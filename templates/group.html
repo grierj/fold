@@ -5,12 +5,20 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <h1>{{.Group.Title}}</h1>
-    <img src="{{.Group.ImageURL}}" alt="{{.Group.Title}}" style="max-width: 300px;">
-    <p><strong>Date & Time:</strong> {{.Group.DateTime.Format "2006-01-02 15:04"}}</p>
-    <p><strong>Type:</strong> {{if .Group.IsRecurring}}Recurring{{else}}One-time{{end}}</p>
-    <p><strong>Description:</strong> {{.Group.Description}}</p>
-    <p><strong>Tags:</strong> {{range (split .Group.Tags ",")}}{{.}}, {{end}}</p>
-    <a href="/">Back to Groups</a>
+    <header>
+        <h1>{{.Group.Title}}</h1>
+        <nav><a href="/">Back to Groups</a></nav>
+    </header>
+    <main>
+        {{if .Group.ImageURL}}
+        <img src="{{.Group.ImageURL}}" alt="{{.Group.Title}}" class="group-image">
+        {{else}}
+        <img src="https://via.placeholder.com/300x150?text={{.Group.Title}}" alt="{{.Group.Title}}" class="group-image">
+        {{end}}
+        <p><strong>Date & Time:</strong> {{.Group.DateTime.Format "2006-01-02 15:04"}}</p>
+        <p><strong>Type:</strong> {{if .Group.IsRecurring}}Recurring{{else}}One-time{{end}}</p>
+        <p><strong>Description:</strong> {{.Group.Description}}</p>
+        <p><strong>Tags:</strong> {{range (split .Group.Tags ",")}}{{.}}, {{end}}</p>
+    </main>
 </body>
 </html>

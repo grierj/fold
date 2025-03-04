@@ -1,17 +1,113 @@
+/* Meetup-inspired styles */
 body {
-    font-family: Arial, sans-serif;
-    margin: 20px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f5f5f5;
+    color: #333;
 }
-form {
+
+header {
+    background-color: #e51937; /* Meetup red */
+    color: white;
+    padding: 20px;
+    text-align: center;
+}
+
+header h1 {
+    margin: 0;
+    font-size: 2.5em;
+    font-weight: 600;
+}
+
+nav {
     margin: 10px 0;
 }
-input, textarea {
-    margin: 5px;
+
+nav a {
+    color: white;
+    text-decoration: none;
+    margin: 0 15px;
+    font-weight: 500;
 }
+
+nav a:hover {
+    text-decoration: underline;
+}
+
+main {
+    max-width: 1200px;
+    margin: 20px auto;
+    padding: 0 20px;
+}
+
+form {
+    margin: 20px 0;
+    display: flex;
+    gap: 10px;
+}
+
+input[type="text"], input[type="password"], textarea, input[type="datetime-local"] {
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 1em;
+    width: 200px;
+}
+
+button {
+    background-color: #e51937;
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+button:hover {
+    background-color: #c3172f;
+}
+
 ul {
     list-style-type: none;
     padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
 }
+
 li {
-    margin: 10px 0;
+    background-color: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+    padding: 15px;
+    transition: transform 0.2s;
+}
+
+li:hover {
+    transform: translateY(-5px);
+}
+
+li a {
+    color: #e51937;
+    text-decoration: none;
+    font-size: 1.2em;
+    font-weight: 500;
+}
+
+li a:hover {
+    text-decoration: underline;
+}
+
+.group-image {
+    width: 100%;
+    height: 150px;
+    object-fit: cover;
+    border-radius: 4px 4px 0 0;
+}
+
+.error {
+    color: #e51937;
+    font-weight: bold;
 }

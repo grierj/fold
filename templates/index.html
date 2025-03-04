@@ -5,25 +5,39 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <h1>Church Social Groups</h1>
-    {{if .LoggedIn}}
-    <a href="/logout">Logout</a> | <a href="/create">Create a Group</a> | <a href="/admin">Admin Dashboard</a>
-    {{else}}
-    <a href="/login">Login</a>
-    {{end}}
-    <form method="GET" action="/">
-        <input type="text" name="search" placeholder="Search by title or description">
-        <input type="text" name="tag" placeholder="Filter by tag">
-        <button type="submit">Search</button>
-    </form>
-    <ul>
-        {{range .Groups}}
-        <li>
-            <a href="/group/{{.ID}}">{{.Title}}</a> - {{.DateTime.Format "2006-01-02 15:04"}}
-            {{if .IsRecurring}}(Recurring){{else}}(One-time){{end}}
-            <br>Tags: {{range (split .Tags ",")}}{{.}}, {{end}}
-        </li>
-        {{end}}
-    </ul>
+    <header>
+        <h1>Church Social Groups</h1>
+        <nav>
+            {{if .LoggedIn}}
+            <a href="/logout">Logout</a> |
+            <a href="/create">Create a Group</a> |
+            <a href="/admin">Admin Dashboard</a>
+            {{else}}
+            <a href="/login">Login</a>
+            {{end}}
+        </nav>
+    </header>
+    <main>
+        <form method="GET" action="/">
+            <input type="text" name="search" placeholder="Search groups...">
+            <input type="text" name="tag" placeholder="Filter by tag">
+            <button type="submit">Search</button>
+        </form>
+        <ul>
+            {{range .Groups}}
+            <li>
+                {{if .ImageURL}}
+                <img src="{{.ImageURL}}" alt="{{.Title}}" class="group-image">
+                {{else}}
+                <img src="https://via.placeholder.com/300x150?text={{.Title}}" alt="{{.Title}}" class="group-image">
+                {{end}}
+                <a href="/group/{{.ID}}">{{.Title}}</a>
+                <p>{{.DateTime.Format "2006-01-02 15:04"}}
+                {{if .IsRecurring}}(Recurring){{else}}(One-time){{end}}</p>
+                <p>Tags: {{range (split .Tags ",")}}{{.}}, {{end}}</p>
+            </li>
+            {{end}}
+        </ul>
+    </main>
 </body>
 </html>

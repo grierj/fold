@@ -5,19 +5,28 @@
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <h1>Admin Dashboard</h1>
-    <h2>Pending Groups</h2>
-    <ul>
-        {{range .PendingGroups}}
-        <li>
-            {{.Title}} - {{.DateTime.Format "2006-01-02 15:04"}}
-            <form method="POST" action="/admin/approve/{{.ID}}">
-                <label>Tags (comma-separated): <input type="text" name="tags"></label>
-                <button type="submit">Approve</button>
-            </form>
-        </li>
-        {{end}}
-    </ul>
-    <a href="/">Back to Groups</a>
+    <header>
+        <h1>Admin Dashboard</h1>
+        <nav><a href="/">Back to Groups</a></nav>
+    </header>
+    <main>
+        <h2>Pending Groups</h2>
+        <ul>
+            {{range .PendingGroups}}
+            <li>
+                {{if .ImageURL}}
+                <img src="{{.ImageURL}}" alt="{{.Title}}" class="group-image">
+                {{else}}
+                <img src="https://via.placeholder.com/300x150?text={{.Title}}" alt="{{.Title}}" class="group-image">
+                {{end}}
+                <p>{{.Title}} - {{.DateTime.Format "2006-01-02 15:04"}}</p>
+                <form method="POST" action="/admin/approve/{{.ID}}">
+                    <label>Tags (comma-separated): <input type="text" name="tags"></label>
+                    <button type="submit">Approve</button>
+                </form>
+            </li>
+            {{end}}
+        </ul>
+    </main>
 </body>
 </html>
