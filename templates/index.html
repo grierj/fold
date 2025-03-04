@@ -6,12 +6,16 @@
 </head>
 <body>
     <h1>Church Social Groups</h1>
+    {{if .LoggedIn}}
+    <a href="/logout">Logout</a> | <a href="/create">Create a Group</a> | <a href="/admin">Admin Dashboard</a>
+    {{else}}
+    <a href="/login">Login</a>
+    {{end}}
     <form method="GET" action="/">
         <input type="text" name="search" placeholder="Search by title or description">
         <input type="text" name="tag" placeholder="Filter by tag">
         <button type="submit">Search</button>
     </form>
-    <a href="/create">Create a Group</a>
     <ul>
         {{range .Groups}}
         <li>
