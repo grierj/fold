@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Create Group</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>Create a New Group</h1>
+    <form method="POST" action="/create">
+        <label>Title: <input type="text" name="title" required></label><br>
+        <label>Date & Time: <input type="datetime-local" name="datetime" required></label><br>
+        <label>Recurring? <input type="checkbox" name="is_recurring" value="true"></label><br>
+        <label>Description: <textarea name="description" required></textarea></label><br>
+        <label>Image URL: <input type="text" name="image_url"></label><br>
+        <button type="submit">Submit for Approval</button>
+    </form>
+</body>
+</html>

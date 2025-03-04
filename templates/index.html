@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Church Groups</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>Church Social Groups</h1>
+    <form method="GET" action="/">
+        <input type="text" name="search" placeholder="Search by title or description">
+        <input type="text" name="tag" placeholder="Filter by tag">
+        <button type="submit">Search</button>
+    </form>
+    <a href="/create">Create a Group</a>
+    <ul>
+        {{range .Groups}}
+        <li>
+            <a href="/group/{{.ID}}">{{.Title}}</a> - {{.DateTime.Format "2006-01-02 15:04"}}
+            {{if .IsRecurring}}(Recurring){{else}}(One-time){{end}}
+            <br>Tags: {{range (split .Tags ",")}}{{.}}, {{end}}
+        </li>
+        {{end}}
+    </ul>
+</body>
+</html>

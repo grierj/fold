@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>{{.Group.Title}}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>{{.Group.Title}}</h1>
+    <img src="{{.Group.ImageURL}}" alt="{{.Group.Title}}" style="max-width: 300px;">
+    <p><strong>Date & Time:</strong> {{.Group.DateTime.Format "2006-01-02 15:04"}}</p>
+    <p><strong>Type:</strong> {{if .Group.IsRecurring}}Recurring{{else}}One-time{{end}}</p>
+    <p><strong>Description:</strong> {{.Group.Description}}</p>
+    <p><strong>Tags:</strong> {{range (split .Group.Tags ",")}}{{.}}, {{end}}</p>
+    <a href="/">Back to Groups</a>
+</body>
+</html>

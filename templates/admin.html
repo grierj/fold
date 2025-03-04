@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Admin Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>Admin Dashboard</h1>
+    <h2>Pending Groups</h2>
+    <ul>
+        {{range .PendingGroups}}
+        <li>
+            {{.Title}} - {{.DateTime.Format "2006-01-02 15:04"}}
+            <form method="POST" action="/admin/approve/{{.ID}}">
+                <label>Tags (comma-separated): <input type="text" name="tags"></label>
+                <button type="submit">Approve</button>
+            </form>
+        </li>
+        {{end}}
+    </ul>
+</body>
+</html>
