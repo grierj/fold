@@ -28,3 +28,9 @@ go.work.sum
 church-groups
 # SQLite dev database
 /data/
+
+# Frontend build output (built by `npm run build` in web/, or the Docker build).
+# The directory itself must exist for go:embed; only the marker file is committed.
+web/dist/*
+!web/dist/README.txt
+web/node_modules/

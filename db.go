@@ -34,7 +34,15 @@ func openDatabase(cfg Config) *gorm.DB {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
 
-	if err := db.AutoMigrate(&models.User{}, &models.Group{}, &models.Setting{}); err != nil {
+	if err := db.AutoMigrate(
+		&models.User{},
+		&models.Group{},
+		&models.Meeting{},
+		&models.MeetingException{},
+		&models.Membership{},
+		&models.RSVP{},
+		&models.Setting{},
+	); err != nil {
 		log.Fatalf("Failed to migrate database: %v", err)
 	}
 	return db
