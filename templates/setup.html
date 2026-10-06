@@ -16,9 +16,10 @@
         {{end}}
         <form method="POST" action="/setup">
             {{ .csrfField }}
-            <label>Church / site name: <input type="text" name="site_name" required></label><br>
-            <label>Admin username: <input type="text" name="username" required></label><br>
-            <label>Password (min 10 characters): <input type="password" name="password" required></label><br>
+            <label>Church / site name: <input type="text" name="site_name" value="{{.EnteredSiteName}}" required></label><br>
+            <label>Admin username: <input type="text" name="username" value="{{.EnteredUsername}}" required></label><br>
+            <label>Password: <input type="password" name="password" required></label>
+            <p class="hint">Password must be at least 10 characters.</p>
             <label>Confirm password: <input type="password" name="password_confirm" required></label><br>
             <button type="submit">Create site</button>
         </form>

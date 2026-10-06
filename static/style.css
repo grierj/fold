@@ -133,3 +133,9 @@ li a:hover {
     color: #e51937;
     font-weight: bold;
 }
+
+.hint {
+    color: #666;
+    font-size: 0.9em;
+    margin: 4px 0 12px 0;
+}

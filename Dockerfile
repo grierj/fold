@@ -16,6 +16,10 @@ COPY . .
 COPY --from=webbuild /web/dist/ ./web/dist/
 # Pure-Go SQLite driver (modernc via glebarez) => no CGO needed.
 RUN CGO_ENABLED=0 go build -trimpath -o /out/church-groups .
+# Seed the data dir so the named volume inherits nonroot ownership on
+# first mount (distroless nonroot is 65532:65532; there is no shell to
+# chown with in the final stage).
+RUN mkdir -p /data/uploads
 
 # Run stage
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -25,9 +29,13 @@ WORKDIR /
 COPY --from=build /out/church-groups /church-groups
 COPY --from=build /src/templates /templates
 COPY --from=build /src/static /static
+# Carry the data dir (with nonroot ownership) into the image so a fresh
+# named volume starts writable by the app user.
+COPY --from=build --chown=65532:65532 /data /data
 ENV PORT=8080 \
     APP_ENV=prod \
-    SQLITE_PATH=/data/church-groups.db
+    SQLITE_PATH=/data/church-groups.db \
+    UPLOAD_DIR=/data/uploads
 VOLUME /data
 EXPOSE 8080
 USER nonroot:nonroot
