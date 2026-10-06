@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"church-groups/models"
+	"church-groups/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -47,6 +48,11 @@ func testApp(t *testing.T) *App {
 		Store:  store,
 		Config: Config{Env: "dev", Port: "8080"},
 	}
+	uploads, err := storage.NewLocalStore(t.TempDir(), "/uploads")
+	if err != nil {
+		t.Fatalf("upload store: %v", err)
+	}
+	app.Uploads = uploads
 	return app
 }
 
