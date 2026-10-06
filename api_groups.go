@@ -93,14 +93,7 @@ func (a *App) apiGetGroup(c *gin.Context) {
 		a.DB.Preload("User").Where("group_id = ? AND status = ?", g.ID, "active").
 			Order("joined_at").Find(&members)
 		for _, m := range members {
-			name := m.User.Name
-			if name == "" {
-				name = m.User.Username
-			}
-			memberList = append(memberList, memberJSON{
-				ID: m.User.ID, Name: name, Role: m.Role,
-				JoinedAt: m.JoinedAt.Format(time.RFC3339),
-			})
+			memberList = append(memberList, a.toMemberJSON(&m))
 		}
 	}
 
@@ -221,14 +214,7 @@ func (a *App) apiGroupMembers(c *gin.Context) {
 		Order("joined_at").Find(&members)
 	out := make([]memberJSON, 0, len(members))
 	for _, m := range members {
-		name := m.User.Name
-		if name == "" {
-			name = m.User.Username
-		}
-		out = append(out, memberJSON{
-			ID: m.User.ID, Name: name, Role: m.Role,
-			JoinedAt: m.JoinedAt.Format(time.RFC3339),
-		})
+		out = append(out, a.toMemberJSON(&m))
 	}
 	c.JSON(http.StatusOK, gin.H{"members": out})
 }

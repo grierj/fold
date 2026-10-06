@@ -15,16 +15,26 @@ import (
 // ---------------------------------------------------------------------------
 
 type userJSON struct {
-	ID       uint   `json:"id"`
-	Username string `json:"username"`
-	Name     string `json:"name"`
-	Email    string `json:"email"`
-	Phone    string `json:"phone"`
-	Role     string `json:"role"`
+	ID          uint   `json:"id"`
+	Username    string `json:"username"`
+	Name        string `json:"name"`
+	DisplayName string `json:"displayName"`
+	Email       string `json:"email"`
+	Phone       string `json:"phone"`
+	AvatarURL   string `json:"avatarUrl"`
+	Role        string `json:"role"`
 }
 
-func toUserJSON(u *models.User) userJSON {
-	return userJSON{ID: u.ID, Username: u.Username, Name: u.Name, Email: u.Email, Phone: u.Phone, Role: u.Role}
+func (a *App) toUserJSON(u *models.User) userJSON {
+	avatarURL := ""
+	if u.AvatarKey != "" {
+		avatarURL = a.Uploads.URL(u.AvatarKey)
+	}
+	return userJSON{
+		ID: u.ID, Username: u.Username, Name: u.Name,
+		DisplayName: u.DisplayName, Email: u.Email, Phone: u.Phone,
+		AvatarURL: avatarURL, Role: u.Role,
+	}
 }
 
 type groupSummaryJSON struct {
@@ -41,10 +51,23 @@ type groupSummaryJSON struct {
 }
 
 type memberJSON struct {
-	ID       uint   `json:"id"`
-	Name     string `json:"name"`
-	Role     string `json:"role"`
-	JoinedAt string `json:"joinedAt"`
+	ID        uint   `json:"id"`
+	Name      string `json:"name"`
+	AvatarURL string `json:"avatarUrl"`
+	Role      string `json:"role"`
+	JoinedAt  string `json:"joinedAt"`
+}
+
+// toMemberJSON renders a membership's user for the roster.
+func (a *App) toMemberJSON(m *models.Membership) memberJSON {
+	avatarURL := ""
+	if m.User.AvatarKey != "" {
+		avatarURL = a.Uploads.URL(m.User.AvatarKey)
+	}
+	return memberJSON{
+		ID: m.User.ID, Name: m.User.PublicName(), AvatarURL: avatarURL,
+		Role: m.Role, JoinedAt: m.JoinedAt.Format(time.RFC3339),
+	}
 }
 
 type meetingInstanceJSON struct {
@@ -181,6 +204,11 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/auth/logout", a.apiLogout)
 	v1.GET("/auth/me", a.apiAuth(), a.apiMe)
 
+	// Profile.
+	v1.PUT("/me", a.apiAuth(), a.apiUpdateMe)
+	v1.POST("/me/avatar", a.apiAuth(), a.apiUploadAvatar)
+	v1.DELETE("/me/avatar", a.apiAuth(), a.apiDeleteAvatar)
+
 	// Groups.
 	v1.GET("/groups", a.optionalUser(), a.apiListGroups)
 	v1.GET("/me/groups", a.apiAuth(), a.apiMyGroups)
@@ -192,6 +220,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/groups/:id/members", a.apiAuth(), a.apiGroupMembers)
 	v1.GET("/groups/:id/meetings", a.optionalUser(), a.apiListMeetings)
 	v1.POST("/groups/:id/meetings", a.apiAuth(), a.apiCreateMeeting)
+	v1.POST("/groups/:id/cover", a.apiAuth(), a.apiUploadGroupCover)
+	v1.DELETE("/groups/:id/cover", a.apiAuth(), a.apiDeleteGroupCover)
 
 	// Meetings.
 	v1.PUT("/meetings/:id", a.apiAuth(), a.apiUpdateMeeting)

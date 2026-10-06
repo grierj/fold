@@ -34,16 +34,29 @@ const (
 )
 
 type User struct {
-	ID        uint   `gorm:"primaryKey"`
-	Username  string `gorm:"unique;not null"`
-	Password  string `gorm:"not null"` // bcrypt hash
-	Name      string
-	Email     string
-	Phone     string // first-class: SMS is a required channel
-	Role      string `gorm:"default:member"` // admin | member
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	DeletedAt gorm.DeletedAt `gorm:"index"`
+	ID          uint   `gorm:"primaryKey"`
+	Username    string `gorm:"unique;not null"`
+	Password    string `gorm:"not null"` // bcrypt hash
+	Name        string // full name
+	DisplayName string // shown in the UI; falls back to Name, then Username
+	Email       string
+	Phone       string // first-class: SMS is a required channel
+	AvatarKey   string // blob-store key for the avatar image ("" = none)
+	Role        string `gorm:"default:member"` // admin | member
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	DeletedAt   gorm.DeletedAt `gorm:"index"`
+}
+
+// PublicName returns the name shown in the UI.
+func (u *User) PublicName() string {
+	if u.DisplayName != "" {
+		return u.DisplayName
+	}
+	if u.Name != "" {
+		return u.Name
+	}
+	return u.Username
 }
 
 // HashPassword hashes the password before saving
