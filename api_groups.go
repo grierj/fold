@@ -93,14 +93,7 @@ func (a *App) apiGetGroup(c *gin.Context) {
 		a.DB.Preload("User").Where("group_id = ? AND status = ?", g.ID, "active").
 			Order("joined_at").Find(&members)
 		for _, m := range members {
-			name := m.User.Name
-			if name == "" {
-				name = m.User.Username
-			}
-			memberList = append(memberList, memberJSON{
-				ID: m.User.ID, Name: name, Role: m.Role,
-				JoinedAt: m.JoinedAt.Format(time.RFC3339),
-			})
+			memberList = append(memberList, a.toMemberJSON(&m))
 		}
 	}
 
@@ -146,6 +139,10 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		ImageURL    *string  `json:"imageUrl"`
 		Location    *string  `json:"location"`
 		Status      *string  `json:"status"`
+		CoverFocal  *struct {
+			X float64 `json:"x"`
+			Y float64 `json:"y"`
+		} `json:"coverFocal"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")
@@ -162,6 +159,10 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	}
 	if body.ImageURL != nil {
 		g.ImageURL = strings.TrimSpace(*body.ImageURL)
+	}
+	if body.CoverFocal != nil {
+		g.CoverFocalX = clampFocal(body.CoverFocal.X)
+		g.CoverFocalY = clampFocal(body.CoverFocal.Y)
 	}
 	if body.Location != nil {
 		g.Location = strings.TrimSpace(*body.Location)
@@ -221,14 +222,7 @@ func (a *App) apiGroupMembers(c *gin.Context) {
 		Order("joined_at").Find(&members)
 	out := make([]memberJSON, 0, len(members))
 	for _, m := range members {
-		name := m.User.Name
-		if name == "" {
-			name = m.User.Username
-		}
-		out = append(out, memberJSON{
-			ID: m.User.ID, Name: name, Role: m.Role,
-			JoinedAt: m.JoinedAt.Format(time.RFC3339),
-		})
+		out = append(out, a.toMemberJSON(&m))
 	}
 	c.JSON(http.StatusOK, gin.H{"members": out})
 }

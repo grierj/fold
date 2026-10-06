@@ -10,21 +10,40 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// minPasswordLength is the minimum for local-account passwords, enforced
+// at setup, admin creation, and admin password reset. The setup template
+// states the requirement next to the field — keep them in sync.
+const minPasswordLength = 10
+
 // ---------------------------------------------------------------------------
 // JSON shapes
 // ---------------------------------------------------------------------------
 
 type userJSON struct {
-	ID       uint   `json:"id"`
-	Username string `json:"username"`
-	Name     string `json:"name"`
-	Email    string `json:"email"`
-	Phone    string `json:"phone"`
-	Role     string `json:"role"`
+	ID          uint    `json:"id"`
+	Username    string  `json:"username"`
+	Name        string  `json:"name"`
+	DisplayName string  `json:"displayName"`
+	Email       string  `json:"email"`
+	Phone       string  `json:"phone"`
+	AvatarURL   string  `json:"avatarUrl"`
+	AvatarFocalX float64 `json:"avatarFocalX"`
+	AvatarFocalY float64 `json:"avatarFocalY"`
+	Role        string  `json:"role"`
 }
 
-func toUserJSON(u *models.User) userJSON {
-	return userJSON{ID: u.ID, Username: u.Username, Name: u.Name, Email: u.Email, Phone: u.Phone, Role: u.Role}
+func (a *App) toUserJSON(u *models.User) userJSON {
+	avatarURL := ""
+	if u.AvatarKey != "" {
+		avatarURL = a.Uploads.URL(u.AvatarKey)
+	}
+	return userJSON{
+		ID: u.ID, Username: u.Username, Name: u.Name,
+		DisplayName: u.DisplayName, Email: u.Email, Phone: u.Phone,
+		AvatarURL: avatarURL,
+		AvatarFocalX: u.AvatarFocalX, AvatarFocalY: u.AvatarFocalY,
+		Role: u.Role,
+	}
 }
 
 type groupSummaryJSON struct {
@@ -33,6 +52,8 @@ type groupSummaryJSON struct {
 	Description   string     `json:"description"`
 	Tags          []string   `json:"tags"`
 	ImageURL      string     `json:"imageUrl"`
+	CoverFocalX   float64    `json:"coverFocalX"`
+	CoverFocalY   float64    `json:"coverFocalY"`
 	Location      string     `json:"location"`
 	LeaderName    string     `json:"leaderName"`
 	MemberCount   int64      `json:"memberCount"`
@@ -41,10 +62,26 @@ type groupSummaryJSON struct {
 }
 
 type memberJSON struct {
-	ID       uint   `json:"id"`
-	Name     string `json:"name"`
-	Role     string `json:"role"`
-	JoinedAt string `json:"joinedAt"`
+	ID           uint    `json:"id"`
+	Name         string  `json:"name"`
+	AvatarURL    string  `json:"avatarUrl"`
+	AvatarFocalX float64 `json:"avatarFocalX"`
+	AvatarFocalY float64 `json:"avatarFocalY"`
+	Role         string  `json:"role"`
+	JoinedAt     string  `json:"joinedAt"`
+}
+
+// toMemberJSON renders a membership's user for the roster.
+func (a *App) toMemberJSON(m *models.Membership) memberJSON {
+	avatarURL := ""
+	if m.User.AvatarKey != "" {
+		avatarURL = a.Uploads.URL(m.User.AvatarKey)
+	}
+	return memberJSON{
+		ID: m.User.ID, Name: m.User.PublicName(), AvatarURL: avatarURL,
+		AvatarFocalX: m.User.AvatarFocalX, AvatarFocalY: m.User.AvatarFocalY,
+		Role: m.Role, JoinedAt: m.JoinedAt.Format(time.RFC3339),
+	}
 }
 
 type meetingInstanceJSON struct {
@@ -181,6 +218,11 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/auth/logout", a.apiLogout)
 	v1.GET("/auth/me", a.apiAuth(), a.apiMe)
 
+	// Profile.
+	v1.PUT("/me", a.apiAuth(), a.apiUpdateMe)
+	v1.POST("/me/avatar", a.apiAuth(), a.apiUploadAvatar)
+	v1.DELETE("/me/avatar", a.apiAuth(), a.apiDeleteAvatar)
+
 	// Groups.
 	v1.GET("/groups", a.optionalUser(), a.apiListGroups)
 	v1.GET("/me/groups", a.apiAuth(), a.apiMyGroups)
@@ -192,6 +234,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/groups/:id/members", a.apiAuth(), a.apiGroupMembers)
 	v1.GET("/groups/:id/meetings", a.optionalUser(), a.apiListMeetings)
 	v1.POST("/groups/:id/meetings", a.apiAuth(), a.apiCreateMeeting)
+	v1.POST("/groups/:id/cover", a.apiAuth(), a.apiUploadGroupCover)
+	v1.DELETE("/groups/:id/cover", a.apiAuth(), a.apiDeleteGroupCover)
 
 	// Meetings.
 	v1.PUT("/meetings/:id", a.apiAuth(), a.apiUpdateMeeting)
@@ -203,4 +247,15 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/admin/pending", a.apiAuth(), a.apiAdmin(), a.apiPendingGroups)
 	v1.POST("/admin/groups/:id/approve", a.apiAuth(), a.apiAdmin(), a.apiApproveGroup)
 	v1.POST("/admin/groups/:id/reject", a.apiAuth(), a.apiAdmin(), a.apiRejectGroup)
+	v1.GET("/admin/groups", a.apiAuth(), a.apiAdmin(), a.apiAdminListGroups)
+	v1.POST("/admin/groups/:id/members", a.apiAuth(), a.apiAdmin(), a.apiAdminAddMember)
+	v1.DELETE("/admin/groups/:id/members/:userId", a.apiAuth(), a.apiAdmin(), a.apiAdminRemoveMember)
+	v1.GET("/admin/users", a.apiAuth(), a.apiAdmin(), a.apiAdminListUsers)
+	v1.POST("/admin/users", a.apiAuth(), a.apiAdmin(), a.apiAdminCreateUser)
+	v1.PUT("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminUpdateUser)
+	v1.DELETE("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminDeleteUser)
+	v1.POST("/admin/users/:id/password", a.apiAuth(), a.apiAdmin(), a.apiAdminResetPassword)
+
+	// Notifications.
+	v1.GET("/notifications", a.apiAuth(), a.apiNotifications)
 }

@@ -4,8 +4,12 @@ export interface User {
   id: number;
   username: string;
   name: string;
+  displayName: string;
   email: string;
   phone: string;
+  avatarUrl: string;
+  avatarFocalX: number;
+  avatarFocalY: number;
   role: string;
 }
 
@@ -15,6 +19,8 @@ export interface GroupSummary {
   description: string;
   tags: string[];
   imageUrl: string;
+  coverFocalX: number;
+  coverFocalY: number;
   location: string;
   leaderName: string;
   memberCount: number;
@@ -25,8 +31,18 @@ export interface GroupSummary {
 export interface Member {
   id: number;
   name: string;
+  avatarUrl: string;
+  avatarFocalX: number;
+  avatarFocalY: number;
   role: "leader" | "member" | string;
   joinedAt: string;
+}
+
+export interface Notification {
+  type: "approval" | "event";
+  title: string;
+  body: string;
+  link: string;
 }
 
 export interface MeetingInstance {
