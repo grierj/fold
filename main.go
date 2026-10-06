@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"church-groups/models"
@@ -27,6 +28,13 @@ const sessionName = "church-session"
 
 func main() {
 	cfg := LoadConfig()
+
+	// Distroless images have no shell, so log the working directory at
+	// startup: template/static paths are relative and this is the only
+	// way to see what they resolve against.
+	if wd, err := os.Getwd(); err == nil {
+		log.Printf("Working directory: %s", wd)
+	}
 
 	if cfg.IsDev() {
 		gin.SetMode(gin.DebugMode)

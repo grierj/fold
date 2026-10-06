@@ -19,6 +19,9 @@ RUN CGO_ENABLED=0 go build -trimpath -o /out/church-groups .
 
 # Run stage
 FROM gcr.io/distroless/static-debian12:nonroot
+# Pin the working directory: the binary uses relative paths for templates/
+# and static assets, and distroless does not guarantee WORKDIR=/.
+WORKDIR /
 COPY --from=build /out/church-groups /church-groups
 COPY --from=build /src/templates /templates
 COPY --from=build /src/static /static
