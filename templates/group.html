@@ -13,7 +13,7 @@
         {{if .Group.ImageURL}}
         <img src="{{.Group.ImageURL}}" alt="{{.Group.Title}}" class="group-image">
         {{else}}
-        <img src="https://via.placeholder.com/300x150?text={{.Group.Title}}" alt="{{.Group.Title}}" class="group-image">
+        <div class="group-image group-image--placeholder" role="img" aria-label="{{.Group.Title}}"><span>{{.Group.Title}}</span></div>
         {{end}}
         <p><strong>Date & Time:</strong> {{.Group.DateTime.Format "2006-01-02 15:04"}}</p>
         <p><strong>Type:</strong> {{if .Group.IsRecurring}}Recurring{{else}}One-time{{end}}</p>

@@ -26,3 +26,5 @@ go.work.sum
 
 # Binary output from go build
 church-groups
+# SQLite dev database
+/data/

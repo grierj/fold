@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Setup — Church Groups</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1>Welcome — let's set things up</h1>
+    </header>
+    <main>
+        <p>This only appears once. Create your church's site and its first
+        administrator account.</p>
+        {{if .Error}}
+        <p class="error">{{.Error}}</p>
+        {{end}}
+        <form method="POST" action="/setup">
+            {{ .csrfField }}
+            <label>Church / site name: <input type="text" name="site_name" required></label><br>
+            <label>Admin username: <input type="text" name="username" required></label><br>
+            <label>Password (min 10 characters): <input type="password" name="password" required></label><br>
+            <label>Confirm password: <input type="password" name="password_confirm" required></label><br>
+            <button type="submit">Create site</button>
+        </form>
+    </main>
+</body>
+</html>

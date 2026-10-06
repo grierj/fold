@@ -47,3 +47,10 @@ func (u *User) BeforeCreate(tx *gorm.DB) (err error) {
 func (u *User) CheckPassword(password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password)) == nil
 }
+
+// Setting is a simple key/value store for site configuration
+// (e.g. the church name collected by the setup wizard).
+type Setting struct {
+	Key   string `gorm:"primaryKey"`
+	Value string
+}

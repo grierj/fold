@@ -14,6 +14,7 @@
         <p class="error">{{.Error}}</p>
         {{end}}
         <form method="POST" action="/login">
+            {{ .csrfField }}
             <label>Username: <input type="text" name="username" required></label><br>
             <label>Password: <input type="password" name="password" required></label><br>
             <button type="submit">Login</button>
