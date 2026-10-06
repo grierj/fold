@@ -1,0 +1,486 @@
+import { useCallback, useEffect, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { ApiError, Groups, Meetings } from "../api";
+import type { GroupDetailResponse, MeetingInstance } from "../types";
+import { useAuth } from "../auth";
+import { DateBadge } from "../components/DateBadge";
+import { RsvpButtons } from "../components/RsvpButtons";
+import { coverImage, formatNextMeeting } from "../components/GroupCard";
+
+type Tab = "events" | "about" | "members";
+
+function rsvpTotal(r: Record<string, number>, key: string): number {
+  return r[key] ?? 0;
+}
+
+function EventRow({
+  instance,
+  groupName,
+  canManage,
+  loggedIn,
+  onRsvp,
+  onCancelled,
+}: {
+  instance: MeetingInstance;
+  groupName: string;
+  canManage: boolean;
+  loggedIn: boolean;
+  onRsvp: (meetingId: number, date: string, status: "going" | "maybe" | "declined") => void;
+  onCancelled: (meetingId: number, date: string) => void;
+}) {
+  const [cancelling, setCancelling] = useState(false);
+  const time = new Date(instance.startsAt).toLocaleTimeString(undefined, {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+  const loc = instance.location || "";
+
+  async function cancel() {
+    if (!confirm(`Cancel this instance on ${instance.date}?`)) return;
+    setCancelling(true);
+    try {
+      await Meetings.cancelInstance(instance.meetingId, instance.date);
+      onCancelled(instance.meetingId, instance.date);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Cancel failed");
+    } finally {
+      setCancelling(false);
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-4 flex gap-4">
+      <DateBadge iso={instance.startsAt} />
+      <div className="grow min-w-0">
+        <div className="font-bold text-lg">{groupName}</div>
+        <div className="text-sm text-gray-600">
+          {time}
+          {loc ? ` · ${loc}` : ""}
+        </div>
+        <div className="text-sm text-gray-500 mt-1">
+          {rsvpTotal(instance.rsvps, "going")} going · {rsvpTotal(instance.rsvps, "maybe")} maybe ·{" "}
+          {rsvpTotal(instance.rsvps, "declined")} can't go
+        </div>
+        {loggedIn && (
+          <div className="mt-2">
+            <RsvpButtons
+              instance={instance}
+              onChange={(status) => onRsvp(instance.meetingId, instance.date, status)}
+            />
+          </div>
+        )}
+      </div>
+      {canManage && (
+        <div className="shrink-0">
+          <button
+            onClick={cancel}
+            disabled={cancelling}
+            className="text-sm text-red-600 hover:text-red-800 font-medium"
+          >
+            {cancelling ? "Cancelling…" : "Cancel"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export interface GroupFormData {
+  name: string;
+  description: string;
+  location: string;
+  tags: string[];
+  imageUrl: string;
+}
+
+function GroupForm({
+  initial,
+  saveLabel,
+  onSaved,
+  onCancel,
+}: {
+  initial: { name: string; description: string; location: string; tags: string[]; imageUrl: string };
+  saveLabel: string;
+  onSaved: (data: GroupFormData) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [name, setName] = useState(initial.name);
+  const [description, setDescription] = useState(initial.description);
+  const [location, setLocation] = useState(initial.location);
+  const [tags, setTags] = useState(initial.tags.join(", "));
+  const [imageUrl, setImageUrl] = useState(initial.imageUrl);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  return (
+    <form
+      className="bg-white rounded-xl border border-gray-200 p-6 space-y-4"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        setBusy(true);
+        setError(null);
+        try {
+          await onSaved({
+            name,
+            description,
+            location,
+            imageUrl,
+            tags: tags
+              .split(",")
+              .map((t) => t.trim())
+              .filter(Boolean),
+          });
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Save failed");
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      {error && <div className="text-red-600 text-sm">{error}</div>}
+      <div>
+        <label className="label">Group name</label>
+        <input className="input" value={name} onChange={(e) => setName(e.target.value)} required />
+      </div>
+      <div>
+        <label className="label">Description</label>
+        <textarea
+          className="input"
+          rows={4}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </div>
+      <div>
+        <label className="label">Location</label>
+        <input
+          className="input"
+          value={location}
+          onChange={(e) => setLocation(e.target.value)}
+          placeholder="e.g. Room 201, Main Campus"
+        />
+      </div>
+      <div>
+        <label className="label">Tags (comma separated)</label>
+        <input
+          className="input"
+          value={tags}
+          onChange={(e) => setTags(e.target.value)}
+          placeholder="e.g. young-adults, bible-study"
+        />
+      </div>
+      <div>
+        <label className="label">Cover image URL</label>
+        <input
+          className="input"
+          value={imageUrl}
+          onChange={(e) => setImageUrl(e.target.value)}
+          placeholder="https://…"
+        />
+      </div>
+      <div className="flex gap-3">
+        <button type="submit" disabled={busy} className="btn-primary">
+          {busy ? "Saving…" : saveLabel}
+        </button>
+        <button type="button" onClick={onCancel} className="btn-secondary">
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+// Exported so /groups/new can reuse the same form.
+export function CreateGroupForm({ onSaved, onCancel }: {
+  onSaved: (data: GroupFormData) => Promise<void>;
+  onCancel: () => void;
+}) {
+  return (
+    <GroupForm
+      initial={{ name: "", description: "", location: "", tags: [], imageUrl: "" }}
+      saveLabel="Create group"
+      onSaved={onSaved}
+      onCancel={onCancel}
+    />
+  );
+}
+
+export function GroupDetail() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const { user, loading: authLoading } = useAuth();
+  const [detail, setDetail] = useState<GroupDetailResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("events");
+  const [editing, setEditing] = useState(false);
+  const [joinBusy, setJoinBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!id) return;
+    setLoading(true);
+    setError(null);
+    setNotFound(false);
+    try {
+      const d = await Groups.get(id);
+      setDetail(d);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) setNotFound(true);
+      else setError(e instanceof Error ? e.message : "Failed to load group");
+    } finally {
+      setLoading(false);
+    }
+  }, [id]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (loading || authLoading) {
+    return <div className="max-w-6xl mx-auto px-4 py-12 text-gray-500">Loading…</div>;
+  }
+  if (notFound || !detail) {
+    return (
+      <div className="max-w-6xl mx-auto px-4 py-12 text-center">
+        <h1 className="text-2xl font-bold mb-2">Group not found</h1>
+        <p className="text-gray-600">
+          {error ?? "This group doesn't exist or isn't visible to you."}{" "}
+          <Link to="/" className="text-brand font-semibold">
+            Back home
+          </Link>
+        </p>
+      </div>
+    );
+  }
+
+  const { group, members, upcomingMeetings, canManage, isMember } = detail;
+  // Server serializes an empty upcomingMeetings as null, not [].
+  const meetings: MeetingInstance[] = upcomingMeetings ?? [];
+
+  async function toggleJoin() {
+    if (!user) {
+      navigate("/login", { state: { from: `/groups/${id}` } });
+      return;
+    }
+    setJoinBusy(true);
+    try {
+      if (isMember) await Groups.leave(id!);
+      else await Groups.join(id!);
+      await load();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setJoinBusy(false);
+    }
+  }
+
+  function handleRsvp(meetingId: number, date: string, status: "going" | "maybe" | "declined") {
+    setDetail((d) =>
+      d
+        ? {
+            ...d,
+            upcomingMeetings: (d.upcomingMeetings ?? []).map((m) =>
+              m.meetingId === meetingId && m.date === date ? { ...m, myRsvp: status } : m
+            ),
+          }
+        : d
+    );
+  }
+
+  function handleCancelled(meetingId: number, date: string) {
+    setDetail((d) =>
+      d
+        ? {
+            ...d,
+            upcomingMeetings: (d.upcomingMeetings ?? []).filter(
+              (m) => !(m.meetingId === meetingId && m.date === date)
+            ),
+          }
+        : d
+    );
+  }
+
+  async function saveEdit(data: GroupFormData) {
+    await Groups.update(id!, data);
+    setEditing(false);
+    await load();
+  }
+
+  return (
+    <div>
+      {/* Cover header */}
+      <div className="relative h-56 sm:h-72 overflow-hidden bg-gray-800">
+        <img
+          src={coverImage(group.imageUrl)}
+          alt=""
+          className="w-full h-full object-cover"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+        <div className="absolute bottom-0 left-0 right-0">
+          <div className="max-w-6xl mx-auto px-4 pb-5 flex items-end gap-4 flex-wrap">
+            <div className="grow min-w-0">
+              {group.status === "pending" && (
+                <span className="inline-block text-xs font-bold uppercase tracking-wide bg-yellow-100 text-yellow-800 rounded-full px-3 py-1 mb-2">
+                  Pending approval
+                </span>
+              )}
+              <h1 className="text-3xl sm:text-4xl font-extrabold text-white">{group.name}</h1>
+              <div className="text-white/80 text-sm mt-1">
+                {group.memberCount} {group.memberCount === 1 ? "member" : "members"}
+                {group.leaderName ? ` · Organized by ${group.leaderName}` : ""}
+                {group.location ? ` · ${group.location}` : ""}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              {canManage && (
+                <>
+                  <Link
+                    to={`/groups/${group.id}/meetings/new`}
+                    className="btn-primary !bg-white !text-brand hover:!bg-gray-100"
+                  >
+                    Schedule event
+                  </Link>
+                  <button onClick={() => setEditing(true)} className="btn-secondary">
+                    Edit group
+                  </button>
+                </>
+              )}
+              <button
+                onClick={toggleJoin}
+                disabled={joinBusy}
+                className={isMember ? "btn-secondary" : "btn-primary"}
+              >
+                {joinBusy ? "…" : isMember ? "Leave group" : "Join this group"}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-6xl mx-auto px-4 py-6">
+        {editing ? (
+          <GroupForm
+            initial={{
+              name: group.name,
+              description: group.description,
+              location: group.location,
+              tags: group.tags,
+              imageUrl: group.imageUrl,
+            }}
+            saveLabel="Save changes"
+            onSaved={saveEdit}
+            onCancel={() => setEditing(false)}
+          />
+        ) : (
+          <>
+            {/* Tabs */}
+            <div className="border-b border-gray-200 mb-6">
+              <nav className="flex gap-6">
+                {(["events", "about", "members"] as Tab[]).map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setTab(t)}
+                    className={
+                      tab === t
+                        ? "pb-3 border-b-2 border-brand text-brand font-semibold capitalize"
+                        : "pb-3 text-gray-600 hover:text-gray-900 font-medium capitalize"
+                    }
+                  >
+                    {t === "events" ? "Upcoming events" : t}
+                  </button>
+                ))}
+              </nav>
+            </div>
+
+            {tab === "events" && (
+              <div className="space-y-3">
+                {meetings.length === 0 && (
+                  <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
+                    No upcoming events scheduled.
+                  </div>
+                )}
+                {meetings.map((m) => (
+                  <EventRow
+                    key={`${m.meetingId}-${m.date}`}
+                    instance={m}
+                    groupName={group.name}
+                    canManage={canManage}
+                    loggedIn={!!user}
+                    onRsvp={handleRsvp}
+                    onCancelled={handleCancelled}
+                  />
+                ))}
+              </div>
+            )}
+
+            {tab === "about" && (
+              <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-3xl space-y-4">
+                <div>
+                  <h3 className="font-bold mb-1">About this group</h3>
+                  <p className="text-gray-700 whitespace-pre-wrap">
+                    {group.description || "No description yet."}
+                  </p>
+                </div>
+                {group.location && (
+                  <div>
+                    <h3 className="font-bold mb-1">Location</h3>
+                    <p className="text-gray-700">{group.location}</p>
+                  </div>
+                )}
+                {group.tags.length > 0 && (
+                  <div>
+                    <h3 className="font-bold mb-1">Tags</h3>
+                    <div className="flex flex-wrap gap-2">
+                      {group.tags.map((t) => (
+                        <span
+                          key={t}
+                          className="text-sm bg-gray-100 text-gray-700 rounded-full px-3 py-1"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <h3 className="font-bold mb-1">Next meeting</h3>
+                  <p className="text-gray-700">{formatNextMeeting(group.nextMeetingAt)}</p>
+                </div>
+              </div>
+            )}
+
+            {tab === "members" && (
+              <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-3xl">
+                {!user ? (
+                  <p className="text-gray-600">
+                    <Link to="/login" className="text-brand font-semibold">
+                      Log in
+                    </Link>{" "}
+                    to see the member roster.
+                  </p>
+                ) : members && members.length > 0 ? (
+                  <ul className="divide-y divide-gray-100">
+                    {members.map((m) => (
+                      <li key={m.id} className="py-3 flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-full bg-brand-light text-brand-dark flex items-center justify-center font-bold">
+                          {m.name.charAt(0).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="font-semibold">{m.name}</div>
+                          <div className="text-sm text-gray-500 capitalize">{m.role}</div>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-gray-600">No members yet.</p>
+                )}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
