@@ -1,5 +1,7 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
+import { Avatar } from "./Avatar";
+import { NotificationBell } from "./Notifications";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { user, loading, logout, isAdmin } = useAuth();
@@ -44,9 +46,24 @@ export function Layout({ children }: { children: React.ReactNode }) {
                     Admin
                   </NavLink>
                 )}
-                <span className="text-gray-600 hidden sm:inline">
-                  Hi, {user.name || user.username}
-                </span>
+                <NotificationBell />
+                <Link
+                  to="/profile"
+                  className="hidden sm:flex items-center gap-2 text-gray-700 hover:text-brand"
+                  title="Your profile"
+                >
+                  <Avatar
+                    url={user.avatarUrl || undefined}
+                    name={user.displayName || user.name || user.username}
+                    focalX={user.avatarFocalX}
+                    focalY={user.avatarFocalY}
+                    size="w-8 h-8"
+                    textSize="text-sm"
+                  />
+                  <span className="text-gray-600">
+                    {user.displayName || user.name || user.username}
+                  </span>
+                </Link>
                 <button onClick={handleLogout} className="text-gray-700 hover:text-brand">
                   Log out
                 </button>

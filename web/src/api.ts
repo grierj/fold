@@ -70,6 +70,7 @@ import type {
   Meeting,
   MeetingInstance,
   Member,
+  Notification,
   User,
 } from "./types";
 
@@ -96,7 +97,14 @@ export const Groups = {
   }) => api<{ group: GroupSummary }>("/groups", { method: "POST", body: data }),
   update: (
     id: number | string,
-    data: { name: string; description: string; tags: string[]; imageUrl: string; location: string }
+    data: {
+      name: string;
+      description: string;
+      tags: string[];
+      imageUrl: string;
+      location: string;
+      coverFocal?: { x: number; y: number };
+    }
   ) => api<{ group: GroupSummary }>(`/groups/${id}`, { method: "PUT", body: data }),
   join: (id: number | string) => api<unknown>(`/groups/${id}/join`, { method: "POST" }),
   leave: (id: number | string) => api<unknown>(`/groups/${id}/leave`, { method: "POST" }),
@@ -129,4 +137,82 @@ export const Admin = {
   approve: (id: number | string, tags: string[]) =>
     api<{ group: GroupSummary }>(`/admin/groups/${id}/approve`, { method: "POST", body: { tags } }),
   reject: (id: number | string) => api<unknown>(`/admin/groups/${id}/reject`, { method: "POST" }),
+};
+
+// Multipart upload: the browser sets Content-Type with the boundary;
+// the CSRF token still goes in the header.
+async function apiUpload<T>(path: string, field: string, file: File): Promise<T> {
+  const form = new FormData();
+  form.append(field, file);
+  const res = await fetch(`/api/v1${path}`, {
+    method: "POST",
+    headers: { "X-CSRF-Token": await ensureCsrf(), Accept: "application/json" },
+    body: form,
+    credentials: "include",
+  });
+  if (res.status === 401) {
+    if (onUnauthorized) onUnauthorized();
+    throw new ApiError(401, "unauthorized");
+  }
+  const raw = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) {
+    throw new ApiError(res.status, raw.error ?? `upload failed (${res.status})`);
+  }
+  return raw as T;
+}
+
+export interface ProfileUpdate {
+  name?: string;
+  displayName?: string;
+  email?: string;
+  phone?: string;
+  avatarFocal?: { x: number; y: number };
+}
+
+export const Profile = {
+  update: (data: ProfileUpdate) => api<{ user: User }>("/me", { method: "PUT", body: data }),
+  uploadAvatar: (file: File) => apiUpload<{ avatarUrl: string }>("/me/avatar", "avatar", file),
+  deleteAvatar: () => api<Record<string, never>>("/me/avatar", { method: "DELETE" }),
+};
+
+export const GroupCover = {
+  upload: (id: number | string, file: File) =>
+    apiUpload<{ imageUrl: string }>(`/groups/${id}/cover`, "cover", file),
+  remove: (id: number | string) =>
+    api<Record<string, never>>(`/groups/${id}/cover`, { method: "DELETE" }),
+};
+
+export const Notifications = {
+  list: () => api<{ notifications: Notification[] }>("/notifications"),
+};
+
+export interface AdminUserInput {
+  username: string;
+  password: string;
+  role: "admin" | "member";
+  name?: string;
+  displayName?: string;
+  email?: string;
+  phone?: string;
+}
+
+export const AdminUsers = {
+  list: () => api<{ users: User[] }>("/admin/users"),
+  create: (data: AdminUserInput) => api<{ user: User }>("/admin/users", { method: "POST", body: data }),
+  update: (id: number, data: ProfileUpdate & { role?: string }) =>
+    api<{ user: User }>(`/admin/users/${id}`, { method: "PUT", body: data }),
+  remove: (id: number) => api<Record<string, never>>(`/admin/users/${id}`, { method: "DELETE" }),
+  resetPassword: (id: number, password: string) =>
+    api<Record<string, never>>(`/admin/users/${id}/password`, {
+      method: "POST",
+      body: { password },
+    }),
+};
+
+export const AdminGroups = {
+  list: () => api<{ groups: GroupSummary[] }>("/admin/groups"),
+  addMember: (id: number | string, userId: number, role: "leader" | "member" = "member") =>
+    api<unknown>(`/admin/groups/${id}/members`, { method: "POST", body: { userId, role } }),
+  removeMember: (id: number | string, userId: number) =>
+    api<unknown>(`/admin/groups/${id}/members/${userId}`, { method: "DELETE" }),
 };
