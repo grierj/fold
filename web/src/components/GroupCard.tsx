@@ -1,0 +1,72 @@
+import { Link } from "react-router-dom";
+import type { GroupSummary } from "../types";
+
+const PLACEHOLDER =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f64060"/><stop offset="1" stop-color="#7c3aed"/></linearGradient></defs><rect width="640" height="360" fill="url(#g)"/></svg>`
+  );
+
+export function coverImage(url: string | undefined | null): string {
+  return url && url.trim() ? url : PLACEHOLDER;
+}
+
+export function formatNextMeeting(iso: string | null): string {
+  if (!iso) return "No meetings scheduled yet";
+  const d = new Date(iso);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  const isTomorrow = d.toDateString() === tomorrow.toDateString();
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (sameDay) return `Today at ${time}`;
+  if (isTomorrow) return `Tomorrow at ${time}`;
+  return (
+    d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) +
+    ` at ${time}`
+  );
+}
+
+// Meetup-style group card: cover image, name, member count, next meeting, location.
+export function GroupCard({ group }: { group: GroupSummary }) {
+  return (
+    <Link
+      to={`/groups/${group.id}`}
+      className="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow overflow-hidden border border-gray-100 flex flex-col"
+    >
+      <div className="h-40 w-full overflow-hidden bg-gray-200">
+        <img
+          src={coverImage(group.imageUrl)}
+          alt=""
+          className="w-full h-full object-cover"
+          loading="lazy"
+        />
+      </div>
+      <div className="p-4 flex flex-col gap-1.5 grow">
+        <h3 className="font-bold text-lg leading-snug">{group.name}</h3>
+        {group.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {group.tags.slice(0, 3).map((t) => (
+              <span
+                key={t}
+                className="text-xs font-medium bg-gray-100 text-gray-600 rounded-full px-2 py-0.5"
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="text-sm text-gray-600 mt-auto pt-2 space-y-0.5">
+          <div>
+            <span className="font-semibold text-gray-800">{group.memberCount}</span>{" "}
+            {group.memberCount === 1 ? "member" : "members"}
+            {group.leaderName ? ` · Organized by ${group.leaderName}` : ""}
+          </div>
+          <div className="text-brand-dark font-medium">{formatNextMeeting(group.nextMeetingAt)}</div>
+          {group.location && <div className="truncate">{group.location}</div>}
+        </div>
+      </div>
+    </Link>
+  );
+}
