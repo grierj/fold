@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import type { GroupSummary } from "../types";
+import { focalPosition } from "../lib/image";
 
 const PLACEHOLDER =
   "data:image/svg+xml," +
@@ -40,6 +41,7 @@ export function GroupCard({ group }: { group: GroupSummary }) {
           src={coverImage(group.imageUrl)}
           alt=""
           className="w-full h-full object-cover"
+          style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
           loading="lazy"
         />
       </div>

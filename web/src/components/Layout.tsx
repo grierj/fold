@@ -1,5 +1,7 @@
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth";
+import { Avatar } from "./Avatar";
+import { NotificationBell } from "./Notifications";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { user, loading, logout, isAdmin } = useAuth();
@@ -44,18 +46,20 @@ export function Layout({ children }: { children: React.ReactNode }) {
                     Admin
                   </NavLink>
                 )}
+                <NotificationBell />
                 <Link
                   to="/profile"
                   className="hidden sm:flex items-center gap-2 text-gray-700 hover:text-brand"
                   title="Your profile"
                 >
-                  <span className="w-8 h-8 rounded-full overflow-hidden bg-brand-light text-brand-dark flex items-center justify-center text-sm font-bold">
-                    {user.avatarUrl ? (
-                      <img src={user.avatarUrl} alt="" className="w-full h-full object-cover" />
-                    ) : (
-                      (user.displayName || user.name || user.username).charAt(0).toUpperCase()
-                    )}
-                  </span>
+                  <Avatar
+                    url={user.avatarUrl || undefined}
+                    name={user.displayName || user.name || user.username}
+                    focalX={user.avatarFocalX}
+                    focalY={user.avatarFocalY}
+                    size="w-8 h-8"
+                    textSize="text-sm"
+                  />
                   <span className="text-gray-600">
                     {user.displayName || user.name || user.username}
                   </span>

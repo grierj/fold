@@ -38,10 +38,14 @@ var allowedImageTypes = map[string]string{
 func (a *App) apiUpdateMe(c *gin.Context) {
 	u := apiUser(c)
 	var body struct {
-		Name        *string `json:"name"`
-		DisplayName *string `json:"displayName"`
-		Email       *string `json:"email"`
-		Phone       *string `json:"phone"`
+		Name        *string  `json:"name"`
+		DisplayName *string  `json:"displayName"`
+		Email       *string  `json:"email"`
+		Phone       *string  `json:"phone"`
+		AvatarFocal *struct {
+			X float64 `json:"x"`
+			Y float64 `json:"y"`
+		} `json:"avatarFocal"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
@@ -86,6 +90,10 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		}
 		updates["phone"] = phone
 	}
+	if body.AvatarFocal != nil {
+		updates["avatar_focal_x"] = clampFocal(body.AvatarFocal.X)
+		updates["avatar_focal_y"] = clampFocal(body.AvatarFocal.Y)
+	}
 	if len(updates) == 0 {
 		c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(u)})
 		return
@@ -103,6 +111,17 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	// Refresh the request-scoped user so later handlers see the update.
 	c.Set("apiUser", &updated)
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&updated)})
+}
+
+// clampFocal keeps a focal-point percentage in the 0-100 range.
+func clampFocal(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
+	}
+	return v
 }
 
 // readImageUpload validates a multipart image upload: real byte-count size

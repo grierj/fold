@@ -49,9 +49,12 @@ instances. See `models/models.go` — it is the source of truth. The old
 meetings are instances (RRULE for recurrence).
 
 `User` carries profile fields: `Name` (full name), `DisplayName` (shown in
-the UI), `Email`, `Phone`, `AvatarKey` (blob-store key, not a URL).
+the UI), `Email`, `Phone`, `AvatarKey` (blob-store key, not a URL),
+`AvatarFocalX/Y` (0-100 focal point for cropped avatars).
 `User.PublicName()` is the display fallback chain
 (DisplayName → Name → Username) — use it anywhere a name is rendered.
+`Group` has `CoverFocalX/Y` for the cover image. Focal points are stored
+0-100 and rendered as CSS `object-position`.
 
 ## Conventions
 
@@ -71,6 +74,12 @@ the UI), `Email`, `Phone`, `AvatarKey` (blob-store key, not a URL).
 - Setup/form UX: state every input requirement next to the field (e.g.
   password minimums). On a failed submission, re-render with the valid
   fields preserved — never echo back secrets (passwords) or payment data.
+- Client-side image prep: `web/src/lib/image.ts` resizes uploads in the
+  browser (`browser-image-compression`) before POST — keeps big-phone-photo
+  CPU off the server. Server still enforces type/size limits.
+- Notifications are derived, not stored (`GET /api/v1/notifications`):
+  approvals for admins, upcoming events for members. Dismissals live in
+  the client's localStorage.
 
 ## Uploads & blob storage
 

@@ -150,7 +150,9 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 
 	return groupSummaryJSON{
 		ID: g.ID, Name: g.Name, Description: g.Description,
-		Tags: splitTags(g.Tags), ImageURL: g.ImageURL, Location: g.Location,
+		Tags: splitTags(g.Tags), ImageURL: g.ImageURL,
+		CoverFocalX: g.CoverFocalX, CoverFocalY: g.CoverFocalY,
+		Location: g.Location,
 		LeaderName: leaderName, MemberCount: memberCount,
 		NextMeetingAt: next, Status: g.Status,
 	}

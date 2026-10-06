@@ -5,7 +5,10 @@ import type { GroupDetailResponse, MeetingInstance } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { RsvpButtons } from "../components/RsvpButtons";
+import { Avatar } from "../components/Avatar";
+import { ImageUpload } from "../components/ImageUpload";
 import { coverImage, formatNextMeeting } from "../components/GroupCard";
+import { focalPosition } from "../lib/image";
 
 type Tab = "events" | "about" | "members";
 
@@ -91,6 +94,8 @@ export interface GroupFormData {
   location: string;
   tags: string[];
   imageUrl: string;
+  coverFile?: File | null;
+  coverFocal?: { x: number; y: number };
 }
 
 function GroupForm({
@@ -99,7 +104,10 @@ function GroupForm({
   onSaved,
   onCancel,
 }: {
-  initial: { name: string; description: string; location: string; tags: string[]; imageUrl: string };
+  initial: {
+    name: string; description: string; location: string; tags: string[];
+    imageUrl: string; coverFocalX: number; coverFocalY: number;
+  };
   saveLabel: string;
   onSaved: (data: GroupFormData) => Promise<void>;
   onCancel: () => void;
@@ -109,6 +117,9 @@ function GroupForm({
   const [location, setLocation] = useState(initial.location);
   const [tags, setTags] = useState(initial.tags.join(", "));
   const [imageUrl, setImageUrl] = useState(initial.imageUrl);
+  const [coverMode, setCoverMode] = useState<"url" | "upload">("url");
+  const [coverFile, setCoverFile] = useState<File | null>(null);
+  const [coverFocal, setCoverFocal] = useState<{ x: number; y: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -124,7 +135,10 @@ function GroupForm({
             name,
             description,
             location,
-            imageUrl,
+            // Upload mode with a new file replaces any URL; otherwise keep it.
+            imageUrl: coverMode === "upload" && coverFile ? "" : imageUrl,
+            coverFile: coverMode === "upload" ? coverFile : null,
+            coverFocal: coverMode === "upload" ? coverFocal ?? undefined : undefined,
             tags: tags
               .split(",")
               .map((t) => t.trim())
@@ -170,13 +184,41 @@ function GroupForm({
         />
       </div>
       <div>
-        <label className="label">Cover image URL</label>
-        <input
-          className="input"
-          value={imageUrl}
-          onChange={(e) => setImageUrl(e.target.value)}
-          placeholder="https://…"
-        />
+        <label className="label">Cover image</label>
+        <div className="flex gap-2 mb-2">
+          {(["url", "upload"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setCoverMode(m)}
+              className={`text-sm px-3 py-1 rounded-full border ${
+                coverMode === m
+                  ? "bg-brand text-white border-brand"
+                  : "text-gray-600 border-gray-300 hover:border-brand"
+              }`}
+            >
+              {m === "url" ? "Image URL" : "Upload"}
+            </button>
+          ))}
+        </div>
+        {coverMode === "url" ? (
+          <input
+            className="input"
+            value={imageUrl}
+            onChange={(e) => setImageUrl(e.target.value)}
+            placeholder="https://…"
+          />
+        ) : (
+          <ImageUpload
+            label=""
+            initialUrl={initial.imageUrl || undefined}
+            initialFocal={{ x: initial.coverFocalX, y: initial.coverFocalY }}
+            maxDim={1600}
+            aspectClass="aspect-[16/9]"
+            onFile={setCoverFile}
+            onFocal={setCoverFocal}
+          />
+        )}
       </div>
       <div className="flex gap-3">
         <button type="submit" disabled={busy} className="btn-primary">
@@ -197,7 +239,7 @@ export function CreateGroupForm({ onSaved, onCancel }: {
 }) {
   return (
     <GroupForm
-      initial={{ name: "", description: "", location: "", tags: [], imageUrl: "" }}
+      initial={{ name: "", description: "", location: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50 }}
       saveLabel="Create group"
       onSaved={onSaved}
       onCancel={onCancel}
@@ -304,7 +346,18 @@ export function GroupDetail() {
   }
 
   async function saveEdit(data: GroupFormData) {
-    await Groups.update(id!, data);
+    const payload = {
+      name: data.name,
+      description: data.description,
+      tags: data.tags,
+      imageUrl: data.imageUrl,
+      location: data.location,
+    };
+    await Groups.update(id!, { ...payload, coverFocal: data.coverFocal });
+    if (data.coverFile) {
+      // Upload replaces the image bytes; the focal point was saved above.
+      await GroupCover.upload(id!, data.coverFile);
+    }
     setEditing(false);
     await load();
   }
@@ -329,6 +382,7 @@ export function GroupDetail() {
           src={coverImage(group.imageUrl)}
           alt=""
           className="w-full h-full object-cover"
+          style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
         />
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
         <div className="absolute bottom-0 left-0 right-0">
@@ -400,6 +454,8 @@ export function GroupDetail() {
               location: group.location,
               tags: group.tags,
               imageUrl: group.imageUrl,
+              coverFocalX: group.coverFocalX,
+              coverFocalY: group.coverFocalY,
             }}
             saveLabel="Save changes"
             onSaved={saveEdit}
@@ -496,13 +552,12 @@ export function GroupDetail() {
                   <ul className="divide-y divide-gray-100">
                     {members.map((m) => (
                       <li key={m.id} className="py-3 flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full overflow-hidden bg-brand-light text-brand-dark flex items-center justify-center font-bold shrink-0">
-                          {m.avatarUrl ? (
-                            <img src={m.avatarUrl} alt="" className="w-full h-full object-cover" />
-                          ) : (
-                            m.name.charAt(0).toUpperCase()
-                          )}
-                        </div>
+                        <Avatar
+                          url={m.avatarUrl || undefined}
+                          name={m.name}
+                          focalX={m.avatarFocalX}
+                          focalY={m.avatarFocalY}
+                        />
                         <div>
                           <div className="font-semibold">{m.name}</div>
                           <div className="text-sm text-gray-500 capitalize">{m.role}</div>

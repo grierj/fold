@@ -70,6 +70,7 @@ import type {
   Meeting,
   MeetingInstance,
   Member,
+  Notification,
   User,
 } from "./types";
 
@@ -96,7 +97,14 @@ export const Groups = {
   }) => api<{ group: GroupSummary }>("/groups", { method: "POST", body: data }),
   update: (
     id: number | string,
-    data: { name: string; description: string; tags: string[]; imageUrl: string; location: string }
+    data: {
+      name: string;
+      description: string;
+      tags: string[];
+      imageUrl: string;
+      location: string;
+      coverFocal?: { x: number; y: number };
+    }
   ) => api<{ group: GroupSummary }>(`/groups/${id}`, { method: "PUT", body: data }),
   join: (id: number | string) => api<unknown>(`/groups/${id}/join`, { method: "POST" }),
   leave: (id: number | string) => api<unknown>(`/groups/${id}/leave`, { method: "POST" }),
@@ -158,6 +166,7 @@ export interface ProfileUpdate {
   displayName?: string;
   email?: string;
   phone?: string;
+  avatarFocal?: { x: number; y: number };
 }
 
 export const Profile = {
@@ -171,4 +180,39 @@ export const GroupCover = {
     apiUpload<{ imageUrl: string }>(`/groups/${id}/cover`, "cover", file),
   remove: (id: number | string) =>
     api<Record<string, never>>(`/groups/${id}/cover`, { method: "DELETE" }),
+};
+
+export const Notifications = {
+  list: () => api<{ notifications: Notification[] }>("/notifications"),
+};
+
+export interface AdminUserInput {
+  username: string;
+  password: string;
+  role: "admin" | "member";
+  name?: string;
+  displayName?: string;
+  email?: string;
+  phone?: string;
+}
+
+export const AdminUsers = {
+  list: () => api<{ users: User[] }>("/admin/users"),
+  create: (data: AdminUserInput) => api<{ user: User }>("/admin/users", { method: "POST", body: data }),
+  update: (id: number, data: ProfileUpdate & { role?: string }) =>
+    api<{ user: User }>(`/admin/users/${id}`, { method: "PUT", body: data }),
+  remove: (id: number) => api<Record<string, never>>(`/admin/users/${id}`, { method: "DELETE" }),
+  resetPassword: (id: number, password: string) =>
+    api<Record<string, never>>(`/admin/users/${id}/password`, {
+      method: "POST",
+      body: { password },
+    }),
+};
+
+export const AdminGroups = {
+  list: () => api<{ groups: GroupSummary[] }>("/admin/groups"),
+  addMember: (id: number | string, userId: number, role: "leader" | "member" = "member") =>
+    api<unknown>(`/admin/groups/${id}/members`, { method: "POST", body: { userId, role } }),
+  removeMember: (id: number | string, userId: number) =>
+    api<unknown>(`/admin/groups/${id}/members/${userId}`, { method: "DELETE" }),
 };

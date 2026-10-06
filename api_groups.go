@@ -139,6 +139,10 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		ImageURL    *string  `json:"imageUrl"`
 		Location    *string  `json:"location"`
 		Status      *string  `json:"status"`
+		CoverFocal  *struct {
+			X float64 `json:"x"`
+			Y float64 `json:"y"`
+		} `json:"coverFocal"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")
@@ -155,6 +159,10 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	}
 	if body.ImageURL != nil {
 		g.ImageURL = strings.TrimSpace(*body.ImageURL)
+	}
+	if body.CoverFocal != nil {
+		g.CoverFocalX = clampFocal(body.CoverFocal.X)
+		g.CoverFocalY = clampFocal(body.CoverFocal.Y)
 	}
 	if body.Location != nil {
 		g.Location = strings.TrimSpace(*body.Location)
