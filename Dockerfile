@@ -1,14 +1,27 @@
-# Build stage
-FROM golang:1.24-bookworm AS build
+# Frontend build stage: the SPA bundle is embedded into the Go binary.
+FROM node:20-alpine AS webbuild
+WORKDIR /web
+COPY web/package.json web/package-lock.json* ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build
+
+# Backend build stage
+FROM golang:1.25-bookworm AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+# Overlay the freshly built SPA so go:embed picks it up.
+COPY --from=webbuild /web/dist/ ./web/dist/
 # Pure-Go SQLite driver (modernc via glebarez) => no CGO needed.
 RUN CGO_ENABLED=0 go build -trimpath -o /out/church-groups .
 
 # Run stage
 FROM gcr.io/distroless/static-debian12:nonroot
+# Pin the working directory: the binary uses relative paths for templates/
+# and static assets, and distroless does not guarantee WORKDIR=/.
+WORKDIR /
 COPY --from=build /out/church-groups /church-groups
 COPY --from=build /src/templates /templates
 COPY --from=build /src/static /static

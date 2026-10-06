@@ -6,6 +6,7 @@ require (
 	github.com/gin-gonic/gin v1.10.0
 	github.com/glebarez/sqlite v1.11.0
 	github.com/gorilla/sessions v1.4.0
+	github.com/teambition/rrule-go v1.8.2
 	golang.org/x/crypto v0.35.0
 	gorm.io/driver/postgres v1.6.3
 	gorm.io/gorm v1.31.2

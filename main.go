@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"embed"
 	"html/template"
+	"io/fs"
 	"log"
 	"net/http"
-	"strconv"
+	"os"
 	"strings"
-	"time"
 
 	"church-groups/models"
 
@@ -26,6 +28,13 @@ const sessionName = "church-session"
 
 func main() {
 	cfg := LoadConfig()
+
+	// Distroless images have no shell, so log the working directory at
+	// startup: template/static paths are relative and this is the only
+	// way to see what they resolve against.
+	if wd, err := os.Getwd(); err == nil {
+		log.Printf("Working directory: %s", wd)
+	}
 
 	if cfg.IsDev() {
 		gin.SetMode(gin.DebugMode)
@@ -55,6 +64,10 @@ func main() {
 
 func (a *App) setupRouter() *gin.Engine {
 	r := gin.New()
+	// The SPA is served by a NoRoute fallback; Gin's default trailing-slash
+	// redirect would 301-loop client-side routes (e.g. "/" -> "/"), so it
+	// must stay off.
+	r.RedirectTrailingSlash = false
 	r.Use(gin.Logger(), gin.Recovery())
 	// Don't trust X-Forwarded-For by default; set explicit proxies if needed.
 	_ = r.SetTrustedProxies(nil)
@@ -69,28 +82,67 @@ func (a *App) setupRouter() *gin.Engine {
 	r.Use(a.setupRequired())
 	r.Use(a.csrfMiddleware())
 
-	// Setup wizard (only reachable when no users exist).
+	// Setup wizard (only reachable when no users exist; server-rendered).
 	r.GET("/setup", a.showSetup)
 	r.POST("/setup", a.handleSetup)
 
-	// Public routes.
-	r.GET("/", a.listGroups)
-	r.GET("/login", a.showLoginForm)
-	r.POST("/login", a.login)
-	r.GET("/logout", a.logout)
+	// JSON API.
+	a.registerAPIRoutes(r)
 
-	// Protected routes.
-	auth := r.Group("/", a.authMiddleware())
-	auth.GET("/create", a.showCreateForm)
-	auth.POST("/create", a.createGroup)
-	auth.GET("/group/:id", a.viewGroup)
-
-	// Admin routes.
-	admin := r.Group("/admin", a.authMiddleware(), a.adminMiddleware())
-	admin.GET("/", a.adminDashboard)
-	admin.POST("/approve/:id", a.approveGroup)
+	// Embedded SPA for everything else.
+	r.NoRoute(a.serveSPA())
 
 	return r
+}
+
+//go:embed web/dist
+var distFS embed.FS
+
+// serveSPA serves the embedded frontend bundle, falling back to index.html
+// for client-side routes. API paths get a JSON 404 instead.
+func (a *App) serveSPA() gin.HandlerFunc {
+	sub, err := fs.Sub(distFS, "web/dist")
+	built := err == nil
+	if built {
+		if _, err := fs.Stat(sub, "index.html"); err != nil {
+			built = false
+		}
+	}
+	if !built {
+		log.Println("WARNING: web/dist is empty — run `npm run build` in web/ to build the frontend")
+	}
+	return func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			jsonError(c, http.StatusNotFound, "not found")
+			return
+		}
+		if !built {
+			c.String(http.StatusServiceUnavailable,
+				"Frontend not built. Run `npm run build` in web/ and restart.")
+			return
+		}
+		path := strings.TrimPrefix(c.Request.URL.Path, "/")
+		if path == "" {
+			path = "index.html"
+		}
+		if _, err := fs.Stat(sub, path); err != nil {
+			// Client-side route — let the SPA router handle it.
+			path = "index.html"
+		}
+		// ServeContent, not http.FileServer: FileServer 301-redirects
+		// index.html serves to "./", which breaks the SPA fallback.
+		data, err := fs.ReadFile(sub, path)
+		if err != nil {
+			jsonError(c, http.StatusNotFound, "not found")
+			return
+		}
+		info, err := fs.Stat(sub, path)
+		if err != nil || info.IsDir() {
+			jsonError(c, http.StatusNotFound, "not found")
+			return
+		}
+		http.ServeContent(c.Writer, c.Request, path, info.ModTime(), bytes.NewReader(data))
+	}
 }
 
 // html renders a template, injecting the CSRF field and site name.
@@ -128,46 +180,6 @@ func (a *App) setupRequired() gin.HandlerFunc {
 		}
 		if n == 0 {
 			c.Redirect(http.StatusSeeOther, "/setup")
-			c.Abort()
-			return
-		}
-		c.Next()
-	}
-}
-
-// Authentication middleware
-func (a *App) authMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		session, err := a.Store.Get(c.Request, sessionName)
-		if err != nil {
-			c.Redirect(http.StatusSeeOther, "/login")
-			c.Abort()
-			return
-		}
-		userID, ok := session.Values["userID"]
-		if !ok || userID == nil {
-			c.Redirect(http.StatusSeeOther, "/login")
-			c.Abort()
-			return
-		}
-		uid, ok := userID.(uint)
-		if !ok {
-			c.Redirect(http.StatusSeeOther, "/login")
-			c.Abort()
-			return
-		}
-		c.Set("userID", uid)
-		c.Next()
-	}
-}
-
-// Admin middleware
-func (a *App) adminMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		userID := c.MustGet("userID").(uint)
-		var user models.User
-		if err := a.DB.First(&user, userID).Error; err != nil || !user.IsAdmin {
-			c.String(http.StatusForbidden, "Access denied")
 			c.Abort()
 			return
 		}
@@ -217,7 +229,7 @@ func (a *App) handleSetup(c *gin.Context) {
 		return
 	}
 
-	admin := models.User{Username: username, Password: password, IsAdmin: true}
+	admin := models.User{Username: username, Password: password, Role: models.RoleAdmin}
 	if err := a.DB.Create(&admin).Error; err != nil {
 		log.Printf("Setup failed creating admin: %v", err)
 		fail("Could not create admin account (username may be taken).")
@@ -231,155 +243,3 @@ func (a *App) handleSetup(c *gin.Context) {
 	c.Redirect(http.StatusSeeOther, "/login")
 }
 
-// --- Handlers ---
-
-// List groups
-func (a *App) listGroups(c *gin.Context) {
-	search := c.Query("search")
-	tag := c.Query("tag")
-
-	var groups []models.Group
-	query := a.DB.Where("approved = ?", true)
-	if search != "" {
-		like := "%" + strings.ToLower(search) + "%"
-		query = query.Where("LOWER(title) LIKE ? OR LOWER(description) LIKE ?", like, like)
-	}
-	if tag != "" {
-		query = query.Where("tags LIKE ?", "%"+tag+"%")
-	}
-	if err := query.Find(&groups).Error; err != nil {
-		log.Printf("Error fetching groups: %v", err)
-	}
-
-	session, _ := a.Store.Get(c.Request, sessionName)
-	a.html(c, http.StatusOK, "index.html", gin.H{
-		"Groups":   groups,
-		"LoggedIn": session.Values["userID"] != nil,
-	})
-}
-
-// Show login form
-func (a *App) showLoginForm(c *gin.Context) {
-	a.html(c, http.StatusOK, "login.html", nil)
-}
-
-// Handle login
-func (a *App) login(c *gin.Context) {
-	username := c.PostForm("username")
-	password := c.PostForm("password")
-
-	var user models.User
-	if err := a.DB.Where("username = ?", username).First(&user).Error; err != nil {
-		a.html(c, http.StatusUnauthorized, "login.html", gin.H{"Error": "Invalid credentials"})
-		return
-	}
-	if !user.CheckPassword(password) {
-		a.html(c, http.StatusUnauthorized, "login.html", gin.H{"Error": "Invalid credentials"})
-		return
-	}
-
-	session, err := a.Store.Get(c.Request, sessionName)
-	if err != nil {
-		c.String(http.StatusInternalServerError, "Session error")
-		return
-	}
-	session.Values["userID"] = user.ID
-	if err := session.Save(c.Request, c.Writer); err != nil {
-		c.String(http.StatusInternalServerError, "Failed to save session")
-		return
-	}
-
-	c.Redirect(http.StatusSeeOther, "/")
-}
-
-// Handle logout
-func (a *App) logout(c *gin.Context) {
-	session, _ := a.Store.Get(c.Request, sessionName)
-	session.Values["userID"] = nil
-	_ = session.Save(c.Request, c.Writer)
-	c.Redirect(http.StatusSeeOther, "/")
-}
-
-// Show group creation form
-func (a *App) showCreateForm(c *gin.Context) {
-	a.html(c, http.StatusOK, "create.html", nil)
-}
-
-// Handle group creation
-func (a *App) createGroup(c *gin.Context) {
-	dateTime, err := time.Parse("2006-01-02T15:04", c.PostForm("datetime"))
-	if err != nil {
-		c.String(http.StatusBadRequest, "Invalid date/time format")
-		return
-	}
-	isRecurring, _ := strconv.ParseBool(c.PostForm("is_recurring"))
-
-	userID := c.MustGet("userID").(uint)
-	group := models.Group{
-		Title:       strings.TrimSpace(c.PostForm("title")),
-		DateTime:    dateTime,
-		IsRecurring: isRecurring,
-		Description: strings.TrimSpace(c.PostForm("description")),
-		ImageURL:    strings.TrimSpace(c.PostForm("image_url")),
-		CreatorID:   userID,
-		Approved:    false,
-	}
-	if group.Title == "" || group.Description == "" {
-		c.String(http.StatusBadRequest, "Title and description are required")
-		return
-	}
-
-	if err := a.DB.Create(&group).Error; err != nil {
-		log.Printf("Failed to create group: %v", err)
-		c.String(http.StatusInternalServerError, "Failed to create group")
-		return
-	}
-	c.Redirect(http.StatusSeeOther, "/")
-}
-
-// Admin dashboard
-func (a *App) adminDashboard(c *gin.Context) {
-	var pendingGroups []models.Group
-	if err := a.DB.Where("approved = ?", false).Find(&pendingGroups).Error; err != nil {
-		log.Printf("Error fetching pending groups: %v", err)
-	}
-
-	a.html(c, http.StatusOK, "admin.html", gin.H{
-		"PendingGroups": pendingGroups,
-	})
-}
-
-// Approve group
-func (a *App) approveGroup(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	tags := c.PostForm("tags")
-
-	var group models.Group
-	if err := a.DB.First(&group, id).Error; err != nil {
-		c.String(http.StatusNotFound, "Group not found")
-		return
-	}
-
-	group.Approved = true
-	group.Tags = tags
-	if err := a.DB.Save(&group).Error; err != nil {
-		log.Printf("Failed to approve group: %v", err)
-		c.String(http.StatusInternalServerError, "Failed to approve group")
-		return
-	}
-	c.Redirect(http.StatusSeeOther, "/admin")
-}
-
-// View group
-func (a *App) viewGroup(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var group models.Group
-	if err := a.DB.First(&group, id).Error; err != nil || !group.Approved {
-		c.String(http.StatusNotFound, "Group not found")
-		return
-	}
-
-	a.html(c, http.StatusOK, "group.html", gin.H{
-		"Group": group,
-	})
-}

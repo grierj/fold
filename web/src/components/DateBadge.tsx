@@ -1,0 +1,18 @@
+// Meetup-style date badge: a bold day-of-month block with the month above.
+export function DateBadge({ iso, size = "md" }: { iso: string; size?: "sm" | "md" }) {
+  const d = new Date(iso);
+  const month = d.toLocaleDateString(undefined, { month: "short" });
+  const day = d.getDate();
+  const box =
+    size === "sm"
+      ? "w-12 h-12 text-lg"
+      : "w-16 h-16 text-2xl";
+  return (
+    <div
+      className={`${box} flex flex-col items-center justify-center rounded-xl bg-brand-light text-brand-dark shrink-0`}
+    >
+      <span className="text-[10px] font-bold uppercase tracking-wide leading-none">{month}</span>
+      <span className="font-extrabold leading-none mt-0.5">{day}</span>
+    </div>
+  );
+}
