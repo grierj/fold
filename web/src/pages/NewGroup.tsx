@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Groups } from "../api";
+import { GroupCover, Groups } from "../api";
 import type { GroupSummary } from "../types";
 import { CreateGroupForm, type GroupFormData } from "./GroupDetail";
 import { useAuth } from "../auth";
@@ -25,7 +25,26 @@ export function NewGroup() {
   }
 
   async function create(data: GroupFormData) {
-    const { group } = await Groups.create(data);
+    const { group } = await Groups.create({
+      name: data.name,
+      description: data.description,
+      tags: data.tags,
+      imageUrl: data.imageUrl,
+      location: data.location,
+    });
+    if (data.coverFile) {
+      await GroupCover.upload(group.id, data.coverFile);
+    }
+    if (data.coverFocal) {
+      await Groups.update(group.id, {
+        name: data.name,
+        description: data.description,
+        tags: data.tags,
+        imageUrl: data.imageUrl,
+        location: data.location,
+        coverFocal: data.coverFocal,
+      });
+    }
     setCreated(group);
   }
 

@@ -42,10 +42,14 @@ type User struct {
 	Email       string
 	Phone       string // first-class: SMS is a required channel
 	AvatarKey   string // blob-store key for the avatar image ("" = none)
-	Role        string `gorm:"default:member"` // admin | member
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	DeletedAt   gorm.DeletedAt `gorm:"index"`
+	// AvatarFocalX/Y is the focal point as a 0-100 percentage, used for
+	// CSS object-position so faces stay centered in cropped avatars.
+	AvatarFocalX float64 `gorm:"default:50"`
+	AvatarFocalY float64 `gorm:"default:50"`
+	Role         string  `gorm:"default:member"` // admin | member
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	DeletedAt    gorm.DeletedAt `gorm:"index"`
 }
 
 // PublicName returns the name shown in the UI.
@@ -85,9 +89,13 @@ type Group struct {
 	Tags        string `gorm:"type:text"` // comma-separated
 	ImageURL    string
 	Location    string
-	LeaderID    uint `gorm:"not null"`
-	Leader      User `gorm:"foreignKey:LeaderID"`
-	Status      string `gorm:"default:pending"` // pending | active | archived
+	// CoverFocalX/Y is the cover-image focal point as a 0-100 percentage,
+	// used for CSS object-position.
+	CoverFocalX float64 `gorm:"default:50"`
+	CoverFocalY float64 `gorm:"default:50"`
+	LeaderID    uint    `gorm:"not null"`
+	Leader      User    `gorm:"foreignKey:LeaderID"`
+	Status      string  `gorm:"default:pending"` // pending | active | archived
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	DeletedAt   gorm.DeletedAt `gorm:"index"`
