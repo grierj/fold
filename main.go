@@ -239,7 +239,7 @@ func (a *App) handleSetup(c *gin.Context) {
 		fail("All fields are required.")
 		return
 	}
-	if len(password) < 10 {
+	if len(password) < minPasswordLength {
 		fail("Password must be at least 10 characters.")
 		return
 	}

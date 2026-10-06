@@ -35,13 +35,16 @@ POST   /api/v1/me/avatar    → 200 {avatarUrl}  (auth; multipart, field "avatar
 DELETE /api/v1/me/avatar    → 200 {}  (auth)
 ```
 
-Profile update body: any of `{name, displayName, email, phone}`. Limits:
+Profile update body: any of `{name, displayName, email, phone,
+avatarFocal: {x, y}}`. Limits:
 names ≤ 100 chars, email must parse and be ≤ 254 chars (empty clears it),
-phone ≤ 30 chars.
+phone ≤ 30 chars, focal clamped to 0-100.
 
-`user`: `{id, username, name, displayName, email, phone, avatarUrl, role}`.
+`user`: `{id, username, name, displayName, email, phone, avatarUrl,
+avatarFocalX, avatarFocalY, role}`.
 `displayName` falls back to name, then username in the UI. `avatarUrl` is a
-`/uploads/...` URL, or empty when no avatar is set.
+`/uploads/...` URL, or empty when no avatar is set. `avatarFocalX/Y` are
+0-100 percentages for CSS `object-position`.
 
 Avatar uploads must be JPEG, PNG, GIF, or WebP (content-sniffed, not by
 extension), ≤ 5MB. Uploading replaces the old avatar; the old blob is
@@ -72,8 +75,8 @@ POST   /api/v1/groups/:id/cover           → 200 {imageUrl} (group leader or ad
 DELETE /api/v1/groups/:id/cover           → 200 {}         (group leader or admin)
 ```
 
-`groupSummary`: `{id, name, description, tags[], imageUrl, location,
-leaderName, memberCount, nextMeetingAt, status}`
+`groupSummary`: `{id, name, description, tags[], imageUrl, coverFocalX,
+coverFocalY, location, leaderName, memberCount, nextMeetingAt, status}`
 
 `group` (detail response): `{group: groupSummary, members: [...],
 upcomingMeetings: [meetingInstance], canManage: bool, isMember: bool}`.
@@ -81,7 +84,8 @@ upcomingMeetings: [meetingInstance], canManage: bool, isMember: bool}`.
 group's leader and admins. Roster member: `{id, name, avatarUrl, role,
 joinedAt}` — `name` is the member's display name.
 
-Create/update body: `{name, description, tags[], imageUrl, location}`.
+Create/update body: `{name, description, tags[], imageUrl, location,
+coverFocal: {x, y}}`.
 New groups enter `pending` until approved (the approval workflow survives).
 
 ### Membership
@@ -146,7 +150,31 @@ GET  /api/v1/admin/pending                 → {groups: [groupSummary]}  (admin)
 POST /api/v1/admin/groups/:id/approve      → 200 {group}               (admin)
      body: {tags: []}
 POST /api/v1/admin/groups/:id/reject       → 200 {}                    (admin)
+GET  /api/v1/admin/groups                  → {groups: [groupSummary]}  (admin; all statuses)
+POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
+     body: {userId, role: "member"|"leader"} — role=leader reassigns leadership
+DELETE /api/v1/admin/groups/:id/members/:userId → 200 {}               (admin; not the leader)
+GET  /api/v1/admin/users                   → {users: [user]}           (admin)
+POST /api/v1/admin/users                    → 201 {user}                (admin)
+     body: {username, password (≥10 chars), role, name?, displayName?, email?, phone?}
+PUT  /api/v1/admin/users/:id               → 200 {user}                (admin; profile fields + role)
+POST /api/v1/admin/users/:id/password      → 200 {}                    (admin)
+     body: {password (≥10 chars)}
+DELETE /api/v1/admin/users/:id             → 200 {}                    (admin; soft delete)
 ```
+
+Guards: cannot demote/delete the last admin, cannot delete or demote
+yourself. `PUT /api/v1/groups/:id` already allows admins to edit any group.
+
+### Notifications
+
+```
+GET /api/v1/notifications → {notifications: [{type, title, body, link}]}  (auth)
+```
+
+Derived, not stored: `approval` (admins, when groups await approval) and
+`event` (meetings in your groups in the next 7 days, max 10). The client
+tracks dismissed items locally.
 
 ## Conventions
 
