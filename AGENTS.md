@@ -48,6 +48,11 @@ instances. See `models/models.go` — it is the source of truth. The old
 "group with one datetime" shape is gone; groups are ongoing entities,
 meetings are instances (RRULE for recurrence).
 
+`User` carries profile fields: `Name` (full name), `DisplayName` (shown in
+the UI), `Email`, `Phone`, `AvatarKey` (blob-store key, not a URL).
+`User.PublicName()` is the display fallback chain
+(DisplayName → Name → Username) — use it anywhere a name is rendered.
+
 ## Conventions
 
 - API is versioned: `/api/v1/...`. JSON uses camelCase keys.
@@ -63,6 +68,28 @@ meetings are instances (RRULE for recurrence).
 - UI reference is **Meetup** — familiar beats original. Copy its patterns
   (group cards, date badges, join buttons); tweak later.
 - Commit messages: short imperative summary; PRs describe behavior change.
+- Setup/form UX: state every input requirement next to the field (e.g.
+  password minimums). On a failed submission, re-render with the valid
+  fields preserved — never echo back secrets (passwords) or payment data.
+
+## Uploads & blob storage
+
+- User-uploaded assets (avatars, group covers) go through the
+  `storage.Store` interface (`storage/storage.go`), never raw filesystem
+  paths in handlers. `App.Uploads` is the instance.
+- The local implementation (`storage.LocalStore`) ships now:
+  `UPLOAD_DIR` (`./data/uploads` default, `/data/uploads` in compose),
+  served at `/uploads/<key>` with `nosniff`. Keys are server-generated —
+  never trust client filenames. Uploads are content-sniffed
+  (JPEG/PNG/GIF/WebP only), ≤ 5MB.
+- **S3 seam:** to move to S3-compatible storage, implement
+  `storage.Store` (Put → bucket, URL → presigned/public object URL,
+  Delete/Exists → bucket ops), wire it in `main()` from new env config,
+  and change `serveUpload` to redirect instead of serving files. No
+  handler changes needed.
+- Docker: the final image pins `WORKDIR /` (distroless doesn't guarantee
+  it) and pre-creates `/data/uploads` with `--chown=65532:65532` so the
+  nonroot app can write to the fresh named volume.
 
 ## Development
 

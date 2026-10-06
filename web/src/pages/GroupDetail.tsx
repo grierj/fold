@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ApiError, Groups, Meetings } from "../api";
+import { ApiError, GroupCover, Groups, Meetings } from "../api";
 import type { GroupDetailResponse, MeetingInstance } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
@@ -216,6 +216,8 @@ export function GroupDetail() {
   const [tab, setTab] = useState<Tab>("events");
   const [editing, setEditing] = useState(false);
   const [joinBusy, setJoinBusy] = useState(false);
+  const [coverBusy, setCoverBusy] = useState(false);
+  const coverRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -307,6 +309,18 @@ export function GroupDetail() {
     await load();
   }
 
+  async function uploadCover(file: File) {
+    setCoverBusy(true);
+    try {
+      await GroupCover.upload(id!, file);
+      await load();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Cover upload failed");
+    } finally {
+      setCoverBusy(false);
+    }
+  }
+
   return (
     <div>
       {/* Cover header */}
@@ -344,6 +358,25 @@ export function GroupDetail() {
                   <button onClick={() => setEditing(true)} className="btn-secondary">
                     Edit group
                   </button>
+                  <button
+                    onClick={() => coverRef.current?.click()}
+                    disabled={coverBusy}
+                    className="btn-secondary"
+                    title="Upload a cover photo (JPEG, PNG, GIF, WebP, up to 5MB)"
+                  >
+                    {coverBusy ? "…" : "Cover photo"}
+                  </button>
+                  <input
+                    ref={coverRef}
+                    type="file"
+                    accept="image/jpeg,image/png,image/gif,image/webp"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) uploadCover(f);
+                      e.target.value = "";
+                    }}
+                  />
                 </>
               )}
               <button
@@ -463,8 +496,12 @@ export function GroupDetail() {
                   <ul className="divide-y divide-gray-100">
                     {members.map((m) => (
                       <li key={m.id} className="py-3 flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-full bg-brand-light text-brand-dark flex items-center justify-center font-bold">
-                          {m.name.charAt(0).toUpperCase()}
+                        <div className="w-10 h-10 rounded-full overflow-hidden bg-brand-light text-brand-dark flex items-center justify-center font-bold shrink-0">
+                          {m.avatarUrl ? (
+                            <img src={m.avatarUrl} alt="" className="w-full h-full object-cover" />
+                          ) : (
+                            m.name.charAt(0).toUpperCase()
+                          )}
                         </div>
                         <div>
                           <div className="font-semibold">{m.name}</div>
