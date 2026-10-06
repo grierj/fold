@@ -13,7 +13,7 @@ via `go:embed`). No separate frontend hosting. Ever.
 
 ## Stack
 
-- **Go 1.24**, Gin (JSON API under `/api/v1`), GORM
+- **Go 1.25**, Gin (JSON API under `/api/v1`), GORM
 - **Postgres** for anything real (`DATABASE_URL`); **SQLite** dev-only
   (pure-Go `glebarez/sqlite` driver — no CGO, keep it that way)
 - Postgres-only features (tsvector search, LISTEN/NOTIFY, advisory locks)
