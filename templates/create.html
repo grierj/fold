@@ -11,6 +11,7 @@
     </header>
     <main>
         <form method="POST" action="/create">
+            {{ .csrfField }}
             <label>Title: <input type="text" name="title" required></label><br>
             <label>Date & Time: <input type="datetime-local" name="datetime" required></label><br>
             <label>Recurring? <input type="checkbox" name="is_recurring" value="true"></label><br>

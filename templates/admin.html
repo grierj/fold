@@ -17,10 +17,11 @@
                 {{if .ImageURL}}
                 <img src="{{.ImageURL}}" alt="{{.Title}}" class="group-image">
                 {{else}}
-                <img src="https://via.placeholder.com/300x150?text={{.Title}}" alt="{{.Title}}" class="group-image">
+                <div class="group-image group-image--placeholder" role="img" aria-label="{{.Title}}"><span>{{.Title}}</span></div>
                 {{end}}
                 <p>{{.Title}} - {{.DateTime.Format "2006-01-02 15:04"}}</p>
                 <form method="POST" action="/admin/approve/{{.ID}}">
+                    {{ .csrfField }}
                     <label>Tags (comma-separated): <input type="text" name="tags"></label>
                     <button type="submit">Approve</button>
                 </form>
