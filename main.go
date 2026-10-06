@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"church-groups/models"
+	"church-groups/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/sessions"
@@ -19,9 +20,10 @@ import (
 
 // App wires together config, database, and session store.
 type App struct {
-	DB     *gorm.DB
-	Store  *sessions.CookieStore
-	Config Config
+	DB      *gorm.DB
+	Store   *sessions.CookieStore
+	Config  Config
+	Uploads storage.Store // blob store for avatars and group covers
 }
 
 const sessionName = "church-session"
@@ -44,6 +46,11 @@ func main() {
 
 	db := openDatabase(cfg)
 
+	uploads, err := storage.NewLocalStore(cfg.UploadDir, "/uploads")
+	if err != nil {
+		log.Fatalf("Upload storage failed: %v", err)
+	}
+
 	store := sessions.NewCookieStore(cfg.SessionSecret)
 	store.Options = &sessions.Options{
 		Path:     "/",
@@ -53,7 +60,7 @@ func main() {
 		SameSite: http.SameSiteLaxMode,
 	}
 
-	app := &App{DB: db, Store: store, Config: cfg}
+	app := &App{DB: db, Store: store, Config: cfg, Uploads: uploads}
 	r := app.setupRouter()
 
 	log.Printf("Starting server on :%s (env=%s)", cfg.Port, cfg.Env)
@@ -77,6 +84,11 @@ func (a *App) setupRouter() *gin.Engine {
 	})
 	r.LoadHTMLGlob("templates/*.html")
 	r.Static("/static", "./static")
+
+	// User-uploaded assets (avatars, group covers). Served with
+	// X-Content-Type-Options: nosniff; uploads are validated as images
+	// on the way in.
+	r.GET("/uploads/*filepath", a.serveUpload)
 
 	// First-run setup wizard takes precedence over everything else.
 	r.Use(a.setupRequired())
@@ -213,7 +225,14 @@ func (a *App) handleSetup(c *gin.Context) {
 	confirm := c.PostForm("password_confirm")
 
 	fail := func(msg string) {
-		a.html(c, http.StatusBadRequest, "setup.html", gin.H{"Error": msg})
+		// Keep the fields that passed validation so the user doesn't have
+		// to retype them. Never echo back secrets (passwords) or payment
+		// details — only non-sensitive fields are preserved.
+		a.html(c, http.StatusBadRequest, "setup.html", gin.H{
+			"Error":           msg,
+			"EnteredSiteName": siteName,
+			"EnteredUsername": username,
+		})
 	}
 
 	if siteName == "" || username == "" || password == "" {

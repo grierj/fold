@@ -130,3 +130,45 @@ export const Admin = {
     api<{ group: GroupSummary }>(`/admin/groups/${id}/approve`, { method: "POST", body: { tags } }),
   reject: (id: number | string) => api<unknown>(`/admin/groups/${id}/reject`, { method: "POST" }),
 };
+
+// Multipart upload: the browser sets Content-Type with the boundary;
+// the CSRF token still goes in the header.
+async function apiUpload<T>(path: string, field: string, file: File): Promise<T> {
+  const form = new FormData();
+  form.append(field, file);
+  const res = await fetch(`/api/v1${path}`, {
+    method: "POST",
+    headers: { "X-CSRF-Token": await ensureCsrf(), Accept: "application/json" },
+    body: form,
+    credentials: "include",
+  });
+  if (res.status === 401) {
+    if (onUnauthorized) onUnauthorized();
+    throw new ApiError(401, "unauthorized");
+  }
+  const raw = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) {
+    throw new ApiError(res.status, raw.error ?? `upload failed (${res.status})`);
+  }
+  return raw as T;
+}
+
+export interface ProfileUpdate {
+  name?: string;
+  displayName?: string;
+  email?: string;
+  phone?: string;
+}
+
+export const Profile = {
+  update: (data: ProfileUpdate) => api<{ user: User }>("/me", { method: "PUT", body: data }),
+  uploadAvatar: (file: File) => apiUpload<{ avatarUrl: string }>("/me/avatar", "avatar", file),
+  deleteAvatar: () => api<Record<string, never>>("/me/avatar", { method: "DELETE" }),
+};
+
+export const GroupCover = {
+  upload: (id: number | string, file: File) =>
+    apiUpload<{ imageUrl: string }>(`/groups/${id}/cover`, "cover", file),
+  remove: (id: number | string) =>
+    api<Record<string, never>>(`/groups/${id}/cover`, { method: "DELETE" }),
+};

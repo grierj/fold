@@ -4,8 +4,10 @@ export interface User {
   id: number;
   username: string;
   name: string;
+  displayName: string;
   email: string;
   phone: string;
+  avatarUrl: string;
   role: string;
 }
 
@@ -25,6 +27,7 @@ export interface GroupSummary {
 export interface Member {
   id: number;
   name: string;
+  avatarUrl: string;
   role: "leader" | "member" | string;
   joinedAt: string;
 }

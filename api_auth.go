@@ -44,7 +44,7 @@ func (a *App) apiLogin(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": toUserJSON(&user)})
+	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&user)})
 }
 
 func (a *App) apiLogout(c *gin.Context) {
@@ -55,7 +55,7 @@ func (a *App) apiLogout(c *gin.Context) {
 }
 
 func (a *App) apiMe(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"user": toUserJSON(apiUser(c))})
+	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(apiUser(c))})
 }
 
 // apiMyGroups lists the groups the current user is an active member of.

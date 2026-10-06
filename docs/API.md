@@ -27,6 +27,39 @@ POST /api/v1/auth/logout                         → 200 {}
 GET  /api/v1/auth/me                             → 200 {user} | 401
 ```
 
+### Profile
+
+```
+PUT    /api/v1/me           → 200 {user}  (auth; partial update)
+POST   /api/v1/me/avatar    → 200 {avatarUrl}  (auth; multipart, field "avatar")
+DELETE /api/v1/me/avatar    → 200 {}  (auth)
+```
+
+Profile update body: any of `{name, displayName, email, phone}`. Limits:
+names ≤ 100 chars, email must parse and be ≤ 254 chars (empty clears it),
+phone ≤ 30 chars.
+
+`user`: `{id, username, name, displayName, email, phone, avatarUrl, role}`.
+`displayName` falls back to name, then username in the UI. `avatarUrl` is a
+`/uploads/...` URL, or empty when no avatar is set.
+
+Avatar uploads must be JPEG, PNG, GIF, or WebP (content-sniffed, not by
+extension), ≤ 5MB. Uploading replaces the old avatar; the old blob is
+deleted. The CSRF token goes in the `X-CSRF-Token` header for multipart
+posts, same as JSON.
+
+### Uploads
+
+```
+GET /uploads/<key>  → the stored image (public; nosniff + 1-day cache)
+```
+
+Keys are server-generated (`avatars/<userId>/<id>.<ext>`,
+`covers/<groupId>/<id>.<ext>`); path traversal is rejected. Local storage
+lives under `UPLOAD_DIR` (`./data/uploads` default, `/data/uploads` in the
+compose stack, persisted on the `/data` volume). See AGENTS.md for the
+S3-replacement seam.
+
 ### Groups
 
 ```
@@ -35,6 +68,8 @@ GET  /api/v1/me/groups                    → {groups: [groupSummary]}  (auth; g
 POST /api/v1/groups                       → 201 {group}   (auth; status=pending)
 GET  /api/v1/groups/:id                   → {group, members, upcomingMeetings, canManage, isMember}
 PUT  /api/v1/groups/:id                   → 200 {group}   (group leader or admin)
+POST   /api/v1/groups/:id/cover           → 200 {imageUrl} (group leader or admin; multipart, field "cover")
+DELETE /api/v1/groups/:id/cover           → 200 {}         (group leader or admin)
 ```
 
 `groupSummary`: `{id, name, description, tags[], imageUrl, location,
@@ -43,7 +78,8 @@ leaderName, memberCount, nextMeetingAt, status}`
 `group` (detail response): `{group: groupSummary, members: [...],
 upcomingMeetings: [meetingInstance], canManage: bool, isMember: bool}`.
 `members` is populated for logged-in users only. `canManage` is true for the
-group's leader and admins.
+group's leader and admins. Roster member: `{id, name, avatarUrl, role,
+joinedAt}` — `name` is the member's display name.
 
 Create/update body: `{name, description, tags[], imageUrl, location}`.
 New groups enter `pending` until approved (the approval workflow survives).

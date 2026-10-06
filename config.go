@@ -26,6 +26,9 @@ type Config struct {
 	// SiteURL is the public base URL (used for CSRF origin checks behind
 	// proxies, e.g. "https://groups.example.org").
 	SiteURL string
+	// UploadDir is where user-uploaded assets (avatars, group covers) are
+	// stored by the local blob store. Default "./data/uploads".
+	UploadDir string
 }
 
 func getEnv(key, def string) string {
@@ -70,6 +73,7 @@ func LoadConfig() Config {
 		SQLitePath:    getEnv("SQLITE_PATH", "./data/church-groups.db"),
 		CookieSecure:  getEnvBool("COOKIE_SECURE", !isDev),
 		SiteURL:       os.Getenv("SITE_URL"),
+		UploadDir:     getEnv("UPLOAD_DIR", "./data/uploads"),
 	}
 }
 

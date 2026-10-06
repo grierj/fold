@@ -135,10 +135,7 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 	var leader models.User
 	leaderName := ""
 	if err := a.DB.First(&leader, g.LeaderID).Error; err == nil {
-		leaderName = leader.Name
-		if leaderName == "" {
-			leaderName = leader.Username
-		}
+		leaderName = leader.PublicName()
 	}
 
 	var next *time.Time
