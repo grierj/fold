@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Groups } from "../api";
 import type { GroupSummary } from "../types";
 import { GroupCard } from "../components/GroupCard";
@@ -8,6 +8,7 @@ import { useAuth } from "../auth";
 // The server exposes GET /api/v1/me/groups for this.
 export function MyGroups() {
   const { user, loading: authLoading } = useAuth();
+  const navigate = useNavigate();
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +66,11 @@ export function MyGroups() {
       )}
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
         {groups.map((g) => (
-          <GroupCard key={g.id} group={g} />
+          <GroupCard
+            key={g.id}
+            group={g}
+            onTagClick={(tag) => navigate(`/?tag=${encodeURIComponent(tag)}`)}
+          />
         ))}
       </div>
     </div>

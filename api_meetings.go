@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +18,11 @@ import (
 // ---------------------------------------------------------------------------
 
 const maxInstances = 100
+
+// maxMeetingWindow caps a client-supplied expansion range. The per-meeting
+// instance cap is applied only after rrule.Between returns, so an unbounded
+// window is a CPU sink on a public endpoint.
+const maxMeetingWindow = 366 * 24 * time.Hour
 
 // expandMeeting returns occurrence start times within [from, to].
 func expandMeeting(m *models.Meeting, from, to time.Time) []time.Time {
@@ -125,7 +131,26 @@ func (a *App) buildInstances(meetings []models.Meeting, from, to time.Time, me *
 			}
 		}
 	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].StartsAt.Before(out[j].StartsAt)
+	})
 	return out
+}
+
+// recurrenceOK accepts an empty rule (one-time) or an RRULE that parses
+// with the same DTSTART construction expandMeeting uses.
+func recurrenceOK(rule string, starts time.Time) bool {
+	rule = strings.TrimSpace(rule)
+	if rule == "" {
+		return true
+	}
+	if len(rule) > maxRecurrenceLen {
+		return false
+	}
+	ruleStr := "DTSTART:" + starts.UTC().Format("20060102T150405Z") +
+		"\nRRULE:" + rule
+	_, err := rrule.StrToRRule(ruleStr)
+	return err == nil
 }
 
 func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
@@ -148,13 +173,19 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 		next = &t
 	}
 
+	visibility := g.Visibility
+	if visibility == "" {
+		visibility = models.VisibilityPublic
+	}
 	return groupSummaryJSON{
 		ID: g.ID, Name: g.Name, Description: g.Description,
 		Tags: splitTags(g.Tags), ImageURL: g.ImageURL,
 		CoverFocalX: g.CoverFocalX, CoverFocalY: g.CoverFocalY,
-		Location: g.Location,
+		Location:   g.Location,
 		LeaderName: leaderName, MemberCount: memberCount,
 		NextMeetingAt: next, Status: g.Status,
+		LeaderID: g.LeaderID, Visibility: visibility,
+		InviteOnly: g.InviteOnly, DeletionRequested: g.DeletionRequested,
 	}
 }
 
@@ -175,13 +206,21 @@ func parseDateParam(s string, def time.Time) time.Time {
 func (a *App) apiListMeetings(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil || g.Status != models.GroupActive {
+	if err := a.DB.First(&g, id).Error; err != nil || !a.canSeeGroup(apiUser(c), &g) {
 		jsonError(c, http.StatusNotFound, "group not found")
 		return
 	}
 	now := time.Now().UTC()
 	from := parseDateParam(c.Query("from"), now)
 	to := parseDateParam(c.Query("to"), now.AddDate(0, 0, 90))
+	if to.Before(from) {
+		jsonError(c, http.StatusBadRequest, "to must be on or after from")
+		return
+	}
+	if to.Sub(from) > maxMeetingWindow {
+		jsonError(c, http.StatusBadRequest, "date range must be 366 days or less")
+		return
+	}
 	var meetings []models.Meeting
 	a.DB.Where("group_id = ?", g.ID).Find(&meetings)
 	insts := a.buildInstances(meetings, from, to, apiUser(c))
@@ -213,10 +252,20 @@ func (a *App) apiCreateMeeting(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "endsAt must be after startsAt")
 		return
 	}
+	location := strings.TrimSpace(body.Location)
+	if len(location) > maxLocationLen {
+		jsonError(c, http.StatusBadRequest, "location is too long")
+		return
+	}
+	rule := strings.TrimSpace(body.RecurrenceRule)
+	if !recurrenceOK(rule, body.StartsAt) {
+		jsonError(c, http.StatusBadRequest, "invalid recurrence rule")
+		return
+	}
 	m := models.Meeting{
 		GroupID: g.ID, StartsAt: body.StartsAt.UTC(), EndsAt: body.EndsAt.UTC(),
-		Location: strings.TrimSpace(body.Location),
-		RecurrenceRule: strings.TrimSpace(body.RecurrenceRule),
+		Location:       location,
+		RecurrenceRule: rule,
 	}
 	if err := a.DB.Create(&m).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not create meeting")
@@ -278,10 +327,20 @@ func (a *App) apiUpdateMeeting(c *gin.Context) {
 		return
 	}
 	if body.Location != nil {
-		m.Location = strings.TrimSpace(*body.Location)
+		location := strings.TrimSpace(*body.Location)
+		if len(location) > maxLocationLen {
+			jsonError(c, http.StatusBadRequest, "location is too long")
+			return
+		}
+		m.Location = location
 	}
 	if body.RecurrenceRule != nil {
-		m.RecurrenceRule = strings.TrimSpace(*body.RecurrenceRule)
+		rule := strings.TrimSpace(*body.RecurrenceRule)
+		if !recurrenceOK(rule, m.StartsAt) {
+			jsonError(c, http.StatusBadRequest, "invalid recurrence rule")
+			return
+		}
+		m.RecurrenceRule = rule
 	}
 	if err := a.DB.Save(m).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not update meeting")
@@ -332,6 +391,11 @@ func (a *App) apiRSVP(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var m models.Meeting
 	if err := a.DB.First(&m, id).Error; err != nil {
+		jsonError(c, http.StatusNotFound, "meeting not found")
+		return
+	}
+	var g models.Group
+	if err := a.DB.First(&g, m.GroupID).Error; err != nil || !a.canSeeGroup(apiUser(c), &g) {
 		jsonError(c, http.StatusNotFound, "meeting not found")
 		return
 	}

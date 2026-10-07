@@ -326,9 +326,14 @@ func TestFocalPoints(t *testing.T) {
 		t.Fatalf("focal not clamped: %+v", me.User)
 	}
 
-	// Group cover focal (leader).
+	// Group cover focal (leader). Management checks the leader membership,
+	// which the API creates alongside LeaderID.
 	g := models.Group{Name: "G", LeaderID: leader.ID, Status: models.GroupActive}
 	app.DB.Create(&g)
+	app.DB.Create(&models.Membership{
+		UserID: leader.ID, GroupID: g.ID,
+		Role: models.MembershipLeader, Status: "active", JoinedAt: time.Now().UTC(),
+	})
 	lc := loginAs(t, app, "leader", "password1234")
 	w = lc.do("PUT", "/api/v1/groups/"+itoa2(g.ID), map[string]interface{}{
 		"coverFocal": map[string]float64{"x": 25, "y": 25},

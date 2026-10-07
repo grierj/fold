@@ -8,28 +8,39 @@ import (
 	"church-groups/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/sessions"
 )
 
 // minPasswordLength is the minimum for local-account passwords, enforced
-// at setup, admin creation, and admin password reset. The setup template
-// states the requirement next to the field — keep them in sync.
+// at setup, admin creation, password change, and admin password reset.
+// The setup template states the requirement next to the field — keep them in sync.
 const minPasswordLength = 10
+
+// Text caps keep a single request from storing an unbounded row.
+// Profile name/display name stay at 100 (see api_profile.go).
+const (
+	maxGroupNameLen   = 200
+	maxLocationLen    = 300
+	maxDescriptionLen = 5000
+	maxTagsLen        = 500
+	maxRecurrenceLen  = 300
+)
 
 // ---------------------------------------------------------------------------
 // JSON shapes
 // ---------------------------------------------------------------------------
 
 type userJSON struct {
-	ID          uint    `json:"id"`
-	Username    string  `json:"username"`
-	Name        string  `json:"name"`
-	DisplayName string  `json:"displayName"`
-	Email       string  `json:"email"`
-	Phone       string  `json:"phone"`
-	AvatarURL   string  `json:"avatarUrl"`
+	ID           uint    `json:"id"`
+	Username     string  `json:"username"`
+	Name         string  `json:"name"`
+	DisplayName  string  `json:"displayName"`
+	Email        string  `json:"email"`
+	Phone        string  `json:"phone"`
+	AvatarURL    string  `json:"avatarUrl"`
 	AvatarFocalX float64 `json:"avatarFocalX"`
 	AvatarFocalY float64 `json:"avatarFocalY"`
-	Role        string  `json:"role"`
+	Role         string  `json:"role"`
 }
 
 func (a *App) toUserJSON(u *models.User) userJSON {
@@ -40,25 +51,29 @@ func (a *App) toUserJSON(u *models.User) userJSON {
 	return userJSON{
 		ID: u.ID, Username: u.Username, Name: u.Name,
 		DisplayName: u.DisplayName, Email: u.Email, Phone: u.Phone,
-		AvatarURL: avatarURL,
+		AvatarURL:    avatarURL,
 		AvatarFocalX: u.AvatarFocalX, AvatarFocalY: u.AvatarFocalY,
 		Role: u.Role,
 	}
 }
 
 type groupSummaryJSON struct {
-	ID            uint       `json:"id"`
-	Name          string     `json:"name"`
-	Description   string     `json:"description"`
-	Tags          []string   `json:"tags"`
-	ImageURL      string     `json:"imageUrl"`
-	CoverFocalX   float64    `json:"coverFocalX"`
-	CoverFocalY   float64    `json:"coverFocalY"`
-	Location      string     `json:"location"`
-	LeaderName    string     `json:"leaderName"`
-	MemberCount   int64      `json:"memberCount"`
-	NextMeetingAt *time.Time `json:"nextMeetingAt"`
-	Status        string     `json:"status"`
+	ID                uint       `json:"id"`
+	Name              string     `json:"name"`
+	Description       string     `json:"description"`
+	Tags              []string   `json:"tags"`
+	ImageURL          string     `json:"imageUrl"`
+	CoverFocalX       float64    `json:"coverFocalX"`
+	CoverFocalY       float64    `json:"coverFocalY"`
+	Location          string     `json:"location"`
+	LeaderName        string     `json:"leaderName"`
+	MemberCount       int64      `json:"memberCount"`
+	NextMeetingAt     *time.Time `json:"nextMeetingAt"`
+	Status            string     `json:"status"`
+	LeaderID          uint       `json:"leaderId"`
+	Visibility        string     `json:"visibility"`
+	InviteOnly        bool       `json:"inviteOnly"`
+	DeletionRequested bool       `json:"deletionRequested"`
 }
 
 type memberJSON struct {
@@ -95,13 +110,13 @@ type meetingInstanceJSON struct {
 }
 
 type meetingJSON struct {
-	ID             uint     `json:"id"`
-	GroupID        uint     `json:"groupId"`
+	ID             uint      `json:"id"`
+	GroupID        uint      `json:"groupId"`
 	StartsAt       time.Time `json:"startsAt"`
 	EndsAt         time.Time `json:"endsAt"`
-	Location       string   `json:"location"`
-	RecurrenceRule string   `json:"recurrenceRule"`
-	CancelledDates []string `json:"cancelledDates"`
+	Location       string    `json:"location"`
+	RecurrenceRule string    `json:"recurrenceRule"`
+	CancelledDates []string  `json:"cancelledDates"`
 }
 
 // ---------------------------------------------------------------------------
@@ -112,28 +127,51 @@ func jsonError(c *gin.Context, code int, msg string) {
 	c.JSON(code, gin.H{"error": msg})
 }
 
+// sessionVersion reads the password generation stored at login.
+// A cookie issued before this field existed has no value and counts as 0.
+func sessionVersion(s *sessions.Session) int {
+	switch v := s.Values["sessionVersion"].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case uint:
+		return int(v)
+	default:
+		return 0
+	}
+}
+
+// userFromSession loads the logged-in user when the cookie is still current.
+func (a *App) userFromSession(c *gin.Context) (*models.User, bool) {
+	session, err := a.Store.Get(c.Request, sessionName)
+	if err != nil {
+		return nil, false
+	}
+	uid, ok := session.Values["userID"].(uint)
+	if !ok {
+		return nil, false
+	}
+	var user models.User
+	if err := a.DB.First(&user, uid).Error; err != nil {
+		return nil, false
+	}
+	if sessionVersion(session) != user.SessionVersion {
+		return nil, false
+	}
+	return &user, true
+}
+
 // apiAuth requires a logged-in user; 401 JSON otherwise.
 func (a *App) apiAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		session, err := a.Store.Get(c.Request, sessionName)
-		if err != nil {
-			jsonError(c, http.StatusUnauthorized, "unauthorized")
-			c.Abort()
-			return
-		}
-		uid, ok := session.Values["userID"].(uint)
+		user, ok := a.userFromSession(c)
 		if !ok {
 			jsonError(c, http.StatusUnauthorized, "unauthorized")
 			c.Abort()
 			return
 		}
-		var user models.User
-		if err := a.DB.First(&user, uid).Error; err != nil {
-			jsonError(c, http.StatusUnauthorized, "unauthorized")
-			c.Abort()
-			return
-		}
-		c.Set("apiUser", &user)
+		c.Set("apiUser", user)
 		c.Next()
 	}
 }
@@ -161,17 +199,31 @@ func apiUser(c *gin.Context) *models.User {
 // optionalUser loads the user when logged in but never rejects.
 func (a *App) optionalUser() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		session, err := a.Store.Get(c.Request, sessionName)
-		if err == nil {
-			if uid, ok := session.Values["userID"].(uint); ok {
-				var user models.User
-				if err := a.DB.First(&user, uid).Error; err == nil {
-					c.Set("apiUser", &user)
-				}
-			}
+		if user, ok := a.userFromSession(c); ok {
+			c.Set("apiUser", user)
 		}
 		c.Next()
 	}
+}
+
+// canSeeGroup reports whether u may open this group.
+// Active public groups are open to everyone. Active private groups require
+// a signed-in user. Invite-only groups require a member, the leader, or an
+// admin. Pending and archived groups stay limited to the leader and admins.
+func (a *App) canSeeGroup(u *models.User, g *models.Group) bool {
+	if g.Status != models.GroupActive {
+		return u != nil && (u.IsAdmin() || g.LeaderID == u.ID)
+	}
+	if g.InviteOnly {
+		if u == nil {
+			return false
+		}
+		return u.IsAdmin() || g.LeaderID == u.ID || a.isMember(u.ID, g.ID)
+	}
+	if g.Visibility == models.VisibilityPrivate {
+		return u != nil
+	}
+	return true
 }
 
 // canManageGroup reports whether u is the group's leader or an admin.
@@ -220,7 +272,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 
 	// Profile.
 	v1.PUT("/me", a.apiAuth(), a.apiUpdateMe)
+	v1.POST("/me/password", a.apiAuth(), a.apiChangePassword)
 	v1.POST("/me/avatar", a.apiAuth(), a.apiUploadAvatar)
+	v1.POST("/me/avatar/url", a.apiAuth(), a.apiFetchAvatar)
 	v1.DELETE("/me/avatar", a.apiAuth(), a.apiDeleteAvatar)
 
 	// Groups.
@@ -231,6 +285,10 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.PUT("/groups/:id", a.apiAuth(), a.apiUpdateGroup)
 	v1.POST("/groups/:id/join", a.apiAuth(), a.apiJoinGroup)
 	v1.POST("/groups/:id/leave", a.apiAuth(), a.apiLeaveGroup)
+	v1.POST("/groups/:id/leader", a.apiAuth(), a.apiTransferLeadership)
+	v1.POST("/groups/:id/members", a.apiAuth(), a.apiAddGroupMember)
+	v1.POST("/groups/:id/deletion-request", a.apiAuth(), a.apiRequestDeletion)
+	v1.DELETE("/groups/:id/deletion-request", a.apiAuth(), a.apiCancelDeletion)
 	v1.GET("/groups/:id/members", a.apiAuth(), a.apiGroupMembers)
 	v1.GET("/groups/:id/meetings", a.optionalUser(), a.apiListMeetings)
 	v1.POST("/groups/:id/meetings", a.apiAuth(), a.apiCreateMeeting)
@@ -245,8 +303,11 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 
 	// Admin.
 	v1.GET("/admin/pending", a.apiAuth(), a.apiAdmin(), a.apiPendingGroups)
+	v1.GET("/admin/deletions", a.apiAuth(), a.apiAdmin(), a.apiDeletionRequests)
 	v1.POST("/admin/groups/:id/approve", a.apiAuth(), a.apiAdmin(), a.apiApproveGroup)
 	v1.POST("/admin/groups/:id/reject", a.apiAuth(), a.apiAdmin(), a.apiRejectGroup)
+	v1.POST("/admin/groups/:id/reject-deletion", a.apiAuth(), a.apiAdmin(), a.apiRejectDeletion)
+	v1.DELETE("/admin/groups/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminDeleteGroup)
 	v1.GET("/admin/groups", a.apiAuth(), a.apiAdmin(), a.apiAdminListGroups)
 	v1.POST("/admin/groups/:id/members", a.apiAuth(), a.apiAdmin(), a.apiAdminAddMember)
 	v1.DELETE("/admin/groups/:id/members/:userId", a.apiAuth(), a.apiAdmin(), a.apiAdminRemoveMember)

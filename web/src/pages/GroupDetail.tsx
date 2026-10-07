@@ -8,7 +8,7 @@ import { RsvpButtons } from "../components/RsvpButtons";
 import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
 import { coverImage, formatNextMeeting } from "../components/GroupCard";
-import { focalPosition } from "../lib/image";
+import { focalPosition, prepareUpload } from "../lib/image";
 
 type Tab = "events" | "about" | "members";
 
@@ -96,6 +96,8 @@ export interface GroupFormData {
   imageUrl: string;
   coverFile?: File | null;
   coverFocal?: { x: number; y: number };
+  visibility: "public" | "private";
+  inviteOnly: boolean;
 }
 
 function GroupForm({
@@ -107,6 +109,7 @@ function GroupForm({
   initial: {
     name: string; description: string; location: string; tags: string[];
     imageUrl: string; coverFocalX: number; coverFocalY: number;
+    visibility?: string; inviteOnly?: boolean;
   };
   saveLabel: string;
   onSaved: (data: GroupFormData) => Promise<void>;
@@ -120,6 +123,12 @@ function GroupForm({
   const [coverMode, setCoverMode] = useState<"url" | "upload">("url");
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverFocal, setCoverFocal] = useState<{ x: number; y: number } | null>(null);
+  const [visibility, setVisibility] = useState<"public" | "private">(
+    initial.visibility === "private" ? "private" : "public"
+  );
+  const [inviteOnly, setInviteOnly] = useState(
+    initial.visibility === "private" && Boolean(initial.inviteOnly)
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -143,6 +152,8 @@ function GroupForm({
               .split(",")
               .map((t) => t.trim())
               .filter(Boolean),
+            visibility,
+            inviteOnly: visibility === "private" && inviteOnly,
           });
         } catch (err) {
           setError(err instanceof Error ? err.message : "Save failed");
@@ -183,6 +194,55 @@ function GroupForm({
           placeholder="e.g. young-adults, bible-study"
         />
       </div>
+      <fieldset>
+        <legend className="label">Who can see this group</legend>
+        <div className="space-y-2 text-sm">
+          <label className="flex items-start gap-2">
+            <input
+              type="radio"
+              name="visibility"
+              className="mt-1"
+              checked={visibility === "public"}
+              onChange={() => {
+                setVisibility("public");
+                setInviteOnly(false);
+              }}
+            />
+            <span>
+              <span className="font-semibold">Public</span>
+              <span className="block text-gray-500">Anyone can see it, including people who are logged out.</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2">
+            <input
+              type="radio"
+              name="visibility"
+              className="mt-1"
+              checked={visibility === "private"}
+              onChange={() => setVisibility("private")}
+            />
+            <span>
+              <span className="font-semibold">Private</span>
+              <span className="block text-gray-500">Only signed-in people can see it.</span>
+            </span>
+          </label>
+          <label className={`flex items-start gap-2 ${visibility === "public" ? "text-gray-400" : ""}`}>
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={inviteOnly && visibility === "private"}
+              disabled={visibility === "public"}
+              onChange={(e) => setInviteOnly(e.target.checked)}
+            />
+            <span>
+              <span className="font-semibold">Invite only</span>
+              <span className="block text-gray-500">
+                Hidden unless someone is already a member. Public groups cannot be invite only.
+              </span>
+            </span>
+          </label>
+        </div>
+      </fieldset>
       <div>
         <label className="label">Cover image</label>
         <div className="flex gap-2 mb-2">
@@ -239,7 +299,10 @@ export function CreateGroupForm({ onSaved, onCancel }: {
 }) {
   return (
     <GroupForm
-      initial={{ name: "", description: "", location: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50 }}
+      initial={{
+        name: "", description: "", location: "", tags: [], imageUrl: "",
+        coverFocalX: 50, coverFocalY: 50, visibility: "public", inviteOnly: false,
+      }}
       saveLabel="Create group"
       onSaved={onSaved}
       onCancel={onCancel}
@@ -259,6 +322,9 @@ export function GroupDetail() {
   const [editing, setEditing] = useState(false);
   const [joinBusy, setJoinBusy] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
+  const [memberUsername, setMemberUsername] = useState("");
+  const [memberBusy, setMemberBusy] = useState(false);
+  const [memberError, setMemberError] = useState<string | null>(null);
   const coverRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -320,16 +386,19 @@ export function GroupDetail() {
   }
 
   function handleRsvp(meetingId: number, date: string, status: "going" | "maybe" | "declined") {
-    setDetail((d) =>
-      d
-        ? {
-            ...d,
-            upcomingMeetings: (d.upcomingMeetings ?? []).map((m) =>
-              m.meetingId === meetingId && m.date === date ? { ...m, myRsvp: status } : m
-            ),
-          }
-        : d
-    );
+    setDetail((d) => {
+      if (!d) return d;
+      return {
+        ...d,
+        upcomingMeetings: (d.upcomingMeetings ?? []).map((m) => {
+          if (m.meetingId !== meetingId || m.date !== date || m.myRsvp === status) return m;
+          const rsvps = { ...m.rsvps };
+          if (m.myRsvp) rsvps[m.myRsvp] = Math.max(0, (rsvps[m.myRsvp] ?? 0) - 1);
+          rsvps[status] = (rsvps[status] ?? 0) + 1;
+          return { ...m, myRsvp: status, rsvps };
+        }),
+      };
+    });
   }
 
   function handleCancelled(meetingId: number, date: string) {
@@ -346,26 +415,88 @@ export function GroupDetail() {
   }
 
   async function saveEdit(data: GroupFormData) {
-    const payload = {
+    // Upload first. Sending imageUrl: "" before the upload clears the
+    // current cover, and a failed upload would leave it blank.
+    if (data.coverFile) {
+      await GroupCover.upload(id!, data.coverFile);
+    }
+    await Groups.update(id!, {
       name: data.name,
       description: data.description,
       tags: data.tags,
-      imageUrl: data.imageUrl,
       location: data.location,
-    };
-    await Groups.update(id!, { ...payload, coverFocal: data.coverFocal });
-    if (data.coverFile) {
-      // Upload replaces the image bytes; the focal point was saved above.
-      await GroupCover.upload(id!, data.coverFile);
-    }
+      ...(data.coverFile ? {} : { imageUrl: data.imageUrl }),
+      ...(data.coverFocal ? { coverFocal: data.coverFocal } : {}),
+      visibility: data.visibility,
+      inviteOnly: data.inviteOnly,
+    });
     setEditing(false);
     await load();
+  }
+
+  async function makeLeader(memberId: number, name: string) {
+    if (!confirm(`Make ${name} the leader of “${group.name}”?`)) return;
+    setMemberBusy(true);
+    setMemberError(null);
+    try {
+      await Groups.transferLeader(id!, memberId);
+      await load();
+    } catch (e) {
+      setMemberError(e instanceof Error ? e.message : "Could not transfer leadership");
+    } finally {
+      setMemberBusy(false);
+    }
+  }
+
+  async function addMember(e: React.FormEvent) {
+    e.preventDefault();
+    const username = memberUsername.trim();
+    if (!username) return;
+    setMemberBusy(true);
+    setMemberError(null);
+    try {
+      await Groups.addMember(id!, username);
+      setMemberUsername("");
+      await load();
+    } catch (e) {
+      setMemberError(e instanceof Error ? e.message : "Could not add that person");
+    } finally {
+      setMemberBusy(false);
+    }
+  }
+
+  async function requestDeletion() {
+    if (!confirm("Ask an admin to delete this group? It stays up until they approve.")) return;
+    setMemberBusy(true);
+    setMemberError(null);
+    try {
+      await Groups.requestDeletion(id!);
+      await load();
+    } catch (e) {
+      setMemberError(e instanceof Error ? e.message : "Could not request deletion");
+    } finally {
+      setMemberBusy(false);
+    }
+  }
+
+  async function cancelDeletion() {
+    setMemberBusy(true);
+    setMemberError(null);
+    try {
+      await Groups.cancelDeletion(id!);
+      await load();
+    } catch (e) {
+      setMemberError(e instanceof Error ? e.message : "Could not cancel the request");
+    } finally {
+      setMemberBusy(false);
+    }
   }
 
   async function uploadCover(file: File) {
     setCoverBusy(true);
     try {
-      await GroupCover.upload(id!, file);
+      const resized = await prepareUpload(file, 1600);
+      await GroupCover.upload(id!, resized);
       await load();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Cover upload failed");
@@ -388,10 +519,24 @@ export function GroupDetail() {
         <div className="absolute bottom-0 left-0 right-0">
           <div className="max-w-6xl mx-auto px-4 pb-5 flex items-end gap-4 flex-wrap">
             <div className="grow min-w-0">
-              {group.status === "pending" && (
-                <span className="inline-block text-xs font-bold uppercase tracking-wide bg-yellow-100 text-yellow-800 rounded-full px-3 py-1 mb-2">
-                  Pending approval
-                </span>
+              {(group.status === "pending" || group.visibility === "private" || group.inviteOnly) && (
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {group.status === "pending" && (
+                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-yellow-100 text-yellow-800 rounded-full px-3 py-1">
+                      Pending approval
+                    </span>
+                  )}
+                  {group.visibility === "private" && (
+                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-white/90 text-gray-800 rounded-full px-3 py-1">
+                      Private
+                    </span>
+                  )}
+                  {group.inviteOnly && (
+                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-white/90 text-gray-800 rounded-full px-3 py-1">
+                      Invite only
+                    </span>
+                  )}
+                </div>
               )}
               <h1 className="text-3xl sm:text-4xl font-extrabold text-white">{group.name}</h1>
               <div className="text-white/80 text-sm mt-1">
@@ -433,13 +578,15 @@ export function GroupDetail() {
                   />
                 </>
               )}
-              <button
-                onClick={toggleJoin}
-                disabled={joinBusy}
-                className={isMember ? "btn-secondary" : "btn-primary"}
-              >
-                {joinBusy ? "…" : isMember ? "Leave group" : "Join this group"}
-              </button>
+              {(!group.inviteOnly || isMember) && (
+                <button
+                  onClick={toggleJoin}
+                  disabled={joinBusy}
+                  className={isMember ? "btn-secondary" : "btn-primary"}
+                >
+                  {joinBusy ? "…" : isMember ? "Leave group" : "Join this group"}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -456,6 +603,8 @@ export function GroupDetail() {
               imageUrl: group.imageUrl,
               coverFocalX: group.coverFocalX,
               coverFocalY: group.coverFocalY,
+              visibility: group.visibility,
+              inviteOnly: group.inviteOnly,
             }}
             saveLabel="Save changes"
             onSaved={saveEdit}
@@ -522,12 +671,13 @@ export function GroupDetail() {
                     <h3 className="font-bold mb-1">Tags</h3>
                     <div className="flex flex-wrap gap-2">
                       {group.tags.map((t) => (
-                        <span
+                        <Link
                           key={t}
-                          className="text-sm bg-gray-100 text-gray-700 rounded-full px-3 py-1"
+                          to={`/?tag=${encodeURIComponent(t)}`}
+                          className="text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-full px-3 py-1"
                         >
                           {t}
-                        </span>
+                        </Link>
                       ))}
                     </div>
                   </div>
@@ -548,25 +698,96 @@ export function GroupDetail() {
                     </Link>{" "}
                     to see the member roster.
                   </p>
-                ) : members && members.length > 0 ? (
-                  <ul className="divide-y divide-gray-100">
-                    {members.map((m) => (
-                      <li key={m.id} className="py-3 flex items-center gap-3">
-                        <Avatar
-                          url={m.avatarUrl || undefined}
-                          name={m.name}
-                          focalX={m.avatarFocalX}
-                          focalY={m.avatarFocalY}
-                        />
-                        <div>
-                          <div className="font-semibold">{m.name}</div>
-                          <div className="text-sm text-gray-500 capitalize">{m.role}</div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
                 ) : (
-                  <p className="text-gray-600">No members yet.</p>
+                  <>
+                    {memberError && <div className="text-red-600 text-sm mb-3">{memberError}</div>}
+                    {members && members.length > 0 ? (
+                      <ul className="divide-y divide-gray-100">
+                        {members.map((m) => (
+                          <li key={m.id} className="py-3 flex items-center gap-3">
+                            <Avatar
+                              url={m.avatarUrl || undefined}
+                              name={m.name}
+                              focalX={m.avatarFocalX}
+                              focalY={m.avatarFocalY}
+                            />
+                            <div className="grow min-w-0">
+                              <div className="font-semibold">{m.name}</div>
+                              <div className="text-sm text-gray-500 capitalize">{m.role}</div>
+                            </div>
+                            {canManage && m.id !== group.leaderId && (
+                              <button
+                                type="button"
+                                onClick={() => makeLeader(m.id, m.name)}
+                                disabled={memberBusy}
+                                className="text-sm font-medium text-brand hover:underline"
+                              >
+                                Make leader
+                              </button>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-gray-600">No members yet.</p>
+                    )}
+                    {canManage && (
+                      <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">
+                        <div className="grow min-w-[12rem]">
+                          <label className="label" htmlFor="add-member">Add a member by username</label>
+                          <input
+                            id="add-member"
+                            className="input"
+                            value={memberUsername}
+                            onChange={(e) => setMemberUsername(e.target.value)}
+                            placeholder="username"
+                            autoComplete="off"
+                          />
+                        </div>
+                        <button
+                          type="submit"
+                          disabled={memberBusy || !memberUsername.trim()}
+                          className="btn-secondary"
+                        >
+                          {memberBusy ? "…" : "Add"}
+                        </button>
+                      </form>
+                    )}
+                    {user.id === group.leaderId && (
+                      <div className="mt-6 border-t border-gray-100 pt-4">
+                        {group.memberCount <= 1 ? (
+                          group.deletionRequested ? (
+                            <div className="space-y-2">
+                              <p className="text-sm text-gray-600">
+                                An admin still has to approve deleting this group.
+                              </p>
+                              <button
+                                type="button"
+                                onClick={cancelDeletion}
+                                disabled={memberBusy}
+                                className="btn-secondary"
+                              >
+                                Cancel deletion request
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={requestDeletion}
+                              disabled={memberBusy}
+                              className="btn-secondary !text-red-600 !border-red-200 hover:!border-red-400"
+                            >
+                              Request deletion
+                            </button>
+                          )
+                        ) : (
+                          <p className="text-sm text-gray-500">
+                            Hand leadership to someone else. You can ask an admin to delete the group once you are the only member.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             )}

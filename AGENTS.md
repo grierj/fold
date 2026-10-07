@@ -98,7 +98,9 @@ the UI), `Email`, `Phone`, `AvatarKey` (blob-store key, not a URL),
   handler changes needed.
 - Docker: the final image pins `WORKDIR /` (distroless doesn't guarantee
   it) and pre-creates `/data/uploads` with `--chown=65532:65532` so the
-  nonroot app can write to the fresh named volume.
+  nonroot app can write to the fresh named volume. Compose mounts that
+  directory as the named volume `uploads`. Do not drop the mount; an
+  anonymous volume is discarded on `up --build`.
 
 ## Development
 
@@ -120,13 +122,20 @@ unless `APP_ENV=dev`.
 ## Deployment
 
 - `docker compose up --build -d` → app + Postgres 16 + Caddy (auto HTTPS).
-  Fill `.env` from `.env.example` first.
+  Fill `.env` from `.env.example` first. Postgres data is `pgdata`;
+  uploads are `uploads`. Both are named volumes.
 - Dockerfile is multi-stage (node → go → distroless), `CGO_ENABLED=0`.
   Keep it that way — the binary must build without a C compiler.
+- `APP_ENV` other than `dev` refuses to boot without `DATABASE_URL`.
+  SQLite stays the dev and `go test` default.
 - First boot with an empty DB serves the setup wizard at `/setup`.
-- Known gap: the Postgres code path is compile-verified but has never run
-  against a live Postgres in this environment (no Docker/Postgres here).
-  Validate with `docker compose up` on a real machine before calling it done.
+  After any user exists, the process caches that and will not show the
+  wizard again until it is restarted.
+- `GET /healthz` pings the database. Compose and the image use
+  `/church-groups healthcheck` because distroless has no shell or curl.
+- Handler tests use in-memory SQLite. Set `DATABASE_URL` to run the same
+  tests against Postgres. A live `docker compose up` is still the check
+  that Caddy, TLS, and the volumes work together.
 
 ## SMS (Phase 2, not yet)
 

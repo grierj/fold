@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/sessions"
@@ -51,22 +52,19 @@ func (a *App) csrfMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		session, err := a.Store.Get(c.Request, sessionName)
 		if err != nil {
-			c.String(http.StatusInternalServerError, "Session error")
-			c.Abort()
+			a.csrfFail(c, http.StatusInternalServerError, "Session error")
 			return
 		}
 
 		token, created := csrfToken(session)
 		if token == "" {
-			c.String(http.StatusInternalServerError, "Failed to generate CSRF token")
-			c.Abort()
+			a.csrfFail(c, http.StatusInternalServerError, "Failed to generate CSRF token")
 			return
 		}
 		if created {
 			// Persist the new token so the cookie is set before any POST.
 			if err := session.Save(c.Request, c.Writer); err != nil {
-				c.String(http.StatusInternalServerError, "Session error")
-				c.Abort()
+				a.csrfFail(c, http.StatusInternalServerError, "Session error")
 				return
 			}
 		}
@@ -78,13 +76,22 @@ func (a *App) csrfMiddleware() gin.HandlerFunc {
 				submitted = c.GetHeader(csrfHeader)
 			}
 			if subtle.ConstantTimeCompare([]byte(submitted), []byte(token)) != 1 {
-				c.String(http.StatusForbidden, "CSRF token invalid")
-				c.Abort()
+				a.csrfFail(c, http.StatusForbidden, "CSRF token invalid")
 				return
 			}
 		}
 		c.Next()
 	}
+}
+
+// csrfFail writes JSON for the API and plain text for the setup form.
+func (a *App) csrfFail(c *gin.Context, code int, msg string) {
+	if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+		jsonError(c, code, msg)
+	} else {
+		c.String(code, msg)
+	}
+	c.Abort()
 }
 
 func isSafeMethod(m string) bool {

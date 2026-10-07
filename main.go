@@ -2,13 +2,18 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"html/template"
 	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 
 	"church-groups/models"
 	"church-groups/storage"
@@ -24,12 +29,26 @@ type App struct {
 	Store   *sessions.CookieStore
 	Config  Config
 	Uploads storage.Store // blob store for avatars and group covers
+
+	// setupDone is set once any user exists. The wizard cannot be re-entered
+	// without a process restart after that, which is the normal case.
+	setupMu   sync.RWMutex
+	setupDone bool
+
+	// loginFails counts consecutive failures per username. It lives in
+	// this process only: a restart clears it, and it is not shared across
+	// replicas. Keyed by username so one church NAT cannot lock everyone out.
+	loginMu    sync.Mutex
+	loginFails map[string]int
 }
 
 const sessionName = "church-session"
 
 func main() {
 	cfg := LoadConfig()
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(runHealthcheck(cfg.Port))
+	}
 
 	// Distroless images have no shell, so log the working directory at
 	// startup: template/static paths are relative and this is the only
@@ -60,13 +79,43 @@ func main() {
 		SameSite: http.SameSiteLaxMode,
 	}
 
-	app := &App{DB: db, Store: store, Config: cfg, Uploads: uploads}
+	app := &App{
+		DB: db, Store: store, Config: cfg, Uploads: uploads,
+		loginFails: map[string]int{},
+	}
 	r := app.setupRouter()
 
-	log.Printf("Starting server on :%s (env=%s)", cfg.Port, cfg.Env)
-	if err := r.Run(":" + cfg.Port); err != nil {
-		log.Fatalf("Server failed: %v", err)
+	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
+	go func() {
+		log.Printf("Starting server on :%s (env=%s)", cfg.Port, cfg.Env)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("Shutdown: %v", err)
 	}
+}
+
+// runHealthcheck is the distroless-friendly probe used by Docker. The image
+// has no shell or curl, so the binary asks the local server itself.
+func runHealthcheck(port string) int {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://127.0.0.1:" + port + "/healthz")
+	if err != nil {
+		return 1
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 1
+	}
+	return 0
 }
 
 func (a *App) setupRouter() *gin.Engine {
@@ -75,7 +124,7 @@ func (a *App) setupRouter() *gin.Engine {
 	// redirect would 301-loop client-side routes (e.g. "/" -> "/"), so it
 	// must stay off.
 	r.RedirectTrailingSlash = false
-	r.Use(gin.Logger(), gin.Recovery())
+	r.Use(gin.Logger(), gin.Recovery(), securityHeaders())
 	// Don't trust X-Forwarded-For by default; set explicit proxies if needed.
 	_ = r.SetTrustedProxies(nil)
 
@@ -89,6 +138,10 @@ func (a *App) setupRouter() *gin.Engine {
 	// X-Content-Type-Options: nosniff; uploads are validated as images
 	// on the way in.
 	r.GET("/uploads/*filepath", a.serveUpload)
+
+	// Registered before the setup redirect so a database ping still
+	// answers while the wizard is waiting for the first admin.
+	r.GET("/healthz", a.healthz)
 
 	// First-run setup wizard takes precedence over everything else.
 	r.Use(a.setupRequired())
@@ -153,8 +206,59 @@ func (a *App) serveSPA() gin.HandlerFunc {
 			jsonError(c, http.StatusNotFound, "not found")
 			return
 		}
+		if path == "index.html" {
+			// Revalidate the shell so a rebuilt image is what the browser runs.
+			c.Header("Cache-Control", "no-cache")
+		} else if strings.HasPrefix(path, "assets/") {
+			c.Header("Cache-Control", "public, max-age=31536000, immutable")
+		}
 		http.ServeContent(c.Writer, c.Request, path, info.ModTime(), bytes.NewReader(data))
 	}
+}
+
+func securityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("Referrer-Policy", "same-origin")
+		c.Header("X-Frame-Options", "SAMEORIGIN")
+		c.Next()
+	}
+}
+
+func (a *App) healthz(c *gin.Context) {
+	sqlDB, err := a.DB.DB()
+	if err != nil {
+		c.Status(http.StatusServiceUnavailable)
+		return
+	}
+	if err := sqlDB.PingContext(c.Request.Context()); err != nil {
+		c.Status(http.StatusServiceUnavailable)
+		return
+	}
+	c.Status(http.StatusOK)
+}
+
+// setupComplete reports whether the wizard has already created an account.
+// After the first user exists the answer is cached for the life of the process.
+func (a *App) setupComplete() (bool, error) {
+	a.setupMu.RLock()
+	if a.setupDone {
+		a.setupMu.RUnlock()
+		return true, nil
+	}
+	a.setupMu.RUnlock()
+
+	var n int64
+	if err := a.DB.Model(&models.User{}).Count(&n).Error; err != nil {
+		return false, err
+	}
+	if n > 0 {
+		a.setupMu.Lock()
+		a.setupDone = true
+		a.setupMu.Unlock()
+		return true, nil
+	}
+	return false, nil
 }
 
 // html renders a template, injecting the CSRF field and site name.
@@ -180,17 +284,17 @@ func (a *App) siteName() string {
 func (a *App) setupRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := c.Request.URL.Path
-		if p == "/setup" || strings.HasPrefix(p, "/static/") {
+		if p == "/setup" || p == "/healthz" || strings.HasPrefix(p, "/static/") {
 			c.Next()
 			return
 		}
-		var n int64
-		if err := a.DB.Model(&models.User{}).Count(&n).Error; err != nil {
+		ready, err := a.setupComplete()
+		if err != nil {
 			c.String(http.StatusInternalServerError, "Database error")
 			c.Abort()
 			return
 		}
-		if n == 0 {
+		if !ready {
 			c.Redirect(http.StatusSeeOther, "/setup")
 			c.Abort()
 			return
@@ -261,4 +365,3 @@ func (a *App) handleSetup(c *gin.Context) {
 	log.Printf("Setup complete: site=%q admin=%q", siteName, username)
 	c.Redirect(http.StatusSeeOther, "/login")
 }
-

@@ -82,10 +82,15 @@ export const Auth = {
 };
 
 export const Groups = {
-  list: (search = "", tag = "") =>
-    api<{ groups: GroupSummary[] }>(
-      `/groups?search=${encodeURIComponent(search)}&tag=${encodeURIComponent(tag)}`
-    ),
+  list: (search = "", tags: string[] = []) => {
+    const q = new URLSearchParams();
+    if (search) q.set("search", search);
+    for (const tag of tags) {
+      if (tag) q.append("tag", tag);
+    }
+    const qs = q.toString();
+    return api<{ groups: GroupSummary[] }>(`/groups${qs ? `?${qs}` : ""}`);
+  },
   get: (id: number | string) => api<GroupDetailResponse>(`/groups/${id}`),
   mine: () => api<{ groups: GroupSummary[] }>(`/me/groups`),
   create: (data: {
@@ -94,20 +99,32 @@ export const Groups = {
     tags: string[];
     imageUrl: string;
     location: string;
+    visibility: "public" | "private";
+    inviteOnly: boolean;
   }) => api<{ group: GroupSummary }>("/groups", { method: "POST", body: data }),
   update: (
     id: number | string,
     data: {
-      name: string;
-      description: string;
-      tags: string[];
-      imageUrl: string;
-      location: string;
+      name?: string;
+      description?: string;
+      tags?: string[];
+      imageUrl?: string;
+      location?: string;
       coverFocal?: { x: number; y: number };
+      visibility?: "public" | "private";
+      inviteOnly?: boolean;
     }
   ) => api<{ group: GroupSummary }>(`/groups/${id}`, { method: "PUT", body: data }),
   join: (id: number | string) => api<unknown>(`/groups/${id}/join`, { method: "POST" }),
   leave: (id: number | string) => api<unknown>(`/groups/${id}/leave`, { method: "POST" }),
+  transferLeader: (id: number | string, userId: number) =>
+    api<{ group: GroupSummary }>(`/groups/${id}/leader`, { method: "POST", body: { userId } }),
+  addMember: (id: number | string, username: string) =>
+    api<unknown>(`/groups/${id}/members`, { method: "POST", body: { username } }),
+  requestDeletion: (id: number | string) =>
+    api<{ group: GroupSummary }>(`/groups/${id}/deletion-request`, { method: "POST" }),
+  cancelDeletion: (id: number | string) =>
+    api<unknown>(`/groups/${id}/deletion-request`, { method: "DELETE" }),
   members: (id: number | string) => api<{ members: Member[] }>(`/groups/${id}/members`),
   meetings: (id: number | string, from?: string, to?: string) => {
     let p = `/groups/${id}/meetings`;
@@ -137,6 +154,11 @@ export const Admin = {
   approve: (id: number | string, tags: string[]) =>
     api<{ group: GroupSummary }>(`/admin/groups/${id}/approve`, { method: "POST", body: { tags } }),
   reject: (id: number | string) => api<unknown>(`/admin/groups/${id}/reject`, { method: "POST" }),
+  deletions: () => api<{ groups: GroupSummary[] }>("/admin/deletions"),
+  rejectDeletion: (id: number | string) =>
+    api<unknown>(`/admin/groups/${id}/reject-deletion`, { method: "POST" }),
+  deleteGroup: (id: number | string) =>
+    api<unknown>(`/admin/groups/${id}`, { method: "DELETE" }),
 };
 
 // Multipart upload: the browser sets Content-Type with the boundary;
@@ -171,7 +193,11 @@ export interface ProfileUpdate {
 
 export const Profile = {
   update: (data: ProfileUpdate) => api<{ user: User }>("/me", { method: "PUT", body: data }),
+  changePassword: (current: string, password: string) =>
+    api<Record<string, never>>("/me/password", { method: "POST", body: { current, password } }),
   uploadAvatar: (file: File) => apiUpload<{ avatarUrl: string }>("/me/avatar", "avatar", file),
+  fetchAvatar: (url: string) =>
+    api<{ avatarUrl: string }>("/me/avatar/url", { method: "POST", body: { url } }),
   deleteAvatar: () => api<Record<string, never>>("/me/avatar", { method: "DELETE" }),
 };
 

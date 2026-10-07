@@ -65,6 +65,12 @@ func LoadConfig() Config {
 		}
 	}
 
+	// SQLite is the dev default. Production must name a Postgres URL so a
+	// missed variable cannot silently store the church on the app disk.
+	if !isDev && os.Getenv("DATABASE_URL") == "" {
+		log.Fatal("DATABASE_URL must be set when APP_ENV != dev")
+	}
+
 	return Config{
 		Env:           env,
 		Port:          getEnv("PORT", "8080"),

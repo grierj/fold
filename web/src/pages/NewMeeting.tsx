@@ -74,6 +74,10 @@ export function NewMeeting() {
       setError("Pick a date.");
       return;
     }
+    if (recurring && days.length === 0) {
+      setError("Pick at least one day to repeat weekly.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {

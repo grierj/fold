@@ -30,36 +30,83 @@ export function formatNextMeeting(iso: string | null): string {
 }
 
 // Meetup-style group card: cover image, name, member count, next meeting, location.
-export function GroupCard({ group }: { group: GroupSummary }) {
+// Tags sit outside the link so they can toggle the directory filter.
+export function GroupCard({
+  group,
+  onTagClick,
+  selectedTags = [],
+}: {
+  group: GroupSummary;
+  onTagClick?: (tag: string) => void;
+  selectedTags?: string[];
+}) {
   return (
-    <Link
-      to={`/groups/${group.id}`}
-      className="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow overflow-hidden border border-gray-100 flex flex-col"
-    >
-      <div className="h-40 w-full overflow-hidden bg-gray-200">
-        <img
-          src={coverImage(group.imageUrl)}
-          alt=""
-          className="w-full h-full object-cover"
-          style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
-          loading="lazy"
-        />
-      </div>
-      <div className="p-4 flex flex-col gap-1.5 grow">
-        <h3 className="font-bold text-lg leading-snug">{group.name}</h3>
-        {group.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {group.tags.slice(0, 3).map((t) => (
+    <div className="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow overflow-hidden border border-gray-100 flex flex-col">
+      <Link to={`/groups/${group.id}`} className="block">
+        <div className="h-40 w-full overflow-hidden bg-gray-200">
+          <img
+            src={coverImage(group.imageUrl)}
+            alt=""
+            className="w-full h-full object-cover"
+            style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
+            loading="lazy"
+          />
+        </div>
+        <div className="px-4 pt-4">
+          <h3 className="font-bold text-lg leading-snug">{group.name}</h3>
+          {(group.status === "pending" ||
+            group.status === "archived" ||
+            group.visibility === "private" ||
+            group.inviteOnly) && (
+            <div className="flex flex-wrap gap-1 mt-1">
+              {group.status === "pending" && (
+                <span className="text-xs font-bold uppercase tracking-wide text-yellow-800">
+                  Pending approval
+                </span>
+              )}
+              {group.status === "archived" && (
+                <span className="text-xs font-bold uppercase tracking-wide text-gray-500">Archived</span>
+              )}
+              {group.visibility === "private" && (
+                <span className="text-xs font-bold uppercase tracking-wide text-gray-500">Private</span>
+              )}
+              {group.inviteOnly && (
+                <span className="text-xs font-bold uppercase tracking-wide text-gray-500">Invite only</span>
+              )}
+            </div>
+          )}
+        </div>
+      </Link>
+      {group.tags.length > 0 && (
+        <div className="px-4 pt-2 flex flex-wrap gap-1">
+          {group.tags.slice(0, 3).map((t) =>
+            onTagClick ? (
+              <button
+                key={t}
+                type="button"
+                onClick={() => onTagClick(t)}
+                aria-pressed={selectedTags.includes(t)}
+                className={
+                  selectedTags.includes(t)
+                    ? "text-xs font-semibold bg-brand text-white rounded-full px-2 py-0.5"
+                    : "text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-full px-2 py-0.5"
+                }
+              >
+                {t}
+              </button>
+            ) : (
               <span
                 key={t}
                 className="text-xs font-medium bg-gray-100 text-gray-600 rounded-full px-2 py-0.5"
               >
                 {t}
               </span>
-            ))}
-          </div>
-        )}
-        <div className="text-sm text-gray-600 mt-auto pt-2 space-y-0.5">
+            )
+          )}
+        </div>
+      )}
+      <Link to={`/groups/${group.id}`} className="block px-4 pb-4 pt-2 mt-auto">
+        <div className="text-sm text-gray-600 space-y-0.5">
           <div>
             <span className="font-semibold text-gray-800">{group.memberCount}</span>{" "}
             {group.memberCount === 1 ? "member" : "members"}
@@ -68,7 +115,7 @@ export function GroupCard({ group }: { group: GroupSummary }) {
           <div className="text-brand-dark font-medium">{formatNextMeeting(group.nextMeetingAt)}</div>
           {group.location && <div className="truncate">{group.location}</div>}
         </div>
-      </div>
-    </Link>
+      </Link>
+    </div>
   );
 }

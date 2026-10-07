@@ -26,6 +26,10 @@ export interface GroupSummary {
   memberCount: number;
   nextMeetingAt: string | null;
   status: string;
+  leaderId: number;
+  visibility: string;
+  inviteOnly: boolean;
+  deletionRequested: boolean;
 }
 
 export interface Member {
