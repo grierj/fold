@@ -91,8 +91,67 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => voi
   );
 }
 
+function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function approve() {
+    if (!confirm(`Delete “${group.name}”? This removes the group, its members, and its events.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await Admin.deleteGroup(group.id);
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function keep() {
+    setBusy(true);
+    setError(null);
+    try {
+      await Admin.rejectDeletion(group.id);
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not keep the group");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <Link to={`/groups/${group.id}`} className="text-xl font-bold hover:text-brand">
+        {group.name}
+      </Link>
+      <div className="text-sm text-gray-500 mt-0.5">
+        Organized by {group.leaderName || "unknown"} · {group.memberCount}{" "}
+        {group.memberCount === 1 ? "member" : "members"}
+      </div>
+      <p className="text-gray-700 mt-3">The leader asked for this group to be deleted.</p>
+      {error && <div className="text-red-600 text-sm mt-2">{error}</div>}
+      <div className="flex gap-3 mt-4">
+        <button
+          onClick={approve}
+          disabled={busy}
+          className="btn-secondary !text-red-600 !border-red-200 hover:!border-red-400"
+        >
+          {busy ? "…" : "Delete group"}
+        </button>
+        <button onClick={keep} disabled={busy} className="btn-primary">
+          Keep group
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [deletions, setDeletions] = useState<GroupSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -100,9 +159,10 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
     setLoading(true);
     setError(null);
     try {
-      const { groups } = await Admin.pending();
-      setGroups(groups);
-      onCount(groups.length);
+      const [pending, requested] = await Promise.all([Admin.pending(), Admin.deletions()]);
+      setGroups(pending.groups);
+      setDeletions(requested.groups);
+      onCount(pending.groups.length + requested.groups.length);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load approval queue");
     } finally {
@@ -118,26 +178,27 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
     <div>
       {loading && <div className="text-gray-500">Loading…</div>}
       {error && <div className="text-red-600">{error}</div>}
-      {!loading && !error && groups.length === 0 && (
+      {!loading && !error && groups.length === 0 && deletions.length === 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
           Nothing pending. All caught up.
         </div>
       )}
-      <div className="space-y-4">
-        {groups.map((g) => (
-          <PendingCard
-            key={g.id}
-            group={g}
-            onDone={() => {
-              setGroups((prev) => {
-                const next = prev.filter((x) => x.id !== g.id);
-                onCount(next.length);
-                return next;
-              });
-            }}
-          />
-        ))}
-      </div>
+      {groups.length > 0 && (
+        <div className="space-y-4">
+          <h2 className="text-xl font-bold">New groups</h2>
+          {groups.map((g) => (
+            <PendingCard key={g.id} group={g} onDone={load} />
+          ))}
+        </div>
+      )}
+      {deletions.length > 0 && (
+        <div className="space-y-4 mt-8">
+          <h2 className="text-xl font-bold">Deletion requests</h2>
+          {deletions.map((g) => (
+            <DeletionCard key={g.id} group={g} onDone={load} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -269,6 +330,8 @@ function GroupsTab({ users }: { users: User[] }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openMembers, setOpenMembers] = useState<number | null>(null);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -283,11 +346,27 @@ function GroupsTab({ users }: { users: User[] }) {
     })();
   }, []);
 
+  async function deleteGroup(g: GroupSummary) {
+    if (!confirm(`Delete “${g.name}”? This removes the group, its members, and its events.`)) return;
+    setDeletingId(g.id);
+    setDeleteError(null);
+    try {
+      await Admin.deleteGroup(g.id);
+      setGroups((prev) => prev.filter((x) => x.id !== g.id));
+      setOpenMembers((v) => (v === g.id ? null : v));
+    } catch (e) {
+      setDeleteError(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   if (loading) return <div className="text-gray-500">Loading…</div>;
   if (error) return <div className="text-red-600">{error}</div>;
 
   return (
     <div className="space-y-3">
+      {deleteError && <div className="text-red-600 text-sm">{deleteError}</div>}
       {groups.map((g) => (
         <div key={g.id} className="bg-white rounded-xl border border-gray-200 p-5">
           <div className="flex items-center gap-3 flex-wrap">
@@ -319,6 +398,13 @@ function GroupsTab({ users }: { users: User[] }) {
             <Link to={`/groups/${g.id}`} className="btn-secondary !py-1.5 !px-3 text-sm">
               Open & edit
             </Link>
+            <button
+              onClick={() => deleteGroup(g)}
+              disabled={deletingId === g.id}
+              className="btn-secondary !py-1.5 !px-3 text-sm !text-red-600 !border-red-200 hover:!border-red-400"
+            >
+              {deletingId === g.id ? "…" : "Delete"}
+            </button>
           </div>
           {openMembers === g.id && <MemberManager group={g} users={users} />}
         </div>

@@ -29,21 +29,18 @@ export function NewGroup() {
       name: data.name,
       description: data.description,
       tags: data.tags,
-      imageUrl: data.imageUrl,
+      // A picked file is uploaded next and sets the URL itself.
+      imageUrl: data.coverFile ? "" : data.imageUrl,
       location: data.location,
+      visibility: data.visibility,
+      inviteOnly: data.inviteOnly,
     });
     if (data.coverFile) {
       await GroupCover.upload(group.id, data.coverFile);
     }
     if (data.coverFocal) {
-      await Groups.update(group.id, {
-        name: data.name,
-        description: data.description,
-        tags: data.tags,
-        imageUrl: data.imageUrl,
-        location: data.location,
-        coverFocal: data.coverFocal,
-      });
+      // Omit imageUrl so this update cannot clear the cover just stored.
+      await Groups.update(group.id, { coverFocal: data.coverFocal });
     }
     setCreated(group);
   }

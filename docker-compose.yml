@@ -24,6 +24,16 @@ services:
       DATABASE_URL: postgres://church:${DB_PASSWORD}@db:5432/churchgroups?sslmode=disable
       COOKIE_SECURE: "true" # TLS is terminated at Caddy; browsers still see https
       SITE_URL: https://${DOMAIN:?Set DOMAIN in .env}
+    volumes:
+      # Avatars and cover photos. A named volume survives `up --build`;
+      # the image's anonymous VOLUME /data does not.
+      - uploads:/data
+    healthcheck:
+      test: ["CMD", "/church-groups", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
     depends_on:
       db:
         condition: service_healthy
@@ -34,6 +44,9 @@ services:
     ports:
       - "80:80"
       - "443:443"
+    depends_on:
+      app:
+        condition: service_healthy
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddydata:/data
@@ -43,5 +56,6 @@ services:
 
 volumes:
   pgdata:
+  uploads:
   caddydata:
   caddyconfig:

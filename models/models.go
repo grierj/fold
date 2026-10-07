@@ -26,6 +26,12 @@ const (
 	GroupArchived = "archived"
 )
 
+// Who can see an active group in the directory.
+const (
+	VisibilityPublic  = "public"  // anyone, including logged-out visitors
+	VisibilityPrivate = "private" // signed-in users
+)
+
 // RSVP statuses.
 const (
 	RSVPGoing    = "going"
@@ -47,9 +53,12 @@ type User struct {
 	AvatarFocalX float64 `gorm:"default:50"`
 	AvatarFocalY float64 `gorm:"default:50"`
 	Role         string  `gorm:"default:member"` // admin | member
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
-	DeletedAt    gorm.DeletedAt `gorm:"index"`
+	// SessionVersion is bumped when the password changes so older cookies
+	// stop working. Missing cookies count as 0, which matches existing rows.
+	SessionVersion int `gorm:"not null;default:0"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	DeletedAt      gorm.DeletedAt `gorm:"index"`
 }
 
 // PublicName returns the name shown in the UI.
@@ -96,9 +105,17 @@ type Group struct {
 	LeaderID    uint    `gorm:"not null"`
 	Leader      User    `gorm:"foreignKey:LeaderID"`
 	Status      string  `gorm:"default:pending"` // pending | active | archived
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	DeletedAt   gorm.DeletedAt `gorm:"index"`
+	// Visibility is public or private. Existing rows stay public.
+	Visibility string `gorm:"not null;default:public"`
+	// InviteOnly groups stay out of the directory unless you are a member
+	// or the leader. It is only valid when Visibility is private.
+	InviteOnly bool `gorm:"not null;default:false"`
+	// DeletionRequested is set by the leader when they are the only member.
+	// An admin approves it by deleting the group.
+	DeletionRequested bool `gorm:"not null;default:false"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	DeletedAt         gorm.DeletedAt `gorm:"index"`
 }
 
 // Meeting is a scheduled occurrence series belonging to a group.
@@ -120,11 +137,11 @@ type Meeting struct {
 // MeetingException cancels (or in future, reschedules) a single instance
 // of a recurring meeting, addressed by date (YYYY-MM-DD).
 type MeetingException struct {
-	ID        uint   `gorm:"primaryKey"`
-	MeetingID uint   `gorm:"not null;uniqueIndex:idx_meeting_date"`
+	ID        uint    `gorm:"primaryKey"`
+	MeetingID uint    `gorm:"not null;uniqueIndex:idx_meeting_date"`
 	Meeting   Meeting `gorm:"foreignKey:MeetingID"`
-	Date      string `gorm:"not null;uniqueIndex:idx_meeting_date"` // YYYY-MM-DD
-	Cancelled bool   `gorm:"default:false"`
+	Date      string  `gorm:"not null;uniqueIndex:idx_meeting_date"` // YYYY-MM-DD
+	Cancelled bool    `gorm:"default:false"`
 }
 
 // Membership is a user's roster entry in a group.
@@ -142,13 +159,13 @@ type Membership struct {
 // RSVP records a user's response to one meeting instance,
 // addressed by (meeting, date).
 type RSVP struct {
-	ID        uint   `gorm:"primaryKey"`
-	UserID    uint   `gorm:"not null;uniqueIndex:idx_rsvp"`
-	User      User   `gorm:"foreignKey:UserID"`
-	MeetingID uint   `gorm:"not null;uniqueIndex:idx_rsvp"`
+	ID        uint    `gorm:"primaryKey"`
+	UserID    uint    `gorm:"not null;uniqueIndex:idx_rsvp"`
+	User      User    `gorm:"foreignKey:UserID"`
+	MeetingID uint    `gorm:"not null;uniqueIndex:idx_rsvp"`
 	Meeting   Meeting `gorm:"foreignKey:MeetingID"`
-	Date      string `gorm:"not null;uniqueIndex:idx_rsvp"` // YYYY-MM-DD
-	Status    string `gorm:"not null"`                      // going | maybe | declined
+	Date      string  `gorm:"not null;uniqueIndex:idx_rsvp"` // YYYY-MM-DD
+	Status    string  `gorm:"not null"`                      // going | maybe | declined
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

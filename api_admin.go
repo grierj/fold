@@ -9,7 +9,6 @@ import (
 	"church-groups/models"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // ---------------------------------------------------------------------------
@@ -252,12 +251,7 @@ func (a *App) apiAdminResetPassword(c *gin.Context) {
 			"password must be at least "+strconv.Itoa(minPasswordLength)+" characters")
 		return
 	}
-	hashed, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not hash password")
-		return
-	}
-	if err := a.DB.Model(u).Update("password", string(hashed)).Error; err != nil {
+	if err := a.setPassword(u, body.Password); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not reset password")
 		return
 	}
@@ -323,10 +317,13 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 			Where("group_id = ? AND user_id = ? AND role = ?", g.ID, g.LeaderID, models.MembershipLeader).
 			Update("role", models.MembershipMember)
 		g.LeaderID = u.ID
+		g.DeletionRequested = false
 		if err := a.DB.Save(&g).Error; err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not reassign leader")
 			return
 		}
+	} else if g.DeletionRequested && u.ID != g.LeaderID {
+		a.DB.Model(&models.Group{}).Where("id = ?", g.ID).Update("deletion_requested", false)
 	}
 	c.JSON(http.StatusOK, gin.H{"membership": gin.H{
 		"id": m.ID, "userId": m.UserID, "groupId": m.GroupID, "role": role,
@@ -347,5 +344,46 @@ func (a *App) apiAdminRemoveMember(c *gin.Context) {
 		return
 	}
 	a.DB.Where("user_id = ? AND group_id = ?", uid, id).Delete(&models.Membership{})
+	c.JSON(http.StatusOK, gin.H{})
+}
+
+func (a *App) apiDeletionRequests(c *gin.Context) {
+	var groups []models.Group
+	a.DB.Where("deletion_requested = ?", true).Order("updated_at").Find(&groups)
+	out := make([]groupSummaryJSON, 0, len(groups))
+	for i := range groups {
+		out = append(out, a.groupSummary(&groups[i]))
+	}
+	c.JSON(http.StatusOK, gin.H{"groups": out})
+}
+
+// apiRejectDeletion keeps the group and clears the leader's request.
+func (a *App) apiRejectDeletion(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var g models.Group
+	if err := a.DB.First(&g, id).Error; err != nil {
+		jsonError(c, http.StatusNotFound, "group not found")
+		return
+	}
+	if err := a.DB.Model(&g).Update("deletion_requested", false).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not reject deletion")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{})
+}
+
+// apiAdminDeleteGroup removes any group. Unlike a leader's request, this
+// does not wait for a membership check.
+func (a *App) apiAdminDeleteGroup(c *gin.Context) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var g models.Group
+	if err := a.DB.First(&g, id).Error; err != nil {
+		jsonError(c, http.StatusNotFound, "group not found")
+		return
+	}
+	if err := a.deleteGroup(c.Request.Context(), &g); err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not delete group")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{})
 }

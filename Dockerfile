@@ -40,3 +40,6 @@ VOLUME /data
 EXPOSE 8080
 USER nonroot:nonroot
 ENTRYPOINT ["/church-groups"]
+# Distroless has no shell or curl. The same binary probes /healthz.
+HEALTHCHECK --interval=10s --timeout=3s --start-period=15s --retries=5 \
+  CMD ["/church-groups", "healthcheck"]

@@ -10,11 +10,19 @@ export function ProfilePage() {
   const [name, setName] = useState<string | null>(null);
   const [email, setEmail] = useState<string | null>(null);
   const [phone, setPhone] = useState<string | null>(null);
-  const [avatarFile, setAvatarFile] = useState<File | null>(null);
-  const [focal, setFocal] = useState<{ x: number; y: number } | null>(null);
+  const [pictureBusy, setPictureBusy] = useState(false);
+  const [pictureStatus, setPictureStatus] = useState<string | null>(null);
+  const [pictureError, setPictureError] = useState<string | null>(null);
+  const [avatarURL, setAvatarURL] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordSaved, setPasswordSaved] = useState(false);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
   if (loading) {
     return <div className="max-w-2xl mx-auto px-4 py-12 text-gray-500">Loading…</div>;
@@ -34,9 +42,8 @@ export function ProfilePage() {
   const fullName = name ?? user.name;
   const em = email ?? user.email;
   const ph = phone ?? user.phone;
-  const focalChanged =
-    focal !== null &&
-    (focal.x !== user.avatarFocalX || focal.y !== user.avatarFocalY);
+  const focalX = user.avatarFocalX;
+  const focalY = user.avatarFocalY;
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -45,14 +52,6 @@ export function ProfilePage() {
     setSaved(false);
     try {
       await ProfileApi.update({ displayName: dn, name: fullName, email: em, phone: ph });
-      if (avatarFile) {
-        await ProfileApi.uploadAvatar(avatarFile);
-      }
-      if (focalChanged && focal) {
-        await ProfileApi.update({ avatarFocal: focal });
-      }
-      setAvatarFile(null);
-      setFocal(null);
       await refresh();
       setSaved(true);
     } catch (err) {
@@ -62,19 +61,99 @@ export function ProfilePage() {
     }
   }
 
+  async function savePictureFile(file: File | null) {
+    if (!file) return;
+    setPictureBusy(true);
+    setPictureError(null);
+    setPictureStatus("Saving picture…");
+    try {
+      await ProfileApi.uploadAvatar(file);
+      await refresh();
+      setPictureStatus("Picture saved.");
+    } catch (err) {
+      setPictureStatus(null);
+      setPictureError(err instanceof Error ? err.message : "Could not save picture");
+    } finally {
+      setPictureBusy(false);
+    }
+  }
+
+  async function saveFocal(next: { x: number; y: number }) {
+    if (next.x === focalX && next.y === focalY) return;
+    setPictureBusy(true);
+    setPictureError(null);
+    setPictureStatus("Saving picture…");
+    try {
+      await ProfileApi.update({ avatarFocal: next });
+      await refresh();
+      setPictureStatus("Picture saved.");
+    } catch (err) {
+      setPictureStatus(null);
+      setPictureError(err instanceof Error ? err.message : "Could not save picture");
+    } finally {
+      setPictureBusy(false);
+    }
+  }
+
+  async function fetchPicture(e: React.FormEvent) {
+    e.preventDefault();
+    const url = avatarURL.trim();
+    if (!url) return;
+    setPictureBusy(true);
+    setPictureError(null);
+    setPictureStatus("Fetching picture…");
+    try {
+      await ProfileApi.fetchAvatar(url);
+      setAvatarURL("");
+      await refresh();
+      setPictureStatus("Picture saved.");
+    } catch (err) {
+      setPictureStatus(null);
+      setPictureError(err instanceof Error ? err.message : "Could not fetch that picture");
+    } finally {
+      setPictureBusy(false);
+    }
+  }
+
+  async function changePassword(e: React.FormEvent) {
+    e.preventDefault();
+    setPasswordError(null);
+    setPasswordSaved(false);
+    if (newPassword.length < 10) {
+      setPasswordError("Password must be at least 10 characters.");
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError("Passwords do not match.");
+      return;
+    }
+    setPasswordSaving(true);
+    try {
+      await ProfileApi.changePassword(currentPassword, newPassword);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setPasswordSaved(true);
+    } catch (err) {
+      setPasswordError(err instanceof Error ? err.message : "Password change failed");
+    } finally {
+      setPasswordSaving(false);
+    }
+  }
+
   async function removeAvatar() {
     if (!confirm("Remove your profile picture?")) return;
-    setSaving(true);
-    setError(null);
+    setPictureBusy(true);
+    setPictureError(null);
+    setPictureStatus(null);
     try {
       await ProfileApi.deleteAvatar();
-      setAvatarFile(null);
       await refresh();
-      setSaved(true);
+      setPictureStatus("Picture removed.");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Remove failed");
+      setPictureError(err instanceof Error ? err.message : "Remove failed");
     } finally {
-      setSaving(false);
+      setPictureBusy(false);
     }
   }
 
@@ -82,31 +161,53 @@ export function ProfilePage() {
     <div className="max-w-2xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-extrabold mb-6">Your profile</h1>
 
+      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+        <ImageUpload
+          key={user.avatarUrl || "none"}
+          label="Profile picture"
+          initialUrl={user.avatarUrl || undefined}
+          initialFocal={{ x: user.avatarFocalX, y: user.avatarFocalY }}
+          maxDim={512}
+          aspectClass="aspect-square !max-w-[12rem]"
+          onFile={savePictureFile}
+          onFocal={saveFocal}
+        />
+        <p className="text-xs text-gray-500 mt-3">
+          A new picture is saved as soon as you choose it. You can also paste an image address.
+        </p>
+        <form onSubmit={fetchPicture} className="mt-3 flex gap-2 flex-wrap items-end">
+          <div className="grow min-w-[12rem]">
+            <label className="label" htmlFor="avatar-url">Image URL</label>
+            <input
+              id="avatar-url"
+              className="input"
+              value={avatarURL}
+              onChange={(e) => setAvatarURL(e.target.value)}
+              placeholder="https://…"
+              inputMode="url"
+            />
+          </div>
+          <button type="submit" disabled={pictureBusy || !avatarURL.trim()} className="btn-secondary">
+            {pictureBusy ? "…" : "Fetch"}
+          </button>
+        </form>
+        {pictureStatus && <div className="text-green-700 text-sm mt-3">{pictureStatus}</div>}
+        {pictureError && <div className="text-red-600 text-sm mt-3">{pictureError}</div>}
+        {user.avatarUrl && (
+          <button
+            type="button"
+            onClick={removeAvatar}
+            disabled={pictureBusy}
+            className="btn-secondary !py-1.5 !px-3 text-sm !text-red-600 mt-3"
+          >
+            Remove picture
+          </button>
+        )}
+      </div>
+
       <form onSubmit={save} className="space-y-6">
         {error && <div className="text-red-600 text-sm">{error}</div>}
         {saved && <div className="text-green-700 text-sm">Profile saved.</div>}
-
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
-          <ImageUpload
-            label="Profile picture"
-            initialUrl={user.avatarUrl || undefined}
-            initialFocal={{ x: user.avatarFocalX, y: user.avatarFocalY }}
-            maxDim={512}
-            aspectClass="aspect-square !max-w-[12rem]"
-            onFile={setAvatarFile}
-            onFocal={setFocal}
-          />
-          {user.avatarUrl && (
-            <button
-              type="button"
-              onClick={removeAvatar}
-              disabled={saving}
-              className="btn-secondary !py-1.5 !px-3 text-sm !text-red-600 mt-3"
-            >
-              Remove picture
-            </button>
-          )}
-        </div>
 
         <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
           <div>
@@ -153,6 +254,52 @@ export function ProfilePage() {
             {saving ? "Saving…" : "Save profile"}
           </button>
         </div>
+      </form>
+
+      <form onSubmit={changePassword} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4 mt-6">
+        <h2 className="text-xl font-bold">Change password</h2>
+        {passwordError && <div className="text-red-600 text-sm">{passwordError}</div>}
+        {passwordSaved && <div className="text-green-700 text-sm">Password changed.</div>}
+        <div>
+          <label className="label" htmlFor="current-password">Current password</label>
+          <input
+            id="current-password"
+            type="password"
+            className="input"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+        </div>
+        <div>
+          <label className="label" htmlFor="new-password">New password</label>
+          <input
+            id="new-password"
+            type="password"
+            className="input"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
+          <p className="text-xs text-gray-500 mt-1">Must be at least 10 characters.</p>
+        </div>
+        <div>
+          <label className="label" htmlFor="confirm-password">Confirm new password</label>
+          <input
+            id="confirm-password"
+            type="password"
+            className="input"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            autoComplete="new-password"
+            required
+          />
+        </div>
+        <button type="submit" disabled={passwordSaving} className="btn-primary">
+          {passwordSaving ? "Saving…" : "Change password"}
+        </button>
       </form>
     </div>
   );

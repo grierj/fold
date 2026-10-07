@@ -1,0 +1,7 @@
+.git
+.env
+*.sqlite3
+db.sqlite3
+/data
+web/node_modules
+church-groups

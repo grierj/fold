@@ -44,6 +44,20 @@ func (a *App) apiNotifications(c *gin.Context) {
 				Link:  "/admin?tab=approvals",
 			})
 		}
+		var deletions int64
+		a.DB.Model(&models.Group{}).Where("deletion_requested = ?", true).Count(&deletions)
+		if deletions > 0 {
+			title := fmt.Sprintf("%d groups are waiting to be deleted", deletions)
+			if deletions == 1 {
+				title = "1 group is waiting to be deleted"
+			}
+			out = append(out, notificationJSON{
+				Type:  "approval",
+				Title: title,
+				Body:  "A leader asked for the group to be removed.",
+				Link:  "/admin?tab=approvals",
+			})
+		}
 	}
 
 	var memberships []models.Membership

@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,24 +19,18 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/gorilla/sessions"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-// testApp builds an App with an in-memory SQLite DB for handler tests.
+// testApp builds an App for handler tests. The default database is
+// in-memory SQLite. When DATABASE_URL is set, the same tests run against
+// Postgres and truncate between cases. Tests in this package do not call
+// t.Parallel, so they share that database safely.
 func testApp(t *testing.T) *App {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	if err != nil {
-		t.Fatalf("open test db: %v", err)
-	}
-	if err := db.AutoMigrate(
-		&models.User{}, &models.Group{}, &models.Meeting{},
-		&models.MeetingException{}, &models.Membership{},
-		&models.RSVP{}, &models.Setting{},
-	); err != nil {
-		t.Fatalf("migrate test db: %v", err)
-	}
+	db := openTestDB(t)
 	store := sessions.NewCookieStore([]byte("test-secret"))
 	store.Options = &sessions.Options{
 		Path:     "/",
@@ -43,17 +39,85 @@ func testApp(t *testing.T) *App {
 		Secure:   false,
 		SameSite: http.SameSiteLaxMode,
 	}
-	app := &App{
-		DB:     db,
-		Store:  store,
-		Config: Config{Env: "dev", Port: "8080"},
-	}
 	uploads, err := storage.NewLocalStore(t.TempDir(), "/uploads")
 	if err != nil {
 		t.Fatalf("upload store: %v", err)
 	}
-	app.Uploads = uploads
-	return app
+	return &App{
+		DB:         db,
+		Store:      store,
+		Config:     Config{Env: "dev", Port: "8080"},
+		Uploads:    uploads,
+		loginFails: map[string]int{},
+	}
+}
+
+func migrateTestModels(db *gorm.DB) error {
+	return db.AutoMigrate(
+		&models.User{}, &models.Group{}, &models.Meeting{},
+		&models.MeetingException{}, &models.Membership{},
+		&models.RSVP{}, &models.Setting{},
+	)
+}
+
+func openTestDB(t *testing.T) *gorm.DB {
+	t.Helper()
+	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+		return openPostgresTestDB(t, dsn)
+	}
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open test db: %v", err)
+	}
+	if err := migrateTestModels(db); err != nil {
+		t.Fatalf("migrate test db: %v", err)
+	}
+	return db
+}
+
+var (
+	pgOnce sync.Once
+	pgDB   *gorm.DB
+	pgErr  error
+)
+
+func openPostgresTestDB(t *testing.T, dsn string) *gorm.DB {
+	t.Helper()
+	pgOnce.Do(func() {
+		pgDB, pgErr = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+		if pgErr != nil {
+			return
+		}
+		pgErr = migrateTestModels(pgDB)
+	})
+	if pgErr != nil {
+		t.Fatalf("postgres: %v", pgErr)
+	}
+	if err := truncateTestTables(pgDB); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	return pgDB
+}
+
+func truncateTestTables(db *gorm.DB) error {
+	for _, m := range []any{
+		&models.RSVP{},
+		&models.MeetingException{},
+		&models.Meeting{},
+		&models.Membership{},
+		&models.Group{},
+		&models.User{},
+		&models.Setting{},
+	} {
+		stmt := &gorm.Statement{DB: db}
+		if err := stmt.Parse(m); err != nil {
+			return err
+		}
+		if err := db.Exec("TRUNCATE TABLE " + stmt.Schema.Table + " RESTART IDENTITY CASCADE").Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func newTestUser(t *testing.T, app *App, username, password, role string) *models.User {
@@ -447,4 +511,3 @@ func itoa(u uint) string {
 	}
 	return string(b[i:])
 }
-

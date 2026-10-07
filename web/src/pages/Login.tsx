@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../auth";
 import { ApiError } from "../api";
@@ -11,9 +11,13 @@ export function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const from = (location.state as { from?: string } | null)?.from ?? "/";
+
+  useEffect(() => {
+    if (user) navigate(from, { replace: true });
+  }, [user, navigate, from]);
 
   if (user) {
-    navigate((location.state as { from?: string } | null)?.from ?? "/", { replace: true });
     return null;
   }
 
@@ -23,7 +27,7 @@ export function Login() {
     setError(null);
     try {
       await login(username, password);
-      navigate((location.state as { from?: string } | null)?.from ?? "/", { replace: true });
+      navigate(from, { replace: true });
     } catch (e) {
       setError(
         e instanceof ApiError && e.status === 401
