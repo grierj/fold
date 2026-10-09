@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"church-groups/models"
-	"church-groups/storage"
+	"fold/models"
+	"fold/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"

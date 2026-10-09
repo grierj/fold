@@ -132,7 +132,7 @@ unless `APP_ENV=dev`.
   After any user exists, the process caches that and will not show the
   wizard again until it is restarted.
 - `GET /healthz` pings the database. Compose and the image use
-  `/church-groups healthcheck` because distroless has no shell or curl.
+  `/fold healthcheck` because distroless has no shell or curl.
 - Handler tests use in-memory SQLite. Set `DATABASE_URL` to run the same
   tests against Postgres. A live `docker compose up` is still the check
   that Caddy, TLS, and the volumes work together.

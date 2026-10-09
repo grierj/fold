@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"church-groups/models"
+	"fold/models"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -358,9 +358,12 @@ func likeContains(s string) string {
 // directoryQuery is the home list: active groups a visitor is allowed to
 // browse. Logged-out visitors get public groups only. Signed-in users also
 // get private groups. Invite-only groups stay hidden unless the visitor
-// leads them or already belongs to them.
+// leads them, already belongs to them, or is an admin.
 func (a *App) directoryQuery(u *models.User) *gorm.DB {
 	q := a.DB.Model(&models.Group{}).Where("status = ?", models.GroupActive)
+	if u != nil && u.IsAdmin() {
+		return q
+	}
 	if u == nil {
 		return q.Where("(visibility = ? OR visibility = '') AND invite_only = ?", models.VisibilityPublic, false)
 	}

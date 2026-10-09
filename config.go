@@ -76,7 +76,7 @@ func LoadConfig() Config {
 		Port:          getEnv("PORT", "8080"),
 		SessionSecret: []byte(secret),
 		DatabaseURL:   os.Getenv("DATABASE_URL"),
-		SQLitePath:    getEnv("SQLITE_PATH", "./data/church-groups.db"),
+		SQLitePath:    getEnv("SQLITE_PATH", "./data/fold.db"),
 		CookieSecure:  getEnvBool("COOKIE_SECURE", !isDev),
 		SiteURL:       os.Getenv("SITE_URL"),
 		UploadDir:     getEnv("UPLOAD_DIR", "./data/uploads"),

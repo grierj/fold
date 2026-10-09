@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"church-groups/models"
+	"fold/models"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/driver/postgres"

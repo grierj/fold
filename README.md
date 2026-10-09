@@ -1,4 +1,4 @@
-# Church Groups (working title: Fold)
+# Fold
 
 Small-group / ministry / activity management for churches — the
 group-management slice of ChurchTrac, without the rest of it.
@@ -30,14 +30,14 @@ process remembers that setup finished until it exits.
 Backups stay a command you run, not another container.
 
 ```bash
-docker compose exec -T db pg_dump -U church churchgroups > churchgroups.sql
+docker compose exec -T db pg_dump -U church fold > fold.sql
 ```
 
 The upload volume's name is `<project>_uploads` (`docker volume ls` prints
 it). Copy it with a small image that has `tar`, because the app image does not:
 
 ```bash
-docker run --rm -v church-groups_uploads:/data:ro -v "$PWD":/backup alpine \
+docker run --rm -v fold_uploads:/data:ro -v "$PWD":/backup alpine \
   tar czf /backup/uploads.tgz -C /data .
 ```
 
@@ -71,7 +71,7 @@ Useful env vars:
 | `PORT` | `8080` | |
 | `SESSION_SECRET` | — | **Required** unless `APP_ENV=dev` |
 | `DATABASE_URL` | — | Postgres DSN. Required unless `APP_ENV=dev` |
-| `SQLITE_PATH` | `./data/church-groups.db` | SQLite file (dev) |
+| `SQLITE_PATH` | `./data/fold.db` | SQLite file (dev) |
 | `COOKIE_SECURE` | true in prod | Set `false` only for plain-http local testing |
 | `SITE_URL` | — | Public base URL, e.g. `https://groups.example.org` |
 

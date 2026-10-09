@@ -16,8 +16,8 @@ import (
 	"strings"
 	"time"
 
-	"church-groups/models"
-	"church-groups/storage"
+	"fold/models"
+	"fold/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -336,7 +336,7 @@ func (a *App) fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, stri
 	if err != nil {
 		return nil, "", fmt.Errorf("could not fetch that image")
 	}
-	req.Header.Set("User-Agent", "church-groups")
+	req.Header.Set("User-Agent", "fold")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, "", fmt.Errorf("could not fetch that image")

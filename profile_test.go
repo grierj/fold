@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"church-groups/models"
+	"fold/models"
 )
 
 // tinyPNG returns a valid 1x1 PNG for upload tests.
