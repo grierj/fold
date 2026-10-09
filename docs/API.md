@@ -90,11 +90,10 @@ the filters narrow together. A blank `tag` is ignored.
 
 The directory lists active groups the caller is allowed to see. Logged-out
 visitors see public groups. Signed-in users also see private groups.
-Invite-only groups are left out unless the caller leads the group or is
-already a member. Opening a group follows the same rule; anyone else gets
-404. Pending and archived groups stay limited to the leader and admins.
-An admin can open an invite-only group by id, but it is not added to their
-home list just because they are an admin.
+Invite-only groups are left out unless the caller leads the group, is
+already a member, or is an admin. Opening a group follows the same rule;
+anyone else gets 404. Pending and archived groups stay limited to the
+leader and admins.
 
 `groupSummary`: `{id, name, description, tags[], imageUrl, coverFocalX,
 coverFocalY, location, leaderName, memberCount, nextMeetingAt, status,

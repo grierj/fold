@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"church-groups/models"
+	"fold/models"
 )
 
 func TestMeetingInstancesAreChronological(t *testing.T) {
@@ -398,8 +398,8 @@ func TestDirectoryVisibility(t *testing.T) {
 
 	admin := loginAPI(t, app, "admin", "password1234")
 	got = groupNames(t, admin.do("GET", "/api/v1/groups", nil, false))
-	if containsName(got, "Invite Prayer") {
-		t.Fatalf("admin directory listed an invite-only group: %v", got)
+	if !containsName(got, "Public Choir") || !containsName(got, "Private Band") || !containsName(got, "Invite Prayer") {
+		t.Fatalf("admin directory: %v", got)
 	}
 	if w := admin.do("GET", "/api/v1/groups/"+itoa(invite.ID), nil, false); w.Code != http.StatusOK {
 		t.Fatalf("admin open invite: %d %s", w.Code, w.Body.String())

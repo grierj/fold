@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"church-groups/models"
+	"fold/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/sessions"

@@ -532,7 +532,7 @@ export function GroupDetail() {
                     </span>
                   )}
                   {group.inviteOnly && (
-                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-white/90 text-gray-800 rounded-full px-3 py-1">
+                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-gray-900 text-white rounded-full px-3 py-1">
                       Invite only
                     </span>
                   )}

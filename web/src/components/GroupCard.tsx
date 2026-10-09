@@ -71,7 +71,9 @@ export function GroupCard({
                 <span className="text-xs font-bold uppercase tracking-wide text-gray-500">Private</span>
               )}
               {group.inviteOnly && (
-                <span className="text-xs font-bold uppercase tracking-wide text-gray-500">Invite only</span>
+                <span className="inline-block text-xs font-bold uppercase tracking-wide bg-gray-900 text-white rounded-full px-2 py-0.5">
+                  Invite only
+                </span>
               )}
             </div>
           )}

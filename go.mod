@@ -1,4 +1,4 @@
-module church-groups
+module fold
 
 go 1.25.0
 

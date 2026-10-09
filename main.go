@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"church-groups/models"
-	"church-groups/storage"
+	"fold/models"
+	"fold/storage"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/sessions"
@@ -42,7 +42,7 @@ type App struct {
 	loginFails map[string]int
 }
 
-const sessionName = "church-session"
+const sessionName = "fold-session"
 
 func main() {
 	cfg := LoadConfig()
@@ -274,7 +274,7 @@ func (a *App) html(c *gin.Context, code int, name string, data gin.H) {
 func (a *App) siteName() string {
 	var s models.Setting
 	if err := a.DB.Where("key = ?", "site_name").First(&s).Error; err != nil || s.Value == "" {
-		return "Church Groups"
+		return "Fold"
 	}
 	return s.Value
 }

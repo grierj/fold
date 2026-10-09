@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"church-groups/models"
+	"fold/models"
 )
 
 func loginAs(t *testing.T, app *App, username, password string) *apiClient {
