@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-38) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
+Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-39) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
 Repo: https://github.com/grierj/fold (first read at commit `aa992e2`; re-checked at `e7c0e8f`, "Merge pull request #7 from grierj/admin-invite-and-rename", merged 2026-10-09 4:31 PM MT).
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions (nothing is open).
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Do one milestone per work session and one PR per milestone. Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-38) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-39) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (DEC-1 to DEC-38) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (DEC-1 to DEC-39) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -334,8 +334,8 @@ The field lists show the important columns, not every column. Every table has `i
 
 **Groups**
 
-- `Group`: `visibility` (`public|private|invite_only`; replaces `Visibility` + `InviteOnly`), `status` (`pending|active|archived`), `leader_id` (displayed primary contact only; never used for permissions, C12), `category` (from a short admin-defined list, for example "Small group", "Ministry", "Class", "Youth"). Joining: any member who can see a public or private group may join it at once; invite-only groups are joined only by invitation. There is no join-request step; leaders remove members who shouldn't be there (DEC-30). There is no teen restriction on groups (DEC-20).
-- `Membership`: `role` = `leader|member`; several leaders allowed; this is the only source of leadership. `status` = `active|invited|removed|pending_return`. `removed` means a leader or admin removed the person (DEC-35): they can't rejoin on their own until a leader or admin adds them back, and the removal is in the `AuditLog`. A disabled account keeps its `active` memberships, hidden and uncounted, with any leadership handed off (DEC-38). `pending_return` is a membership waiting for a leader or admin after its account was re-enabled, because restoring it would exceed a group limit; it counts toward nothing until approved (no group limit exists yet, so this only matters once one is added). A teen account can never have `role=leader` (DEC-18).
+- `Group`: `visibility` (`public|private|invite_only`; replaces `Visibility` + `InviteOnly`), `status` (`pending|active|archived`), `leader_id` (displayed primary contact only; never used for permissions, C12), `category` (from a short admin-defined list, for example "Small group", "Ministry", "Class", "Youth"). `member_limit` (nullable positive int; null, the default, means unlimited; set by the group's leaders or an admin; DEC-39, 5.4). Joining: any member who can see a public or private group may join it at once; invite-only groups are joined only by invitation. There is no join-request step; leaders remove members who shouldn't be there (DEC-30). There is no teen restriction on groups (DEC-20).
+- `Membership`: `role` = `leader|member`; several leaders allowed; this is the only source of leadership. `status` = `active|invited|removed|pending_return`. `removed` means a leader or admin removed the person (DEC-35): they can't rejoin on their own until a leader or admin adds them back, and the removal is in the `AuditLog`. A disabled account keeps its `active` memberships, hidden and uncounted, with any leadership handed off (DEC-38). `pending_return` is a membership waiting for a leader or admin after its account was re-enabled, because the group was at its `member_limit` (DEC-39); it counts toward nothing until approved (back to `active`, as an explicit over-limit choice) or declined (`removed`). A teen account can never have `role=leader` (DEC-18).
 
 **Events**
 
@@ -407,6 +407,7 @@ The field lists show the important columns, not every column. Every table has `i
 - A promoted person gets a transactional email (and an SMS if they opted in) with a one-click "I can't come" link that frees the slot again.
 - People see their waitlist position ("You are #3 on the waitlist").
 - Disabled accounts (DEC-38): their registrations stay but never take a slot or count in waitlist math or attendee counts. On re-enable each comes back as it was if it fits; otherwise it becomes `pending_return` (no slot) until a leader, host, or admin approves it (over capacity only as an explicit choice; with the waitlist on, approval puts it on the waitlist) or declines it (removed). All three steps are audited, with an in-app notice to leaders and admins.
+- Group member limit (DEC-39). Groups have no waitlist and no registration capacity: an optional `Group.member_limit` caps active memberships (a class in a room). Only `active` memberships of accounts that aren't disabled or deleted count, leaders included; `invited`, `removed`, `pending_return`, and disabled accounts don't. Self-join into a full group is refused with 409 "This group is full". A leader or admin adds someone over the limit only by explicit choice (the API takes `overLimit: true`, the SPA confirms first), and that add is audited (`membership.added_over_limit`). Accepting a leader's or admin's invitation into a group follows the same rule as that leader's add. Lowering the limit below the current count is allowed; nobody is removed, and joins stay blocked until the count is below the limit. Leaders and admins see "count of limit". Every join, add, restore, and approval locks the group row (`SELECT ... FOR UPDATE`) before counting.
 - There is no sign-up approval step (DEC-30). Anyone who can see an event may sign up. A leader or host can remove (prune) any registration with an optional note; the person is told, and the freed slot triggers promotion (DEC-20).
 
 ### 5.5 Background jobs
@@ -637,6 +638,9 @@ All checks live in `internal/policy` as pure functions with table tests. Handler
 | Approve or reject groups | Yes | No | No | No | No |
 | Edit a group, manage its roster (add members) | Any | Own groups (leaders) | No | No | No |
 | Remove a member from a group (audited; DEC-35, M0.3b) | Anyone except the group's last leader | Own groups (leaders): anyone except an admin or the last leader; co-leaders included | No (leave instead) | No (leave instead) | No |
+| Set or clear a group's member limit (DEC-39) | Any | Own groups (leaders) | No | No | No |
+| Add someone to a full group (explicit over-limit choice, audited; DEC-39) | Any | Own groups (leaders) | No (self-join refused: "This group is full") | No | No |
+| Approve or decline a `pending_return` membership (audited; DEC-38, DEC-39) | Any | Own groups (leaders) | No | No | No |
 | Make someone a group leader, or a leader a member again | Any adult (never the last leader) | Own groups, adults only; audited, and admins get an in-app notice (no admin gate, DEC-31, DEC-34); can't demote an admin (DEC-35) | No | No | No |
 | Create or edit events in a group | Any | Own groups (leaders) | No | No | No |
 | Create church-wide events | Yes | No | No | No | No |
@@ -1498,7 +1502,13 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
     - Audit rows: one `membership.role_changed` per group (meta `reason: "account_deleted"` or `"account_disabled"`, plus the departing user's id), and one `user.deleted` or `user.disabled` row.
     - The SPA's delete or disable dialog lists each group with a successor picker that defaults to the deleting admin.
     - `leaderCount` counts only active accounts.
-  - **Disabled accounts keep their memberships (DEC-38).** While disabled, their memberships and RSVPs are hidden from rosters and never counted (member counts, RSVP counts, `leaderCount`, the "other members" check for deletion requests). Enabling the account restores them as plain member (one `membership.restored` audit row each, plus `user.enabled`). No group, meeting, or RSVP limit exists in the code yet, so nothing can go to `pending_return` in this milestone; M1.5 and M1.8 add it with event capacity.
+  - **Disabled accounts keep their memberships (DEC-38).** While disabled, their memberships and RSVPs are hidden from rosters and never counted (member counts, RSVP counts, `leaderCount`, the "other members" check for deletion requests). Enabling the account restores them as plain member (one `membership.restored` audit row each, plus `user.enabled`). A group at its `member_limit` gets `pending_return` instead (DEC-39, below). Meetings and RSVPs have no capacity yet; M1.5 and M1.8 add `pending_return` for registrations.
+  - **Group member limit (DEC-39, 5.4).** Migration `00004` adds nullable `groups.member_limit` with `CHECK (member_limit > 0)`. The group create and edit API and form take `memberLimit` (a number sets it, null clears it). `policy.GroupHasRoom` owns the rule.
+    - Join, the leader's add by email, and the admin add all go through one path that locks the group row and counts. Full means self-join gets 409 "This group is full"; leader and admin adds get 409 with `full: true` unless the body has `overLimit: true`, and that add writes `membership.added_over_limit` (actor, person, count, limit).
+    - Re-enabling an account restores its memberships in group-id order, locking each group row. A group with room gets `active` member; a full one gets `pending_return`. Each restore writes `membership.restored` with the resulting status.
+    - `POST /api/v1/groups/:id/members/:userId/return` with `{decision: "approve"|"decline"}`, for the group's leaders and admins. Approve sets `active` member (over the limit by explicit choice); decline sets `removed`. Audited as `membership.return_approved` and `membership.return_declined`. A pending person's self-join answers 409.
+    - Group detail gives leaders and admins `pendingReturns`; the roster shows a "Waiting to return" section with Approve and Decline. `GET /api/v1/admin/pending-returns` feeds the same list on the admin Approvals tab. Leaders of the group and admins get an in-app notice per pending return until it's decided.
+    - Invitation acceptance into a group (M1.2) follows the leader's add rule.
   - **Admins on rosters (DEC-38).** The members JSON has an `admin` flag. The SPA shows an "Admin" label on group and admin rosters and hides Remove and "Remove as leader" for admins unless the viewer is an admin.
   - **Security headers (DEC-37, 10.1, 10.6).** The app sets them itself, so they hold behind any proxy:
     - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'`. As built, `style-src` needs no `'unsafe-inline'`: React sets focal points through the CSSOM, which CSP allows. `blob:` is for upload previews, and `img-src https:` is for cover images given by URL. Tighten `img-src` when uploads become the only source (M4.7). The image compressor runs on the main thread, because its web worker loads code from a CDN.
@@ -1523,6 +1533,12 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] Disabling then re-enabling keeps memberships and restores them as plain member, never leader; each restore and the re-enable are audited (DEC-38)
   - [x] While disabled, the person is hidden from rosters and excluded from member counts, RSVP counts, and leader counts (DEC-38)
   - [x] Roster APIs flag admins, and leaders get no Remove button for them (DEC-38)
+  - [x] A group can have a member limit (null is unlimited); a full group refuses self-join with "This group is full", and there is no waitlist (DEC-39)
+  - [x] Leaders and admins add over the limit only with the explicit override (the SPA confirms), and each over-limit add is audited (DEC-39)
+  - [x] Only active memberships of listed accounts count, leaders included; disabled accounts and `pending_return` don't (DEC-39)
+  - [x] Lowering the limit below the count keeps everyone and blocks new joins until the count drops; leaders and admins see "count of limit" (DEC-39)
+  - [x] Re-enabling restores a membership as member when the group has room, and as `pending_return` when it's full; leaders and admins see it on the roster, the admin tab, and as a notice, and approve (over the limit) or decline (removed), each audited (DEC-38, DEC-39)
+  - [x] Concurrent joins and a re-enable can't push a group past its limit without an override (group row lock) (DEC-39)
 - Tests: policy table tests for the new `CanRemoveMember` and `CanChangeRole` cases (admin target, last leader, co-leader, self); API tests for removal, rejoin, audit rows, and the handoff (refusal, defaults, invalid successor); a header test on an API route, the SPA shell, and `/setup`.
 
 **M0.4 Frontend and browser test tooling**
@@ -1572,6 +1588,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] SMTP sends through a test SMTP server in CI
   - [ ] An admin's or leader's invitation creates an active account on acceptance (the person sets a password), with no approval step
   - [ ] A leader's invitation can add the person only to a group that leader leads (403 otherwise)
+  - [ ] Accepting an invitation into a full group follows the leader's add rule: it joins over the `member_limit` only when the inviting leader or admin chose to go over it, and that is audited (DEC-39)
   - [ ] Reset and invite tokens are single use and expire
   - [ ] Password reset answers "If that email has an account, we've sent a link" for every address, known or not
   - [ ] Changing your email sends a verification link to the new address and a notice to the old one; the change applies only after verification and ends every other session
@@ -1998,7 +2015,7 @@ Built only when a church asks: Resend and Mailgun email adapters, a Plivo SMS ad
 
 ### 15.1 Decisions
 
-Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, numbered after the original questions), then made more decisions the same day: DEC-17 to DEC-25 (Grier's items A to I), DEC-26 to DEC-30, and DEC-31 to DEC-33 (after Codex's final review), DEC-34 to DEC-37 (Grier's answers to the M0.1 and M0.2 PR questions), and DEC-38 (Grier's answers to the M0.3b PR questions). Each has been carried through the sections listed. These decisions win over the original requirement wording and over the repo.
+Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, numbered after the original questions), then made more decisions the same day: DEC-17 to DEC-25 (Grier's items A to I), DEC-26 to DEC-30, and DEC-31 to DEC-33 (after Codex's final review), DEC-34 to DEC-37 (Grier's answers to the M0.1 and M0.2 PR questions), and DEC-38 (Grier's answers to the M0.3b PR questions), and DEC-39 (Grier's group member limit, from the same PR). Each has been carried through the sections listed. These decisions win over the original requirement wording and over the repo.
 
 | ID | Decision (2026-10-09) | Where it flows |
 |---|---|---|
@@ -2040,6 +2057,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-36 | **Deleting the account of a group's only leader requires a successor.** For every group the account solely leads, the deleting admin picks a new leader: a member of that group or any admin, the deleting admin selected by default. The handoff is audited. The same applies to disabling an account. | 6, 10.1, 10.6, M0.3b |
 | DEC-37 | **Security headers and dependency scanning move up to M0.3b:** CSP, HSTS, and the other headers set by the app; Dependabot; `govulncheck` and `npm audit` in CI. Caddy and image-level headers and pinned image digests stay in M5.1. | 10.1, 10.6, M0.3b, M5.1 |
 | DEC-38 | **Admins are labeled on rosters, and disabled accounts keep their memberships** (Grier, Oct 9, 2026). (A) Rosters and any member list a leader sees mark church admins with an "Admin" label, and leaders never get a Remove button for them; the members API exposes an `admin` flag, and the server still refuses (DEC-35). (B) Disabling an account no longer ends its memberships or registrations. They stay but are hidden from rosters and attendee lists, excluded from messaging, and never counted toward any limit (group size, event capacity, waitlist math, attendee counts). Leadership still goes to the chosen successor at disable time (DEC-36), so any leader role becomes plain member. On re-enable, memberships and registrations come back as plain member and attendee, never leader. If restoring one would push a group or event over a limit, it becomes `pending_return` instead: it doesn't count toward limits, a leader of that group or event (or an admin) approves or declines it (decline removes it), and approving over the limit is an explicit choice that follows the waitlist rules (5.4) when a waitlist exists. Restore, approve, and decline are audited, and leaders and admins get an in-app notice for pending returns. Deletion still ends memberships. | 5.3, 5.4, 6, 10.1, M0.3b, M1.5, M1.8, M3.5 |
+| DEC-39 | **Groups get an optional member limit** (Grier, Oct 9, 2026), because recurring classes meet in rooms with a maximum capacity. It's expected to be rarely used. `Group.member_limit` is a nullable positive int (null, the default, is unlimited), set by the group's leaders or an admin. Only `active` memberships of non-disabled accounts count, leaders included. A full group refuses self-join ("This group is full"); groups have no waitlist. A leader or admin goes over the limit only by explicit choice (an API override flag; the SPA confirms), and that add is audited; accepting an invitation follows the same rule as the leader's add. Lowering the limit below the count is allowed: existing members stay and joins are blocked until the count drops. Leaders and admins see the count and limit. This makes DEC-38's `pending_return` real for groups: re-enabling restores each membership as member if there is room, otherwise `pending_return`, which leaders of that group and admins approve (over the limit) or decline (removed), audited with an in-app notice. Restores are processed in a stable order with the group row locked. Events keep their own capacity (5.4). | 5.3, 5.4, 6, M0.3b, M1.2 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10).
 
