@@ -3,7 +3,7 @@
 Status: research draft, 2026-10-10. Written by Quill (research) for Codex, who turns it into a plan item. Grier decides on any vendor.
 Scope: read-only desk research. No accounts were created and no vendor was contacted. Claims not confirmed from a primary source are marked **[unverified]**. Estimates are marked **[estimate]**.
 
-Repo copy: added to `docs/plan/research/` on Oct 10, 2026 and copied verbatim, so its plan references point to draft v4 and may have moved. The decided design is `PLAN.md` 5.12 (DEC-42, DEC-43). Grier decided to build in Fold with no vendor; Knock is a UX reference only. The 6.14 questions are tracked in `PLAN.md` 15.2 (N1–N7).
+Repo copy: added to `docs/plan/research/` on Oct 10, 2026 and copied verbatim, so its plan references point to draft v4 and may have moved. The decided design is `PLAN.md` 5.12 (DEC-42, DEC-43). Grier decided to build in Fold with no vendor; Knock is a UX reference only. Grier answered the 6.14 questions on Oct 10, 2026 (`PLAN.md` DEC-44).
 
 Plan references are to `/workspace/fold-plan/PLAN.md` (draft v4, 2026-10-09).
 

@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-43) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
+Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-44) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
 Repo: https://github.com/grierj/fold (first read at commit `aa992e2`; re-checked at `e7c0e8f`, "Merge pull request #7 from grierj/admin-invite-and-rename", merged 2026-10-09 4:31 PM MT).
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions (nothing is open).
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Do one milestone per work session and one PR per milestone. Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-43) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-44) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (DEC-1 to DEC-43) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (DEC-1 to DEC-44) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -393,8 +393,8 @@ The field lists show the important columns, not every column. Every table has `i
   - partial index for open batches: `(user_id, group_key)` where unread and not archived
 
   Rows cascade-delete with the user.
-- `notification_settings(user_id, email_mode immediate|daily, …)` (from M3.12). It holds only the email timing and the per-category email choices that `Consent` doesn't cover. It never overrides `Consent`. SMS opt-in stays in `Consent` (7.4). Locked (required) categories can't be written. The exact columns are settled in M3.12 (6.13 #10).
-- `notification_deliveries(notification_id?, user_id, channel email|sms, digest_id?, status queued|suppressed|deferred|sent|delivered|bounced|failed, reason, scheduled_for, provider_message_id, sent_at)` (from M1.2). Unique `(notification_id, channel)`. `notification_id` is null for a digest. Statuses match `MessageRecipient`.
+- No `notification_settings` table in v1 (DEC-44). Email is "Right away" only, and the per-category Email and Text switches and "Turn off all optional email" are all `Consent` rows (`scope category:<name>`), so they need no table of their own (6.13 #10). Locked (required) categories can't be written. A per-user `email_mode` table arrives with digests (M6.16).
+- `notification_deliveries(notification_id, user_id, channel email|sms, status queued|suppressed|deferred|sent|delivered|bounced|failed, reason, scheduled_for, provider_message_id, sent_at)` (from M1.2). Unique `(notification_id, channel)`. Statuses match `MessageRecipient`. Digests (M6.16) add a nullable `notification_id` and a `digest_id`.
 
 **Calendar**
 
@@ -426,7 +426,7 @@ The field lists show the important columns, not every column. Every table has `i
 
 - Until M3.1, the few periodic tasks (occurrence extension, age rollover, token cleanup, request expiry) run from one in-process daily ticker guarded by a Postgres advisory lock. There is no jobs table yet.
 - From M3.1, a `jobs` table and worker live in the same binary. The worker starts with `serve`. `FOLD_WORKERS=0` turns it off, for debugging only.
-- Job kinds: `occurrences.extend`, `message.send`, `message.deliver_batch`, `reminder.schedule`, `waitlist.notify`, `webhook.process`, `provider.poll_status` (for example SMS registration or email domain verification), `cleanup.tokens`, `accounts.expire_requests`, `contact.expire_requests` and `contact.end_grants` (a daily sweep; role changes also end grants at once, 5.11), `accounts.age_rollover` (teens turn into adults at 18; household children who turn 13 are flagged to their guardians), `notification.deliver` and `notification.digest` (5.12), and `notifications.cleanup` (daily: auto-archives event items whose occurrence has ended, and applies retention, 5.12). Until M3.1, the notification cleanup runs on the daily ticker.
+- Job kinds: `occurrences.extend`, `message.send`, `message.deliver_batch`, `reminder.schedule`, `waitlist.notify`, `webhook.process`, `provider.poll_status` (for example SMS registration or email domain verification), `cleanup.tokens`, `accounts.expire_requests`, `contact.expire_requests` and `contact.end_grants` (a daily sweep; role changes also end grants at once, 5.11), `accounts.age_rollover` (teens turn into adults at 18; household children who turn 13 are flagged to their guardians), `notification.deliver` (5.12; `notification.digest` later, M6.16), and `notifications.cleanup` (daily: auto-archives event items whose occurrence has ended, and applies retention, 5.12). Until M3.1, the notification cleanup runs on the daily ticker.
 - The worker claims jobs with `FOR UPDATE SKIP LOCKED` and polls every 1 to 2 seconds (`FOLD_JOB_POLL=1s`). There is no `LISTEN/NOTIFY`.
 - Retries use exponential backoff with jitter and a `max_attempts` per kind, then `dead`. The admin "System" page lists dead jobs with a retry button.
 - `unique_key` makes scheduling idempotent (for example `reminder:occ:123:24h`).
@@ -587,12 +587,12 @@ Leaders, co-leaders, and hosts reach teens through Fold, never directly. Adults 
 
 ### 5.12 Notifications (DEC-42, DEC-43)
 
-Fold builds its notifications itself: no vendor and no new service (DEC-42). Knock (knock.app) is the **UX reference only**: separate unread, read, and archived states, "Mark all as read", archive with ×, batching, at most two inline buttons, and a category × channel preferences grid. Knock and Novu were researched and rejected as add-ons. Knock is closed SaaS that would need an account per church, would duplicate Fold's consent and send-window rules, and would add `connect-src` origins. Novu needs MongoDB, Redis and four services. Research and the designer's guidelines: [`research/notifications.md`](research/notifications.md) (Quill's sections 0–5 and Illuminator's section 6). Section 6 of that file is the UI spec for the bell, the panel, the `/notifications` page and the settings page. Where it and this section differ, this section wins.
+Fold builds its notifications itself: no vendor and no new service (DEC-42). Knock (knock.app) is the **UX reference only**: separate unread, read, and archived states, "Mark all as read", archive with ×, batching, at most two inline buttons, and a category × channel preferences grid. Knock and Novu were researched and rejected as add-ons. Knock is closed SaaS that would need an account per church, would duplicate Fold's consent and send-window rules, and would add `connect-src` origins. Novu needs MongoDB, Redis and four services. Research and the designer's guidelines: [`research/notifications.md`](research/notifications.md) (Quill's sections 0–5 and Illuminator's section 6). Section 6 of that file is the UI spec for the bell, the panel, the `/notifications` page and the settings page. Grier answered its product questions (6.14) in DEC-44. Where the research file and this section differ, this section wins.
 
-**Shape.** Notifications are stored, not derived, with one row per recipient (fan-out on write). The same code path that writes the `AuditLog` row calls `notify.Send(ctx, tx, kind, recipients, subject, data)` inside its transaction. `internal/notify` holds a **kind registry in Go**, not in the database: `Kind{Key, Category, Required, BatchWindow, AllowEmail, AllowSMS, Actions, Render, RenderEmailSafe}`. Title, body, and link are rendered when the row is written, so later edits don't rewrite history. Tables are listed in 5.3: `notifications`, `notification_settings`, and `notification_deliveries`.
+**Shape.** Notifications are stored, not derived, with one row per recipient (fan-out on write). The same code path that writes the `AuditLog` row calls `notify.Send(ctx, tx, kind, recipients, subject, data)` inside its transaction. `internal/notify` holds a **kind registry in Go**, not in the database: `Kind{Key, Category, Required, BatchWindow, AllowEmail, AllowSMS, Actions, Render, RenderEmailSafe}`. Title, body, and link are rendered when the row is written, so later edits don't rewrite history. Tables are listed in 5.3: `notifications` and `notification_deliveries`. A third table, the digest settings `notification_settings`, waits for digests (M6.16, DEC-44).
 
 **States and the badge.** In-app is always on.
-- **Badge count:** the badge shows one count: unread items plus unresolved items waiting on you, with no double counting, capped at "9+". Opening the panel doesn't clear it. Opening an item, or "Mark all as read", clears ordinary items. *This one-count badge is pending Grier (15.2, N1).*
+- **Badge count (DEC-44):** the badge shows one plain count, with no needs-action dot: unread items plus unresolved items waiting on you, with no double counting, capped at "9+". Opening the panel doesn't clear it. Opening an item, or "Mark all as read", clears ordinary items.
 - **"Mark all as read" (6.13 #2):** `read-all` skips unresolved waiting items on the server. The count also ignores `read_at` for them until `resolved_at` is set, so server and UI agree.
 - **`seen_at` (6.13 #1):** kept only for the email escalation ("email if not seen after 15 minutes"). The badge doesn't use it, and the panel posts `seen` with the ids it shows.
 - **Task resolution:** approving, rejecting, or withdrawing the subject sets `resolved_at` on every copy in the same transaction. Other admins see "Done · approved by Pat" instead of a stale button, and the item leaves the count.
@@ -615,9 +615,9 @@ A user can only read or change their own rows.
 
 **Inline actions (6.13 #5, #6).** Only the kind registry emits `actions`, and only for allow-listed kinds. The v1 allow-list is two items, both for admins:
 - Approve a new group.
-- Approve an account request from an adult with no warning flags.
+- Approve an account request from an adult with no warnings (duplicate, rate-limit, or honeypot flags). Any other account request, including every teen request, goes to Review (DEC-44).
 
-Anything about a minor, consent, contact access, roles, deletion, outbound messages, visibility overrides, or RSVPs is navigation-only (research 6.6). Each button calls the existing domain endpoint, so policy and audit stay in one place. That endpoint refuses a notification-originated action on a kind that isn't allow-listed, whatever the client sends. Allow-listed actions use conditional updates. A lost race returns 409 with `resolvedBy`, so the row shows "Already approved by Pat", not an error. *Inline approval of account requests is pending Grier (15.2, N3).*
+Anything about a minor, consent, contact access, roles, deletion, outbound messages, visibility overrides, or RSVPs is navigation-only (research 6.6). Each button calls the existing domain endpoint, so policy and audit stay in one place. That endpoint refuses a notification-originated action on a kind that isn't allow-listed, whatever the client sends. Allow-listed actions use conditional updates. A lost race returns 409 with `resolvedBy`, so the row shows "Already approved by Pat", not an error.
 
 **Delivery: jobs plus the email and SMS adapters.**
 
@@ -628,14 +628,14 @@ domain code (same tx as AuditLog) ──> notify.Send
 job runner (5.5, SKIP LOCKED):
    notification.deliver: skip if read, archived, or resolved (escalation) → Consent + Suppression + teen rules
                          → SMS send window (the shared messaging function, DEC-9, DEC-25)
-                         → daily-digest users: leave for the digest → EmailSender / SMSSender (5.6)
+                         → EmailSender / SMSSender (5.6)
                          → `notification_deliveries` row; guardian copies follow DEC-19 and DEC-29
-   notification.digest:  per user-local morning; unread, unarchived, unresolved, not yet emailed → one email
 ```
 
 - **Email before M3.1.** The `jobs` table arrives in M3.1. In M1.2, notification email goes through the minimal sender (`internal/mail`) right after the transaction commits, with no delay. The 15-minute "if not seen" escalation starts once `notification.deliver` exists (M3.1 or later). Required and security kinds always send at once.
 - **Sensitive email (6.13 #9).** Kinds that touch minors, consent, or contact access render through `RenderEmailSafe`. It names nobody and only links in: "You have a contact request in Fold. Sign in to review it."
-- **Quiet hours.** In-app notices are silent and arrive at any time. SMS follows the send window. Email is unrestricted, as in 7.5 (*pending Grier, 15.2, N6*).
+- **Email timing (DEC-44).** Email is "Right away" only in v1. Once-a-day digests move to a later version (M6.16).
+- **Quiet hours (DEC-44).** In-app notices are silent and arrive at any time. SMS follows the 8 AM–8 PM send window. Email ignores quiet hours, as in 7.5.
 
 **Which events go in the bell.**
 - **In the bell:**
@@ -647,7 +647,7 @@ job runner (5.5, SKIP LOCKED):
   - message requests (7.6) and conversation replies (7.8)
   - for events you're going to or waitlisted for: cancellations, time or place changes, and "you're in" off the waitlist
 - **Event items expire (6.13 #3):** they have `expires_at` set to the occurrence end. A daily job sets `archived_at` when that passes; they aren't deleted, so they stay under Archived until retention removes them.
-- **Not in the bell:** event **reminders** go by email and SMS only (7.7), and today's derived "upcoming events" items are dropped. *Pending Grier (15.2, N2).*
+- **Not in the bell (DEC-44):** event **reminders** go by email and SMS only (7.7), and today's derived "upcoming events" items are dropped.
 
 **Minors and privacy** (10.1):
 - People without a login get no rows. The account holder gets them instead ("for Sam (your household)").
@@ -659,7 +659,7 @@ job runner (5.5, SKIP LOCKED):
 **CSP.** Notifications add no origin. Everything is same-origin (`connect-src 'self'`). Icons are inline SVG, avatars are served by Fold, and times use `Intl`. Rows render as plain text (no `dangerouslySetInnerHTML`). `link` must be an internal path starting with `/` and is validated on write.
 
 **Settings payload** (M3.12):
-- one email timing for the whole page, plus per-category email and SMS (6.13 #10)
+- per-category Email and Text switches, plus "Turn off all optional email", all mapped to `Consent` rows (6.13 #10, DEC-44); no email-timing choice in v1 and no per-group settings (DEC-44)
 - the effective time zone (`User.timezone`, falling back to the church zone) for the quiet-hours line (6.13 #11)
 - read-only `guardian_copies` for a teen's own page (6.13 #12)
 
@@ -900,7 +900,7 @@ Minors (DEC-8, DEC-19):
 - Waitlisted people get "you're in" notices, or "still full and starting soon".
 - SMS reminders follow the send window. If the reminder time falls outside the recipient's window, it moves to the last allowed time before it, if that is no more than 18 hours earlier (for example 7:59 PM the night before a 9:00 AM event). Otherwise it is skipped, and the email reminder still goes.
 - Reminders are `category=reminder` messages, so they appear in history and respect consent.
-- Reminders go by email and SMS only. They never create bell notifications. The bell carries event *changes* (cancellations, time or place changes, "you're in"), not reminders (5.12; *pending Grier, 15.2, N2*).
+- Reminders go by email and SMS only. They never create bell notifications. The bell carries event *changes* (cancellations, time or place changes, "you're in"), not reminders (5.12, DEC-44).
 
 ### 7.8 One-to-one messages and reply relay (DEC-31)
 
@@ -1526,7 +1526,7 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 | v0.4 Email | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay | M3.1–M3.6, M3.11 |
 | v0.5 MVP | Encrypted settings, SPA setup wizard, legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs: the first version a church can run | M4.1–M4.5, M4.9, M5.1–M5.4 |
 | v0.6 Rooms | Rooms, by-room view and feed, suggestions | M2.1–M2.3 |
-| v0.7 SMS | Telnyx, keywords and revocation, send window and caps, SMS reminders, member requests, notification preferences, SMS and digests, SMS provisioning | M3.7–M3.9, M3.12, M4.6 |
+| v0.7 SMS | Telnyx, keywords and revocation, send window and caps, SMS reminders, member requests, notification preferences and SMS, SMS provisioning | M3.7–M3.9, M3.12, M4.6 |
 | v0.8 Storage and CLI | S3 and private assets, `fold setup` | M4.7, M4.8 |
 | v1.0 | Twilio adapter, hardening, sign-up sheets, attendance, security review | M3.10, M6.2, M6.3 + fixes |
 | v1.x and later | Community features; the durable audit log (DEC-33) | Rest of M6, including M6.14 |
@@ -1680,7 +1680,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
     - Resolve tasks on approval or rejection.
     - Allow-list inline Approve for new groups.
     - Archive on the server (`archived_at`), replacing localStorage dismissals.
-    - Drop the derived "upcoming events" items (*pending Grier, 15.2, N2*).
+    - Drop the derived "upcoming events" items (DEC-44).
     - Run the 60-second badge poll plus refresh on focus and navigation.
   - From M1.2 on, the same changes also send a transactional email.
   - Split note: stored notifications make M1.1b noticeably bigger. If it's too big for one PR, split it into **M1.1b** (hosts, visibility, attendee privacy, with the visibility-override notice written as a stored row once M1.1c lands) and **M1.1c Stored notifications** (the bullet above), with M1.2 depending on both.
@@ -1694,7 +1694,8 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] A non-admin host can edit, message, and see registrants of the events they host, and nothing else (policy tests)
   - [ ] Notifications are stored rows (5.12); nothing is derived on read, and the SPA writes no notification state to localStorage
   - [ ] Archiving an item survives logout and shows on another device; Undo (and the Archived filter) restores it
-  - [ ] The badge counts unread plus unresolved waiting items; "Mark all as read" leaves waiting items counted until they are resolved, on both server and UI (*badge semantics pending Grier, 15.2, N1*)
+  - [ ] The badge counts unread plus unresolved waiting items; "Mark all as read" leaves waiting items counted until they are resolved, on both server and UI (DEC-44: one plain count, no needs-action dot)
+  - [ ] The bell shows no upcoming-event items (DEC-44)
   - [ ] Approving or rejecting a pending group resolves every admin's copy in the same transaction; a second admin sees "Done · approved by …"; an inline Approve that loses the race gets 409 with `resolvedBy`
   - [ ] An inline action posted for a kind that isn't allow-listed is refused by the server
   - [ ] A user can't read, mark, or archive another user's notification (404)
@@ -1731,6 +1732,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] Choosing "under 13" on any door stores nothing and shows the household explanation
   - [ ] Requests expire after 30 days
   - [ ] Public forms are rate limited (10 per IP per hour) and have a honeypot
+  - [ ] An admin's bell item for an adult account request with no warnings has inline Approve; a teen request or one with a duplicate, rate-limit, or honeypot flag shows only Review, and the server refuses inline approval of it (DEC-44)
 - Tests: API tests for each door.
 
 **M1.4 Guest registration**
@@ -1918,7 +1920,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 
 **M3.6 Email reminders**
 - Depends on: M3.5
-- Scope: 7.7, email part (SMS reminders arrive with M3.8). Reminders are messages, not notifications: they create no bell rows (5.12; *pending Grier, 15.2, N2*).
+- Scope: 7.7, email part (SMS reminders arrive with M3.8). Reminders are messages, not notifications: they create no bell rows (5.12, DEC-44).
 - Acceptance:
   - [ ] Each going registrant gets exactly one 24-hour email reminder per occurrence, even after restarts (`unique_key`)
   - [ ] Cancelled occurrences cancel their pending reminders
@@ -1980,21 +1982,20 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] An inbound webhook that fails verification returns 401 and changes nothing
 - Tests: relay tests with recorded Postmark inbound payloads; policy tests; header tests.
 
-**M3.12 Notification preferences, SMS delivery, digests**
+**M3.12 Notification preferences and SMS delivery**
 - Depends on: M3.3, M3.8
 - Scope: the rest of 5.12's delivery:
   - Move notification email onto the `notification.deliver` job, with the 15-minute "skip if seen or read" escalation for non-urgent kinds.
   - SMS delivery for kinds marked `AllowSMS`, through Consent, Suppression, teen rules, and the shared send-window function.
-  - The daily digest (`notification.digest` at 7 AM recipient-local). Weekly is cut.
-  - The `/settings/notifications` page (research 6.8): rows by category with Email and Text columns, locked required cells, one email-timing choice, "Turn off all optional email", the quiet-hours line with the effective time zone, and the teen `guardian_copies` line.
+  - The `/settings/notifications` page (research 6.8): rows by category with Email and Text columns, locked required cells, "Turn off all optional email" (writes `Consent` opt-outs for every optional category and leaves required mail on), the quiet-hours line with the effective time zone, and the teen `guardian_copies` line.
   - The email unsubscribe link opens the same page.
-  - *Pending Grier: email timing (N5), per-group settings (N4), the master switch (N7), email quiet hours (N6).*
+  - Per DEC-44: email is "Right away" only, with no email-timing choice and no digests (both later, M6.16). There are no per-group settings in v1. Email ignores quiet hours.
 - Acceptance:
-  - [ ] Email and SMS toggles write `Consent` rows; the digest choice writes `notification_settings`; a locked category can't be turned off (API refuses)
+  - [ ] Email and SMS toggles write `Consent` rows; a locked category can't be turned off (API refuses)
   - [ ] A non-urgent notification read within 15 minutes sends no email; an unread one sends exactly one, even after restarts
   - [ ] SMS for a notification follows the recipient's send window and is never sent without an opted-in consent (and, for teens, `TeenConsent`)
-  - [ ] A daily-digest user gets one morning email listing unread, unresolved items not already emailed, and no immediate emails for optional kinds
-  - [ ] "Turn off all optional email" leaves account, safety, and request emails on
+  - [ ] "Turn off all optional email" writes one `Consent` opt-out row per optional category (source `web_form`) and leaves account, safety, and request emails on; turning a category back on appends an opt-in row
+  - [ ] A notification email sent at 11 PM recipient-local goes at once (no quiet hours for email); its SMS waits for the send window
   - [ ] The settings payload has the effective time zone and, for teens, read-only `guardian_copies`
 - Tests: job tests with a fake clock; consent mapping tests; Playwright for the settings page.
 
@@ -2154,6 +2155,7 @@ Each item is one milestone. Each still needs acceptance criteria written into th
 - M6.13 (dropped: no translations or i18n framework, DEC-13)
 - M6.14 Durable, tamper-evident audit log for the most important events (10.7, DEC-33): append-only storage, hash chaining, a write-once offsite export (for example B2 Object Lock), retention rules, and an admin export for legal requests. Later, not v1 scope; the regular `AuditLog` covers these events until then
 - M6.15 Roster sync with church management software (DEC-40, research/chms-sync.md). Far future, not committed. `chms` adapter kind; One-way only (ChMS into Fold, never write-back). CSV import with admin review first, then Planning Center People, Breeze and ChMeetings read adapters. First design which local management features lock for synced fields and which stay (DEC-40). Re-verify the research's unverified items (Planning Center webhook events, vendor terms, rate limits) before starting
+- M6.16 Notification email digests (DEC-44). Later, not v1. A once-a-day email (7 AM recipient-local) of unread, unresolved notifications not already emailed: the `notification.digest` job, a `notification_settings` table with per-user `email_mode immediate|daily`, and the email-timing choice on the settings page. Weekly stays cut.
 
 Built only when a church asks: Resend and Mailgun email adapters, a Plivo SMS adapter, a Zoom video adapter, and a moderator role (DEC-17).
 
@@ -2163,7 +2165,7 @@ Built only when a church asks: Resend and Mailgun email adapters, a Plivo SMS ad
 
 ### 15.1 Decisions
 
-Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, numbered after the original questions), then made more decisions the same day: DEC-17 to DEC-25 (Grier's items A to I), DEC-26 to DEC-30, and DEC-31 to DEC-33 (after Codex's final review), DEC-34 to DEC-37 (Grier's answers to the M0.1 and M0.2 PR questions), and DEC-38 (Grier's answers to the M0.3b PR questions), and DEC-39 (Grier's group member limit, from the same PR). On Oct 10, 2026 Grier added DEC-40 to DEC-43 (roster sync, the session-cookie gap, notifications built in Fold, and the self-contained directive). Each has been carried through the sections listed. These decisions win over the original requirement wording and over the repo.
+Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, numbered after the original questions), then made more decisions the same day: DEC-17 to DEC-25 (Grier's items A to I), DEC-26 to DEC-30, and DEC-31 to DEC-33 (after Codex's final review), DEC-34 to DEC-37 (Grier's answers to the M0.1 and M0.2 PR questions), and DEC-38 (Grier's answers to the M0.3b PR questions), and DEC-39 (Grier's group member limit, from the same PR). On Oct 10, 2026 Grier added DEC-40 to DEC-44 (roster sync, the session-cookie gap, notifications built in Fold, the self-contained directive, and the notification product answers). Each has been carried through the sections listed. These decisions win over the original requirement wording and over the repo.
 
 | ID | Decision (2026-10-09) | Where it flows |
 |---|---|---|
@@ -2208,24 +2210,17 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-39 | **Groups get an optional member limit** (Grier, Oct 9, 2026), because recurring classes meet in rooms with a maximum capacity. It's expected to be rarely used. `Group.member_limit` is a nullable positive int (null, the default, is unlimited), set by the group's leaders or an admin. Only `active` memberships of non-disabled accounts count, leaders included. A full group refuses self-join ("This group is full"); groups have no waitlist. A leader or admin goes over the limit only by explicit choice (an API override flag; the SPA confirms), and that add is audited; accepting an invitation follows the same rule as the leader's add. Lowering the limit below the count is allowed: existing members stay and joins are blocked until the count drops. Leaders and admins see the count and limit. This makes DEC-38's `pending_return` real for groups: re-enabling restores each membership as member if there is room, otherwise `pending_return`, which leaders of that group and admins approve (over the limit) or decline (removed), audited with an in-app notice. Restores are processed in a stable order with the group row locked. Events keep their own capacity (5.4). | 5.3, 5.4, 6, M0.3b, M1.2 |
 | DEC-40 | **Roster sync with church management software is a far-future consideration, not a current milestone** (Grier, Oct 10, 2026), so churches can avoid managing rosters in two places. Research: `docs/plan/research/chms-sync.md`. Direction: a new `chms` provider kind following the email/SMS adapter pattern. **One-way only, from the ChMS into Fold; Fold never writes back** (Grier, Oct 10, 2026). Import with admin review first, then scheduled or webhook-driven updates. Each field has one owner: the ChMS owns names, households and addresses; Fold owns login email, consent, roles, group memberships and registrations. Conflicts go to an admin. **Open design item:** when sync is on, ChMS-owned fields must be locked from local editing in Fold, which means turning off some local management features. Decide carefully, field by field, which features to lock and which to keep, so Fold keeps what matters (consent, minors protections, roles, groups, events, registrations, messaging) before any sync work starts. Match by email first; in a household that shares an email the primary contact becomes the account; name-only matches are suggestions only. Minors: no accounts from import, household members only, guardian links start pending admin approval (DEC-32), consent is never imported, minors' contact info and sensitive data are not imported. Build order when it happens: generic CSV import (covers ChurchTrac, Realm, PowerChurch and others with no API; reuses M4.5), then Planning Center People, then Breeze, then ChMeetings. Pushpay/CCB needs vendor app approval, which is awkward for open source. | 13.2, M4.5, M6.11, M6.15 |
 | DEC-41 | **Stolen session cookies are a known, accepted risk for now** (Grier, Oct 10, 2026). Logout deletes the browser's session cookie, clears browser storage and reloads, but sessions are stateless signed cookies, so a cookie copied before logout keeps working until it expires (7 days) or `session_version` is bumped. Server-side sessions or "log out everywhere" are purposely not being built at this time. | 10.1 |
-| DEC-42 | **Notifications are built in Fold, with no vendor; dismissals and read state are stored per user on the server** (Grier, Oct 10, 2026). Browser-only dismissals reset on every sign-in, which is a poor long-term experience. Fold stores one notification row per recipient in Postgres, serves a polled badge, and delivers email and SMS through its own jobs and provider adapters (5.12). **Knock (knock.app) is a UI/UX reference only, never a third-party add-on.** Novu and other vendors were also rejected. This follows the self-contained directive (DEC-43). Research and designer guidelines: `docs/plan/research/notifications.md`. Phasing: stored notifications in M1.1b, email in M1.2, event-change and waitlist notices in M1.5 (reminders by email and SMS, not the bell), and preferences, SMS and digests in M3.12. Illuminator's product questions are open (15.2, N1–N7). | 1, 3.1, 5.3, 5.5, 5.12, 7.7, 10.1, 10.6, 12, M1.1b, M1.2, M1.5, M3.6, M3.12 |
+| DEC-42 | **Notifications are built in Fold, with no vendor; dismissals and read state are stored per user on the server** (Grier, Oct 10, 2026). Browser-only dismissals reset on every sign-in, which is a poor long-term experience. Fold stores one notification row per recipient in Postgres, serves a polled badge, and delivers email and SMS through its own jobs and provider adapters (5.12). **Knock (knock.app) is a UI/UX reference only, never a third-party add-on.** Novu and other vendors were also rejected. This follows the self-contained directive (DEC-43). Research and designer guidelines: `docs/plan/research/notifications.md`. Phasing: stored notifications in M1.1b, email in M1.2, event-change and waitlist notices in M1.5 (reminders by email and SMS, not the bell), preferences and SMS in M3.12, and digests later (M6.16). Illuminator's product questions are answered in DEC-44. | 1, 3.1, 5.3, 5.5, 5.12, 7.7, 10.1, 10.6, 12, M1.1b, M1.2, M1.5, M3.6, M3.12 |
 | DEC-43 | **Fold stays as self-contained as possible** (Grier, Oct 10, 2026). Fold builds what it needs itself. An outside service is added only when it's needed to keep deployments simple or to meet a church's request. This sharpens goal 4 (few external dependencies) and D3/D6, and it applies to features as well as infrastructure (for example notifications, DEC-42). | 1, 12, 5.12 |
+| DEC-44 | **Notification product answers** (Grier, Oct 10, 2026, answering Illuminator's questions in research 6.14): (1) the bell badge is **one plain count** (unread plus unresolved items waiting on you), with no needs-action dot; (2) event **reminders go by email and SMS only, never to the bell**, and the bell's upcoming-event items are dropped; (3) on a public site, an **adult account request with no warnings** can be approved inline; any other account request goes to Review; (4) **no per-group notification settings** in v1; (5) email is **"Right away" only** in v1, and once-a-day digests move to a later version (M6.16); (6) **email ignores** the 8 AM–8 PM quiet hours, which apply to SMS only; (7) a **"Turn off all optional email"** switch, mapped to `Consent` rows. | 5.3, 5.5, 5.12, 7.7, M1.1b, M1.3, M3.6, M3.12, M6.16 |
 
-The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-43 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, and set the self-contained directive.
+The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions.
 
 ### 15.2 Still open
 
-Notification product questions from Illuminator (research 6.14), sent to Big Boss for Grier. Each is **pending Grier**. The plan follows the designer's recommendation, marked as pending where it applies, until Grier answers.
+No open decisions. Illuminator's notification product questions (research 6.14) are answered in DEC-44.
 
-- **N1. Badge (pending Grier):** one plain count that includes items still waiting on you, with no colored dot? (Recommended; research 6.1.)
-- **N2. Reminders (pending Grier):** take event reminders out of the bell, as Meetup does, and drop today's "upcoming events" bell items? Upcoming events still show on the home page, My groups, and the calendar. (Recommended; research 6.5a.)
-- **N3. Inline Approve for adult account requests (pending Grier):** comfortable with it on a public-internet site, or should every account request go through the Review page? (Recommended: inline only for unflagged adults; research 6.6.)
-- **N4. Per-group notification settings (pending Grier):** leave them out of v1? (Recommended: out; categories only.)
-- **N5. Email timing (pending Grier):** is "Once a day" wanted in v1, or only "Right away" at first? Weekly is cut either way.
-- **N6. Quiet hours for email (pending Grier):** keep email unrestricted, with the 8 AM–8 PM window for texts only? (Recommended: yes; the daily summary goes at 7 AM.)
-- **N7. "Turn off all optional email" (pending Grier):** include Meetup's master switch? (Recommended: yes.)
-
-Also a proposal, not a decision: notification retention of 90 days for read or archived rows and 180 days for unread rows (5.12).
+One proposal is still unconfirmed: notification retention of 90 days for read or archived rows and 180 days for unread rows (5.12). Build it as written unless Grier changes it.
 
 ---
 
