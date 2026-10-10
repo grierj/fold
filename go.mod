@@ -7,7 +7,7 @@ toolchain go1.26.9
 require (
 	github.com/gin-gonic/gin v1.10.0
 	github.com/gorilla/sessions v1.4.0
-	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/pressly/goose/v3 v3.27.0
 	github.com/teambition/rrule-go v1.8.2
 	golang.org/x/crypto v0.58.0
