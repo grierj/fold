@@ -4,7 +4,7 @@ Claim a milestone here (in its own PR or commit) before starting it.
 
 | Milestone | Status | Owner | Branch/PR |
 | --- | --- | --- | --- |
-| M0.1 PostgreSQL only, clean baseline, CLI, request plumbing | in progress | Codex | `m0.1-postgres-baseline` |
+| M0.1 PostgreSQL only, clean baseline, CLI, request plumbing | done (PR open) | Codex | `m0.1-postgres-baseline` |
 | M0.2 Visibility enum, policy package, leadership by membership, audit log | unclaimed | | |
 | M0.3 Log in by email | unclaimed | | |
 | M0.4 Frontend and browser test tooling | unclaimed | | |
