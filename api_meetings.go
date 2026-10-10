@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -173,10 +174,6 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 		next = &t
 	}
 
-	visibility := g.Visibility
-	if visibility == "" {
-		visibility = models.VisibilityPublic
-	}
 	return groupSummaryJSON{
 		ID: g.ID, Name: g.Name, Description: g.Description,
 		Tags: splitTags(g.Tags), ImageURL: g.ImageURL,
@@ -184,8 +181,8 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 		Location:   g.Location,
 		LeaderName: leaderName, MemberCount: memberCount,
 		NextMeetingAt: next, Status: g.Status,
-		LeaderID: g.LeaderID, Visibility: visibility,
-		InviteOnly: g.InviteOnly, DeletionRequested: g.DeletionRequested,
+		LeaderID: g.LeaderID, Visibility: g.Visibility,
+		DeletionRequested: g.DeletionRequested,
 	}
 }
 
@@ -229,13 +226,8 @@ func (a *App) apiListMeetings(c *gin.Context) {
 
 func (a *App) apiCreateMeeting(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	}
-	if !canManageGroup(a, apiUser(c), g.ID) {
-		jsonError(c, http.StatusForbidden, "forbidden")
+	g, _, ok := a.loadManagedGroupID(c, uint(id))
+	if !ok {
 		return
 	}
 	var body struct {
@@ -294,8 +286,7 @@ func (a *App) loadMeeting(c *gin.Context) (*models.Meeting, bool) {
 		jsonError(c, http.StatusNotFound, "meeting not found")
 		return nil, false
 	}
-	if !canManageGroup(a, apiUser(c), m.GroupID) {
-		jsonError(c, http.StatusForbidden, "forbidden")
+	if _, _, ok := a.loadManagedGroupID(c, m.GroupID); !ok {
 		return nil, false
 	}
 	return &m, true
@@ -395,7 +386,8 @@ func (a *App) apiRSVP(c *gin.Context) {
 		return
 	}
 	var g models.Group
-	if err := a.DB.First(&g, m.GroupID).Error; err != nil || !a.canSeeGroup(apiUser(c), &g) {
+	if err := a.DB.First(&g, m.GroupID).Error; err != nil ||
+		!policy.CanRSVP(asPerson(apiUser(c)), asGroup(&g), a.relOf(apiUser(c), g.ID)) {
 		jsonError(c, http.StatusNotFound, "meeting not found")
 		return
 	}

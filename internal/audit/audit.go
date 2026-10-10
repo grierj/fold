@@ -1,0 +1,49 @@
+// Package audit writes AuditLog rows (5.3, 10.6). Every milestone that
+// records a sensitive action uses Write, inside the same transaction as the
+// change it records.
+package audit
+
+import (
+	"encoding/json"
+
+	"fold/models"
+
+	"gorm.io/gorm"
+)
+
+// Actions. Add new ones here so they are easy to find and query.
+const (
+	// RoleChanged: someone was made a group leader, or stopped being one.
+	// Target is the group; meta has userId, oldRole and newRole ("leader",
+	// "member", or "none" when they left or were removed).
+	RoleChanged = "membership.role_changed"
+)
+
+// Entry is one audit record. Actor is nil for system actions.
+type Entry struct {
+	Actor      *uint
+	Action     string
+	TargetType string
+	TargetID   uint
+	Meta       map[string]any
+	IP         string
+}
+
+// Write stores e using db, which should be the caller's transaction.
+func Write(db *gorm.DB, e Entry) error {
+	meta := []byte("{}")
+	if len(e.Meta) > 0 {
+		var err error
+		if meta, err = json.Marshal(e.Meta); err != nil {
+			return err
+		}
+	}
+	return db.Create(&models.AuditLog{
+		ActorID:    e.Actor,
+		Action:     e.Action,
+		TargetType: e.TargetType,
+		TargetID:   e.TargetID,
+		MetaJSON:   string(meta),
+		IP:         e.IP,
+	}).Error
+}

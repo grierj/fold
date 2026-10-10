@@ -26,10 +26,11 @@ const (
 	GroupArchived = "archived"
 )
 
-// Who can see an active group in the directory.
+// Who can see an active group (C3). internal/policy decides what each means.
 const (
-	VisibilityPublic  = "public"  // anyone, including logged-out visitors
-	VisibilityPrivate = "private" // signed-in users
+	VisibilityPublic     = "public"      // anyone, including logged-out visitors
+	VisibilityPrivate    = "private"     // signed-in users
+	VisibilityInviteOnly = "invite_only" // members and admins only
 )
 
 // RSVP statuses.
@@ -87,8 +88,6 @@ func (u *User) CheckPassword(password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password)) == nil
 }
 
-func (u *User) IsAdmin() bool { return u.Role == RoleAdmin }
-
 // Group is an ongoing entity (a small group, ministry, or activity) —
 // not a single event. Meetings are its instances.
 type Group struct {
@@ -102,14 +101,13 @@ type Group struct {
 	// used for CSS object-position.
 	CoverFocalX float64 `gorm:"default:50"`
 	CoverFocalY float64 `gorm:"default:50"`
-	LeaderID    uint    `gorm:"not null"`
-	Leader      User    `gorm:"foreignKey:LeaderID"`
-	Status      string  `gorm:"default:pending"` // pending | active | archived
-	// Visibility is public or private. Existing rows stay public.
+	// LeaderID is the displayed primary contact only. Leadership comes from
+	// Membership.Role (C12); never use this for permissions.
+	LeaderID uint   `gorm:"not null"`
+	Leader   User   `gorm:"foreignKey:LeaderID"`
+	Status   string `gorm:"default:pending"` // pending | active | archived
+	// Visibility is public, private, or invite_only (a CHECK enforces it).
 	Visibility string `gorm:"not null;default:public"`
-	// InviteOnly groups stay out of the directory unless you are a member
-	// or the leader. It is only valid when Visibility is private.
-	InviteOnly bool `gorm:"not null;default:false"`
 	// DeletionRequested is set by the leader when they are the only member.
 	// An admin approves it by deleting the group.
 	DeletionRequested bool `gorm:"not null;default:false"`
@@ -145,6 +143,7 @@ type MeetingException struct {
 }
 
 // Membership is a user's roster entry in a group.
+// Role=leader is the only source of leadership; a group may have several.
 type Membership struct {
 	ID       uint   `gorm:"primaryKey"`
 	UserID   uint   `gorm:"not null;uniqueIndex:idx_user_group"`
@@ -177,11 +176,25 @@ type Setting struct {
 	Value string
 }
 
+// AuditLog is one append-only record of a sensitive action (5.3). Write it
+// through internal/audit. ActorID is nil for system actions. Rows have no
+// foreign keys, so they outlive the people and groups they name.
+type AuditLog struct {
+	ID         uint      `gorm:"primaryKey"`
+	ActorID    *uint     `gorm:"index"`
+	Action     string    `gorm:"not null;index"`
+	TargetType string    `gorm:"not null;index:idx_audit_logs_target"`
+	TargetID   uint      `gorm:"not null;index:idx_audit_logs_target"`
+	MetaJSON   string    `gorm:"column:meta_json;type:jsonb;not null;default:'{}'"`
+	IP         string    `gorm:"column:ip"`
+	At         time.Time `gorm:"not null;default:now();index"`
+}
+
 // All lists every model, in dependency order. The drift check and the test
 // helpers use it; a new model must be added here and to a migration.
 func All() []any {
 	return []any{
 		&User{}, &Group{}, &Meeting{}, &MeetingException{},
-		&Membership{}, &RSVP{}, &Setting{},
+		&Membership{}, &RSVP{}, &Setting{}, &AuditLog{},
 	}
 }

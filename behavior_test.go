@@ -150,10 +150,7 @@ func TestPendingGroupIsHiddenFromOtherMembers(t *testing.T) {
 	app := testApp(t)
 	leaderUser := newTestUser(t, app, "leader", "password1234", models.RoleMember)
 	newTestUser(t, app, "sam", "password1234", models.RoleMember)
-	g := models.Group{Name: "Hidden", LeaderID: leaderUser.ID, Status: models.GroupPending}
-	if err := app.DB.Create(&g).Error; err != nil {
-		t.Fatal(err)
-	}
+	g := newTestGroup(t, app, leaderUser, "Hidden", models.GroupPending)
 	start := time.Date(2026, 11, 1, 18, 0, 0, 0, time.UTC)
 	m := models.Meeting{GroupID: g.ID, StartsAt: start, EndsAt: start.Add(time.Hour)}
 	if err := app.DB.Create(&m).Error; err != nil {
@@ -329,11 +326,11 @@ func TestCSRFFailureIsJSON(t *testing.T) {
 	}
 }
 
-func activeGroup(t *testing.T, app *App, leader *models.User, name, visibility, tags string, invite bool) models.Group {
+func activeGroup(t *testing.T, app *App, leader *models.User, name, visibility, tags string) models.Group {
 	t.Helper()
 	g := models.Group{
 		Name: name, LeaderID: leader.ID, Status: models.GroupActive,
-		Visibility: visibility, InviteOnly: invite, Tags: tags,
+		Visibility: visibility, Tags: tags,
 	}
 	if err := app.DB.Create(&g).Error; err != nil {
 		t.Fatal(err)
@@ -374,9 +371,9 @@ func TestDirectoryVisibility(t *testing.T) {
 	leaderUser := newTestUser(t, app, "leader", "password1234", models.RoleMember)
 	newTestUser(t, app, "sam", "password1234", models.RoleMember)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
-	activeGroup(t, app, leaderUser, "Public Choir", models.VisibilityPublic, "", false)
-	activeGroup(t, app, leaderUser, "Private Band", models.VisibilityPrivate, "", false)
-	invite := activeGroup(t, app, leaderUser, "Invite Prayer", models.VisibilityPrivate, "", true)
+	activeGroup(t, app, leaderUser, "Public Choir", models.VisibilityPublic, "")
+	activeGroup(t, app, leaderUser, "Private Band", models.VisibilityPrivate, "")
+	invite := activeGroup(t, app, leaderUser, "Invite Prayer", models.VisibilityInviteOnly, "")
 
 	anon := newAPIClient(t, app)
 	got := groupNames(t, anon.do("GET", "/api/v1/groups", nil, false))
@@ -411,16 +408,16 @@ func TestDirectoryVisibility(t *testing.T) {
 		t.Fatalf("leader directory: %v", got)
 	}
 	w := leader.do("POST", "/api/v1/groups", map[string]any{
-		"name": "Nope", "visibility": "public", "inviteOnly": true,
+		"name": "Nope", "visibility": "secret",
 	}, true)
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("public invite-only create: %d %s", w.Code, w.Body.String())
+		t.Fatalf("unknown visibility on create: %d %s", w.Code, w.Body.String())
 	}
 	w = leader.do("PUT", "/api/v1/groups/"+itoa(invite.ID), map[string]any{
-		"visibility": "public", "inviteOnly": true,
+		"visibility": "hidden",
 	}, true)
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("public invite-only update: %d %s", w.Code, w.Body.String())
+		t.Fatalf("unknown visibility on update: %d %s", w.Code, w.Body.String())
 	}
 
 	w = leader.do("POST", "/api/v1/groups/"+itoa(invite.ID)+"/members", map[string]any{"username": "sam"}, true)
@@ -436,9 +433,9 @@ func TestDirectoryVisibility(t *testing.T) {
 func TestTagFiltersCombine(t *testing.T) {
 	app := testApp(t)
 	leaderUser := newTestUser(t, app, "leader", "password1234", models.RoleMember)
-	activeGroup(t, app, leaderUser, "Youth Choir", models.VisibilityPublic, "choir,youth", false)
-	activeGroup(t, app, leaderUser, "Youth Band", models.VisibilityPublic, "band,youth", false)
-	activeGroup(t, app, leaderUser, "Sunday Choir", models.VisibilityPublic, "choir", false)
+	activeGroup(t, app, leaderUser, "Youth Choir", models.VisibilityPublic, "choir,youth")
+	activeGroup(t, app, leaderUser, "Youth Band", models.VisibilityPublic, "band,youth")
+	activeGroup(t, app, leaderUser, "Sunday Choir", models.VisibilityPublic, "choir")
 
 	anon := newAPIClient(t, app)
 	got := groupNames(t, anon.do("GET", "/api/v1/groups?tag=choir&tag=youth", nil, false))
@@ -502,9 +499,12 @@ func TestLeadershipAndDeletion(t *testing.T) {
 	if w := leader.do("POST", "/api/v1/groups/"+gid+"/deletion-request", map[string]any{}, true); w.Code != http.StatusBadRequest {
 		t.Fatalf("delete with a member: %d %s", w.Code, w.Body.String())
 	}
-	w = leader.do("POST", "/api/v1/groups/"+gid+"/leader", map[string]any{"userId": samUser.ID}, true)
+	w = leader.do("PUT", "/api/v1/groups/"+gid+"/members/"+itoa(samUser.ID)+"/role", map[string]any{"role": "leader"}, true)
 	if w.Code != http.StatusOK {
-		t.Fatalf("transfer: %d %s", w.Code, w.Body.String())
+		t.Fatalf("make sam a leader: %d %s", w.Code, w.Body.String())
+	}
+	if w := leader.do("POST", "/api/v1/groups/"+gid+"/leave", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("old leader leave: %d %s", w.Code, w.Body.String())
 	}
 	var detail struct {
 		Group groupSummaryJSON `json:"group"`
@@ -514,14 +514,11 @@ func TestLeadershipAndDeletion(t *testing.T) {
 	if detail.Group.LeaderID != samUser.ID {
 		t.Fatalf("leader id: %d", detail.Group.LeaderID)
 	}
-	if w := leader.do("POST", "/api/v1/groups/"+gid+"/leave", map[string]any{}, true); w.Code != http.StatusOK {
-		t.Fatalf("old leader leave: %d %s", w.Code, w.Body.String())
-	}
 	if w := sam.do("POST", "/api/v1/groups/"+gid+"/deletion-request", map[string]any{}, true); w.Code != http.StatusOK {
 		t.Fatalf("new leader request: %d %s", w.Code, w.Body.String())
 	}
 
-	busy := activeGroup(t, app, leaderUser, "Busy", models.VisibilityPublic, "", false)
+	busy := activeGroup(t, app, leaderUser, "Busy", models.VisibilityPublic, "")
 	if err := app.DB.Create(&models.Membership{
 		UserID: samUser.ID, GroupID: busy.ID,
 		Role: models.MembershipMember, Status: "active", JoinedAt: time.Now().UTC(),

@@ -27,10 +27,13 @@ export interface GroupSummary {
   nextMeetingAt: string | null;
   status: string;
   leaderId: number;
-  visibility: string;
-  inviteOnly: boolean;
+  visibility: Visibility;
   deletionRequested: boolean;
 }
+
+// Who can see a group (C3). invite_only groups are hidden from everyone but
+// their members and admins.
+export type Visibility = "public" | "private" | "invite_only";
 
 export interface Member {
   id: number;
@@ -43,7 +46,7 @@ export interface Member {
 }
 
 export interface Notification {
-  type: "approval" | "event";
+  type: "approval" | "event" | "leadership";
   title: string;
   body: string;
   link: string;

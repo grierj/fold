@@ -5,10 +5,12 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/sessions"
+	"gorm.io/gorm"
 )
 
 // minPasswordLength is the minimum for local-account passwords, enforced
@@ -71,8 +73,7 @@ type groupSummaryJSON struct {
 	NextMeetingAt     *time.Time `json:"nextMeetingAt"`
 	Status            string     `json:"status"`
 	LeaderID          uint       `json:"leaderId"`
-	Visibility        string     `json:"visibility"`
-	InviteOnly        bool       `json:"inviteOnly"`
+	Visibility        string     `json:"visibility"` // public | private | invite_only
 	DeletionRequested bool       `json:"deletionRequested"`
 }
 
@@ -180,7 +181,7 @@ func (a *App) apiAuth() gin.HandlerFunc {
 func (a *App) apiAdmin() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		u, ok := c.Get("apiUser")
-		if !ok || !u.(*models.User).IsAdmin() {
+		if !ok || !policy.IsAdmin(asPerson(u.(*models.User))) {
 			jsonError(c, http.StatusForbidden, "admin required")
 			c.Abort()
 			return
@@ -206,35 +207,79 @@ func (a *App) optionalUser() gin.HandlerFunc {
 	}
 }
 
-// canSeeGroup reports whether u may open this group.
-// Active public groups are open to everyone. Active private groups require
-// a signed-in user. Invite-only groups require a member, the leader, or an
-// admin. Pending and archived groups stay limited to the leader and admins.
-func (a *App) canSeeGroup(u *models.User, g *models.Group) bool {
-	if g.Status != models.GroupActive {
-		return u != nil && (u.IsAdmin() || g.LeaderID == u.ID)
+// ---------------------------------------------------------------------------
+// Policy glue: load the facts, then ask internal/policy (C12)
+// ---------------------------------------------------------------------------
+
+// asPerson describes the signed-in user to policy; nil means signed out.
+func asPerson(u *models.User) *policy.Person {
+	if u == nil {
+		return nil
 	}
-	if g.InviteOnly {
-		if u == nil {
-			return false
-		}
-		return u.IsAdmin() || g.LeaderID == u.ID || a.isMember(u.ID, g.ID)
-	}
-	if g.Visibility == models.VisibilityPrivate {
-		return u != nil
-	}
-	return true
+	return &policy.Person{ID: u.ID, Admin: u.Role == models.RoleAdmin}
 }
 
-// canManageGroup reports whether u is the group's leader or an admin.
-func canManageGroup(a *App, u *models.User, groupID uint) bool {
-	if u.IsAdmin() {
-		return true
+func asGroup(g *models.Group) policy.Group {
+	return policy.Group{Status: g.Status, Visibility: g.Visibility}
+}
+
+// relOf loads u's active membership in a group.
+func (a *App) relOf(u *models.User, groupID uint) policy.Rel {
+	if u == nil {
+		return policy.Rel{}
 	}
 	var m models.Membership
-	err := a.DB.Where("user_id = ? AND group_id = ? AND role = ? AND status = ?",
-		u.ID, groupID, models.MembershipLeader, "active").First(&m).Error
-	return err == nil
+	if err := a.DB.Where("user_id = ? AND group_id = ? AND status = ?", u.ID, groupID, "active").
+		First(&m).Error; err != nil {
+		return policy.Rel{}
+	}
+	return policy.Rel{Member: true, Leader: m.Role == models.MembershipLeader}
+}
+
+// leaderCount counts a group's active leaders whose accounts still exist.
+func leaderCount(db *gorm.DB, groupID uint) int {
+	var n int64
+	db.Model(&models.Membership{}).
+		Joins("JOIN users ON users.id = memberships.user_id AND users.deleted_at IS NULL").
+		Where("memberships.group_id = ? AND memberships.role = ? AND memberships.status = ?",
+			groupID, models.MembershipLeader, "active").
+		Count(&n)
+	return int(n)
+}
+
+func (a *App) canSeeGroup(u *models.User, g *models.Group) bool {
+	return policy.CanSeeGroup(asPerson(u), asGroup(g), a.relOf(u, g.ID))
+}
+
+// loadGroupFor loads group id for u: 404 when it doesn't exist or u can't
+// see it (invite-only groups never answer 403 to outsiders).
+func (a *App) loadGroupFor(c *gin.Context, id uint) (*models.Group, policy.Rel, bool) {
+	u := apiUser(c)
+	var g models.Group
+	if err := a.DB.First(&g, id).Error; err != nil {
+		jsonError(c, http.StatusNotFound, "group not found")
+		return nil, policy.Rel{}, false
+	}
+	rel := a.relOf(u, g.ID)
+	if !policy.CanSeeGroup(asPerson(u), asGroup(&g), rel) {
+		jsonError(c, http.StatusNotFound, "group not found")
+		return nil, policy.Rel{}, false
+	}
+	return &g, rel, true
+}
+
+// loadManagedGroupID is loadGroupFor plus CanManageGroup (403 when the
+// group is visible but u doesn't lead it).
+func (a *App) loadManagedGroupID(c *gin.Context, id uint) (*models.Group, policy.Rel, bool) {
+	g, rel, ok := a.loadGroupFor(c, id)
+	if !ok {
+		return nil, rel, false
+	}
+	if !policy.CanManageGroup(asPerson(apiUser(c)), rel) {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return nil, rel, false
+	}
+	return g, rel, true
 }
 
 func splitTags(s string) []string {
@@ -285,7 +330,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.PUT("/groups/:id", a.apiAuth(), a.apiUpdateGroup)
 	v1.POST("/groups/:id/join", a.apiAuth(), a.apiJoinGroup)
 	v1.POST("/groups/:id/leave", a.apiAuth(), a.apiLeaveGroup)
-	v1.POST("/groups/:id/leader", a.apiAuth(), a.apiTransferLeadership)
+	v1.PUT("/groups/:id/members/:userId/role", a.apiAuth(), a.apiSetMemberRole)
 	v1.POST("/groups/:id/members", a.apiAuth(), a.apiAddGroupMember)
 	v1.POST("/groups/:id/deletion-request", a.apiAuth(), a.apiRequestDeletion)
 	v1.DELETE("/groups/:id/deletion-request", a.apiAuth(), a.apiCancelDeletion)
