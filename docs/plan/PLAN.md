@@ -1006,8 +1006,8 @@ DEC-30's "trust the church body" covers workflow only: no approval gates on sign
 - [ ] Admin two-factor sign-in (TOTP), required for every admin from v0.5 (M4.9)
 - [ ] Login throttling by email and client IP, stored in Postgres (M0.3)
 - [ ] Rate limits and a honeypot on public forms, per IP and per target address; per-leader invitation limits; caps on HELP and automatic SMS replies and on phone verification texts; open direct-contact request limits; per-author and per-recipient message limits (M1.2, M1.3, M1.4, M1.11, M3.7, M3.8)
-- [ ] CSRF on every state-changing route except signature- or token-authenticated hooks and one-click unsubscribe (M0.1)
-- [ ] Trusted proxies set to the compose network only (M0.1)
+- [x] CSRF on every state-changing route except signature- or token-authenticated hooks and one-click unsubscribe (M0.1)
+- [x] Trusted proxies set to the compose network only (M0.1)
 - [ ] Input validation and output sanitizing: server-side validation on every API field, bluemonday on rich text, SSRF guard on URL fetch (all milestones; M3.4)
 - [ ] Uploads: type sniffing, size limits, private assets behind policy checks (M4.7)
 - [ ] Secrets: provider secrets encrypted at rest, never returned to the browser, `.env` mode 600 (M4.1)
@@ -1438,16 +1438,16 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - CSRF route groups (C17): create the router groups so `/hooks/*` and `POST /u/unsubscribe/<token>` are outside the CSRF middleware (their handlers come later), with a test that the exempt list is exactly those.
   - Update `AGENTS.md`: Postgres for dev and tests; SMS through adapters with Telnyx as the default and Twilio next, none required (C13); no Python. Fix the README Go version.
 - Acceptance:
-  - [ ] `go.mod` has no SQLite driver, and `rg -i sqlite` finds nothing outside this plan
-  - [ ] `APP_ENV=dev` without `DATABASE_URL` exits with a clear "start the dev database" message
-  - [ ] A fresh database migrates to the baseline, and the drift check reports no drift
-  - [ ] Adding a model field without a migration makes the drift check fail (a self-test proves the check works)
-  - [ ] `fold version` works with no environment variables; `fold migrate status` works with only `DATABASE_URL`
-  - [ ] `fold` with no arguments still serves
-  - [ ] Migrations take a Postgres advisory lock, so two app containers starting together don't both migrate
-  - [ ] `ClientIP()` returns the address the trusted proxy forwards, and ignores `X-Forwarded-For` sent from outside the trusted subnet (test with a fake proxy)
-  - [ ] A POST to `/hooks/test` without a CSRF token is not rejected by CSRF; any other POST without one is
-  - [ ] The whole existing test suite passes on Postgres via `make test` in under 2 minutes on a laptop
+  - [x] `go.mod` has no SQLite driver, and `rg -i sqlite` finds nothing outside this plan
+  - [x] `APP_ENV=dev` without `DATABASE_URL` exits with a clear "start the dev database" message
+  - [x] A fresh database migrates to the baseline, and the drift check reports no drift
+  - [x] Adding a model field without a migration makes the drift check fail (a self-test proves the check works)
+  - [x] `fold version` works with no environment variables; `fold migrate status` works with only `DATABASE_URL`
+  - [x] `fold` with no arguments still serves
+  - [x] Migrations take a Postgres advisory lock, so two app containers starting together don't both migrate
+  - [x] `ClientIP()` returns the address the trusted proxy forwards, and ignores `X-Forwarded-For` sent from outside the trusted subnet (test with a fake proxy)
+  - [x] A POST to `/hooks/test` without a CSRF token is not rejected by CSRF; any other POST without one is
+  - [x] The whole existing test suite passes on Postgres via `make test` in under 2 minutes on a laptop
 - Tests: migration on an empty database; drift-check self-test; advisory-lock test; trusted-proxy test; CSRF exemption test; the existing suite.
 
 **M0.2 Visibility enum, policy package, leadership by membership, audit log**

@@ -347,7 +347,7 @@ func validateGroupText(name, description, location, tags string) string {
 
 // likeContains builds a LIKE pattern that matches the text as a substring.
 // % and _ in the input are escaped so they are not wildcards. Callers must
-// pass ESCAPE '\' — SQLite has no default escape character.
+// pass ESCAPE '\' so the escape character is explicit.
 func likeContains(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `%`, `\%`)

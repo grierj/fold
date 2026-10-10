@@ -176,3 +176,12 @@ type Setting struct {
 	Key   string `gorm:"primaryKey"`
 	Value string
 }
+
+// All lists every model, in dependency order. The drift check and the test
+// helpers use it; a new model must be added here and to a migration.
+func All() []any {
+	return []any{
+		&User{}, &Group{}, &Meeting{}, &MeetingException{},
+		&Membership{}, &RSVP{}, &Setting{},
+	}
+}

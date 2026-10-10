@@ -17,10 +17,12 @@ via `go:embed`). No separate frontend hosting. Ever.
 ## Stack
 
 - **Go 1.25**, Gin (JSON API under `/api/v1`), GORM
-- **Postgres** for anything real (`DATABASE_URL`); **SQLite** dev-only
-  (pure-Go `glebarez/sqlite` driver — no CGO, keep it that way)
-- Postgres-only features (tsvector search, LISTEN/NOTIFY, advisory locks)
-  go behind feature flags so the SQLite dev path keeps working
+- **PostgreSQL only**, everywhere: production, development, and tests
+  (`DATABASE_URL`, DEC-1, DEC-24). There is no second database, so use
+  Postgres features freely. `CGO_ENABLED=0`; keep it that way
+- Schema: versioned **goose** SQL files in `migrations/`, embedded in the
+  binary and run on start under an advisory lock. They are the source of
+  truth; GORM models must match them (C1)
 - **React + Vite + Tailwind** SPA in `web/`; `web/dist/` is embedded into
   the binary. Release pipeline runs `npm run build` before `go build`
 - **No Python.** Not for tooling, not for scripts. Shell or Go.
@@ -30,7 +32,7 @@ via `go:embed`). No separate frontend hosting. Ever.
 ```
 browser ──► single Go binary ──► /api/v1/* (JSON, cookie auth)
               │                    /* (embedded SPA, index.html fallback)
-              └──► Postgres (prod) / SQLite (dev)
+              └──► Postgres (everywhere)
 ```
 
 - Single-tenant app. "SaaS" means many single-tenant deployments behind a
@@ -66,11 +68,20 @@ the UI), `Email`, `Phone`, `AvatarKey` (blob-store key, not a URL),
   handles it). The old server-rendered redirect behavior is gone except
   for `/setup`.
 - Errors: `{"error": "human readable"}` with the right status code.
-- Migrations: GORM `AutoMigrate` for additive changes; versioned SQL in
-  `migrations/` for anything destructive (to be added when first needed).
-- Tests: `go test ./...`. Handler tests use `httptest` + in-memory SQLite
-  (see `auth_test.go` for the cookie-jar + CSRF-dance pattern — reuse it).
-- `go vet ./...` must be clean before any PR.
+- Migrations: every schema change is a **new** goose file in `migrations/`
+  (`NNNNN_name.sql`); never edit an old one. Add the model change in the
+  same PR and list new models in `models.All()`. `AutoMigrate` never runs
+  against a real database; the drift test (`migrations/migrations_test.go`)
+  runs it on a throwaway database and fails on any CREATE or ALTER.
+- Tests: `make test` (`go test ./...` against `DATABASE_URL`; starts the
+  dev database if unset). Handler tests use `httptest` and the package's
+  Postgres database from `internal/testdb` (see `auth_test.go` for the
+  cookie-jar + CSRF-dance pattern — reuse it).
+- `make lint` (`go vet` + `gofmt`) must be clean before any PR.
+- State-changing routes all go through CSRF except `/hooks/*` and
+  `POST /u/unsubscribe/:token` (`csrfExemptRoutes`; a test keeps that list
+  exact). Only `FOLD_TRUSTED_PROXIES` may set `X-Forwarded-For`.
+
 - UI reference is **Meetup** — familiar beats original. Copy its patterns
   (group cards, date badges, join buttons); tweak later.
 - Commit messages: short imperative summary; PRs describe behavior change.
@@ -108,41 +119,43 @@ the UI), `Email`, `Phone`, `AvatarKey` (blob-store key, not a URL),
 ## Development
 
 ```bash
-# Backend (SQLite dev DB, debug logging)
-APP_ENV=dev go run .
-
-# Frontend
-cd web && npm install && npm run dev      # Vite dev server, proxies /api to :8080
-npm run build                              # outputs to web/dist (embedded)
-
-# Full stack
-go test ./...
+make dev      # dev Postgres (deploy/docker-compose.dev.yml) + Go server + Vite
+make test     # go test ./... against DATABASE_URL (starts the dev DB if unset)
+make lint     # go vet + gofmt
+cd web && npm run build   # outputs to web/dist (embedded)
 ```
 
-Env vars: see `config.go` and `.env.example`. `SESSION_SECRET` is required
-unless `APP_ENV=dev`.
+There is no fallback database: `fold serve` without `DATABASE_URL` exits
+with a "start the dev database" message, in dev too. Env vars: see
+`config.go` and `.env.example`. `SESSION_SECRET` is required unless
+`APP_ENV=dev`.
+
+CLI (C11): `fold` (same as `fold serve`), `fold healthcheck`,
+`fold migrate [up|status|down-one]` (needs only `DATABASE_URL`), and
+`fold version` (needs nothing). `--json` gives machine-readable output.
 
 ## Deployment
 
 - `docker compose up --build -d` → app + Postgres 16 + Caddy (auto HTTPS).
   Fill `.env` from `.env.example` first. Postgres data is `pgdata`;
   uploads are `uploads`. Both are named volumes.
+- The compose network has the fixed subnet `172.30.0.0/24`, which is the
+  default `FOLD_TRUSTED_PROXIES`. Change both together.
 - Dockerfile is multi-stage (node → go → distroless), `CGO_ENABLED=0`.
   Keep it that way — the binary must build without a C compiler.
-- `APP_ENV` other than `dev` refuses to boot without `DATABASE_URL`.
-  SQLite stays the dev and `go test` default.
+- Every `APP_ENV` refuses to boot without `DATABASE_URL`. Migrations run
+  on start under a Postgres advisory lock; a failed migration exits non-zero.
 - First boot with an empty DB serves the setup wizard at `/setup`.
   After any user exists, the process caches that and will not show the
   wizard again until it is restarted.
 - `GET /healthz` pings the database. Compose and the image use
   `/fold healthcheck` because distroless has no shell or curl.
-- Handler tests use in-memory SQLite. Set `DATABASE_URL` to run the same
-  tests against Postgres. A live `docker compose up` is still the check
-  that Caddy, TLS, and the volumes work together.
+- A live `docker compose up` is still the check that Caddy, TLS, and the
+  volumes work together.
 
 ## SMS (Phase 2, not yet)
 
-Group SMS sits behind provider adapters (Telnyx default, Twilio optional).
+Group SMS goes through SMS provider adapters (Telnyx default, Twilio next).
 It is **not built yet**, and none is required to run Fold. When you build it:
 put it behind a `Notifier` interface (`internal/notify/`), broadcast-only v1,
 replies route to the group leader. Don't start early.

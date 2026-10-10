@@ -236,4 +236,3 @@ func TestServeUploadRejectsTraversal(t *testing.T) {
 		}
 	}
 }
-
