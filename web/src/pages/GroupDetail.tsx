@@ -443,6 +443,21 @@ export function GroupDetail() {
     }
   }
 
+  async function removeMember(memberId: number, name: string) {
+    if (!confirm(`Remove ${name} from “${group.name}”? They can't rejoin on their own; a leader can add them back.`)) return;
+    const note = prompt("Optional note for the church admins (never shown to the person you remove):") ?? "";
+    setMemberBusy(true);
+    setMemberError(null);
+    try {
+      await Groups.removeMember(id!, memberId, note.trim() || undefined);
+      await load();
+    } catch (e) {
+      setMemberError(e instanceof Error ? e.message : "Could not remove that person");
+    } finally {
+      setMemberBusy(false);
+    }
+  }
+
   async function addMember(e: React.FormEvent) {
     e.preventDefault();
     const email = memberEmail.trim();
@@ -727,6 +742,16 @@ export function GroupDetail() {
                                 className="text-sm font-medium text-gray-600 hover:underline"
                               >
                                 Remove as leader
+                              </button>
+                            )}
+                            {canManage && m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (
+                              <button
+                                type="button"
+                                onClick={() => removeMember(m.id, m.name)}
+                                disabled={memberBusy}
+                                className="text-sm font-medium text-red-600 hover:underline"
+                              >
+                                Remove
                               </button>
                             )}
                           </li>

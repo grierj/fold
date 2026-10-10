@@ -143,6 +143,8 @@ POST /api/v1/groups/:id/join    → 200 {membership}  (auth; idempotent)
 POST /api/v1/groups/:id/leave   → 200 {}            (auth; 400 if you are the only leader)
 POST /api/v1/groups/:id/members → 200 {membership}  (auth; leader or admin)
      body: {email} — adds that account as a member
+DELETE /api/v1/groups/:id/members/:userId → 200 {members: [...]}  (auth; leader or admin; DEC-35)
+     body (optional): {note} — kept only in the audit row, never shown to the removed person
 PUT  /api/v1/groups/:id/members/:userId/role → 200 {members: [...]}  (auth; leader or admin)
      body: {role: "leader"|"member"} — userId must already be an active member
 POST /api/v1/groups/:id/deletion-request → 200 {group}  (auth; a leader)
@@ -229,22 +231,44 @@ DELETE /api/v1/admin/groups/:id            → 200 {}                    (admin;
 GET  /api/v1/admin/groups                  → {groups: [groupSummary]}  (admin; all statuses)
 POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
      body: {userId, role: "member"|"leader"} — role=leader adds a (co-)leader; audited
-DELETE /api/v1/admin/groups/:id/members/:userId → 200 {}               (admin; 400 for the only leader)
+DELETE /api/v1/admin/groups/:id/members/:userId → 200 {members}      (admin; same rules as the leader route)
 GET  /api/v1/admin/users                   → {users: [user]}           (admin)
+GET  /api/v1/admin/users/:id/sole-leader-groups → {groups: [{id, name, status, candidates: [{id, name, admin}]}]}  (admin; DEC-36)
 POST /api/v1/admin/users                    → 201 {user}                (admin)
      body: {email, name, password? (≥10 chars), role, displayName?, phone?}
      — without a password the account is `invited` and can't sign in; 409 if the email is taken (any case)
 PUT  /api/v1/admin/users/:id               → 200 {user}                (admin; profile fields, email, role, status)
-     body: any of {name, displayName, email, phone, role, status: "active"|"disabled"}
+     body: any of {name, displayName, email, phone, role, status: "active"|"disabled", successors}
 POST /api/v1/admin/users/:id/password      → 200 {}                    (admin; also activates an invited account)
      body: {password (≥10 chars)}
 DELETE /api/v1/admin/users/:id             → 200 {}                    (admin; soft delete, frees the email)
+     body: {successors: {"<groupId>": <userId>}} — required for every group they lead alone
 ```
 
 Guards: cannot demote, disable or delete the last active admin, or
 yourself. Changing someone's password, email, role, or status ends all of
 their sessions (`session_version`). A disabled admin has no admin powers. `PUT /api/v1/groups/:id` already allows admins to edit any group.
 
+
+Removing a member (DEC-35): leaders remove people from groups they lead,
+co-leaders included, but never an admin (they can't demote an admin
+co-leader either) or the last leader; admins remove anyone but the last
+leader. Removing yourself is `leave`. The membership becomes `removed`: the
+person can't rejoin on their own (join answers 403), invite-only groups are
+404 to them, and a leader or admin adding them back makes it active again.
+Each removal writes a `membership.removed` audit row; removing a leader also
+shows admins a `leadership` notice.
+
+Sole-leader handoff (DEC-36): deleting or disabling the only leader of any
+group (any status) needs `successors`, a new leader per group: an active
+adult member of that group or any active admin (the SPA preselects the
+acting admin). A missing or invalid choice answers 400 with
+`{error, groups}` in the `sole-leader-groups` shape. On success, in one
+transaction: each successor becomes a leader (added to the group if needed)
+and the primary contact, the departing account's memberships end, and the
+account is deleted or disabled. Audit: `membership.role_changed` per group
+with `reason` `account_deleted` or `account_disabled` and
+`departingUserId`, plus `user.deleted` or `user.disabled`.
 ### Notifications
 
 ```
@@ -265,3 +289,10 @@ with or without a deletion request, and whether or not it still has members.
 - Validation failures → `400 {"error":"..."}`; missing → `404`.
 - Lists are unpaginated in v1 (fine for church scale); add `?page=` later
   if needed.
+- Every response carries the app's security headers (`securityHeaders` in
+  `main.go`, DEC-37): a `Content-Security-Policy` allowing only same-origin
+  scripts, styles, and connections (images may also be `data:`, `blob:`, or
+  `https:`), `X-Content-Type-Options: nosniff`, `Referrer-Policy:
+  same-origin`, `X-Frame-Options: SAMEORIGIN`, and `Permissions-Policy:
+  camera=(), microphone=(), geolocation=()`. `Strict-Transport-Security` is
+  added when `COOKIE_SECURE` is on.

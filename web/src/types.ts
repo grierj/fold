@@ -83,3 +83,11 @@ export interface Meeting {
   recurrenceRule: string;
   cancelledDates: string[];
 }
+
+// A group the person being deleted leads alone, and who may take over (DEC-36).
+export interface SoleLedGroup {
+  id: number;
+  name: string;
+  status: string;
+  candidates: { id: number; name: string; admin: boolean }[];
+}

@@ -1014,7 +1014,7 @@ DEC-30's "trust the church body" covers workflow only: no approval gates on sign
 - [ ] Secrets: provider secrets encrypted at rest, never returned to the browser, `.env` mode 600 (M4.1)
 - [x] Least-privilege permissions: every check in `internal/policy` with table tests; invite-only stays 404 to outsiders (M0.2)
 - [ ] Audit log for admin actions, sends, consent, roles, settings, secrets, links of minors, and every contact-access attempt; the table is created in M0.2, and rows about contact access, minors, consent, and roles are never purged (M0.2 onward)
-- [ ] Leaders remove members (never an admin or the last leader) and sole-leader accounts hand off to a chosen successor before deletion or disabling; both audited (M0.3b, DEC-35, DEC-36)
+- [x] Leaders remove members (never an admin or the last leader) and sole-leader accounts hand off to a chosen successor before deletion or disabling; both audited (M0.3b, DEC-35, DEC-36)
 - [ ] TLS everywhere (Caddy) plus security headers: HSTS, CSP, `nosniff`, frame, referrer, and permissions policies, set by the app in M0.3b (DEC-37); Caddy and image-level headers in M5.1
 - [ ] Webhook signature checks on every provider, including inbound mail (M3.2, M3.7, M3.11)
 - [ ] No account enumeration: sign-up, guest registration, password reset, and login give the same response whether or not an email has an account; the email carries the hint (M0.3, M1.2, M1.3, M1.4)
@@ -1498,7 +1498,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
     - The SPA's delete or disable dialog lists each group with a successor picker that defaults to the deleting admin.
     - `leaderCount` counts only active accounts.
   - **Security headers (DEC-37, 10.1, 10.6).** The app sets them itself, so they hold behind any proxy:
-    - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'`. `'unsafe-inline'` is for React `style` attributes (focal points), and `img-src https:` is for cover images given by URL. Tighten both when uploads become the only source (M4.7).
+    - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'`. As built, `style-src` needs no `'unsafe-inline'`: React sets focal points through the CSSOM, which CSP allows. `blob:` is for upload previews, and `img-src https:` is for cover images given by URL. Tighten `img-src` when uploads become the only source (M4.7). The image compressor runs on the main thread, because its web worker loads code from a CDN.
     - `Strict-Transport-Security: max-age=31536000` when `COOKIE_SECURE` is on (never in dev).
     - Keep `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, and `X-Frame-Options: SAMEORIGIN`. Add `Permissions-Policy: camera=(), microphone=(), geolocation=()`.
     - The server-rendered `/setup` page must work under the same CSP (no inline scripts).
@@ -1509,14 +1509,14 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
     - Fix or upgrade anything they flag in the same PR. Note any finding that can't be fixed in the PR body with the reason.
     - Pinned image digests in releases stay with M5.1.
 - Acceptance:
-  - [ ] A leader removes a member and a co-leader of their own group; each removal writes a `membership.removed` row with actor, group, person, old role, and IP
-  - [ ] A leader can't remove (or demote) an admin, can't remove the last leader, and gets 404 for a group they can't see and 403 for a visible group they don't lead
-  - [ ] A removed member can't rejoin by themselves, a leader can add them back, and an invite-only group is 404 to them right after removal
-  - [ ] Removing a leader shows admins an in-app notice; the note is in the audit row and nowhere in the removed person's API responses
-  - [ ] Deleting (or disabling) the only leader of two groups without successors is refused with both groups listed; with successors (one group member, one the deleting admin by default) it succeeds, both groups keep a leader, and the audit rows are written
-  - [ ] A successor must be an active adult member of that group or an admin; anyone else is refused
-  - [ ] Every response carries the CSP, `nosniff`, referrer, frame, and permissions headers; HSTS is present only with `COOKIE_SECURE`; the SPA and `/setup` load with no CSP violations in a browser
-  - [ ] Dependabot config is in the repo, and the `govulncheck` and `npm audit` CI steps pass
+  - [x] A leader removes a member and a co-leader of their own group; each removal writes a `membership.removed` row with actor, group, person, old role, and IP
+  - [x] A leader can't remove (or demote) an admin, can't remove the last leader, and gets 404 for a group they can't see and 403 for a visible group they don't lead
+  - [x] A removed member can't rejoin by themselves, a leader can add them back, and an invite-only group is 404 to them right after removal
+  - [x] Removing a leader shows admins an in-app notice; the note is in the audit row and nowhere in the removed person's API responses
+  - [x] Deleting (or disabling) the only leader of two groups without successors is refused with both groups listed; with successors (one group member, one the deleting admin by default) it succeeds, both groups keep a leader, and the audit rows are written
+  - [x] A successor must be an active adult member of that group or an admin; anyone else is refused
+  - [x] Every response carries the CSP, `nosniff`, referrer, frame, and permissions headers; HSTS is present only with `COOKIE_SECURE`; the SPA and `/setup` load with no CSP violations in a browser
+  - [x] Dependabot config is in the repo, and the `govulncheck` and `npm audit` CI steps pass
 - Tests: policy table tests for the new `CanRemoveMember` and `CanChangeRole` cases (admin target, last leader, co-leader, self); API tests for removal, rejoin, audit rows, and the handoff (refusal, defaults, invalid successor); a header test on an API route, the SPA shell, and `/setup`.
 
 **M0.4 Frontend and browser test tooling**

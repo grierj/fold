@@ -230,19 +230,29 @@ func (a *App) relOf(u *models.User, groupID uint) policy.Rel {
 	if u == nil {
 		return policy.Rel{}
 	}
-	var m models.Membership
-	if err := a.DB.Where("user_id = ? AND group_id = ? AND status = ?", u.ID, groupID, "active").
-		First(&m).Error; err != nil {
-		return policy.Rel{}
-	}
-	return policy.Rel{Member: true, Leader: m.Role == models.MembershipLeader}
+	return relIn(a.DB, u.ID, groupID)
 }
 
-// leaderCount counts a group's active leaders whose accounts still exist.
+// membershipRel turns a membership row (any status) into policy facts.
+func membershipRel(m models.Membership) policy.Rel {
+	active := m.ID != 0 && m.Status == "active"
+	return policy.Rel{
+		Member:  active,
+		Leader:  active && m.Role == models.MembershipLeader,
+		Removed: m.ID != 0 && m.Status == memberRemoved,
+	}
+}
+
+// memberRemoved is the Membership.Status of someone a leader or admin
+// removed (DEC-35).
+const memberRemoved = "removed"
+
+// leaderCount counts a group's active leaders whose accounts still exist
+// and aren't disabled.
 func leaderCount(db *gorm.DB, groupID uint) int {
 	var n int64
 	db.Model(&models.Membership{}).
-		Joins("JOIN users ON users.id = memberships.user_id AND users.deleted_at IS NULL").
+		Joins("JOIN users ON users.id = memberships.user_id AND users.deleted_at IS NULL AND users.status <> 'disabled'").
 		Where("memberships.group_id = ? AND memberships.role = ? AND memberships.status = ?",
 			groupID, models.MembershipLeader, "active").
 		Count(&n)
@@ -334,6 +344,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/groups/:id/leave", a.apiAuth(), a.apiLeaveGroup)
 	v1.PUT("/groups/:id/members/:userId/role", a.apiAuth(), a.apiSetMemberRole)
 	v1.POST("/groups/:id/members", a.apiAuth(), a.apiAddGroupMember)
+	v1.DELETE("/groups/:id/members/:userId", a.apiAuth(), a.apiRemoveGroupMember)
 	v1.POST("/groups/:id/deletion-request", a.apiAuth(), a.apiRequestDeletion)
 	v1.DELETE("/groups/:id/deletion-request", a.apiAuth(), a.apiCancelDeletion)
 	v1.GET("/groups/:id/members", a.apiAuth(), a.apiGroupMembers)
@@ -361,6 +372,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/admin/users", a.apiAuth(), a.apiAdmin(), a.apiAdminListUsers)
 	v1.POST("/admin/users", a.apiAuth(), a.apiAdmin(), a.apiAdminCreateUser)
 	v1.PUT("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminUpdateUser)
+	v1.GET("/admin/users/:id/sole-leader-groups", a.apiAuth(), a.apiAdmin(), a.apiAdminSoleLedGroups)
 	v1.DELETE("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminDeleteUser)
 	v1.POST("/admin/users/:id/password", a.apiAuth(), a.apiAdmin(), a.apiAdminResetPassword)
 

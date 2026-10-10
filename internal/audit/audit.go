@@ -17,6 +17,20 @@ const (
 	// Target is the group; meta has userId, oldRole and newRole ("leader",
 	// "member", or "none" when they left or were removed).
 	RoleChanged = "membership.role_changed"
+
+	// MemberRemoved: a leader or admin removed someone from a group (DEC-35).
+	// Target is the group; meta has userId, oldRole ("leader" or "member"),
+	// and the optional note, which is never shown to the removed person.
+	MemberRemoved = "membership.removed"
+
+	// UserDeleted: an admin deleted an account. Target is the user. Any
+	// sole-leader handoff is recorded as RoleChanged rows with reason
+	// "account_deleted" (DEC-36).
+	UserDeleted = "user.deleted"
+
+	// UserDisabled: an admin disabled an account (handoff rows use reason
+	// "account_disabled").
+	UserDisabled = "user.disabled"
 )
 
 // Entry is one audit record. Actor is nil for system actions.

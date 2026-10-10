@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"fold/internal/audit"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -176,6 +177,9 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		Phone       *string `json:"phone"`
 		Role        *string `json:"role"`
 		Status      *string `json:"status"`
+		// Successors: required when disabling someone who leads a group alone
+		// (DEC-36), as for deletion.
+		Successors map[string]uint `json:"successors"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
@@ -261,7 +265,23 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		updates["session_version"] = gorm.Expr("session_version + 1")
 	}
 	if len(updates) > 0 {
-		if err := a.DB.Model(u).Updates(updates).Error; err != nil {
+		disabling := updates["status"] == models.UserDisabled
+		err := a.DB.Transaction(func(tx *gorm.DB) error {
+			if disabling {
+				if err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled"); err != nil {
+					return err
+				}
+				if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled,
+					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+					return err
+				}
+			}
+			return tx.Model(u).Updates(updates).Error
+		})
+		if needSuccessors(c, err) {
+			return
+		}
+		if err != nil {
 			if emailTaken(err) {
 				jsonError(c, http.StatusConflict, "an account with that email already exists")
 				return
@@ -289,19 +309,35 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, msg)
 		return
 	}
-	// Soft delete (DeletedAt). Their memberships stay for history; the
-	// roster only lists active memberships whose user still exists. The
-	// email is replaced so the address is free for a new account, and the
-	// session version is bumped so open sessions end.
+	var body struct {
+		// Successors maps group id to the new leader, for every group this
+		// person leads alone (DEC-36; see GET /admin/users/:id/sole-leader-groups).
+		Successors map[string]uint `json:"successors"`
+	}
+	_ = c.ShouldBindJSON(&body) // optional when they lead no group alone
+	// Soft delete (DeletedAt), after handing off every group they lead alone
+	// and ending their memberships. The email is replaced so the address is
+	// free for a new account, and the session version is bumped so open
+	// sessions end.
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted"); err != nil {
+			return err
+		}
 		if err := tx.Model(u).Updates(map[string]any{
 			"email":           fmt.Sprintf("deleted-%d@deleted.invalid", u.ID),
 			"session_version": gorm.Expr("session_version + 1"),
 		}).Error; err != nil {
 			return err
 		}
+		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDeleted,
+			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+			return err
+		}
 		return tx.Delete(u).Error
 	})
+	if needSuccessors(c, err) {
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not delete user")
 		return
@@ -376,7 +412,7 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	err := a.changeRole(c, &g, u.ID, role, func(actor, t policy.Rel, leaders int) bool {
+	err := a.changeRole(c, &g, u.ID, role, "", func(actor, t policy.Rel, leaders int) bool {
 		// Admins may add someone straight in with either role.
 		return policy.CanChangeRole(asPerson(me), actor, asPerson(&u),
 			policy.Rel{Member: true, Leader: t.Leader}, role == models.MembershipLeader, leaders)
@@ -403,27 +439,12 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 
 func (a *App) apiAdminRemoveMember(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	uid, _ := strconv.Atoi(c.Param("userId"))
 	var g models.Group
 	if err := a.DB.First(&g, id).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "group not found")
 		return
 	}
-	me := apiUser(c)
-	err := a.changeRole(c, &g, uint(uid), "", func(actor, t policy.Rel, leaders int) bool {
-		return policy.CanRemoveMember(asPerson(me), actor, t, leaders)
-	})
-	switch err {
-	case nil:
-	case errRoleRefused:
-		jsonError(c, http.StatusBadRequest,
-			"cannot remove the only leader — make someone else a leader first")
-		return
-	default:
-		jsonError(c, http.StatusInternalServerError, "could not remove member")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{})
+	a.removeMember(c, &g)
 }
 
 func (a *App) apiDeletionRequests(c *gin.Context) {

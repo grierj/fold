@@ -120,9 +120,9 @@ func (a *App) apiNotifications(c *gin.Context) {
 // hear about it and can undo a bad promotion). Read from the audit log.
 func (a *App) leadershipNotices(me *models.User) []notificationJSON {
 	var rows []models.AuditLog
-	a.DB.Where("action = ? AND at > ? AND (actor_id IS NULL OR actor_id <> ?)",
-		audit.RoleChanged, time.Now().Add(-14*24*time.Hour), me.ID).
-		Order("at DESC").Limit(20).Find(&rows)
+	a.DB.Where("action IN ? AND at > ? AND (actor_id IS NULL OR actor_id <> ?)",
+		[]string{audit.RoleChanged, audit.MemberRemoved}, time.Now().Add(-14*24*time.Hour), me.ID).
+		Order("at DESC").Limit(40).Find(&rows)
 	out := []notificationJSON{}
 	for _, r := range rows {
 		var meta struct {
@@ -133,9 +133,14 @@ func (a *App) leadershipNotices(me *models.User) []notificationJSON {
 		if json.Unmarshal([]byte(r.MetaJSON), &meta) != nil {
 			continue
 		}
+		if r.Action == audit.MemberRemoved && meta.OldRole != models.MembershipLeader {
+			continue // removing a plain member isn't a leadership change
+		}
 		person := a.nameOf(meta.UserID)
 		var title string
 		switch {
+		case r.Action == audit.MemberRemoved:
+			title = fmt.Sprintf("%s removed %s (a leader) from the group", a.actorName(r.ActorID), person)
 		case meta.NewRole == models.MembershipLeader:
 			title = fmt.Sprintf("%s made %s a leader", a.actorName(r.ActorID), person)
 		case r.ActorID != nil && *r.ActorID == meta.UserID:

@@ -2,10 +2,11 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
 // Build artifacts land in web/dist, which the Go binary embeds via go:embed.
-// Assets use relative paths so the bundle works when served at / by the binary.
+// Assets use absolute paths: the binary serves the SPA at /, and relative
+// paths broke deep links such as /groups/1 (assets resolved under /groups/).
 export default defineConfig({
   plugins: [react()],
-  base: "./",
+  base: "/",
   build: {
     outDir: "dist",
     emptyOutDir: true,

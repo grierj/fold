@@ -71,6 +71,7 @@ import type {
   MeetingInstance,
   Member,
   Notification,
+  SoleLedGroup,
   User,
   Visibility,
 } from "./types";
@@ -121,6 +122,9 @@ export const Groups = {
     api<{ members: Member[] }>(`/groups/${id}/members/${userId}/role`, { method: "PUT", body: { role } }),
   addMember: (id: number | string, email: string) =>
     api<unknown>(`/groups/${id}/members`, { method: "POST", body: { email } }),
+  // Leaders and admins remove someone (audited; DEC-35). The note stays in the audit log.
+  removeMember: (id: number | string, userId: number, note?: string) =>
+    api<{ members: Member[] }>(`/groups/${id}/members/${userId}`, { method: "DELETE", body: { note } }),
   requestDeletion: (id: number | string) =>
     api<{ group: GroupSummary }>(`/groups/${id}/deletion-request`, { method: "POST" }),
   cancelDeletion: (id: number | string) =>
@@ -225,9 +229,15 @@ export interface AdminUserInput {
 export const AdminUsers = {
   list: () => api<{ users: User[] }>("/admin/users"),
   create: (data: AdminUserInput) => api<{ user: User }>("/admin/users", { method: "POST", body: data }),
-  update: (id: number, data: ProfileUpdate & { role?: string; status?: "active" | "disabled" }) =>
+  update: (
+    id: number,
+    data: ProfileUpdate & { role?: string; status?: "active" | "disabled"; successors?: Record<string, number> },
+  ) =>
     api<{ user: User }>(`/admin/users/${id}`, { method: "PUT", body: data }),
-  remove: (id: number) => api<Record<string, never>>(`/admin/users/${id}`, { method: "DELETE" }),
+  // Groups this person leads alone, with who may take over (DEC-36).
+  soleLeaderGroups: (id: number) => api<{ groups: SoleLedGroup[] }>(`/admin/users/${id}/sole-leader-groups`),
+  remove: (id: number, successors: Record<string, number> = {}) =>
+    api<Record<string, never>>(`/admin/users/${id}`, { method: "DELETE", body: { successors } }),
   resetPassword: (id: number, password: string) =>
     api<Record<string, never>>(`/admin/users/${id}/password`, {
       method: "POST",

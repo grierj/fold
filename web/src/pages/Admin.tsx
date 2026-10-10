@@ -4,6 +4,7 @@ import { Admin, AdminGroups, AdminUsers, Groups } from "../api";
 import type { GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Avatar } from "../components/Avatar";
+import { DeleteUserPanel } from "../components/DeleteUserPanel";
 
 type AdminTab = "approvals" | "groups" | "users";
 
@@ -621,20 +622,8 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
       setBusy(false);
     }
   }
-
-  async function remove(u: User) {
-    if (!confirm(`Delete ${u.displayName || u.name} (${u.email})? They will no longer be able to log in.`)) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await AdminUsers.remove(u.id);
-      reload();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Delete failed");
-    } finally {
-      setBusy(false);
-    }
-  }
+  // Deleting or disabling opens a panel that also picks successors (DEC-36).
+  const [leaving, setLeaving] = useState<{ id: number; action: "delete" | "disable" } | null>(null);
 
   return (
     <div>
@@ -690,6 +679,13 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   {resetId === u.id && (
                     <PasswordReset user={u} onDone={() => setResetId(null)} />
                   )}
+                  {leaving?.id === u.id && (
+                    <DeleteUserPanel
+                      target={u}
+                      action={leaving.action}
+                      onDone={(done) => { setLeaving(null); if (done) reload(); }}
+                    />
+                  )}
                 </td>
                 <td className="px-4 py-3 text-gray-600 hidden md:table-cell">
                   {u.email || "—"}
@@ -723,14 +719,18 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     Password
                   </button>
                   <button
-                    onClick={() => setStatus(u, u.status === "disabled" ? "active" : "disabled")}
+                    onClick={() =>
+                      u.status === "disabled"
+                        ? setStatus(u, "active")
+                        : setLeaving({ id: u.id, action: "disable" })
+                    }
                     disabled={busy}
                     className="text-sm text-gray-600 hover:underline mr-3"
                   >
                     {u.status === "disabled" ? "Enable" : "Disable"}
                   </button>
                   <button
-                    onClick={() => remove(u)}
+                    onClick={() => { setLeaving({ id: u.id, action: "delete" }); setEditingId(null); setResetId(null); }}
                     disabled={busy}
                     className="text-sm text-red-600 hover:underline"
                   >

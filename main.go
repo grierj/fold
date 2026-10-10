@@ -126,7 +126,7 @@ func (a *App) setupRouter() *gin.Engine {
 	// redirect would 301-loop client-side routes (e.g. "/" -> "/"), so it
 	// must stay off.
 	r.RedirectTrailingSlash = false
-	r.Use(gin.Logger(), gin.Recovery(), securityHeaders())
+	r.Use(gin.Logger(), gin.Recovery(), securityHeaders(a.Config.CookieSecure))
 	// Believe X-Forwarded-For only from the reverse proxy (C17). LoadConfig
 	// validated the list; an empty one trusts nobody.
 	if err := r.SetTrustedProxies(a.Config.TrustedProxies); err != nil {
@@ -229,11 +229,29 @@ func (a *App) serveSPA() gin.HandlerFunc {
 	}
 }
 
-func securityHeaders() gin.HandlerFunc {
+// contentSecurityPolicy covers the SPA and /setup (DEC-37, 10.1). Scripts
+// and styles come only from this origin; React sets focal points through
+// the CSSOM, which CSP allows without 'unsafe-inline'. Images may be data:
+// and blob: (upload previews) or any https URL (group covers given by URL);
+// tighten img-src when uploads are the only source (M4.7).
+const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; " +
+	"img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self'; object-src 'none'; " +
+	"base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
+
+// securityHeaders sets the headers on every response, so they hold behind
+// any proxy. HSTS goes out only when cookies are Secure, which means the
+// site is served over HTTPS (never in dev).
+func securityHeaders(hsts bool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		c.Header("X-Content-Type-Options", "nosniff")
-		c.Header("Referrer-Policy", "same-origin")
-		c.Header("X-Frame-Options", "SAMEORIGIN")
+		h := c.Writer.Header()
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "same-origin")
+		h.Set("X-Frame-Options", "SAMEORIGIN")
+		h.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		if hsts {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
 		c.Next()
 	}
 }
