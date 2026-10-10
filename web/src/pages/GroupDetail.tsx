@@ -97,6 +97,7 @@ export interface GroupFormData {
   coverFile?: File | null;
   coverFocal?: { x: number; y: number };
   visibility: Visibility;
+  memberLimit: number | null;
 }
 
 function GroupForm({
@@ -109,6 +110,7 @@ function GroupForm({
     name: string; description: string; location: string; tags: string[];
     imageUrl: string; coverFocalX: number; coverFocalY: number;
     visibility?: Visibility;
+    memberLimit?: number | null;
   };
   saveLabel: string;
   onSaved: (data: GroupFormData) => Promise<void>;
@@ -123,6 +125,7 @@ function GroupForm({
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverFocal, setCoverFocal] = useState<{ x: number; y: number } | null>(null);
   const [visibility, setVisibility] = useState<Visibility>(initial.visibility ?? "public");
+  const [memberLimit, setMemberLimit] = useState(initial.memberLimit ? String(initial.memberLimit) : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -147,6 +150,7 @@ function GroupForm({
               .map((t) => t.trim())
               .filter(Boolean),
             visibility,
+            memberLimit: memberLimit.trim() ? Number(memberLimit) : null,
           });
         } catch (err) {
           setError(err instanceof Error ? err.message : "Save failed");
@@ -186,6 +190,22 @@ function GroupForm({
           onChange={(e) => setTags(e.target.value)}
           placeholder="e.g. young-adults, bible-study"
         />
+      </div>
+      <div>
+        <label className="label" htmlFor="member-limit">Member limit (optional)</label>
+        <input
+          id="member-limit"
+          className="input"
+          type="number"
+          min={1}
+          step={1}
+          value={memberLimit}
+          onChange={(e) => setMemberLimit(e.target.value)}
+          placeholder="No limit"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          For a room with a fixed capacity. When it's full, people can't join on their own; leaders can still add someone.
+        </p>
       </div>
       <fieldset>
         <legend className="label">Who can see this group</legend>
@@ -303,7 +323,7 @@ export function CreateGroupForm({ onSaved, onCancel }: {
 export function GroupDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, isAdmin } = useAuth();
   const [detail, setDetail] = useState<GroupDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -355,6 +375,7 @@ export function GroupDetail() {
   }
 
   const { group, members, upcomingMeetings, canManage, isMember } = detail;
+  const pendingReturns = detail.pendingReturns ?? [];
   // Server serializes an empty upcomingMeetings as null, not [].
   const meetings: MeetingInstance[] = upcomingMeetings ?? [];
   // Leadership comes from membership roles (several leaders allowed).
@@ -421,6 +442,7 @@ export function GroupDetail() {
       ...(data.coverFile ? {} : { imageUrl: data.imageUrl }),
       ...(data.coverFocal ? { coverFocal: data.coverFocal } : {}),
       visibility: data.visibility,
+      memberLimit: data.memberLimit,
     });
     setEditing(false);
     await load();
@@ -443,6 +465,21 @@ export function GroupDetail() {
     }
   }
 
+  async function removeMember(memberId: number, name: string) {
+    if (!confirm(`Remove ${name} from “${group.name}”? They can't rejoin on their own; a leader can add them back.`)) return;
+    const note = prompt("Optional note for the church admins (never shown to the person you remove):") ?? "";
+    setMemberBusy(true);
+    setMemberError(null);
+    try {
+      await Groups.removeMember(id!, memberId, note.trim() || undefined);
+      await load();
+    } catch (e) {
+      setMemberError(e instanceof Error ? e.message : "Could not remove that person");
+    } finally {
+      setMemberBusy(false);
+    }
+  }
+
   async function addMember(e: React.FormEvent) {
     e.preventDefault();
     const email = memberEmail.trim();
@@ -450,11 +487,35 @@ export function GroupDetail() {
     setMemberBusy(true);
     setMemberError(null);
     try {
-      await Groups.addMember(id!, email);
+      try {
+        await Groups.addMember(id!, email);
+      } catch (err) {
+        // Full group: going over the limit is an explicit, audited choice (DEC-39).
+        if (!(err instanceof ApiError) || err.status !== 409) throw err;
+        if (!confirm(`“${group.name}” is full (${group.memberCount} of ${group.memberLimit}). Add ${email} anyway?`)) return;
+        await Groups.addMember(id!, email, true);
+      }
       setMemberEmail("");
       await load();
     } catch (e) {
       setMemberError(e instanceof Error ? e.message : "Could not add that person");
+    } finally {
+      setMemberBusy(false);
+    }
+  }
+
+  async function decideReturn(memberId: number, name: string, decision: "approve" | "decline") {
+    const question = decision === "approve"
+      ? `Let ${name} back into “${group.name}”? This can put the group over its limit.`
+      : `Decline ${name}'s return? They'll be removed from “${group.name}”.`;
+    if (!confirm(question)) return;
+    setMemberBusy(true);
+    setMemberError(null);
+    try {
+      await Groups.decideReturn(id!, memberId, decision);
+      await load();
+    } catch (e) {
+      setMemberError(e instanceof Error ? e.message : "Could not save that");
     } finally {
       setMemberBusy(false);
     }
@@ -535,7 +596,9 @@ export function GroupDetail() {
               )}
               <h1 className="text-3xl sm:text-4xl font-extrabold text-white">{group.name}</h1>
               <div className="text-white/80 text-sm mt-1">
-                {group.memberCount} {group.memberCount === 1 ? "member" : "members"}
+                {canManage && group.memberLimit
+                  ? `${group.memberCount} of ${group.memberLimit} members`
+                  : `${group.memberCount} ${group.memberCount === 1 ? "member" : "members"}`}
                 {group.leaderName ? ` · Organized by ${group.leaderName}` : ""}
                 {group.location ? ` · ${group.location}` : ""}
               </div>
@@ -599,6 +662,7 @@ export function GroupDetail() {
               coverFocalX: group.coverFocalX,
               coverFocalY: group.coverFocalY,
               visibility: group.visibility,
+              memberLimit: group.memberLimit,
             }}
             saveLabel="Save changes"
             onSaved={saveEdit}
@@ -706,7 +770,13 @@ export function GroupDetail() {
                               focalY={m.avatarFocalY}
                             />
                             <div className="grow min-w-0">
-                              <div className="font-semibold">{m.name}</div>
+                              <div className="font-semibold">{m.name}
+                                {m.admin && (
+                                  <span className="ml-2 inline-block rounded-full bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-800">
+                                    Admin
+                                  </span>
+                                )}
+                              </div>
                               <div className="text-sm text-gray-500 capitalize">{m.role}</div>
                             </div>
                             {canManage && m.role !== "leader" && (
@@ -719,7 +789,7 @@ export function GroupDetail() {
                                 Make leader
                               </button>
                             )}
-                            {canManage && m.role === "leader" && leaderCount > 1 && (
+                            {canManage && m.role === "leader" && leaderCount > 1 && (!m.admin || isAdmin) && (
                               <button
                                 type="button"
                                 onClick={() => setRole(m.id, m.name, "member")}
@@ -729,11 +799,43 @@ export function GroupDetail() {
                                 Remove as leader
                               </button>
                             )}
+                            {canManage && m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (!m.admin || isAdmin) && (
+                              <button
+                                type="button"
+                                onClick={() => removeMember(m.id, m.name)}
+                                disabled={memberBusy}
+                                className="text-sm font-medium text-red-600 hover:underline"
+                              >
+                                Remove
+                              </button>
+                            )}
                           </li>
                         ))}
                       </ul>
                     ) : (
                       <p className="text-gray-600">No members yet.</p>
+                    )}
+                    {canManage && pendingReturns.length > 0 && (
+                      <section id="waiting" className="mt-6">
+                        <h3 className="font-bold">Waiting to return</h3>
+                        <p className="text-sm text-gray-500">
+                          Their accounts were turned back on while the group was full.
+                        </p>
+                        <ul className="divide-y divide-gray-100">
+                          {pendingReturns.map((m) => (
+                            <li key={m.id} className="py-3 flex items-center gap-3">
+                              <Avatar url={m.avatarUrl || undefined} name={m.name} focalX={m.avatarFocalX} focalY={m.avatarFocalY} />
+                              <div className="grow min-w-0 font-semibold">{m.name}</div>
+                              <button type="button" onClick={() => decideReturn(m.id, m.name, "approve")} disabled={memberBusy} className="text-sm font-medium text-brand hover:underline">
+                                Approve
+                              </button>
+                              <button type="button" onClick={() => decideReturn(m.id, m.name, "decline")} disabled={memberBusy} className="text-sm font-medium text-red-600 hover:underline">
+                                Decline
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </section>
                     )}
                     {canManage && (
                       <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">

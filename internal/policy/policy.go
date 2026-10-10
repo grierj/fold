@@ -43,6 +43,12 @@ type Group struct {
 type Rel struct {
 	Member bool // any active membership, leaders included
 	Leader bool // active membership with role=leader
+	// Removed: a leader or admin removed this person (DEC-35). They aren't a
+	// member and can't rejoin on their own.
+	Removed bool
+	// PendingReturn: the account was re-enabled while the group was full; a
+	// leader or admin decides (DEC-38, DEC-39). Not a member meanwhile.
+	PendingReturn bool
 }
 
 // CanSeeGroup: public groups are open to all, private groups to signed-in
@@ -78,6 +84,12 @@ func CanSeeRoster(p *Person, g Group, r Rel) bool {
 func CanJoinGroup(p *Person, g Group, r Rel) bool {
 	if p == nil || g.Status != GroupActive || !CanSeeGroup(p, g, r) {
 		return false
+	}
+	if r.Removed && !p.Admin {
+		return false // removed people come back only when a leader adds them
+	}
+	if r.PendingReturn {
+		return false // a leader or admin approves the return instead
 	}
 	return p.Admin || r.Member || g.Visibility != InviteOnly
 }
@@ -115,6 +127,7 @@ func CanSetGroupStatus(p *Person, r Rel, status string) bool {
 //   - The target must already be an active member.
 //   - Only adults lead: a teen can never be made a leader (DEC-18).
 //   - A group can never lose its last leader.
+//   - A leader can't demote an admin; only another admin can (DEC-35).
 //
 // There is no admin-approval gate for a leader promoting a co-leader
 // (DEC-31, 5.11). The handler writes an audit row and admins see a notice.
@@ -126,13 +139,37 @@ func CanChangeRole(p *Person, r Rel, target *Person, targetRel Rel, makeLeader b
 	if makeLeader {
 		return !target.Teen
 	}
+	// A leader can't demote an admin who co-leads the group (DEC-35).
+	if targetRel.Leader && target.Admin && !p.Admin {
+		return false
+	}
 	return !targetRel.Leader || leaders > 1
 }
 
-// CanRemoveMember: leaders and admins prune their roster; nobody removes
-// the last leader.
-func CanRemoveMember(p *Person, r Rel, targetRel Rel, leaders int) bool {
-	return CanManageGroup(p, r) && (!targetRel.Leader || leaders > 1)
+// CanRemoveMember decides taking someone off a group's roster (DEC-35).
+//   - Admins may remove anyone; leaders only in groups they lead.
+//   - A leader can't remove an admin; only another admin can.
+//   - Nobody removes the group's last leader (hand off first).
+//   - Co-leaders can be removed like members; removing yourself is leaving
+//     (CanLeaveGroup).
+//
+// The handler marks the membership removed (so the person can't rejoin on
+// their own) and writes an audit row (DEC-34: log it, no approval layer).
+func CanRemoveMember(p *Person, r Rel, target *Person, targetRel Rel, leaders int) bool {
+	if !CanManageGroup(p, r) || target == nil || !targetRel.Member || p.ID == target.ID {
+		return false
+	}
+	if target.Admin && !p.Admin {
+		return false
+	}
+	return !targetRel.Leader || leaders > 1
+}
+
+// CanBeSuccessor: when an admin deletes the account of a group's only
+// leader, the new leader is an adult active member of that group or any
+// admin (DEC-36). Teens never lead (DEC-18).
+func CanBeSuccessor(candidate *Person, candidateRel Rel) bool {
+	return candidate != nil && !candidate.Teen && (candidate.Admin || candidateRel.Member)
 }
 
 // CanLeaveGroup: anyone may leave, except the last leader, who must hand
@@ -198,4 +235,13 @@ func CanSeeContact(p *Person, self bool, c Contact) bool {
 // or deleted.
 func CanDemoteOrDelete(p, target *Person, admins int) bool {
 	return IsAdmin(p) && target != nil && p.ID != target.ID && (!target.Admin || admins > 1)
+}
+
+// GroupHasRoom reports whether one more active member fits under a group's
+// member limit (DEC-39); nil means unlimited. When it is false, self-join
+// is refused, and a leader or admin may still add someone, approve a
+// return, or have a restore go through only by explicit choice. Groups
+// have no waitlist.
+func GroupHasRoom(limit *int, count int) bool {
+	return limit == nil || count < *limit
 }

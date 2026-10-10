@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -57,12 +58,13 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Name        string   `json:"name"`
-		Description string   `json:"description"`
-		Tags        []string `json:"tags"`
-		ImageURL    string   `json:"imageUrl"`
-		Location    string   `json:"location"`
-		Visibility  string   `json:"visibility"`
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Tags        []string        `json:"tags"`
+		ImageURL    string          `json:"imageUrl"`
+		Location    string          `json:"location"`
+		Visibility  string          `json:"visibility"`
+		MemberLimit json.RawMessage `json:"memberLimit"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 		jsonError(c, http.StatusBadRequest, "name is required")
@@ -81,6 +83,11 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, msg)
 		return
 	}
+	limit, _, msg := parseMemberLimit(body.MemberLimit)
+	if msg != "" {
+		jsonError(c, http.StatusBadRequest, msg)
+		return
+	}
 	g := models.Group{
 		Name:        name,
 		Description: description,
@@ -90,6 +97,7 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		LeaderID:    u.ID, // displayed primary contact
 		Status:      policy.NewGroupStatus(asPerson(u)),
 		Visibility:  visibility,
+		MemberLimit: limit,
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&g).Error; err != nil {
@@ -127,21 +135,30 @@ func (a *App) apiGetGroup(c *gin.Context) {
 	now := time.Now().UTC()
 	upcoming := a.buildInstances(meetings, now, now.AddDate(0, 0, 90), me)
 
+	pendingFor := []memberJSON{}
+	if policy.CanManageGroup(p, rel) {
+		pendingFor = a.membersWith(g.ID, memberPendingReturn)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"group":            a.groupSummary(g),
 		"members":          memberList,
 		"upcomingMeetings": upcoming,
 		"canManage":        policy.CanManageGroup(p, rel),
 		"isMember":         rel.Member,
+		// Leaders and admins decide returns into a full group (DEC-39).
+		"pendingReturns": pendingFor,
 	})
 }
 
-// roster lists a group's active members whose accounts still exist.
-func (a *App) roster(groupID uint) []memberJSON {
+// roster lists a group's active members whose accounts are listed.
+func (a *App) roster(groupID uint) []memberJSON { return a.membersWith(groupID, "active") }
+
+// membersWith lists a group's memberships in one status, listed accounts only.
+func (a *App) membersWith(groupID uint, status string) []memberJSON {
 	var members []models.Membership
 	a.DB.Preload("User").
-		Joins("JOIN users ON users.id = memberships.user_id AND users.deleted_at IS NULL").
-		Where("memberships.group_id = ? AND memberships.status = ?", groupID, "active").
+		Joins(listedUsers("memberships")).
+		Where("memberships.group_id = ? AND memberships.status = ?", groupID, status).
 		Order("memberships.joined_at").Find(&members)
 	out := make([]memberJSON, 0, len(members))
 	for i := range members {
@@ -169,6 +186,9 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			Y float64 `json:"y"`
 		} `json:"coverFocal"`
 		Visibility *string `json:"visibility"`
+		// MemberLimit: a number sets it, null clears it (DEC-39). Lowering it
+		// below the current count is fine; nobody is removed.
+		MemberLimit json.RawMessage `json:"memberLimit"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")
@@ -237,6 +257,12 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		}
 		g.Visibility = visibility
 	}
+	if limit, set, msg := parseMemberLimit(body.MemberLimit); msg != "" {
+		jsonError(c, http.StatusBadRequest, msg)
+		return
+	} else if set {
+		g.MemberLimit = limit
+	}
 	if err := a.DB.Save(g).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not update group")
 		return
@@ -260,22 +286,45 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 		return
 	}
 	if !policy.CanJoinGroup(asPerson(u), asGroup(g), rel) {
-		jsonError(c, http.StatusForbidden, "this group is invite only")
+		switch {
+		case rel.Removed:
+			jsonError(c, http.StatusForbidden, "A leader removed you from this group")
+		case rel.PendingReturn:
+			jsonError(c, http.StatusConflict, "Your return to this group is waiting for a leader")
+		default:
+			jsonError(c, http.StatusForbidden, "this group is invite only")
+		}
 		return
 	}
-	m := models.Membership{UserID: u.ID, GroupID: g.ID}
-	res := a.DB.Where("user_id = ? AND group_id = ?", u.ID, g.ID).
-		Attrs(models.Membership{Role: models.MembershipMember, Status: "active", JoinedAt: time.Now().UTC()}).
-		FirstOrCreate(&m)
-	if res.Error != nil {
-		jsonError(c, http.StatusInternalServerError, "could not join group")
-		return
+	if !rel.Member {
+		// Self-join never goes over the member limit (DEC-39).
+		err := a.changeRole(c, g, u.ID, models.MembershipMember, "", false, func(_, t policy.Rel, _ int) bool {
+			return policy.CanJoinGroup(asPerson(u), asGroup(g), t)
+		})
+		switch err {
+		case nil:
+		case errGroupFull:
+			groupFull(c)
+			return
+		case errRoleRefused:
+			jsonError(c, http.StatusForbidden, "you can't join this group")
+			return
+		default:
+			jsonError(c, http.StatusInternalServerError, "could not join group")
+			return
+		}
 	}
-	// A new member means the leader is no longer alone, so a pending
-	// deletion request no longer matches the rule that created it.
-	if g.DeletionRequested && res.RowsAffected > 0 {
+	a.membershipAdded(c, g, u.ID)
+}
+
+// membershipAdded clears a lone leader's deletion request once someone else
+// is in the group, and answers with the membership.
+func (a *App) membershipAdded(c *gin.Context, g *models.Group, userID uint) {
+	if g.DeletionRequested && memberCount(a.DB, g.ID) > 1 {
 		a.DB.Model(&models.Group{}).Where("id = ?", g.ID).Update("deletion_requested", false)
 	}
+	var m models.Membership
+	a.DB.Where("user_id = ? AND group_id = ?", userID, g.ID).First(&m)
 	c.JSON(http.StatusOK, gin.H{"membership": gin.H{
 		"id": m.ID, "userId": m.UserID, "groupId": m.GroupID,
 		"role": m.Role, "status": m.Status,
@@ -290,7 +339,7 @@ func (a *App) apiLeaveGroup(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "group not found")
 		return
 	}
-	if err := a.changeRole(c, &g, u.ID, "", func(_, target policy.Rel, leaders int) bool {
+	if err := a.changeRole(c, &g, u.ID, "", "", false, func(_, target policy.Rel, leaders int) bool {
 		return !target.Member || policy.CanLeaveGroup(target, leaders)
 	}); err != nil {
 		if err == errRoleRefused {
@@ -414,7 +463,7 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 		return
 	}
 	makeLeader := body.Role == models.MembershipLeader
-	err := a.changeRole(c, g, target.ID, body.Role, func(actor, targetRel policy.Rel, leaders int) bool {
+	err := a.changeRole(c, g, target.ID, body.Role, "", false, func(actor, targetRel policy.Rel, leaders int) bool {
 		return policy.CanChangeRole(asPerson(me), actor, asPerson(&target), targetRel, makeLeader, leaders)
 	})
 	switch err {
@@ -433,28 +482,39 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 // errRoleRefused means policy said no once the group row was locked.
 var errRoleRefused = errors.New("role change refused")
 
-// changeRole sets userID's role in g to newRole ("leader", "member", or ""
-// to leave the group). It locks the group row so concurrent changes can't
-// remove the last leader, asks allow with fresh facts, keeps the displayed
-// primary contact pointing at a leader, and writes a
-// membership.role_changed audit row when leadership changes.
-func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole string,
+// errGroupFull: the group is at its member limit and nobody chose to go over
+// it (DEC-39).
+var errGroupFull = errors.New("group full")
+
+// groupFull answers 409 for errGroupFull. full:true tells the SPA it may
+// offer a leader or admin the explicit over-limit choice.
+func groupFull(c *gin.Context) {
+	c.JSON(http.StatusConflict, gin.H{"error": "This group is full", "full": true})
+}
+
+// changeRole sets userID's role in g to newRole: "leader" or "member",
+// "" to leave the group, or memberRemoved when a leader or admin removes
+// them (note is kept in the audit row only). It locks the group row so
+// concurrent changes can't remove the last leader, asks allow with fresh
+// facts, keeps the displayed primary contact pointing at a leader, and
+// writes a membership.role_changed audit row when leadership changes, or a
+// membership.removed row for every removal.
+func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, note string, overLimit bool,
 	allow func(actor, target policy.Rel, leaders int) bool) error {
 	actor := apiUser(c)
 	return a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(g, g.ID).Error; err != nil {
 			return err
 		}
-		var m models.Membership
-		if err := tx.Where("user_id = ? AND group_id = ? AND status = ?", userID, g.ID, "active").
-			First(&m).Error; err != nil && err != gorm.ErrRecordNotFound {
+		var m models.Membership // any status, so a removed row is reused
+		if err := tx.Where("user_id = ? AND group_id = ?", userID, g.ID).Limit(1).Find(&m).Error; err != nil {
 			return err
 		}
+		targetRel := membershipRel(m)
 		oldRole := ""
-		if m.ID != 0 {
+		if targetRel.Member {
 			oldRole = m.Role
 		}
-		targetRel := policy.Rel{Member: m.ID != 0, Leader: oldRole == models.MembershipLeader}
 		actorRel := targetRel
 		if actor.ID != userID {
 			actorRel = relIn(tx, actor.ID, g.ID)
@@ -462,12 +522,26 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole s
 		if !allow(actorRel, targetRel, leaderCount(tx, g.ID)) {
 			return errRoleRefused
 		}
-		if oldRole == newRole {
+		if oldRole == newRole || (newRole == memberRemoved && !targetRel.Member) {
 			return nil
+		}
+		// Adding someone (or bringing them back) needs room under the member
+		// limit, or an explicit over-limit choice, which is audited (DEC-39).
+		adding := !targetRel.Member && (newRole == models.MembershipLeader || newRole == models.MembershipMember)
+		count := 0
+		if adding {
+			count = int(memberCount(tx, g.ID))
+			if !policy.GroupHasRoom(g.MemberLimit, count) && !overLimit {
+				return errGroupFull
+			}
 		}
 		switch {
 		case newRole == "":
 			if err := tx.Delete(&m).Error; err != nil {
+				return err
+			}
+		case newRole == memberRemoved:
+			if err := tx.Model(&m).Updates(map[string]any{"status": memberRemoved, "role": models.MembershipMember}).Error; err != nil {
 				return err
 			}
 		case m.ID == 0:
@@ -475,16 +549,37 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole s
 				Status: "active", JoinedAt: time.Now().UTC()}).Error; err != nil {
 				return err
 			}
-		default:
-			if err := tx.Model(&m).Update("role", newRole).Error; err != nil {
+		default: // a role change, or adding back someone who left or was removed
+			if err := tx.Model(&m).Updates(map[string]any{"role": newRole, "status": "active"}).Error; err != nil {
 				return err
 			}
 		}
+		if oldRole == models.MembershipLeader || newRole == models.MembershipLeader {
+			if err := fixPrimaryContact(tx, g); err != nil {
+				return err
+			}
+		}
+		if adding && !policy.GroupHasRoom(g.MemberLimit, count) {
+			if err := audit.Write(tx, audit.Entry{
+				Actor: &actor.ID, Action: audit.AddedOverLimit, TargetType: "group", TargetID: g.ID,
+				Meta: map[string]any{"userId": userID, "count": count, "limit": *g.MemberLimit, "role": newRole},
+				IP:   c.ClientIP(),
+			}); err != nil {
+				return err
+			}
+		}
+		if newRole == memberRemoved {
+			meta := map[string]any{"userId": userID, "oldRole": oldRole}
+			if note != "" {
+				meta["note"] = note
+			}
+			return audit.Write(tx, audit.Entry{
+				Actor: &actor.ID, Action: audit.MemberRemoved,
+				TargetType: "group", TargetID: g.ID, Meta: meta, IP: c.ClientIP(),
+			})
+		}
 		if oldRole != models.MembershipLeader && newRole != models.MembershipLeader {
 			return nil
-		}
-		if err := fixPrimaryContact(tx, g); err != nil {
-			return err
 		}
 		return audit.Write(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.RoleChanged,
@@ -513,11 +608,8 @@ func fixPrimaryContact(tx *gorm.DB, g *models.Group) error {
 // relIn is relOf on a given handle (a transaction).
 func relIn(tx *gorm.DB, userID, groupID uint) policy.Rel {
 	var m models.Membership
-	if err := tx.Where("user_id = ? AND group_id = ? AND status = ?", userID, groupID, "active").
-		First(&m).Error; err != nil {
-		return policy.Rel{}
-	}
-	return policy.Rel{Member: true, Leader: m.Role == models.MembershipLeader}
+	tx.Where("user_id = ? AND group_id = ?", userID, groupID).Limit(1).Find(&m)
+	return membershipRel(m)
 }
 
 func roleOrNone(r string) string {
@@ -536,6 +628,8 @@ func (a *App) apiAddGroupMember(c *gin.Context) {
 	}
 	var body struct {
 		Email string `json:"email"`
+		// OverLimit: add even though the group is full (DEC-39); audited.
+		OverLimit bool `json:"overLimit"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Email) == "" {
 		jsonError(c, http.StatusBadRequest, "email is required")
@@ -546,25 +640,25 @@ func (a *App) apiAddGroupMember(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "user not found")
 		return
 	}
-	m := models.Membership{UserID: target.ID, GroupID: g.ID}
-	res := a.DB.Where("user_id = ? AND group_id = ?", target.ID, g.ID).
-		Attrs(models.Membership{Role: models.MembershipMember, Status: "active", JoinedAt: time.Now().UTC()}).
-		FirstOrCreate(&m)
-	if res.Error != nil {
-		jsonError(c, http.StatusInternalServerError, "could not add member")
-		return
+	if !relIn(a.DB, target.ID, g.ID).Member {
+		me := apiUser(c)
+		err := a.changeRole(c, g, target.ID, models.MembershipMember, "", body.OverLimit, func(actor, _ policy.Rel, _ int) bool {
+			return policy.CanManageGroup(asPerson(me), actor)
+		})
+		switch err {
+		case nil:
+		case errGroupFull:
+			groupFull(c)
+			return
+		case errRoleRefused:
+			jsonError(c, http.StatusForbidden, "forbidden")
+			return
+		default:
+			jsonError(c, http.StatusInternalServerError, "could not add member")
+			return
+		}
 	}
-	if m.Status != "active" {
-		a.DB.Model(&m).Updates(map[string]any{"status": "active"})
-		m.Status = "active"
-	}
-	if g.DeletionRequested && res.RowsAffected > 0 {
-		a.DB.Model(&models.Group{}).Where("id = ?", g.ID).Update("deletion_requested", false)
-	}
-	c.JSON(http.StatusOK, gin.H{"membership": gin.H{
-		"id": m.ID, "userId": m.UserID, "groupId": m.GroupID,
-		"role": m.Role, "status": m.Status,
-	}})
+	a.membershipAdded(c, g, target.ID)
 }
 
 // apiRequestDeletion asks an admin to delete the group. Only a leader can
@@ -577,8 +671,8 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 	}
 	u := apiUser(c)
 	var others int64
-	a.DB.Model(&models.Membership{}).
-		Where("group_id = ? AND status = ? AND user_id <> ?", g.ID, "active", u.ID).
+	a.DB.Model(&models.Membership{}).Joins(listedUsers("memberships")).
+		Where("memberships.group_id = ? AND memberships.status = ? AND memberships.user_id <> ?", g.ID, "active", u.ID).
 		Count(&others)
 	if !rel.Leader {
 		jsonError(c, http.StatusForbidden, "only a group leader can request deletion")
@@ -651,6 +745,57 @@ func (a *App) deleteGroup(ctx context.Context, g *models.Group) error {
 
 func memberCount(db *gorm.DB, groupID uint) int64 {
 	var n int64
-	db.Model(&models.Membership{}).Where("group_id = ? AND status = ?", groupID, "active").Count(&n)
+	db.Model(&models.Membership{}).Joins(listedUsers("memberships")).
+		Where("memberships.group_id = ? AND memberships.status = ?", groupID, "active").Count(&n)
 	return n
+}
+
+// apiRemoveGroupMember lets a group's leaders (and admins) remove someone
+// from the roster (DEC-35). 404 for a group the caller can't see, 403 for
+// one they don't lead.
+func (a *App) apiRemoveGroupMember(c *gin.Context) {
+	g, _, ok := a.loadManagedGroup(c)
+	if !ok {
+		return
+	}
+	a.removeMember(c, g)
+}
+
+// removeMember removes :userId from g if policy allows, marks the
+// membership removed, and audits it. Body: optional {note}.
+func (a *App) removeMember(c *gin.Context, g *models.Group) {
+	uid, _ := strconv.Atoi(c.Param("userId"))
+	var body struct {
+		Note string `json:"note"`
+	}
+	_ = c.ShouldBindJSON(&body) // the body is optional
+	note := strings.TrimSpace(body.Note)
+	if len(note) > 500 {
+		jsonError(c, http.StatusBadRequest, "note must be at most 500 characters")
+		return
+	}
+	me := apiUser(c)
+	if uint(uid) == me.ID {
+		jsonError(c, http.StatusBadRequest, "to leave the group, use leave")
+		return
+	}
+	var target models.User
+	if err := a.DB.First(&target, uid).Error; err != nil {
+		jsonError(c, http.StatusNotFound, "user not found")
+		return
+	}
+	err := a.changeRole(c, g, target.ID, memberRemoved, note, false, func(actor, t policy.Rel, leaders int) bool {
+		return policy.CanRemoveMember(asPerson(me), actor, asPerson(&target), t, leaders)
+	})
+	switch err {
+	case nil:
+	case errRoleRefused:
+		jsonError(c, http.StatusBadRequest,
+			"leaders can't remove an admin, and nobody can remove the group's only leader (make someone else a leader first)")
+		return
+	default:
+		jsonError(c, http.StatusInternalServerError, "could not remove member")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"members": a.roster(g.ID)})
 }

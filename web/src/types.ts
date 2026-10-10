@@ -30,6 +30,8 @@ export interface GroupSummary {
   leaderId: number;
   visibility: Visibility;
   deletionRequested: boolean;
+  // Cap on active members (DEC-39); null means no limit.
+  memberLimit: number | null;
 }
 
 // Who can see a group (C3). invite_only groups are hidden from everyone but
@@ -44,6 +46,7 @@ export interface Member {
   avatarFocalY: number;
   role: "leader" | "member" | string;
   joinedAt: string;
+  admin: boolean; // church admin: labeled on rosters, never removable by leaders
 }
 
 export interface Notification {
@@ -72,6 +75,13 @@ export interface GroupDetailResponse {
   upcomingMeetings: MeetingInstance[];
   canManage: boolean;
   isMember: boolean;
+  // Re-enabled accounts waiting because the group was full (leaders and admins only).
+  pendingReturns: Member[];
+}
+
+export interface PendingReturn {
+  group: GroupSummary;
+  member: Member;
 }
 
 export interface Meeting {
@@ -82,4 +92,12 @@ export interface Meeting {
   location: string;
   recurrenceRule: string;
   cancelledDates: string[];
+}
+
+// A group the person being deleted leads alone, and who may take over (DEC-36).
+export interface SoleLedGroup {
+  id: number;
+  name: string;
+  status: string;
+  candidates: { id: number; name: string; admin: boolean }[];
 }

@@ -99,10 +99,10 @@ func (a *App) buildInstances(meetings []models.Meeting, from, to time.Time, me *
 	for i := range meetings {
 		meetingIDs = append(meetingIDs, meetings[i].ID)
 	}
-	a.DB.Model(&models.RSVP{}).
-		Select("meeting_id, date, status, count(*) as n").
-		Where("meeting_id IN ?", meetingIDs).
-		Group("meeting_id, date, status").
+	a.DB.Model(&models.RSVP{}).Joins(listedUsers("rsvps")).
+		Select("rsvps.meeting_id, rsvps.date, rsvps.status, count(*) as n").
+		Where("rsvps.meeting_id IN ?", meetingIDs).
+		Group("rsvps.meeting_id, rsvps.date, rsvps.status").
 		Scan(&rows)
 	counts := map[string]map[string]int64{} // "mid|date" -> status -> n
 	for _, r := range rows {
@@ -155,8 +155,7 @@ func recurrenceOK(rule string, starts time.Time) bool {
 }
 
 func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
-	var memberCount int64
-	a.DB.Model(&models.Membership{}).Where("group_id = ? AND status = ?", g.ID, "active").Count(&memberCount)
+	members := memberCount(a.DB, g.ID)
 
 	var leader models.User
 	leaderName := ""
@@ -179,10 +178,11 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 		Tags: splitTags(g.Tags), ImageURL: g.ImageURL,
 		CoverFocalX: g.CoverFocalX, CoverFocalY: g.CoverFocalY,
 		Location:   g.Location,
-		LeaderName: leaderName, MemberCount: memberCount,
+		LeaderName: leaderName, MemberCount: members,
 		NextMeetingAt: next, Status: g.Status,
 		LeaderID: g.LeaderID, Visibility: g.Visibility,
 		DeletionRequested: g.DeletionRequested,
+		MemberLimit:       g.MemberLimit,
 	}
 }
 

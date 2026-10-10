@@ -16,7 +16,7 @@ via `go:embed`). No separate frontend hosting. Ever.
 
 ## Stack
 
-- **Go 1.25**, Gin (JSON API under `/api/v1`), GORM
+- **Go 1.26** (Go 1.25 is out of security support), Gin (JSON API under `/api/v1`), GORM
 - **PostgreSQL only**, everywhere: production, development, and tests
   (`DATABASE_URL`, DEC-1, DEC-24). There is no second database, so use
   Postgres features freely. `CGO_ENABLED=0`; keep it that way
@@ -71,6 +71,15 @@ Postgres (`login_throttles`, see `api_auth.go`).
   handles it). The old server-rendered redirect behavior is gone except
   for `/setup`.
 - Errors: `{"error": "human readable"}` with the right status code.
+- The app sends a strict CSP (DEC-37): no inline `<script>` or `style=""`
+  markup in server templates, no `eval`, and no CDN or third-party scripts,
+  styles, or fonts. React `style={{...}}` props are fine (they go through
+  the CSSOM). Bundle everything through Vite.
+- Membership rules live in `internal/policy`: removal (`CanRemoveMember`),
+  handoff (`CanBeSuccessor`), role changes. A removed membership keeps its
+  row with `status=removed` (DEC-35).
+  Adding anyone to a group goes through `changeRole`, which locks the
+  group row and checks `policy.GroupHasRoom` (member limit, DEC-39).
 - Migrations: every schema change is a **new** goose file in `migrations/`
   (`NNNNN_name.sql`); never edit an old one. Add the model change in the
   same PR and list new models in `models.All()`. `AutoMigrate` never runs

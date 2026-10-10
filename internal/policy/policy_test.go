@@ -146,6 +146,9 @@ func TestCanChangeRole(t *testing.T) {
 		{"can't demote the last leader", admin, none, adult2, leader, false, 1, false},
 		{"leader can step down when another leads", adult, leader, adult, leader, false, 2, true},
 		{"demoting a plain member is a no-op that's allowed", adult, leader, adult2, member, false, 1, true},
+		{"leader can't demote an admin co-leader (DEC-35)", adult, leader, admin, leader, false, 2, false},
+		{"admin demotes another admin co-leader", admin, none, &Person{ID: 9, Admin: true}, leader, false, 2, true},
+		{"leader may promote an admin member", adult, leader, admin, member, true, 1, true},
 	}
 	for _, c := range cases {
 		if got := CanChangeRole(c.p, c.r, c.target, c.targetRel, c.makeLeader, c.leaders); got != c.want {
@@ -154,12 +157,52 @@ func TestCanChangeRole(t *testing.T) {
 	}
 }
 
-func TestRosterLeavingAndRemoval(t *testing.T) {
-	if !CanRemoveMember(adult, leader, member, 1) || !CanRemoveMember(admin, none, leader, 2) {
-		t.Error("leaders and admins remove members and extra leaders")
+// Section 6, "Remove a member from a group" (DEC-35).
+func TestCanRemoveMember(t *testing.T) {
+	cases := []struct {
+		name      string
+		p         *Person
+		r         Rel
+		target    *Person
+		targetRel Rel
+		leaders   int
+		want      bool
+	}{
+		{"leader removes a member", adult, leader, adult2, member, 1, true},
+		{"leader removes a teen member", adult, leader, teen, member, 1, true},
+		{"leader removes a co-leader", adult, leader, adult2, leader, 2, true},
+		{"leader can't remove an admin member", adult, leader, admin, member, 1, false},
+		{"leader can't remove an admin co-leader", adult, leader, admin, leader, 2, false},
+		{"admin removes anyone", admin, none, adult2, leader, 2, true},
+		{"admin removes another admin", admin, none, &Person{ID: 9, Admin: true}, member, 1, true},
+		{"nobody removes the last leader", admin, none, adult2, leader, 1, false},
+		{"removing yourself is leaving, not removal", adult, leader, adult, leader, 2, false},
+		{"members don't remove anyone", adult, member, adult2, member, 1, false},
+		{"leaders of other groups don't", adult, none, adult2, member, 1, false},
+		{"can't remove a non-member", adult, leader, adult2, none, 1, false},
+		{"guests can't", guest, none, adult2, member, 1, false},
 	}
-	if CanRemoveMember(admin, none, leader, 1) || CanRemoveMember(adult, member, member, 1) {
-		t.Error("nobody removes the last leader; members don't remove anyone")
+	for _, c := range cases {
+		if got := CanRemoveMember(c.p, c.r, c.target, c.targetRel, c.leaders); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// DEC-36: a sole leader's successor is an adult member of the group or any admin.
+func TestCanBeSuccessor(t *testing.T) {
+	if !CanBeSuccessor(adult, member) || !CanBeSuccessor(adult2, leader) || !CanBeSuccessor(admin, none) {
+		t.Error("adult members and admins can take over")
+	}
+	if CanBeSuccessor(adult, none) || CanBeSuccessor(teen, member) || CanBeSuccessor(guest, none) {
+		t.Error("outsiders, teens and nobody can't")
+	}
+}
+
+func TestLeavingAndDeletion(t *testing.T) {
+	removed := Rel{Removed: true}
+	if CanJoinGroup(adult, active(Public), removed) || !CanJoinGroup(admin, active(Public), removed) {
+		t.Error("removed people don't rejoin on their own (admins may)")
 	}
 	if !CanLeaveGroup(member, 1) || !CanLeaveGroup(leader, 2) || CanLeaveGroup(leader, 1) {
 		t.Error("anyone leaves except the last leader")
@@ -249,5 +292,16 @@ func TestCanDemoteOrDelete(t *testing.T) {
 	}
 	if CanDemoteOrDelete(admin, admin, 2) || CanDemoteOrDelete(admin, otherAdmin, 1) || CanDemoteOrDelete(adult, adult2, 2) {
 		t.Error("not yourself, not the last admin, not as a member")
+	}
+}
+
+// DEC-39: an optional group member limit.
+func TestGroupHasRoom(t *testing.T) {
+	two := 2
+	if !GroupHasRoom(nil, 1000) || !GroupHasRoom(&two, 1) || GroupHasRoom(&two, 2) || GroupHasRoom(&two, 3) {
+		t.Error("nil is unlimited; full at or over the limit")
+	}
+	if CanJoinGroup(adult, active(Public), Rel{PendingReturn: true}) {
+		t.Error("a pending return isn't a self-join")
 	}
 }

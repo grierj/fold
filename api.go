@@ -76,6 +76,8 @@ type groupSummaryJSON struct {
 	LeaderID          uint       `json:"leaderId"`
 	Visibility        string     `json:"visibility"` // public | private | invite_only
 	DeletionRequested bool       `json:"deletionRequested"`
+	// MemberLimit caps active members (DEC-39); null means unlimited.
+	MemberLimit *int `json:"memberLimit"`
 }
 
 type memberJSON struct {
@@ -86,6 +88,9 @@ type memberJSON struct {
 	AvatarFocalY float64 `json:"avatarFocalY"`
 	Role         string  `json:"role"`
 	JoinedAt     string  `json:"joinedAt"`
+	// Admin marks church admins so leaders see the label and no Remove button
+	// (DEC-38); the server refuses such removals anyway (DEC-35).
+	Admin bool `json:"admin"`
 }
 
 // toMemberJSON renders a membership's user for the roster.
@@ -98,6 +103,7 @@ func (a *App) toMemberJSON(m *models.Membership) memberJSON {
 		ID: m.User.ID, Name: m.User.PublicName(), AvatarURL: avatarURL,
 		AvatarFocalX: m.User.AvatarFocalX, AvatarFocalY: m.User.AvatarFocalY,
 		Role: m.Role, JoinedAt: m.JoinedAt.Format(time.RFC3339),
+		Admin: asPerson(&m.User).Admin,
 	}
 }
 
@@ -230,19 +236,41 @@ func (a *App) relOf(u *models.User, groupID uint) policy.Rel {
 	if u == nil {
 		return policy.Rel{}
 	}
-	var m models.Membership
-	if err := a.DB.Where("user_id = ? AND group_id = ? AND status = ?", u.ID, groupID, "active").
-		First(&m).Error; err != nil {
-		return policy.Rel{}
-	}
-	return policy.Rel{Member: true, Leader: m.Role == models.MembershipLeader}
+	return relIn(a.DB, u.ID, groupID)
 }
 
-// leaderCount counts a group's active leaders whose accounts still exist.
+// membershipRel turns a membership row (any status) into policy facts.
+func membershipRel(m models.Membership) policy.Rel {
+	active := m.ID != 0 && m.Status == "active"
+	return policy.Rel{
+		Member:        active,
+		Leader:        active && m.Role == models.MembershipLeader,
+		Removed:       m.ID != 0 && m.Status == memberRemoved,
+		PendingReturn: m.ID != 0 && m.Status == memberPendingReturn,
+	}
+}
+
+// memberRemoved is the Membership.Status of someone a leader or admin
+// removed (DEC-35).
+const memberRemoved = "removed"
+
+// memberPendingReturn is a re-enabled account's membership waiting for a
+// leader or admin because the group was full (DEC-38, DEC-39).
+const memberPendingReturn = "pending_return"
+
+// listedUsers joins memberships or rsvps (the table name) to accounts that
+// are listed: not deleted and not disabled. A disabled account keeps its
+// memberships and RSVPs, but they are hidden and never counted (DEC-38).
+func listedUsers(table string) string {
+	return "JOIN users ON users.id = " + table + ".user_id AND users.deleted_at IS NULL AND users.status <> 'disabled'"
+}
+
+// leaderCount counts a group's active leaders whose accounts still exist
+// and aren't disabled.
 func leaderCount(db *gorm.DB, groupID uint) int {
 	var n int64
 	db.Model(&models.Membership{}).
-		Joins("JOIN users ON users.id = memberships.user_id AND users.deleted_at IS NULL").
+		Joins(listedUsers("memberships")).
 		Where("memberships.group_id = ? AND memberships.role = ? AND memberships.status = ?",
 			groupID, models.MembershipLeader, "active").
 		Count(&n)
@@ -334,6 +362,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/groups/:id/leave", a.apiAuth(), a.apiLeaveGroup)
 	v1.PUT("/groups/:id/members/:userId/role", a.apiAuth(), a.apiSetMemberRole)
 	v1.POST("/groups/:id/members", a.apiAuth(), a.apiAddGroupMember)
+	v1.DELETE("/groups/:id/members/:userId", a.apiAuth(), a.apiRemoveGroupMember)
+	v1.POST("/groups/:id/members/:userId/return", a.apiAuth(), a.apiDecideReturn)
 	v1.POST("/groups/:id/deletion-request", a.apiAuth(), a.apiRequestDeletion)
 	v1.DELETE("/groups/:id/deletion-request", a.apiAuth(), a.apiCancelDeletion)
 	v1.GET("/groups/:id/members", a.apiAuth(), a.apiGroupMembers)
@@ -350,6 +380,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 
 	// Admin.
 	v1.GET("/admin/pending", a.apiAuth(), a.apiAdmin(), a.apiPendingGroups)
+	v1.GET("/admin/pending-returns", a.apiAuth(), a.apiAdmin(), a.apiAdminPendingReturns)
 	v1.GET("/admin/deletions", a.apiAuth(), a.apiAdmin(), a.apiDeletionRequests)
 	v1.POST("/admin/groups/:id/approve", a.apiAuth(), a.apiAdmin(), a.apiApproveGroup)
 	v1.POST("/admin/groups/:id/reject", a.apiAuth(), a.apiAdmin(), a.apiRejectGroup)
@@ -361,6 +392,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/admin/users", a.apiAuth(), a.apiAdmin(), a.apiAdminListUsers)
 	v1.POST("/admin/users", a.apiAuth(), a.apiAdmin(), a.apiAdminCreateUser)
 	v1.PUT("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminUpdateUser)
+	v1.GET("/admin/users/:id/sole-leader-groups", a.apiAuth(), a.apiAdmin(), a.apiAdminSoleLedGroups)
 	v1.DELETE("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminDeleteUser)
 	v1.POST("/admin/users/:id/password", a.apiAuth(), a.apiAdmin(), a.apiAdminResetPassword)
 

@@ -138,6 +138,9 @@ type Group struct {
 	Status   string `gorm:"default:pending"` // pending | active | archived
 	// Visibility is public, private, or invite_only (a CHECK enforces it).
 	Visibility string `gorm:"not null;default:public"`
+	// MemberLimit caps active memberships (DEC-39); nil means unlimited. A
+	// CHECK keeps it positive. Groups have no waitlist.
+	MemberLimit *int
 	// DeletionRequested is set by the leader when they are the only member.
 	// An admin approves it by deleting the group.
 	DeletionRequested bool `gorm:"not null;default:false"`
