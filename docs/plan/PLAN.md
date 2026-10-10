@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-44) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
+Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-45) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
 Repo: https://github.com/grierj/fold (first read at commit `aa992e2`; re-checked at `e7c0e8f`, "Merge pull request #7 from grierj/admin-invite-and-rename", merged 2026-10-09 4:31 PM MT).
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions (nothing is open).
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Do one milestone per work session and one PR per milestone. Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-44) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-45) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (DEC-1 to DEC-44) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (DEC-1 to DEC-45) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -596,7 +596,7 @@ Fold builds its notifications itself: no vendor and no new service (DEC-42). Kno
 - **"Mark all as read" (6.13 #2):** `read-all` skips unresolved waiting items on the server. The count also ignores `read_at` for them until `resolved_at` is set, so server and UI agree.
 - **`seen_at` (6.13 #1):** kept only for the email escalation ("email if not seen after 15 minutes"). The badge doesn't use it, and the panel posts `seen` with the ids it shows.
 - **Task resolution:** approving, rejecting, or withdrawing the subject sets `resolved_at` on every copy in the same transaction. Other admins see "Done · approved by Pat" instead of a stale button, and the item leaves the count.
-- **Retention (proposal, from the research):** a daily cleanup deletes read or archived rows after 90 days, unread rows after 180, and anything past `expires_at` that isn't kept under Archived. Notifications are a convenience. `AuditLog` stays the record.
+- **Retention (DEC-45):** a daily cleanup deletes read or archived rows after 90 days, unread rows after 180, and anything past `expires_at` that isn't kept under Archived. Notifications are a convenience. `AuditLog` stays the record.
 
 **API** (under `/api/v1`, session auth, CSRF on writes, `Cache-Control: no-store` like every API response):
 - `GET /notifications/badge` returns `{unread, waiting}`. Both numbers feed the bell's accessible name (6.13 #1). It is cheap and answers 304 against an ETag when nothing changed.
@@ -2213,6 +2213,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-42 | **Notifications are built in Fold, with no vendor; dismissals and read state are stored per user on the server** (Grier, Oct 10, 2026). Browser-only dismissals reset on every sign-in, which is a poor long-term experience. Fold stores one notification row per recipient in Postgres, serves a polled badge, and delivers email and SMS through its own jobs and provider adapters (5.12). **Knock (knock.app) is a UI/UX reference only, never a third-party add-on.** Novu and other vendors were also rejected. This follows the self-contained directive (DEC-43). Research and designer guidelines: `docs/plan/research/notifications.md`. Phasing: stored notifications in M1.1b, email in M1.2, event-change and waitlist notices in M1.5 (reminders by email and SMS, not the bell), preferences and SMS in M3.12, and digests later (M6.16). Illuminator's product questions are answered in DEC-44. | 1, 3.1, 5.3, 5.5, 5.12, 7.7, 10.1, 10.6, 12, M1.1b, M1.2, M1.5, M3.6, M3.12 |
 | DEC-43 | **Fold stays as self-contained as possible** (Grier, Oct 10, 2026). Fold builds what it needs itself. An outside service is added only when it's needed to keep deployments simple or to meet a church's request. This sharpens goal 4 (few external dependencies) and D3/D6, and it applies to features as well as infrastructure (for example notifications, DEC-42). | 1, 12, 5.12 |
 | DEC-44 | **Notification product answers** (Grier, Oct 10, 2026, answering Illuminator's questions in research 6.14): (1) the bell badge is **one plain count** (unread plus unresolved items waiting on you), with no needs-action dot; (2) event **reminders go by email and SMS only, never to the bell**, and the bell's upcoming-event items are dropped; (3) on a public site, an **adult account request with no warnings** can be approved inline; any other account request goes to Review; (4) **no per-group notification settings** in v1; (5) email is **"Right away" only** in v1, and once-a-day digests move to a later version (M6.16); (6) **email ignores** the 8 AM–8 PM quiet hours, which apply to SMS only; (7) a **"Turn off all optional email"** switch, mapped to `Consent` rows. | 5.3, 5.5, 5.12, 7.7, M1.1b, M1.3, M3.6, M3.12, M6.16 |
+| DEC-45 | **Notification retention** (Grier, Oct 10, 2026, accepting Quill's proposal): a daily cleanup deletes read or archived notifications after 90 days and unread ones after 180 days. `AuditLog` remains the record. Easy to change later if needed. | 5.12 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions.
 
@@ -2220,7 +2221,7 @@ The five questions left open in draft v2 are all answered: intermediate override
 
 No open decisions. Illuminator's notification product questions (research 6.14) are answered in DEC-44.
 
-One proposal is still unconfirmed: notification retention of 90 days for read or archived rows and 180 days for unread rows (5.12). Build it as written unless Grier changes it.
+No pending items. Notification retention was confirmed as DEC-45.
 
 ---
 
