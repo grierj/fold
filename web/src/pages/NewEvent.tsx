@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Groups, Site } from "../api";
+import { Groups } from "../api";
 import { useAuth } from "../auth";
 import { COMMON_ZONES, WEEKDAYS, weekdayCode } from "../lib/eventForm";
+import { browserTimeZone } from "../lib/wall";
 
 export function NewEvent() {
   const { id } = useParams<{ id: string }>();
@@ -16,8 +17,8 @@ export function NewEvent() {
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("19:00");
   const [durationMin, setDurationMin] = useState(90);
-  const [tzid, setTzid] = useState("");
-  const tzTouched = useRef(false);
+  // The person scheduling the series is sitting in this browser.
+  const [tzid, setTzid] = useState(browserTimeZone);
   const [location, setLocation] = useState("");
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
@@ -39,13 +40,6 @@ export function NewEvent() {
       })
       .finally(() => {
         if (alive) setLoading(false);
-      });
-    Site.get()
-      .then((s) => {
-        if (alive && !tzTouched.current) setTzid(s.timezone || "UTC");
-      })
-      .catch(() => {
-        if (alive && !tzTouched.current) setTzid("UTC");
       });
     return () => {
       alive = false;
@@ -200,10 +194,7 @@ export function NewEvent() {
               className="input"
               list="event-zones"
               value={tzid}
-              onChange={(e) => {
-                tzTouched.current = true;
-                setTzid(e.target.value);
-              }}
+              onChange={(e) => setTzid(e.target.value)}
               required
               aria-describedby="tz-hint"
             />
@@ -213,7 +204,7 @@ export function NewEvent() {
               ))}
             </datalist>
             <p id="tz-hint" className="text-sm text-gray-500 mt-1">
-              An IANA name, for example America/Boise. The clock stays put across daylight saving.
+              Your computer's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving.
             </p>
           </div>
         </div>

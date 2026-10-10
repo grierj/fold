@@ -199,8 +199,9 @@ PUT /api/v1/admin/timezone → 200 {timezone}   (admin)
     body: {timezone} — an IANA name, for example America/Denver
 ```
 
-`timezone` is the church default for new events. Each event stores its own
-`tzid`. An unknown name is 400.
+`timezone` is the church time zone. The schedule form defaults a new series
+to the browser's time zone. A create request that omits `tzid` uses the
+church time zone, or UTC when that setting is missing. An unknown name is 400.
 
 ### Events
 
@@ -240,7 +241,8 @@ title, or location.
 
 Create body: `{title?, startsLocal, durationMinutes, tzid?, location?,
 recurrenceRule?, rruleUntil?}`. `startsLocal` and `durationMinutes` (1 to
-10080) are required. `tzid` defaults to the church time zone. An empty
+10080) are required. Omit `tzid` to use the church time zone. The schedule
+form sends the browser's time zone. An empty
 `recurrenceRule` is one date. The rule must not contain `DTSTART` or a
 newline; `rruleUntil` is a separate inclusive `YYYY-MM-DD`, not an `UNTIL`
 inside the rule. A rule that does not parse is 400.
