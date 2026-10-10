@@ -6,7 +6,7 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | --- | --- | --- | --- |
 | M0.1 PostgreSQL only, clean baseline, CLI, request plumbing | done (PR open) | Codex | `m0.1-postgres-baseline` |
 | M0.2 Visibility enum, policy package, leadership by membership, audit log | done (PR open) | Codex | `m0.2-policy-visibility-audit` |
-| M0.3a Log in by email | in progress | Codex | `m0.3a-email-login` |
+| M0.3a Log in by email | done (PR open) | Codex | `m0.3a-email-login` |
 | M0.3b Leaders remove members, sole-leader handoff, security headers, dependency scanning | unclaimed | | |
 | M0.4 Frontend and browser test tooling | unclaimed | | |
 | M1.1a Events, time zones, occurrences, series edits | unclaimed | | |
