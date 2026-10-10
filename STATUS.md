@@ -4,11 +4,11 @@ Claim a milestone here (in its own PR or commit) before starting it.
 
 | Milestone | Status | Owner | Branch/PR |
 | --- | --- | --- | --- |
-| M0.1 PostgreSQL only, clean baseline, CLI, request plumbing | done (PR open) | Codex | `m0.1-postgres-baseline` |
-| M0.2 Visibility enum, policy package, leadership by membership, audit log | done (PR open) | Codex | `m0.2-policy-visibility-audit` |
-| M0.3a Log in by email | done (PR open) | Codex | `m0.3a-email-login` |
-| M0.3b Leaders remove members, sole-leader handoff, security headers, dependency scanning | done (PR open) | Codex | `m0.3b-roster-handoff-headers` |
-| M0.4 Frontend and browser test tooling | unclaimed | | |
+| M0.1 PostgreSQL only, clean baseline, CLI, request plumbing | done (merged, #9) | Codex | `m0.1-postgres-baseline` |
+| M0.2 Visibility enum, policy package, leadership by membership, audit log | done (merged, #10) | Codex | `m0.2-policy-visibility-audit` |
+| M0.3a Log in by email | done (merged, #12) | Codex | `m0.3a-email-login` |
+| M0.3b Leaders remove members, sole-leader handoff, security headers, dependency scanning | done (merged, #13) | Codex | `m0.3b-roster-handoff-headers` |
+| M0.4 Frontend and browser test tooling | in progress | Codex | `m0.4-frontend-test-tooling` |
 | M1.1a Events, time zones, occurrences, series edits | unclaimed | | |
 | M1.1b Church-wide hosts, event visibility, audit, in-app notices | unclaimed | | |
 | M1.2 Email basics, password reset, invitations | unclaimed | | |
