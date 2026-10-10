@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-39) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
+Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-40) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
 Repo: https://github.com/grierj/fold (first read at commit `aa992e2`; re-checked at `e7c0e8f`, "Merge pull request #7 from grierj/admin-invite-and-rename", merged 2026-10-09 4:31 PM MT).
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions (nothing is open).
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Do one milestone per work session and one PR per milestone. Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-39) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-40) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (DEC-1 to DEC-39) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (DEC-1 to DEC-40) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -1369,7 +1369,8 @@ Fold runs on one VPS with Docker Compose. That is the only supported deployment 
 | Keyword auto-replies ("text CAMP for info") | **Later** | Cheap once inbound SMS exists. |
 | Guest follow-up workflow (first-time visitor tasks) | **Later** | ChurchTrac automations-lite. |
 | Custom registration questions | **Later** | Meetup RSVP questions (dietary needs, T-shirt size). |
-| ChurchTrac CSV import | **Later** | Eases switching. Needs a real sample ChurchTrac export before any work starts; nobody has one yet (DEC-15). |
+| ChurchTrac CSV import | **Later** | Eases switching. Needs a real sample ChurchTrac export before any work starts; nobody has one yet (DEC-15). ChurchTrac has no public API, so CSV is its only path (see M6.15). |
+| Roster sync with church management software (ChMS) | **Future** (M6.15) | So churches don't manage rosters in two places. Import with admin review first, then limited write-back; not full two-way sync (DEC-40, research/chms-sync.md). |
 | OIDC sign-in (Google/Microsoft) | **Later** | Nice; adds a dependency, so optional. |
 | Admin TOTP | **Core** (M4.9, v0.5) | Fold is on the public internet (final review, finding 7). |
 | Durable, tamper-evident audit log | **Later** (M6.14) | Legal and safeguarding record (DEC-33, 10.7). |
@@ -2002,10 +2003,11 @@ Each item is one milestone. Each still needs acceptance criteria written into th
 - M6.8 Background-check status flags on slots
 - M6.9 Photo galleries (private by default)
 - M6.10 (moved to M4.9: admin TOTP is required from v0.5)
-- M6.11 ChurchTrac CSV import (blocked until someone provides a real sample ChurchTrac export, DEC-15)
+- M6.11 ChurchTrac CSV import (blocked until someone provides a real sample ChurchTrac export, DEC-15; becomes the first step of M6.15)
 - M6.12 Custom registration questions
 - M6.13 (dropped: no translations or i18n framework, DEC-13)
 - M6.14 Durable, tamper-evident audit log for the most important events (10.7, DEC-33): append-only storage, hash chaining, a write-once offsite export (for example B2 Object Lock), retention rules, and an admin export for legal requests. Later, not v1 scope; the regular `AuditLog` covers these events until then
+- M6.15 Roster sync with church management software (DEC-40, research/chms-sync.md). Far future, not committed. `chms` adapter kind; CSV import with admin review first, then Planning Center People, Breeze and ChMeetings adapters with limited write-back. Re-verify the research's unverified items (Planning Center webhook events, vendor terms, rate limits) before starting
 
 Built only when a church asks: Resend and Mailgun email adapters, a Plivo SMS adapter, a Zoom video adapter, and a moderator role (DEC-17).
 
@@ -2058,8 +2060,9 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-37 | **Security headers and dependency scanning move up to M0.3b:** CSP, HSTS, and the other headers set by the app; Dependabot; `govulncheck` and `npm audit` in CI. Caddy and image-level headers and pinned image digests stay in M5.1. | 10.1, 10.6, M0.3b, M5.1 |
 | DEC-38 | **Admins are labeled on rosters, and disabled accounts keep their memberships** (Grier, Oct 9, 2026). (A) Rosters and any member list a leader sees mark church admins with an "Admin" label, and leaders never get a Remove button for them; the members API exposes an `admin` flag, and the server still refuses (DEC-35). (B) Disabling an account no longer ends its memberships or registrations. They stay but are hidden from rosters and attendee lists, excluded from messaging, and never counted toward any limit (group size, event capacity, waitlist math, attendee counts). Leadership still goes to the chosen successor at disable time (DEC-36), so any leader role becomes plain member. On re-enable, memberships and registrations come back as plain member and attendee, never leader. If restoring one would push a group or event over a limit, it becomes `pending_return` instead: it doesn't count toward limits, a leader of that group or event (or an admin) approves or declines it (decline removes it), and approving over the limit is an explicit choice that follows the waitlist rules (5.4) when a waitlist exists. Restore, approve, and decline are audited, and leaders and admins get an in-app notice for pending returns. Deletion still ends memberships. | 5.3, 5.4, 6, 10.1, M0.3b, M1.5, M1.8, M3.5 |
 | DEC-39 | **Groups get an optional member limit** (Grier, Oct 9, 2026), because recurring classes meet in rooms with a maximum capacity. It's expected to be rarely used. `Group.member_limit` is a nullable positive int (null, the default, is unlimited), set by the group's leaders or an admin. Only `active` memberships of non-disabled accounts count, leaders included. A full group refuses self-join ("This group is full"); groups have no waitlist. A leader or admin goes over the limit only by explicit choice (an API override flag; the SPA confirms), and that add is audited; accepting an invitation follows the same rule as the leader's add. Lowering the limit below the count is allowed: existing members stay and joins are blocked until the count drops. Leaders and admins see the count and limit. This makes DEC-38's `pending_return` real for groups: re-enabling restores each membership as member if there is room, otherwise `pending_return`, which leaders of that group and admins approve (over the limit) or decline (removed), audited with an in-app notice. Restores are processed in a stable order with the group row locked. Events keep their own capacity (5.4). | 5.3, 5.4, 6, M0.3b, M1.2 |
+| DEC-40 | **Roster sync with church management software is a far-future consideration, not a current milestone** (Grier, Oct 10, 2026), so churches can avoid managing rosters in two places. Research: `docs/plan/research/chms-sync.md`. Direction: a new `chms` provider kind following the email/SMS adapter pattern; import with admin review first, then limited write-back (group memberships, new adults approved in Fold), not full two-way sync. Each field has one owner: the ChMS owns names, households and addresses; Fold owns login email, consent, roles and registrations. Conflicts go to an admin. Match by email first; in a household that shares an email the primary contact becomes the account; name-only matches are suggestions only. Minors: no accounts from import, household members only, guardian links start pending admin approval (DEC-32), consent is never imported, minors' contact info and sensitive data are not imported, and nothing about minors is written back. Build order when it happens: generic CSV import (covers ChurchTrac, Realm, PowerChurch and others with no API; reuses M4.5), then Planning Center People, then Breeze, then ChMeetings. Pushpay/CCB needs vendor app approval, which is awkward for open source. | 13.2, M4.5, M6.11, M6.15 |
 
-The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10).
+The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026).
 
 ### 15.2 Still open
 
