@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -436,19 +437,34 @@ func TestTagFiltersCombine(t *testing.T) {
 	activeGroup(t, app, leaderUser, "Youth Choir", models.VisibilityPublic, "choir,youth")
 	activeGroup(t, app, leaderUser, "Youth Band", models.VisibilityPublic, "band,youth")
 	activeGroup(t, app, leaderUser, "Sunday Choir", models.VisibilityPublic, "choir")
+	activeGroup(t, app, leaderUser, "Women's Bible Study", models.VisibilityPublic, "Women,study")
+	activeGroup(t, app, leaderUser, "Men's Breakfast", models.VisibilityPublic, "men, breakfast")
+	activeGroup(t, app, leaderUser, "Hidden Choir", models.VisibilityInviteOnly, "choir,secret")
 
 	anon := newAPIClient(t, app)
-	got := groupNames(t, anon.do("GET", "/api/v1/groups?tag=choir&tag=youth", nil, false))
-	if len(got) != 1 || got[0] != "Youth Choir" {
-		t.Fatalf("choir AND youth: %v", got)
+	cases := []struct {
+		query string
+		want  []string
+	}{
+		// Repeated tags are OR-ed: any selected tag matches.
+		{"tag=choir&tag=band", []string{"Sunday Choir", "Youth Band", "Youth Choir"}},
+		{"tag=choir", []string{"Sunday Choir", "Youth Choir"}},
+		// Search still narrows the OR.
+		{"tag=choir&tag=band&search=youth", []string{"Youth Band", "Youth Choir"}},
+		// Exact tags: "men" is not a substring match for "women".
+		{"tag=men", []string{"Men's Breakfast"}},
+		// Case-insensitive both ways, trimmed, blanks ignored.
+		{"tag=CHOIR", []string{"Sunday Choir", "Youth Choir"}},
+		{"tag=+women+&tag=", []string{"Women's Bible Study"}},
+		// Tags of groups the viewer can't see never match.
+		{"tag=secret", nil},
 	}
-	got = groupNames(t, anon.do("GET", "/api/v1/groups?tag=choir", nil, false))
-	if len(got) != 2 || !containsName(got, "Youth Choir") || !containsName(got, "Sunday Choir") {
-		t.Fatalf("choir: %v", got)
-	}
-	got = groupNames(t, anon.do("GET", "/api/v1/groups?tag=choir&tag=band", nil, false))
-	if len(got) != 0 {
-		t.Fatalf("choir AND band: %v", got)
+	for _, tc := range cases {
+		got := groupNames(t, anon.do("GET", "/api/v1/groups?"+tc.query, nil, false))
+		sort.Strings(got)
+		if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+			t.Fatalf("%s: got %v, want %v", tc.query, got, tc.want)
+		}
 	}
 }
 
