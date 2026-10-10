@@ -177,7 +177,8 @@ func TestSetupWizardCreatesAdmin(t *testing.T) {
 
 	form := url.Values{
 		"csrf_token": {m[1]},
-		"site_name":  {"Fold Test"}, "name": {"Root"}, "email": {"Root@Example.com"},
+		"site_name":  {"Fold Test"}, "timezone": {"America/Denver"},
+		"name": {"Root"}, "email": {"Root@Example.com"},
 		"password": {"pw12345678"}, "password_confirm": {"pw12345678"},
 	}
 	w := httptest.NewRecorder()
@@ -201,6 +202,11 @@ func TestSetupWizardCreatesAdmin(t *testing.T) {
 	app.DB.Where("key = ?", "site_name").First(&s)
 	if s.Value != "Fold Test" {
 		t.Fatalf("site name not stored: %q", s.Value)
+	}
+	var tz models.Setting
+	app.DB.Where("key = ?", "timezone").First(&tz)
+	if tz.Value != "America/Denver" {
+		t.Fatalf("timezone not stored: %q", tz.Value)
 	}
 }
 
@@ -358,70 +364,66 @@ func TestJoinLeaveAndRSVP(t *testing.T) {
 		t.Fatalf("expected 2 memberships, got %d", n)
 	}
 
-	// Leader creates a weekly meeting.
-	start := time.Date(2026, 10, 14, 18, 30, 0, 0, time.UTC) // a Wednesday
-	w = admin.do("POST", "/api/v1/groups/"+gid+"/meetings", map[string]any{
-		"startsAt":       start.Format(time.RFC3339),
-		"endsAt":         start.Add(90 * time.Minute).Format(time.RFC3339),
+	// Leader creates a weekly event. 2026-10-14 is a Wednesday.
+	w = admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"startsLocal": "2026-10-14T18:30", "durationMinutes": 90, "tzid": "UTC",
 		"recurrenceRule": "FREQ=WEEKLY;BYDAY=WE",
 	}, true)
 	if w.Code != http.StatusCreated {
-		t.Fatalf("create meeting: %d %s", w.Code, w.Body.String())
+		t.Fatalf("create event: %d %s", w.Code, w.Body.String())
 	}
 	var mcreated struct {
-		Meeting meetingJSON `json:"meeting"`
+		Event eventJSON `json:"event"`
 	}
 	decodeJSON(t, w, &mcreated)
-	mid := itoa(mcreated.Meeting.ID)
+	mid := itoa(mcreated.Event.ID)
 
-	// Expanded list shows 4 weekly instances.
-	w = sam.do("GET", "/api/v1/groups/"+gid+"/meetings?from=2026-10-06&to=2026-11-06", nil, false)
+	// The stored series covers Oct 14, 21, 28 and Nov 4.
+	w = sam.do("GET", "/api/v1/groups/"+gid+"/events?from=2026-10-06&to=2026-11-06", nil, false)
 	var mlist struct {
-		Meetings []meetingInstanceJSON `json:"meetings"`
+		Events []occurrenceJSON `json:"events"`
 	}
 	decodeJSON(t, w, &mlist)
-	if len(mlist.Meetings) != 4 {
-		t.Fatalf("expected 4 instances, got %d", len(mlist.Meetings))
+	if len(mlist.Events) != 4 {
+		t.Fatalf("expected 4 occurrences, got %d", len(mlist.Events))
 	}
-	first := mlist.Meetings[0]
+	first := mlist.Events[0]
 
-	// Sam RSVPs going.
-	w = sam.do("PUT", "/api/v1/meetings/"+mid+"/rsvp", map[string]any{
+	// Sam registers going.
+	w = sam.do("PUT", "/api/v1/events/"+mid+"/registrations", map[string]any{
 		"status": "going", "date": first.Date,
 	}, true)
 	if w.Code != http.StatusOK {
-		t.Fatalf("rsvp: %d %s", w.Code, w.Body.String())
+		t.Fatalf("register: %d %s", w.Code, w.Body.String())
 	}
 
-	// Counts reflect it.
-	w = sam.do("GET", "/api/v1/groups/"+gid+"/meetings?from=2026-10-06&to=2026-11-06", nil, false)
+	w = sam.do("GET", "/api/v1/groups/"+gid+"/events?from=2026-10-06&to=2026-11-06", nil, false)
 	decodeJSON(t, w, &mlist)
-	if mlist.Meetings[0].RSVPs["going"] != 1 {
-		t.Fatalf("rsvp count: %+v", mlist.Meetings[0].RSVPs)
+	if mlist.Events[0].Registrations["going"] != 1 {
+		t.Fatalf("registration count: %+v", mlist.Events[0].Registrations)
 	}
-	if mlist.Meetings[0].MyRSVP == nil || *mlist.Meetings[0].MyRSVP != "going" {
-		t.Fatalf("myRsvp missing: %+v", mlist.Meetings[0].MyRSVP)
+	if mlist.Events[0].MyRegistration == nil || *mlist.Events[0].MyRegistration != "going" {
+		t.Fatalf("myRegistration missing: %+v", mlist.Events[0].MyRegistration)
 	}
 
-	// Cancel one instance → it disappears.
-	w = admin.do("POST", "/api/v1/meetings/"+mid+"/cancel",
+	// Cancel one date and it drops out of the scheduled list.
+	w = admin.do("POST", "/api/v1/events/"+mid+"/cancel",
 		map[string]any{"date": first.Date}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
 	}
-	w = sam.do("GET", "/api/v1/groups/"+gid+"/meetings?from=2026-10-06&to=2026-11-06", nil, false)
+	w = sam.do("GET", "/api/v1/groups/"+gid+"/events?from=2026-10-06&to=2026-11-06", nil, false)
 	decodeJSON(t, w, &mlist)
-	if len(mlist.Meetings) != 3 {
-		t.Fatalf("expected 3 after cancel, got %d", len(mlist.Meetings))
+	if len(mlist.Events) != 3 {
+		t.Fatalf("expected 3 after cancel, got %d", len(mlist.Events))
 	}
 
-	// Non-leader cannot create meetings.
-	w = sam.do("POST", "/api/v1/groups/"+gid+"/meetings", map[string]any{
-		"startsAt": start.Format(time.RFC3339),
-		"endsAt":   start.Add(time.Hour).Format(time.RFC3339),
+	// Non-leader cannot create events.
+	w = sam.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"startsLocal": "2026-10-14T18:30", "durationMinutes": 60, "tzid": "UTC",
 	}, true)
 	if w.Code != http.StatusForbidden {
-		t.Fatalf("non-leader create meeting: %d", w.Code)
+		t.Fatalf("non-leader create event: %d", w.Code)
 	}
 
 	// Leave.

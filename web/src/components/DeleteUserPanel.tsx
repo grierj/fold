@@ -58,7 +58,7 @@ export function DeleteUserPanel({
       </p>
       {action === "disable" && (
         <p className="text-gray-700">
-          Their groups and RSVPs are kept but hidden until you enable them again; they come back as a member, not a
+          Their groups and registrations are kept but hidden until you enable them again; they come back as a member, not a
           leader.
         </p>
       )}

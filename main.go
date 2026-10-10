@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"fold/internal/events"
 	"fold/models"
 	"fold/storage"
 
@@ -86,6 +87,10 @@ func serve(stderr io.Writer) int {
 	}
 	r := app.setupRouter()
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	app.startOccurrenceTicker(ctx)
+
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 	go func() {
 		log.Printf("Starting server on :%s (env=%s)", cfg.Port, cfg.Env)
@@ -94,8 +99,6 @@ func serve(stderr io.Writer) int {
 		}
 	}()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	<-ctx.Done()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -103,6 +106,30 @@ func serve(stderr io.Writer) int {
 		log.Printf("Shutdown: %v", err)
 	}
 	return 0
+}
+
+// startOccurrenceTicker extends stored occurrences out to 18 months, once
+// at startup and then daily. A second app process skips the run while the
+// advisory lock is held (5.5).
+func (a *App) startOccurrenceTicker(ctx context.Context) {
+	go func() {
+		run := func() {
+			if err := events.ExtendLocked(ctx, a.DB, time.Now().UTC()); err != nil {
+				log.Printf("occurrences: %v", err)
+			}
+		}
+		run()
+		tick := time.NewTicker(24 * time.Hour)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				run()
+			}
+		}
+	}()
 }
 
 // runHealthcheck is the distroless-friendly probe used by Docker. The image
@@ -358,6 +385,7 @@ func (a *App) handleSetup(c *gin.Context) {
 	}
 
 	siteName := strings.TrimSpace(c.PostForm("site_name"))
+	timezone := strings.TrimSpace(c.PostForm("timezone"))
 	name := strings.TrimSpace(c.PostForm("name"))
 	email := normalizeEmail(c.PostForm("email"))
 	password := c.PostForm("password")
@@ -370,13 +398,18 @@ func (a *App) handleSetup(c *gin.Context) {
 		a.html(c, http.StatusBadRequest, "setup.html", gin.H{
 			"Error":           msg,
 			"EnteredSiteName": siteName,
+			"EnteredTimezone": timezone,
 			"EnteredName":     name,
 			"EnteredEmail":    email,
 		})
 	}
 
-	if siteName == "" || name == "" || email == "" || password == "" {
+	if siteName == "" || timezone == "" || name == "" || email == "" || password == "" {
 		fail("All fields are required.")
+		return
+	}
+	if _, err := time.LoadLocation(timezone); err != nil {
+		fail("Time zone must be an IANA name, for example America/Denver.")
 		return
 	}
 	if !validEmail(email) {
@@ -405,7 +438,10 @@ func (a *App) handleSetup(c *gin.Context) {
 	a.DB.Where(models.Setting{Key: "site_name"}).
 		Assign(models.Setting{Value: siteName}).
 		FirstOrCreate(&models.Setting{})
+	a.DB.Where(models.Setting{Key: settingTimezone}).
+		Assign(models.Setting{Value: timezone}).
+		FirstOrCreate(&models.Setting{})
 
-	log.Printf("Setup complete: site=%q", siteName)
+	log.Printf("Setup complete: site=%q timezone=%q", siteName, timezone)
 	c.Redirect(http.StatusSeeOther, "/login")
 }

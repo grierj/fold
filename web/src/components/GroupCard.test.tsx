@@ -8,7 +8,7 @@ import type { GroupSummary } from "../types";
 const group: GroupSummary = {
   id: 7, name: "Tuesday Bible Study", description: "", tags: ["bible-study", "adults"],
   imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Room 201",
-  leaderName: "Grier", memberCount: 4, nextMeetingAt: null, status: "active",
+  leaderName: "Grier", memberCount: 4, nextEventAt: null, nextEventLocal: "", nextEventTzid: "", status: "active",
   leaderId: 1, visibility: "invite_only", deletionRequested: false, memberLimit: null,
 };
 
@@ -27,7 +27,24 @@ describe("GroupCard", () => {
     expect(screen.getByRole("link", { name: /Tuesday Bible Study/ })).toHaveAttribute("href", "/groups/7");
     expect(screen.getByText("Invite only")).toBeInTheDocument();
     expect(screen.queryByText("Pending approval")).not.toBeInTheDocument();
-    expect(screen.getByText(/No meetings scheduled yet/)).toBeInTheDocument();
+    expect(screen.getByText(/No events scheduled yet/)).toBeInTheDocument();
+  });
+
+  it("shows the event's wall-clock date, not the UTC date", () => {
+    render(
+      <MemoryRouter>
+        <GroupCard
+          group={{
+            ...group,
+            nextEventAt: "2035-06-16T01:00:00Z",
+            nextEventLocal: "2035-06-15T19:00",
+            nextEventTzid: "America/Boise",
+          }}
+        />
+      </MemoryRouter>
+    );
+    expect(screen.getByText(/Jun 15/)).toBeInTheDocument();
+    expect(screen.queryByText(/Jun 16/)).not.toBeInTheDocument();
   });
 
   it("toggles the directory filter from a tag", async () => {

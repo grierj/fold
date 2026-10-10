@@ -136,21 +136,19 @@ func (a *App) apiGetGroup(c *gin.Context) {
 		memberList = a.roster(g.ID)
 	}
 
-	var meetings []models.Meeting
-	a.DB.Where("group_id = ?", g.ID).Find(&meetings)
 	now := time.Now().UTC()
-	upcoming := a.buildInstances(meetings, now, now.AddDate(0, 0, 90), me)
+	upcoming := a.buildOccurrences([]uint{g.ID}, now.Add(-24*time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02"), &now, me)
 
 	pendingFor := []memberJSON{}
 	if policy.CanManageGroup(p, rel) {
 		pendingFor = a.membersWith(g.ID, memberPendingReturn)
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"group":            a.groupSummary(g),
-		"members":          memberList,
-		"upcomingMeetings": upcoming,
-		"canManage":        policy.CanManageGroup(p, rel),
-		"isMember":         rel.Member,
+		"group":          a.groupSummary(g),
+		"members":        memberList,
+		"upcomingEvents": upcoming,
+		"canManage":      policy.CanManageGroup(p, rel),
+		"isMember":       rel.Member,
 		// Leaders and admins decide returns into a full group (DEC-39).
 		"pendingReturns": pendingFor,
 	})
@@ -714,25 +712,17 @@ func (a *App) apiCancelDeletion(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// deleteGroup removes the group and the rows that belong to it. Meetings
-// and the group itself are soft-deleted. RSVPs, exceptions, and memberships
-// have no deleted-at column, so they are removed outright.
+// deleteGroup removes the group and the rows that belong to it. Events and
+// the group itself are soft-deleted. Registrations, occurrences, and
+// memberships have no deleted-at column, so they are removed outright.
 func (a *App) deleteGroup(ctx context.Context, g *models.Group) error {
 	imageURL := g.ImageURL
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		var meetingIDs []uint
-		if err := tx.Unscoped().Model(&models.Meeting{}).Where("group_id = ?", g.ID).Pluck("id", &meetingIDs).Error; err != nil {
+		var eventIDs []uint
+		if err := tx.Unscoped().Model(&models.Event{}).Where("group_id = ?", g.ID).Pluck("id", &eventIDs).Error; err != nil {
 			return err
 		}
-		if len(meetingIDs) > 0 {
-			if err := tx.Where("meeting_id IN ?", meetingIDs).Delete(&models.RSVP{}).Error; err != nil {
-				return err
-			}
-			if err := tx.Where("meeting_id IN ?", meetingIDs).Delete(&models.MeetingException{}).Error; err != nil {
-				return err
-			}
-		}
-		if err := tx.Where("group_id = ?", g.ID).Delete(&models.Meeting{}).Error; err != nil {
+		if err := deleteEventRows(tx, eventIDs); err != nil {
 			return err
 		}
 		if err := tx.Where("group_id = ?", g.ID).Delete(&models.Membership{}).Error; err != nil {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Admin, AdminGroups, AdminUsers, ApiError, Groups } from "../api";
+import { Admin, AdminGroups, AdminUsers, ApiError, Groups, Site } from "../api";
+import { COMMON_ZONES } from "../lib/eventForm";
 import type { GroupSummary, Member, PendingReturn, User } from "../types";
 import { useAuth } from "../auth";
 import { Avatar } from "../components/Avatar";
@@ -777,6 +778,80 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
 // Page
 // ---------------------------------------------------------------------------
 
+function ChurchTimezone() {
+  const [tz, setTz] = useState("");
+  const [saved, setSaved] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    Site.get()
+      .then((s) => {
+        if (!alive) return;
+        setTz(s.timezone);
+        setSaved(s.timezone);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setOk(false);
+    try {
+      const r = await Admin.setTimezone(tz.trim());
+      setTz(r.timezone);
+      setSaved(r.timezone);
+      setOk(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the time zone");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="mb-6 flex flex-wrap items-end gap-3">
+      <div>
+        <label className="label" htmlFor="church-tz">
+          Church time zone
+        </label>
+        <input
+          id="church-tz"
+          className="input"
+          list="church-zones"
+          value={tz}
+          onChange={(e) => {
+            setTz(e.target.value);
+            setOk(false);
+          }}
+          required
+          aria-describedby="church-tz-hint"
+        />
+        <datalist id="church-zones">
+          {COMMON_ZONES.map((z) => (
+            <option key={z} value={z} />
+          ))}
+        </datalist>
+        <p id="church-tz-hint" className="text-sm text-gray-500 mt-1">
+          New events use this zone unless a leader picks another. An IANA name, for example America/Denver.
+        </p>
+      </div>
+      <button type="submit" className="btn-secondary" disabled={busy || tz.trim() === saved}>
+        {busy ? "Saving…" : "Save time zone"}
+      </button>
+      {ok && <span className="text-sm text-gray-600">Saved</span>}
+      {error && <span className="text-sm text-red-600">{error}</span>}
+    </form>
+  );
+}
+
 export function AdminPage() {
   const { user, loading: authLoading, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -818,6 +893,7 @@ export function AdminPage() {
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-extrabold mb-6">Admin</h1>
+      <ChurchTimezone />
       <div className="flex gap-1 border-b border-gray-200 mb-6">
         {tabs.map((t) => (
           <button

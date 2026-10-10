@@ -248,10 +248,7 @@ func TestNotifications(t *testing.T) {
 		t.Fatalf("create group: %v", err)
 	}
 	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
-	mt := models.Meeting{GroupID: g.ID, StartsAt: start, EndsAt: start.Add(time.Hour)}
-	if err := app.DB.Create(&mt).Error; err != nil {
-		t.Fatalf("create meeting: %v", err)
-	}
+	seedEvent(t, app, &g, member.ID, start)
 	app.DB.Create(&models.Membership{UserID: member.ID, GroupID: g.ID, Role: "member", Status: "active", JoinedAt: time.Now().UTC()})
 
 	adminClient := loginAs(t, app, "admin", "password1234")

@@ -1,32 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { Groups } from "../api";
+import { Groups, Site } from "../api";
 import { useAuth } from "../auth";
+import { COMMON_ZONES, WEEKDAYS, weekdayCode } from "../lib/eventForm";
 
-const WEEKDAYS = [
-  { label: "Mon", value: "MO" },
-  { label: "Tue", value: "TU" },
-  { label: "Wed", value: "WE" },
-  { label: "Thu", value: "TH" },
-  { label: "Fri", value: "FR" },
-  { label: "Sat", value: "SA" },
-  { label: "Sun", value: "SU" },
-];
-
-// Build an RFC 3339 datetime with the user's local UTC offset, e.g.
-// 2026-10-14T19:00:00-06:00. The server treats per-instance times as local
-// times carried on the date, so preserving the local wall time matters.
-function localRfc3339(date: string, time: string): string {
-  const d = new Date(`${date}T${time}:00`);
-  const offMin = -d.getTimezoneOffset();
-  const sign = offMin >= 0 ? "+" : "-";
-  const abs = Math.abs(offMin);
-  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
-  const mm = String(abs % 60).padStart(2, "0");
-  return `${date}T${time}:00${sign}${hh}:${mm}`;
-}
-
-export function NewMeeting() {
+export function NewEvent() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user, loading: authLoading } = useAuth();
@@ -34,9 +12,12 @@ export function NewMeeting() {
   const [canManage, setCanManage] = useState(false);
   const [loading, setLoading] = useState(true);
 
+  const [title, setTitle] = useState("");
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("19:00");
   const [durationMin, setDurationMin] = useState(90);
+  const [tzid, setTzid] = useState("");
+  const tzTouched = useRef(false);
   const [location, setLocation] = useState("");
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
@@ -59,6 +40,13 @@ export function NewMeeting() {
       .finally(() => {
         if (alive) setLoading(false);
       });
+    Site.get()
+      .then((s) => {
+        if (alive && !tzTouched.current) setTzid(s.timezone || "UTC");
+      })
+      .catch(() => {
+        if (alive && !tzTouched.current) setTzid("UTC");
+      });
     return () => {
       alive = false;
     };
@@ -68,10 +56,19 @@ export function NewMeeting() {
     setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
   }
 
+  function onRecurring(checked: boolean) {
+    setRecurring(checked);
+    if (checked && days.length === 0 && date) setDays([weekdayCode(date)]);
+  }
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!date) {
       setError("Pick a date.");
+      return;
+    }
+    if (!tzid.trim()) {
+      setError("Pick a time zone.");
       return;
     }
     if (recurring && days.length === 0) {
@@ -81,24 +78,14 @@ export function NewMeeting() {
     setBusy(true);
     setError(null);
     try {
-      const startsAt = localRfc3339(date, startTime);
-      const start = new Date(`${date}T${startTime}:00`);
-      const end = new Date(start.getTime() + durationMin * 60_000);
-      const offMin = -start.getTimezoneOffset();
-      const sign = offMin >= 0 ? "+" : "-";
-      const abs = Math.abs(offMin);
-      const off = `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
-      const pad = (n: number) => String(n).padStart(2, "0");
-      const endsAt = `${end.getFullYear()}-${pad(end.getMonth() + 1)}-${pad(end.getDate())}T${pad(end.getHours())}:${pad(end.getMinutes())}:00${off}`;
-      // The server expands recurrences on the UTC timeline, so BYDAY must use
-      // the UTC weekday. Map each selected local weekday by the same day-shift
-      // the UTC conversion applies to the start time.
-      const WD = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
-      const shift = (start.getUTCDay() - start.getDay() + 7) % 7;
-      const utcDays = days.map((d) => WD[(WD.indexOf(d) + shift) % 7]);
-      const recurrenceRule =
-        recurring && utcDays.length > 0 ? `FREQ=WEEKLY;BYDAY=${utcDays.join(",")}` : undefined;
-      await Groups.createMeeting(id!, { startsAt, endsAt, location, recurrenceRule });
+      await Groups.createEvent(id!, {
+        title: title.trim(),
+        startsLocal: `${date}T${startTime}`,
+        durationMinutes: durationMin,
+        tzid: tzid.trim(),
+        location: location.trim(),
+        recurrenceRule: recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "",
+      });
       navigate(`/groups/${id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to schedule event");
@@ -114,7 +101,7 @@ export function NewMeeting() {
   if (!user) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
-        <Link to="/login" state={{ from: `/groups/${id}/meetings/new` }} className="text-brand font-semibold">
+        <Link to="/login" state={{ from: `/groups/${id}/events/new` }} className="text-brand font-semibold">
           Log in
         </Link>{" "}
         to schedule an event.
@@ -144,20 +131,42 @@ export function NewMeeting() {
       </p>
       <form onSubmit={submit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
         {error && <div className="text-red-600 text-sm">{error}</div>}
+        <div>
+          <label className="label" htmlFor="event-title">
+            Title (optional)
+          </label>
+          <input
+            id="event-title"
+            className="input"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder={groupName || "Event name"}
+          />
+        </div>
         <div className="grid sm:grid-cols-2 gap-4">
           <div>
-            <label className="label">Date</label>
+            <label className="label" htmlFor="event-date">
+              Date
+            </label>
             <input
+              id="event-date"
               type="date"
               className="input"
               value={date}
-              onChange={(e) => setDate(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setDate(v);
+                if (recurring && days.length === 0 && v) setDays([weekdayCode(v)]);
+              }}
               required
             />
           </div>
           <div>
-            <label className="label">Start time</label>
+            <label className="label" htmlFor="event-time">
+              Start time
+            </label>
             <input
+              id="event-time"
               type="time"
               className="input"
               value={startTime}
@@ -166,20 +175,54 @@ export function NewMeeting() {
             />
           </div>
         </div>
-        <div>
-          <label className="label">Duration (minutes)</label>
-          <input
-            type="number"
-            min={15}
-            step={15}
-            className="input"
-            value={durationMin}
-            onChange={(e) => setDurationMin(Number(e.target.value))}
-          />
+        <div className="grid sm:grid-cols-2 gap-4">
+          <div>
+            <label className="label" htmlFor="event-duration">
+              Duration (minutes)
+            </label>
+            <input
+              id="event-duration"
+              type="number"
+              min={1}
+              max={10080}
+              step={1}
+              className="input"
+              value={durationMin}
+              onChange={(e) => setDurationMin(Number(e.target.value))}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor="event-tz">
+              Time zone
+            </label>
+            <input
+              id="event-tz"
+              className="input"
+              list="event-zones"
+              value={tzid}
+              onChange={(e) => {
+                tzTouched.current = true;
+                setTzid(e.target.value);
+              }}
+              required
+              aria-describedby="tz-hint"
+            />
+            <datalist id="event-zones">
+              {COMMON_ZONES.map((z) => (
+                <option key={z} value={z} />
+              ))}
+            </datalist>
+            <p id="tz-hint" className="text-sm text-gray-500 mt-1">
+              An IANA name, for example America/Boise. The clock stays put across daylight saving.
+            </p>
+          </div>
         </div>
         <div>
-          <label className="label">Location (blank = group's location)</label>
+          <label className="label" htmlFor="event-location">
+            Location (blank = group's location)
+          </label>
           <input
+            id="event-location"
             className="input"
             value={location}
             onChange={(e) => setLocation(e.target.value)}
@@ -191,7 +234,7 @@ export function NewMeeting() {
             <input
               type="checkbox"
               checked={recurring}
-              onChange={(e) => setRecurring(e.target.checked)}
+              onChange={(e) => onRecurring(e.target.checked)}
               className="w-4 h-4 accent-[#f64060]"
             />
             Repeat weekly

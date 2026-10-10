@@ -1,32 +1,32 @@
 import { useState } from "react";
-import { Meetings } from "../api";
-import type { MeetingInstance } from "../types";
+import { Events } from "../api";
+import type { EventOccurrence, RegistrationStatus } from "../types";
 
-const OPTIONS: { value: "going" | "maybe" | "declined"; label: string }[] = [
+const OPTIONS: { value: RegistrationStatus; label: string }[] = [
   { value: "going", label: "Going" },
   { value: "maybe", label: "Maybe" },
   { value: "declined", label: "Can't go" },
 ];
 
-// Meetup-style RSVP buttons for one meeting instance.
+// Meetup-style registration buttons for one event date.
 export function RsvpButtons({
   instance,
   onChange,
 }: {
-  instance: MeetingInstance;
-  onChange: (status: "going" | "maybe" | "declined") => void;
+  instance: EventOccurrence;
+  onChange: (status: RegistrationStatus) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function choose(status: "going" | "maybe" | "declined") {
+  async function choose(status: RegistrationStatus) {
     setBusy(status);
     setError(null);
     try {
-      await Meetings.rsvp(instance.meetingId, status, instance.date);
+      await Events.register(instance.eventId, status, instance.date);
       onChange(status);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "RSVP failed");
+      setError(e instanceof Error ? e.message : "Could not save your registration");
     } finally {
       setBusy(null);
     }
@@ -36,7 +36,7 @@ export function RsvpButtons({
     <div>
       <div className="flex gap-2">
         {OPTIONS.map((o) => {
-          const active = instance.myRsvp === o.value;
+          const active = instance.myRegistration === o.value;
           return (
             <button
               key={o.value}

@@ -1663,9 +1663,9 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - Occurrences: `EventOccurrence` with an 18-month horizon, extended by the daily ticker (5.5); cancelled dates as occurrence status.
   - Series edits: the v1 rule in 5.3 (whole future series, plus per-date overrides).
 - Acceptance:
-  - [ ] A weekly 7:00 pm America/Boise event stays at 7:00 pm local on both sides of 2026-11-01 and 2027-03-14
-  - [ ] The API returns both UTC and local times
-  - [ ] A series edit moves future occurrences, keeps their registrations, cancels dates that no longer exist (registrants told), and leaves per-date overrides alone
+  - [x] A weekly 7:00 pm America/Boise event stays at 7:00 pm local on both sides of 2026-11-01 and 2027-03-14
+  - [x] The API returns both UTC and local times
+  - [x] A series edit moves future occurrences, keeps their registrations, cancels dates that no longer exist (registrants told), and leaves per-date overrides alone
 - Tests: DST table tests (America/Boise, America/New_York, America/Phoenix, Europe/London); occurrence generation; series edit.
 
 **M1.1b Church-wide hosts, event visibility, audit, stored in-app notifications**

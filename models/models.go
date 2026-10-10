@@ -33,11 +33,17 @@ const (
 	VisibilityInviteOnly = "invite_only" // members and admins only
 )
 
-// RSVP statuses.
+// Registration statuses (renamed from RSVP, M1.1a).
 const (
-	RSVPGoing    = "going"
-	RSVPMaybe    = "maybe"
-	RSVPDeclined = "declined"
+	RegGoing    = "going"
+	RegMaybe    = "maybe"
+	RegDeclined = "declined"
+)
+
+// Occurrence statuses. A cancelled date is a row, not a separate exception.
+const (
+	OccurrenceScheduled = "scheduled"
+	OccurrenceCancelled = "cancelled"
 )
 
 // Account statuses (5.3). Only active accounts with a password sign in.
@@ -119,7 +125,7 @@ func (u *User) CanSignIn() bool {
 }
 
 // Group is an ongoing entity (a small group, ministry, or activity) —
-// not a single event. Meetings are its instances.
+// not a single event. Events are its instances.
 type Group struct {
 	ID          uint   `gorm:"primaryKey"`
 	Name        string `gorm:"not null"`
@@ -149,30 +155,57 @@ type Group struct {
 	DeletedAt         gorm.DeletedAt `gorm:"index"`
 }
 
-// Meeting is a scheduled occurrence series belonging to a group.
-// StartsAt is the first occurrence; RecurrenceRule (RFC 5545 RRULE,
-// e.g. "FREQ=WEEKLY;BYDAY=WE") generates the rest. Empty rule = one-time.
-type Meeting struct {
-	ID             uint      `gorm:"primaryKey"`
-	GroupID        uint      `gorm:"not null;index"`
-	Group          Group     `gorm:"foreignKey:GroupID"`
-	StartsAt       time.Time `gorm:"not null"`
-	EndsAt         time.Time `gorm:"not null"`
-	Location       string    // empty = use the group's location
-	RecurrenceRule string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	DeletedAt      gorm.DeletedAt `gorm:"index"`
+// Event is a series (or a one-time event) belonging to a group. Church-wide
+// events arrive in M1.1b, so GroupID stays required. The wall clock
+// (StartsLocal + TZID) is the source of truth; occurrences store UTC (C2).
+type Event struct {
+	ID              uint    `gorm:"primaryKey"`
+	GroupID         uint    `gorm:"not null;index"`
+	Group           Group   `gorm:"foreignKey:GroupID"`
+	Title           string  `gorm:"not null"`
+	StartsLocal     string  `gorm:"not null"` // YYYY-MM-DDTHH:MM, no offset
+	DurationMinutes int     `gorm:"not null"`
+	TZID            string  `gorm:"column:tzid;not null"`
+	RRule           string  `gorm:"column:rrule;not null"`
+	RRuleUntil      *string `gorm:"column:rrule_until"` // YYYY-MM-DD, inclusive
+	Location        string  `gorm:"not null"`           // empty = the group's location
+	CreatedBy       uint    `gorm:"not null"`
+	Creator         User    `gorm:"foreignKey:CreatedBy"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	DeletedAt       gorm.DeletedAt `gorm:"index"`
 }
 
-// MeetingException cancels (or in future, reschedules) a single instance
-// of a recurring meeting, addressed by date (YYYY-MM-DD).
-type MeetingException struct {
-	ID        uint    `gorm:"primaryKey"`
-	MeetingID uint    `gorm:"not null;uniqueIndex:idx_meeting_date"`
-	Meeting   Meeting `gorm:"foreignKey:MeetingID"`
-	Date      string  `gorm:"not null;uniqueIndex:idx_meeting_date"` // YYYY-MM-DD
-	Cancelled bool    `gorm:"default:false"`
+// EventOccurrence is one date of an event, generated 18 months ahead.
+// OriginalDate is the series date in the event's time zone and does not
+// change when a per-date override moves the clock time. Registrations hang
+// off this row, so a series edit can move the time without losing them.
+type EventOccurrence struct {
+	ID               uint      `gorm:"primaryKey"`
+	EventID          uint      `gorm:"not null;uniqueIndex:idx_event_original_date"`
+	Event            Event     `gorm:"foreignKey:EventID"`
+	OriginalDate     string    `gorm:"not null;uniqueIndex:idx_event_original_date"` // YYYY-MM-DD
+	StartsAt         time.Time `gorm:"not null;index"`
+	EndsAt           time.Time `gorm:"not null"`
+	Status           string    `gorm:"not null;default:scheduled"` // scheduled | cancelled
+	TitleOverride    *string
+	LocationOverride *string
+	StartsAtOverride *time.Time
+	DurationOverride *int
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+// TimeFrozen reports a per-date clock override. A series edit does not
+// move that clock.
+func (o EventOccurrence) TimeFrozen() bool {
+	return o.StartsAtOverride != nil || o.DurationOverride != nil
+}
+
+// Customized reports a per-date override or a cancellation. A series edit
+// leaves the row alone: it does not move the clock and does not drop the date.
+func (o EventOccurrence) Customized() bool {
+	return o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil || o.Status == OccurrenceCancelled
 }
 
 // Membership is a user's roster entry in a group.
@@ -188,18 +221,16 @@ type Membership struct {
 	JoinedAt time.Time
 }
 
-// RSVP records a user's response to one meeting instance,
-// addressed by (meeting, date).
-type RSVP struct {
-	ID        uint    `gorm:"primaryKey"`
-	UserID    uint    `gorm:"not null;uniqueIndex:idx_rsvp"`
-	User      User    `gorm:"foreignKey:UserID"`
-	MeetingID uint    `gorm:"not null;uniqueIndex:idx_rsvp"`
-	Meeting   Meeting `gorm:"foreignKey:MeetingID"`
-	Date      string  `gorm:"not null;uniqueIndex:idx_rsvp"` // YYYY-MM-DD
-	Status    string  `gorm:"not null"`                      // going | maybe | declined
-	CreatedAt time.Time
-	UpdatedAt time.Time
+// Registration is a user's response to one occurrence (renamed from RSVP).
+type Registration struct {
+	ID           uint            `gorm:"primaryKey"`
+	OccurrenceID uint            `gorm:"not null;uniqueIndex:idx_registration"`
+	Occurrence   EventOccurrence `gorm:"foreignKey:OccurrenceID"`
+	UserID       uint            `gorm:"not null;uniqueIndex:idx_registration"`
+	User         User            `gorm:"foreignKey:UserID"`
+	Status       string          `gorm:"not null"` // going | maybe | declined
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Setting is a simple key/value store for site configuration
@@ -237,7 +268,7 @@ type LoginThrottle struct {
 // helpers use it; a new model must be added here and to a migration.
 func All() []any {
 	return []any{
-		&User{}, &Group{}, &Meeting{}, &MeetingException{},
-		&Membership{}, &RSVP{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
+		&User{}, &Group{}, &Event{}, &EventOccurrence{},
+		&Membership{}, &Registration{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
 	}
 }

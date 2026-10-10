@@ -87,13 +87,13 @@ API contract: `docs/API.md`. Agent working notes: `AGENTS.md`.
 ## Layout
 
 - `main.go` — wiring, setup wizard, embedded-SPA serving
-- `api.go` — JSON API v1 handlers (auth, groups, memberships, meetings, RSVPs, admin)
+- `api.go` — JSON API v1 handlers (auth, groups, memberships, events, registrations, admin)
 - `csrf.go` — hand-rolled synchronizer CSRF tokens
 - `config.go` — environment-based configuration
 - `cli.go` — subcommands (`serve`, `healthcheck`, `migrate`, `version`)
 - `db.go` — Postgres connection + migrations on start
 - `migrations/` — goose SQL migrations (the schema's source of truth), embedded
-- `models/` — GORM models (`User`, `Group`, `Meeting`, `MeetingException`, `Membership`, `RSVP`, `Setting`)
+- `models/` — GORM models (`User`, `Group`, `Event`, `EventOccurrence`, `Membership`, `Registration`, `Setting`)
 - `web/` — React + Vite + Tailwind SPA (builds to `web/dist`, embedded via `go:embed`)
 - `templates/` — setup wizard page only (the app UI is the SPA)
 - `docs/` — API contract and other docs

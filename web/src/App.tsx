@@ -5,7 +5,7 @@ import { Home } from "./pages/Home";
 import { Login } from "./pages/Login";
 import { GroupDetail } from "./pages/GroupDetail";
 import { NewGroup } from "./pages/NewGroup";
-import { NewMeeting } from "./pages/NewMeeting";
+import { NewEvent } from "./pages/NewEvent";
 import { MyGroups } from "./pages/MyGroups";
 import { ProfilePage } from "./pages/Profile";
 import { AdminPage } from "./pages/Admin";
@@ -39,7 +39,7 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/groups/new" element={<NewGroup />} />
         <Route path="/groups/:id" element={<GroupDetail />} />
-        <Route path="/groups/:id/meetings/new" element={<NewMeeting />} />
+        <Route path="/groups/:id/events/new" element={<NewEvent />} />
         <Route path="/my-groups" element={<MyGroups />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/admin" element={<AdminPage />} />

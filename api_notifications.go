@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sort"
 	"time"
 
 	"fold/internal/audit"
@@ -68,56 +67,114 @@ func (a *App) apiNotifications(c *gin.Context) {
 	// Leaders hear about returns in their groups; admins about all (DEC-39).
 	out = append(out, a.pendingReturnNotices(u)...)
 
-	var memberships []models.Membership
-	a.DB.Where("user_id = ? AND status = ?", u.ID, "active").Find(&memberships)
-	if len(memberships) > 0 {
-		groupIDs := make([]uint, 0, len(memberships))
-		for i := range memberships {
-			groupIDs = append(groupIDs, memberships[i].GroupID)
-		}
-		var groups []models.Group
-		a.DB.Where("id IN ?", groupIDs).Find(&groups)
-		names := map[uint]string{}
-		for i := range groups {
-			names[groups[i].ID] = groups[i].Name
-		}
-		var meetings []models.Meeting
-		a.DB.Where("group_id IN ?", groupIDs).Find(&meetings)
-		now := time.Now().UTC()
-		horizon := now.AddDate(0, 0, 7)
-		type evt struct {
-			at time.Time
-			n  notificationJSON
-		}
-		var evts []evt
-		for i := range meetings {
-			m := &meetings[i]
-			cancelled := a.cancelledDates(m.ID)
-			for _, occ := range expandMeeting(m, now, horizon) {
-				date := occ.UTC().Format("2006-01-02")
-				if cancelled[date] {
-					continue
-				}
-				body := occ.Format("Mon, Jan 2 · 3:04 PM")
-				if m.Location != "" {
-					body += " · " + m.Location
-				}
-				evts = append(evts, evt{at: occ, n: notificationJSON{
-					ID:    fmt.Sprintf("event:%d:%s", m.ID, date),
-					Type:  "event",
-					Title: names[m.GroupID],
-					Body:  body,
-					Link:  fmt.Sprintf("/groups/%d", m.GroupID),
-				}})
-			}
-		}
-		sort.Slice(evts, func(i, j int) bool { return evts[i].at.Before(evts[j].at) })
-		for i := 0; i < len(evts) && i < 10; i++ {
-			out = append(out, evts[i].n)
-		}
-	}
+	out = append(out, a.eventNotices(u)...)
 
 	c.JSON(http.StatusOK, gin.H{"notifications": out})
+}
+
+// eventNotices lists upcoming occurrences in the member's groups, and tells
+// people who registered going or maybe when a date they were on is cancelled
+// (a series edit that drops the date, or a leader cancelling one date).
+func (a *App) eventNotices(u *models.User) []notificationJSON {
+	var memberships []models.Membership
+	a.DB.Where("user_id = ? AND status = ?", u.ID, "active").Find(&memberships)
+	if len(memberships) == 0 {
+		return nil
+	}
+	groupIDs := make([]uint, 0, len(memberships))
+	for i := range memberships {
+		groupIDs = append(groupIDs, memberships[i].GroupID)
+	}
+	now := time.Now().UTC()
+	out := a.cancelledNotices(u.ID, now)
+	out = append(out, a.upcomingNotices(groupIDs, now)...)
+	return out
+}
+
+type noticeRow struct {
+	OccID         uint
+	EventID       uint
+	GroupID       uint
+	OriginalDate  string
+	StartsAt      time.Time
+	TZID          string
+	Title         string
+	Location      string
+	GroupName     string
+	GroupLocation string
+}
+
+func (a *App) cancelledNotices(userID uint, now time.Time) []notificationJSON {
+	var rows []noticeRow
+	a.DB.Table("registrations").
+		Select(`event_occurrences.id as occ_id, events.id as event_id, events.group_id,
+			event_occurrences.original_date, event_occurrences.starts_at, events.tzid,
+			events.title, events.location, groups.name as group_name, groups.location as group_location`).
+		Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
+		Joins("JOIN events ON events.id = event_occurrences.event_id AND events.deleted_at IS NULL").
+		Joins("JOIN groups ON groups.id = events.group_id AND groups.deleted_at IS NULL").
+		Where("registrations.user_id = ? AND registrations.status IN ?", userID, []string{models.RegGoing, models.RegMaybe}).
+		Where("event_occurrences.status = ? AND event_occurrences.starts_at > ?", models.OccurrenceCancelled, now.Add(-14*24*time.Hour)).
+		Order("event_occurrences.starts_at").Limit(10).Scan(&rows)
+	out := make([]notificationJSON, 0, len(rows))
+	for _, r := range rows {
+		name := r.Title
+		if name == "" {
+			name = r.GroupName
+		}
+		out = append(out, notificationJSON{
+			ID:    fmt.Sprintf("event-cancelled:%d", r.OccID),
+			Type:  "event",
+			Title: "Cancelled: " + name,
+			Body:  noticeWhen(r),
+			Link:  fmt.Sprintf("/groups/%d", r.GroupID),
+		})
+	}
+	return out
+}
+
+func (a *App) upcomingNotices(groupIDs []uint, now time.Time) []notificationJSON {
+	var rows []noticeRow
+	a.DB.Table("event_occurrences").
+		Select(`event_occurrences.id as occ_id, events.id as event_id, events.group_id,
+			event_occurrences.original_date, event_occurrences.starts_at, events.tzid,
+			events.title, events.location, groups.name as group_name, groups.location as group_location`).
+		Joins("JOIN events ON events.id = event_occurrences.event_id AND events.deleted_at IS NULL").
+		Joins("JOIN groups ON groups.id = events.group_id AND groups.deleted_at IS NULL").
+		Where("events.group_id IN ? AND event_occurrences.status = ?", groupIDs, models.OccurrenceScheduled).
+		Where("event_occurrences.starts_at >= ? AND event_occurrences.starts_at < ?", now, now.AddDate(0, 0, 7)).
+		Order("event_occurrences.starts_at").Limit(10).Scan(&rows)
+	out := make([]notificationJSON, 0, len(rows))
+	for _, r := range rows {
+		title := r.GroupName
+		if r.Title != "" {
+			title = r.Title
+		}
+		out = append(out, notificationJSON{
+			ID:    fmt.Sprintf("event:%d:%s", r.EventID, r.OriginalDate),
+			Type:  "event",
+			Title: title,
+			Body:  noticeWhen(r),
+			Link:  fmt.Sprintf("/groups/%d", r.GroupID),
+		})
+	}
+	return out
+}
+
+func noticeWhen(r noticeRow) string {
+	loc := time.UTC
+	if l, err := time.LoadLocation(r.TZID); err == nil {
+		loc = l
+	}
+	body := r.StartsAt.In(loc).Format("Mon, Jan 2 · 3:04 PM")
+	place := r.Location
+	if place == "" {
+		place = r.GroupLocation
+	}
+	if place != "" {
+		body += " · " + place
+	}
+	return body
 }
 
 // leadershipNotices tells admins who was made or removed as a group leader

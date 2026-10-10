@@ -21,6 +21,21 @@
                 <label>Church / site name: <input type="text" name="site_name" value="{{.EnteredSiteName}}" required></label>
             </div>
             <div class="field">
+                <label>Church time zone: <input type="text" name="timezone" value="{{.EnteredTimezone}}" list="timezones" aria-describedby="tz-hint" required></label>
+                <p class="hint" id="tz-hint">IANA name, for example America/Denver. A 7:00 PM event stays at 7:00 PM when daylight saving changes.</p>
+                <datalist id="timezones">
+                    <option value="America/New_York"></option>
+                    <option value="America/Chicago"></option>
+                    <option value="America/Denver"></option>
+                    <option value="America/Boise"></option>
+                    <option value="America/Phoenix"></option>
+                    <option value="America/Los_Angeles"></option>
+                    <option value="America/Anchorage"></option>
+                    <option value="Pacific/Honolulu"></option>
+                    <option value="Europe/London"></option>
+                </datalist>
+            </div>
+            <div class="field">
                 <label>Your name: <input type="text" name="name" value="{{.EnteredName}}" autocomplete="name" required></label>
             </div>
             <div class="field">
