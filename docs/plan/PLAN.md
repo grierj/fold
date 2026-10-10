@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-33) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
+Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-37) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
 Repo: https://github.com/grierj/fold (first read at commit `aa992e2`; re-checked at `e7c0e8f`, "Merge pull request #7 from grierj/admin-invite-and-rename", merged 2026-10-09 4:31 PM MT).
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions (nothing is open).
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Do one milestone per work session and one PR per milestone. Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-33) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-37) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (DEC-1 to DEC-33) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (DEC-1 to DEC-37) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -335,7 +335,7 @@ The field lists show the important columns, not every column. Every table has `i
 **Groups**
 
 - `Group`: `visibility` (`public|private|invite_only`; replaces `Visibility` + `InviteOnly`), `status` (`pending|active|archived`), `leader_id` (displayed primary contact only; never used for permissions, C12), `category` (from a short admin-defined list, for example "Small group", "Ministry", "Class", "Youth"). Joining: any member who can see a public or private group may join it at once; invite-only groups are joined only by invitation. There is no join-request step; leaders remove members who shouldn't be there (DEC-30). There is no teen restriction on groups (DEC-20).
-- `Membership`: `role` = `leader|member`; several leaders allowed; this is the only source of leadership. `status` = `active|invited|removed`. A teen account can never have `role=leader` (DEC-18).
+- `Membership`: `role` = `leader|member`; several leaders allowed; this is the only source of leadership. `status` = `active|invited|removed`. `removed` means a leader or admin removed the person (DEC-35): they can't rejoin on their own until a leader or admin adds them back, and the removal is in the `AuditLog`. A teen account can never have `role=leader` (DEC-18).
 
 **Events**
 
@@ -569,7 +569,7 @@ Leaders, co-leaders, and hosts reach teens through Fold, never directly. Adults 
   - Grants end automatically when the leader stops leading that group, when a host is removed from the event or 30 days after its last occurrence, when a teen turns 18 (the new adult's own setting then applies, and they are told), or when either account is disabled.
 - **Every attempt is logged** (DEC-31). Each attempt to get direct contact is an `AuditLog` row, whatever the outcome: the request, each party's approval or denial, withdrawal, expiry, the grant, every reveal, revocation, automatic end, and any API call that asked for hidden fields without a grant (refused). These rows are never purged, even when a person is later deleted, so they are there for safeguarding reviews and legal requests. Admins can view and export them per person. The durable, tamper-evident log (DEC-33, 10.7) hardens this later.
 - **Replies stay inside Fold**: see 7.8.
-- **Co-leaders** (final review, finding 1). A leader can still make another adult a co-leader without an admin (section 6). That co-leader can message the group, teens included, only through Fold. Each send is logged and visible to admins, and they see no teen contact details unless an admin and the teen both approve. That closes the contact-detail part of the hole. Making someone a leader also writes an `AuditLog` row and shows the admins an in-app notice (M0.2), so an admin can undo a bad promotion quickly. There is **no extra admin-approval gate** on co-leader promotion, even in groups with teens (DEC-31). What remains: a co-leader sees what any leader sees about attendees (names, Teen badges, ages, and children's care notes during the event window), and can remove registrations. Revisit the gate if a church's safe-church policy requires vetting every leader; the background-check flags (M6.8) are the natural place for that.
+- **Co-leaders** (final review, finding 1). A leader can still make another adult a co-leader without an admin (section 6). That co-leader can message the group, teens included, only through Fold. Each send is logged and visible to admins, and they see no teen contact details unless an admin and the teen both approve. That closes the contact-detail part of the hole. Making someone a leader also writes an `AuditLog` row and shows the admins an in-app notice (M0.2), so an admin can undo a bad promotion quickly. There is **no extra admin-approval gate** on co-leader promotion, even in groups with teens (DEC-31). What remains: a co-leader sees what any leader sees about attendees (names, Teen badges, ages, and children's care notes during the event window), and can remove registrations. Revisit the gate if a church's safe-church policy requires vetting every leader; the background-check flags (M6.8) are the natural place for that. Grier confirmed this design on Oct 9, 2026 (DEC-34): no extra approval layers; audit, notify admins, and remove bad actors outright (leaders and admins can remove members from M0.3b, DEC-35).
 
 ---
 
@@ -634,8 +634,9 @@ All checks live in `internal/policy` as pure functions with table tests. Handler
 |---|---|---|---|---|---|
 | Create a group | Yes (active at once) | Leaders: yes (pending) | Yes (pending) | No | No |
 | Approve or reject groups | Yes | No | No | No | No |
-| Edit a group, manage its roster (add, remove members) | Any | Own groups (leaders) | No | No | No |
-| Make someone a group leader | Any adult | Own groups, adults only; audited, and admins get an in-app notice (no admin gate, DEC-31) | No | No | No |
+| Edit a group, manage its roster (add members) | Any | Own groups (leaders) | No | No | No |
+| Remove a member from a group (audited; DEC-35, M0.3b) | Anyone except the group's last leader | Own groups (leaders): anyone except an admin or the last leader; co-leaders included | No (leave instead) | No (leave instead) | No |
+| Make someone a group leader, or a leader a member again | Any adult (never the last leader) | Own groups, adults only; audited, and admins get an in-app notice (no admin gate, DEC-31, DEC-34); can't demote an admin (DEC-35) | No | No | No |
 | Create or edit events in a group | Any | Own groups (leaders) | No | No | No |
 | Create church-wide events | Yes | No | No | No | No |
 | Assign or remove hosts of a church-wide event | Yes (adults only) | No | No | No | No |
@@ -671,7 +672,7 @@ All checks live in `internal/policy` as pure functions with table tests. Handler
 | See the audit log | Yes | No | No | No | No |
 | Background-check flags (later) | Yes (and an optional safety-coordinator role) | No | Own status only | No | No |
 
-Guard rails that already exist and stay: the last admin cannot be demoted or deleted; you cannot delete or demote yourself; invite-only groups return 404 (not 403) to people who cannot see them. New guard rails: a teen cannot be made a leader, host, or admin (DEC-18); an account under 13 cannot be created by any path; a group cannot lose its last leader; no guardian or household link to a teen or child is confirmed without an admin (DEC-32); no API response to a leader or host includes a teen's email or phone (DEC-31).
+Guard rails that already exist and stay: the last admin cannot be demoted or deleted; you cannot delete or demote yourself; invite-only groups return 404 (not 403) to people who cannot see them. New guard rails: a teen cannot be made a leader, host, or admin (DEC-18); an account under 13 cannot be created by any path; a group cannot lose its last leader; no guardian or household link to a teen or child is confirmed without an admin (DEC-32); no API response to a leader or host includes a teen's email or phone (DEC-31); a leader cannot remove or demote an admin (DEC-35); an account that is a group's only leader cannot be deleted or disabled until the admin picks a successor for each such group (DEC-36).
 
 ---
 
@@ -946,11 +947,11 @@ Implementation note for agents: keep the counting-usage test in one function, `r
     - phone verification texts: 3 per number per day (7.4, M3.7);
     - direct-contact requests: 10 open per leader (5.11, M1.11).
   - Signature checks on every provider webhook.
-  - A Content-Security-Policy header for the SPA.
+  - Security headers set by the app (M0.3b, DEC-37): a Content-Security-Policy for the SPA and `/setup`, HSTS when cookies are secure, and a `Permissions-Policy`, plus the existing `nosniff`, referrer, and frame headers.
 - Provider secrets are encrypted at rest (C8) and never sent back to the browser after saving. The UI shows "set, last checked on ...".
 - `AuditLog` (created in M0.2) covers admin actions, sends, approvals, consent changes, role and secret changes, and every contact-access attempt (5.3, 5.11).
 - Export: admins can export people, groups, and events as CSV. Users can download their own data as JSON.
-- Deletion: deleting a user removes personal data (name, email, phone, avatar) but keeps anonymous registrations for attendance counts. Opt-out and suppression records keep a hashed address so the person is never messaged again by mistake.
+- Deletion: deleting a user removes personal data (name, email, phone, avatar) but keeps anonymous registrations for attendance counts. If the account is the only leader of any group, the admin first picks a successor for each (a member of that group or any admin, the deleting admin by default); the handoff is audited (DEC-36, M0.3b). Disabling follows the same rule. Opt-out and suppression records keep a hashed address so the person is never messaged again by mistake.
 
 ### 10.2 Directory and contact details
 
@@ -1013,7 +1014,8 @@ DEC-30's "trust the church body" covers workflow only: no approval gates on sign
 - [ ] Secrets: provider secrets encrypted at rest, never returned to the browser, `.env` mode 600 (M4.1)
 - [ ] Least-privilege permissions: every check in `internal/policy` with table tests; invite-only stays 404 to outsiders (M0.2)
 - [ ] Audit log for admin actions, sends, consent, roles, settings, secrets, links of minors, and every contact-access attempt; the table is created in M0.2, and rows about contact access, minors, consent, and roles are never purged (M0.2 onward)
-- [ ] TLS everywhere (Caddy) plus security headers: HSTS, CSP, `nosniff`, frame and referrer policies (M0.1, M5.1)
+- [ ] Leaders remove members (never an admin or the last leader) and sole-leader accounts hand off to a chosen successor before deletion or disabling; both audited (M0.3b, DEC-35, DEC-36)
+- [ ] TLS everywhere (Caddy) plus security headers: HSTS, CSP, `nosniff`, frame, referrer, and permissions policies, set by the app in M0.3b (DEC-37); Caddy and image-level headers in M5.1
 - [ ] Webhook signature checks on every provider, including inbound mail (M3.2, M3.7, M3.11)
 - [ ] No account enumeration: sign-up, guest registration, password reset, and login give the same response whether or not an email has an account; the email carries the hint (M0.3, M1.2, M1.3, M1.4)
 - [ ] Email change: the new address is verified before it takes effect, the old address gets a notice, and other sessions end (M1.2)
@@ -1024,7 +1026,7 @@ DEC-30's "trust the church body" covers workflow only: no approval gates on sign
 - [ ] Leader grants audited, with an in-app notice to admins (M0.2)
 - [ ] Later, not v1: durable, tamper-evident audit log for the most important events (DEC-33, 10.7, M6.14). The regular `AuditLog` covers them until then.
 - [ ] Backups: nightly, retained, restore-tested in CI, offsite encrypted with `age`; backup check before migrations (M5.2, M5.3)
-- [ ] Dependency updates: Dependabot (or Renovate) for Go modules, npm, and base images; `govulncheck` and `npm audit` in CI; pinned image digests in releases (M0.1, M5.1)
+- [ ] Dependency updates: Dependabot for Go modules, npm, GitHub Actions, and base images, and `govulncheck` and `npm audit` in CI (M0.3b, DEC-37); pinned image digests in releases (M5.1)
 - [ ] Server: unattended OS security updates and a firewall allowing only 22, 80, and 443 (Appendix A)
 
 ### 10.7 Durable audit log (later, DEC-33)
@@ -1410,7 +1412,7 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 
 | Release | Contents | Milestones |
 |---|---|---|
-| v0.2 Foundations | Postgres-only clean baseline, CLI, trusted proxies, CSRF route groups, visibility enum and policy, email login, frontend test tooling | M0.1–M0.4 |
+| v0.2 Foundations | Postgres-only clean baseline, CLI, trusted proxies, CSRF route groups, visibility enum and policy, email login, member removal and sole-leader handoff, security headers and dependency scanning, frontend test tooling | M0.1–M0.4 (M0.3 is M0.3a + M0.3b) |
 | v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy | M1.1a–M1.11 |
 | v0.4 Email | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay | M3.1–M3.6, M3.11 |
 | v0.5 MVP | Encrypted settings, SPA setup wizard, legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs: the first version a church can run | M4.1–M4.5, M4.9, M5.1–M5.4 |
@@ -1461,8 +1463,12 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] The `AuditLog` table exists; making or removing a leader writes a row (actor, group, person, old and new role, IP) and shows admins an in-app notice
 - Tests: policy table tests covering every row of section 6 that exists so far; audit-row tests for leader changes.
 
-**M0.3 Log in by email**
+**M0.3 Log in by email; leaders remove members; sole-leader handoff; security headers and dependency scanning**
 - Depends on: M0.2 (run after it; both rewrite handlers and test helpers)
+- Size: this milestone grew on Oct 9, 2026 (DEC-35 to DEC-37) and is now too big for one session. **Build it as two PRs, M0.3a then M0.3b**, each with its own STATUS.md row (the PR that claims M0.3a splits the row). References to "M0.3" elsewhere in this plan mean M0.3a (email login, throttling, sessions) unless they name M0.3b. M0.3b depends only on M0.2, so it may go first if Grier wants member removal sooner, but don't run the two in parallel: both change the admin user handlers, the roster, and the test helpers.
+
+**M0.3a Log in by email**
+- Depends on: M0.2
 - Scope: C16 and DEC-23. Drop `Username`; `User.email` becomes `citext` NOT NULL unique; `password_hash` nullable. Login, the first-admin page, admin user creation, and the SPA use email. Throttling is keyed by email and by client IP, stored in Postgres. Login never says whether an email has an account. Changing a password or role, or disabling an account, bumps `session_version` (10.1).
 - Acceptance:
   - [ ] Sign-in works with the email in any letter case, and fails for a user with no password set
@@ -1472,6 +1478,46 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] An unknown email and a wrong password get the same response in about the same time
   - [ ] Changing a password or role, or disabling an account, ends the person's other sessions
 - Tests: API tests for login, creation, and throttling.
+
+**M0.3b Leaders remove members, sole-leader handoff, security headers, dependency scanning**
+- Depends on: M0.2 (and M0.3a if it lands first; rebase the roster and admin-user handlers onto it)
+- Scope:
+  - **Leaders remove members (DEC-35).** `DELETE /api/v1/groups/:id/members/:userId` (optional `{note}`) for the group's leaders and admins. The rule lives in `internal/policy` (extend `CanRemoveMember` with the target person):
+    - Admins may remove anyone; leaders only from groups they lead.
+    - Nobody removes the group's last leader (they hand off first, as in M0.2).
+    - A leader cannot remove an admin, and for consistency cannot demote an admin who co-leads the group (`CanChangeRole`). Only another admin can.
+    - A leader may remove a co-leader (not the last), the same as demoting one. Removing yourself is leaving (`POST /groups/:id/leave`), with the same rules.
+    - Teens are removed like anyone else.
+  - Removal sets `Membership.status=removed` instead of deleting the row. A removed person can't rejoin on their own: join answers 403 "A leader removed you from this group". A leader or admin can add them back, which sets `active` again. An invite-only group becomes 404 to them at once. They aren't notified in this milestone, because there is no email yet. The admin endpoint `DELETE /admin/groups/:id/members/:userId` uses the same path.
+  - Every removal writes one `membership.removed` audit row (actor, group, person, old role, optional note, IP). When the removed person was a leader, admins get the same in-app `leadership` notice as in M0.2 (DEC-31). The note goes only into the audit row and is never shown to the removed person. The SPA adds "Remove from group" with a confirm on roster rows for leaders and admins.
+  - **Sole-leader handoff when an account is deleted or disabled (DEC-36).**
+    - `GET /api/v1/admin/users/:id/sole-leader-groups` lists every group, in any status, where the account is the only active leader. For each group it gives the candidate successors: the group's other active adult members, and every admin (the deleting admin included).
+    - `DELETE /api/v1/admin/users/:id` (and disabling, once account status exists in M0.3a) takes `{successors: {"<groupId>": <userId>}}`. It refuses with 400 and the list of groups when any sole-led group is missing a valid successor.
+    - In one transaction it makes each successor a leader (adding an admin as a member if needed), sets the primary contact, ends the departing account's memberships, and deletes or disables the account.
+    - Audit rows: one `membership.role_changed` per group (meta `reason: "account_deleted"` or `"account_disabled"`, plus the departing user's id), and one `user.deleted` or `user.disabled` row.
+    - The SPA's delete or disable dialog lists each group with a successor picker that defaults to the deleting admin.
+    - `leaderCount` counts only active accounts.
+  - **Security headers (DEC-37, 10.1, 10.6).** The app sets them itself, so they hold behind any proxy:
+    - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'`. `'unsafe-inline'` is for React `style` attributes (focal points), and `img-src https:` is for cover images given by URL. Tighten both when uploads become the only source (M4.7).
+    - `Strict-Transport-Security: max-age=31536000` when `COOKIE_SECURE` is on (never in dev).
+    - Keep `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, and `X-Frame-Options: SAMEORIGIN`. Add `Permissions-Policy: camera=(), microphone=(), geolocation=()`.
+    - The server-rendered `/setup` page must work under the same CSP (no inline scripts).
+    - Caddy and image-level headers stay with M5.1.
+  - **Dependency scanning (DEC-37, 10.6).**
+    - `.github/dependabot.yml`: weekly updates for Go modules, npm (`/web`), GitHub Actions, and the Dockerfile base images.
+    - A CI job runs `govulncheck ./...` (pinned version) and `npm audit --omit=dev --audit-level=high` in `web/`. Both must pass.
+    - Fix or upgrade anything they flag in the same PR. Note any finding that can't be fixed in the PR body with the reason.
+    - Pinned image digests in releases stay with M5.1.
+- Acceptance:
+  - [ ] A leader removes a member and a co-leader of their own group; each removal writes a `membership.removed` row with actor, group, person, old role, and IP
+  - [ ] A leader can't remove (or demote) an admin, can't remove the last leader, and gets 404 for a group they can't see and 403 for a visible group they don't lead
+  - [ ] A removed member can't rejoin by themselves, a leader can add them back, and an invite-only group is 404 to them right after removal
+  - [ ] Removing a leader shows admins an in-app notice; the note is in the audit row and nowhere in the removed person's API responses
+  - [ ] Deleting (or disabling) the only leader of two groups without successors is refused with both groups listed; with successors (one group member, one the deleting admin by default) it succeeds, both groups keep a leader, and the audit rows are written
+  - [ ] A successor must be an active adult member of that group or an admin; anyone else is refused
+  - [ ] Every response carries the CSP, `nosniff`, referrer, frame, and permissions headers; HSTS is present only with `COOKIE_SECURE`; the SPA and `/setup` load with no CSP violations in a browser
+  - [ ] Dependabot config is in the repo, and the `govulncheck` and `npm audit` CI steps pass
+- Tests: policy table tests for the new `CanRemoveMember` and `CanChangeRole` cases (admin target, last leader, co-leader, self); API tests for removal, rejoin, audit rows, and the handoff (refusal, defaults, invalid successor); a header test on an API route, the SPA shell, and `/setup`.
 
 **M0.4 Frontend and browser test tooling**
 - Depends on: M0.1
@@ -1942,7 +1988,7 @@ Built only when a church asks: Resend and Mailgun email adapters, a Plivo SMS ad
 
 ### 15.1 Decisions
 
-Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, numbered after the original questions), then made more decisions the same day: DEC-17 to DEC-25 (Grier's items A to I), DEC-26 to DEC-30, and DEC-31 to DEC-33 (after Codex's final review). Each has been carried through the sections listed. These decisions win over the original requirement wording and over the repo.
+Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, numbered after the original questions), then made more decisions the same day: DEC-17 to DEC-25 (Grier's items A to I), DEC-26 to DEC-30, and DEC-31 to DEC-33 (after Codex's final review), and DEC-34 to DEC-37 (Grier's answers to the M0.1 and M0.2 PR questions). Each has been carried through the sections listed. These decisions win over the original requirement wording and over the repo.
 
 | ID | Decision (2026-10-09) | Where it flows |
 |---|---|---|
@@ -1979,8 +2025,12 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-31 | **Fold is the contact proxy.** Every leader-to-teen message goes through Fold's email, SMS, or in-app messaging, and leaders, co-leaders, and hosts never see a teen's email or phone by default. Adults get "Hide my contact info from group leaders", off by default; when on, leaders reach them only through Fold. A leader can request direct contact: a hidden adult alone approves or declines; for a teen, **both an admin and the teen must approve** (decided). Every attempt to get direct contact is logged, including requests, denials, and withdrawn or expired requests, along with every grant, reveal, revocation, and automatic end. The person, an admin, or a teen's confirmed guardian can revoke a grant; grants end when the leader stops leading the group (and when a teen turns 18). Replies come back through Fold: relay Reply-To addresses for email, and the church's number for SMS, tied to the group or event. Co-leader promotion gets no extra admin gate; it is audited with an admin notice, and the proxy covers contact details. | 2 (F1), 5.3, 5.5, 5.10, 5.11, 6, 7.1, 7.4, 7.8, 10.1, 10.2, 10.3, 10.5, 10.6, 13.2, 14.2, M0.2, M1.1b, M1.11, M3.7, M3.11 |
 | DEC-32 | **Linking any teen or child to an adult, as guardian or household member, always needs admin approval.** That includes a guardian adding a household child or teen, turning a household teen into an account with an email, a teen naming a guardian at self-signup, and claims on existing teens. There is no auto-confirm path. Adult household people (for example a spouse) need no approval. | 5.3, 5.10, 6, 10.3, 10.6, M1.9, M1.10 |
 | DEC-33 | **A durable, tamper-evident audit log for the most important events comes later** (not v1): contact access (every attempt), guardian and teen links, teen consent, role changes, visibility overrides, opt-outs, and admin overrides. Sketch: append-only storage, hash chaining, a write-once offsite export (for example B2 Object Lock), retention rules, and an admin export for legal requests. Until then, the regular `AuditLog` from M0.2 records these events and never purges them. | 5.3, 5.11, 10.6, 10.7, 13.2, 14.2, M6.14 |
+| DEC-34 | **Reasonable people, logs just in case, remove bad actors.** Inside Fold, assume people act reasonably. Keep audit logs in case they don't, and remove bad actors outright instead of adding approval layers. Take reasonable, well-thought-out steps for privacy and legal compliance, but avoid extra approvals and friction. This confirms co-leader promotion as built in M0.2 (no admin gate; audited, with an admin notice). Teen contact details stay protected by the grant rule (DEC-31). | 5.11, 6, M0.2, M0.3b |
+| DEC-35 | **Leaders can remove members from their own groups**, as soon as possible (M0.3b). Removals are audited, and the rule lives in `internal/policy`. Leaders can't remove admins or the group's last leader. Consistent edge cases: leaders can't demote an admin co-leader either; a removed person can't rejoin on their own until a leader or admin adds them back. | 5.3, 6, 10.6, M0.3b |
+| DEC-36 | **Deleting the account of a group's only leader requires a successor.** For every group the account solely leads, the deleting admin picks a new leader: a member of that group or any admin, the deleting admin selected by default. The handoff is audited. The same applies to disabling an account. | 6, 10.1, 10.6, M0.3b |
+| DEC-37 | **Security headers and dependency scanning move up to M0.3b:** CSP, HSTS, and the other headers set by the app; Dependabot; `govulncheck` and `npm audit` in CI. Caddy and image-level headers and pinned image digests stay in M5.1. | 10.1, 10.6, M0.3b, M5.1 |
 
-The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging.
+The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10).
 
 ### 15.2 Still open
 
