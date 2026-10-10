@@ -26,10 +26,8 @@ go.work.sum
 
 # Binary output from go build
 fold
-# SQLite dev database
+# Local uploads in development (UPLOAD_DIR default)
 /data/
-*.sqlite3
-db.sqlite3
 
 # Frontend build output (built by `npm run build` in web/, or the Docker build).
 # The directory itself must exist for go:embed; only the marker file is committed.

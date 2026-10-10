@@ -1,49 +1,42 @@
 package main
 
 import (
-	"log"
-	"os"
-	"path/filepath"
+	"context"
+	"database/sql"
+	"fmt"
 
-	"fold/models"
+	"fold/migrations"
 
-	"github.com/glebarez/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-// openDatabase connects to Postgres when DATABASE_URL is set, otherwise to
-// SQLite (development). It runs schema migrations and returns the handle.
-func openDatabase(cfg Config) *gorm.DB {
-	var db *gorm.DB
-	var err error
-
-	if cfg.DatabaseURL != "" {
-		log.Println("Using Postgres")
-		db, err = gorm.Open(postgres.Open(cfg.DatabaseURL), &gorm.Config{})
-	} else {
-		log.Printf("Using SQLite at %s (development only)", cfg.SQLitePath)
-		if dir := filepath.Dir(cfg.SQLitePath); dir != "" {
-			if mkErr := os.MkdirAll(dir, 0o755); mkErr != nil {
-				log.Fatalf("Failed to create SQLite directory: %v", mkErr)
-			}
-		}
-		db, err = gorm.Open(sqlite.Open(cfg.SQLitePath), &gorm.Config{})
-	}
+// openDatabase connects to Postgres and applies pending migrations under
+// the migration advisory lock. GORM never changes the schema here: the
+// goose files are the source of truth (C1).
+func openDatabase(ctx context.Context, url string) (*gorm.DB, error) {
+	db, err := gorm.Open(postgres.Open(url), &gorm.Config{})
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		return nil, fmt.Errorf("connect to database: %w", err)
 	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	if err := migrateUp(ctx, sqlDB); err != nil {
+		return nil, err
+	}
+	return db, nil
+}
 
-	if err := db.AutoMigrate(
-		&models.User{},
-		&models.Group{},
-		&models.Meeting{},
-		&models.MeetingException{},
-		&models.Membership{},
-		&models.RSVP{},
-		&models.Setting{},
-	); err != nil {
-		log.Fatalf("Failed to migrate database: %v", err)
+func migrateUp(ctx context.Context, db *sql.DB) error {
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		return err
 	}
-	return db
+	if _, err := p.Up(ctx); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	return nil
 }

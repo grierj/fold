@@ -1,0 +1,27 @@
+# Development and test database (DEC-1, DEC-24). Postgres is the only
+# database Fold supports, in development and tests too.
+#
+#   docker compose -f deploy/docker-compose.dev.yml up -d db
+#   export DATABASE_URL=postgres://fold:fold@localhost:5432/fold?sslmode=disable
+#
+# `make dev` and `make test` do this for you. The fold role is a superuser
+# so the test helper can create and drop throwaway databases.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fold
+      POSTGRES_PASSWORD: fold
+      POSTGRES_DB: fold
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - devpgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fold"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+volumes:
+  devpgdata:

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -44,10 +46,12 @@ type App struct {
 
 const sessionName = "fold-session"
 
-func main() {
-	cfg := LoadConfig()
-	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
-		os.Exit(runHealthcheck(cfg.Port))
+// serve runs the web server until SIGINT or SIGTERM.
+func serve(stderr io.Writer) int {
+	cfg, err := LoadConfig()
+	if err != nil {
+		fmt.Fprintln(stderr, "fold:", err)
+		return 1
 	}
 
 	// Distroless images have no shell, so log the working directory at
@@ -63,7 +67,11 @@ func main() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	db := openDatabase(cfg)
+	db, err := openDatabase(context.Background(), cfg.DatabaseURL)
+	if err != nil {
+		fmt.Fprintln(stderr, "fold:", err)
+		return 1
+	}
 
 	uploads, err := storage.NewLocalStore(cfg.UploadDir, "/uploads")
 	if err != nil {
@@ -101,6 +109,7 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Shutdown: %v", err)
 	}
+	return 0
 }
 
 // runHealthcheck is the distroless-friendly probe used by Docker. The image
@@ -125,8 +134,12 @@ func (a *App) setupRouter() *gin.Engine {
 	// must stay off.
 	r.RedirectTrailingSlash = false
 	r.Use(gin.Logger(), gin.Recovery(), securityHeaders())
-	// Don't trust X-Forwarded-For by default; set explicit proxies if needed.
-	_ = r.SetTrustedProxies(nil)
+	// Believe X-Forwarded-For only from the reverse proxy (C17). LoadConfig
+	// validated the list; an empty one trusts nobody.
+	if err := r.SetTrustedProxies(a.Config.TrustedProxies); err != nil {
+		log.Printf("WARNING: trusted proxies: %v; trusting none", err)
+		_ = r.SetTrustedProxies(nil)
+	}
 
 	r.SetFuncMap(template.FuncMap{
 		"split": strings.Split,
@@ -142,6 +155,13 @@ func (a *App) setupRouter() *gin.Engine {
 	// Registered before the setup redirect so a database ping still
 	// answers while the wizard is waiting for the first admin.
 	r.GET("/healthz", a.healthz)
+
+	// Routes outside the CSRF and setup middleware (C17). They authenticate
+	// with provider signatures (hooks) or signed tokens (RFC 8058 one-click
+	// unsubscribe) instead. Their handlers arrive with messaging (M3);
+	// until then they answer 404. csrfExemptRoutes must match this list.
+	r.Any("/hooks/*path", notFound)
+	r.POST("/u/unsubscribe/:token", notFound)
 
 	// First-run setup wizard takes precedence over everything else.
 	r.Use(a.setupRequired())
