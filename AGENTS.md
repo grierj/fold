@@ -3,6 +3,9 @@
 Working title: **Fold**. Church small-group / ministry / activity management.
 The group-management slice of ChurchTrac, without the rest of it.
 
+`docs/plan/PLAN.md` is the source of truth for product decisions; when it
+disagrees with older repo docs (including this file), follow the plan.
+
 ## The one rule
 
 **Deployment simplicity is the top concern.** Whatever you build, a church
@@ -139,6 +142,7 @@ unless `APP_ENV=dev`.
 
 ## SMS (Phase 2, not yet)
 
-Group SMS via Twilio is a hard requirement, but it is **not built yet**.
-When you build it: put it behind a `Notifier` interface (`internal/notify/`),
-broadcast-only v1, replies route to the group leader. Don't start early.
+Group SMS sits behind provider adapters (Telnyx default, Twilio optional).
+It is **not built yet**, and none is required to run Fold. When you build it:
+put it behind a `Notifier` interface (`internal/notify/`), broadcast-only v1,
+replies route to the group leader. Don't start early.
