@@ -206,7 +206,7 @@ func TestDirectoryMatchesPolicy(t *testing.T) {
 		if !slices.Equal(got, want) {
 			name := "guest"
 			if u != nil {
-				name = u.Username
+				name = u.Name
 			}
 			t.Errorf("%s: directory %v, policy %v", name, got, want)
 		}

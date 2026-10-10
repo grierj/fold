@@ -54,10 +54,13 @@ instances. See `models/models.go` — it is the source of truth. The old
 meetings are instances (RRULE for recurrence).
 
 `User` carries profile fields: `Name` (full name), `DisplayName` (shown in
-the UI), `Email`, `Phone`, `AvatarKey` (blob-store key, not a URL),
+the UI), `Email` (the login: `citext`, unique, DEC-23), `PasswordHash` (nil
+until set), `Status` (`active`, `invited`, `disabled`, ...), `Phone`, `AvatarKey` (blob-store key, not a URL),
 `AvatarFocalX/Y` (0-100 focal point for cropped avatars).
 `User.PublicName()` is the display fallback chain
-(DisplayName → Name → Username) — use it anywhere a name is rendered.
+(DisplayName → Name → "Member"; never the email) — use it anywhere a name
+is rendered. Sign-in needs `User.CanSignIn()`; login throttling lives in
+Postgres (`login_throttles`, see `api_auth.go`).
 `Group` has `CoverFocalX/Y` for the cover image. Focal points are stored
 0-100 and rendered as CSS `object-position`.
 

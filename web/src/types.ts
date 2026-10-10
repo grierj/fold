@@ -2,7 +2,6 @@
 
 export interface User {
   id: number;
-  username: string;
   name: string;
   displayName: string;
   email: string;
@@ -11,6 +10,8 @@ export interface User {
   avatarFocalX: number;
   avatarFocalY: number;
   role: string;
+  status: "active" | "invited" | "guest" | "pending_consent" | "disabled";
+  hasPassword: boolean;
 }
 
 export interface GroupSummary {

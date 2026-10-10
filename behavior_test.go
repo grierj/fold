@@ -265,7 +265,7 @@ func TestPasswordChangeEndsOtherSessions(t *testing.T) {
 	decodeJSON(t, w, &users)
 	var aliceID uint
 	for _, u := range users.Users {
-		if u.Username == "alice" {
+		if u.Name == "alice" {
 			aliceID = u.ID
 		}
 	}
@@ -420,7 +420,7 @@ func TestDirectoryVisibility(t *testing.T) {
 		t.Fatalf("unknown visibility on update: %d %s", w.Code, w.Body.String())
 	}
 
-	w = leader.do("POST", "/api/v1/groups/"+itoa(invite.ID)+"/members", map[string]any{"username": "sam"}, true)
+	w = leader.do("POST", "/api/v1/groups/"+itoa(invite.ID)+"/members", map[string]any{"email": "sam@example.com"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("add member: %d %s", w.Code, w.Body.String())
 	}
@@ -493,7 +493,7 @@ func TestLeadershipAndDeletion(t *testing.T) {
 		t.Fatalf("group after reject: err=%v requested=%v", err, still.DeletionRequested)
 	}
 
-	if w := leader.do("POST", "/api/v1/groups/"+gid+"/members", map[string]any{"username": "sam"}, true); w.Code != http.StatusOK {
+	if w := leader.do("POST", "/api/v1/groups/"+gid+"/members", map[string]any{"email": "sam@example.com"}, true); w.Code != http.StatusOK {
 		t.Fatalf("add sam: %d %s", w.Code, w.Body.String())
 	}
 	if w := leader.do("POST", "/api/v1/groups/"+gid+"/deletion-request", map[string]any{}, true); w.Code != http.StatusBadRequest {

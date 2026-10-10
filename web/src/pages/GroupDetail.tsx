@@ -312,7 +312,7 @@ export function GroupDetail() {
   const [editing, setEditing] = useState(false);
   const [joinBusy, setJoinBusy] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
-  const [memberUsername, setMemberUsername] = useState("");
+  const [memberEmail, setMemberEmail] = useState("");
   const [memberBusy, setMemberBusy] = useState(false);
   const [memberError, setMemberError] = useState<string | null>(null);
   const coverRef = useRef<HTMLInputElement>(null);
@@ -445,13 +445,13 @@ export function GroupDetail() {
 
   async function addMember(e: React.FormEvent) {
     e.preventDefault();
-    const username = memberUsername.trim();
-    if (!username) return;
+    const email = memberEmail.trim();
+    if (!email) return;
     setMemberBusy(true);
     setMemberError(null);
     try {
-      await Groups.addMember(id!, username);
-      setMemberUsername("");
+      await Groups.addMember(id!, email);
+      setMemberEmail("");
       await load();
     } catch (e) {
       setMemberError(e instanceof Error ? e.message : "Could not add that person");
@@ -738,19 +738,20 @@ export function GroupDetail() {
                     {canManage && (
                       <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">
                         <div className="grow min-w-[12rem]">
-                          <label className="label" htmlFor="add-member">Add a member by username</label>
+                          <label className="label" htmlFor="add-member">Add a member by email</label>
                           <input
                             id="add-member"
                             className="input"
-                            value={memberUsername}
-                            onChange={(e) => setMemberUsername(e.target.value)}
-                            placeholder="username"
+                            value={memberEmail}
+                            onChange={(e) => setMemberEmail(e.target.value)}
+                            type="email"
+                            placeholder="name@example.com"
                             autoComplete="off"
                           />
                         </div>
                         <button
                           type="submit"
-                          disabled={memberBusy || !memberUsername.trim()}
+                          disabled={memberBusy || !memberEmail.trim()}
                           className="btn-secondary"
                         >
                           {memberBusy ? "…" : "Add"}

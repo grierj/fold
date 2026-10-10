@@ -22,10 +22,21 @@ redirects to login itself (no server redirects except `/setup`).
 ### Auth
 
 ```
-POST /api/v1/auth/login    {username, password} → 200 {user} | 401
+POST /api/v1/auth/login    {email, password} → 200 {user} | 401 | 429
 POST /api/v1/auth/logout                         → 200 {}
 GET  /api/v1/auth/me                             → 200 {user} | 401
 ```
+
+Sign-in is by email in any letter case (`users.email` is `citext`, unique).
+Only an `active` account with a password signs in. Every failure, whether
+the email is unknown, the password is wrong, or the account is invited or
+disabled, answers `401 {"error":"invalid email or password"}` after one
+bcrypt comparison, so the response doesn't reveal whether an account
+exists. Throttling lives in the `login_throttles` table: 10 failures for
+one email within 15 minutes lock that email from every IP, and 50 failures
+from one client IP lock that IP, each for 15 minutes. A locked email or IP
+gets `429` (checked before the password, so it reveals nothing either). A
+successful sign-in clears the email's counter but not the IP's.
 
 ### Profile
 
@@ -38,19 +49,21 @@ POST   /api/v1/me/avatar/url → 200 {avatarUrl} (auth)
 DELETE /api/v1/me/avatar    → 200 {}  (auth)
 ```
 
-Profile update body: any of `{name, displayName, email, phone,
-avatarFocal: {x, y}}`. Limits:
-names ≤ 100 chars, email must parse and be ≤ 254 chars (empty clears it),
-phone ≤ 30 chars, focal clamped to 0-100.
+Profile update body: any of `{name, displayName, phone, avatarFocal: {x, y}}`.
+Limits: names ≤ 100 chars, phone ≤ 30 chars, focal clamped to 0-100. The
+email is the login: sending a different `email` answers 400 ("ask an admin
+to change your sign-in email") until verified email changes arrive (M1.2).
+Sending the current address (any case) is accepted and changes nothing.
 
 `POST /me/password` body: `{current, password}`. `password` is at least 10
 characters. The current browser stays logged in. Every other session for
 that account ends. An admin password reset ends all of that account's
 sessions, including the one that requested it.
 
-`user`: `{id, username, name, displayName, email, phone, avatarUrl,
-avatarFocalX, avatarFocalY, role}`.
-`displayName` falls back to name, then username in the UI. `avatarUrl` is a
+`user`: `{id, name, displayName, email, phone, avatarUrl,
+avatarFocalX, avatarFocalY, role, status, hasPassword}`. `status` is
+`active`, `invited` (no password yet), or `disabled` (`guest` and
+`pending_consent` come later). `displayName` falls back to name in the UI. `avatarUrl` is a
 `/uploads/...` URL, or empty when no avatar is set. `avatarFocalX/Y` are
 0-100 percentages for CSS `object-position`.
 
@@ -129,7 +142,7 @@ status.
 POST /api/v1/groups/:id/join    → 200 {membership}  (auth; idempotent)
 POST /api/v1/groups/:id/leave   → 200 {}            (auth; 400 if you are the only leader)
 POST /api/v1/groups/:id/members → 200 {membership}  (auth; leader or admin)
-     body: {username} — adds that account as a member
+     body: {email} — adds that account as a member
 PUT  /api/v1/groups/:id/members/:userId/role → 200 {members: [...]}  (auth; leader or admin)
      body: {role: "leader"|"member"} — userId must already be an active member
 POST /api/v1/groups/:id/deletion-request → 200 {group}  (auth; a leader)
@@ -219,15 +232,18 @@ POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
 DELETE /api/v1/admin/groups/:id/members/:userId → 200 {}               (admin; 400 for the only leader)
 GET  /api/v1/admin/users                   → {users: [user]}           (admin)
 POST /api/v1/admin/users                    → 201 {user}                (admin)
-     body: {username, password (≥10 chars), role, name?, displayName?, email?, phone?}
-PUT  /api/v1/admin/users/:id               → 200 {user}                (admin; profile fields + role)
-POST /api/v1/admin/users/:id/password      → 200 {}                    (admin)
+     body: {email, name, password? (≥10 chars), role, displayName?, phone?}
+     — without a password the account is `invited` and can't sign in; 409 if the email is taken (any case)
+PUT  /api/v1/admin/users/:id               → 200 {user}                (admin; profile fields, email, role, status)
+     body: any of {name, displayName, email, phone, role, status: "active"|"disabled"}
+POST /api/v1/admin/users/:id/password      → 200 {}                    (admin; also activates an invited account)
      body: {password (≥10 chars)}
-DELETE /api/v1/admin/users/:id             → 200 {}                    (admin; soft delete)
+DELETE /api/v1/admin/users/:id             → 200 {}                    (admin; soft delete, frees the email)
 ```
 
-Guards: cannot demote/delete the last admin, cannot delete or demote
-yourself. `PUT /api/v1/groups/:id` already allows admins to edit any group.
+Guards: cannot demote, disable or delete the last active admin, or
+yourself. Changing someone's password, email, role, or status ends all of
+their sessions (`session_version`). A disabled admin has no admin powers. `PUT /api/v1/groups/:id` already allows admins to edit any group.
 
 ### Notifications
 

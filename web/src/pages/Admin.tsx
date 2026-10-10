@@ -301,7 +301,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
             <option value="">Select…</option>
             {candidates.map((u) => (
               <option key={u.id} value={u.id}>
-                {u.displayName || u.name || u.username} (@{u.username})
+                {u.displayName || u.name} ({u.email})
               </option>
             ))}
           </select>
@@ -428,7 +428,6 @@ function GroupsTab({ users }: { users: User[] }) {
 // ---------------------------------------------------------------------------
 
 const EMPTY_USER_FORM = {
-  username: "",
   password: "",
   role: "member" as "admin" | "member",
   name: "",
@@ -451,7 +450,6 @@ function UserForm({
   const [form, setForm] = useState(
     initial
       ? {
-          username: initial.username,
           password: "",
           role: initial.role as "admin" | "member",
           name: initial.name,
@@ -472,9 +470,9 @@ function UserForm({
     setError(null);
     try {
       if (creating) {
-        await AdminUsers.create(form);
+        await AdminUsers.create({ ...form, password: form.password || undefined });
       } else if (initial) {
-        const { username: _username, password: _password, ...rest } = form;
+        const { password: _password, ...rest } = form;
         await AdminUsers.update(initial.id, rest);
       }
       onSaved();
@@ -490,13 +488,14 @@ function UserForm({
       {error && <div className="text-red-600 text-sm">{error}</div>}
       <div className="grid sm:grid-cols-2 gap-4">
         <div>
-          <label className="label">Username</label>
+          <label className="label">Email (signs in with it)</label>
           <input
+            type="email"
             className="input"
-            value={form.username}
-            onChange={set("username")}
+            value={form.email}
+            onChange={set("email")}
+            maxLength={254}
             required
-            disabled={!creating}
           />
         </div>
         <div>
@@ -508,15 +507,18 @@ function UserForm({
         </div>
         {creating && (
           <div className="sm:col-span-2">
-            <label className="label">Password</label>
+            <label className="label">Password (optional)</label>
             <input
               type="password"
               className="input"
               value={form.password}
               onChange={set("password")}
-              required
+              autoComplete="new-password"
             />
-            <p className="text-xs text-gray-500 mt-1">Must be at least 10 characters.</p>
+            <p className="text-xs text-gray-500 mt-1">
+              At least 10 characters. Leave blank to create an invited account that can't sign in until a password
+              is set.
+            </p>
           </div>
         )}
         <div>
@@ -525,11 +527,7 @@ function UserForm({
         </div>
         <div>
           <label className="label">Full name</label>
-          <input className="input" value={form.name} onChange={set("name")} maxLength={100} />
-        </div>
-        <div>
-          <label className="label">Email</label>
-          <input type="email" className="input" value={form.email} onChange={set("email")} maxLength={254} />
+          <input className="input" value={form.name} onChange={set("name")} maxLength={100} required />
         </div>
         <div>
           <label className="label">Phone</label>
@@ -571,7 +569,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
   if (done) {
     return (
       <div className="text-sm text-green-700 mt-2">
-        Password reset for @{user.username}.{" "}
+        Password set for {user.email}.{" "}
         <button onClick={onDone} className="underline">
           Done
         </button>
@@ -582,7 +580,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
   return (
     <form onSubmit={reset} className="flex gap-2 mt-2 flex-wrap items-end">
       <div>
-        <label className="label">New password for @{user.username}</label>
+        <label className="label">New password for {user.email}</label>
         <input
           type="password"
           className="input !w-56"
@@ -610,8 +608,22 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  async function setStatus(u: User, status: "active" | "disabled") {
+    if (status === "disabled" && !confirm(`Disable ${u.displayName || u.name}? They will be signed out and can't sign in.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await AdminUsers.update(u.id, { status });
+      reload();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Update failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function remove(u: User) {
-    if (!confirm(`Delete @${u.username}? They will no longer be able to log in.`)) return;
+    if (!confirm(`Delete ${u.displayName || u.name} (${u.email})? They will no longer be able to log in.`)) return;
     setBusy(true);
     setError(null);
     try {
@@ -656,15 +668,15 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   <div className="flex items-center gap-2">
                     <Avatar
                       url={u.avatarUrl || undefined}
-                      name={u.displayName || u.name || u.username}
+                      name={u.displayName || u.name}
                       focalX={u.avatarFocalX}
                       focalY={u.avatarFocalY}
                       size="w-8 h-8"
                       textSize="text-xs"
                     />
                     <div>
-                      <div className="font-medium">{u.displayName || u.name || u.username}</div>
-                      <div className="text-xs text-gray-500">@{u.username}</div>
+                      <div className="font-medium">{u.displayName || u.name}</div>
+                      <div className="text-xs text-gray-500">{u.email}</div>
                     </div>
                   </div>
                   {editingId === u.id && (
@@ -691,6 +703,11 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   >
                     {u.role}
                   </span>
+                  {u.status !== "active" && (
+                    <span className="ml-1 inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-amber-100 text-amber-800">
+                      {u.status}
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   <button
@@ -704,6 +721,13 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     className="text-sm text-gray-600 hover:underline mr-3"
                   >
                     Password
+                  </button>
+                  <button
+                    onClick={() => setStatus(u, u.status === "disabled" ? "active" : "disabled")}
+                    disabled={busy}
+                    className="text-sm text-gray-600 hover:underline mr-3"
+                  >
+                    {u.status === "disabled" ? "Enable" : "Disable"}
                   </button>
                   <button
                     onClick={() => remove(u)}

@@ -44,17 +44,29 @@ func testApp(t *testing.T) *App {
 		t.Fatalf("upload store: %v", err)
 	}
 	return &App{
-		DB:         db,
-		Store:      store,
-		Config:     Config{Env: "dev", Port: "8080"},
-		Uploads:    uploads,
-		loginFails: map[string]int{},
+		DB:      db,
+		Store:   store,
+		Config:  Config{Env: "dev", Port: "8080"},
+		Uploads: uploads,
 	}
 }
 
-func newTestUser(t *testing.T, app *App, username, password, role string) *models.User {
+// testEmail turns a short test name ("alice") into an address.
+func testEmail(name string) string {
+	if strings.Contains(name, "@") {
+		return name
+	}
+	return name + "@example.com"
+}
+
+// newTestUser creates an active account named name, signing in as
+// testEmail(name).
+func newTestUser(t *testing.T, app *App, name, password, role string) *models.User {
 	t.Helper()
-	u := models.User{Username: username, Password: password, Role: role, Name: username}
+	u := models.User{Email: testEmail(name), Role: role, Name: name, Status: models.UserActive}
+	if err := u.SetPassword(password); err != nil {
+		t.Fatal(err)
+	}
 	if err := app.DB.Create(&u).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -67,6 +79,7 @@ type apiClient struct {
 	router http.Handler
 	jar    map[string]*http.Cookie
 	token  string
+	ip     string // client address for requests; empty uses httptest's default
 }
 
 func newAPIClient(t *testing.T, app *App) *apiClient {
@@ -108,6 +121,9 @@ func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.R
 		rdr = bytes.NewReader(nil)
 	}
 	req := httptest.NewRequest(method, path, rdr)
+	if c.ip != "" {
+		req.RemoteAddr = c.ip + ":1234"
+	}
 	if jsonBody != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -132,12 +148,12 @@ func decodeJSON(t *testing.T, w *httptest.ResponseRecorder, v any) {
 	}
 }
 
-func loginAPI(t *testing.T, app *App, username, password string) *apiClient {
+func loginAPI(t *testing.T, app *App, name, password string) *apiClient {
 	t.Helper()
 	c := newAPIClient(t, app)
 	c.fetchCSRF()
 	w := c.do("POST", "/api/v1/auth/login",
-		map[string]string{"username": username, "password": password}, true)
+		map[string]string{"email": testEmail(name), "password": password}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("login failed: %d %s", w.Code, w.Body.String())
 	}
@@ -161,7 +177,7 @@ func TestSetupWizardCreatesAdmin(t *testing.T) {
 
 	form := url.Values{
 		"csrf_token": {m[1]},
-		"site_name":  {"Fold Test"}, "username": {"root"},
+		"site_name":  {"Fold Test"}, "name": {"Root"}, "email": {"Root@Example.com"},
 		"password": {"pw12345678"}, "password_confirm": {"pw12345678"},
 	}
 	w := httptest.NewRecorder()
@@ -175,7 +191,7 @@ func TestSetupWizardCreatesAdmin(t *testing.T) {
 		t.Fatalf("setup: got %d", w.Code)
 	}
 	var u models.User
-	if err := app.DB.Where("username = ?", "root").First(&u).Error; err != nil {
+	if err := app.DB.Where("email = ?", "root@example.com").First(&u).Error; err != nil {
 		t.Fatalf("admin not created: %v", err)
 	}
 	if u.Role != models.RoleAdmin {
@@ -197,14 +213,14 @@ func TestAPILoginFlow(t *testing.T) {
 
 	// wrong password → 401
 	w := c.do("POST", "/api/v1/auth/login",
-		map[string]string{"username": "alice", "password": "nope"}, true)
+		map[string]string{"email": "alice@example.com", "password": "nope"}, true)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong password: got %d", w.Code)
 	}
 
 	// correct → 200 with user payload
 	w = c.do("POST", "/api/v1/auth/login",
-		map[string]string{"username": "alice", "password": "secret123"}, true)
+		map[string]string{"email": "Alice@Example.COM", "password": "secret123"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("login: got %d %s", w.Code, w.Body.String())
 	}
@@ -212,7 +228,7 @@ func TestAPILoginFlow(t *testing.T) {
 		User userJSON `json:"user"`
 	}
 	decodeJSON(t, w, &loginBody)
-	if loginBody.User.Username != "alice" {
+	if loginBody.User.Email != "alice@example.com" {
 		t.Fatalf("unexpected user: %+v", loginBody.User)
 	}
 

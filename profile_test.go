@@ -60,7 +60,7 @@ func TestUpdateMe(t *testing.T) {
 	w := c.do("PUT", "/api/v1/me", map[string]string{
 		"name":        "Grier Johnson",
 		"displayName": "Grier",
-		"email":       "grier@example.org",
+		"email":       "Grier@Example.com", // same address: allowed
 		"phone":       "555-0100",
 	}, true)
 	if w.Code != http.StatusOK {
@@ -71,7 +71,7 @@ func TestUpdateMe(t *testing.T) {
 	}
 	decodeJSON(t, w, &resp)
 	if resp.User.DisplayName != "Grier" || resp.User.Name != "Grier Johnson" ||
-		resp.User.Email != "grier@example.org" || resp.User.Phone != "555-0100" {
+		resp.User.Email != "grier@example.com" || resp.User.Phone != "555-0100" {
 		t.Fatalf("unexpected user json: %+v", resp.User)
 	}
 	if resp.User.AvatarURL != "" {
@@ -105,10 +105,13 @@ func TestUpdateMeValidation(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("long name: got %d, want 400", w.Code)
 	}
-	// Clearing the email is allowed.
-	w = c.do("PUT", "/api/v1/me", map[string]string{"email": ""}, true)
-	if w.Code != http.StatusOK {
-		t.Fatalf("clear email: got %d %s", w.Code, w.Body.String())
+	// The email is the login: members can't clear or change it themselves
+	// until verified changes arrive (M1.2).
+	for _, e := range []string{"", "other@example.com"} {
+		w = c.do("PUT", "/api/v1/me", map[string]string{"email": e}, true)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("change email to %q: got %d, want 400", e, w.Code)
+		}
 	}
 }
 
@@ -158,7 +161,7 @@ func TestAvatarUploadAndDelete(t *testing.T) {
 		t.Fatalf("avatar delete: %d %s", w.Code, w.Body.String())
 	}
 	var u models.User
-	app.DB.Where("username = ?", "grier").First(&u)
+	app.DB.Where("email = ?", testEmail("grier")).First(&u)
 	if u.AvatarKey != "" {
 		t.Fatalf("avatar key not cleared")
 	}

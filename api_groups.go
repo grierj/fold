@@ -527,7 +527,7 @@ func roleOrNone(r string) string {
 	return r
 }
 
-// apiAddGroupMember lets a leader add someone by username. Invite-only
+// apiAddGroupMember lets a leader add someone by email. Invite-only
 // groups have no public join button, so this is how they grow.
 func (a *App) apiAddGroupMember(c *gin.Context) {
 	g, _, ok := a.loadManagedGroup(c)
@@ -535,14 +535,14 @@ func (a *App) apiAddGroupMember(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Username string `json:"username"`
+		Email string `json:"email"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Username) == "" {
-		jsonError(c, http.StatusBadRequest, "username is required")
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Email) == "" {
+		jsonError(c, http.StatusBadRequest, "email is required")
 		return
 	}
 	var target models.User
-	if err := a.DB.Where("username = ?", strings.TrimSpace(body.Username)).First(&target).Error; err != nil {
+	if err := a.DB.Where("email = ?", normalizeEmail(body.Email)).First(&target).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "user not found")
 		return
 	}
