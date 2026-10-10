@@ -257,7 +257,7 @@ Phasing suggestion for Codex:
 
 ## 6. Notification UX/UI guidelines — **DRAFT, reviewed by Illuminator (designer), 2026-10-10**
 
-> DRAFT, designer pass done. Quill wrote the starting point from research; Illuminator (Fold's UI designer) reviewed and edited it. Meetup is the primary reference and ChurchTrac the secondary one (PLAN 1.7, item 7). Every change is marked **Illuminator:** inline and listed in 6.0. Technical questions are in 6.13 ("For Codex") and product questions in 6.14 ("For Big Boss/Grier"). Neither is decided here. The research sections (0–5, 7, 8) are unchanged except for cross-references.
+> DRAFT, designer pass done. Quill wrote the starting point from research; Illuminator (Fold's UI designer) reviewed and edited it. Meetup is the primary reference and ChurchTrac the secondary one (PLAN 1.7, item 7). Every change is marked **Illuminator:** inline and listed in 6.0. Technical questions are in 6.13 ("For Codex"), not decided here. The product questions in 6.14 ("For Big Boss/Grier") were **resolved by Grier on Oct 10, 2026**, who accepted every recommendation and confirmed that Fold builds notifications in-house (Knock is a UI/UX reference only). The research sections (0–5, 7, 8) are unchanged except for cross-references.
 
 ### 6.0 Illuminator changelog (designer review, 2026-10-10)
 
@@ -273,6 +273,7 @@ Phasing suggestion for Codex:
 10. **No welcome item for new users.** The empty state explains the bell instead (6.7).
 11. **Teen, consent, and public-internet rules** for what a row and its email may say (6.3a).
 12. **Meetup and ChurchTrac evidence** cited, with what couldn't be verified (6.12).
+13. **Illuminator, 2026-10-10 (later):** Grier resolved all seven 6.14 questions (via Big Boss) and accepted every recommendation. 6.14 is marked resolved. 6.8 no longer has an email-timing choice: email in v1 is "Right away" only, and "Once a day" moves to Later. 6.1, 6.5a, 6.6, 6.8, and 6.13 now cite the decisions. Fold builds notifications in-house; Knock is a UI/UX reference only.
 
 ### 6.1 Bell and badge
 - The bell sits in the top bar where it is today (`Layout.tsx`, between "Admin" and the avatar), drawn as an inline SVG (no icon fonts or CDNs). It shows only when signed in. Signed-out visitors see "Start a group" and "Log in" as now.
@@ -286,6 +287,7 @@ Phasing suggestion for Codex:
 - **Illuminator: badge style.** `bg-brand-dark text-white text-xs font-bold`, `min-w-[1.25rem] h-5 px-1 rounded-full`, with `ring-2 ring-white` so it stays readable over the bell's outline. (`bg-brand` with white is only 3.61:1.)
 - No badge at zero. When the count goes up, the badge does one 150 ms scale step, skipped under `prefers-reduced-motion`. No pulsing or shaking.
 - The accessible name carries the meaning (6.9): "Notifications, 3 unread, 1 waiting on you."
+- *Decided: Grier, Oct 10, 2026 (6.14.1).*
 
 ### 6.1a Illuminator: fit with Fold's visual language
 - **Header** (`Layout.tsx`): white, `border-b border-gray-200`, `h-16`, `max-w-6xl`, nav text `text-sm font-medium text-gray-700 hover:text-brand`. The bell button follows suit (`text-gray-700 hover:text-brand`), with a 44×44 px hit area (`p-2.5` around a 24 px icon) and the app's visible focus ring (`focus-visible:ring-2 ring-brand ring-offset-2`).
@@ -348,7 +350,7 @@ Phasing suggestion for Codex:
 - **Reminders don't go in the bell.** The 24 h email and 2 h text reminders (PLAN 7.7) stay email and SMS only, as on Meetup, whose help center lists event reminders as email and push, not Inbox (6.12). Upcoming events already live on the home page, in My groups, and on the calendar. Weekly-group reminders in the bell would bury the items that matter.
 - **What does go in the bell**: an event you're going to (or waitlisted for) is **cancelled**, or its **time or place changes**, or you're **moved off the waitlist**. These are rare and need attention.
 - Each event item **archives itself when the occurrence ends**, so the bell never shows yesterday's "time changed". It stays findable under Archived until retention removes it.
-- This replaces today's derived "upcoming events" bell items (section 1).
+- This replaces today's derived "upcoming events" bell items (section 1), which are dropped. *Decided: Grier, Oct 10, 2026 (6.14.2).*
 
 ### 6.6 Actions
 **Illuminator: the rule.** An inline button may change state only if all of these hold:
@@ -363,7 +365,7 @@ Everything else gets a navigation button ("Review", "View event", "Reply") that 
 | Kind | Who sees it | Buttons | Why it's safe |
 |---|---|---|---|
 | New group pending approval | Admins | **Approve** · Review | Reversible (archive the group). Group name, leader, and description excerpt are in the row. Rejecting usually needs a note, so it's under Review. |
-| Account request from an **adult** with no warnings (duplicate, rate-limit, or honeypot flags) | Admins | **Approve** · Review | Reversible (disable the account). The row shows name, email, source ("Self-signup" or "Invited by Sam"), and the first line of the message. Teen requests and flagged requests show only **Review**. Declining goes through Review for the optional note. |
+| Account request from an **adult** with no warnings (duplicate, rate-limit, or honeypot flags) | Admins | **Approve** · Review | Reversible (disable the account). The row shows name, email, source ("Self-signup" or "Invited by Sam"), and the first line of the message. Teen requests and flagged requests show only **Review**. Declining goes through Review for the optional note. *Decided: Grier, Oct 10, 2026 (6.14.3).* |
 
 **Navigation-only buttons (always allowed):** Review · View event · View group · Reply (to a conversation) · Open request.
 
@@ -393,12 +395,12 @@ Everything else gets a navigation button ("Review", "View event", "Reply") that 
   - Each row has a one-line, plain-language description under its name.
 - **Locked cells** show a lock icon and the reason in text ("Required: these are requests only you can handle"; "Required for your safety and privacy"). The cell's accessible name includes "Locked, on". Locked: Safety & contact (email), account and security mail (not listed; always sent), and Waiting on you (email) for the people responsible.
 - The **Text column** is disabled with a reason until the phone is verified and SMS is opted in. For teens it also needs guardian SMS consent ("Texts need your guardian's OK"). A "Set up texting" link goes to the profile.
-- **Illuminator: one email-timing choice for the whole page**, not per category: "Email me: Right away · Once a day (7 AM)". Locked categories always go right away. Weekly is cut from v1 (6.14).
-- **Illuminator: Meetup's escape hatch**, worded for Fold. At the bottom: "Turn off all optional email". It confirms what still arrives ("You'll still get account, safety, and request emails"). Required mail stays on.
-- A read-only quiet-hours line: "Texts are only sent between 8 AM and 8 PM in your time zone (America/Boise)." The zone name links to the profile's time-zone field and falls back to the church zone. In-app notices are silent and arrive any time.
+- **Illuminator: no email-timing choice in v1.** Email goes right away. A "Once a day" summary is **Later**, and weekly is cut. *Decided: Grier, Oct 10, 2026 (6.14.5).*
+- **Illuminator: Meetup's escape hatch**, worded for Fold. At the bottom: "Turn off all optional email". It confirms what still arrives ("You'll still get account, safety, and request emails"). Required mail stays on. *Decided: Grier, Oct 10, 2026 (6.14.7).*
+- A read-only quiet-hours line: "Texts are only sent between 8 AM and 8 PM in your time zone (America/Boise)." The zone name links to the profile's time-zone field and falls back to the church zone. In-app notices are silent and arrive any time. Email isn't held for quiet hours. *Decided: Grier, Oct 10, 2026 (6.14.6).*
 - Toggles are real `<input type="checkbox" role="switch">` with visible labels. Each saves as it changes, with a polite "Saved" status next to the control (no toast). On failure, the switch reverts and "Couldn't save. Try again" appears.
 - The same page opens from the email unsubscribe link (signed token, PLAN 7.4).
-- **Illuminator:** no per-group settings in v1. Meetup has them (6.12), but they multiply the switches by the number of groups (6.14).
+- **Illuminator:** no per-group settings in v1. Meetup has them (6.12), but they multiply the switches by the number of groups. *Decided: Grier, Oct 10, 2026 (6.14.4).*
 
 ### 6.9 Accessibility (WCAG 2.2 AA)
 - **Illuminator:** the bell is a `<button aria-expanded aria-controls="notif-panel">` (no `aria-haspopup="dialog"`, because the panel is a disclosure, 6.2). Its accessible name includes the counts: "Notifications, 3 unread, 1 waiting on you". At zero it's just "Notifications".
@@ -448,35 +450,36 @@ Everything else gets a navigation button ("Review", "View event", "Reply") that 
 ### 6.13 Illuminator: For Codex (technical questions; not decided here)
 1. **Badge semantics.** 6.1 counts unread plus unresolved items waiting on you, so the badge no longer needs `seen_at`. Decide whether to keep `seen_at` and `POST /notifications/seen` only for the "email if not seen after 15 min" escalation (3.3), or switch escalation to `read_at`. `GET /notifications/badge` should return both numbers (`unread`, `waiting`) for the accessible name.
 2. **`read-all` must skip unresolved waiting items** (or the count must ignore `read_at` for them). Pick one so the server and UI agree.
-3. **Reminders out of the bell** (6.5a, pending Grier): this would change the M2.x plan for reminder rows. Event-change and waitlist items need `expires_at` = occurrence end, with **auto-archive** rather than deletion, so they stay under Archived until retention.
+3. **Reminders out of the bell** (6.5a, confirmed by Grier, 6.14.2): this changes the M2.x plan for reminder rows. Event-change and waitlist items need `expires_at` = occurrence end, with **auto-archive** rather than deletion, so they stay under Archived until retention.
 4. **No batching** for waiting, safety, and cancellation kinds. That's a per-kind flag in the registry (`BatchWindow = 0`).
 5. **Allow-list enforcement**: inline `actions` should be emitted by the kind registry only for allow-listed kinds and only when the subject is an adult with no flags. The UI must not be the gate. Reject an action on a non-allowed kind server-side even if a client sends it.
 6. **Conflict response**: allow-listed actions use conditional updates. On a lost race, return a structured "already handled by X" (for example 409 with `resolvedBy`) so the row can show "Already approved by Pat" instead of an error.
 7. **Offline and stale display**: keep the last-loaded feed **in memory only**, not localStorage. Fold is on the public internet and devices get shared, and logout must leave nothing behind (matches the existing logout-clears-storage rule).
 8. **Polling cadence**: 3.3 says 60 s with ETag; today's bell uses 5 min. Either works for the design. The rule is a refresh on focus, on navigation, and after an inline action, and polling paused when hidden.
 9. **Sensitive email rendering** (6.3a): kinds touching minors, consent, or contact access need an email variant that names nothing and links in. That could be a per-kind `EmailSafe` render.
-10. **Preferences storage** (6.8): with no In-app column and one global email timing, `notification_settings` may shrink to one per-user `email_mode` plus per-category email on/off. Decide how "Turn off all optional email" maps onto `Consent` rows, and confirm locked categories can't be written.
+10. **Preferences storage** (6.8): with no In-app column and no email timing in v1 (digests are Later, 6.14.5), `notification_settings` may shrink to per-category email on/off. The `notification.digest` job and `email_mode` can wait. Decide how "Turn off all optional email" maps onto `Consent` rows, and confirm locked categories can't be written.
 11. **Quiet-hours line** needs the effective time zone (`User.timezone`, falling back to the church zone) on the settings payload.
 12. **Teen transparency line** needs `guardian_copies` exposed to the teen's own settings payload (read-only).
 13. **Mobile route**: `/notifications?filter=…` with back-navigation state, and the < 640 px switch from popover to page.
 
-### 6.14 Illuminator: For Big Boss/Grier (product questions)
-1. **Badge**: OK with one plain count that includes items still waiting on you, and no colored dot? (Recommended; 6.1.)
-2. **Reminders**: OK to take event reminders out of the bell, as on Meetup, and drop today's "upcoming events" bell items? Upcoming events still show on the home page, My groups, and the calendar. (Recommended; 6.5a.)
-3. **Inline Approve for adult account requests** on a public-internet site: comfortable, or should every account request go through the Review page? (Recommended: inline only for unflagged adults; 6.6.)
-4. **Per-group notification settings** (Meetup has them): leave them out of v1? (Recommended: out; categories only.)
-5. **Email timing**: is "Once a day" wanted in v1, or only "Right away" at first? Weekly is cut either way. (Ties to open question 7.4.)
-6. **Quiet hours for email**: the plan applies 8 AM–8 PM to texts only. Keep email unrestricted? (Recommended: yes; email doesn't buzz anyone at night, and the daily summary goes at 7 AM.)
-7. **"Turn off all optional email"**: include Meetup's master switch? (Recommended: yes; it's one switch that saves people hunting.)
+### 6.14 Illuminator: For Big Boss/Grier (product questions) — **RESOLVED, Grier, Oct 10, 2026 (via Big Boss)**
+Grier accepted every recommendation and confirmed that Fold builds notifications in-house; Knock is only a UI/UX reference.
+1. **Badge**: one plain count, including items still waiting on you, with no needs-action dot. (6.1)
+2. **Reminders**: email and text only, not the bell. Today's upcoming-events bell items are dropped. (6.5a)
+3. **Account requests**: inline Approve only for adult requests with no warnings. Anything else goes to Review. (6.6)
+4. **Per-group notification settings**: not in v1. Categories only. (6.8)
+5. **Email timing**: "Right away" only in v1. "Once a day" summaries move to Later; weekly is cut. (6.8)
+6. **Quiet hours**: email ignores them. 8 AM–8 PM applies to texts only. (6.8)
+7. **"Turn off all optional email"**: included. (6.8)
 
 ---
 
 ## 7. Open questions for Grier, Codex, and the designer
 
-1. Badge semantics: unseen count plus a needs-action dot (recommended), or a count of unread? *(Illuminator: answered in 6.1, one plain count; confirm with Grier, 6.14.1.)*
-2. Should upcoming-event reminders appear in the bell at all, or only in email and SMS plus the calendar? They're the noisiest kind today. *(Illuminator: answered in 6.5a, not in the bell; confirm with Grier, 6.14.2.)*
+1. Badge semantics: unseen count plus a needs-action dot (recommended), or a count of unread? *(Illuminator: answered in 6.1, one plain count; confirmed by Grier, Oct 10, 2026, 6.14.1.)*
+2. Should upcoming-event reminders appear in the bell at all, or only in email and SMS plus the calendar? They're the noisiest kind today. *(Illuminator: answered in 6.5a, not in the bell; confirmed by Grier, Oct 10, 2026, 6.14.2.)*
 3. Retention periods (90 days for read, 180 for unread) are a proposal.
-4. Is a daily or weekly digest wanted in v1, or only later? *(Illuminator cross-ref: 6.8 and 6.14.5.)*
+4. Is a daily or weekly digest wanted in v1, or only later? *(Illuminator cross-ref: decided by Grier, Oct 10, 2026: none in v1, "Once a day" is Later; 6.8 and 6.14.5.)*
 5. Which inline actions are allowed (join approvals, group SMS requests)? *(Illuminator: answered in 6.6; Fold has no join requests (DEC-30), and group SMS requests are on the deny-list.)*
 
 ---
