@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-37) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
+Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-38) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
 Repo: https://github.com/grierj/fold (first read at commit `aa992e2`; re-checked at `e7c0e8f`, "Merge pull request #7 from grierj/admin-invite-and-rename", merged 2026-10-09 4:31 PM MT).
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions (nothing is open).
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Do one milestone per work session and one PR per milestone. Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-37) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-38) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (DEC-1 to DEC-37) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (DEC-1 to DEC-38) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -335,7 +335,7 @@ The field lists show the important columns, not every column. Every table has `i
 **Groups**
 
 - `Group`: `visibility` (`public|private|invite_only`; replaces `Visibility` + `InviteOnly`), `status` (`pending|active|archived`), `leader_id` (displayed primary contact only; never used for permissions, C12), `category` (from a short admin-defined list, for example "Small group", "Ministry", "Class", "Youth"). Joining: any member who can see a public or private group may join it at once; invite-only groups are joined only by invitation. There is no join-request step; leaders remove members who shouldn't be there (DEC-30). There is no teen restriction on groups (DEC-20).
-- `Membership`: `role` = `leader|member`; several leaders allowed; this is the only source of leadership. `status` = `active|invited|removed`. `removed` means a leader or admin removed the person (DEC-35): they can't rejoin on their own until a leader or admin adds them back, and the removal is in the `AuditLog`. A teen account can never have `role=leader` (DEC-18).
+- `Membership`: `role` = `leader|member`; several leaders allowed; this is the only source of leadership. `status` = `active|invited|removed|pending_return`. `removed` means a leader or admin removed the person (DEC-35): they can't rejoin on their own until a leader or admin adds them back, and the removal is in the `AuditLog`. A disabled account keeps its `active` memberships, hidden and uncounted, with any leadership handed off (DEC-38). `pending_return` is a membership waiting for a leader or admin after its account was re-enabled, because restoring it would exceed a group limit; it counts toward nothing until approved (no group limit exists yet, so this only matters once one is added). A teen account can never have `role=leader` (DEC-18).
 
 **Events**
 
@@ -361,7 +361,7 @@ The field lists show the important columns, not every column. Every table has `i
   - Future occurrences without overrides move to the new times; their registrations stay.
   - Occurrences whose date no longer exists in the new rule are cancelled, and their registrants are told.
   - Each moved occurrence's room bookings move with it (`RoomBooking.starts_at`, `ends_at`, and `padded_range` are recomputed in the same transaction). A booking that would now conflict is set to `requested` instead of failing the edit, and the leader or host is told which dates lost their room (9.2).
-- `Registration` (renamed from `RSVP`): `occurrence_id`, `user_id` (nullable), `household_person_id` (nullable; exactly one of the two is set), `registered_by` (the account holder, for household people), `status` (`going|maybe|declined|waitlisted|cancelled|removed`), `attendance_mode` (`in_person|remote`), `guest_count`, `childcare_count`, `childcare_ages_note`, `waitlisted_at`, `promoted_at`, `removed_by`, `removal_note`, `source` (`web|admin|guest_form`), `manage_token_hash` (lets guests cancel from an email link). Partial unique indexes on `(occurrence_id, user_id)` and `(occurrence_id, household_person_id)`. `removed` is a leader or host pruning someone (DEC-20, DEC-30).
+- `Registration` (renamed from `RSVP`): `occurrence_id`, `user_id` (nullable), `household_person_id` (nullable; exactly one of the two is set), `registered_by` (the account holder, for household people), `status` (`going|maybe|declined|waitlisted|cancelled|removed|pending_return`), `attendance_mode` (`in_person|remote`), `guest_count`, `childcare_count`, `childcare_ages_note`, `waitlisted_at`, `promoted_at`, `removed_by`, `removal_note`, `source` (`web|admin|guest_form`), `manage_token_hash` (lets guests cancel from an email link). Partial unique indexes on `(occurrence_id, user_id)` and `(occurrence_id, household_person_id)`. `removed` is a leader or host pruning someone (DEC-20, DEC-30). Registrations of a disabled account stay, hidden from attendee lists and never counted; on re-enable they return as they were, or as `pending_return` when the occurrence is full (DEC-38, 5.4).
 - Later: `Attendance(occurrence_id, user_id?, household_person_id?, present, checked_in_at, checked_in_by, method roll|qr|kiosk)`.
 
 **Rooms (optional; hidden when `rooms_enabled=false`)**
@@ -406,6 +406,7 @@ The field lists show the important columns, not every column. Every table has `i
 - No auto-promotion within 2 hours of the start (a fixed rule, not a setting). The leader gets a notice instead, and promotion is one click.
 - A promoted person gets a transactional email (and an SMS if they opted in) with a one-click "I can't come" link that frees the slot again.
 - People see their waitlist position ("You are #3 on the waitlist").
+- Disabled accounts (DEC-38): their registrations stay but never take a slot or count in waitlist math or attendee counts. On re-enable each comes back as it was if it fits; otherwise it becomes `pending_return` (no slot) until a leader, host, or admin approves it (over capacity only as an explicit choice; with the waitlist on, approval puts it on the waitlist) or declines it (removed). All three steps are audited, with an in-app notice to leaders and admins.
 - There is no sign-up approval step (DEC-30). Anyone who can see an event may sign up. A leader or host can remove (prune) any registration with an optional note; the person is told, and the freed slot triggers promotion (DEC-20).
 
 ### 5.5 Background jobs
@@ -672,7 +673,7 @@ All checks live in `internal/policy` as pure functions with table tests. Handler
 | See the audit log | Yes | No | No | No | No |
 | Background-check flags (later) | Yes (and an optional safety-coordinator role) | No | Own status only | No | No |
 
-Guard rails that already exist and stay: the last admin cannot be demoted or deleted; you cannot delete or demote yourself; invite-only groups return 404 (not 403) to people who cannot see them. New guard rails: a teen cannot be made a leader, host, or admin (DEC-18); an account under 13 cannot be created by any path; a group cannot lose its last leader; no guardian or household link to a teen or child is confirmed without an admin (DEC-32); no API response to a leader or host includes a teen's email or phone (DEC-31); a leader cannot remove or demote an admin (DEC-35); an account that is a group's only leader cannot be deleted or disabled until the admin picks a successor for each such group (DEC-36).
+Guard rails that already exist and stay: the last admin cannot be demoted or deleted; you cannot delete or demote yourself; invite-only groups return 404 (not 403) to people who cannot see them. New guard rails: a teen cannot be made a leader, host, or admin (DEC-18); an account under 13 cannot be created by any path; a group cannot lose its last leader; no guardian or household link to a teen or child is confirmed without an admin (DEC-32); no API response to a leader or host includes a teen's email or phone (DEC-31); a leader cannot remove or demote an admin (DEC-35); an account that is a group's only leader cannot be deleted or disabled until the admin picks a successor for each such group (DEC-36); a disabled account never keeps a leader role, its memberships and registrations are hidden and never counted while it is disabled, and re-enabling never restores leadership or pushes a group or event past a limit without a leader's or admin's approval (DEC-38). Rosters show leaders which members are admins, and leaders never get a Remove button for them (DEC-38).
 
 ---
 
@@ -951,7 +952,7 @@ Implementation note for agents: keep the counting-usage test in one function, `r
 - Provider secrets are encrypted at rest (C8) and never sent back to the browser after saving. The UI shows "set, last checked on ...".
 - `AuditLog` (created in M0.2) covers admin actions, sends, approvals, consent changes, role and secret changes, and every contact-access attempt (5.3, 5.11).
 - Export: admins can export people, groups, and events as CSV. Users can download their own data as JSON.
-- Deletion: deleting a user removes personal data (name, email, phone, avatar) but keeps anonymous registrations for attendance counts. If the account is the only leader of any group, the admin first picks a successor for each (a member of that group or any admin, the deleting admin by default); the handoff is audited (DEC-36, M0.3b). Disabling follows the same rule. Opt-out and suppression records keep a hashed address so the person is never messaged again by mistake.
+- Deletion: deleting a user removes personal data (name, email, phone, avatar) but keeps anonymous registrations for attendance counts. If the account is the only leader of any group, the admin first picks a successor for each (a member of that group or any admin, the deleting admin by default); the handoff is audited (DEC-36, M0.3b). Disabling uses the same successor picker but keeps the account's memberships and registrations, hidden and uncounted, as plain member; re-enabling restores them as plain member and attendee, never leader, with anything over a limit going to `pending_return` for a leader or admin to approve or decline (DEC-38). Opt-out and suppression records keep a hashed address so the person is never messaged again by mistake.
 
 ### 10.2 Directory and contact details
 
@@ -1493,10 +1494,12 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - **Sole-leader handoff when an account is deleted or disabled (DEC-36).**
     - `GET /api/v1/admin/users/:id/sole-leader-groups` lists every group, in any status, where the account is the only active leader. For each group it gives the candidate successors: the group's other active adult members, and every admin (the deleting admin included).
     - `DELETE /api/v1/admin/users/:id` (and disabling, once account status exists in M0.3a) takes `{successors: {"<groupId>": <userId>}}`. It refuses with 400 and the list of groups when any sole-led group is missing a valid successor.
-    - In one transaction it makes each successor a leader (adding an admin as a member if needed), sets the primary contact, ends the departing account's memberships, and deletes or disables the account.
+    - In one transaction it makes each successor a leader (adding an admin as a member if needed) and sets the primary contact. Then it **deletes** the account and ends its memberships, or **disables** the account and keeps its memberships and RSVPs as plain member, demoting any other leadership (DEC-38).
     - Audit rows: one `membership.role_changed` per group (meta `reason: "account_deleted"` or `"account_disabled"`, plus the departing user's id), and one `user.deleted` or `user.disabled` row.
     - The SPA's delete or disable dialog lists each group with a successor picker that defaults to the deleting admin.
     - `leaderCount` counts only active accounts.
+  - **Disabled accounts keep their memberships (DEC-38).** While disabled, their memberships and RSVPs are hidden from rosters and never counted (member counts, RSVP counts, `leaderCount`, the "other members" check for deletion requests). Enabling the account restores them as plain member (one `membership.restored` audit row each, plus `user.enabled`). No group, meeting, or RSVP limit exists in the code yet, so nothing can go to `pending_return` in this milestone; M1.5 and M1.8 add it with event capacity.
+  - **Admins on rosters (DEC-38).** The members JSON has an `admin` flag. The SPA shows an "Admin" label on group and admin rosters and hides Remove and "Remove as leader" for admins unless the viewer is an admin.
   - **Security headers (DEC-37, 10.1, 10.6).** The app sets them itself, so they hold behind any proxy:
     - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'`. As built, `style-src` needs no `'unsafe-inline'`: React sets focal points through the CSSOM, which CSP allows. `blob:` is for upload previews, and `img-src https:` is for cover images given by URL. Tighten `img-src` when uploads become the only source (M4.7). The image compressor runs on the main thread, because its web worker loads code from a CDN.
     - `Strict-Transport-Security: max-age=31536000` when `COOKIE_SECURE` is on (never in dev).
@@ -1517,6 +1520,9 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] A successor must be an active adult member of that group or an admin; anyone else is refused
   - [x] Every response carries the CSP, `nosniff`, referrer, frame, and permissions headers; HSTS is present only with `COOKIE_SECURE`; the SPA and `/setup` load with no CSP violations in a browser
   - [x] Dependabot config is in the repo, and the `govulncheck` and `npm audit` CI steps pass
+  - [x] Disabling then re-enabling keeps memberships and restores them as plain member, never leader; each restore and the re-enable are audited (DEC-38)
+  - [x] While disabled, the person is hidden from rosters and excluded from member counts, RSVP counts, and leader counts (DEC-38)
+  - [x] Roster APIs flag admins, and leaders get no Remove button for them (DEC-38)
 - Tests: policy table tests for the new `CanRemoveMember` and `CanChangeRole` cases (admin target, last leader, co-leader, self); API tests for removal, rejoin, audit rows, and the handoff (refusal, defaults, invalid successor); a header test on an API route, the SPA shell, and `/setup`.
 
 **M0.4 Frontend and browser test tooling**
@@ -1597,13 +1603,15 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 
 **M1.5 Capacity, waitlist, pruning**
 - Depends on: M1.2
-- Scope: 5.4 in full, including remote capacity, guests, and removal by leaders and hosts (DEC-20).
+- Scope: 5.4 in full, including remote capacity, guests, and removal by leaders and hosts (DEC-20). Also the DEC-38 rules for disabled and re-enabled accounts: hidden and uncounted while disabled, `pending_return` when a restore would exceed capacity.
 - Acceptance:
   - [ ] 50 concurrent "going" requests on a 10-seat event give exactly 10 going and 40 waitlisted (Postgres test)
   - [ ] Cancelling promotes the earliest entry that fits, skipping a party too big for the free seats
   - [ ] No auto-promotion inside the cutoff; the leader is notified instead
   - [ ] Promoted people get an email with a one-click "I can't come" link
   - [ ] There is no approval step: a sign-up is `going` (or `waitlisted`) at once; a leader or host can remove anyone, and the removed person is told (DEC-30)
+  - [ ] Registrations of a disabled account are hidden from attendee lists and never count toward capacity, waitlist math, or attendee counts (DEC-38)
+  - [ ] Re-enabling an account whose registration would overfill an occurrence makes it `pending_return` (not counted); a leader, host, or admin approves it (over capacity only by explicit choice, otherwise through the waitlist when it is on) or declines it (which removes it); restore, approve, and decline are audited, and leaders and admins get an in-app notice (DEC-38)
 - Tests: unit tests on the promotion function plus the concurrency test.
 
 **M1.6 Calendar views**
@@ -1630,6 +1638,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Depends on: M1.1a
 - Scope: 5.8 video links (link and Jitsi), remote flag and remote capacity UI, childcare fields and counts on registration (F11–F13).
 - Acceptance:
+  - [ ] Remote and childcare capacity follow DEC-38: a disabled account's registrations never count, and a restore that would exceed `remote_capacity` or `childcare_capacity` becomes `pending_return` for a leader, host, or admin to approve or decline
   - [ ] "Generate Jitsi link" makes a new random URL on the configured domain
   - [ ] `registered_only` hides the link from people not going, in the API, emails, and feeds
   - [ ] Events can be filtered by "remote available" and "childcare available"
@@ -1755,6 +1764,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] A person in two chosen groups gets one copy
   - [ ] Opted-out and suppressed people are skipped and counted with reasons
   - [ ] A leader demoted between scheduling and sending is refused at send time
+  - [ ] Disabled accounts are never recipients, even though their memberships and registrations are kept (DEC-38)
   - [ ] Teens without `account` consent and all household people get nothing; messages about a household person's registration go to the account holder (DEC-8)
   - [ ] With `guardian_copies` off (default), guardians get no copies; with it on, each confirmed guardian gets one marked copy per message to their teen (DEC-19); no copy is ever sent by SMS (DEC-29)
   - [ ] A scheduled message can be cancelled until sending starts
@@ -1988,7 +1998,7 @@ Built only when a church asks: Resend and Mailgun email adapters, a Plivo SMS ad
 
 ### 15.1 Decisions
 
-Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, numbered after the original questions), then made more decisions the same day: DEC-17 to DEC-25 (Grier's items A to I), DEC-26 to DEC-30, and DEC-31 to DEC-33 (after Codex's final review), and DEC-34 to DEC-37 (Grier's answers to the M0.1 and M0.2 PR questions). Each has been carried through the sections listed. These decisions win over the original requirement wording and over the repo.
+Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, numbered after the original questions), then made more decisions the same day: DEC-17 to DEC-25 (Grier's items A to I), DEC-26 to DEC-30, and DEC-31 to DEC-33 (after Codex's final review), DEC-34 to DEC-37 (Grier's answers to the M0.1 and M0.2 PR questions), and DEC-38 (Grier's answers to the M0.3b PR questions). Each has been carried through the sections listed. These decisions win over the original requirement wording and over the repo.
 
 | ID | Decision (2026-10-09) | Where it flows |
 |---|---|---|
@@ -2029,6 +2039,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-35 | **Leaders can remove members from their own groups**, as soon as possible (M0.3b). Removals are audited, and the rule lives in `internal/policy`. Leaders can't remove admins or the group's last leader. Consistent edge cases: leaders can't demote an admin co-leader either; a removed person can't rejoin on their own until a leader or admin adds them back. | 5.3, 6, 10.6, M0.3b |
 | DEC-36 | **Deleting the account of a group's only leader requires a successor.** For every group the account solely leads, the deleting admin picks a new leader: a member of that group or any admin, the deleting admin selected by default. The handoff is audited. The same applies to disabling an account. | 6, 10.1, 10.6, M0.3b |
 | DEC-37 | **Security headers and dependency scanning move up to M0.3b:** CSP, HSTS, and the other headers set by the app; Dependabot; `govulncheck` and `npm audit` in CI. Caddy and image-level headers and pinned image digests stay in M5.1. | 10.1, 10.6, M0.3b, M5.1 |
+| DEC-38 | **Admins are labeled on rosters, and disabled accounts keep their memberships** (Grier, Oct 9, 2026). (A) Rosters and any member list a leader sees mark church admins with an "Admin" label, and leaders never get a Remove button for them; the members API exposes an `admin` flag, and the server still refuses (DEC-35). (B) Disabling an account no longer ends its memberships or registrations. They stay but are hidden from rosters and attendee lists, excluded from messaging, and never counted toward any limit (group size, event capacity, waitlist math, attendee counts). Leadership still goes to the chosen successor at disable time (DEC-36), so any leader role becomes plain member. On re-enable, memberships and registrations come back as plain member and attendee, never leader. If restoring one would push a group or event over a limit, it becomes `pending_return` instead: it doesn't count toward limits, a leader of that group or event (or an admin) approves or declines it (decline removes it), and approving over the limit is an explicit choice that follows the waitlist rules (5.4) when a waitlist exists. Restore, approve, and decline are audited, and leaders and admins get an in-app notice for pending returns. Deletion still ends memberships. | 5.3, 5.4, 6, 10.1, M0.3b, M1.5, M1.8, M3.5 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10).
 
