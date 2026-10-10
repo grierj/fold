@@ -139,3 +139,80 @@ li a:hover {
     font-size: 0.9em;
     margin: 4px 0 12px 0;
 }
+/* First-run setup page (templates/setup.html): a single stacked column,
+   each label above its full-width input, matching the SPA's login card. */
+main.setup {
+    max-width: 30rem;
+    margin: 32px auto;
+    padding: 0 16px;
+    box-sizing: border-box;
+}
+
+.setup-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    margin: 20px 0 0;
+    padding: 24px;
+    background-color: #fff;
+    border: 1px solid #e2e2e2;
+    border-radius: 12px;
+}
+
+.setup-form .field {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.setup-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 0.95em;
+    font-weight: 600;
+    color: #333;
+}
+
+.setup-form input {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid #8a8a8a;
+    border-radius: 6px;
+    background-color: #fff;
+    color: #333;
+    font: inherit;
+    font-weight: 400;
+}
+
+.setup-form input:focus-visible,
+.setup-form button:focus-visible {
+    outline: 3px solid #1a5fb4;
+    outline-offset: 2px;
+}
+
+.setup-form .hint {
+    margin: 6px 0 0;
+    color: #595959;
+    font-size: 0.85em;
+}
+
+.setup-form button {
+    width: 100%;
+    margin-top: 4px;
+    padding: 12px 20px;
+    font: inherit;
+    font-weight: 600;
+}
+
+@media (max-width: 480px) {
+    header h1 {
+        font-size: 1.75em;
+    }
+
+    .setup-form {
+        padding: 16px;
+    }
+}

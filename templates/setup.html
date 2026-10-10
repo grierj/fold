@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Setup — Fold</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -8,20 +9,30 @@
     <header>
         <h1>Welcome — let's set things up</h1>
     </header>
-    <main>
+    <main class="setup">
         <p>This only appears once. Create your church's site and its first
         administrator account.</p>
         {{if .Error}}
         <p class="error">{{.Error}}</p>
         {{end}}
-        <form method="POST" action="/setup">
+        <form method="POST" action="/setup" class="setup-form">
             {{ .csrfField }}
-            <label>Church / site name: <input type="text" name="site_name" value="{{.EnteredSiteName}}" required></label><br>
-            <label>Your name: <input type="text" name="name" value="{{.EnteredName}}" autocomplete="name" required></label><br>
-            <label>Your email (you sign in with it): <input type="email" name="email" value="{{.EnteredEmail}}" autocomplete="email" required></label><br>
-            <label>Password: <input type="password" name="password" autocomplete="new-password" required></label>
-            <p class="hint">Password must be at least 10 characters.</p>
-            <label>Confirm password: <input type="password" name="password_confirm" required></label><br>
+            <div class="field">
+                <label>Church / site name: <input type="text" name="site_name" value="{{.EnteredSiteName}}" required></label>
+            </div>
+            <div class="field">
+                <label>Your name: <input type="text" name="name" value="{{.EnteredName}}" autocomplete="name" required></label>
+            </div>
+            <div class="field">
+                <label>Your email (you sign in with it): <input type="email" name="email" value="{{.EnteredEmail}}" autocomplete="email" required></label>
+            </div>
+            <div class="field">
+                <label>Password: <input type="password" name="password" autocomplete="new-password" aria-describedby="password-hint" required></label>
+                <p class="hint" id="password-hint">Password must be at least 10 characters.</p>
+            </div>
+            <div class="field">
+                <label>Confirm password: <input type="password" name="password_confirm" required></label>
+            </div>
             <button type="submit">Create site</button>
         </form>
     </main>
