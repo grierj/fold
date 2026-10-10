@@ -215,23 +215,33 @@ func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) e
 
 // restoreMemberships runs when a disabled account is enabled again. Its
 // kept memberships come back as plain members (DEC-38), one
-// membership.restored audit row each. No group has a size limit today, so
-// nothing goes to pending_return yet; event capacity (M1.5) adds that.
+// membership.restored audit row each. A group at its member limit gets
+// pending_return instead, for a leader or admin to approve or decline
+// (DEC-39).
 func restoreMemberships(c *gin.Context, tx *gorm.DB, userID uint) error {
 	actor := apiUser(c)
 	var kept []models.Membership
-	if err := tx.Where("user_id = ? AND status = 'active'", userID).Find(&kept).Error; err != nil {
+	// Stable order (by group) so concurrent restores lock groups the same way.
+	if err := tx.Where("user_id = ? AND status = 'active'", userID).Order("group_id").Find(&kept).Error; err != nil {
 		return err
 	}
 	for _, m := range kept {
-		if m.Role != models.MembershipMember {
-			if err := tx.Model(&m).Update("role", models.MembershipMember).Error; err != nil {
-				return err
-			}
+		// Lock the group so a concurrent join or restore can't race the
+		// count. The account is still disabled here, so it isn't counted.
+		var g models.Group
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&g, m.GroupID).Error; err != nil {
+			return err
+		}
+		status := "active"
+		if !policy.GroupHasRoom(g.MemberLimit, int(memberCount(tx, g.ID))) {
+			status = memberPendingReturn // a leader or admin decides (DEC-39)
+		}
+		if err := tx.Model(&m).Updates(map[string]any{"role": models.MembershipMember, "status": status}).Error; err != nil {
+			return err
 		}
 		if err := audit.Write(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.MemberRestored, TargetType: "group", TargetID: m.GroupID,
-			Meta: map[string]any{"userId": userID, "status": "active"}, IP: c.ClientIP(),
+			Meta: map[string]any{"userId": userID, "status": status}, IP: c.ClientIP(),
 		}); err != nil {
 			return err
 		}

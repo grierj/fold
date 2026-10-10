@@ -294,3 +294,14 @@ func TestCanDemoteOrDelete(t *testing.T) {
 		t.Error("not yourself, not the last admin, not as a member")
 	}
 }
+
+// DEC-39: an optional group member limit.
+func TestGroupHasRoom(t *testing.T) {
+	two := 2
+	if !GroupHasRoom(nil, 1000) || !GroupHasRoom(&two, 1) || GroupHasRoom(&two, 2) || GroupHasRoom(&two, 3) {
+		t.Error("nil is unlimited; full at or over the limit")
+	}
+	if CanJoinGroup(adult, active(Public), Rel{PendingReturn: true}) {
+		t.Error("a pending return isn't a self-join")
+	}
+}

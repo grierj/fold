@@ -182,6 +182,7 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 		NextMeetingAt: next, Status: g.Status,
 		LeaderID: g.LeaderID, Visibility: g.Visibility,
 		DeletionRequested: g.DeletionRequested,
+		MemberLimit:       g.MemberLimit,
 	}
 }
 

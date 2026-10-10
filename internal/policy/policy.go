@@ -46,6 +46,9 @@ type Rel struct {
 	// Removed: a leader or admin removed this person (DEC-35). They aren't a
 	// member and can't rejoin on their own.
 	Removed bool
+	// PendingReturn: the account was re-enabled while the group was full; a
+	// leader or admin decides (DEC-38, DEC-39). Not a member meanwhile.
+	PendingReturn bool
 }
 
 // CanSeeGroup: public groups are open to all, private groups to signed-in
@@ -84,6 +87,9 @@ func CanJoinGroup(p *Person, g Group, r Rel) bool {
 	}
 	if r.Removed && !p.Admin {
 		return false // removed people come back only when a leader adds them
+	}
+	if r.PendingReturn {
+		return false // a leader or admin approves the return instead
 	}
 	return p.Admin || r.Member || g.Visibility != InviteOnly
 }
@@ -229,4 +235,13 @@ func CanSeeContact(p *Person, self bool, c Contact) bool {
 // or deleted.
 func CanDemoteOrDelete(p, target *Person, admins int) bool {
 	return IsAdmin(p) && target != nil && p.ID != target.ID && (!target.Admin || admins > 1)
+}
+
+// GroupHasRoom reports whether one more active member fits under a group's
+// member limit (DEC-39); nil means unlimited. When it is false, self-join
+// is refused, and a leader or admin may still add someone, approve a
+// return, or have a restore go through only by explicit choice. Groups
+// have no waitlist.
+func GroupHasRoom(limit *int, count int) bool {
+	return limit == nil || count < *limit
 }

@@ -74,6 +74,7 @@ import type {
   SoleLedGroup,
   User,
   Visibility,
+  PendingReturn,
 } from "./types";
 
 export const Auth = {
@@ -102,6 +103,7 @@ export const Groups = {
     imageUrl: string;
     location: string;
     visibility: Visibility;
+    memberLimit: number | null;
   }) => api<{ group: GroupSummary }>("/groups", { method: "POST", body: data }),
   update: (
     id: number | string,
@@ -113,6 +115,7 @@ export const Groups = {
       location?: string;
       coverFocal?: { x: number; y: number };
       visibility?: Visibility;
+      memberLimit?: number | null;
     }
   ) => api<{ group: GroupSummary }>(`/groups/${id}`, { method: "PUT", body: data }),
   join: (id: number | string) => api<unknown>(`/groups/${id}/join`, { method: "POST" }),
@@ -120,8 +123,12 @@ export const Groups = {
   // Make a member a leader, or a leader a member again (audited; admins are notified).
   setRole: (id: number | string, userId: number, role: "leader" | "member") =>
     api<{ members: Member[] }>(`/groups/${id}/members/${userId}/role`, { method: "PUT", body: { role } }),
-  addMember: (id: number | string, email: string) =>
-    api<unknown>(`/groups/${id}/members`, { method: "POST", body: { email } }),
+  // overLimit: add even though the group is full (an explicit, audited choice; DEC-39).
+  addMember: (id: number | string, email: string, overLimit = false) =>
+    api<unknown>(`/groups/${id}/members`, { method: "POST", body: { email, overLimit } }),
+  // Approve or decline a re-enabled account waiting to return to a full group.
+  decideReturn: (id: number | string, userId: number, decision: "approve" | "decline") =>
+    api<unknown>(`/groups/${id}/members/${userId}/return`, { method: "POST", body: { decision } }),
   // Leaders and admins remove someone (audited; DEC-35). The note stays in the audit log.
   removeMember: (id: number | string, userId: number, note?: string) =>
     api<{ members: Member[] }>(`/groups/${id}/members/${userId}`, { method: "DELETE", body: { note } }),
@@ -155,6 +162,7 @@ export const Meetings = {
 
 export const Admin = {
   pending: () => api<{ groups: GroupSummary[] }>("/admin/pending"),
+  pendingReturns: () => api<{ returns: PendingReturn[] }>("/admin/pending-returns"),
   approve: (id: number | string, tags: string[]) =>
     api<{ group: GroupSummary }>(`/admin/groups/${id}/approve`, { method: "POST", body: { tags } }),
   reject: (id: number | string) => api<unknown>(`/admin/groups/${id}/reject`, { method: "POST" }),
@@ -247,8 +255,8 @@ export const AdminUsers = {
 
 export const AdminGroups = {
   list: () => api<{ groups: GroupSummary[] }>("/admin/groups"),
-  addMember: (id: number | string, userId: number, role: "leader" | "member" = "member") =>
-    api<unknown>(`/admin/groups/${id}/members`, { method: "POST", body: { userId, role } }),
+  addMember: (id: number | string, userId: number, role: "leader" | "member" = "member", overLimit = false) =>
+    api<unknown>(`/admin/groups/${id}/members`, { method: "POST", body: { userId, role, overLimit } }),
   removeMember: (id: number | string, userId: number) =>
     api<unknown>(`/admin/groups/${id}/members/${userId}`, { method: "DELETE" }),
 };

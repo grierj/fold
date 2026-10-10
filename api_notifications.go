@@ -63,6 +63,8 @@ func (a *App) apiNotifications(c *gin.Context) {
 		}
 		out = append(out, a.leadershipNotices(u)...)
 	}
+	// Leaders hear about returns in their groups; admins about all (DEC-39).
+	out = append(out, a.pendingReturnNotices(u)...)
 
 	var memberships []models.Membership
 	a.DB.Where("user_id = ? AND status = ?", u.ID, "active").Find(&memberships)

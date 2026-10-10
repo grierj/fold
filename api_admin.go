@@ -402,6 +402,8 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 	var body struct {
 		UserID uint   `json:"userId"`
 		Role   string `json:"role"`
+		// OverLimit: add even though the group is full (DEC-39); audited.
+		OverLimit bool `json:"overLimit"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.UserID == 0 {
 		jsonError(c, http.StatusBadRequest, "userId is required")
@@ -421,13 +423,16 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	err := a.changeRole(c, &g, u.ID, role, "", func(actor, t policy.Rel, leaders int) bool {
+	err := a.changeRole(c, &g, u.ID, role, "", body.OverLimit, func(actor, t policy.Rel, leaders int) bool {
 		// Admins may add someone straight in with either role.
 		return policy.CanChangeRole(asPerson(me), actor, asPerson(&u),
 			policy.Rel{Member: true, Leader: t.Leader}, role == models.MembershipLeader, leaders)
 	})
 	switch err {
 	case nil:
+	case errGroupFull:
+		groupFull(c)
+		return
 	case errRoleRefused:
 		jsonError(c, http.StatusBadRequest,
 			"only adults can be leaders, and a group must keep at least one leader")

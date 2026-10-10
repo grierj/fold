@@ -30,6 +30,8 @@ export interface GroupSummary {
   leaderId: number;
   visibility: Visibility;
   deletionRequested: boolean;
+  // Cap on active members (DEC-39); null means no limit.
+  memberLimit: number | null;
 }
 
 // Who can see a group (C3). invite_only groups are hidden from everyone but
@@ -73,6 +75,13 @@ export interface GroupDetailResponse {
   upcomingMeetings: MeetingInstance[];
   canManage: boolean;
   isMember: boolean;
+  // Re-enabled accounts waiting because the group was full (leaders and admins only).
+  pendingReturns: Member[];
+}
+
+export interface PendingReturn {
+  group: GroupSummary;
+  member: Member;
 }
 
 export interface Meeting {

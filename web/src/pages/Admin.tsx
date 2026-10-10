@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Admin, AdminGroups, AdminUsers, Groups } from "../api";
-import type { GroupSummary, Member, User } from "../types";
+import { Admin, AdminGroups, AdminUsers, ApiError, Groups } from "../api";
+import type { GroupSummary, Member, PendingReturn, User } from "../types";
 import { useAuth } from "../auth";
 import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
@@ -153,6 +153,7 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
 function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [deletions, setDeletions] = useState<GroupSummary[]>([]);
+  const [returns, setReturns] = useState<PendingReturn[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -160,10 +161,13 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
     setLoading(true);
     setError(null);
     try {
-      const [pending, requested] = await Promise.all([Admin.pending(), Admin.deletions()]);
+      const [pending, requested, waiting] = await Promise.all([
+        Admin.pending(), Admin.deletions(), Admin.pendingReturns(),
+      ]);
       setGroups(pending.groups);
       setDeletions(requested.groups);
-      onCount(pending.groups.length + requested.groups.length);
+      setReturns(waiting.returns);
+      onCount(pending.groups.length + requested.groups.length + waiting.returns.length);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load approval queue");
     } finally {
@@ -179,7 +183,7 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
     <div>
       {loading && <div className="text-gray-500">Loading…</div>}
       {error && <div className="text-red-600">{error}</div>}
-      {!loading && !error && groups.length === 0 && deletions.length === 0 && (
+      {!loading && !error && groups.length === 0 && deletions.length === 0 && returns.length === 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
           Nothing pending. All caught up.
         </div>
@@ -198,6 +202,17 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
           {deletions.map((g) => (
             <DeletionCard key={g.id} group={g} onDone={load} />
           ))}
+        </div>
+      )}
+      {returns.length > 0 && (
+        <div className="space-y-4 mt-8">
+          <h2 className="text-xl font-bold">Waiting to return</h2>
+          <p className="text-sm text-gray-500">Re-enabled accounts whose group was full.</p>
+          <ul className="bg-white rounded-xl border border-gray-200 divide-y divide-gray-100">
+            {returns.map((r) => (
+              <ReturnRow key={`${r.group.id}-${r.member.id}`} item={r} onDone={load} />
+            ))}
+          </ul>
         </div>
       )}
     </div>
@@ -233,7 +248,14 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
     setBusy(true);
     setError(null);
     try {
-      await AdminGroups.addMember(group.id, Number(addUserId), addRole);
+      try {
+        await AdminGroups.addMember(group.id, Number(addUserId), addRole);
+      } catch (err) {
+        // Full group: going over the limit is an explicit, audited choice (DEC-39).
+        if (!(err instanceof ApiError) || err.status !== 409) throw err;
+        if (!confirm(`“${group.name}” is full. Add this person anyway?`)) return;
+        await AdminGroups.addMember(group.id, Number(addUserId), addRole, true);
+      }
       setAddUserId("");
       await load();
     } catch (e) {
@@ -822,5 +844,45 @@ export function AdminPage() {
         usersLoading ? <div className="text-gray-500">Loading…</div> : <UsersTab users={users} reload={loadUsers} />
       )}
     </div>
+  );
+}
+
+// One re-enabled account waiting to return to a full group (DEC-39).
+function ReturnRow({ item, onDone }: { item: PendingReturn; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { group, member } = item;
+  async function decide(decision: "approve" | "decline") {
+    const question = decision === "approve"
+      ? `Let ${member.name} back into “${group.name}”? This can put the group over its limit.`
+      : `Decline ${member.name}'s return? They'll be removed from “${group.name}”.`;
+    if (!confirm(question)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await Groups.decideReturn(group.id, member.id, decision);
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not save that");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <li className="p-4 flex items-center gap-3 flex-wrap">
+      <div className="grow min-w-0">
+        <div className="font-semibold">{member.name}</div>
+        <Link to={`/groups/${group.id}#waiting`} className="text-sm text-brand hover:underline">
+          {group.name} · {group.memberCount} of {group.memberLimit ?? "∞"}
+        </Link>
+        {error && <div className="text-red-600 text-sm">{error}</div>}
+      </div>
+      <button type="button" onClick={() => decide("approve")} disabled={busy} className="text-sm font-medium text-brand hover:underline">
+        Approve
+      </button>
+      <button type="button" onClick={() => decide("decline")} disabled={busy} className="text-sm font-medium text-red-600 hover:underline">
+        Decline
+      </button>
+    </li>
   );
 }

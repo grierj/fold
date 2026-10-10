@@ -38,6 +38,15 @@ const (
 	// MemberRestored: a disabled account was enabled and one of its kept
 	// memberships came back as a plain member (DEC-38). Meta: userId, status.
 	MemberRestored = "membership.restored"
+
+	// AddedOverLimit: a leader or admin added someone to a full group by
+	// explicit choice (DEC-39). Meta: userId, count, limit, role.
+	AddedOverLimit = "membership.added_over_limit"
+
+	// ReturnApproved / ReturnDeclined: a leader or admin decided a
+	// pending_return membership (DEC-38, DEC-39). Meta: userId, count, limit.
+	ReturnApproved = "membership.return_approved"
+	ReturnDeclined = "membership.return_declined"
 )
 
 // Entry is one audit record. Actor is nil for system actions.

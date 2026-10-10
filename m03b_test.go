@@ -23,6 +23,8 @@ type auditMeta struct {
 	Note            string `json:"note"`
 	Reason          string `json:"reason"`
 	DepartingUserID uint   `json:"departingUserId"`
+	Status          string `json:"status"`
+	Limit           int    `json:"limit"`
 }
 
 func auditRows(t *testing.T, app *App, action string) ([]models.AuditLog, []auditMeta) {

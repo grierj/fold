@@ -114,18 +114,24 @@ Pending and archived groups stay limited to their leaders and admins.
 
 `groupSummary`: `{id, name, description, tags[], imageUrl, coverFocalX,
 coverFocalY, location, leaderName, memberCount, nextMeetingAt, status,
-leaderId, visibility, deletionRequested}`. `leaderId` and `leaderName` are the
+leaderId, visibility, deletionRequested, memberLimit}`. `memberLimit` is null
+for no limit (DEC-39); `memberCount` counts active members of listed accounts. `leaderId` and `leaderName` are the
 displayed primary contact only (one of the leaders); they grant nothing.
 
 `group` (detail response): `{group: groupSummary, members: [...],
-upcomingMeetings: [meetingInstance], canManage: bool, isMember: bool}`.
+upcomingMeetings: [meetingInstance], canManage: bool, isMember: bool,
+pendingReturns: [member]}`. `pendingReturns` (leaders and admins only, else `[]`)
+lists re-enabled accounts waiting because the group was full (DEC-39).
 `members` is filled only for the group's members and admins (people see each
 other only inside groups they share); otherwise it is `[]`. `canManage` is
 true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, role,
 joinedAt, admin}` — `name` is the member's display name; `admin` marks church admins (DEC-38).
 
 Create/update body: `{name, description, tags[], imageUrl, location,
-coverFocal: {x, y}, visibility}`.
+coverFocal: {x, y}, visibility, memberLimit}`.
+`memberLimit` is a positive whole number, or null for no limit (the default);
+on update, omit it to leave it unchanged. Lowering it below the count keeps
+everyone and blocks joins until the count drops (DEC-39).
 `visibility` is `public` (the default), `private`, or `invite_only`;
 anything else is rejected with 400. On update, omit it to leave it
 unchanged.
@@ -142,7 +148,11 @@ status.
 POST /api/v1/groups/:id/join    → 200 {membership}  (auth; idempotent)
 POST /api/v1/groups/:id/leave   → 200 {}            (auth; 400 if you are the only leader)
 POST /api/v1/groups/:id/members → 200 {membership}  (auth; leader or admin)
-     body: {email} — adds that account as a member
+     body: {email, overLimit?} — adds that account as a member; a full group
+     answers 409 {error: "This group is full", full: true} unless overLimit is true (audited)
+POST /api/v1/groups/:id/members/:userId/return → 200 {group, members, pendingReturns}  (auth; leader or admin; DEC-39)
+     body: {decision: "approve"|"decline"} — approve makes a pending_return membership
+     active (over the limit by explicit choice); decline sets it removed; both audited
 DELETE /api/v1/groups/:id/members/:userId → 200 {members: [...]}  (auth; leader or admin; DEC-35)
      body (optional): {note} — kept only in the audit row, never shown to the removed person
 PUT  /api/v1/groups/:id/members/:userId/role → 200 {members: [...]}  (auth; leader or admin)
@@ -153,7 +163,8 @@ GET  /api/v1/groups/:id/members → {members: [...]}  (auth; members and admins;
 ```
 
 Join returns 404 when the group is not visible, and 403 when it is
-invite-only and the caller is not already a member. A deletion request is
+invite-only and the caller is not already a member. A full group answers 409
+"This group is full" (no waitlist), and someone whose return is pending gets 409. A deletion request is
 accepted only from a leader who is the group's only active member. Adding
 a member clears a pending request.
 
@@ -230,7 +241,9 @@ POST /api/v1/admin/groups/:id/reject-deletion → 200 {}               (admin; c
 DELETE /api/v1/admin/groups/:id            → 200 {}                    (admin; deletes the group)
 GET  /api/v1/admin/groups                  → {groups: [groupSummary]}  (admin; all statuses)
 POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
-     body: {userId, role: "member"|"leader"} — role=leader adds a (co-)leader; audited
+     body: {userId, role: "member"|"leader", overLimit?} — role=leader adds a (co-)leader; audited;
+     a full group needs overLimit (audited as membership.added_over_limit)
+GET  /api/v1/admin/pending-returns         → {returns: [{group: groupSummary, member}]}  (admin; DEC-39)
 DELETE /api/v1/admin/groups/:id/members/:userId → 200 {members}      (admin; same rules as the leader route)
 GET  /api/v1/admin/users                   → {users: [user]}           (admin)
 GET  /api/v1/admin/users/:id/sole-leader-groups → {groups: [{id, name, status, candidates: [{id, name, admin}]}]}  (admin; DEC-36)
@@ -252,7 +265,7 @@ their sessions (`session_version`). A disabled admin has no admin powers. `PUT /
 
 Rosters (`members` in group detail, `GET /groups/:id/members`, admin rosters) include `admin: true` for church admins, so the SPA can label them and hide Remove (DEC-38).
 
-Disabling (DEC-38): the account's memberships and RSVPs are kept, hidden from rosters, and left out of member counts, RSVP counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Enabling it again restores them as plain member, writing `membership.restored` per membership and `user.enabled`. Deleting still ends memberships.
+Disabling (DEC-38): the account's memberships and RSVPs are kept, hidden from rosters, and left out of member counts, RSVP counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Enabling it again restores them as plain member, or as `pending_return` in a group at its member limit (DEC-39), writing `membership.restored` (with the resulting status) per membership and `user.enabled`. Deleting still ends memberships.
 
 Removing a member (DEC-35): leaders remove people from groups they lead,
 co-leaders included, but never an admin (they can't demote an admin

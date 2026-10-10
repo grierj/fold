@@ -78,6 +78,8 @@ Postgres (`login_throttles`, see `api_auth.go`).
 - Membership rules live in `internal/policy`: removal (`CanRemoveMember`),
   handoff (`CanBeSuccessor`), role changes. A removed membership keeps its
   row with `status=removed` (DEC-35).
+  Adding anyone to a group goes through `changeRole`, which locks the
+  group row and checks `policy.GroupHasRoom` (member limit, DEC-39).
 - Migrations: every schema change is a **new** goose file in `migrations/`
   (`NNNNN_name.sql`); never edit an old one. Add the model change in the
   same PR and list new models in `models.All()`. `AutoMigrate` never runs

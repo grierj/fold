@@ -33,6 +33,7 @@ export function NewGroup() {
       imageUrl: data.coverFile ? "" : data.imageUrl,
       location: data.location,
       visibility: data.visibility,
+      memberLimit: data.memberLimit,
     });
     if (data.coverFile) {
       await GroupCover.upload(group.id, data.coverFile);
