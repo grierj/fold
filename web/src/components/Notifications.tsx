@@ -1,29 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
+import { useAuth } from "../auth";
 import { Notifications as NotificationsApi } from "../api";
 import type { Notification } from "../types";
 
-const DISMISSED_KEY = "fold-dismissed-notifications";
+// Dismissals are per user, and logout clears them with the rest of storage.
+function dismissedKey(userId: number): string {
+  return `fold-dismissed-notifications:${userId}`;
+}
 
-function dismissedIds(): Set<string> {
+function dismissedIds(key: string): Set<string> {
   try {
-    return new Set(JSON.parse(localStorage.getItem(DISMISSED_KEY) ?? "[]"));
+    return new Set(JSON.parse(localStorage.getItem(key) ?? "[]"));
   } catch {
     return new Set();
   }
 }
 
-function notifId(n: Notification): string {
-  return `${n.type}:${n.link}:${n.title}`;
-}
-
 // NotificationBell: derived notifications (approvals for admins, upcoming
-// events). Dismissals are tracked in localStorage; the list itself is
-// recomputed server-side on each load.
+// events). The list is recomputed server-side on every load: on mount (each
+// sign-in mounts a fresh bell), on navigation, when the window regains
+// focus, and every few minutes. Each notice has a server id that changes
+// when it is about something new, so a dismissal never hides a later notice.
 export function NotificationBell() {
   const [items, setItems] = useState<Notification[]>([]);
   const [open, setOpen] = useState(false);
-  const [dismissed, setDismissed] = useState<Set<string>>(dismissedIds);
+  const { user } = useAuth();
+  const key = dismissedKey(user?.id ?? 0);
+  const { pathname } = useLocation();
+  const [dismissed, setDismissed] = useState<Set<string>>(() => dismissedIds(key));
   const boxRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(async () => {
@@ -37,8 +42,20 @@ export function NotificationBell() {
 
   useEffect(() => {
     load();
+  }, [load, pathname]);
+
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === "visible") load();
+    }
+    window.addEventListener("focus", load);
+    document.addEventListener("visibilitychange", onVisible);
     const t = setInterval(load, 5 * 60 * 1000);
-    return () => clearInterval(t);
+    return () => {
+      window.removeEventListener("focus", load);
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(t);
+    };
   }, [load]);
 
   useEffect(() => {
@@ -49,14 +66,14 @@ export function NotificationBell() {
     return () => document.removeEventListener("click", onDocClick);
   }, []);
 
-  const visible = items.filter((n) => !dismissed.has(notifId(n)));
+  const visible = items.filter((n) => !dismissed.has(n.id));
 
   function dismiss(n: Notification) {
-    const id = notifId(n);
+    const id = n.id;
     setDismissed((prev) => {
       const next = new Set(prev);
       next.add(id);
-      localStorage.setItem(DISMISSED_KEY, JSON.stringify([...next]));
+      localStorage.setItem(key, JSON.stringify([...next]));
       return next;
     });
   }
@@ -95,7 +112,7 @@ export function NotificationBell() {
           ) : (
             <ul className="divide-y divide-gray-100 max-h-96 overflow-y-auto">
               {visible.map((n) => (
-                <li key={notifId(n)}>
+                <li key={n.id}>
                   <Link
                     to={n.link}
                     onClick={() => {

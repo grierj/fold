@@ -161,8 +161,8 @@ function GroupForm({
     >
       {error && <div className="text-red-600 text-sm">{error}</div>}
       <div>
-        <label className="label">Group name</label>
-        <input className="input" value={name} onChange={(e) => setName(e.target.value)} required />
+        <label className="label" htmlFor="group-name">Group name</label>
+        <input id="group-name" className="input" value={name} onChange={(e) => setName(e.target.value)} required />
       </div>
       <div>
         <label className="label">Description</label>

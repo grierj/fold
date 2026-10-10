@@ -191,6 +191,7 @@ func (a *App) serveSPA() gin.HandlerFunc {
 	}
 	return func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			c.Header("Cache-Control", "no-store")
 			jsonError(c, http.StatusNotFound, "not found")
 			return
 		}
@@ -220,8 +221,10 @@ func (a *App) serveSPA() gin.HandlerFunc {
 			return
 		}
 		if path == "index.html" {
-			// Revalidate the shell so a rebuilt image is what the browser runs.
-			c.Header("Cache-Control", "no-cache")
+			// no-store: always fetch the shell fresh (a rebuilt image is what
+			// runs), and keep the page out of the back/forward cache, so going
+			// back after logout never shows the previous session's screen.
+			c.Header("Cache-Control", "no-store")
 		} else if strings.HasPrefix(path, "assets/") {
 			c.Header("Cache-Control", "public, max-age=31536000, immutable")
 		}

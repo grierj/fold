@@ -50,6 +50,7 @@ export interface Member {
 }
 
 export interface Notification {
+  id: string;
   type: "approval" | "event" | "leadership";
   title: string;
   body: string;

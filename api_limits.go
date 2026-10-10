@@ -128,6 +128,7 @@ func (a *App) pendingReturnNotices(u *models.User) []notificationJSON {
 	out := []notificationJSON{}
 	for _, p := range a.pendingReturns(u) {
 		out = append(out, notificationJSON{
+			ID:    fmt.Sprintf("return:%d:%d", p.Group.ID, p.Member.ID),
 			Type:  "approval",
 			Title: fmt.Sprintf("%s is waiting to return to %s", p.Member.Name, p.Group.Name),
 			Body:  "Their account was turned back on while the group was full. Approve or decline on the roster.",

@@ -17,6 +17,11 @@ SPA boot flow: `GET /auth/csrf` → store token → send as header on all
 writes. 401 responses are JSON `{"error":"unauthorized"}` — the SPA
 redirects to login itself (no server redirects except `/setup`).
 
+Every API response carries `Cache-Control: no-store` (so does the SPA
+shell), so neither the HTTP cache nor back/forward replays a session
+after logout. `POST /auth/logout` expires the session cookie; the SPA then
+clears local/session storage and reloads `/`.
+
 ## Endpoints
 
 ### Auth
@@ -289,8 +294,12 @@ with `reason` `account_deleted` or `account_disabled` and
 ### Notifications
 
 ```
-GET /api/v1/notifications → {notifications: [{type, title, body, link}]}  (auth)
+GET /api/v1/notifications → {notifications: [{id, type, title, body, link}]}  (auth)
 ```
+
+`id` names the exact notice and changes when it is about something new
+(e.g. another pending group), so a dismissal never hides a later notice.
+The SPA refetches on sign-in, navigation, window focus and every 5 minutes.
 
 Derived, not stored: `approval` (admins, when groups await approval or a
 leader has asked for a group to be deleted) and `event` (meetings in your
