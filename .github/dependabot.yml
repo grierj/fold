@@ -10,9 +10,11 @@ updates:
     directory: /web
     schedule:
       interval: weekly
+    # Minor and patch bumps come grouped; each major gets its own PR, so a
+    # framework migration never holds up safe updates.
     groups:
-      web:
-        patterns: ["*"]
+      web-minor-patch:
+        update-types: ["minor", "patch"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -21,3 +23,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Node LTS only: skip odd-numbered (non-LTS) releases.
+    ignore:
+      - dependency-name: node
+        versions: ["23.x", "25.x", "27.x", "29.x"]
