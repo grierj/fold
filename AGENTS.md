@@ -107,7 +107,8 @@ Postgres (`login_throttles`, see `api_auth.go`).
   `POST /u/unsubscribe/:token` (`csrfExemptRoutes`; a test keeps that list
   exact). Only `FOLD_TRUSTED_PROXIES` may set `X-Forwarded-For`.
 
-- UI reference is **Meetup** — familiar beats original. Copy its patterns
+- UI reference is **Meetup** (primary), with ChurchTrac as the secondary
+  reference for church-admin screens Meetup lacks. Familiar beats original. Copy its patterns
   (group cards, date badges, join buttons); tweak later.
 - Commit messages: short imperative summary; PRs describe behavior change.
 - Setup/form UX: state every input requirement next to the field (e.g.

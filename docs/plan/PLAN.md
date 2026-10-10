@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-40) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
+Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-42) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
 Repo: https://github.com/grierj/fold (first read at commit `aa992e2`; re-checked at `e7c0e8f`, "Merge pull request #7 from grierj/admin-invite-and-rename", merged 2026-10-09 4:31 PM MT).
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions (nothing is open).
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Do one milestone per work session and one PR per milestone. Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-40) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-42) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -45,7 +45,7 @@ How to use this document:
 4. Few external dependencies. Only email, the host, and (for texting) SMS are needed outside the box. The only database is PostgreSQL, run by Docker Compose in production, development, and tests (DEC-1, DEC-24). Everything else (object storage, video, DNS automation) is optional.
 5. Every external dependency can be set up by API: by the app's setup wizard, by the `fold` CLI, or by an AI agent following `AGENTS.md`. A power user can still do every step by hand.
 6. Every proprietary dependency sits behind an adapter interface. Build one real adapter per kind first (plus the `devoutbox` for tests), and add the second when it is needed. By v1.0 each kind has at least two working options (for example SMTP and Postmark for email; Telnyx and Twilio for SMS).
-7. Familiar UI. Copy Meetup patterns (group cards, date badges, RSVP buttons), as the repo already does.
+7. Familiar UI. Meetup is the primary UI and design reference: copy its patterns (group cards, date badges, RSVP buttons), as the repo already does. ChurchTrac is the secondary reference, for church-admin screens Meetup has no equivalent for (people and households, rooms, attendance, consent, setup).
 
 ### Non-goals
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (DEC-1 to DEC-40) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (DEC-1 to DEC-42) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -135,7 +135,7 @@ Features already built:
 - Meetings belong to a group, with an optional RRULE. Single instances can be cancelled with `MeetingException`. Per-instance RSVPs (going / maybe / declined), addressed by `(meetingId, date)`.
 - Profiles with avatar upload or fetch-from-URL (SSRF-guarded), focal points, and client-side image compression.
 - Admin panel: pending groups, deletion requests, users, memberships.
-- Derived notifications (not stored), dismissed in the browser's localStorage.
+- Derived notifications (not stored), dismissed in the browser's localStorage. Logout clears that storage, so dismissals reset on the next sign-in; DEC-42 replaces this with stored per-user state.
 
 ### 3.2 Goals already written in the repo
 
@@ -147,7 +147,7 @@ From `AGENTS.md` and `README.md`:
 - Postgres-only features go behind flags so SQLite dev keeps working. **Superseded by DEC-1 and DEC-24**: PostgreSQL everywhere, so no flags are needed.
 - OIDC (Microsoft Entra ID and Google) later, behind an `AuthProvider` seam.
 - The group approval workflow is core and must survive refactors.
-- Meetup is the UI reference.
+- Meetup is the primary UI and design reference, and ChurchTrac is the secondary one (Grier, Oct 10, 2026).
 - SMS is a hard requirement for "Phase 2". It should sit behind a `Notifier` interface in `internal/notify/`, broadcast-only in v1, with replies routed to the group leader. **Corrected**: the line "Group SMS via Twilio is a hard requirement" (still in `AGENTS.md` at `e7c0e8f`) was a mistake. SMS goes through provider adapters with Telnyx as the default and Twilio as the second adapter, none required (C13).
 - Versioned SQL migrations in `migrations/` once the first destructive change is needed. **Now** (C1): a clean baseline in M0.1.
 
@@ -945,6 +945,7 @@ Implementation note for agents: keep the counting-usage test in one function, `r
   - Session revocation: changing a password, email, or role (including becoming an admin), turning on 2FA, or disabling an account bumps `session_version`, which ends the person's other sessions.
   - TOTP two-factor sign-in, required for every admin from v0.5 (M4.9), with one-time recovery codes.
   - Login throttling by email and by client IP (DEC-23), stored in Postgres so it survives restarts.
+  - Known gap, deliberately not built (DEC-41): sessions live in a signed cookie, so logout deletes the browser's cookie but a copy taken before logout stays valid until it expires (7 days) or `session_version` is bumped. Server-side session storage or a "log out everywhere" control would close this. Revisit if the threat model changes.
   - Rate limits on public endpoints (guest signup, account requests), with a hidden honeypot field instead of a third-party CAPTCHA. Limits apply per IP and per target, with these defaults (admins can change them):
     - guest verification emails: 3 per address per hour and 10 per day, as well as per IP (M1.4);
     - leader invitations: 20 per leader per day (M1.2);
@@ -2061,6 +2062,8 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-38 | **Admins are labeled on rosters, and disabled accounts keep their memberships** (Grier, Oct 9, 2026). (A) Rosters and any member list a leader sees mark church admins with an "Admin" label, and leaders never get a Remove button for them; the members API exposes an `admin` flag, and the server still refuses (DEC-35). (B) Disabling an account no longer ends its memberships or registrations. They stay but are hidden from rosters and attendee lists, excluded from messaging, and never counted toward any limit (group size, event capacity, waitlist math, attendee counts). Leadership still goes to the chosen successor at disable time (DEC-36), so any leader role becomes plain member. On re-enable, memberships and registrations come back as plain member and attendee, never leader. If restoring one would push a group or event over a limit, it becomes `pending_return` instead: it doesn't count toward limits, a leader of that group or event (or an admin) approves or declines it (decline removes it), and approving over the limit is an explicit choice that follows the waitlist rules (5.4) when a waitlist exists. Restore, approve, and decline are audited, and leaders and admins get an in-app notice for pending returns. Deletion still ends memberships. | 5.3, 5.4, 6, 10.1, M0.3b, M1.5, M1.8, M3.5 |
 | DEC-39 | **Groups get an optional member limit** (Grier, Oct 9, 2026), because recurring classes meet in rooms with a maximum capacity. It's expected to be rarely used. `Group.member_limit` is a nullable positive int (null, the default, is unlimited), set by the group's leaders or an admin. Only `active` memberships of non-disabled accounts count, leaders included. A full group refuses self-join ("This group is full"); groups have no waitlist. A leader or admin goes over the limit only by explicit choice (an API override flag; the SPA confirms), and that add is audited; accepting an invitation follows the same rule as the leader's add. Lowering the limit below the count is allowed: existing members stay and joins are blocked until the count drops. Leaders and admins see the count and limit. This makes DEC-38's `pending_return` real for groups: re-enabling restores each membership as member if there is room, otherwise `pending_return`, which leaders of that group and admins approve (over the limit) or decline (removed), audited with an in-app notice. Restores are processed in a stable order with the group row locked. Events keep their own capacity (5.4). | 5.3, 5.4, 6, M0.3b, M1.2 |
 | DEC-40 | **Roster sync with church management software is a far-future consideration, not a current milestone** (Grier, Oct 10, 2026), so churches can avoid managing rosters in two places. Research: `docs/plan/research/chms-sync.md`. Direction: a new `chms` provider kind following the email/SMS adapter pattern. **One-way only, from the ChMS into Fold; Fold never writes back** (Grier, Oct 10, 2026). Import with admin review first, then scheduled or webhook-driven updates. Each field has one owner: the ChMS owns names, households and addresses; Fold owns login email, consent, roles, group memberships and registrations. Conflicts go to an admin. **Open design item:** when sync is on, ChMS-owned fields must be locked from local editing in Fold, which means turning off some local management features. Decide carefully, field by field, which features to lock and which to keep, so Fold keeps what matters (consent, minors protections, roles, groups, events, registrations, messaging) before any sync work starts. Match by email first; in a household that shares an email the primary contact becomes the account; name-only matches are suggestions only. Minors: no accounts from import, household members only, guardian links start pending admin approval (DEC-32), consent is never imported, minors' contact info and sensitive data are not imported. Build order when it happens: generic CSV import (covers ChurchTrac, Realm, PowerChurch and others with no API; reuses M4.5), then Planning Center People, then Breeze, then ChMeetings. Pushpay/CCB needs vendor app approval, which is awkward for open source. | 13.2, M4.5, M6.11, M6.15 |
+| DEC-41 | **Stolen session cookies are a known, accepted risk for now** (Grier, Oct 10, 2026). Logout deletes the browser's session cookie, clears browser storage and reloads, but sessions are stateless signed cookies, so a cookie copied before logout keeps working until it expires (7 days) or `session_version` is bumped. Server-side sessions or "log out everywhere" are purposely not being built at this time. | 10.1 |
+| DEC-42 | **Notification dismissals are stored per user on the server** (Grier, Oct 10, 2026). Browser-only dismissals reset on every sign-in, which is a poor long-term experience. Quill is researching Knock (knock.app) and alternatives, and with Illuminator will set UX/UI guidelines for notifications (`/workspace/fold-plan/research/notifications.md`). A milestone is added once that lands; Grier decides on any vendor. | 3.1, 10.1 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026).
 
