@@ -192,7 +192,7 @@ These match Grier's requirements and stay unless a milestone says otherwise. Und
 | Backups are manual `pg_dump` only | Open | M5.2 |
 | Setup asks only for the site name and admin | Open | M4.2 to M4.6 |
 | Config is env-only | Open | C8, M4.1 |
-| No frontend tests (`npm test` does not exist) | Open | M0.4 |
+| No frontend tests (`npm test` does not exist) | Resolved: Vitest and Playwright | M0.4 |
 
 There is nothing to upgrade from: PR #7's database and cookie renames need no upgrade note, because no church runs Fold (DEC-22). `docs/UPGRADING.md` starts with the first release churches can run (v0.5).
 
@@ -1545,8 +1545,8 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Depends on: M0.1
 - Scope: add Vitest (with Testing Library) and an `npm test` script to `web/`; add Playwright with one smoke test (sign in, see the groups page) under `web/e2e`; `make e2e`; a CI job that installs Chromium and runs both.
 - Acceptance:
-  - [ ] `npm test` runs at least one real component test
-  - [ ] `make e2e` passes locally against the dev stack, and the CI job passes
+  - [x] `npm test` runs at least one real component test
+  - [x] `make e2e` passes locally against the dev stack, and the CI job passes
 - Tests: the new ones.
 
 ### 14.4 Phase 1: Events and people

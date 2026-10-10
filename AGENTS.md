@@ -89,6 +89,13 @@ Postgres (`login_throttles`, see `api_auth.go`).
   dev database if unset). Handler tests use `httptest` and the package's
   Postgres database from `internal/testdb` (see `auth_test.go` for the
   cookie-jar + CSRF-dance pattern — reuse it).
+- Frontend: `cd web && npm test` runs Vitest component tests
+  (`src/**/*.test.tsx`, jsdom + Testing Library). `make e2e` runs Playwright
+  (Chromium only) in `web/e2e` against the real binary on a fresh
+  `<db>_e2e` Postgres database; `seed.setup.ts` creates the data the specs
+  share, so specs run one at a time. Assert on roles and visible text, and
+  accept `confirm()` dialogs with `page.on("dialog")`. First run:
+  `cd web && npx playwright install chromium`.
 - `make lint` (`go vet` + `gofmt`) must be clean before any PR.
 - Permissions: every check is a pure function in `internal/policy` (section 6
   of the plan) with table tests. Handlers load facts and call it; never
@@ -140,6 +147,8 @@ Postgres (`login_throttles`, see `api_auth.go`).
 make dev      # dev Postgres (deploy/docker-compose.dev.yml) + Go server + Vite
 make test     # go test ./... against DATABASE_URL (starts the dev DB if unset)
 make lint     # go vet + gofmt
+make e2e      # Playwright (Chromium) on a fresh Postgres database
+cd web && npm test        # Vitest component tests
 cd web && npm run build   # outputs to web/dist (embedded)
 ```
 
