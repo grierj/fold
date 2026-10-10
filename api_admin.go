@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
+	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -130,14 +130,11 @@ func (a *App) adminTargetUser(c *gin.Context) (*models.User, bool) {
 	return &u, true
 }
 
-// lastAdmin reports whether u is the only remaining admin.
-func (a *App) lastAdmin(u *models.User) bool {
-	if !u.IsAdmin() {
-		return false
-	}
+// adminCount counts admin accounts.
+func (a *App) adminCount() int {
 	var n int64
 	a.DB.Model(&models.User{}).Where("role = ?", models.RoleAdmin).Count(&n)
-	return n <= 1
+	return int(n)
 }
 
 func (a *App) apiAdminUpdateUser(c *gin.Context) {
@@ -188,15 +185,13 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, "role must be admin or member")
 			return
 		}
-		if u.IsAdmin() && role != models.RoleAdmin {
+		if role != models.RoleAdmin && !policy.CanDemoteOrDelete(asPerson(me), asPerson(u), a.adminCount()) {
+			msg := "cannot demote the last admin"
 			if u.ID == me.ID {
-				jsonError(c, http.StatusBadRequest, "you cannot demote yourself")
-				return
+				msg = "you cannot demote yourself"
 			}
-			if a.lastAdmin(u) {
-				jsonError(c, http.StatusBadRequest, "cannot demote the last admin")
-				return
-			}
+			jsonError(c, http.StatusBadRequest, msg)
+			return
 		}
 		updates["role"] = role
 	}
@@ -217,12 +212,12 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
-	if u.ID == me.ID {
-		jsonError(c, http.StatusBadRequest, "you cannot delete your own account")
-		return
-	}
-	if a.lastAdmin(u) {
-		jsonError(c, http.StatusBadRequest, "cannot delete the last admin")
+	if !policy.CanDemoteOrDelete(asPerson(me), asPerson(u), a.adminCount()) {
+		msg := "cannot delete the last admin"
+		if u.ID == me.ID {
+			msg = "you cannot delete your own account"
+		}
+		jsonError(c, http.StatusBadRequest, msg)
 		return
 	}
 	// Soft delete (DeletedAt). Their memberships stay for history; the
@@ -300,29 +295,25 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "role must be leader or member")
 		return
 	}
-	m := models.Membership{UserID: u.ID, GroupID: g.ID}
-	if err := a.DB.Where("user_id = ? AND group_id = ?", u.ID, g.ID).
-		Attrs(models.Membership{Role: role, Status: "active", JoinedAt: time.Now().UTC()}).
-		FirstOrCreate(&m).Error; err != nil {
+	me := apiUser(c)
+	err := a.changeRole(c, &g, u.ID, role, func(actor, t policy.Rel, leaders int) bool {
+		// Admins may add someone straight in with either role.
+		return policy.CanChangeRole(asPerson(me), actor, asPerson(&u),
+			policy.Rel{Member: true, Leader: t.Leader}, role == models.MembershipLeader, leaders)
+	})
+	switch err {
+	case nil:
+	case errRoleRefused:
+		jsonError(c, http.StatusBadRequest,
+			"only adults can be leaders, and a group must keep at least one leader")
+		return
+	default:
 		jsonError(c, http.StatusInternalServerError, "could not add member")
 		return
 	}
-	// Keep an explicit role change in sync (FirstOrCreate won't update).
-	if m.Role != role || m.Status != "active" {
-		a.DB.Model(&m).Updates(map[string]interface{}{"role": role, "status": "active"})
-	}
-	if role == models.MembershipLeader && g.LeaderID != u.ID {
-		// Reassigning leadership: demote the previous leader's membership.
-		a.DB.Model(&models.Membership{}).
-			Where("group_id = ? AND user_id = ? AND role = ?", g.ID, g.LeaderID, models.MembershipLeader).
-			Update("role", models.MembershipMember)
-		g.LeaderID = u.ID
-		g.DeletionRequested = false
-		if err := a.DB.Save(&g).Error; err != nil {
-			jsonError(c, http.StatusInternalServerError, "could not reassign leader")
-			return
-		}
-	} else if g.DeletionRequested && u.ID != g.LeaderID {
+	var m models.Membership
+	a.DB.Where("user_id = ? AND group_id = ?", u.ID, g.ID).First(&m)
+	if g.DeletionRequested && memberCount(a.DB, g.ID) > 1 {
 		a.DB.Model(&models.Group{}).Where("id = ?", g.ID).Update("deletion_requested", false)
 	}
 	c.JSON(http.StatusOK, gin.H{"membership": gin.H{
@@ -338,12 +329,20 @@ func (a *App) apiAdminRemoveMember(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "group not found")
 		return
 	}
-	if uint(uid) == g.LeaderID {
+	me := apiUser(c)
+	err := a.changeRole(c, &g, uint(uid), "", func(actor, t policy.Rel, leaders int) bool {
+		return policy.CanRemoveMember(asPerson(me), actor, t, leaders)
+	})
+	switch err {
+	case nil:
+	case errRoleRefused:
 		jsonError(c, http.StatusBadRequest,
-			"cannot remove the group leader — assign a new leader first")
+			"cannot remove the only leader — make someone else a leader first")
+		return
+	default:
+		jsonError(c, http.StatusInternalServerError, "could not remove member")
 		return
 	}
-	a.DB.Where("user_id = ? AND group_id = ?", uid, id).Delete(&models.Membership{})
 	c.JSON(http.StatusOK, gin.H{})
 }
 

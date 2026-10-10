@@ -24,6 +24,8 @@ services:
       DATABASE_URL: postgres://church:${DB_PASSWORD}@db:5432/fold?sslmode=disable
       COOKIE_SECURE: "true" # TLS is terminated at Caddy; browsers still see https
       SITE_URL: https://${DOMAIN:?Set DOMAIN in .env}
+      # Only Caddy, on the fixed subnet below, may set X-Forwarded-For (C17).
+      FOLD_TRUSTED_PROXIES: ${FOLD_TRUSTED_PROXIES:-172.30.0.0/24}
     volumes:
       # Avatars and cover photos. A named volume survives `up --build`;
       # the image's anonymous VOLUME /data does not.
@@ -53,6 +55,13 @@ services:
       - caddyconfig:/config
     environment:
       DOMAIN: ${DOMAIN}
+
+# One network with a fixed subnet, so the app can trust exactly its proxy.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
 
 volumes:
   pgdata:

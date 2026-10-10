@@ -56,8 +56,7 @@ export function GroupCard({
           <h3 className="font-bold text-lg leading-snug">{group.name}</h3>
           {(group.status === "pending" ||
             group.status === "archived" ||
-            group.visibility === "private" ||
-            group.inviteOnly) && (
+            group.visibility !== "public") && (
             <div className="flex flex-wrap gap-1 mt-1">
               {group.status === "pending" && (
                 <span className="text-xs font-bold uppercase tracking-wide text-yellow-800">
@@ -70,7 +69,7 @@ export function GroupCard({
               {group.visibility === "private" && (
                 <span className="text-xs font-bold uppercase tracking-wide text-gray-500">Private</span>
               )}
-              {group.inviteOnly && (
+              {group.visibility === "invite_only" && (
                 <span className="inline-block text-xs font-bold uppercase tracking-wide bg-gray-900 text-white rounded-full px-2 py-0.5">
                   Invite only
                 </span>

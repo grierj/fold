@@ -78,7 +78,7 @@ S3-replacement seam.
 ```
 GET  /api/v1/groups?search=&tag=          → {groups: [groupSummary]}
 GET  /api/v1/me/groups                    → {groups: [groupSummary]}  (auth; groups I belong to, any status)
-POST /api/v1/groups                       → 201 {group}   (auth; status=pending)
+POST /api/v1/groups                       → 201 {group}   (auth, not teens; pending, or active when an admin creates it)
 GET  /api/v1/groups/:id                   → {group, members, upcomingMeetings, canManage, isMember}
 PUT  /api/v1/groups/:id                   → 200 {group}   (group leader or admin)
 POST   /api/v1/groups/:id/cover           → 200 {imageUrl} (group leader or admin; multipart, field "cover")
@@ -88,31 +88,36 @@ DELETE /api/v1/groups/:id/cover           → 200 {}         (group leader or ad
 `tag` may be repeated (`tag=choir&tag=youth`). Every value must match, so
 the filters narrow together. A blank `tag` is ignored.
 
+Every permission check lives in `internal/policy` (PLAN.md section 6).
+Leadership comes only from membership roles (`role: "leader"`); a group
+may have several leaders. "Leader" below means any of them.
+
 The directory lists active groups the caller is allowed to see. Logged-out
-visitors see public groups. Signed-in users also see private groups.
-Invite-only groups are left out unless the caller leads the group, is
-already a member, or is an admin. Opening a group follows the same rule;
-anyone else gets 404. Pending and archived groups stay limited to the
-leader and admins.
+visitors see `public` groups. Signed-in users also see `private` groups.
+`invite_only` groups are left out unless the caller is a member (leaders
+are members) or an admin. Opening a group follows the same rule, and so
+does every route under `/groups/:id`: anyone else gets 404, never 403.
+Pending and archived groups stay limited to their leaders and admins.
 
 `groupSummary`: `{id, name, description, tags[], imageUrl, coverFocalX,
 coverFocalY, location, leaderName, memberCount, nextMeetingAt, status,
-leaderId, visibility, inviteOnly, deletionRequested}`
+leaderId, visibility, deletionRequested}`. `leaderId` and `leaderName` are the
+displayed primary contact only (one of the leaders); they grant nothing.
 
 `group` (detail response): `{group: groupSummary, members: [...],
 upcomingMeetings: [meetingInstance], canManage: bool, isMember: bool}`.
-`members` is populated for logged-in users only. `canManage` is true for the
-group's leader and admins. Roster member: `{id, name, avatarUrl, role,
+`members` is filled only for the group's members and admins (people see each
+other only inside groups they share); otherwise it is `[]`. `canManage` is
+true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, role,
 joinedAt}` — `name` is the member's display name.
 
 Create/update body: `{name, description, tags[], imageUrl, location,
-coverFocal: {x, y}, visibility, inviteOnly}`.
-`visibility` is `public` (the default) or `private`. `inviteOnly` is only
-valid when visibility is `private`; a public invite-only group is rejected
-with 400. On update, omit either field to leave it unchanged. Sending
-`visibility: "public"` while the group is still invite-only fails until
-`inviteOnly` is also false.
-New groups enter `pending` until approved (the approval workflow survives).
+coverFocal: {x, y}, visibility}`.
+`visibility` is `public` (the default), `private`, or `invite_only`;
+anything else is rejected with 400. On update, omit it to leave it
+unchanged.
+New groups enter `pending` until an admin approves them (the approval
+workflow survives); groups an admin creates start `active`.
 Name ≤ 200 characters, description ≤ 5000, location ≤ 300, joined tags ≤ 500.
 Update rejects an empty name. `status` is only `pending`, `active`, or
 `archived`; a leader may set `archived`, and only an admin may set another
@@ -122,21 +127,30 @@ status.
 
 ```
 POST /api/v1/groups/:id/join    → 200 {membership}  (auth; idempotent)
-POST /api/v1/groups/:id/leave   → 200 {}            (auth; 400 if you are the leader)
+POST /api/v1/groups/:id/leave   → 200 {}            (auth; 400 if you are the only leader)
 POST /api/v1/groups/:id/members → 200 {membership}  (auth; leader or admin)
      body: {username} — adds that account as a member
-POST /api/v1/groups/:id/leader  → 200 {group}      (auth; leader or admin)
-     body: {userId} — userId must already be an active member
-POST /api/v1/groups/:id/deletion-request → 200 {group}  (auth; the leader only)
+PUT  /api/v1/groups/:id/members/:userId/role → 200 {members: [...]}  (auth; leader or admin)
+     body: {role: "leader"|"member"} — userId must already be an active member
+POST /api/v1/groups/:id/deletion-request → 200 {group}  (auth; a leader)
 DELETE /api/v1/groups/:id/deletion-request → 200 {}    (auth; leader or admin)
-GET  /api/v1/groups/:id/members → {members: [...]}  (auth; hidden when you cannot see the group)
+GET  /api/v1/groups/:id/members → {members: [...]}  (auth; members and admins; 404 if you cannot see the group, 403 if you are not in it)
 ```
 
 Join returns 404 when the group is not visible, and 403 when it is
 invite-only and the caller is not already a member. A deletion request is
-accepted only when the leader has no other active members. The leader is
-always a member, so “no members” means nobody else is left. Adding a member
-or transferring leadership clears a pending request. `DELETE` on the
+accepted only from a leader who is the group's only active member. Adding
+a member clears a pending request.
+
+Role changes: only adults can be made leaders (teen accounts arrive in
+M1.10 and are refused), and a group never loses its last leader: demoting,
+removing, or leaving as the only leader is a 400. There is no admin
+approval step for a leader promoting a co-leader (DEC-31). Instead every
+change that makes or removes a leader (including leaving and admin
+add/remove) writes a `membership.role_changed` audit row (actor, group,
+person, old and new role, IP), and admins get a `leadership` notification.
+When the primary contact stops leading, `leaderId` moves to the
+earliest-joined remaining leader. `DELETE` on the
 request withdraws it without deleting the group.
 
 `membership`: `{id, userId, user: {id, name}, groupId, role: "leader"|"member",
@@ -201,8 +215,8 @@ POST /api/v1/admin/groups/:id/reject-deletion → 200 {}               (admin; c
 DELETE /api/v1/admin/groups/:id            → 200 {}                    (admin; deletes the group)
 GET  /api/v1/admin/groups                  → {groups: [groupSummary]}  (admin; all statuses)
 POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
-     body: {userId, role: "member"|"leader"} — role=leader reassigns leadership
-DELETE /api/v1/admin/groups/:id/members/:userId → 200 {}               (admin; not the leader)
+     body: {userId, role: "member"|"leader"} — role=leader adds a (co-)leader; audited
+DELETE /api/v1/admin/groups/:id/members/:userId → 200 {}               (admin; 400 for the only leader)
 GET  /api/v1/admin/users                   → {users: [user]}           (admin)
 POST /api/v1/admin/users                    → 201 {user}                (admin)
      body: {username, password (≥10 chars), role, name?, displayName?, email?, phone?}
@@ -223,7 +237,8 @@ GET /api/v1/notifications → {notifications: [{type, title, body, link}]}  (aut
 
 Derived, not stored: `approval` (admins, when groups await approval or a
 leader has asked for a group to be deleted) and `event` (meetings in your
-groups in the next 7 days, max 10). The client tracks dismissed items
+groups in the next 7 days, max 10), and `leadership` (admins: someone else
+made or removed a group leader in the last 14 days, from the audit log). The client tracks dismissed items
 locally. Admin `DELETE /admin/groups/:id` removes a group immediately,
 with or without a deletion request, and whether or not it still has members.
 

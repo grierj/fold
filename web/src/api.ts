@@ -72,6 +72,7 @@ import type {
   Member,
   Notification,
   User,
+  Visibility,
 } from "./types";
 
 export const Auth = {
@@ -99,8 +100,7 @@ export const Groups = {
     tags: string[];
     imageUrl: string;
     location: string;
-    visibility: "public" | "private";
-    inviteOnly: boolean;
+    visibility: Visibility;
   }) => api<{ group: GroupSummary }>("/groups", { method: "POST", body: data }),
   update: (
     id: number | string,
@@ -111,14 +111,14 @@ export const Groups = {
       imageUrl?: string;
       location?: string;
       coverFocal?: { x: number; y: number };
-      visibility?: "public" | "private";
-      inviteOnly?: boolean;
+      visibility?: Visibility;
     }
   ) => api<{ group: GroupSummary }>(`/groups/${id}`, { method: "PUT", body: data }),
   join: (id: number | string) => api<unknown>(`/groups/${id}/join`, { method: "POST" }),
   leave: (id: number | string) => api<unknown>(`/groups/${id}/leave`, { method: "POST" }),
-  transferLeader: (id: number | string, userId: number) =>
-    api<{ group: GroupSummary }>(`/groups/${id}/leader`, { method: "POST", body: { userId } }),
+  // Make a member a leader, or a leader a member again (audited; admins are notified).
+  setRole: (id: number | string, userId: number, role: "leader" | "member") =>
+    api<{ members: Member[] }>(`/groups/${id}/members/${userId}/role`, { method: "PUT", body: { role } }),
   addMember: (id: number | string, username: string) =>
     api<unknown>(`/groups/${id}/members`, { method: "POST", body: { username } }),
   requestDeletion: (id: number | string) =>

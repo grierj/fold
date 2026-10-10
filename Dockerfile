@@ -14,8 +14,8 @@ RUN go mod download
 COPY . .
 # Overlay the freshly built SPA so go:embed picks it up.
 COPY --from=webbuild /web/dist/ ./web/dist/
-# Pure-Go SQLite driver (modernc via glebarez) => no CGO needed.
-RUN CGO_ENABLED=0 go build -trimpath -o /out/fold .
+ARG FOLD_VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.version=${FOLD_VERSION}" -o /out/fold .
 # Seed the data dir so the named volume inherits nonroot ownership on
 # first mount (distroless nonroot is 65532:65532; there is no shell to
 # chown with in the final stage).
@@ -34,7 +34,6 @@ COPY --from=build /src/static /static
 COPY --from=build --chown=65532:65532 /data /data
 ENV PORT=8080 \
     APP_ENV=prod \
-    SQLITE_PATH=/data/fold.db \
     UPLOAD_DIR=/data/uploads
 VOLUME /data
 EXPOSE 8080

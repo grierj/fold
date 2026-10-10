@@ -101,3 +101,9 @@ func isSafeMethod(m string) bool {
 	}
 	return false
 }
+
+// csrfExemptRoutes are the only state-changing routes registered outside
+// csrfMiddleware (setupRouter). TestCSRFExemptRoutesAreExact keeps it honest.
+var csrfExemptRoutes = []string{"/hooks/*path", "POST /u/unsubscribe/:token"}
+
+func notFound(c *gin.Context) { jsonError(c, http.StatusNotFound, "not found") }

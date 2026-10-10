@@ -4,8 +4,8 @@ Claim a milestone here (in its own PR or commit) before starting it.
 
 | Milestone | Status | Owner | Branch/PR |
 | --- | --- | --- | --- |
-| M0.1 PostgreSQL only, clean baseline, CLI, request plumbing | unclaimed | | |
-| M0.2 Visibility enum, policy package, leadership by membership, audit log | unclaimed | | |
+| M0.1 PostgreSQL only, clean baseline, CLI, request plumbing | done (PR open) | Codex | `m0.1-postgres-baseline` |
+| M0.2 Visibility enum, policy package, leadership by membership, audit log | done (PR open) | Codex | `m0.2-policy-visibility-audit` |
 | M0.3 Log in by email | unclaimed | | |
 | M0.4 Frontend and browser test tooling | unclaimed | | |
 | M1.1a Events, time zones, occurrences, series edits | unclaimed | | |
