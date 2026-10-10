@@ -34,13 +34,19 @@ func (a *App) apiListGroups(c *gin.Context) {
 			like, like,
 		)
 	}
-	// Repeated tag params are AND-ed. Blank values are ignored.
-	for _, tag := range c.QueryArray("tag") {
-		tag = strings.TrimSpace(tag)
-		if tag == "" {
-			continue
+	// Repeated tag params are OR-ed: a group matches if it has any of them.
+	// Matching is exact per tag and case-insensitive ("men" never matches
+	// "women"). Blank values are ignored.
+	// Tags are stored comma-joined, so no tag contains a comma; a comma in
+	// a query value is treated as a separator too.
+	var tags []string
+	for _, tag := range strings.Split(strings.Join(c.QueryArray("tag"), ","), ",") {
+		if tag = strings.ToLower(strings.TrimSpace(tag)); tag != "" {
+			tags = append(tags, tag)
 		}
-		query = query.Where("tags LIKE ? ESCAPE '\\'", likeContains(tag))
+	}
+	if len(tags) > 0 {
+		query = query.Where(`regexp_split_to_array(lower(tags), '\s*,\s*') && string_to_array(?, ',')`, strings.Join(tags, ","))
 	}
 	query.Order("name").Find(&groups)
 

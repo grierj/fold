@@ -98,8 +98,11 @@ POST   /api/v1/groups/:id/cover           → 200 {imageUrl} (group leader or ad
 DELETE /api/v1/groups/:id/cover           → 200 {}         (group leader or admin)
 ```
 
-`tag` may be repeated (`tag=choir&tag=youth`). Every value must match, so
-the filters narrow together. A blank `tag` is ignored.
+`tag` may be repeated (`tag=choir&tag=youth`). A group matches if it has
+*any* of the given tags (OR); `search` still narrows the result. Tags match
+exactly and case-insensitively (`men` never matches `Women`). A blank `tag`
+is ignored. The list respects visibility, so it never reveals groups (or
+their tags) the viewer can't see.
 
 Every permission check lives in `internal/policy` (PLAN.md section 6).
 Leadership comes only from membership roles (`role: "leader"`); a group

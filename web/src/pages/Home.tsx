@@ -23,9 +23,9 @@ export function Home() {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
-  // Chips come from the last response that was not tag-filtered, so turning
-  // tags on does not erase the others. Selected tags stay visible even when
-  // the page was opened with them already set.
+  // Chips list every tag in the directory the viewer can see, fetched once
+  // without filters, so a link that opens with tags already selected still
+  // offers all the others. Selected tags are always shown too.
   const [tagChoices, setTagChoices] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -34,9 +34,10 @@ export function Home() {
     const current = tagsFromParams(searchParams);
     const next = new URLSearchParams(searchParams);
     next.delete("tag");
-    const turningOff = current.includes(tag);
+    const same = (t: string) => t.toLowerCase() === tag.toLowerCase();
+    const turningOff = current.some(same);
     for (const t of current) {
-      if (t !== tag) next.append("tag", t);
+      if (!same(t)) next.append("tag", t);
     }
     if (!turningOff) next.append("tag", tag);
     setSearchParams(next, { replace: true });
@@ -62,11 +63,6 @@ export function Home() {
       .then(({ groups }) => {
         if (!alive) return;
         setGroups(groups);
-        if (tags.length === 0) {
-          const s = new Set<string>();
-          for (const g of groups) for (const t of g.tags) s.add(t);
-          setTagChoices([...s].sort());
-        }
       })
       .catch((e) => {
         if (alive) setError(e instanceof Error ? e.message : "Failed to load groups");
@@ -79,7 +75,27 @@ export function Home() {
     };
   }, [debounced, tagKey]);
 
-  const chips = [...new Set([...tagChoices, ...selectedTags])].sort();
+  useEffect(() => {
+    let alive = true;
+    Groups.list()
+      .then(({ groups }) => {
+        if (alive) setTagChoices(groups.flatMap((g) => g.tags));
+      })
+      .catch(() => {
+        // Chips are a convenience; the selected ones still show.
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Tags match case-insensitively, so chips do too: one chip per tag.
+  const selectedLower = selectedTags.map((t) => t.toLowerCase());
+  const byLower = new Map<string, string>();
+  for (const t of [...selectedTags, ...tagChoices]) {
+    if (!byLower.has(t.toLowerCase())) byLower.set(t.toLowerCase(), t);
+  }
+  const chips = [...byLower.values()].sort((a, b) => a.localeCompare(b));
 
   return (
     <div>
@@ -114,7 +130,7 @@ export function Home() {
                 All
               </button>
               {chips.map((t) => {
-                const on = selectedTags.includes(t);
+                const on = selectedLower.includes(t.toLowerCase());
                 return (
                   <button
                     key={t}
@@ -131,6 +147,21 @@ export function Home() {
                 );
               })}
             </div>
+          )}
+          {selectedTags.length > 0 && (
+            <p className="mt-3 text-sm text-gray-600">
+              Showing groups tagged{" "}
+              {selectedTags.map((t, i) => (
+                <span key={t}>
+                  {i > 0 && " or "}
+                  <span className="font-semibold">{t}</span>
+                </span>
+              ))}
+              .{" "}
+              <button onClick={clearTags} className="text-brand hover:underline">
+                Clear
+              </button>
+            </p>
           )}
         </div>
       </section>
