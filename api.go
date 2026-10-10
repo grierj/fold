@@ -86,6 +86,9 @@ type memberJSON struct {
 	AvatarFocalY float64 `json:"avatarFocalY"`
 	Role         string  `json:"role"`
 	JoinedAt     string  `json:"joinedAt"`
+	// Admin marks church admins so leaders see the label and no Remove button
+	// (DEC-38); the server refuses such removals anyway (DEC-35).
+	Admin bool `json:"admin"`
 }
 
 // toMemberJSON renders a membership's user for the roster.
@@ -98,6 +101,7 @@ func (a *App) toMemberJSON(m *models.Membership) memberJSON {
 		ID: m.User.ID, Name: m.User.PublicName(), AvatarURL: avatarURL,
 		AvatarFocalX: m.User.AvatarFocalX, AvatarFocalY: m.User.AvatarFocalY,
 		Role: m.Role, JoinedAt: m.JoinedAt.Format(time.RFC3339),
+		Admin: asPerson(&m.User).Admin,
 	}
 }
 
@@ -247,12 +251,19 @@ func membershipRel(m models.Membership) policy.Rel {
 // removed (DEC-35).
 const memberRemoved = "removed"
 
+// listedUsers joins memberships or rsvps (the table name) to accounts that
+// are listed: not deleted and not disabled. A disabled account keeps its
+// memberships and RSVPs, but they are hidden and never counted (DEC-38).
+func listedUsers(table string) string {
+	return "JOIN users ON users.id = " + table + ".user_id AND users.deleted_at IS NULL AND users.status <> 'disabled'"
+}
+
 // leaderCount counts a group's active leaders whose accounts still exist
 // and aren't disabled.
 func leaderCount(db *gorm.DB, groupID uint) int {
 	var n int64
 	db.Model(&models.Membership{}).
-		Joins("JOIN users ON users.id = memberships.user_id AND users.deleted_at IS NULL AND users.status <> 'disabled'").
+		Joins(listedUsers("memberships")).
 		Where("memberships.group_id = ? AND memberships.role = ? AND memberships.status = ?",
 			groupID, models.MembershipLeader, "active").
 		Count(&n)

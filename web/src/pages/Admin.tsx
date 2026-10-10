@@ -276,6 +276,11 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
             />
             <div className="grow min-w-0">
               <span className="font-medium">{m.name}</span>{" "}
+              {m.admin && (
+                <span className="mr-1 inline-block rounded-full bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-800">
+                  Admin
+                </span>
+              )}
               <span className="text-xs text-gray-500 capitalize">· {m.role}</span>
             </div>
             <button

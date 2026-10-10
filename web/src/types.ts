@@ -44,6 +44,7 @@ export interface Member {
   avatarFocalY: number;
   role: "leader" | "member" | string;
   joinedAt: string;
+  admin: boolean; // church admin: labeled on rosters, never removable by leaders
 }
 
 export interface Notification {

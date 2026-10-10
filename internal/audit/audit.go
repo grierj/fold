@@ -31,6 +31,13 @@ const (
 	// UserDisabled: an admin disabled an account (handoff rows use reason
 	// "account_disabled").
 	UserDisabled = "user.disabled"
+
+	// UserEnabled: an admin enabled a disabled account again.
+	UserEnabled = "user.enabled"
+
+	// MemberRestored: a disabled account was enabled and one of its kept
+	// memberships came back as a plain member (DEC-38). Meta: userId, status.
+	MemberRestored = "membership.restored"
 )
 
 // Entry is one audit record. Actor is nil for system actions.

@@ -56,6 +56,12 @@ export function DeleteUserPanel({
       <p className="font-semibold text-red-800">
         {action === "delete" ? "Delete" : "Disable"} {name}? They will be signed out and can't sign in.
       </p>
+      {action === "disable" && (
+        <p className="text-gray-700">
+          Their groups and RSVPs are kept but hidden until you enable them again; they come back as a member, not a
+          leader.
+        </p>
+      )}
       {groups === null && !error && <p className="text-gray-600">Checking their groups…</p>}
       {groups && groups.length > 0 && (
         <div className="space-y-2">

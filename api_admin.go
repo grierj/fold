@@ -276,6 +276,15 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 					return err
 				}
 			}
+			if s, ok := updates["status"].(string); ok && u.Status == models.UserDisabled && s != models.UserDisabled {
+				if err := restoreMemberships(c, tx, u.ID); err != nil {
+					return err
+				}
+				if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserEnabled,
+					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+					return err
+				}
+			}
 			return tx.Model(u).Updates(updates).Error
 		})
 		if needSuccessors(c, err) {

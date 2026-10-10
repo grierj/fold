@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"fold/internal/audit"
 	"fold/models"
@@ -229,10 +230,27 @@ func TestSoleLeaderHandoff(t *testing.T) {
 					t.Fatalf("%s: leader %d, contact %d, leaders %d", g.Name, want.ID, fresh.LeaderID, leaderCount(app.DB, g.ID))
 				}
 			}
-			if membershipStatus(app, leaving, g1) != "none" {
-				t.Fatal("the departing account's memberships should end")
+			// Deletion ends memberships; disabling keeps them as plain member (DEC-38).
+			want := map[string]string{"delete": "none", "disable": "active"}[action]
+			for _, g := range []*models.Group{g1, g2, shared} {
+				if got := membershipStatus(app, leaving, g); got != want || relIn(app.DB, leaving.ID, g.ID).Leader {
+					t.Fatalf("%s: membership %s (leader %v), want %s and not leader", g.Name, got, relIn(app.DB, leaving.ID, g.ID).Leader, want)
+				}
 			}
-			rows, metas := auditRows(t, app, audit.RoleChanged)
+			allRows, allMetas := auditRows(t, app, audit.RoleChanged)
+			var rows []models.AuditLog
+			var metas []auditMeta
+			demotions := 0
+			for i := range allRows {
+				if allMetas[i].NewRole == "leader" {
+					rows, metas = append(rows, allRows[i]), append(metas, allMetas[i])
+				} else if allMetas[i].UserID == leaving.ID {
+					demotions++
+				}
+			}
+			if want := map[string]int{"delete": 0, "disable": 3}[action]; demotions != want {
+				t.Fatalf("demotion rows: %d, want %d", demotions, want)
+			}
 			reason := "account_" + map[string]string{"delete": "deleted", "disable": "disabled"}[action]
 			if len(rows) != 2 || metas[0].Reason != reason || metas[0].DepartingUserID != leaving.ID ||
 				metas[0].NewRole != "leader" || *rows[0].ActorID != me.ID {
@@ -294,6 +312,125 @@ func TestDependabotCoversEveryEcosystem(t *testing.T) {
 	for _, step := range []string{"govulncheck@v", "npm audit --omit=dev --audit-level=high"} {
 		if !strings.Contains(string(ci), step) {
 			t.Errorf("CI has no %q step", step)
+		}
+	}
+}
+
+// DEC-38: a disabled account keeps its memberships and RSVPs, hidden and
+// uncounted; re-enabling brings them back as plain member, never leader.
+func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	pat := newTestUser(t, app, "pat", "password1234", models.RoleMember)
+	co := newTestUser(t, app, "co", "password1234", models.RoleMember)
+	viewer := newTestUser(t, app, "viewer", "password1234", models.RoleMember)
+	led := newTestGroup(t, app, pat, "Led", models.GroupActive) // pat leads alone
+	coled := newTestGroup(t, app, co, "Coled", models.GroupActive)
+	addMember(t, app, pat, coled, models.MembershipLeader)
+	joined := newTestGroup(t, app, co, "Joined", models.GroupActive)
+	addMember(t, app, pat, joined, models.MembershipMember)
+	for _, g := range []*models.Group{led, coled, joined} {
+		addMember(t, app, viewer, g, models.MembershipMember)
+	}
+	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
+	mt := models.Meeting{GroupID: joined.ID, StartsAt: start, EndsAt: start.Add(time.Hour)}
+	app.DB.Create(&mt)
+	date := start.Format("2006-01-02")
+	app.DB.Create(&models.RSVP{UserID: pat.ID, MeetingID: mt.ID, Date: date, Status: models.RSVPGoing})
+	app.DB.Create(&models.RSVP{UserID: viewer.ID, MeetingID: mt.ID, Date: date, Status: models.RSVPGoing})
+
+	admin := loginAs(t, app, "admin", "password1234")
+	other := loginAs(t, app, "viewer", "password1234")
+	type detail struct {
+		Group    groupSummaryJSON `json:"group"`
+		Members  []memberJSON     `json:"members"`
+		Upcoming []struct {
+			RSVPs map[string]int64 `json:"rsvps"`
+		} `json:"upcomingMeetings"`
+	}
+	look := func(g *models.Group) (d detail) {
+		t.Helper()
+		decodeJSON(t, other.do("GET", "/api/v1/groups/"+itoa(g.ID), nil, false), &d)
+		return d
+	}
+	listed := func(d detail) (role string) {
+		for _, m := range d.Members {
+			if m.ID == pat.ID {
+				return m.Role
+			}
+		}
+		return ""
+	}
+	before := look(joined)
+	if listed(before) != "member" || before.Group.MemberCount != 3 || before.Upcoming[0].RSVPs["going"] != 2 {
+		t.Fatalf("before: %+v", before)
+	}
+
+	w := admin.do("PUT", "/api/v1/admin/users/"+itoa(pat.ID),
+		map[string]any{"status": "disabled", "successors": map[string]uint{itoa(led.ID): viewer.ID}}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", w.Code, w.Body.String())
+	}
+	// Hidden from rosters, member counts and RSVP counts; rows kept.
+	size := map[*models.Group]int64{led: 2, coled: 3, joined: 3} // with pat
+	for _, g := range []*models.Group{led, coled, joined} {
+		d := look(g)
+		if listed(d) != "" || d.Group.MemberCount != size[g]-1 {
+			t.Fatalf("%s while disabled: listed %q, count %d", g.Name, listed(d), d.Group.MemberCount)
+		}
+		if membershipStatus(app, pat, g) != "active" || relIn(app.DB, pat.ID, g.ID).Leader {
+			t.Fatalf("%s: membership should be kept as plain member", g.Name)
+		}
+	}
+	if d := look(joined); d.Upcoming[0].RSVPs["going"] != 1 {
+		t.Fatalf("disabled RSVP counted: %+v", d.Upcoming)
+	}
+	if leaderCount(app.DB, coled.ID) != 1 || !relIn(app.DB, viewer.ID, led.ID).Leader {
+		t.Fatal("leadership should have moved")
+	}
+
+	// Re-enabled: back as plain member everywhere, RSVP counted, audited.
+	if w := admin.do("PUT", "/api/v1/admin/users/"+itoa(pat.ID), map[string]string{"status": "active"}, true); w.Code != http.StatusOK {
+		t.Fatalf("enable: %d %s", w.Code, w.Body.String())
+	}
+	for _, g := range []*models.Group{led, coled, joined} {
+		if d := look(g); listed(d) != "member" || d.Group.MemberCount != size[g] {
+			t.Fatalf("%s after enable: listed %q, count %d", g.Name, listed(d), d.Group.MemberCount)
+		}
+	}
+	if d := look(joined); d.Upcoming[0].RSVPs["going"] != 2 {
+		t.Fatalf("RSVP not restored: %+v", d.Upcoming)
+	}
+	if rows, metas := auditRows(t, app, audit.MemberRestored); len(rows) != 3 || metas[0].UserID != pat.ID {
+		t.Fatalf("restored rows: %+v", rows)
+	}
+	if rows, _ := auditRows(t, app, audit.UserEnabled); len(rows) != 1 {
+		t.Fatalf("user.enabled rows: %d", len(rows))
+	}
+}
+
+// DEC-38: rosters flag church admins, so leaders see the label and no
+// Remove button; the server still refuses (TestLeadersRemoveMembers).
+func TestRosterFlagsAdmins(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	lead := newTestUser(t, app, "lead", "password1234", models.RoleMember)
+	adminUser := newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+	sam := newTestUser(t, app, "sam", "password1234", models.RoleMember)
+	g := newTestGroup(t, app, lead, "G", models.GroupActive)
+	addMember(t, app, adminUser, g, models.MembershipMember)
+	addMember(t, app, sam, g, models.MembershipMember)
+	for _, path := range []string{"/api/v1/groups/" + itoa(g.ID), "/api/v1/groups/" + itoa(g.ID) + "/members"} {
+		var body struct {
+			Members []memberJSON `json:"members"`
+		}
+		decodeJSON(t, loginAs(t, app, "lead", "password1234").do("GET", path, nil, false), &body)
+		flags := map[uint]bool{}
+		for _, m := range body.Members {
+			flags[m.ID] = m.Admin
+		}
+		if len(flags) != 3 || !flags[adminUser.ID] || flags[sam.ID] || flags[lead.ID] {
+			t.Fatalf("%s admin flags: %+v", path, body.Members)
 		}
 	}
 }

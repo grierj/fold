@@ -303,7 +303,7 @@ export function CreateGroupForm({ onSaved, onCancel }: {
 export function GroupDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, loading: authLoading } = useAuth();
+  const { user, loading: authLoading, isAdmin } = useAuth();
   const [detail, setDetail] = useState<GroupDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -721,7 +721,13 @@ export function GroupDetail() {
                               focalY={m.avatarFocalY}
                             />
                             <div className="grow min-w-0">
-                              <div className="font-semibold">{m.name}</div>
+                              <div className="font-semibold">{m.name}
+                                {m.admin && (
+                                  <span className="ml-2 inline-block rounded-full bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-800">
+                                    Admin
+                                  </span>
+                                )}
+                              </div>
                               <div className="text-sm text-gray-500 capitalize">{m.role}</div>
                             </div>
                             {canManage && m.role !== "leader" && (
@@ -734,7 +740,7 @@ export function GroupDetail() {
                                 Make leader
                               </button>
                             )}
-                            {canManage && m.role === "leader" && leaderCount > 1 && (
+                            {canManage && m.role === "leader" && leaderCount > 1 && (!m.admin || isAdmin) && (
                               <button
                                 type="button"
                                 onClick={() => setRole(m.id, m.name, "member")}
@@ -744,7 +750,7 @@ export function GroupDetail() {
                                 Remove as leader
                               </button>
                             )}
-                            {canManage && m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (
+                            {canManage && m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (!m.admin || isAdmin) && (
                               <button
                                 type="button"
                                 onClick={() => removeMember(m.id, m.name)}

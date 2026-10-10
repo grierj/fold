@@ -94,11 +94,12 @@ func (errNeedSuccessors) Error() string {
 	return "every group this person leads alone needs a new leader"
 }
 
-// handOffLeadership runs inside the deletion transaction. For each group
-// leaving solely leads it makes successors[groupID] a leader (adding them
-// to the group if needed, as an admin may not be a member), points the
-// primary contact at them, and audits it with reason. Then it ends all of
-// leaving's memberships.
+// handOffLeadership runs inside the delete or disable transaction. For each
+// group leaving solely leads it makes successors[groupID] a leader (adding
+// them to the group if needed, as an admin may not be a member), points the
+// primary contact at them, and audits it with reason. Then deletion ends all
+// of leaving's memberships, while disabling keeps them as plain
+// memberships (DEC-38).
 func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map[string]uint, reason string) error {
 	actor := apiUser(c)
 	groups, err := soleLedGroups(tx, leaving)
@@ -154,7 +155,13 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 			return err
 		}
 	}
-	if err := tx.Where("user_id = ?", leaving).Delete(&models.Membership{}).Error; err != nil {
+	if reason == "account_deleted" {
+		if err := tx.Where("user_id = ?", leaving).Delete(&models.Membership{}).Error; err != nil {
+			return err
+		}
+	} else if err := demoteEverywhere(c, tx, leaving, reason); err != nil {
+		// Disabling keeps memberships (DEC-38); they are hidden while the
+		// account is disabled, and any leadership becomes plain membership.
 		return err
 	}
 	// Groups they co-led still show them as the primary contact; move it.
@@ -178,4 +185,56 @@ func needSuccessors(c *gin.Context, err error) bool {
 	}
 	c.JSON(http.StatusBadRequest, gin.H{"error": need.Error(), "groups": need.groups})
 	return true
+}
+
+// demoteEverywhere makes every leadership of userID a plain membership, with
+// a membership.role_changed audit row per group (DEC-38: a disabled
+// account keeps its memberships but never its leadership).
+func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) error {
+	actor := apiUser(c)
+	var led []models.Membership
+	if err := tx.Where("user_id = ? AND role = ? AND status = 'active'", userID, models.MembershipLeader).
+		Find(&led).Error; err != nil {
+		return err
+	}
+	for _, m := range led {
+		if err := tx.Model(&m).Update("role", models.MembershipMember).Error; err != nil {
+			return err
+		}
+		if err := audit.Write(tx, audit.Entry{
+			Actor: &actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: m.GroupID,
+			Meta: map[string]any{"userId": userID, "oldRole": models.MembershipLeader,
+				"newRole": models.MembershipMember, "reason": reason},
+			IP: c.ClientIP(),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// restoreMemberships runs when a disabled account is enabled again. Its
+// kept memberships come back as plain members (DEC-38), one
+// membership.restored audit row each. No group has a size limit today, so
+// nothing goes to pending_return yet; event capacity (M1.5) adds that.
+func restoreMemberships(c *gin.Context, tx *gorm.DB, userID uint) error {
+	actor := apiUser(c)
+	var kept []models.Membership
+	if err := tx.Where("user_id = ? AND status = 'active'", userID).Find(&kept).Error; err != nil {
+		return err
+	}
+	for _, m := range kept {
+		if m.Role != models.MembershipMember {
+			if err := tx.Model(&m).Update("role", models.MembershipMember).Error; err != nil {
+				return err
+			}
+		}
+		if err := audit.Write(tx, audit.Entry{
+			Actor: &actor.ID, Action: audit.MemberRestored, TargetType: "group", TargetID: m.GroupID,
+			Meta: map[string]any{"userId": userID, "status": "active"}, IP: c.ClientIP(),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }

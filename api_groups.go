@@ -136,11 +136,11 @@ func (a *App) apiGetGroup(c *gin.Context) {
 	})
 }
 
-// roster lists a group's active members whose accounts still exist.
+// roster lists a group's active members whose accounts are listed.
 func (a *App) roster(groupID uint) []memberJSON {
 	var members []models.Membership
 	a.DB.Preload("User").
-		Joins("JOIN users ON users.id = memberships.user_id AND users.deleted_at IS NULL").
+		Joins(listedUsers("memberships")).
 		Where("memberships.group_id = ? AND memberships.status = ?", groupID, "active").
 		Order("memberships.joined_at").Find(&members)
 	out := make([]memberJSON, 0, len(members))
@@ -599,8 +599,8 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 	}
 	u := apiUser(c)
 	var others int64
-	a.DB.Model(&models.Membership{}).
-		Where("group_id = ? AND status = ? AND user_id <> ?", g.ID, "active", u.ID).
+	a.DB.Model(&models.Membership{}).Joins(listedUsers("memberships")).
+		Where("memberships.group_id = ? AND memberships.status = ? AND memberships.user_id <> ?", g.ID, "active", u.ID).
 		Count(&others)
 	if !rel.Leader {
 		jsonError(c, http.StatusForbidden, "only a group leader can request deletion")
@@ -673,7 +673,8 @@ func (a *App) deleteGroup(ctx context.Context, g *models.Group) error {
 
 func memberCount(db *gorm.DB, groupID uint) int64 {
 	var n int64
-	db.Model(&models.Membership{}).Where("group_id = ? AND status = ?", groupID, "active").Count(&n)
+	db.Model(&models.Membership{}).Joins(listedUsers("memberships")).
+		Where("memberships.group_id = ? AND memberships.status = ?", groupID, "active").Count(&n)
 	return n
 }
 

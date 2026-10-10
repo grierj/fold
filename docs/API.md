@@ -122,7 +122,7 @@ upcomingMeetings: [meetingInstance], canManage: bool, isMember: bool}`.
 `members` is filled only for the group's members and admins (people see each
 other only inside groups they share); otherwise it is `[]`. `canManage` is
 true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, role,
-joinedAt}` — `name` is the member's display name.
+joinedAt, admin}` — `name` is the member's display name; `admin` marks church admins (DEC-38).
 
 Create/update body: `{name, description, tags[], imageUrl, location,
 coverFocal: {x, y}, visibility}`.
@@ -250,6 +250,10 @@ yourself. Changing someone's password, email, role, or status ends all of
 their sessions (`session_version`). A disabled admin has no admin powers. `PUT /api/v1/groups/:id` already allows admins to edit any group.
 
 
+Rosters (`members` in group detail, `GET /groups/:id/members`, admin rosters) include `admin: true` for church admins, so the SPA can label them and hide Remove (DEC-38).
+
+Disabling (DEC-38): the account's memberships and RSVPs are kept, hidden from rosters, and left out of member counts, RSVP counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Enabling it again restores them as plain member, writing `membership.restored` per membership and `user.enabled`. Deleting still ends memberships.
+
 Removing a member (DEC-35): leaders remove people from groups they lead,
 co-leaders included, but never an admin (they can't demote an admin
 co-leader either) or the last leader; admins remove anyone but the last
@@ -265,8 +269,8 @@ adult member of that group or any active admin (the SPA preselects the
 acting admin). A missing or invalid choice answers 400 with
 `{error, groups}` in the `sole-leader-groups` shape. On success, in one
 transaction: each successor becomes a leader (added to the group if needed)
-and the primary contact, the departing account's memberships end, and the
-account is deleted or disabled. Audit: `membership.role_changed` per group
+and the primary contact, the account is deleted (memberships end) or disabled (memberships kept
+as plain member). Audit: `membership.role_changed` per group
 with `reason` `account_deleted` or `account_disabled` and
 `departingUserId`, plus `user.deleted` or `user.disabled`.
 ### Notifications
