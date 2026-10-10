@@ -46,7 +46,7 @@ the same volume while the app is stopped.
 
 ## Local development
 
-Requires Go 1.26+, Node 20+, and Docker (for the dev Postgres 16 database).
+Requires Go 1.26+, Node 22+, and Docker (for the dev Postgres 16 database).
 
 ```bash
 make dev    # starts Postgres (deploy/docker-compose.dev.yml), the API on :8080,

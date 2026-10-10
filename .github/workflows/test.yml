@@ -35,7 +35,7 @@ jobs:
       - run: make test
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
       - working-directory: web
@@ -71,7 +71,7 @@ jobs:
           go-version-file: go.mod
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
       - working-directory: web

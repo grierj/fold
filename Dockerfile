@@ -1,5 +1,5 @@
 # Frontend build stage: the SPA bundle is embedded into the Go binary.
-FROM node:20-alpine AS webbuild
+FROM node:22-alpine AS webbuild
 WORKDIR /web
 COPY web/package.json web/package-lock.json* ./
 RUN npm ci --no-audit --no-fund
