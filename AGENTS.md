@@ -78,6 +78,12 @@ the UI), `Email`, `Phone`, `AvatarKey` (blob-store key, not a URL),
   Postgres database from `internal/testdb` (see `auth_test.go` for the
   cookie-jar + CSRF-dance pattern — reuse it).
 - `make lint` (`go vet` + `gofmt`) must be clean before any PR.
+- Permissions: every check is a pure function in `internal/policy` (section 6
+  of the plan) with table tests. Handlers load facts and call it; never
+  inline role checks or read `Group.LeaderID` (display only). Leadership is
+  `Membership.Role = leader`; a group can have several leaders.
+- Audit: record sensitive actions with `audit.Write` (`internal/audit`) in
+  the same transaction as the change. Admin notices derive from those rows.
 - State-changing routes all go through CSRF except `/hooks/*` and
   `POST /u/unsubscribe/:token` (`csrfExemptRoutes`; a test keeps that list
   exact). Only `FOLD_TRUSTED_PROXIES` may set `X-Forwarded-For`.

@@ -1011,7 +1011,7 @@ DEC-30's "trust the church body" covers workflow only: no approval gates on sign
 - [ ] Input validation and output sanitizing: server-side validation on every API field, bluemonday on rich text, SSRF guard on URL fetch (all milestones; M3.4)
 - [ ] Uploads: type sniffing, size limits, private assets behind policy checks (M4.7)
 - [ ] Secrets: provider secrets encrypted at rest, never returned to the browser, `.env` mode 600 (M4.1)
-- [ ] Least-privilege permissions: every check in `internal/policy` with table tests; invite-only stays 404 to outsiders (M0.2)
+- [x] Least-privilege permissions: every check in `internal/policy` with table tests; invite-only stays 404 to outsiders (M0.2)
 - [ ] Audit log for admin actions, sends, consent, roles, settings, secrets, links of minors, and every contact-access attempt; the table is created in M0.2, and rows about contact access, minors, consent, and roles are never purged (M0.2 onward)
 - [ ] TLS everywhere (Caddy) plus security headers: HSTS, CSP, `nosniff`, frame and referrer policies (M0.1, M5.1)
 - [ ] Webhook signature checks on every provider, including inbound mail (M3.2, M3.7, M3.11)
@@ -1021,7 +1021,7 @@ DEC-30's "trust the church body" covers workflow only: no approval gates on sign
 - [ ] Contact privacy: leaders and hosts never get teens' contact details; hidden adults' details only with their grant; every contact-access attempt audited; replies relayed through Fold (M1.11, M3.11)
 - [ ] Guardian and household links of teens and children confirmed only by an admin (M1.9, M1.10)
 - [ ] An opened invite-only event never reveals the group's members or leaders (M1.1b)
-- [ ] Leader grants audited, with an in-app notice to admins (M0.2)
+- [x] Leader grants audited, with an in-app notice to admins (M0.2)
 - [ ] Later, not v1: durable, tamper-evident audit log for the most important events (DEC-33, 10.7, M6.14). The regular `AuditLog` covers them until then.
 - [ ] Backups: nightly, retained, restore-tested in CI, offsite encrypted with `age`; backup check before migrations (M5.2, M5.3)
 - [ ] Dependency updates: Dependabot (or Renovate) for Go modules, npm, and base images; `govulncheck` and `npm audit` in CI; pinned image digests in releases (M0.1, M5.1)
@@ -1454,11 +1454,11 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Depends on: M0.1
 - Scope: one `visibility` enum on groups (C3). Create `internal/policy` and move all existing checks there. Leadership comes only from `Membership.role=leader`; replace every `Group.LeaderID` check (about 16 places, for example `api_groups.go:543`) with policy calls, and keep `LeaderID` as the displayed primary contact (C12). Update the SPA (`inviteOnly` in `groupSummaryJSON` in `api.go`, `web/src/types.ts:31`) and `docs/API.md`. Create the `AuditLog` table (5.3) and one `audit.Write` helper that every later milestone uses. Making or removing a leader writes a `membership.role_changed` row and shows the admins an in-app notice (DEC-31; no admin gate).
 - Acceptance:
-  - [ ] Every handler's permission check calls `policy`; `rg LeaderID` finds it only in models, display code, and tests
-  - [ ] Invite-only groups return 404 to non-members, and admins see every group in lists and by id (DEC-5)
-  - [ ] A group can have several leaders; removing the last leader is blocked; a teen cannot be made a leader (DEC-18; enforced once teen accounts exist in M1.10, with the policy rule written now)
-  - [ ] The SPA shows and edits the three visibility values; the old `inviteOnly` field is gone from the API
-  - [ ] The `AuditLog` table exists; making or removing a leader writes a row (actor, group, person, old and new role, IP) and shows admins an in-app notice
+  - [x] Every handler's permission check calls `policy`; `rg LeaderID` finds it only in models, display code, and tests
+  - [x] Invite-only groups return 404 to non-members, and admins see every group in lists and by id (DEC-5)
+  - [x] A group can have several leaders; removing the last leader is blocked; a teen cannot be made a leader (DEC-18; enforced once teen accounts exist in M1.10, with the policy rule written now)
+  - [x] The SPA shows and edits the three visibility values; the old `inviteOnly` field is gone from the API
+  - [x] The `AuditLog` table exists; making or removing a leader writes a row (actor, group, person, old and new role, IP) and shows admins an in-app notice
 - Tests: policy table tests covering every row of section 6 that exists so far; audit-row tests for leader changes.
 
 **M0.3 Log in by email**

@@ -386,7 +386,7 @@ function GroupsTab({ users }: { users: User[] }) {
                 >
                   {g.status}
                 </span>
-                {g.inviteOnly && (
+                {g.visibility === "invite_only" && (
                   <span className="ml-1.5 inline-block rounded-full px-2 py-0.5 font-semibold uppercase tracking-wide bg-gray-900 text-white">
                     Invite only
                   </span>
