@@ -1005,7 +1005,7 @@ DEC-30's "trust the church body" covers workflow only: no approval gates on sign
 - [ ] Account approval: self-signup and member "invite a friend" need admin approval (DEC-4; M1.3)
 - [ ] Authentication: bcrypt, email login, single-use hashed reset and invite tokens, other sessions ended on password, email, or role change and on disable, Secure/HttpOnly/SameSite cookies (M0.3, M1.2)
 - [ ] Admin two-factor sign-in (TOTP), required for every admin from v0.5 (M4.9)
-- [ ] Login throttling by email and client IP, stored in Postgres (M0.3)
+- [x] Login throttling by email and client IP, stored in Postgres (M0.3)
 - [ ] Rate limits and a honeypot on public forms, per IP and per target address; per-leader invitation limits; caps on HELP and automatic SMS replies and on phone verification texts; open direct-contact request limits; per-author and per-recipient message limits (M1.2, M1.3, M1.4, M1.11, M3.7, M3.8)
 - [x] CSRF on every state-changing route except signature- or token-authenticated hooks and one-click unsubscribe (M0.1)
 - [x] Trusted proxies set to the compose network only (M0.1)
@@ -1471,12 +1471,12 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Depends on: M0.2
 - Scope: C16 and DEC-23. Drop `Username`; `User.email` becomes `citext` NOT NULL unique; `password_hash` nullable. Login, the first-admin page, admin user creation, and the SPA use email. Throttling is keyed by email and by client IP, stored in Postgres. Login never says whether an email has an account. Changing a password or role, or disabling an account, bumps `session_version` (10.1).
 - Acceptance:
-  - [ ] Sign-in works with the email in any letter case, and fails for a user with no password set
-  - [ ] Creating a second account with the same email (any case) is refused
-  - [ ] There is no `username` column, field, or form anywhere (`rg -i username` finds nothing outside this plan)
-  - [ ] Ten failed logins for one email lock that email for 15 minutes across IPs; fifty from one IP lock that IP
-  - [ ] An unknown email and a wrong password get the same response in about the same time
-  - [ ] Changing a password or role, or disabling an account, ends the person's other sessions
+  - [x] Sign-in works with the email in any letter case, and fails for a user with no password set
+  - [x] Creating a second account with the same email (any case) is refused
+  - [x] There is no `username` column, field, or form anywhere (`rg -i username` finds nothing outside this plan)
+  - [x] Ten failed logins for one email lock that email for 15 minutes across IPs; fifty from one IP lock that IP
+  - [x] An unknown email and a wrong password get the same response in about the same time
+  - [x] Changing a password or role, or disabling an account, ends the person's other sessions
 - Tests: API tests for login, creation, and throttling.
 
 **M0.3b Leaders remove members, sole-leader handoff, security headers, dependency scanning**

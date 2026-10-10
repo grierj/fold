@@ -7,7 +7,7 @@ export function Login() {
   const { login, user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [username, setUsername] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -26,12 +26,12 @@ export function Login() {
     setBusy(true);
     setError(null);
     try {
-      await login(username, password);
+      await login(email, password);
       navigate(from, { replace: true });
     } catch (e) {
       setError(
         e instanceof ApiError && e.status === 401
-          ? "Invalid username or password."
+          ? "Invalid email or password."
           : e instanceof Error
             ? e.message
             : "Login failed."
@@ -47,15 +47,16 @@ export function Login() {
       <form onSubmit={submit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
         {error && <div className="text-red-600 text-sm">{error}</div>}
         <div>
-          <label className="label" htmlFor="username">
-            Username
+          <label className="label" htmlFor="email">
+            Email
           </label>
           <input
-            id="username"
+            id="email"
+            type="email"
             className="input"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            autoComplete="username"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
             required
           />
         </div>

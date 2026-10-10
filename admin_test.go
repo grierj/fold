@@ -8,9 +8,9 @@ import (
 	"fold/models"
 )
 
-func loginAs(t *testing.T, app *App, username, password string) *apiClient {
+func loginAs(t *testing.T, app *App, name, password string) *apiClient {
 	t.Helper()
-	return loginAPI(t, app, username, password)
+	return loginAPI(t, app, name, password)
 }
 
 func TestAdminUserCRUD(t *testing.T) {
@@ -28,7 +28,7 @@ func TestAdminUserCRUD(t *testing.T) {
 
 	// Create.
 	w = admin.do("POST", "/api/v1/admin/users", map[string]string{
-		"username": "newbie", "password": "password1234", "role": "member",
+		"email": "Newbie@Example.com", "name": "Newbie", "password": "password1234", "role": "member",
 		"displayName": "Newbie",
 	}, true)
 	if w.Code != http.StatusCreated {
@@ -38,21 +38,21 @@ func TestAdminUserCRUD(t *testing.T) {
 		User userJSON `json:"user"`
 	}
 	decodeJSON(t, w, &created)
-	if created.User.Username != "newbie" || created.User.DisplayName != "Newbie" {
+	if created.User.Email != "newbie@example.com" || created.User.DisplayName != "Newbie" {
 		t.Fatalf("unexpected created user: %+v", created.User)
 	}
 
-	// Duplicate username conflicts.
+	// Duplicate email (any case) conflicts.
 	w = admin.do("POST", "/api/v1/admin/users", map[string]string{
-		"username": "newbie", "password": "password1234",
+		"email": "NEWBIE@example.com", "name": "Again", "password": "password1234",
 	}, true)
 	if w.Code != http.StatusConflict {
-		t.Fatalf("duplicate username: got %d, want 409", w.Code)
+		t.Fatalf("duplicate email: got %d, want 409", w.Code)
 	}
 
 	// Short password rejected.
 	w = admin.do("POST", "/api/v1/admin/users", map[string]string{
-		"username": "shorty", "password": "short",
+		"email": "shorty@example.com", "name": "Shorty", "password": "short",
 	}, true)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("short password: got %d, want 400", w.Code)
@@ -84,7 +84,7 @@ func TestAdminUserCRUD(t *testing.T) {
 	}
 	// Now only "admin" is admin: demoting them fails.
 	var adminUser models.User
-	app.DB.Where("username = ?", "admin").First(&adminUser)
+	app.DB.Where("email = ?", testEmail("admin")).First(&adminUser)
 	w = admin.do("PUT", "/api/v1/admin/users/"+itoa2(adminUser.ID), map[string]string{"role": "member"}, true)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("demote last admin: got %d, want 400", w.Code)
@@ -101,7 +101,7 @@ func TestAdminUserCRUD(t *testing.T) {
 		t.Fatalf("delete user: %d %s", w.Code, w.Body.String())
 	}
 	var gone models.User
-	if err := app.DB.Where("username = ?", "newbie").First(&gone).Error; err == nil {
+	if err := app.DB.Where("email = ?", testEmail("newbie")).First(&gone).Error; err == nil {
 		t.Fatalf("user still present after delete")
 	}
 }
@@ -113,7 +113,7 @@ func TestAdminResetPassword(t *testing.T) {
 	admin := loginAs(t, app, "admin", "password1234")
 
 	var u models.User
-	app.DB.Where("username = ?", "grier").First(&u)
+	app.DB.Where("email = ?", testEmail("grier")).First(&u)
 	w := admin.do("POST", "/api/v1/admin/users/"+itoa2(u.ID)+"/password",
 		map[string]string{"password": "brand-new-password"}, true)
 	if w.Code != http.StatusOK {
@@ -135,12 +135,12 @@ func TestAdminResetPassword(t *testing.T) {
 }
 
 // loginAPIExpectFail reports whether login succeeded (it shouldn't).
-func loginAPIExpectFail(t *testing.T, app *App, username, password string) bool {
+func loginAPIExpectFail(t *testing.T, app *App, name, password string) bool {
 	t.Helper()
 	c := newAPIClient(t, app)
 	c.fetchCSRF()
 	w := c.do("POST", "/api/v1/auth/login",
-		map[string]string{"username": username, "password": password}, true)
+		map[string]string{"email": testEmail(name), "password": password}, true)
 	return w.Code == http.StatusOK
 }
 
@@ -189,7 +189,7 @@ func TestAdminGroupMembers(t *testing.T) {
 	}
 	// Removing a regular member works.
 	var oldLeader models.User
-	app.DB.Where("username = ?", "grier").First(&oldLeader)
+	app.DB.Where("email = ?", testEmail("grier")).First(&oldLeader)
 	// grier's membership role was demoted to member on reassignment; add first
 	w = admin.do("POST", membersPath, map[string]interface{}{
 		"userId": oldLeader.ID, "role": "member",

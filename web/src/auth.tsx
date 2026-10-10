@@ -5,7 +5,7 @@ import type { User } from "./types";
 interface AuthState {
   user: User | null;
   loading: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
   isAdmin: boolean;
@@ -40,8 +40,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     refresh();
   }, [refresh]);
 
-  const login = useCallback(async (username: string, password: string) => {
-    const { user } = await AuthApi.login(username, password);
+  const login = useCallback(async (email: string, password: string) => {
+    const { user } = await AuthApi.login(email, password);
     setUser(user);
   }, []);
 

@@ -34,7 +34,6 @@ const (
 
 type userJSON struct {
 	ID           uint    `json:"id"`
-	Username     string  `json:"username"`
 	Name         string  `json:"name"`
 	DisplayName  string  `json:"displayName"`
 	Email        string  `json:"email"`
@@ -43,6 +42,8 @@ type userJSON struct {
 	AvatarFocalX float64 `json:"avatarFocalX"`
 	AvatarFocalY float64 `json:"avatarFocalY"`
 	Role         string  `json:"role"`
+	Status       string  `json:"status"`
+	HasPassword  bool    `json:"hasPassword"`
 }
 
 func (a *App) toUserJSON(u *models.User) userJSON {
@@ -51,11 +52,11 @@ func (a *App) toUserJSON(u *models.User) userJSON {
 		avatarURL = a.Uploads.URL(u.AvatarKey)
 	}
 	return userJSON{
-		ID: u.ID, Username: u.Username, Name: u.Name,
+		ID: u.ID, Name: u.Name,
 		DisplayName: u.DisplayName, Email: u.Email, Phone: u.Phone,
 		AvatarURL:    avatarURL,
 		AvatarFocalX: u.AvatarFocalX, AvatarFocalY: u.AvatarFocalY,
-		Role: u.Role,
+		Role: u.Role, Status: u.Status, HasPassword: u.PasswordHash != nil,
 	}
 }
 
@@ -157,7 +158,7 @@ func (a *App) userFromSession(c *gin.Context) (*models.User, bool) {
 	if err := a.DB.First(&user, uid).Error; err != nil {
 		return nil, false
 	}
-	if sessionVersion(session) != user.SessionVersion {
+	if sessionVersion(session) != user.SessionVersion || user.Status != models.UserActive {
 		return nil, false
 	}
 	return &user, true
@@ -216,7 +217,8 @@ func asPerson(u *models.User) *policy.Person {
 	if u == nil {
 		return nil
 	}
-	return &policy.Person{ID: u.ID, Admin: u.Role == models.RoleAdmin}
+	// A disabled admin has no admin powers (and can't sign in anyway).
+	return &policy.Person{ID: u.ID, Admin: u.Role == models.RoleAdmin && u.Status == models.UserActive}
 }
 
 func asGroup(g *models.Group) policy.Group {

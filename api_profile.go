@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/mail"
 	"net/url"
 	"os"
 	"strconv"
@@ -73,19 +72,11 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		}
 		updates["display_name"] = dn
 	}
-	if body.Email != nil {
-		email := strings.TrimSpace(*body.Email)
-		if email != "" {
-			if len(email) > 254 {
-				jsonError(c, http.StatusBadRequest, "email must be at most 254 characters")
-				return
-			}
-			if _, err := mail.ParseAddress(email); err != nil {
-				jsonError(c, http.StatusBadRequest, "invalid email address")
-				return
-			}
-		}
-		updates["email"] = email
+	// The email is the login. Changing it needs a verification link (10.1),
+	// which arrives with email in M1.2; until then an admin changes it.
+	if body.Email != nil && normalizeEmail(*body.Email) != normalizeEmail(u.Email) {
+		jsonError(c, http.StatusBadRequest, "ask an admin to change your sign-in email")
+		return
 	}
 	if body.Phone != nil {
 		phone := strings.TrimSpace(*body.Phone)

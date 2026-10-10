@@ -54,14 +54,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 >
                   <Avatar
                     url={user.avatarUrl || undefined}
-                    name={user.displayName || user.name || user.username}
+                    name={user.displayName || user.name}
                     focalX={user.avatarFocalX}
                     focalY={user.avatarFocalY}
                     size="w-8 h-8"
                     textSize="text-sm"
                   />
                   <span className="text-gray-600">
-                    {user.displayName || user.name || user.username}
+                    {user.displayName || user.name}
                   </span>
                 </Link>
                 <button onClick={handleLogout} className="text-gray-700 hover:text-brand">

@@ -36,12 +36,6 @@ type App struct {
 	// without a process restart after that, which is the normal case.
 	setupMu   sync.RWMutex
 	setupDone bool
-
-	// loginFails counts consecutive failures per username. It lives in
-	// this process only: a restart clears it, and it is not shared across
-	// replicas. Keyed by username so one church NAT cannot lock everyone out.
-	loginMu    sync.Mutex
-	loginFails map[string]int
 }
 
 const sessionName = "fold-session"
@@ -89,7 +83,6 @@ func serve(stderr io.Writer) int {
 
 	app := &App{
 		DB: db, Store: store, Config: cfg, Uploads: uploads,
-		loginFails: map[string]int{},
 	}
 	r := app.setupRouter()
 
@@ -344,7 +337,8 @@ func (a *App) handleSetup(c *gin.Context) {
 	}
 
 	siteName := strings.TrimSpace(c.PostForm("site_name"))
-	username := strings.TrimSpace(c.PostForm("username"))
+	name := strings.TrimSpace(c.PostForm("name"))
+	email := normalizeEmail(c.PostForm("email"))
 	password := c.PostForm("password")
 	confirm := c.PostForm("password_confirm")
 
@@ -355,12 +349,17 @@ func (a *App) handleSetup(c *gin.Context) {
 		a.html(c, http.StatusBadRequest, "setup.html", gin.H{
 			"Error":           msg,
 			"EnteredSiteName": siteName,
-			"EnteredUsername": username,
+			"EnteredName":     name,
+			"EnteredEmail":    email,
 		})
 	}
 
-	if siteName == "" || username == "" || password == "" {
+	if siteName == "" || name == "" || email == "" || password == "" {
 		fail("All fields are required.")
+		return
+	}
+	if !validEmail(email) {
+		fail("Enter a valid email address.")
 		return
 	}
 	if len(password) < minPasswordLength {
@@ -372,16 +371,20 @@ func (a *App) handleSetup(c *gin.Context) {
 		return
 	}
 
-	admin := models.User{Username: username, Password: password, Role: models.RoleAdmin}
-	if err := a.DB.Create(&admin).Error; err != nil {
+	admin := models.User{Email: email, Name: name, Role: models.RoleAdmin, Status: models.UserActive}
+	err := admin.SetPassword(password)
+	if err == nil {
+		err = a.DB.Create(&admin).Error
+	}
+	if err != nil {
 		log.Printf("Setup failed creating admin: %v", err)
-		fail("Could not create admin account (username may be taken).")
+		fail("Could not create the admin account.")
 		return
 	}
 	a.DB.Where(models.Setting{Key: "site_name"}).
 		Assign(models.Setting{Value: siteName}).
 		FirstOrCreate(&models.Setting{})
 
-	log.Printf("Setup complete: site=%q admin=%q", siteName, username)
+	log.Printf("Setup complete: site=%q", siteName)
 	c.Redirect(http.StatusSeeOther, "/login")
 }

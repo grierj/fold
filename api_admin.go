@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -9,6 +11,8 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgconn"
+	"gorm.io/gorm"
 )
 
 // ---------------------------------------------------------------------------
@@ -68,7 +72,7 @@ func (a *App) apiRejectGroup(c *gin.Context) {
 
 func (a *App) apiAdminListUsers(c *gin.Context) {
 	var users []models.User
-	a.DB.Order("username").Find(&users)
+	a.DB.Order("lower(name), email").Find(&users)
 	out := make([]userJSON, 0, len(users))
 	for i := range users {
 		out = append(out, a.toUserJSON(&users[i]))
@@ -76,26 +80,32 @@ func (a *App) apiAdminListUsers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"users": out})
 }
 
+// apiAdminCreateUser adds an account. Without a password it starts
+// invited and can't sign in until someone sets one (M1.2 emails the link).
 func (a *App) apiAdminCreateUser(c *gin.Context) {
 	var body struct {
-		Username    string `json:"username"`
+		Email       string `json:"email"`
 		Password    string `json:"password"`
 		Role        string `json:"role"`
 		Name        string `json:"name"`
 		DisplayName string `json:"displayName"`
-		Email       string `json:"email"`
 		Phone       string `json:"phone"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	username := strings.TrimSpace(body.Username)
-	if username == "" {
-		jsonError(c, http.StatusBadRequest, "username is required")
+	email := normalizeEmail(body.Email)
+	if !validEmail(email) {
+		jsonError(c, http.StatusBadRequest, "a valid email is required")
 		return
 	}
-	if len(body.Password) < minPasswordLength {
+	name := strings.TrimSpace(body.Name)
+	if name == "" || len(name) > 100 {
+		jsonError(c, http.StatusBadRequest, "name is required (at most 100 characters)")
+		return
+	}
+	if body.Password != "" && len(body.Password) < minPasswordLength {
 		jsonError(c, http.StatusBadRequest,
 			"password must be at least "+strconv.Itoa(minPasswordLength)+" characters")
 		return
@@ -109,15 +119,31 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		return
 	}
 	u := models.User{
-		Username: username, Password: body.Password, Role: role,
-		Name: strings.TrimSpace(body.Name), DisplayName: strings.TrimSpace(body.DisplayName),
-		Email: strings.TrimSpace(body.Email), Phone: strings.TrimSpace(body.Phone),
+		Email: email, Role: role, Status: models.UserInvited,
+		Name: name, DisplayName: strings.TrimSpace(body.DisplayName), Phone: strings.TrimSpace(body.Phone),
+	}
+	if body.Password != "" {
+		if err := u.SetPassword(body.Password); err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not create user")
+			return
+		}
+		u.Status = models.UserActive
 	}
 	if err := a.DB.Create(&u).Error; err != nil {
-		jsonError(c, http.StatusConflict, "username is taken")
+		if emailTaken(err) {
+			jsonError(c, http.StatusConflict, "an account with that email already exists")
+			return
+		}
+		jsonError(c, http.StatusInternalServerError, "could not create user")
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"user": a.toUserJSON(&u)})
+}
+
+// emailTaken reports a unique-email violation.
+func emailTaken(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func (a *App) adminTargetUser(c *gin.Context) (*models.User, bool) {
@@ -133,7 +159,7 @@ func (a *App) adminTargetUser(c *gin.Context) (*models.User, bool) {
 // adminCount counts admin accounts.
 func (a *App) adminCount() int {
 	var n int64
-	a.DB.Model(&models.User{}).Where("role = ?", models.RoleAdmin).Count(&n)
+	a.DB.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Count(&n)
 	return int(n)
 }
 
@@ -149,12 +175,14 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		Email       *string `json:"email"`
 		Phone       *string `json:"phone"`
 		Role        *string `json:"role"`
+		Status      *string `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
 	updates := map[string]interface{}{}
+	bump := false
 	if body.Name != nil {
 		if len(*body.Name) > 100 {
 			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
@@ -170,7 +198,15 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		updates["display_name"] = strings.TrimSpace(*body.DisplayName)
 	}
 	if body.Email != nil {
-		updates["email"] = strings.TrimSpace(*body.Email)
+		email := normalizeEmail(*body.Email)
+		if !validEmail(email) {
+			jsonError(c, http.StatusBadRequest, "a valid email is required")
+			return
+		}
+		if email != normalizeEmail(u.Email) {
+			updates["email"] = email
+			bump = true
+		}
 	}
 	if body.Phone != nil {
 		if len(*body.Phone) > 30 {
@@ -193,10 +229,43 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, msg)
 			return
 		}
-		updates["role"] = role
+		if role != u.Role {
+			updates["role"] = role
+			bump = true
+		}
+	}
+	if body.Status != nil {
+		status := strings.TrimSpace(*body.Status)
+		if status != models.UserActive && status != models.UserDisabled {
+			jsonError(c, http.StatusBadRequest, "status must be active or disabled")
+			return
+		}
+		if status == models.UserDisabled && !policy.CanDemoteOrDelete(asPerson(me), asPerson(u), a.adminCount()) {
+			msg := "cannot disable the last admin"
+			if u.ID == me.ID {
+				msg = "you cannot disable your own account"
+			}
+			jsonError(c, http.StatusBadRequest, msg)
+			return
+		}
+		if status == models.UserActive && u.PasswordHash == nil {
+			status = models.UserInvited // re-enabled, but still needs a password
+		}
+		if status != u.Status {
+			updates["status"] = status
+			bump = true
+		}
+	}
+	// Changing the email, role or status ends the person's sessions (10.1).
+	if bump {
+		updates["session_version"] = gorm.Expr("session_version + 1")
 	}
 	if len(updates) > 0 {
 		if err := a.DB.Model(u).Updates(updates).Error; err != nil {
+			if emailTaken(err) {
+				jsonError(c, http.StatusConflict, "an account with that email already exists")
+				return
+			}
 			jsonError(c, http.StatusInternalServerError, "could not update user")
 			return
 		}
@@ -221,8 +290,19 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		return
 	}
 	// Soft delete (DeletedAt). Their memberships stay for history; the
-	// roster only lists active memberships whose user still exists.
-	if err := a.DB.Delete(u).Error; err != nil {
+	// roster only lists active memberships whose user still exists. The
+	// email is replaced so the address is free for a new account, and the
+	// session version is bumped so open sessions end.
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(u).Updates(map[string]any{
+			"email":           fmt.Sprintf("deleted-%d@deleted.invalid", u.ID),
+			"session_version": gorm.Expr("session_version + 1"),
+		}).Error; err != nil {
+			return err
+		}
+		return tx.Delete(u).Error
+	})
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not delete user")
 		return
 	}

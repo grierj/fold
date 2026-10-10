@@ -8,7 +8,6 @@ export function ProfilePage() {
   const { user, loading, refresh } = useAuth();
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
-  const [email, setEmail] = useState<string | null>(null);
   const [phone, setPhone] = useState<string | null>(null);
   const [pictureBusy, setPictureBusy] = useState(false);
   const [pictureStatus, setPictureStatus] = useState<string | null>(null);
@@ -40,7 +39,6 @@ export function ProfilePage() {
 
   const dn = displayName ?? user.displayName;
   const fullName = name ?? user.name;
-  const em = email ?? user.email;
   const ph = phone ?? user.phone;
   const focalX = user.avatarFocalX;
   const focalY = user.avatarFocalY;
@@ -51,7 +49,7 @@ export function ProfilePage() {
     setError(null);
     setSaved(false);
     try {
-      await ProfileApi.update({ displayName: dn, name: fullName, email: em, phone: ph });
+      await ProfileApi.update({ displayName: dn, name: fullName, phone: ph });
       await refresh();
       setSaved(true);
     } catch (err) {
@@ -230,14 +228,9 @@ export function ProfilePage() {
             />
           </div>
           <div>
-            <label className="label">Email</label>
-            <input
-              type="email"
-              className="input"
-              value={em}
-              onChange={(e) => setEmail(e.target.value)}
-              maxLength={254}
-            />
+            <label className="label">Email (you sign in with it)</label>
+            <input type="email" className="input bg-gray-50" value={user.email} readOnly />
+            <p className="text-xs text-gray-500 mt-1">Ask an admin to change your sign-in email.</p>
           </div>
           <div>
             <label className="label">Phone</label>
@@ -249,7 +242,6 @@ export function ProfilePage() {
               maxLength={30}
             />
           </div>
-          <div className="text-xs text-gray-500">Username: @{user.username} (cannot be changed)</div>
           <button type="submit" disabled={saving} className="btn-primary">
             {saving ? "Saving…" : "Save profile"}
           </button>

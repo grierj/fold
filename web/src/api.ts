@@ -77,8 +77,8 @@ import type {
 
 export const Auth = {
   me: () => api<{ user: User }>("/auth/me"),
-  login: (username: string, password: string) =>
-    api<{ user: User }>("/auth/login", { method: "POST", body: { username, password } }),
+  login: (email: string, password: string) =>
+    api<{ user: User }>("/auth/login", { method: "POST", body: { email, password } }),
   logout: () => api<Record<string, never>>("/auth/logout", { method: "POST" }),
 };
 
@@ -119,8 +119,8 @@ export const Groups = {
   // Make a member a leader, or a leader a member again (audited; admins are notified).
   setRole: (id: number | string, userId: number, role: "leader" | "member") =>
     api<{ members: Member[] }>(`/groups/${id}/members/${userId}/role`, { method: "PUT", body: { role } }),
-  addMember: (id: number | string, username: string) =>
-    api<unknown>(`/groups/${id}/members`, { method: "POST", body: { username } }),
+  addMember: (id: number | string, email: string) =>
+    api<unknown>(`/groups/${id}/members`, { method: "POST", body: { email } }),
   requestDeletion: (id: number | string) =>
     api<{ group: GroupSummary }>(`/groups/${id}/deletion-request`, { method: "POST" }),
   cancelDeletion: (id: number | string) =>
@@ -213,19 +213,19 @@ export const Notifications = {
 };
 
 export interface AdminUserInput {
-  username: string;
-  password: string;
+  email: string;
+  name: string;
+  // Optional: without one the account is invited and can't sign in yet.
+  password?: string;
   role: "admin" | "member";
-  name?: string;
   displayName?: string;
-  email?: string;
   phone?: string;
 }
 
 export const AdminUsers = {
   list: () => api<{ users: User[] }>("/admin/users"),
   create: (data: AdminUserInput) => api<{ user: User }>("/admin/users", { method: "POST", body: data }),
-  update: (id: number, data: ProfileUpdate & { role?: string }) =>
+  update: (id: number, data: ProfileUpdate & { role?: string; status?: "active" | "disabled" }) =>
     api<{ user: User }>(`/admin/users/${id}`, { method: "PUT", body: data }),
   remove: (id: number) => api<Record<string, never>>(`/admin/users/${id}`, { method: "DELETE" }),
   resetPassword: (id: number, password: string) =>

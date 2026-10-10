@@ -40,29 +40,44 @@ const (
 	RSVPDeclined = "declined"
 )
 
+// Account statuses (5.3). Only active accounts with a password sign in.
+// Guests and teens waiting for consent arrive in M1.4 and M1.10.
+const (
+	UserActive         = "active"
+	UserInvited        = "invited" // no password yet
+	UserGuest          = "guest"
+	UserPendingConsent = "pending_consent"
+	UserDisabled       = "disabled"
+)
+
 type User struct {
-	ID          uint   `gorm:"primaryKey"`
-	Username    string `gorm:"unique;not null"`
-	Password    string `gorm:"not null"` // bcrypt hash
-	Name        string // full name
-	DisplayName string // shown in the UI; falls back to Name, then Username
-	Email       string
-	Phone       string // first-class: SMS is a required channel
-	AvatarKey   string // blob-store key for the avatar image ("" = none)
+	ID uint `gorm:"primaryKey"`
+	// Email is the login (DEC-23, C16): citext, so any letter case matches.
+	Email string `gorm:"type:citext;not null;unique"`
+	// PasswordHash is the bcrypt hash, nil until the person has a password.
+	PasswordHash *string
+	Name         string // full name
+	DisplayName  string // shown in the UI; falls back to Name
+	Phone        string // first-class: SMS is a required channel
+	AvatarKey    string // blob-store key for the avatar image ("" = none)
 	// AvatarFocalX/Y is the focal point as a 0-100 percentage, used for
 	// CSS object-position so faces stay centered in cropped avatars.
 	AvatarFocalX float64 `gorm:"default:50"`
 	AvatarFocalY float64 `gorm:"default:50"`
 	Role         string  `gorm:"default:member"` // admin | member
-	// SessionVersion is bumped when the password changes so older cookies
-	// stop working. Missing cookies count as 0, which matches existing rows.
+	// Status is active, invited, guest, pending_consent or disabled (a CHECK
+	// enforces it).
+	Status string `gorm:"not null;default:active"`
+	// SessionVersion is bumped when the password, email, role or status
+	// changes, so older cookies stop working (10.1).
 	SessionVersion int `gorm:"not null;default:0"`
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	DeletedAt      gorm.DeletedAt `gorm:"index"`
 }
 
-// PublicName returns the name shown in the UI.
+// PublicName returns the name shown in the UI. It never falls back to the
+// email, which is contact information.
 func (u *User) PublicName() string {
 	if u.DisplayName != "" {
 		return u.DisplayName
@@ -70,22 +85,37 @@ func (u *User) PublicName() string {
 	if u.Name != "" {
 		return u.Name
 	}
-	return u.Username
+	return "Member"
 }
 
-// HashPassword hashes the password before saving
-func (u *User) BeforeCreate(tx *gorm.DB) (err error) {
-	hashed, err := bcrypt.GenerateFromPassword([]byte(u.Password), bcrypt.DefaultCost)
+// SetPassword stores a bcrypt hash of plain (it does not save the row).
+func (u *User) SetPassword(plain string) error {
+	hashed, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
 	if err != nil {
 		return err
 	}
-	u.Password = string(hashed)
+	h := string(hashed)
+	u.PasswordHash = &h
 	return nil
 }
 
-// CheckPassword compares a password with the stored hash
+// dummyHash is compared against when there is no real hash, so a missing
+// account or password costs the same time as a wrong password.
+var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("not a real password"), bcrypt.DefaultCost)
+
+// CheckPassword reports whether password matches. It is always false when
+// no password is set, and takes about the same time either way.
 func (u *User) CheckPassword(password string) bool {
-	return bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(password)) == nil
+	if u == nil || u.PasswordHash == nil {
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		return false
+	}
+	return bcrypt.CompareHashAndPassword([]byte(*u.PasswordHash), []byte(password)) == nil
+}
+
+// CanSignIn: an active account with a password.
+func (u *User) CanSignIn() bool {
+	return u.Status == UserActive && u.PasswordHash != nil
 }
 
 // Group is an ongoing entity (a small group, ministry, or activity) —
@@ -190,11 +220,21 @@ type AuditLog struct {
 	At         time.Time `gorm:"not null;default:now();index"`
 }
 
+// LoginThrottle counts failed sign-ins for one key ("email:<address>" or
+// "ip:<address>") in the current 15-minute window (10.1). It lives in
+// Postgres so it survives restarts and is shared by every replica.
+type LoginThrottle struct {
+	Key         string    `gorm:"primaryKey"`
+	Failures    int       `gorm:"not null;default:0"`
+	WindowStart time.Time `gorm:"not null"`
+	LockedUntil *time.Time
+}
+
 // All lists every model, in dependency order. The drift check and the test
 // helpers use it; a new model must be added here and to a migration.
 func All() []any {
 	return []any{
 		&User{}, &Group{}, &Meeting{}, &MeetingException{},
-		&Membership{}, &RSVP{}, &Setting{}, &AuditLog{},
+		&Membership{}, &RSVP{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
 	}
 }
