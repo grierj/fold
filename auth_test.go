@@ -443,3 +443,17 @@ func itoa(u uint) string {
 	}
 	return string(b[i:])
 }
+
+// newTestGroup creates a group led (through its membership, C12) by leader.
+func newTestGroup(t *testing.T, app *App, leader *models.User, name, status string) *models.Group {
+	t.Helper()
+	g := models.Group{Name: name, LeaderID: leader.ID, Status: status, Visibility: models.VisibilityPublic}
+	if err := app.DB.Create(&g).Error; err != nil {
+		t.Fatalf("create group: %v", err)
+	}
+	if err := app.DB.Create(&models.Membership{UserID: leader.ID, GroupID: g.ID,
+		Role: models.MembershipLeader, Status: "active", JoinedAt: time.Now().UTC()}).Error; err != nil {
+		t.Fatalf("create leader membership: %v", err)
+	}
+	return &g
+}

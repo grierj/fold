@@ -187,10 +187,7 @@ func TestGroupCoverUpload(t *testing.T) {
 	leader := newTestUser(t, app, "grier", "password1234", "member")
 	other := newTestUser(t, app, "other", "password1234", "member")
 	_ = other
-	g := models.Group{Name: "Test Group", LeaderID: leader.ID, Status: models.GroupActive}
-	if err := app.DB.Create(&g).Error; err != nil {
-		t.Fatalf("create group: %v", err)
-	}
+	g := newTestGroup(t, app, leader, "Test Group", models.GroupActive)
 
 	leaderClient := loginAPI(t, app, "grier", "password1234")
 	coverPath := "/api/v1/groups/" + strconv.Itoa(int(g.ID)) + "/cover"

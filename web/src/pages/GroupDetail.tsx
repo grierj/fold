@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, GroupCover, Groups, Meetings } from "../api";
-import type { GroupDetailResponse, MeetingInstance } from "../types";
+import type { GroupDetailResponse, MeetingInstance, Visibility } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { RsvpButtons } from "../components/RsvpButtons";
@@ -96,8 +96,7 @@ export interface GroupFormData {
   imageUrl: string;
   coverFile?: File | null;
   coverFocal?: { x: number; y: number };
-  visibility: "public" | "private";
-  inviteOnly: boolean;
+  visibility: Visibility;
 }
 
 function GroupForm({
@@ -109,7 +108,7 @@ function GroupForm({
   initial: {
     name: string; description: string; location: string; tags: string[];
     imageUrl: string; coverFocalX: number; coverFocalY: number;
-    visibility?: string; inviteOnly?: boolean;
+    visibility?: Visibility;
   };
   saveLabel: string;
   onSaved: (data: GroupFormData) => Promise<void>;
@@ -123,12 +122,7 @@ function GroupForm({
   const [coverMode, setCoverMode] = useState<"url" | "upload">("url");
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverFocal, setCoverFocal] = useState<{ x: number; y: number } | null>(null);
-  const [visibility, setVisibility] = useState<"public" | "private">(
-    initial.visibility === "private" ? "private" : "public"
-  );
-  const [inviteOnly, setInviteOnly] = useState(
-    initial.visibility === "private" && Boolean(initial.inviteOnly)
-  );
+  const [visibility, setVisibility] = useState<Visibility>(initial.visibility ?? "public");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -153,7 +147,6 @@ function GroupForm({
               .map((t) => t.trim())
               .filter(Boolean),
             visibility,
-            inviteOnly: visibility === "private" && inviteOnly,
           });
         } catch (err) {
           setError(err instanceof Error ? err.message : "Save failed");
@@ -203,10 +196,7 @@ function GroupForm({
               name="visibility"
               className="mt-1"
               checked={visibility === "public"}
-              onChange={() => {
-                setVisibility("public");
-                setInviteOnly(false);
-              }}
+              onChange={() => setVisibility("public")}
             />
             <span>
               <span className="font-semibold">Public</span>
@@ -226,18 +216,18 @@ function GroupForm({
               <span className="block text-gray-500">Only signed-in people can see it.</span>
             </span>
           </label>
-          <label className={`flex items-start gap-2 ${visibility === "public" ? "text-gray-400" : ""}`}>
+          <label className="flex items-start gap-2">
             <input
-              type="checkbox"
+              type="radio"
+              name="visibility"
               className="mt-1"
-              checked={inviteOnly && visibility === "private"}
-              disabled={visibility === "public"}
-              onChange={(e) => setInviteOnly(e.target.checked)}
+              checked={visibility === "invite_only"}
+              onChange={() => setVisibility("invite_only")}
             />
             <span>
               <span className="font-semibold">Invite only</span>
               <span className="block text-gray-500">
-                Hidden unless someone is already a member. Public groups cannot be invite only.
+                Hidden from everyone except its members and church admins. People join only when a leader adds them.
               </span>
             </span>
           </label>
@@ -301,7 +291,7 @@ export function CreateGroupForm({ onSaved, onCancel }: {
     <GroupForm
       initial={{
         name: "", description: "", location: "", tags: [], imageUrl: "",
-        coverFocalX: 50, coverFocalY: 50, visibility: "public", inviteOnly: false,
+        coverFocalX: 50, coverFocalY: 50, visibility: "public",
       }}
       saveLabel="Create group"
       onSaved={onSaved}
@@ -367,6 +357,9 @@ export function GroupDetail() {
   const { group, members, upcomingMeetings, canManage, isMember } = detail;
   // Server serializes an empty upcomingMeetings as null, not [].
   const meetings: MeetingInstance[] = upcomingMeetings ?? [];
+  // Leadership comes from membership roles (several leaders allowed).
+  const leaderCount = (members ?? []).filter((m) => m.role === "leader").length;
+  const isLeader = !!user && (members ?? []).some((m) => m.id === user.id && m.role === "leader");
 
   async function toggleJoin() {
     if (!user) {
@@ -428,21 +421,23 @@ export function GroupDetail() {
       ...(data.coverFile ? {} : { imageUrl: data.imageUrl }),
       ...(data.coverFocal ? { coverFocal: data.coverFocal } : {}),
       visibility: data.visibility,
-      inviteOnly: data.inviteOnly,
     });
     setEditing(false);
     await load();
   }
 
-  async function makeLeader(memberId: number, name: string) {
-    if (!confirm(`Make ${name} the leader of “${group.name}”?`)) return;
+  async function setRole(memberId: number, name: string, role: "leader" | "member") {
+    const question = role === "leader"
+      ? `Make ${name} a leader of “${group.name}”? Church admins will be notified.`
+      : `Remove ${name} as a leader of “${group.name}”?`;
+    if (!confirm(question)) return;
     setMemberBusy(true);
     setMemberError(null);
     try {
-      await Groups.transferLeader(id!, memberId);
+      await Groups.setRole(id!, memberId, role);
       await load();
     } catch (e) {
-      setMemberError(e instanceof Error ? e.message : "Could not transfer leadership");
+      setMemberError(e instanceof Error ? e.message : "Could not change the role");
     } finally {
       setMemberBusy(false);
     }
@@ -519,7 +514,7 @@ export function GroupDetail() {
         <div className="absolute bottom-0 left-0 right-0">
           <div className="max-w-6xl mx-auto px-4 pb-5 flex items-end gap-4 flex-wrap">
             <div className="grow min-w-0">
-              {(group.status === "pending" || group.visibility === "private" || group.inviteOnly) && (
+              {(group.status === "pending" || group.visibility !== "public") && (
                 <div className="flex flex-wrap gap-2 mb-2">
                   {group.status === "pending" && (
                     <span className="inline-block text-xs font-bold uppercase tracking-wide bg-yellow-100 text-yellow-800 rounded-full px-3 py-1">
@@ -531,7 +526,7 @@ export function GroupDetail() {
                       Private
                     </span>
                   )}
-                  {group.inviteOnly && (
+                  {group.visibility === "invite_only" && (
                     <span className="inline-block text-xs font-bold uppercase tracking-wide bg-gray-900 text-white rounded-full px-3 py-1">
                       Invite only
                     </span>
@@ -578,7 +573,7 @@ export function GroupDetail() {
                   />
                 </>
               )}
-              {(!group.inviteOnly || isMember) && (
+              {(group.visibility !== "invite_only" || isMember) && (
                 <button
                   onClick={toggleJoin}
                   disabled={joinBusy}
@@ -604,7 +599,6 @@ export function GroupDetail() {
               coverFocalX: group.coverFocalX,
               coverFocalY: group.coverFocalY,
               visibility: group.visibility,
-              inviteOnly: group.inviteOnly,
             }}
             saveLabel="Save changes"
             onSaved={saveEdit}
@@ -715,14 +709,24 @@ export function GroupDetail() {
                               <div className="font-semibold">{m.name}</div>
                               <div className="text-sm text-gray-500 capitalize">{m.role}</div>
                             </div>
-                            {canManage && m.id !== group.leaderId && (
+                            {canManage && m.role !== "leader" && (
                               <button
                                 type="button"
-                                onClick={() => makeLeader(m.id, m.name)}
+                                onClick={() => setRole(m.id, m.name, "leader")}
                                 disabled={memberBusy}
                                 className="text-sm font-medium text-brand hover:underline"
                               >
                                 Make leader
+                              </button>
+                            )}
+                            {canManage && m.role === "leader" && leaderCount > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => setRole(m.id, m.name, "member")}
+                                disabled={memberBusy}
+                                className="text-sm font-medium text-gray-600 hover:underline"
+                              >
+                                Remove as leader
                               </button>
                             )}
                           </li>
@@ -753,7 +757,7 @@ export function GroupDetail() {
                         </button>
                       </form>
                     )}
-                    {user.id === group.leaderId && (
+                    {isLeader && (
                       <div className="mt-6 border-t border-gray-100 pt-4">
                         {group.memberCount <= 1 ? (
                           group.deletionRequested ? (

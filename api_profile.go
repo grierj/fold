@@ -425,15 +425,8 @@ func uploadKeyFromURL(raw string) (string, bool) {
 
 // apiUploadGroupCover replaces a group's cover image. Leader or admin only.
 func (a *App) apiUploadGroupCover(c *gin.Context) {
-	u := apiUser(c)
-	id, _ := strconv.Atoi(c.Param("id"))
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	}
-	if g.LeaderID != u.ID && !u.IsAdmin() {
-		jsonError(c, http.StatusForbidden, "only the group leader or an admin can change the cover")
+	g, _, ok := a.loadManagedGroup(c)
+	if !ok {
 		return
 	}
 	tmp, ext, mime, err := readImageUpload(c, "cover")
@@ -462,7 +455,7 @@ func (a *App) apiUploadGroupCover(c *gin.Context) {
 	}
 	oldURL := g.ImageURL
 	g.ImageURL = a.Uploads.URL(key)
-	if err := a.DB.Model(&g).Update("image_url", g.ImageURL).Error; err != nil {
+	if err := a.DB.Model(g).Update("image_url", g.ImageURL).Error; err != nil {
 		_ = a.Uploads.Delete(ctx, key)
 		jsonError(c, http.StatusInternalServerError, "could not save cover")
 		return
@@ -475,19 +468,12 @@ func (a *App) apiUploadGroupCover(c *gin.Context) {
 
 // apiDeleteGroupCover removes a group's uploaded cover image.
 func (a *App) apiDeleteGroupCover(c *gin.Context) {
-	u := apiUser(c)
-	id, _ := strconv.Atoi(c.Param("id"))
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	}
-	if g.LeaderID != u.ID && !u.IsAdmin() {
-		jsonError(c, http.StatusForbidden, "only the group leader or an admin can change the cover")
+	g, _, ok := a.loadManagedGroup(c)
+	if !ok {
 		return
 	}
 	oldURL := g.ImageURL
-	if err := a.DB.Model(&g).Update("image_url", "").Error; err != nil {
+	if err := a.DB.Model(g).Update("image_url", "").Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not remove cover")
 		return
 	}
