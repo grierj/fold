@@ -29,6 +29,9 @@ export async function ensureCsrf(): Promise<string> {
 interface RequestOptions {
   method?: string;
   body?: unknown;
+  // anonymousOK: a 401 just means "not signed in" (the boot-time session
+  // check), so don't send the visitor to /login; public pages stay public.
+  anonymousOK?: boolean;
 }
 
 export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
@@ -49,7 +52,7 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     credentials: "include",
   });
   if (res.status === 401) {
-    if (onUnauthorized) onUnauthorized();
+    if (onUnauthorized && !opts.anonymousOK) onUnauthorized();
     throw new ApiError(401, "unauthorized");
   }
   const text = await res.text();
@@ -78,7 +81,7 @@ import type {
 } from "./types";
 
 export const Auth = {
-  me: () => api<{ user: User }>("/auth/me"),
+  me: () => api<{ user: User }>("/auth/me", { anonymousOK: true }),
   login: (email: string, password: string) =>
     api<{ user: User }>("/auth/login", { method: "POST", body: { email, password } }),
   logout: () => api<Record<string, never>>("/auth/logout", { method: "POST" }),

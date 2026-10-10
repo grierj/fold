@@ -3,7 +3,7 @@
 DEV_COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 DEV_DATABASE_URL := postgres://fold:fold@localhost:5432/fold?sslmode=disable
 
-.PHONY: dev test lint devdb
+.PHONY: dev test lint devdb e2e
 
 # Start the dev database and wait until it accepts connections.
 devdb:
@@ -24,6 +24,18 @@ test:
 		DATABASE_URL="$(DEV_DATABASE_URL)" go test ./...; \
 	else \
 		go test ./...; \
+	fi
+
+# Playwright (Chromium) against the real binary on a fresh <db>_e2e Postgres
+# database (web/e2e/server.sh). Starts the dev database when DATABASE_URL is
+# unset. First time: cd web && npx playwright install chromium.
+e2e:
+	cd web && npm run build
+	@if [ -z "$$DATABASE_URL" ]; then \
+		$(DEV_COMPOSE) up -d --wait db && \
+		cd web && DATABASE_URL="$(DEV_DATABASE_URL)" npx playwright test; \
+	else \
+		cd web && npx playwright test; \
 	fi
 
 lint:

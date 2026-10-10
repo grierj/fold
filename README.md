@@ -78,6 +78,8 @@ Useful env vars:
 ```bash
 make test   # go test ./... on Postgres; starts the dev database if DATABASE_URL is unset
 make lint   # go vet + gofmt
+cd web && npm test   # Vitest component tests
+make e2e    # Playwright browser tests (first run: cd web && npx playwright install chromium)
 ```
 
 API contract: `docs/API.md`. Agent working notes: `AGENTS.md`.

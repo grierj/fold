@@ -34,3 +34,6 @@ fold
 web/dist/*
 !web/dist/README.txt
 web/node_modules/
+# Playwright output (make e2e).
+web/test-results/
+web/playwright-report/
