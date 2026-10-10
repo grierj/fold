@@ -19,6 +19,10 @@ import (
 // ---------------------------------------------------------------------------
 
 type notificationJSON struct {
+	// ID names this exact notice. It changes when the notice is about
+	// something new (another pending group, a new audit row), so a notice
+	// dismissed in the SPA never hides a later one with the same wording.
+	ID    string `json:"id"`
 	Type  string `json:"type"` // "approval" | "event" | "leadership"
 	Title string `json:"title"`
 	Body  string `json:"body"`
@@ -33,28 +37,26 @@ func (a *App) apiNotifications(c *gin.Context) {
 	out := []notificationJSON{}
 
 	if policy.IsAdmin(asPerson(u)) {
-		var n int64
-		a.DB.Model(&models.Group{}).Where("status = ?", models.GroupPending).Count(&n)
-		if n > 0 {
-			word := "groups"
+		if n, newest := groupQueue(a, "status = ?", models.GroupPending); n > 0 {
+			title := fmt.Sprintf("%d groups need approval", n)
 			if n == 1 {
-				word = "group"
+				title = "1 group needs approval"
 			}
 			out = append(out, notificationJSON{
+				ID:    fmt.Sprintf("approval:groups:%d:%d", newest, n),
 				Type:  "approval",
-				Title: fmt.Sprintf("%d %s need approval", n, word),
+				Title: title,
 				Body:  "Review them in the admin panel.",
 				Link:  "/admin?tab=approvals",
 			})
 		}
-		var deletions int64
-		a.DB.Model(&models.Group{}).Where("deletion_requested = ?", true).Count(&deletions)
-		if deletions > 0 {
+		if deletions, newest := groupQueue(a, "deletion_requested = ?", true); deletions > 0 {
 			title := fmt.Sprintf("%d groups are waiting to be deleted", deletions)
 			if deletions == 1 {
 				title = "1 group is waiting to be deleted"
 			}
 			out = append(out, notificationJSON{
+				ID:    fmt.Sprintf("approval:deletions:%d:%d", newest, deletions),
 				Type:  "approval",
 				Title: title,
 				Body:  "A leader asked for the group to be removed.",
@@ -101,6 +103,7 @@ func (a *App) apiNotifications(c *gin.Context) {
 					body += " · " + m.Location
 				}
 				evts = append(evts, evt{at: occ, n: notificationJSON{
+					ID:    fmt.Sprintf("event:%d:%s", m.ID, date),
 					Type:  "event",
 					Title: names[m.GroupID],
 					Body:  body,
@@ -153,6 +156,7 @@ func (a *App) leadershipNotices(me *models.User) []notificationJSON {
 		var g models.Group
 		a.DB.Unscoped().First(&g, r.TargetID)
 		out = append(out, notificationJSON{
+			ID:    fmt.Sprintf("leadership:%d", r.ID),
 			Type:  "leadership",
 			Title: title,
 			Body:  g.Name + " · " + r.At.Format("Jan 2"),
@@ -175,4 +179,16 @@ func (a *App) actorName(id *uint) string {
 		return "Fold"
 	}
 	return a.nameOf(*id)
+}
+
+// groupQueue counts the groups matching where and returns the newest id,
+// which makes a queue notice's ID change whenever a new group joins it.
+func groupQueue(a *App, where string, arg any) (n int64, newest uint) {
+	var row struct {
+		N      int64
+		Newest uint
+	}
+	a.DB.Model(&models.Group{}).Select("count(*) AS n, coalesce(max(id), 0) AS newest").
+		Where(where, arg).Scan(&row)
+	return row.N, row.Newest
 }

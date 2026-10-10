@@ -1,16 +1,11 @@
-import { Link, NavLink, useNavigate } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { useAuth } from "../auth";
 import { Avatar } from "./Avatar";
 import { NotificationBell } from "./Notifications";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { user, loading, logout, isAdmin } = useAuth();
-  const navigate = useNavigate();
 
-  async function handleLogout() {
-    await logout();
-    navigate("/");
-  }
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -64,7 +59,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                     {user.displayName || user.name}
                   </span>
                 </Link>
-                <button onClick={handleLogout} className="text-gray-700 hover:text-brand">
+                <button onClick={logout} className="text-gray-700 hover:text-brand">
                   Log out
                 </button>
               </>

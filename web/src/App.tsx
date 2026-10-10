@@ -10,8 +10,10 @@ import { MyGroups } from "./pages/MyGroups";
 import { ProfilePage } from "./pages/Profile";
 import { AdminPage } from "./pages/Admin";
 import { setOnUnauthorized } from "./api";
+import { useAuth } from "./auth";
 
 export default function App() {
+  const { user, loading } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -27,7 +29,11 @@ export default function App() {
   }, [navigate, location.pathname]);
 
   return (
-    <Layout>
+    // Keyed by user: signing in as someone else remounts every page and the
+    // header, so nothing fetched for the previous user (or while signed out)
+    // survives. Routes wait for the session check so pages fetch once.
+    <Layout key={user?.id ?? "anon"}>
+      {loading ? null : (
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
@@ -46,6 +52,7 @@ export default function App() {
           }
         />
       </Routes>
+      )}
     </Layout>
   );
 }

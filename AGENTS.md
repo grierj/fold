@@ -118,7 +118,8 @@ Postgres (`login_throttles`, see `api_auth.go`).
   CPU off the server. Server still enforces type/size limits.
 - Notifications are derived, not stored (`GET /api/v1/notifications`):
   approvals for admins, upcoming events for members. Dismissals live in
-  the client's localStorage.
+  localStorage per user, keyed by the notice `id`; logout clears all
+  browser storage and reloads the page.
 
 ## Uploads & blob storage
 

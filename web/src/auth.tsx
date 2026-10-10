@@ -2,6 +2,16 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { Auth as AuthApi, ensureCsrf } from "./api";
 import type { User } from "./types";
 
+// clearClientData removes everything the SPA keeps in browser storage.
+export function clearClientData() {
+  try {
+    localStorage.clear();
+    sessionStorage.clear();
+  } catch {
+    // Storage can be unavailable (privacy modes); nothing to clear then.
+  }
+}
+
 interface AuthState {
   user: User | null;
   loading: boolean;
@@ -45,12 +55,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(user);
   }, []);
 
+  // Logout ends the server session, then drops every client-side copy of
+  // the user's data. Pages keep what they fetched in component state and
+  // don't refetch when the user changes, so clearing auth alone left the
+  // previous screen up. A full load of "/" is the only reset that covers
+  // everything (state, module caches like the CSRF token, history entries
+  // that belonged to the old page).
   const logout = useCallback(async () => {
     try {
       await AuthApi.logout();
-    } finally {
-      setUser(null);
+    } catch {
+      // Still clear this browser; the reload shows if the server disagreed.
     }
+    setUser(null);
+    clearClientData();
+    window.location.replace("/");
   }, []);
 
   const value = useMemo(

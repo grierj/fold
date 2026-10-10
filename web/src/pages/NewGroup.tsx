@@ -6,7 +6,7 @@ import { CreateGroupForm, type GroupFormData } from "./GroupDetail";
 import { useAuth } from "../auth";
 
 export function NewGroup() {
-  const { user, loading } = useAuth();
+  const { user, loading, isAdmin } = useAuth();
   const navigate = useNavigate();
   const [created, setCreated] = useState<GroupSummary | null>(null);
 
@@ -47,7 +47,18 @@ export function NewGroup() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
-      {created ? (
+      {created && created.status === "active" ? (
+        // Admins' groups (and anyone else's the server activates) are live now.
+        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center">
+          <h1 className="text-2xl font-extrabold">Group created</h1>
+          <p className="text-gray-600 mt-2">
+            <span className="font-semibold">“{created.name}”</span> is live.
+          </p>
+          <Link to={`/groups/${created.id}`} className="btn-primary inline-block mt-6">
+            Go to the group
+          </Link>
+        </div>
+      ) : created ? (
         <div className="bg-white rounded-xl border border-gray-200 p-8 text-center">
           <div className="w-14 h-14 mx-auto rounded-full bg-yellow-100 text-yellow-700 flex items-center justify-center text-2xl font-bold">
             !
@@ -65,9 +76,11 @@ export function NewGroup() {
       ) : (
         <>
           <h1 className="text-3xl font-extrabold mb-2">Start a new group</h1>
-          <p className="text-gray-600 mb-6">
-            New groups are reviewed by a church admin before they appear in the directory.
-          </p>
+          {!isAdmin && (
+            <p className="text-gray-600 mb-6">
+              New groups are reviewed by a church admin before they appear in the directory.
+            </p>
+          )}
           <CreateGroupForm onSaved={create} onCancel={() => navigate("/")} />
         </>
       )}

@@ -338,6 +338,9 @@ func joinTags(tags []string) string {
 
 func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1 := r.Group("/api/v1")
+	// API responses carry per-user data: never store them in the HTTP cache
+	// or let back/forward replay them after logout.
+	v1.Use(func(c *gin.Context) { c.Header("Cache-Control", "no-store") })
 
 	// Auth (csrf token endpoint is public; login/logout need the token).
 	v1.GET("/auth/csrf", a.apiGetCSRF)

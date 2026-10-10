@@ -201,9 +201,14 @@ func (a *App) apiChangePassword(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
+// apiLogout ends the session: the cookie is expired (MaxAge -1), so the
+// browser drops it along with its CSRF token. The SPA then reloads.
 func (a *App) apiLogout(c *gin.Context) {
 	session, _ := a.Store.Get(c.Request, sessionName)
-	session.Values["userID"] = nil
+	session.Values = map[any]any{}
+	opts := *a.Store.Options
+	opts.MaxAge = -1
+	session.Options = &opts
 	_ = session.Save(c.Request, c.Writer)
 	c.JSON(http.StatusOK, gin.H{})
 }
