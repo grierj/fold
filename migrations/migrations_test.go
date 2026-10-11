@@ -37,8 +37,8 @@ func TestMigrateEmptyDatabase(t *testing.T) {
 		t.Fatalf("pending after up: %v %v", pending, err)
 	}
 	var n int
-	if err := db.QueryRow("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('users','groups','events','event_occurrences','registrations','memberships','settings')").Scan(&n); err != nil || n != 7 {
-		t.Fatalf("baseline tables = %d (%v), want 7", n, err)
+	if err := db.QueryRow("SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('users','groups','events','event_hosts','event_occurrences','registrations','memberships','settings')").Scan(&n); err != nil || n != 8 {
+		t.Fatalf("baseline tables = %d (%v), want 8", n, err)
 	}
 }
 

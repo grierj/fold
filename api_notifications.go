@@ -72,29 +72,28 @@ func (a *App) apiNotifications(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"notifications": out})
 }
 
-// eventNotices lists upcoming occurrences in the member's groups, and tells
-// people who registered going or maybe when a date they were on is cancelled
-// (a series edit that drops the date, or a leader cancelling one date).
+// eventNotices lists upcoming occurrences in the member's groups, tells
+// people who registered going or maybe when a date they were on is cancelled,
+// and tells other leaders and admins when an event was opened past its group.
 func (a *App) eventNotices(u *models.User) []notificationJSON {
-	var memberships []models.Membership
-	a.DB.Where("user_id = ? AND status = ?", u.ID, "active").Find(&memberships)
-	if len(memberships) == 0 {
-		return nil
-	}
-	groupIDs := make([]uint, 0, len(memberships))
-	for i := range memberships {
-		groupIDs = append(groupIDs, memberships[i].GroupID)
-	}
 	now := time.Now().UTC()
 	out := a.cancelledNotices(u.ID, now)
-	out = append(out, a.upcomingNotices(groupIDs, now)...)
-	return out
+	var memberships []models.Membership
+	a.DB.Where("user_id = ? AND status = ?", u.ID, "active").Find(&memberships)
+	if len(memberships) > 0 {
+		groupIDs := make([]uint, 0, len(memberships))
+		for i := range memberships {
+			groupIDs = append(groupIDs, memberships[i].GroupID)
+		}
+		out = append(out, a.upcomingNotices(groupIDs, now)...)
+	}
+	return append(out, a.visibilityNotices(u)...)
 }
 
 type noticeRow struct {
 	OccID         uint
 	EventID       uint
-	GroupID       uint
+	GroupID       *uint
 	OriginalDate  string
 	StartsAt      time.Time
 	TZID          string
@@ -112,22 +111,19 @@ func (a *App) cancelledNotices(userID uint, now time.Time) []notificationJSON {
 			events.title, events.location, groups.name as group_name, groups.location as group_location`).
 		Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
 		Joins("JOIN events ON events.id = event_occurrences.event_id AND events.deleted_at IS NULL").
-		Joins("JOIN groups ON groups.id = events.group_id AND groups.deleted_at IS NULL").
+		Joins("LEFT JOIN groups ON groups.id = events.group_id AND groups.deleted_at IS NULL").
 		Where("registrations.user_id = ? AND registrations.status IN ?", userID, []string{models.RegGoing, models.RegMaybe}).
 		Where("event_occurrences.status = ? AND event_occurrences.starts_at > ?", models.OccurrenceCancelled, now.Add(-14*24*time.Hour)).
+		Where("events.group_id IS NULL OR groups.id IS NOT NULL").
 		Order("event_occurrences.starts_at").Limit(10).Scan(&rows)
 	out := make([]notificationJSON, 0, len(rows))
 	for _, r := range rows {
-		name := r.Title
-		if name == "" {
-			name = r.GroupName
-		}
 		out = append(out, notificationJSON{
 			ID:    fmt.Sprintf("event-cancelled:%d", r.OccID),
 			Type:  "event",
-			Title: "Cancelled: " + name,
+			Title: "Cancelled: " + noticeTitle(r),
 			Body:  noticeWhen(r),
-			Link:  fmt.Sprintf("/groups/%d", r.GroupID),
+			Link:  noticeLink(r),
 		})
 	}
 	return out
@@ -155,10 +151,92 @@ func (a *App) upcomingNotices(groupIDs []uint, now time.Time) []notificationJSON
 			Type:  "event",
 			Title: title,
 			Body:  noticeWhen(r),
-			Link:  fmt.Sprintf("/groups/%d", r.GroupID),
+			Link:  noticeLink(r),
 		})
 	}
 	return out
+}
+
+// visibilityNotices is the derived copy of an event.visibility_override
+// audit row (M1.1c stores it). Other leaders of that group, and admins,
+// see it. The person who made the change does not. The id includes the
+// audit row so dismissing one change does not hide the next.
+func (a *App) visibilityNotices(me *models.User) []notificationJSON {
+	var rows []models.AuditLog
+	a.DB.Where("action = ? AND at > ? AND (actor_id IS NULL OR actor_id <> ?)",
+		audit.VisibilityOverride, time.Now().Add(-14*24*time.Hour), me.ID).
+		Order("at DESC").Limit(40).Find(&rows)
+	out := []notificationJSON{}
+	for _, r := range rows {
+		if len(out) >= 20 {
+			break
+		}
+		var ev models.Event
+		if err := a.DB.First(&ev, r.TargetID).Error; err != nil || ev.GroupID == nil {
+			continue
+		}
+		var g models.Group
+		if err := a.DB.First(&g, *ev.GroupID).Error; err != nil {
+			continue
+		}
+		if !policy.IsAdmin(asPerson(me)) && !a.relOf(me, g.ID).Leader {
+			continue
+		}
+		var meta struct {
+			NewVisibility   string `json:"newVisibility"`
+			GroupVisibility string `json:"groupVisibility"`
+			Reason          string `json:"reason"`
+		}
+		if json.Unmarshal([]byte(r.MetaJSON), &meta) != nil {
+			continue
+		}
+		name := ev.Title
+		if name == "" {
+			name = g.Name
+		}
+		body := a.actorName(r.ActorID) + " opened it up. Now " + visWord(meta.NewVisibility) + ". The group is " + visWord(meta.GroupVisibility) + "."
+		if meta.Reason != "" {
+			body += " " + meta.Reason
+		}
+		out = append(out, notificationJSON{
+			ID:    fmt.Sprintf("visibility:%d", r.ID),
+			Type:  "event",
+			Title: "Event opened up: " + name,
+			Body:  body,
+			Link:  fmt.Sprintf("/groups/%d", g.ID),
+		})
+	}
+	return out
+}
+
+func visWord(v string) string {
+	switch v {
+	case models.VisibilityPublic:
+		return "public"
+	case models.VisibilityPrivate:
+		return "private"
+	case models.VisibilityInviteOnly:
+		return "invite-only"
+	default:
+		return "closed"
+	}
+}
+
+func noticeLink(r noticeRow) string {
+	if r.GroupID != nil && *r.GroupID != 0 {
+		return fmt.Sprintf("/groups/%d", *r.GroupID)
+	}
+	return fmt.Sprintf("/events/%d", r.EventID)
+}
+
+func noticeTitle(r noticeRow) string {
+	if r.Title != "" {
+		return r.Title
+	}
+	if r.GroupName != "" {
+		return r.GroupName
+	}
+	return "Church event"
 }
 
 func noticeWhen(r noticeRow) string {

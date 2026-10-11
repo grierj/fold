@@ -6,6 +6,8 @@ import { Login } from "./pages/Login";
 import { GroupDetail } from "./pages/GroupDetail";
 import { NewGroup } from "./pages/NewGroup";
 import { NewEvent } from "./pages/NewEvent";
+import { NewChurchEvent } from "./pages/NewChurchEvent";
+import { EventDetail } from "./pages/EventDetail";
 import { MyGroups } from "./pages/MyGroups";
 import { ProfilePage } from "./pages/Profile";
 import { AdminPage } from "./pages/Admin";
@@ -40,6 +42,8 @@ export default function App() {
         <Route path="/groups/new" element={<NewGroup />} />
         <Route path="/groups/:id" element={<GroupDetail />} />
         <Route path="/groups/:id/events/new" element={<NewEvent />} />
+        <Route path="/events/new" element={<NewChurchEvent />} />
+        <Route path="/events/:id" element={<EventDetail />} />
         <Route path="/my-groups" element={<MyGroups />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/admin" element={<AdminPage />} />

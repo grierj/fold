@@ -26,11 +26,19 @@ const (
 	GroupArchived = "archived"
 )
 
-// Who can see an active group (C3). internal/policy decides what each means.
+// Who can see an active group (C3). The same values are used on events.
+// internal/policy decides what each means.
 const (
 	VisibilityPublic     = "public"      // anyone, including logged-out visitors
 	VisibilityPrivate    = "private"     // signed-in users
 	VisibilityInviteOnly = "invite_only" // members and admins only
+)
+
+// Where an event's visibility comes from (DEC-6). group follows the group,
+// including later changes. custom keeps the event's own value.
+const (
+	VisibilitySourceGroup  = "group"
+	VisibilitySourceCustom = "custom"
 )
 
 // Registration statuses (renamed from RSVP, M1.1a).
@@ -155,25 +163,48 @@ type Group struct {
 	DeletedAt         gorm.DeletedAt `gorm:"index"`
 }
 
-// Event is a series (or a one-time event) belonging to a group. Church-wide
-// events arrive in M1.1b, so GroupID stays required. The wall clock
+// Event is a series (or a one-time event). GroupID is nil for a church-wide
+// event (DEC-7): an admin creates it and its hosts run it. The wall clock
 // (StartsLocal + TZID) is the source of truth; occurrences store UTC (C2).
 type Event struct {
-	ID              uint    `gorm:"primaryKey"`
-	GroupID         uint    `gorm:"not null;index"`
-	Group           Group   `gorm:"foreignKey:GroupID"`
-	Title           string  `gorm:"not null"`
-	StartsLocal     string  `gorm:"not null"` // YYYY-MM-DDTHH:MM, no offset
-	DurationMinutes int     `gorm:"not null"`
-	TZID            string  `gorm:"column:tzid;not null"`
-	RRule           string  `gorm:"column:rrule;not null"`
-	RRuleUntil      *string `gorm:"column:rrule_until"` // YYYY-MM-DD, inclusive
-	Location        string  `gorm:"not null"`           // empty = the group's location
-	CreatedBy       uint    `gorm:"not null"`
-	Creator         User    `gorm:"foreignKey:CreatedBy"`
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	DeletedAt       gorm.DeletedAt `gorm:"index"`
+	ID      uint   `gorm:"primaryKey"`
+	GroupID *uint  `gorm:"index"`
+	Group   Group  `gorm:"foreignKey:GroupID"`
+	Title   string `gorm:"not null"`
+	// Description is plain text, same 5000-character limit as a group.
+	// Sanitized HTML is a later milestone.
+	Description string `gorm:"not null"`
+	// Visibility is public, private, or invite_only. With VisibilitySource
+	// group, it tracks the group's visibility. Church-wide events are
+	// public or private and always custom (a CHECK enforces that).
+	Visibility       string  `gorm:"not null"`
+	VisibilitySource string  `gorm:"not null;default:group"`
+	StartsLocal      string  `gorm:"not null"` // YYYY-MM-DDTHH:MM, no offset
+	DurationMinutes  int     `gorm:"not null"`
+	TZID             string  `gorm:"column:tzid;not null"`
+	RRule            string  `gorm:"column:rrule;not null"`
+	RRuleUntil       *string `gorm:"column:rrule_until"` // YYYY-MM-DD, inclusive
+	Location         string  `gorm:"not null"`           // empty = the group's location
+	CreatedBy        uint    `gorm:"not null"`
+	Creator          User    `gorm:"foreignKey:CreatedBy"`
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	DeletedAt        gorm.DeletedAt `gorm:"index"`
+}
+
+// EventHost is an adult assigned to a church-wide event (DEC-7). Hosts get
+// leader rights over that event only. Group events use the group's leaders;
+// a host row on a group event grants nothing in v1. AddedBy has no
+// association: a second belongs-to User would add a foreign key GORM and
+// the migration disagree on.
+type EventHost struct {
+	ID        uint  `gorm:"primaryKey"`
+	EventID   uint  `gorm:"not null;uniqueIndex:idx_event_host"`
+	Event     Event `gorm:"foreignKey:EventID"`
+	UserID    uint  `gorm:"not null;uniqueIndex:idx_event_host"`
+	User      User  `gorm:"foreignKey:UserID"`
+	AddedBy   uint  `gorm:"not null"`
+	CreatedAt time.Time
 }
 
 // EventOccurrence is one date of an event, generated 18 months ahead.
@@ -268,7 +299,7 @@ type LoginThrottle struct {
 // helpers use it; a new model must be added here and to a migration.
 func All() []any {
 	return []any{
-		&User{}, &Group{}, &Event{}, &EventOccurrence{},
+		&User{}, &Group{}, &Event{}, &EventHost{}, &EventOccurrence{},
 		&Membership{}, &Registration{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
 	}
 }

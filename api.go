@@ -124,6 +124,7 @@ type occurrenceJSON struct {
 	DurationMinutes       int              `json:"durationMinutes"`
 	Location              string           `json:"location"`
 	Title                 string           `json:"title"`
+	Description           string           `json:"description"`
 	RecurrenceRule        string           `json:"recurrenceRule"`
 	RRuleUntil            string           `json:"rruleUntil,omitempty"`
 	SeriesStartsLocal     string           `json:"seriesStartsLocal"`
@@ -133,20 +134,50 @@ type occurrenceJSON struct {
 	Overridden            bool             `json:"overridden"`
 	Registrations         map[string]int64 `json:"registrations"`
 	MyRegistration        *string          `json:"myRegistration"`
+	Visibility            string           `json:"visibility"`
+	VisibilitySource      string           `json:"visibilitySource"`
+	ChurchWide            bool             `json:"churchWide"`
+	GroupID               *uint            `json:"groupId,omitempty"`
+	GroupName             string           `json:"groupName,omitempty"`
+	HostedBy              string           `json:"hostedBy,omitempty"`
+	// AttendeesVisible is false when the caller gets a count only. An empty
+	// allowed list is omitted; the bool is what says names were allowed.
+	AttendeesVisible bool           `json:"attendeesVisible"`
+	Attendees        []attendeeJSON `json:"attendees,omitempty"`
+}
+
+type attendeeJSON struct {
+	UserID uint   `json:"userId"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+type hostJSON struct {
+	UserID uint   `json:"userId"`
+	Name   string `json:"name"`
+	Email  string `json:"email"`
 }
 
 type eventJSON struct {
-	ID              uint      `json:"id"`
-	GroupID         uint      `json:"groupId"`
-	Title           string    `json:"title"`
-	StartsLocal     string    `json:"startsLocal"`
-	DurationMinutes int       `json:"durationMinutes"`
-	TZID            string    `json:"tzid"`
-	StartsAt        time.Time `json:"startsAt"`
-	EndsAt          time.Time `json:"endsAt"`
-	Location        string    `json:"location"`
-	RecurrenceRule  string    `json:"recurrenceRule"`
-	RRuleUntil      string    `json:"rruleUntil,omitempty"`
+	ID               uint       `json:"id"`
+	GroupID          *uint      `json:"groupId,omitempty"`
+	GroupName        string     `json:"groupName,omitempty"`
+	GroupVisibility  string     `json:"groupVisibility,omitempty"`
+	HostedBy         string     `json:"hostedBy,omitempty"`
+	Title            string     `json:"title"`
+	Description      string     `json:"description"`
+	StartsLocal      string     `json:"startsLocal"`
+	DurationMinutes  int        `json:"durationMinutes"`
+	TZID             string     `json:"tzid"`
+	StartsAt         time.Time  `json:"startsAt"`
+	EndsAt           time.Time  `json:"endsAt"`
+	Location         string     `json:"location"`
+	RecurrenceRule   string     `json:"recurrenceRule"`
+	RRuleUntil       string     `json:"rruleUntil,omitempty"`
+	Visibility       string     `json:"visibility"`
+	VisibilitySource string     `json:"visibilitySource"`
+	ChurchWide       bool       `json:"churchWide"`
+	Hosts            []hostJSON `json:"hosts,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -398,11 +429,19 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.DELETE("/groups/:id/cover", a.apiAuth(), a.apiDeleteGroupCover)
 
 	// Events. A series edit (PUT) moves future dates; a per-date edit leaves
-	// that date alone the next time the series changes (M1.1a).
+	// that date alone the next time the series changes (M1.1a). Church-wide
+	// events have no group (M1.1b). GET /events is the home list of events
+	// the viewer can see without seeing their group.
 	v1.GET("/site", a.apiSite)
 	v1.PUT("/admin/timezone", a.apiAuth(), a.apiAdmin(), a.apiSetTimezone)
+	v1.GET("/events", a.optionalUser(), a.apiListOpenEvents)
+	v1.POST("/events", a.apiAuth(), a.apiAdmin(), a.apiCreateChurchEvent)
+	v1.GET("/events/:id", a.optionalUser(), a.apiGetEvent)
 	v1.PUT("/events/:id", a.apiAuth(), a.apiUpdateEvent)
 	v1.DELETE("/events/:id", a.apiAuth(), a.apiDeleteEvent)
+	v1.PUT("/events/:id/visibility", a.apiAuth(), a.apiSetEventVisibility)
+	v1.POST("/events/:id/hosts", a.apiAuth(), a.apiAdmin(), a.apiAddEventHost)
+	v1.DELETE("/events/:id/hosts/:userId", a.apiAuth(), a.apiAdmin(), a.apiRemoveEventHost)
 	v1.POST("/events/:id/cancel", a.apiAuth(), a.apiCancelOccurrence)
 	v1.PUT("/events/:id/occurrences/:date", a.apiAuth(), a.apiUpdateOccurrence)
 	v1.PUT("/events/:id/registrations", a.apiAuth(), a.apiRegister)

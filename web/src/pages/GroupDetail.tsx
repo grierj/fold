@@ -4,6 +4,8 @@ import { ApiError, Events, GroupCover, Groups } from "../api";
 import type { EventOccurrence, GroupDetailResponse, RegistrationStatus, Visibility } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
+import { AttendeeNames } from "../components/EventIntro";
+import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
@@ -154,6 +156,7 @@ function SeriesEditor({
   const [duration, setDuration] = useState(instance.seriesDurationMinutes);
   const [tzid, setTzid] = useState(instance.tzid);
   const [title, setTitle] = useState(instance.seriesTitle);
+  const [description, setDescription] = useState(instance.description);
   const [location, setLocation] = useState(instance.seriesLocation);
   const [recurring, setRecurring] = useState(instance.recurrenceRule !== "");
   const [days, setDays] = useState<string[]>(() => {
@@ -183,6 +186,7 @@ function SeriesEditor({
     try {
       await Events.update(instance.eventId, {
         title,
+        description,
         startsLocal: `${date}T${time}`,
         durationMinutes: duration,
         tzid: tzid.trim(),
@@ -266,6 +270,19 @@ function SeriesEditor({
           <input id={`s-loc-${instance.id}`} className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
         </div>
       </div>
+      <div>
+        <label className="label" htmlFor={`s-desc-${instance.id}`}>
+          Description
+        </label>
+        <textarea
+          id={`s-desc-${instance.id}`}
+          className="input"
+          rows={3}
+          maxLength={5000}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </div>
       {simple ? (
         <div>
           <label className="flex items-center gap-2 font-semibold cursor-pointer">
@@ -315,7 +332,10 @@ function SeriesEditor({
 function EventRow({
   instance,
   groupName,
+  groupVisibility,
   canManage,
+  showVisibility,
+  showDescription,
   loggedIn,
   onRsvp,
   onCancelled,
@@ -323,7 +343,11 @@ function EventRow({
 }: {
   instance: EventOccurrence;
   groupName: string;
+  groupVisibility: Visibility;
   canManage: boolean;
+  // One control per series. Later dates of the same event omit it.
+  showVisibility: boolean;
+  showDescription: boolean;
   loggedIn: boolean;
   onRsvp: (eventId: number, date: string, status: RegistrationStatus) => void;
   onCancelled: (eventId: number, date: string) => void;
@@ -353,6 +377,9 @@ function EventRow({
       <DateBadge local={instance.startsLocal} />
       <div className="grow min-w-0">
         <div className="font-bold text-lg">{name}</div>
+        {showDescription && instance.description && (
+          <p className="text-sm text-gray-700 whitespace-pre-wrap mt-1">{instance.description}</p>
+        )}
         <div className="text-sm text-gray-600">
           {time}
           {loc ? ` · ${loc}` : ""}
@@ -364,6 +391,18 @@ function EventRow({
           {rsvpTotal(instance.registrations, "going")} going · {rsvpTotal(instance.registrations, "maybe")} maybe ·{" "}
           {rsvpTotal(instance.registrations, "declined")} can't go
         </div>
+        <AttendeeNames instance={instance} />
+        {showVisibility && (
+          <EventVisibilityControl
+            key={`${instance.eventId}-${instance.visibility}-${instance.visibilitySource}`}
+            eventId={instance.eventId}
+            groupName={groupName}
+            groupVisibility={groupVisibility}
+            visibility={instance.visibility ?? groupVisibility}
+            source={instance.visibilitySource ?? "group"}
+            onSaved={onChanged}
+          />
+        )}
         {loggedIn && (
           <div className="mt-2">
             <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
@@ -682,6 +721,11 @@ export function GroupDetail() {
   const { group, members, upcomingEvents, canManage, isMember } = detail;
   const pendingReturns = detail.pendingReturns ?? [];
   const events: EventOccurrence[] = upcomingEvents ?? [];
+  // The visibility control belongs to the series, so only its first date shows it.
+  const visibilityDate = new Map<number, string>();
+  for (const m of events) {
+    if (!visibilityDate.has(m.eventId)) visibilityDate.set(m.eventId, m.date);
+  }
   // Leadership comes from membership roles (several leaders allowed).
   const leaderCount = (members ?? []).filter((m) => m.role === "leader").length;
   const isLeader = !!user && (members ?? []).some((m) => m.id === user.id && m.role === "leader");
@@ -1003,7 +1047,10 @@ export function GroupDetail() {
                     key={`${m.eventId}-${m.date}`}
                     instance={m}
                     groupName={group.name}
+                    groupVisibility={group.visibility}
                     canManage={canManage}
+                    showVisibility={canManage && visibilityDate.get(m.eventId) === m.date}
+                    showDescription={visibilityDate.get(m.eventId) === m.date}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}
                     onCancelled={handleCancelled}

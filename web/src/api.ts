@@ -68,6 +68,8 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
 // ---- endpoint wrappers ----
 
 import type {
+  EventDetailResponse,
+  EventHostRow,
   EventOccurrence,
   EventSeries,
   GroupDetailResponse,
@@ -154,6 +156,7 @@ export const Groups = {
     id: number | string,
     data: {
       title?: string;
+      description?: string;
       startsLocal: string;
       durationMinutes: number;
       tzid: string;
@@ -168,10 +171,32 @@ export const Site = {
 };
 
 export const Events = {
+  listOpen: () => api<{ events: EventOccurrence[] }>("/events"),
+  get: (id: number | string) => api<EventDetailResponse>(`/events/${id}`),
+  createChurch: (data: {
+    title: string;
+    description?: string;
+    startsLocal: string;
+    durationMinutes: number;
+    tzid: string;
+    location?: string;
+    recurrenceRule?: string;
+    visibility?: "public" | "private";
+    hosts?: string[];
+  }) => api<{ event: EventSeries }>("/events", { method: "POST", body: data }),
+  setVisibility: (
+    id: number,
+    data: { visibility: Visibility; source: "group" | "custom"; reason?: string }
+  ) => api<{ event: EventSeries }>(`/events/${id}/visibility`, { method: "PUT", body: data }),
+  addHost: (id: number, email: string) =>
+    api<{ hosts: EventHostRow[] }>(`/events/${id}/hosts`, { method: "POST", body: { email } }),
+  removeHost: (id: number, userId: number) =>
+    api<{ hosts: EventHostRow[] }>(`/events/${id}/hosts/${userId}`, { method: "DELETE" }),
   update: (
     id: number,
     data: {
       title?: string;
+      description?: string;
       startsLocal?: string;
       durationMinutes?: number;
       tzid?: string;

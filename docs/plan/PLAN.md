@@ -135,7 +135,7 @@ Features already built:
 - Meetings belong to a group, with an optional RRULE. Single instances can be cancelled with `MeetingException`. Per-instance RSVPs (going / maybe / declined), addressed by `(meetingId, date)`.
 - Profiles with avatar upload or fetch-from-URL (SSRF-guarded), focal points, and client-side image compression.
 - Admin panel: pending groups, deletion requests, users, memberships.
-- Derived notifications (not stored), dismissed in the browser's localStorage. Logout clears that storage, so dismissals reset on the next sign-in. From M1.1b, stored notifications built in Fold replace them, with dismissal (`archived_at`) and read state kept per user on the server (5.12, DEC-42).
+- Derived notifications (not stored), dismissed in the browser's localStorage. Logout clears that storage, so dismissals reset on the next sign-in. From M1.1c, stored notifications built in Fold replace them, with dismissal (`archived_at`) and read state kept per user on the server (5.12, DEC-42).
 
 ### 3.2 Goals already written in the repo
 
@@ -384,7 +384,7 @@ The field lists show the important columns, not every column. Every table has `i
 - `ContactGrant(request_id, leader_id, subject_user_id, context_type, context_id, fields, granted_at, ended_at, end_reason revoked_by_subject|revoked_by_admin|revoked_by_guardian|left_role|turned_18|account_disabled, ended_by)`. A grant is active while `ended_at` is null.
 - `Conversation(context_type group|event, context_id, created_by, relay_token_hash, closed_at)`, `ConversationParticipant(conversation_id, user_id)`, and `ConversationMessage(conversation_id, author_id, channel in_app|email|sms, body_text, inbound_message_id?, at)` (from M3.11).
 
-**Notifications (5.12, DEC-42; from M1.1b)**
+**Notifications (5.12, DEC-42; from M1.1c)**
 
 - `notifications(user_id, kind, category admin|groups|events|messages|safety, priority, actor_id?, subject_type?, subject_id?, group_key?, dedupe_key?, title, body, link, actions jsonb, batch_count, data jsonb, created_at, updated_at, seen_at?, read_at?, archived_at?, resolved_at?, expires_at?)`. One row per recipient. `kind` keys the Go registry. `link` is an internal path (starts with `/`) and is validated. `actions` holds at most 2 buttons, emitted only for allow-listed kinds. `data` is small and non-sensitive. `title`, `body`, and `data` never contain contact details of a teen or of a hidden adult (DEC-31). Indexes:
   - unique `(user_id, dedupe_key)` where `dedupe_key` is set (idempotent writes)
@@ -1129,9 +1129,9 @@ DEC-30's "trust the church body" covers workflow only: no approval gates on sign
 - [ ] SMS opt-in only after proof of phone ownership: a texted code or a YES reply (M3.7)
 - [ ] Contact privacy: leaders and hosts never get teens' contact details; hidden adults' details only with their grant; every contact-access attempt audited; replies relayed through Fold (M1.11, M3.11)
 - [ ] Guardian and household links of teens and children confirmed only by an admin (M1.9, M1.10)
-- [ ] An opened invite-only event never reveals the group's members or leaders (M1.1b)
+- [x] An opened invite-only event never reveals the group's members or leaders (M1.1b)
 - [x] Leader grants audited, with an in-app notice to admins (M0.2)
-- [ ] Notifications carry names and in-app links only. Sensitive kinds use link-only email. The client keeps them in memory only. Inline actions are allow-listed on the server (5.12; M1.1b, M1.2)
+- [ ] Notifications carry names and in-app links only. Sensitive kinds use link-only email. The client keeps them in memory only. Inline actions are allow-listed on the server (5.12; M1.1c, M1.2)
 - [ ] Later, not v1: durable, tamper-evident audit log for the most important events (DEC-33, 10.7, M6.14). The regular `AuditLog` covers them until then.
 - [ ] Backups: nightly, retained, restore-tested in CI, offsite encrypted with `age`; backup check before migrations (M5.2, M5.3)
 - [ ] Dependency updates: Dependabot for Go modules, npm, GitHub Actions, and base images, and `govulncheck` and `npm audit` in CI (M0.3b, DEC-37); pinned image digests in releases (M5.1)
@@ -1668,30 +1668,35 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] A series edit moves future occurrences, keeps their registrations, cancels dates that no longer exist (registrants told), and leaves per-date overrides alone
 - Tests: DST table tests (America/Boise, America/New_York, America/Phoenix, Europe/London); occurrence generation; series edit.
 
-**M1.1b Church-wide hosts, event visibility, audit, stored in-app notifications**
+**M1.1b Church-wide hosts, event visibility, audit, attendee privacy**
 - Depends on: M1.1a
 - Scope:
   - Church-wide events (`group_id` null), created by admins, with required `EventHost` rows (DEC-7).
   - Event visibility with `visibility_source` and the DEC-6, DEC-17, and DEC-28 rules, written to the `AuditLog` table from M0.2.
-  - Notices: this milestone ships before email (M1.2), so its notices are **in-app**, and it ships the stored notifications of 5.12 (DEC-42). The work:
-    - Add the `notifications` table, `internal/notify` with the kind registry, and the feed, badge, seen, read, read-all, and archive endpoints.
-    - Rebuild the bell and panel to the research 6.1–6.7 and 6.9 spec, and add the `/notifications` page with the mobile switch (6.10).
-    - Store today's derived notices (pending groups, deletion requests, leader grants, `pending_return` items) and this milestone's visibility-override notice as rows, written in the same transaction as their `AuditLog` row.
-    - Resolve tasks on approval or rejection.
-    - Allow-list inline Approve for new groups.
-    - Archive on the server (`archived_at`), replacing localStorage dismissals.
-    - Drop the derived "upcoming events" items (DEC-44).
-    - Run the 60-second badge poll plus refresh on focus and navigation.
-  - From M1.2 on, the same changes also send a transactional email.
-  - Split note: stored notifications make M1.1b noticeably bigger. If it's too big for one PR, split it into **M1.1b** (hosts, visibility, attendee privacy, with the visibility-override notice written as a stored row once M1.1c lands) and **M1.1c Stored notifications** (the bullet above), with M1.2 depending on both.
-  - Attendee privacy for opened events (final review, finding 3): when an invite-only group's event is `private` or `public`, only its leaders and the admins see attendee names. Everyone else sees a count. The visibility dialog warns: "Only leaders will see who signed up, so members of <group> aren't revealed." The event page names no leaders. It shows "Hosted by <church name>", plus a "Message the organizers" button once M3.11 exists.
+  - The more-open change tells the group's other leaders and the admins with a derived in-app notice (the same feed as today's other notices). M1.1c stores that notice as a row.
+  - Attendee privacy for opened events (final review, finding 3): when an invite-only group's event is `private` or `public`, people outside the group see a count, not names. Leaders, admins, and members of the group see names (section 6). The visibility dialog warns: "Only leaders will see who signed up, so members of <group> aren't revealed." The event page names no leaders. It shows "Hosted by <church name>", plus a "Message the organizers" button once M3.11 exists.
 - Acceptance:
-  - [ ] A leader of the event's group, or an admin, can set a group event to `public`, `private`, or `invite_only`. A change more open than the group writes an `event.visibility_override` audit row (reason optional, DEC-28) and shows an in-app notice to the other leaders and the admins
-  - [ ] An invite-only group's `private` or `public` event shows "Hosted by <church>" and never names or links the group or its leaders to outsiders; the group still returns 404 to them
-  - [ ] On such an event, a member who isn't in the group sees only an attendee count, never names (API and UI tests)
-  - [ ] With `visibility_source=group`, changing the group's visibility changes the event's; with `custom`, it does not
-  - [ ] A church-wide event cannot be saved without at least one host, and cannot be `invite_only`; a non-admin host can switch it between `public` and `private`
-  - [ ] A non-admin host can edit, message, and see registrants of the events they host, and nothing else (policy tests)
+  - [x] A leader of the event's group, or an admin, can set a group event to `public`, `private`, or `invite_only`. A change more open than the group writes an `event.visibility_override` audit row (reason optional, DEC-28) and shows an in-app notice to the other leaders and the admins
+  - [x] An invite-only group's `private` or `public` event shows "Hosted by <church>" and never names or links the group or its leaders to outsiders; the group still returns 404 to them
+  - [x] On such an event, a member who isn't in the group sees only an attendee count, never names (API and UI tests)
+  - [x] With `visibility_source=group`, changing the group's visibility changes the event's; with `custom`, it does not
+  - [x] A church-wide event cannot be saved without at least one host, and cannot be `invite_only`; a non-admin host can switch it between `public` and `private`
+  - [x] A non-admin host can edit, message, and see registrants of the events they host, and nothing else (policy tests)
+- Tests: policy tables for visibility, hosts, and attendee lists; API tests for the audit row, the notice, hosted-by, and the count.
+
+**M1.1c Stored in-app notifications**
+- Depends on: M1.1b
+- Scope: the stored notifications of 5.12 (DEC-42). This was split out of M1.1b because the two together are too big for one PR. The work:
+  - Add the `notifications` table, `internal/notify` with the kind registry, and the feed, badge, seen, read, read-all, and archive endpoints.
+  - Rebuild the bell and panel to the research 6.1–6.7 and 6.9 spec, and add the `/notifications` page with the mobile switch (6.10).
+  - Store today's derived notices (pending groups, deletion requests, leader grants, `pending_return` items, cancellation notices, and the M1.1b visibility-override notice) as rows, written in the same transaction as their `AuditLog` row.
+  - Resolve tasks on approval or rejection.
+  - Allow-list inline Approve for new groups.
+  - Archive on the server (`archived_at`), replacing localStorage dismissals.
+  - Drop the derived "upcoming events" items (DEC-44).
+  - Run the 60-second badge poll plus refresh on focus and navigation.
+  - From M1.2 on, the same changes also send a transactional email.
+- Acceptance:
   - [ ] Notifications are stored rows (5.12); nothing is derived on read, and the SPA writes no notification state to localStorage
   - [ ] Archiving an item survives logout and shows on another device; Undo (and the Archived filter) restores it
   - [ ] The badge counts unread plus unresolved waiting items; "Mark all as read" leaves waiting items counted until they are resolved, on both server and UI (DEC-44: one plain count, no needs-action dot)
@@ -1703,10 +1708,10 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] `GET /notifications/badge` returns `{unread, waiting}` and 304 when unchanged; the SPA refreshes it on focus and navigation and pauses while hidden
   - [ ] Every kind, rendered with teen and hidden-adult fixtures, contains no `@` or phone pattern (unit test over the registry)
   - [ ] A notification `link` that isn't an internal path is rejected
-- Tests: policy tables for visibility, hosts, and attendee lists; notify tests (state transitions, batching, dedupe, task resolution, own-rows-only); Playwright for the bell, archive and Undo, and the waiting count.
+- Tests: notify tests (state transitions, batching, dedupe, task resolution, own-rows-only); Playwright for the bell, archive and Undo, and the waiting count.
 
 **M1.2 Email basics, password reset, invitations**
-- Depends on: M1.1b, M0.3
+- Depends on: M1.1b, M1.1c, M0.3
 - Scope: `internal/mail` minimal sender (`devoutbox` in dev and tests, SMTP from `FOLD_SMTP_URL`) and plain transactional templates (C6). Password reset with a uniform response. Verified email change (10.1). Admin and leader `Invitation`s (no approval), with the per-leader daily limit. Email copies of M1.1b's visibility notices. Email delivery of notifications (5.12): kinds marked `AllowEmail` send a transactional email through the minimal sender right after the transaction commits, recorded in `notification_deliveries`. Sensitive kinds use the link-only `RenderEmailSafe` variant. The 15-minute "if not seen" delay waits for jobs (M3.1). `/dev/outbox` page in dev only.
 - Acceptance:
   - [ ] `/dev/outbox` is unreachable unless `APP_ENV=dev`
@@ -2210,7 +2215,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-39 | **Groups get an optional member limit** (Grier, Oct 9, 2026), because recurring classes meet in rooms with a maximum capacity. It's expected to be rarely used. `Group.member_limit` is a nullable positive int (null, the default, is unlimited), set by the group's leaders or an admin. Only `active` memberships of non-disabled accounts count, leaders included. A full group refuses self-join ("This group is full"); groups have no waitlist. A leader or admin goes over the limit only by explicit choice (an API override flag; the SPA confirms), and that add is audited; accepting an invitation follows the same rule as the leader's add. Lowering the limit below the count is allowed: existing members stay and joins are blocked until the count drops. Leaders and admins see the count and limit. This makes DEC-38's `pending_return` real for groups: re-enabling restores each membership as member if there is room, otherwise `pending_return`, which leaders of that group and admins approve (over the limit) or decline (removed), audited with an in-app notice. Restores are processed in a stable order with the group row locked. Events keep their own capacity (5.4). | 5.3, 5.4, 6, M0.3b, M1.2 |
 | DEC-40 | **Roster sync with church management software is a far-future consideration, not a current milestone** (Grier, Oct 10, 2026), so churches can avoid managing rosters in two places. Research: `docs/plan/research/chms-sync.md`. Direction: a new `chms` provider kind following the email/SMS adapter pattern. **One-way only, from the ChMS into Fold; Fold never writes back** (Grier, Oct 10, 2026). Import with admin review first, then scheduled or webhook-driven updates. Each field has one owner: the ChMS owns names, households and addresses; Fold owns login email, consent, roles, group memberships and registrations. Conflicts go to an admin. **Open design item:** when sync is on, ChMS-owned fields must be locked from local editing in Fold, which means turning off some local management features. Decide carefully, field by field, which features to lock and which to keep, so Fold keeps what matters (consent, minors protections, roles, groups, events, registrations, messaging) before any sync work starts. Match by email first; in a household that shares an email the primary contact becomes the account; name-only matches are suggestions only. Minors: no accounts from import, household members only, guardian links start pending admin approval (DEC-32), consent is never imported, minors' contact info and sensitive data are not imported. Build order when it happens: generic CSV import (covers ChurchTrac, Realm, PowerChurch and others with no API; reuses M4.5), then Planning Center People, then Breeze, then ChMeetings. Pushpay/CCB needs vendor app approval, which is awkward for open source. | 13.2, M4.5, M6.11, M6.15 |
 | DEC-41 | **Stolen session cookies are a known, accepted risk for now** (Grier, Oct 10, 2026). Logout deletes the browser's session cookie, clears browser storage and reloads, but sessions are stateless signed cookies, so a cookie copied before logout keeps working until it expires (7 days) or `session_version` is bumped. Server-side sessions or "log out everywhere" are purposely not being built at this time. | 10.1 |
-| DEC-42 | **Notifications are built in Fold, with no vendor; dismissals and read state are stored per user on the server** (Grier, Oct 10, 2026). Browser-only dismissals reset on every sign-in, which is a poor long-term experience. Fold stores one notification row per recipient in Postgres, serves a polled badge, and delivers email and SMS through its own jobs and provider adapters (5.12). **Knock (knock.app) is a UI/UX reference only, never a third-party add-on.** Novu and other vendors were also rejected. This follows the self-contained directive (DEC-43). Research and designer guidelines: `docs/plan/research/notifications.md`. Phasing: stored notifications in M1.1b, email in M1.2, event-change and waitlist notices in M1.5 (reminders by email and SMS, not the bell), preferences and SMS in M3.12, and digests later (M6.16). Illuminator's product questions are answered in DEC-44. | 1, 3.1, 5.3, 5.5, 5.12, 7.7, 10.1, 10.6, 12, M1.1b, M1.2, M1.5, M3.6, M3.12 |
+| DEC-42 | **Notifications are built in Fold, with no vendor; dismissals and read state are stored per user on the server** (Grier, Oct 10, 2026). Browser-only dismissals reset on every sign-in, which is a poor long-term experience. Fold stores one notification row per recipient in Postgres, serves a polled badge, and delivers email and SMS through its own jobs and provider adapters (5.12). **Knock (knock.app) is a UI/UX reference only, never a third-party add-on.** Novu and other vendors were also rejected. This follows the self-contained directive (DEC-43). Research and designer guidelines: `docs/plan/research/notifications.md`. Phasing: stored notifications in M1.1c, email in M1.2, event-change and waitlist notices in M1.5 (reminders by email and SMS, not the bell), preferences and SMS in M3.12, and digests later (M6.16). Illuminator's product questions are answered in DEC-44. | 1, 3.1, 5.3, 5.5, 5.12, 7.7, 10.1, 10.6, 12, M1.1b, M1.2, M1.5, M3.6, M3.12 |
 | DEC-43 | **Fold stays as self-contained as possible** (Grier, Oct 10, 2026). Fold builds what it needs itself. An outside service is added only when it's needed to keep deployments simple or to meet a church's request. This sharpens goal 4 (few external dependencies) and D3/D6, and it applies to features as well as infrastructure (for example notifications, DEC-42). | 1, 12, 5.12 |
 | DEC-44 | **Notification product answers** (Grier, Oct 10, 2026, answering Illuminator's questions in research 6.14): (1) the bell badge is **one plain count** (unread plus unresolved items waiting on you), with no needs-action dot; (2) event **reminders go by email and SMS only, never to the bell**, and the bell's upcoming-event items are dropped; (3) on a public site, an **adult account request with no warnings** can be approved inline; any other account request goes to Review; (4) **no per-group notification settings** in v1; (5) email is **"Right away" only** in v1, and once-a-day digests move to a later version (M6.16); (6) **email ignores** the 8 AM–8 PM quiet hours, which apply to SMS only; (7) a **"Turn off all optional email"** switch, mapped to `Consent` rows. | 5.3, 5.5, 5.12, 7.7, M1.1b, M1.3, M3.6, M3.12, M6.16 |
 | DEC-45 | **Notification retention** (Grier, Oct 10, 2026, accepting Quill's proposal): a daily cleanup deletes read or archived notifications after 90 days and unread ones after 180 days. `AuditLog` remains the record. Easy to change later if needed. | 5.12 |

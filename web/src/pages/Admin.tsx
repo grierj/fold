@@ -840,7 +840,7 @@ function ChurchTimezone() {
           ))}
         </datalist>
         <p id="church-tz-hint" className="text-sm text-gray-500 mt-1">
-          New events use this zone unless a leader picks another. An IANA name, for example America/Denver.
+          The schedule form starts in the leader's time zone. This is the fallback when a request doesn't name one. An IANA name, for example America/Denver.
         </p>
       </div>
       <button type="submit" className="btn-secondary" disabled={busy || tz.trim() === saved}>
@@ -894,6 +894,11 @@ export function AdminPage() {
     <div className="max-w-5xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-extrabold mb-6">Admin</h1>
       <ChurchTimezone />
+      <p className="mb-6">
+        <Link to="/events/new" className="text-brand font-semibold">
+          Schedule a church-wide event
+        </Link>
+      </p>
       <div className="flex gap-1 border-b border-gray-200 mb-6">
         {tabs.map((t) => (
           <button

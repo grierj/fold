@@ -267,7 +267,20 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	} else if set {
 		g.MemberLimit = limit
 	}
-	if err := a.DB.Save(g).Error; err != nil {
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Save(g).Error; err != nil {
+			return err
+		}
+		// Events that follow the group pick up a visibility change in the
+		// same transaction. Custom events keep their own value (DEC-6).
+		if body.Visibility == nil {
+			return nil
+		}
+		return tx.Model(&models.Event{}).
+			Where("group_id = ? AND visibility_source = ?", g.ID, models.VisibilitySourceGroup).
+			Update("visibility", g.Visibility).Error
+	})
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not update group")
 		return
 	}

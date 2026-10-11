@@ -47,6 +47,17 @@ const (
 	// pending_return membership (DEC-38, DEC-39). Meta: userId, count, limit.
 	ReturnApproved = "membership.return_approved"
 	ReturnDeclined = "membership.return_declined"
+
+	// VisibilityOverride: a group event was made more open than its group
+	// (DEC-6, DEC-17, DEC-28). Target is the event. Meta has oldVisibility,
+	// newVisibility, oldSource, newSource, groupVisibility, and an optional
+	// reason. The group's other leaders and the admins see a derived notice.
+	VisibilityOverride = "event.visibility_override"
+
+	// VisibilityChanged: any other visibility change (stricter, back to
+	// following the group, or a church-wide public/private switch). Same
+	// meta shape, without a notice.
+	VisibilityChanged = "event.visibility_changed"
 )
 
 // Entry is one audit record. Actor is nil for system actions.

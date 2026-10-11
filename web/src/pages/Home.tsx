@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { Groups } from "../api";
-import type { GroupSummary } from "../types";
+import { Link, useSearchParams } from "react-router-dom";
+import { Events, Groups } from "../api";
+import type { EventOccurrence, GroupSummary } from "../types";
+import { DateBadge } from "../components/DateBadge";
 import { GroupCard } from "../components/GroupCard";
+import { formatWallClock, zoneSuffix } from "../lib/wall";
 
 function tagsFromParams(params: URLSearchParams): string[] {
   const seen = new Set<string>();
@@ -29,6 +31,7 @@ export function Home() {
   const [tagChoices, setTagChoices] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [openEvents, setOpenEvents] = useState<EventOccurrence[]>([]);
 
   function toggleTag(tag: string) {
     const current = tagsFromParams(searchParams);
@@ -74,6 +77,20 @@ export function Home() {
       alive = false;
     };
   }, [debounced, tagKey]);
+
+  useEffect(() => {
+    let alive = true;
+    Events.listOpen()
+      .then(({ events }) => {
+        if (alive) setOpenEvents(events);
+      })
+      .catch(() => {
+        if (alive) setOpenEvents([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -165,6 +182,33 @@ export function Home() {
           )}
         </div>
       </section>
+
+      {openEvents.length > 0 && (
+        <section className="max-w-6xl mx-auto px-4 pt-8">
+          <h2 className="text-2xl font-bold mb-4">Coming up</h2>
+          <div className="space-y-3">
+            {openEvents.map((ev) => (
+              <Link
+                key={`${ev.eventId}-${ev.date}`}
+                to={`/events/${ev.eventId}`}
+                className="bg-white rounded-xl border border-gray-200 p-4 flex gap-4 hover:border-gray-300"
+              >
+                <DateBadge local={ev.startsLocal} />
+                <div className="min-w-0">
+                  <div className="font-bold text-lg">{ev.title || "Church event"}</div>
+                  <div className="text-sm text-gray-600">
+                    {formatWallClock(ev.startsLocal)}
+                    {zoneSuffix(ev.startsAt, ev.tzid)}
+                    {ev.location ? ` · ${ev.location}` : ""}
+                  </div>
+                  {ev.description && <div className="text-sm text-gray-600 line-clamp-2">{ev.description}</div>}
+                  {ev.hostedBy && <div className="text-sm text-gray-500">Hosted by {ev.hostedBy}</div>}
+                </div>
+              </Link>
+            ))}
+          </div>
+        </section>
+      )}
 
       {/* Group grid */}
       <section className="max-w-6xl mx-auto px-4 py-8">

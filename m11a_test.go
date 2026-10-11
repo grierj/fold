@@ -18,8 +18,14 @@ import (
 func seedEvent(t *testing.T, app *App, g *models.Group, createdBy uint, start time.Time) (models.Event, models.EventOccurrence) {
 	t.Helper()
 	start = start.UTC()
+	gid := g.ID
+	vis := g.Visibility
+	if vis == "" {
+		vis = models.VisibilityPublic
+	}
 	ev := models.Event{
-		GroupID: g.ID, StartsLocal: start.Format("2006-01-02T15:04"),
+		GroupID: &gid, Visibility: vis, VisibilitySource: models.VisibilitySourceGroup,
+		StartsLocal:     start.Format("2006-01-02T15:04"),
 		DurationMinutes: 60, TZID: "UTC", Location: "", CreatedBy: createdBy,
 	}
 	if err := app.DB.Create(&ev).Error; err != nil {
