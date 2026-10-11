@@ -1522,7 +1522,7 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 | Release | Contents | Milestones |
 |---|---|---|
 | v0.2 Foundations | Postgres-only clean baseline, CLI, trusted proxies, CSRF route groups, visibility enum and policy, email login, member removal and sole-leader handoff, security headers and dependency scanning, frontend test tooling | M0.1–M0.4 (M0.3 is M0.3a + M0.3b) |
-| v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy | M1.1a–M1.11 |
+| v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy, frontend toolchain upgrades (Vite 8, React 19, Tailwind 4, Node 24) | M1.1a–M1.12 |
 | v0.4 Email | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay | M3.1–M3.6, M3.11 |
 | v0.5 MVP | Encrypted settings, SPA setup wizard, legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs: the first version a church can run | M4.1–M4.5, M4.9, M5.1–M5.4 |
 | v0.6 Rooms | Rooms, by-room view and feed, suggestions | M2.1–M2.3 |
@@ -1767,7 +1767,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Tests: unit tests on the promotion function plus the concurrency test; notification expiry test.
 
 **M1.6 Calendar views**
-- Depends on: M1.1b, M0.4
+- Depends on: M1.1b, M0.4. Prefer to land M1.12 (frontend toolchain upgrades) first, so the calendar UI is written once against React 19 and Tailwind 4.
 - Scope: agenda timeline, week and month views, filters (8.1).
 - Acceptance:
   - [ ] A member never sees invite-only events of groups they are not in (API and UI)
@@ -1837,6 +1837,39 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] Every request, decision by each party, withdrawal, expiry, grant, reveal, revocation, automatic end, and refused attempt writes an `AuditLog` row (a test walks every path and checks its row)
   - [ ] Admins can see and export (CSV) the contact-access history for any person
 - Tests: policy tables for the 5.11 rows of section 6; API tests on every path; fake-clock tests for expiry and age.
+
+**M1.12 Frontend toolchain upgrades**
+- Depends on: M0.4. Best done **before M1.6**, the first large new UI, so new screens are written once against the new stack. It's independent of the other Phase 1 milestones and can run in parallel.
+- Why: Dependabot opened these majors, and Grier wants them done rather than dropped (Oct 11, 2026). Each is breaking, so each lands as its own PR, in this order, with the full checks green before the next.
+  1. **Vite 8 + `@vitejs/plugin-react` 6** (Dependabot #31 and #34, closed). These two must move together: plugin-react 6 needs `vite ^8`, and each failed CI on its own. Vite 8 replaces esbuild and Rollup with Rolldown and Oxc. Migration:
+     - Check `vite.config.ts`, including the dev proxy and `base: "/"`, the Vitest config block, and the `build` output that `go:embed` serves.
+     - Confirm the image compressor still runs on the main thread.
+     - Keep Vitest on a version whose `vite` peer range includes 8. Vitest 5 already allows `^6.4 || ^7 || ^8`.
+  2. **React 19** (with `@types/react`, `@types/react-dom`, and current Testing Library). Breaking changes:
+     - removed legacy APIs (`propTypes`/`defaultProps` on function components, string refs, legacy context)
+     - `ref` as a prop
+     - stricter types: `useRef` needs an argument, and implicit `children` and the global `JSX` namespace are gone
+     - changed error-reporting behavior
+
+     Migration: run the official codemods, fix the types, and check that React Router 7 and `browser-image-compression` work unchanged.
+  3. **Tailwind CSS 4** (Dependabot #35, closed). It's a real migration, not a bump:
+     - Configuration becomes CSS-first. `tailwind.config.js` moves to `@theme` in `index.css`.
+     - The PostCSS plugin becomes `@tailwindcss/postcss` (or the Vite plugin `@tailwindcss/vite`), and `autoprefixer` is dropped.
+     - Several utilities are renamed or have new defaults: shadow, blur and rounded scales, ring width and color, the default border color, and `outline-none`.
+     - `@apply` in component classes (`.btn-primary`, `.input`, `.label`) needs checking.
+     - Browser support becomes Safari 16.4+, Chrome 111+, and Firefox 128+.
+
+     Migration: run `npx @tailwindcss/upgrade`, then review each changed class against the screens.
+  4. **Node 24 LTS.** Node 22 leaves maintenance on Apr 30, 2027, so this lands before then. Move the CI `node-version`, the Dockerfile `node:24-alpine` build stage, README, and AGENTS.md together, and regenerate the lockfile. Watch for packages whose `engines` exclude Node 24. Dependabot skips non-LTS Node images, so it won't propose this.
+- Already done, not part of this milestone: **TypeScript 7** (#32) and **Vitest 5** (#33) were merged on Oct 11, 2026. Both needed no code or config changes. TypeScript 7's `tsc --noEmit` type-checks the app as before.
+- Acceptance (for each step):
+  - [ ] `npm ci && npm run build` passes, and the embedded SPA serves from the Go binary (deep links still load)
+  - [ ] `npm test` and `make e2e` pass, three runs in a row for e2e, with zero CSP violations (the existing CSP spec)
+  - [ ] `npm audit --omit=dev` is clean
+  - [ ] No visual regressions: before-and-after screenshots of the home page, group detail, new group, admin tabs, login, and profile at desktop and 390 px widths are compared and attached to the PR; any intended change is called out
+  - [ ] Tailwind 4: no `tailwind.config.js` left over unless the PR says why; the `brand` palette and the `.btn-*`/`.input` classes look the same
+  - [ ] Node 24: CI, the Docker build, and local checks all run on Node 24, and nothing still says Node 22
+- Tests: the existing Vitest and Playwright suites; add a Playwright screenshot comparison for the key pages if the manual comparison proves error-prone.
 
 ### 14.5 Phase 2: Rooms
 
