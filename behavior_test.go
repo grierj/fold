@@ -24,31 +24,30 @@ func TestMeetingInstancesAreChronological(t *testing.T) {
 	gid := itoa(created.Group.ID)
 	admin.do("POST", "/api/v1/admin/groups/"+gid+"/approve", map[string]any{}, true)
 
-	now := time.Now().UTC().Truncate(time.Second)
+	now := time.Now().UTC().Truncate(time.Minute)
 	later := now.Add(30 * 24 * time.Hour)
 	sooner := now.Add(48 * time.Hour)
 	for _, start := range []time.Time{later, sooner} {
-		w = admin.do("POST", "/api/v1/groups/"+gid+"/meetings", map[string]any{
-			"startsAt": start.Format(time.RFC3339),
-			"endsAt":   start.Add(time.Hour).Format(time.RFC3339),
+		w = admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+			"startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC",
 		}, true)
 		if w.Code != http.StatusCreated {
-			t.Fatalf("create meeting: %d %s", w.Code, w.Body.String())
+			t.Fatalf("create event: %d %s", w.Code, w.Body.String())
 		}
 	}
 
 	from := now.Add(-time.Hour).Format("2006-01-02")
 	to := now.Add(60 * 24 * time.Hour).Format("2006-01-02")
-	w = admin.do("GET", "/api/v1/groups/"+gid+"/meetings?from="+from+"&to="+to, nil, false)
+	w = admin.do("GET", "/api/v1/groups/"+gid+"/events?from="+from+"&to="+to, nil, false)
 	var list struct {
-		Meetings []meetingInstanceJSON `json:"meetings"`
+		Events []occurrenceJSON `json:"events"`
 	}
 	decodeJSON(t, w, &list)
-	if len(list.Meetings) != 2 {
-		t.Fatalf("instances: got %d", len(list.Meetings))
+	if len(list.Events) != 2 {
+		t.Fatalf("occurrences: got %d", len(list.Events))
 	}
-	if !list.Meetings[0].StartsAt.Before(list.Meetings[1].StartsAt) {
-		t.Fatalf("not chronological: %s then %s", list.Meetings[0].StartsAt, list.Meetings[1].StartsAt)
+	if !list.Events[0].StartsAt.Before(list.Events[1].StartsAt) {
+		t.Fatalf("not chronological: %s then %s", list.Events[0].StartsAt, list.Events[1].StartsAt)
 	}
 
 	w = admin.do("GET", "/api/v1/groups/"+gid, nil, false)
@@ -56,8 +55,8 @@ func TestMeetingInstancesAreChronological(t *testing.T) {
 		Group groupSummaryJSON `json:"group"`
 	}
 	decodeJSON(t, w, &detail)
-	if detail.Group.NextMeetingAt == nil || !detail.Group.NextMeetingAt.UTC().Equal(sooner) {
-		t.Fatalf("nextMeetingAt: got %v want %s", detail.Group.NextMeetingAt, sooner)
+	if detail.Group.NextEventAt == nil || !detail.Group.NextEventAt.UTC().Equal(sooner) {
+		t.Fatalf("nextEventAt: got %v want %s", detail.Group.NextEventAt, sooner)
 	}
 }
 
@@ -153,18 +152,14 @@ func TestPendingGroupIsHiddenFromOtherMembers(t *testing.T) {
 	newTestUser(t, app, "sam", "password1234", models.RoleMember)
 	g := newTestGroup(t, app, leaderUser, "Hidden", models.GroupPending)
 	start := time.Date(2026, 11, 1, 18, 0, 0, 0, time.UTC)
-	m := models.Meeting{GroupID: g.ID, StartsAt: start, EndsAt: start.Add(time.Hour)}
-	if err := app.DB.Create(&m).Error; err != nil {
-		t.Fatal(err)
-	}
+	ev, _ := seedEvent(t, app, g, leaderUser.ID, start)
 	gid := itoa(g.ID)
-	mid := itoa(m.ID)
 
 	sam := loginAPI(t, app, "sam", "password1234")
 	if w := sam.do("GET", "/api/v1/groups/"+gid+"/members", nil, false); w.Code != http.StatusNotFound {
 		t.Fatalf("members: got %d", w.Code)
 	}
-	w := sam.do("PUT", "/api/v1/meetings/"+mid+"/rsvp", map[string]any{
+	w := sam.do("PUT", "/api/v1/events/"+itoa(ev.ID)+"/registrations", map[string]any{
 		"status": "going", "date": "2026-11-01",
 	}, true)
 	if w.Code != http.StatusNotFound {
@@ -189,17 +184,15 @@ func TestMeetingValidation(t *testing.T) {
 	gid := itoa(created.Group.ID)
 	admin.do("POST", "/api/v1/admin/groups/"+gid+"/approve", map[string]any{}, true)
 
-	start := time.Date(2026, 10, 20, 18, 0, 0, 0, time.UTC)
-	w = admin.do("POST", "/api/v1/groups/"+gid+"/meetings", map[string]any{
-		"startsAt":       start.Format(time.RFC3339),
-		"endsAt":         start.Add(time.Hour).Format(time.RFC3339),
+	w = admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"startsLocal": "2026-10-20T18:00", "durationMinutes": 60, "tzid": "UTC",
 		"recurrenceRule": "NOT_A_RULE",
 	}, true)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("bad rule: got %d %s", w.Code, w.Body.String())
 	}
 
-	w = admin.do("GET", "/api/v1/groups/"+gid+"/meetings?from=2000-01-01&to=2026-01-01", nil, false)
+	w = admin.do("GET", "/api/v1/groups/"+gid+"/events?from=2000-01-01&to=2026-01-01", nil, false)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("wide range: got %d %s", w.Code, w.Body.String())
 	}

@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import type { GroupSummary } from "../types";
 import { focalPosition } from "../lib/image";
+import { formatNextEvent } from "../lib/wall";
 
 const PLACEHOLDER =
   "data:image/svg+xml," +
@@ -12,24 +13,7 @@ export function coverImage(url: string | undefined | null): string {
   return url && url.trim() ? url : PLACEHOLDER;
 }
 
-export function formatNextMeeting(iso: string | null): string {
-  if (!iso) return "No meetings scheduled yet";
-  const d = new Date(iso);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  const tomorrow = new Date(now);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const isTomorrow = d.toDateString() === tomorrow.toDateString();
-  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-  if (sameDay) return `Today at ${time}`;
-  if (isTomorrow) return `Tomorrow at ${time}`;
-  return (
-    d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) +
-    ` at ${time}`
-  );
-}
-
-// Meetup-style group card: cover image, name, member count, next meeting, location.
+// Meetup-style group card: cover image, name, member count, next event, location.
 // Tags sit outside the link so they can toggle the directory filter.
 export function GroupCard({
   group,
@@ -113,7 +97,9 @@ export function GroupCard({
             {group.memberCount === 1 ? "member" : "members"}
             {group.leaderName ? ` · Organized by ${group.leaderName}` : ""}
           </div>
-          <div className="text-brand-dark font-medium">{formatNextMeeting(group.nextMeetingAt)}</div>
+          <div className="text-brand-dark font-medium">
+            {formatNextEvent(group.nextEventLocal, group.nextEventTzid, group.nextEventAt)}
+          </div>
           {group.location && <div className="truncate">{group.location}</div>}
         </div>
       </Link>

@@ -187,9 +187,9 @@ func CanRequestDeletion(p *Person, r Rel, otherMembers int64) bool {
 // CanCancelDeletion: the group's leaders and admins.
 func CanCancelDeletion(p *Person, r Rel) bool { return CanManageGroup(p, r) }
 
-// CanRSVP: signed-in people respond to meetings of active groups they can
-// see. Guest registration comes in M1.4.
-func CanRSVP(p *Person, g Group, r Rel) bool {
+// CanRegister: signed-in people register for events of active groups they
+// can see. Guest registration comes in M1.4.
+func CanRegister(p *Person, g Group, r Rel) bool {
 	return p != nil && g.Status == GroupActive && CanSeeGroup(p, g, r)
 }
 

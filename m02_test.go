@@ -142,11 +142,11 @@ func TestInviteOnlyIs404AndVisibilityEnum(t *testing.T) {
 	for _, req := range []struct{ method, path string }{
 		{"GET", "/api/v1/groups/" + gid},
 		{"GET", "/api/v1/groups/" + gid + "/members"},
-		{"GET", "/api/v1/groups/" + gid + "/meetings"},
+		{"GET", "/api/v1/groups/" + gid + "/events"},
 		{"PUT", "/api/v1/groups/" + gid},
 		{"POST", "/api/v1/groups/" + gid + "/join"},
 		{"POST", "/api/v1/groups/" + gid + "/members"},
-		{"POST", "/api/v1/groups/" + gid + "/meetings"},
+		{"POST", "/api/v1/groups/" + gid + "/events"},
 		{"PUT", "/api/v1/groups/" + gid + "/members/" + itoa(ann.ID) + "/role"},
 		{"DELETE", "/api/v1/groups/" + gid + "/cover"},
 	} {

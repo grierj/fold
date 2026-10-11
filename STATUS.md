@@ -9,7 +9,7 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | M0.3a Log in by email | done (merged, #12) | Codex | `m0.3a-email-login` |
 | M0.3b Leaders remove members, sole-leader handoff, security headers, dependency scanning | done (merged, #13) | Codex | `m0.3b-roster-handoff-headers` |
 | M0.4 Frontend and browser test tooling | done (PR open) | Codex | `m0.4-frontend-test-tooling` |
-| M1.1a Events, time zones, occurrences, series edits | unclaimed | | |
+| M1.1a Events, time zones, occurrences, series edits | done (PR open, #38) | Grok | `m1.1a-events-occurrences` |
 | M1.1b Church-wide hosts, event visibility, audit, in-app notices | unclaimed | | |
 | M1.2 Email basics, password reset, invitations | unclaimed | | |
 | M1.3 Self-signup, account requests, age gate | unclaimed | | |

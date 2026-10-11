@@ -9,6 +9,7 @@ import { apiAs, email, PASSWORD } from "./helpers";
 setup("first-run setup and seed data", async ({ page, request }) => {
   await page.goto("/setup");
   await page.locator("[name=site_name]").fill("Fold e2e");
+  await page.locator("[name=timezone]").fill("America/Boise");
   await page.locator("[name=name]").fill("Grier");
   await page.locator("[name=email]").fill(email("grier"));
   await page.locator("[name=password]").fill(PASSWORD);

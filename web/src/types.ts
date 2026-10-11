@@ -25,7 +25,9 @@ export interface GroupSummary {
   location: string;
   leaderName: string;
   memberCount: number;
-  nextMeetingAt: string | null;
+  nextEventAt: string | null;
+  nextEventLocal: string;
+  nextEventTzid: string;
   status: string;
   leaderId: number;
   visibility: Visibility;
@@ -57,23 +59,40 @@ export interface Notification {
   link: string;
 }
 
-export interface MeetingInstance {
-  meetingId: number;
-  date: string; // YYYY-MM-DD — the per-instance address
+export type RegistrationStatus = "going" | "maybe" | "declined";
+
+// One date of an event. date is the series date and stays put when a
+// per-date edit moves the clock. startsAt/endsAt are UTC; startsLocal and
+// endsLocal are the wall clock in tzid.
+export interface EventOccurrence {
+  id: number;
+  eventId: number;
+  date: string;
   startsAt: string;
   endsAt: string;
+  startsLocal: string;
+  endsLocal: string;
+  tzid: string;
+  durationMinutes: number;
   location: string;
-  rsvps: Record<string, number>;
-  myRsvp: "going" | "maybe" | "declined" | null;
+  title: string;
+  recurrenceRule: string;
+  rruleUntil?: string;
+  seriesStartsLocal: string;
+  seriesTitle: string;
+  seriesLocation: string;
+  seriesDurationMinutes: number;
+  overridden: boolean;
+  registrations: Record<string, number>;
+  myRegistration: RegistrationStatus | null;
 }
 
-// NOTE: the implementation returns {group, members, upcomingMeetings,
-// canManage, isMember} — docs/API.md lists a `leader` field here that the
-// handler does not actually send.
+// NOTE: the implementation returns {group, members, upcomingEvents,
+// canManage, isMember}.
 export interface GroupDetailResponse {
   group: GroupSummary;
   members: Member[] | null;
-  upcomingMeetings: MeetingInstance[];
+  upcomingEvents: EventOccurrence[];
   canManage: boolean;
   isMember: boolean;
   // Re-enabled accounts waiting because the group was full (leaders and admins only).
@@ -85,14 +104,18 @@ export interface PendingReturn {
   member: Member;
 }
 
-export interface Meeting {
+export interface EventSeries {
   id: number;
   groupId: number;
+  title: string;
+  startsLocal: string;
+  durationMinutes: number;
+  tzid: string;
   startsAt: string;
   endsAt: string;
   location: string;
   recurrenceRule: string;
-  cancelledDates: string[];
+  rruleUntil?: string;
 }
 
 // A group the person being deleted leads alone, and who may take over (DEC-36).

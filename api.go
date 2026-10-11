@@ -71,7 +71,9 @@ type groupSummaryJSON struct {
 	Location          string     `json:"location"`
 	LeaderName        string     `json:"leaderName"`
 	MemberCount       int64      `json:"memberCount"`
-	NextMeetingAt     *time.Time `json:"nextMeetingAt"`
+	NextEventAt       *time.Time `json:"nextEventAt"`
+	NextEventLocal    string     `json:"nextEventLocal"`
+	NextEventTzid     string     `json:"nextEventTzid"`
 	Status            string     `json:"status"`
 	LeaderID          uint       `json:"leaderId"`
 	Visibility        string     `json:"visibility"` // public | private | invite_only
@@ -107,24 +109,44 @@ func (a *App) toMemberJSON(m *models.Membership) memberJSON {
 	}
 }
 
-type meetingInstanceJSON struct {
-	MeetingID uint             `json:"meetingId"`
-	Date      string           `json:"date"`
-	StartsAt  time.Time        `json:"startsAt"`
-	EndsAt    time.Time        `json:"endsAt"`
-	Location  string           `json:"location"`
-	RSVPs     map[string]int64 `json:"rsvps"`
-	MyRSVP    *string          `json:"myRsvp"`
+// occurrenceJSON is one date of an event. startsAt/endsAt are UTC;
+// startsLocal/endsLocal are the wall clock in tzid (C2). date is the series
+// date and stays put when a per-date override moves the clock.
+type occurrenceJSON struct {
+	ID                    uint             `json:"id"`
+	EventID               uint             `json:"eventId"`
+	Date                  string           `json:"date"`
+	StartsAt              time.Time        `json:"startsAt"`
+	EndsAt                time.Time        `json:"endsAt"`
+	StartsLocal           string           `json:"startsLocal"`
+	EndsLocal             string           `json:"endsLocal"`
+	TZID                  string           `json:"tzid"`
+	DurationMinutes       int              `json:"durationMinutes"`
+	Location              string           `json:"location"`
+	Title                 string           `json:"title"`
+	RecurrenceRule        string           `json:"recurrenceRule"`
+	RRuleUntil            string           `json:"rruleUntil,omitempty"`
+	SeriesStartsLocal     string           `json:"seriesStartsLocal"`
+	SeriesTitle           string           `json:"seriesTitle"`
+	SeriesLocation        string           `json:"seriesLocation"`
+	SeriesDurationMinutes int              `json:"seriesDurationMinutes"`
+	Overridden            bool             `json:"overridden"`
+	Registrations         map[string]int64 `json:"registrations"`
+	MyRegistration        *string          `json:"myRegistration"`
 }
 
-type meetingJSON struct {
-	ID             uint      `json:"id"`
-	GroupID        uint      `json:"groupId"`
-	StartsAt       time.Time `json:"startsAt"`
-	EndsAt         time.Time `json:"endsAt"`
-	Location       string    `json:"location"`
-	RecurrenceRule string    `json:"recurrenceRule"`
-	CancelledDates []string  `json:"cancelledDates"`
+type eventJSON struct {
+	ID              uint      `json:"id"`
+	GroupID         uint      `json:"groupId"`
+	Title           string    `json:"title"`
+	StartsLocal     string    `json:"startsLocal"`
+	DurationMinutes int       `json:"durationMinutes"`
+	TZID            string    `json:"tzid"`
+	StartsAt        time.Time `json:"startsAt"`
+	EndsAt          time.Time `json:"endsAt"`
+	Location        string    `json:"location"`
+	RecurrenceRule  string    `json:"recurrenceRule"`
+	RRuleUntil      string    `json:"rruleUntil,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -258,9 +280,9 @@ const memberRemoved = "removed"
 // leader or admin because the group was full (DEC-38, DEC-39).
 const memberPendingReturn = "pending_return"
 
-// listedUsers joins memberships or rsvps (the table name) to accounts that
-// are listed: not deleted and not disabled. A disabled account keeps its
-// memberships and RSVPs, but they are hidden and never counted (DEC-38).
+// listedUsers joins memberships or registrations (the table name) to accounts
+// that are listed: not deleted and not disabled. A disabled account keeps its
+// memberships and registrations, but they are hidden and never counted (DEC-38).
 func listedUsers(table string) string {
 	return "JOIN users ON users.id = " + table + ".user_id AND users.deleted_at IS NULL AND users.status <> 'disabled'"
 }
@@ -370,16 +392,20 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/groups/:id/deletion-request", a.apiAuth(), a.apiRequestDeletion)
 	v1.DELETE("/groups/:id/deletion-request", a.apiAuth(), a.apiCancelDeletion)
 	v1.GET("/groups/:id/members", a.apiAuth(), a.apiGroupMembers)
-	v1.GET("/groups/:id/meetings", a.optionalUser(), a.apiListMeetings)
-	v1.POST("/groups/:id/meetings", a.apiAuth(), a.apiCreateMeeting)
+	v1.GET("/groups/:id/events", a.optionalUser(), a.apiListEvents)
+	v1.POST("/groups/:id/events", a.apiAuth(), a.apiCreateEvent)
 	v1.POST("/groups/:id/cover", a.apiAuth(), a.apiUploadGroupCover)
 	v1.DELETE("/groups/:id/cover", a.apiAuth(), a.apiDeleteGroupCover)
 
-	// Meetings.
-	v1.PUT("/meetings/:id", a.apiAuth(), a.apiUpdateMeeting)
-	v1.DELETE("/meetings/:id", a.apiAuth(), a.apiDeleteMeeting)
-	v1.POST("/meetings/:id/cancel", a.apiAuth(), a.apiCancelInstance)
-	v1.PUT("/meetings/:id/rsvp", a.apiAuth(), a.apiRSVP)
+	// Events. A series edit (PUT) moves future dates; a per-date edit leaves
+	// that date alone the next time the series changes (M1.1a).
+	v1.GET("/site", a.apiSite)
+	v1.PUT("/admin/timezone", a.apiAuth(), a.apiAdmin(), a.apiSetTimezone)
+	v1.PUT("/events/:id", a.apiAuth(), a.apiUpdateEvent)
+	v1.DELETE("/events/:id", a.apiAuth(), a.apiDeleteEvent)
+	v1.POST("/events/:id/cancel", a.apiAuth(), a.apiCancelOccurrence)
+	v1.PUT("/events/:id/occurrences/:date", a.apiAuth(), a.apiUpdateOccurrence)
+	v1.PUT("/events/:id/registrations", a.apiAuth(), a.apiRegister)
 
 	// Admin.
 	v1.GET("/admin/pending", a.apiAuth(), a.apiAdmin(), a.apiPendingGroups)

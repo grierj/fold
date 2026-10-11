@@ -335,11 +335,9 @@ func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
 		addMember(t, app, viewer, g, models.MembershipMember)
 	}
 	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
-	mt := models.Meeting{GroupID: joined.ID, StartsAt: start, EndsAt: start.Add(time.Hour)}
-	app.DB.Create(&mt)
-	date := start.Format("2006-01-02")
-	app.DB.Create(&models.RSVP{UserID: pat.ID, MeetingID: mt.ID, Date: date, Status: models.RSVPGoing})
-	app.DB.Create(&models.RSVP{UserID: viewer.ID, MeetingID: mt.ID, Date: date, Status: models.RSVPGoing})
+	_, occ := seedEvent(t, app, joined, co.ID, start)
+	app.DB.Create(&models.Registration{UserID: pat.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
+	app.DB.Create(&models.Registration{UserID: viewer.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
 
 	admin := loginAs(t, app, "admin", "password1234")
 	other := loginAs(t, app, "viewer", "password1234")
@@ -347,8 +345,8 @@ func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
 		Group    groupSummaryJSON `json:"group"`
 		Members  []memberJSON     `json:"members"`
 		Upcoming []struct {
-			RSVPs map[string]int64 `json:"rsvps"`
-		} `json:"upcomingMeetings"`
+			Registrations map[string]int64 `json:"registrations"`
+		} `json:"upcomingEvents"`
 	}
 	look := func(g *models.Group) (d detail) {
 		t.Helper()
@@ -364,7 +362,7 @@ func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
 		return ""
 	}
 	before := look(joined)
-	if listed(before) != "member" || before.Group.MemberCount != 3 || before.Upcoming[0].RSVPs["going"] != 2 {
+	if listed(before) != "member" || before.Group.MemberCount != 3 || before.Upcoming[0].Registrations["going"] != 2 {
 		t.Fatalf("before: %+v", before)
 	}
 
@@ -384,8 +382,8 @@ func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
 			t.Fatalf("%s: membership should be kept as plain member", g.Name)
 		}
 	}
-	if d := look(joined); d.Upcoming[0].RSVPs["going"] != 1 {
-		t.Fatalf("disabled RSVP counted: %+v", d.Upcoming)
+	if d := look(joined); d.Upcoming[0].Registrations["going"] != 1 {
+		t.Fatalf("disabled registration counted: %+v", d.Upcoming)
 	}
 	if leaderCount(app.DB, coled.ID) != 1 || !relIn(app.DB, viewer.ID, led.ID).Leader {
 		t.Fatal("leadership should have moved")
@@ -400,8 +398,8 @@ func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
 			t.Fatalf("%s after enable: listed %q, count %d", g.Name, listed(d), d.Group.MemberCount)
 		}
 	}
-	if d := look(joined); d.Upcoming[0].RSVPs["going"] != 2 {
-		t.Fatalf("RSVP not restored: %+v", d.Upcoming)
+	if d := look(joined); d.Upcoming[0].Registrations["going"] != 2 {
+		t.Fatalf("registration not restored: %+v", d.Upcoming)
 	}
 	if rows, metas := auditRows(t, app, audit.MemberRestored); len(rows) != 3 || metas[0].UserID != pat.ID {
 		t.Fatalf("restored rows: %+v", rows)

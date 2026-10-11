@@ -1,19 +1,315 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ApiError, GroupCover, Groups, Meetings } from "../api";
-import type { GroupDetailResponse, MeetingInstance, Visibility } from "../types";
+import { ApiError, Events, GroupCover, Groups } from "../api";
+import type { EventOccurrence, GroupDetailResponse, RegistrationStatus, Visibility } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
-import { coverImage, formatNextMeeting } from "../components/GroupCard";
+import { coverImage } from "../components/GroupCard";
 import { focalPosition, prepareUpload } from "../lib/image";
+import { formatNextEvent, formatWallClock, zoneSuffix } from "../lib/wall";
+import { COMMON_ZONES, WEEKDAYS, bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
 
 type Tab = "events" | "about" | "members";
 
 function rsvpTotal(r: Record<string, number>, key: string): number {
   return r[key] ?? 0;
+}
+
+function WeekdayPicker({ days, onToggle }: { days: string[]; onToggle: (value: string) => void }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {WEEKDAYS.map((w) => (
+        <button
+          type="button"
+          key={w.value}
+          onClick={() => onToggle(w.value)}
+          className={
+            days.includes(w.value)
+              ? "px-3 py-1.5 rounded-full text-sm font-semibold bg-brand text-white"
+              : "px-3 py-1.5 rounded-full text-sm font-semibold bg-gray-100 text-gray-600 hover:bg-gray-200"
+          }
+        >
+          {w.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function DateEditor({
+  instance,
+  onSaved,
+  onClose,
+}: {
+  instance: EventOccurrence;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  const [date, setDate] = useState(instance.startsLocal.slice(0, 10));
+  const [time, setTime] = useState(instance.startsLocal.slice(11, 16));
+  const [duration, setDuration] = useState(instance.durationMinutes);
+  const [title, setTitle] = useState(instance.title);
+  const [location, setLocation] = useState(instance.location);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    const body: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string } = {};
+    const startsLocal = `${date}T${time}`;
+    if (startsLocal !== instance.startsLocal) body.startsLocal = startsLocal;
+    if (duration !== instance.durationMinutes) body.durationMinutes = duration;
+    if (title !== instance.title) body.title = title;
+    if (location !== instance.location) body.location = location;
+    if (Object.keys(body).length === 0) {
+      onClose();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await Events.updateOccurrence(instance.eventId, instance.date, body);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update this date");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
+      <p className="text-sm text-gray-600">
+        This date only. Later series changes leave it alone. The series date stays {instance.date}.
+      </p>
+      {error && <div className="text-sm text-red-600">{error}</div>}
+      <div className="grid sm:grid-cols-3 gap-3">
+        <div>
+          <label className="label" htmlFor={`date-${instance.id}`}>
+            Date
+          </label>
+          <input id={`date-${instance.id}`} type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} required />
+        </div>
+        <div>
+          <label className="label" htmlFor={`time-${instance.id}`}>
+            Start time
+          </label>
+          <input id={`time-${instance.id}`} type="time" className="input" value={time} onChange={(e) => setTime(e.target.value)} required />
+        </div>
+        <div>
+          <label className="label" htmlFor={`dur-${instance.id}`}>
+            Minutes
+          </label>
+          <input
+            id={`dur-${instance.id}`}
+            type="number"
+            min={1}
+            max={10080}
+            className="input"
+            value={duration}
+            onChange={(e) => setDuration(Number(e.target.value))}
+          />
+        </div>
+      </div>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label className="label" htmlFor={`title-${instance.id}`}>
+            Title
+          </label>
+          <input id={`title-${instance.id}`} className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+        </div>
+        <div>
+          <label className="label" htmlFor={`loc-${instance.id}`}>
+            Location
+          </label>
+          <input id={`loc-${instance.id}`} className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button type="submit" disabled={busy} className="btn-primary">
+          {busy ? "Saving…" : "Save this date"}
+        </button>
+        <button type="button" onClick={onClose} className="btn-secondary">
+          Close
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function SeriesEditor({
+  instance,
+  onSaved,
+  onClose,
+}: {
+  instance: EventOccurrence;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  const simple = isSimpleWeekly(instance.recurrenceRule);
+  const [date, setDate] = useState(instance.seriesStartsLocal.slice(0, 10));
+  const [time, setTime] = useState(instance.seriesStartsLocal.slice(11, 16) || "19:00");
+  const [duration, setDuration] = useState(instance.seriesDurationMinutes);
+  const [tzid, setTzid] = useState(instance.tzid);
+  const [title, setTitle] = useState(instance.seriesTitle);
+  const [location, setLocation] = useState(instance.seriesLocation);
+  const [recurring, setRecurring] = useState(instance.recurrenceRule !== "");
+  const [days, setDays] = useState<string[]>(() => {
+    const picked = bydays(instance.recurrenceRule);
+    if (picked.length > 0) return picked;
+    if (instance.recurrenceRule.startsWith("FREQ=WEEKLY")) return [weekdayCode(instance.seriesStartsLocal.slice(0, 10))];
+    return [];
+  });
+  const [rule, setRule] = useState(instance.recurrenceRule);
+  const [until, setUntil] = useState(instance.rruleUntil ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function toggleDay(v: string) {
+    setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
+  }
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (simple && recurring && days.length === 0) {
+      setError("Pick at least one day to repeat weekly.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const recurrenceRule = simple ? (recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "") : rule.trim();
+    try {
+      await Events.update(instance.eventId, {
+        title,
+        startsLocal: `${date}T${time}`,
+        durationMinutes: duration,
+        tzid: tzid.trim(),
+        location,
+        recurrenceRule,
+        rruleUntil: until,
+      });
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update the series");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
+      <p className="text-sm text-gray-600">
+        This changes every future date that has not been edited on its own. Customized dates stay as they are. Dates
+        the new schedule drops are cancelled, and people who were going or maybe are told.
+      </p>
+      {error && <div className="text-sm text-red-600">{error}</div>}
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label className="label" htmlFor={`s-date-${instance.id}`}>
+            First date
+          </label>
+          <input id={`s-date-${instance.id}`} type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} required />
+        </div>
+        <div>
+          <label className="label" htmlFor={`s-time-${instance.id}`}>
+            Start time
+          </label>
+          <input id={`s-time-${instance.id}`} type="time" className="input" value={time} onChange={(e) => setTime(e.target.value)} required />
+        </div>
+      </div>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label className="label" htmlFor={`s-dur-${instance.id}`}>
+            Duration (minutes)
+          </label>
+          <input
+            id={`s-dur-${instance.id}`}
+            type="number"
+            min={1}
+            max={10080}
+            className="input"
+            value={duration}
+            onChange={(e) => setDuration(Number(e.target.value))}
+          />
+        </div>
+        <div>
+          <label className="label" htmlFor={`s-tz-${instance.id}`}>
+            Time zone
+          </label>
+          <input
+            id={`s-tz-${instance.id}`}
+            className="input"
+            list={`series-zones-${instance.id}`}
+            value={tzid}
+            onChange={(e) => setTzid(e.target.value)}
+            required
+          />
+          <datalist id={`series-zones-${instance.id}`}>
+            {COMMON_ZONES.map((z) => (
+              <option key={z} value={z} />
+            ))}
+          </datalist>
+        </div>
+      </div>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label className="label" htmlFor={`s-title-${instance.id}`}>
+            Title
+          </label>
+          <input id={`s-title-${instance.id}`} className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+        </div>
+        <div>
+          <label className="label" htmlFor={`s-loc-${instance.id}`}>
+            Location (blank = group's location)
+          </label>
+          <input id={`s-loc-${instance.id}`} className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
+        </div>
+      </div>
+      {simple ? (
+        <div>
+          <label className="flex items-center gap-2 font-semibold cursor-pointer">
+            <input
+              type="checkbox"
+              checked={recurring}
+              onChange={(e) => {
+                setRecurring(e.target.checked);
+                if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
+              }}
+              className="w-4 h-4 accent-[#f64060]"
+            />
+            Repeat weekly
+          </label>
+          {recurring && (
+            <div className="mt-3">
+              <WeekdayPicker days={days} onToggle={toggleDay} />
+            </div>
+          )}
+        </div>
+      ) : (
+        <div>
+          <label className="label" htmlFor={`s-rule-${instance.id}`}>
+            Recurrence rule
+          </label>
+          <input id={`s-rule-${instance.id}`} className="input" value={rule} onChange={(e) => setRule(e.target.value)} />
+        </div>
+      )}
+      <div>
+        <label className="label" htmlFor={`s-until-${instance.id}`}>
+          Repeat until (optional)
+        </label>
+        <input id={`s-until-${instance.id}`} type="date" className="input" value={until} onChange={(e) => setUntil(e.target.value)} />
+      </div>
+      <div className="flex gap-2">
+        <button type="submit" disabled={busy} className="btn-primary">
+          {busy ? "Saving…" : "Save series"}
+        </button>
+        <button type="button" onClick={onClose} className="btn-secondary">
+          Close
+        </button>
+      </div>
+    </form>
+  );
 }
 
 function EventRow({
@@ -23,27 +319,28 @@ function EventRow({
   loggedIn,
   onRsvp,
   onCancelled,
+  onChanged,
 }: {
-  instance: MeetingInstance;
+  instance: EventOccurrence;
   groupName: string;
   canManage: boolean;
   loggedIn: boolean;
-  onRsvp: (meetingId: number, date: string, status: "going" | "maybe" | "declined") => void;
-  onCancelled: (meetingId: number, date: string) => void;
+  onRsvp: (eventId: number, date: string, status: RegistrationStatus) => void;
+  onCancelled: (eventId: number, date: string) => void;
+  onChanged: () => void;
 }) {
   const [cancelling, setCancelling] = useState(false);
-  const time = new Date(instance.startsAt).toLocaleTimeString(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  const [editor, setEditor] = useState<null | "date" | "series">(null);
+  const time = formatWallClock(instance.startsLocal) + zoneSuffix(instance.startsAt, instance.tzid);
   const loc = instance.location || "";
+  const name = instance.title || groupName;
 
   async function cancel() {
-    if (!confirm(`Cancel this instance on ${instance.date}?`)) return;
+    if (!confirm(`Cancel this date on ${instance.date}?`)) return;
     setCancelling(true);
     try {
-      await Meetings.cancelInstance(instance.meetingId, instance.date);
-      onCancelled(instance.meetingId, instance.date);
+      await Events.cancelOccurrence(instance.eventId, instance.date);
+      onCancelled(instance.eventId, instance.date);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Cancel failed");
     } finally {
@@ -53,28 +350,36 @@ function EventRow({
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 flex gap-4">
-      <DateBadge iso={instance.startsAt} />
+      <DateBadge local={instance.startsLocal} />
       <div className="grow min-w-0">
-        <div className="font-bold text-lg">{groupName}</div>
+        <div className="font-bold text-lg">{name}</div>
         <div className="text-sm text-gray-600">
           {time}
           {loc ? ` · ${loc}` : ""}
         </div>
+        {instance.overridden && (
+          <div className="text-sm text-gray-500">This date was edited on its own, so series changes leave it alone.</div>
+        )}
         <div className="text-sm text-gray-500 mt-1">
-          {rsvpTotal(instance.rsvps, "going")} going · {rsvpTotal(instance.rsvps, "maybe")} maybe ·{" "}
-          {rsvpTotal(instance.rsvps, "declined")} can't go
+          {rsvpTotal(instance.registrations, "going")} going · {rsvpTotal(instance.registrations, "maybe")} maybe ·{" "}
+          {rsvpTotal(instance.registrations, "declined")} can't go
         </div>
         {loggedIn && (
           <div className="mt-2">
-            <RsvpButtons
-              instance={instance}
-              onChange={(status) => onRsvp(instance.meetingId, instance.date, status)}
-            />
+            <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
           </div>
         )}
+        {editor === "date" && <DateEditor instance={instance} onSaved={onChanged} onClose={() => setEditor(null)} />}
+        {editor === "series" && <SeriesEditor instance={instance} onSaved={onChanged} onClose={() => setEditor(null)} />}
       </div>
       {canManage && (
-        <div className="shrink-0">
+        <div className="shrink-0 flex flex-col items-end gap-2">
+          <button type="button" onClick={() => setEditor(editor === "date" ? null : "date")} className="text-sm text-brand font-medium">
+            Edit this date
+          </button>
+          <button type="button" onClick={() => setEditor(editor === "series" ? null : "series")} className="text-sm text-brand font-medium">
+            Edit series
+          </button>
           <button
             onClick={cancel}
             disabled={cancelling}
@@ -374,10 +679,9 @@ export function GroupDetail() {
     );
   }
 
-  const { group, members, upcomingMeetings, canManage, isMember } = detail;
+  const { group, members, upcomingEvents, canManage, isMember } = detail;
   const pendingReturns = detail.pendingReturns ?? [];
-  // Server serializes an empty upcomingMeetings as null, not [].
-  const meetings: MeetingInstance[] = upcomingMeetings ?? [];
+  const events: EventOccurrence[] = upcomingEvents ?? [];
   // Leadership comes from membership roles (several leaders allowed).
   const leaderCount = (members ?? []).filter((m) => m.role === "leader").length;
   const isLeader = !!user && (members ?? []).some((m) => m.id === user.id && m.role === "leader");
@@ -399,30 +703,28 @@ export function GroupDetail() {
     }
   }
 
-  function handleRsvp(meetingId: number, date: string, status: "going" | "maybe" | "declined") {
+  function handleRsvp(eventId: number, date: string, status: RegistrationStatus) {
     setDetail((d) => {
       if (!d) return d;
       return {
         ...d,
-        upcomingMeetings: (d.upcomingMeetings ?? []).map((m) => {
-          if (m.meetingId !== meetingId || m.date !== date || m.myRsvp === status) return m;
-          const rsvps = { ...m.rsvps };
-          if (m.myRsvp) rsvps[m.myRsvp] = Math.max(0, (rsvps[m.myRsvp] ?? 0) - 1);
-          rsvps[status] = (rsvps[status] ?? 0) + 1;
-          return { ...m, myRsvp: status, rsvps };
+        upcomingEvents: (d.upcomingEvents ?? []).map((m) => {
+          if (m.eventId !== eventId || m.date !== date || m.myRegistration === status) return m;
+          const registrations = { ...m.registrations };
+          if (m.myRegistration) registrations[m.myRegistration] = Math.max(0, (registrations[m.myRegistration] ?? 0) - 1);
+          registrations[status] = (registrations[status] ?? 0) + 1;
+          return { ...m, myRegistration: status, registrations };
         }),
       };
     });
   }
 
-  function handleCancelled(meetingId: number, date: string) {
+  function handleCancelled(eventId: number, date: string) {
     setDetail((d) =>
       d
         ? {
             ...d,
-            upcomingMeetings: (d.upcomingMeetings ?? []).filter(
-              (m) => !(m.meetingId === meetingId && m.date === date)
-            ),
+            upcomingEvents: (d.upcomingEvents ?? []).filter((m) => !(m.eventId === eventId && m.date === date)),
           }
         : d
     );
@@ -607,7 +909,7 @@ export function GroupDetail() {
               {canManage && (
                 <>
                   <Link
-                    to={`/groups/${group.id}/meetings/new`}
+                    to={`/groups/${group.id}/events/new`}
                     className="btn-primary !bg-white !text-brand hover:!bg-gray-100"
                   >
                     Schedule event
@@ -691,20 +993,21 @@ export function GroupDetail() {
 
             {tab === "events" && (
               <div className="space-y-3">
-                {meetings.length === 0 && (
+                {events.length === 0 && (
                   <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
                     No upcoming events scheduled.
                   </div>
                 )}
-                {meetings.map((m) => (
+                {events.map((m) => (
                   <EventRow
-                    key={`${m.meetingId}-${m.date}`}
+                    key={`${m.eventId}-${m.date}`}
                     instance={m}
                     groupName={group.name}
                     canManage={canManage}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}
                     onCancelled={handleCancelled}
+                    onChanged={() => void load()}
                   />
                 ))}
               </div>
@@ -741,8 +1044,10 @@ export function GroupDetail() {
                   </div>
                 )}
                 <div>
-                  <h3 className="font-bold mb-1">Next meeting</h3>
-                  <p className="text-gray-700">{formatNextMeeting(group.nextMeetingAt)}</p>
+                  <h3 className="font-bold mb-1">Next event</h3>
+                  <p className="text-gray-700">
+                    {formatNextEvent(group.nextEventLocal, group.nextEventTzid, group.nextEventAt)}
+                  </p>
                 </div>
               </div>
             )}

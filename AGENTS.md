@@ -48,10 +48,13 @@ browser ──► single Go binary ──► /api/v1/* (JSON, cookie auth)
 
 ## Data model (Phase 1+)
 
-`User` → `Membership` → `Group` → `Meeting`; `RSVP` links users to meeting
-instances. See `models/models.go` — it is the source of truth. The old
-"group with one datetime" shape is gone; groups are ongoing entities,
-meetings are instances (RRULE for recurrence).
+`User` → `Membership` → `Group` → `Event` → `EventOccurrence`;
+`Registration` links a user to one occurrence. The wall clock
+(`starts_local` + IANA `tzid`) is the source of truth; occurrences store
+UTC and are generated 18 months ahead (extended daily under an advisory
+lock). See `models/models.go`. Groups are ongoing entities; an event is a
+series (RRULE) or a single date. A series edit moves future occurrences
+that have no per-date override and keeps their registrations.
 
 `User` carries profile fields: `Name` (full name), `DisplayName` (shown in
 the UI), `Email` (the login: `citext`, unique, DEC-23), `PasswordHash` (nil
@@ -118,7 +121,8 @@ Postgres (`login_throttles`, see `api_auth.go`).
   browser (`browser-image-compression`) before POST — keeps big-phone-photo
   CPU off the server. Server still enforces type/size limits.
 - Notifications are derived, not stored (`GET /api/v1/notifications`):
-  approvals for admins, upcoming events for members. Dismissals live in
+  approvals for admins, upcoming events for members, and a notice when a
+  date they registered going or maybe is cancelled. Dismissals live in
   localStorage per user, keyed by the notice `id`; logout clears all
   browser storage and reloads the page.
 

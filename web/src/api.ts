@@ -68,16 +68,17 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
 // ---- endpoint wrappers ----
 
 import type {
+  EventOccurrence,
+  EventSeries,
   GroupDetailResponse,
   GroupSummary,
-  Meeting,
-  MeetingInstance,
   Member,
   Notification,
+  PendingReturn,
+  RegistrationStatus,
   SoleLedGroup,
   User,
   Visibility,
-  PendingReturn,
 } from "./types";
 
 export const Auth = {
@@ -140,27 +141,55 @@ export const Groups = {
   cancelDeletion: (id: number | string) =>
     api<unknown>(`/groups/${id}/deletion-request`, { method: "DELETE" }),
   members: (id: number | string) => api<{ members: Member[] }>(`/groups/${id}/members`),
-  meetings: (id: number | string, from?: string, to?: string) => {
-    let p = `/groups/${id}/meetings`;
+  events: (id: number | string, from?: string, to?: string) => {
+    let p = `/groups/${id}/events`;
     const q = new URLSearchParams();
     if (from) q.set("from", from);
     if (to) q.set("to", to);
     const qs = q.toString();
     if (qs) p += `?${qs}`;
-    return api<{ meetings: MeetingInstance[] }>(p);
+    return api<{ events: EventOccurrence[] }>(p);
   },
-  createMeeting: (
+  createEvent: (
     id: number | string,
-    data: { startsAt: string; endsAt: string; location: string; recurrenceRule?: string }
-  ) => api<{ meeting: Meeting }>(`/groups/${id}/meetings`, { method: "POST", body: data }),
+    data: {
+      title?: string;
+      startsLocal: string;
+      durationMinutes: number;
+      tzid: string;
+      location?: string;
+      recurrenceRule?: string;
+    }
+  ) => api<{ event: EventSeries }>(`/groups/${id}/events`, { method: "POST", body: data }),
 };
 
-export const Meetings = {
-  rsvp: (id: number, status: "going" | "maybe" | "declined", date: string) =>
-    api<unknown>(`/meetings/${id}/rsvp`, { method: "PUT", body: { status, date } }),
-  cancelInstance: (id: number, date: string) =>
-    api<unknown>(`/meetings/${id}/cancel`, { method: "POST", body: { date } }),
-  delete: (id: number) => api<unknown>(`/meetings/${id}`, { method: "DELETE" }),
+export const Site = {
+  get: () => api<{ name: string; timezone: string }>("/site"),
+};
+
+export const Events = {
+  update: (
+    id: number,
+    data: {
+      title?: string;
+      startsLocal?: string;
+      durationMinutes?: number;
+      tzid?: string;
+      location?: string;
+      recurrenceRule?: string;
+      rruleUntil?: string;
+    }
+  ) => api<{ event: EventSeries }>(`/events/${id}`, { method: "PUT", body: data }),
+  register: (id: number, status: RegistrationStatus, date: string) =>
+    api<unknown>(`/events/${id}/registrations`, { method: "PUT", body: { status, date } }),
+  cancelOccurrence: (id: number, date: string) =>
+    api<unknown>(`/events/${id}/cancel`, { method: "POST", body: { date } }),
+  updateOccurrence: (
+    id: number,
+    date: string,
+    data: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string }
+  ) => api<{ occurrence: EventOccurrence }>(`/events/${id}/occurrences/${date}`, { method: "PUT", body: data }),
+  delete: (id: number) => api<unknown>(`/events/${id}`, { method: "DELETE" }),
 };
 
 export const Admin = {
@@ -174,6 +203,8 @@ export const Admin = {
     api<unknown>(`/admin/groups/${id}/reject-deletion`, { method: "POST" }),
   deleteGroup: (id: number | string) =>
     api<unknown>(`/admin/groups/${id}`, { method: "DELETE" }),
+  setTimezone: (timezone: string) =>
+    api<{ timezone: string }>("/admin/timezone", { method: "PUT", body: { timezone } }),
 };
 
 // Multipart upload: the browser sets Content-Type with the boundary;

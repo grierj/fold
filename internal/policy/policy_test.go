@@ -228,9 +228,9 @@ func TestCanSeeRoster(t *testing.T) {
 	}
 }
 
-// Section 6, "Register for a public / private / invite-only event" (RSVPs
-// on meetings today; guests come in M1.4).
-func TestCanRSVP(t *testing.T) {
+// Section 6, "Register for a public / private / invite-only event"
+// (registrations; guests come in M1.4).
+func TestCanRegister(t *testing.T) {
 	cases := []struct {
 		name string
 		p    *Person
@@ -248,7 +248,7 @@ func TestCanRSVP(t *testing.T) {
 		{"pending group", admin, pending, none, false},
 	}
 	for _, c := range cases {
-		if got := CanRSVP(c.p, c.g, c.r); got != c.want {
+		if got := CanRegister(c.p, c.g, c.r); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}

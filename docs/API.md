@@ -97,7 +97,7 @@ S3-replacement seam.
 GET  /api/v1/groups?search=&tag=          → {groups: [groupSummary]}
 GET  /api/v1/me/groups                    → {groups: [groupSummary]}  (auth; groups I belong to, any status)
 POST /api/v1/groups                       → 201 {group}   (auth, not teens; pending, or active when an admin creates it)
-GET  /api/v1/groups/:id                   → {group, members, upcomingMeetings, canManage, isMember}
+GET  /api/v1/groups/:id                   → {group, members, upcomingEvents, canManage, isMember}
 PUT  /api/v1/groups/:id                   → 200 {group}   (group leader or admin)
 POST   /api/v1/groups/:id/cover           → 200 {imageUrl} (group leader or admin; multipart, field "cover")
 DELETE /api/v1/groups/:id/cover           → 200 {}         (group leader or admin)
@@ -121,13 +121,14 @@ does every route under `/groups/:id`: anyone else gets 404, never 403.
 Pending and archived groups stay limited to their leaders and admins.
 
 `groupSummary`: `{id, name, description, tags[], imageUrl, coverFocalX,
-coverFocalY, location, leaderName, memberCount, nextMeetingAt, status,
-leaderId, visibility, deletionRequested, memberLimit}`. `memberLimit` is null
+coverFocalY, location, leaderName, memberCount, nextEventAt, nextEventLocal,
+nextEventTzid, status, leaderId, visibility, deletionRequested, memberLimit}`.
+`memberLimit` is null
 for no limit (DEC-39); `memberCount` counts active members of listed accounts. `leaderId` and `leaderName` are the
 displayed primary contact only (one of the leaders); they grant nothing.
 
 `group` (detail response): `{group: groupSummary, members: [...],
-upcomingMeetings: [meetingInstance], canManage: bool, isMember: bool,
+upcomingEvents: [occurrence], canManage: bool, isMember: bool,
 pendingReturns: [member]}`. `pendingReturns` (leaders and admins only, else `[]`)
 lists re-enabled accounts waiting because the group was full (DEC-39).
 `members` is filled only for the group's members and admins (people see each
@@ -190,52 +191,87 @@ request withdraws it without deleting the group.
 `membership`: `{id, userId, user: {id, name}, groupId, role: "leader"|"member",
 status, joinedAt}`
 
-### Meetings
-
-Meetings belong to groups. A meeting may carry an `recurrenceRule`
-(RFC 5545 RRULE, e.g. `FREQ=WEEKLY;BYDAY=WE`); instances are expanded
-server-side. Each instance is addressed as `{meetingId, date}` where date
-is `YYYY-MM-DD`.
-
-**Timezone note:** expansion runs on the UTC timeline, so `BYDAY` values in
-the rule refer to the **UTC** day of `startsAt`. When a client converts a
-local wall-clock time to UTC for `startsAt`, it must derive `BYDAY` from
-the UTC-normalized day, not the local day — otherwise the series lands on
-the wrong local weekday. (A bare `FREQ=WEEKLY` with no `BYDAY` repeats on
-the DTSTART weekday and is always safe.)
+### Site
 
 ```
-GET  /api/v1/groups/:id/meetings?from=2026-10-06&to=2027-01-06
-  → {meetings: [meetingInstance]}   (default: next 90 days, max 366-day window, max 100 per meeting)
-POST /api/v1/groups/:id/meetings    → 201 {meeting}   (group leader or admin)
-PUT  /api/v1/meetings/:id           → 200 {meeting}   (group leader or admin)
-DELETE /api/v1/meetings/:id         → 200 {}          (group leader or admin)
-POST /api/v1/meetings/:id/cancel    → 200 {}          (group leader or admin)
-     body: {date: "YYYY-MM-DD"} — cancels one recurring instance
+GET /api/v1/site → {name, timezone}   (public)
+PUT /api/v1/admin/timezone → 200 {timezone}   (admin)
+    body: {timezone} — an IANA name, for example America/Denver
 ```
 
-`meeting`: `{id, groupId, startsAt, endsAt, location, recurrenceRule,
-cancelledDates[]}`
+`timezone` is the church time zone. The schedule form defaults a new series
+to the browser's time zone. A create request that omits `tzid` uses the
+church time zone, or UTC when that setting is missing. An unknown name is 400.
 
-`meetingInstance`: `{meetingId, date, startsAt, endsAt, location,
-rsvps: {going, maybe, declined}, myRsvp: "going"|"maybe"|"declined"|null}`
+### Events
 
-Meeting body: `{startsAt, endsAt, location, recurrenceRule?}`.
-`startsAt` is the first occurrence; times are per-instance local times
-carried on the date. An `recurrenceRule` that does not parse is rejected
-with 400. Instances are returned in chronological order. `from`/`to` must
-be in order and at most 366 days apart.
+Events belong to groups. A series stores a wall clock (`startsLocal`,
+`YYYY-MM-DDTHH:MM` with no offset) and an IANA `tzid`. Occurrences are
+stored up to 18 months ahead and extended daily. A weekly 7:00 pm
+America/Boise event stays at 7:00 pm local on both sides of a
+daylight-saving change. `BYDAY` is the weekday in that zone.
 
-### RSVP
+Each date is addressed as `{eventId, date}` where `date` is the series
+date `YYYY-MM-DD`. A per-date time change does not change `date`.
 
 ```
-PUT /api/v1/meetings/:id/rsvp   → 200 {rsvp}   (auth)
+GET  /api/v1/groups/:id/events?from=2026-10-06&to=2027-01-06
+  → {events: [occurrence]}   (default: next 90 days, max 366-day window, max 100 per event)
+POST /api/v1/groups/:id/events              → 201 {event}   (group leader or admin)
+PUT  /api/v1/events/:id                     → 200 {event}   (group leader or admin; series edit)
+DELETE /api/v1/events/:id                   → 200 {}        (group leader or admin)
+POST /api/v1/events/:id/cancel              → 200 {}        (group leader or admin)
+     body: {date: "YYYY-MM-DD"} — cancels that stored date
+PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (group leader or admin)
+     body: any of {startsLocal, durationMinutes, location, title} — this date only
+```
+
+`event`: `{id, groupId, title, startsLocal, durationMinutes, tzid, startsAt,
+endsAt, location, recurrenceRule, rruleUntil}`. `startsAt` and `endsAt` are
+UTC. `startsLocal` is the wall clock.
+
+`occurrence`: `{id, eventId, date, startsAt, endsAt, startsLocal, endsLocal,
+tzid, durationMinutes, location, title, recurrenceRule, rruleUntil,
+seriesStartsLocal, seriesTitle, seriesLocation, seriesDurationMinutes,
+overridden, registrations: {going, maybe, declined},
+myRegistration: "going"|"maybe"|"declined"|null}`. `startsAt`/`endsAt` are
+UTC. `startsLocal`/`endsLocal` are the wall clock in `tzid`, including a
+per-date override. `overridden` is true when this date has its own time,
+title, or location.
+
+Create body: `{title?, startsLocal, durationMinutes, tzid?, location?,
+recurrenceRule?, rruleUntil?}`. `startsLocal` and `durationMinutes` (1 to
+10080) are required. Omit `tzid` to use the church time zone. The schedule
+form sends the browser's time zone. An empty
+`recurrenceRule` is one date. The rule must not contain `DTSTART` or a
+newline; `rruleUntil` is a separate inclusive `YYYY-MM-DD`, not an `UNTIL`
+inside the rule. A rule that does not parse is 400.
+
+A series edit (`PUT /events/:id`) applies to every future date. Future
+means `startsAt` is strictly after now; a date already underway stays.
+Future dates without a per-date override move onto the new times and keep
+their registrations (same occurrence row). A future date the new rule no
+longer contains is cancelled, and people who registered going or maybe see
+a derived notice. Per-date overrides, including a location-only override,
+are left alone. Dates the new rule adds are inserted.
+
+Occurrences are returned in chronological order. `from`/`to` are inclusive
+`YYYY-MM-DD` and at most 366 days apart. Cancelled dates are left out of
+the list. The group detail's `upcomingEvents` are the scheduled dates from
+now through 90 days.
+
+### Registration
+
+```
+PUT /api/v1/events/:id/registrations   → 200 {registration}   (auth)
   body: {status: "going"|"maybe"|"declined", date: "YYYY-MM-DD"}
 ```
 
-`rsvp`: `{userId, meetingId, date, status}`. One row per
-(user, meeting, date); PUT is idempotent. The caller must be allowed to
-see the meeting's group.
+`registration`: `{userId, eventId, occurrenceId, date, status}`. One row per
+(user, occurrence); PUT is idempotent. The date must be a scheduled
+occurrence. The caller must be allowed to see the event's group; otherwise
+the response is 404. A disabled account's registration is kept and hidden
+from the counts.
 
 ### Admin
 
@@ -273,7 +309,7 @@ their sessions (`session_version`). A disabled admin has no admin powers. `PUT /
 
 Rosters (`members` in group detail, `GET /groups/:id/members`, admin rosters) include `admin: true` for church admins, so the SPA can label them and hide Remove (DEC-38).
 
-Disabling (DEC-38): the account's memberships and RSVPs are kept, hidden from rosters, and left out of member counts, RSVP counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Enabling it again restores them as plain member, or as `pending_return` in a group at its member limit (DEC-39), writing `membership.restored` (with the resulting status) per membership and `user.enabled`. Deleting still ends memberships.
+Disabling (DEC-38): the account's memberships and registrations are kept, hidden from rosters, and left out of member counts, registration counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Enabling it again restores them as plain member, or as `pending_return` in a group at its member limit (DEC-39), writing `membership.restored` (with the resulting status) per membership and `user.enabled`. Deleting still ends memberships.
 
 Removing a member (DEC-35): leaders remove people from groups they lead,
 co-leaders included, but never an admin (they can't demote an admin
@@ -305,8 +341,9 @@ GET /api/v1/notifications → {notifications: [{id, type, title, body, link}]}  
 The SPA refetches on sign-in, navigation, window focus and every 5 minutes.
 
 Derived, not stored: `approval` (admins, when groups await approval or a
-leader has asked for a group to be deleted) and `event` (meetings in your
-groups in the next 7 days, max 10), and `leadership` (admins: someone else
+leader has asked for a group to be deleted), `event` (scheduled occurrences
+in your groups in the next 7 days, max 10, and a notice when a date you
+registered going or maybe is cancelled), and `leadership` (admins: someone else
 made or removed a group leader in the last 14 days, from the audit log). The client tracks dismissed items
 locally. Admin `DELETE /admin/groups/:id` removes a group immediately,
 with or without a deletion request, and whether or not it still has members.
