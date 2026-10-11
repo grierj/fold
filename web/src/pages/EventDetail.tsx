@@ -84,6 +84,7 @@ export function EventDetail() {
       <h1 className="text-3xl font-extrabold mb-2">{title}</h1>
       <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} />
       {event.location && <p className="text-gray-600 mt-1">{event.location}</p>}
+      {event.description && <p className="text-gray-700 whitespace-pre-wrap mt-3">{event.description}</p>}
       {error && <div className="text-red-600 mt-3">{error}</div>}
 
       {canSetVisibility && (
@@ -248,6 +249,7 @@ function HostEditor({
 
 function SeriesForm({ event, onSaved }: { event: EventDetailResponse["event"]; onSaved: () => void }) {
   const [title, setTitle] = useState(event.title);
+  const [description, setDescription] = useState(event.description);
   const [date, setDate] = useState(event.startsLocal.slice(0, 10));
   const [time, setTime] = useState(event.startsLocal.slice(11, 16));
   const [duration, setDuration] = useState(event.durationMinutes);
@@ -268,6 +270,7 @@ function SeriesForm({ event, onSaved }: { event: EventDetailResponse["event"]; o
     try {
       await Events.update(event.id, {
         title: title.trim(),
+        description: description.trim(),
         startsLocal: `${date}T${time}`,
         durationMinutes: duration,
         tzid: tzid.trim(),
@@ -286,6 +289,14 @@ function SeriesForm({ event, onSaved }: { event: EventDetailResponse["event"]; o
       {error && <div className="text-sm text-red-600">{error}</div>}
       <p className="text-sm text-gray-600">Future dates without their own edits move. Past dates stay.</p>
       <input className="input" aria-label="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
+      <textarea
+        className="input"
+        rows={4}
+        maxLength={5000}
+        aria-label="Description"
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+      />
       <div className="grid sm:grid-cols-2 gap-3">
         <input className="input" type="date" aria-label="Date" value={date} onChange={(e) => setDate(e.target.value)} required />
         <input className="input" type="time" aria-label="Start time" value={time} onChange={(e) => setTime(e.target.value)} required />

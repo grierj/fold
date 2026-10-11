@@ -51,7 +51,8 @@ browser ──► single Go binary ──► /api/v1/* (JSON, cookie auth)
 `User` → `Membership` → `Group` → `Event` → `EventOccurrence`;
 `Registration` links a user to one occurrence. An event may instead be
 church-wide (`events.group_id` null), created by an admin and run by its
-`EventHost` rows. `visibility` plus `visibility_source` (`group` or
+`EventHost` rows. An event has a plain-text `description` (5000 characters,
+same as a group). `visibility` plus `visibility_source` (`group` or
 `custom`) decide who can see it; `group` follows the group's visibility.
 The wall clock (`starts_local` + IANA `tzid`) is the source of truth;
 occurrences store UTC and are generated 18 months ahead (extended daily

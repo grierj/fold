@@ -269,6 +269,7 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 		StartsAt: start.UTC(), EndsAt: end.UTC(),
 		StartsLocal: events.FormatWall(start, loc), EndsLocal: events.FormatWall(end, loc),
 		TZID: ev.TZID, DurationMinutes: dur, Location: location, Title: title,
+		Description:    ev.Description,
 		RecurrenceRule: ev.RRule, RRuleUntil: until, SeriesStartsLocal: ev.StartsLocal,
 		Overridden:  o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil,
 		SeriesTitle: ev.Title, SeriesLocation: ev.Location, SeriesDurationMinutes: ev.DurationMinutes,
@@ -287,7 +288,7 @@ func toEventJSON(ev *models.Event) eventJSON {
 		until = *ev.RRuleUntil
 	}
 	return eventJSON{
-		ID: ev.ID, GroupID: ev.GroupID, Title: ev.Title,
+		ID: ev.ID, GroupID: ev.GroupID, Title: ev.Title, Description: ev.Description,
 		StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes, TZID: ev.TZID,
 		StartsAt: start.UTC(), EndsAt: end.UTC(),
 		Location: ev.Location, RecurrenceRule: ev.RRule, RRuleUntil: until,
@@ -340,6 +341,7 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 
 type eventBody struct {
 	Title           *string `json:"title"`
+	Description     *string `json:"description"`
 	StartsLocal     *string `json:"startsLocal"`
 	DurationMinutes *int    `json:"durationMinutes"`
 	TZID            *string `json:"tzid"`
@@ -403,14 +405,21 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody) {
 	if body.Title != nil {
 		ev.Title = strings.TrimSpace(*body.Title)
 	}
+	if body.Description != nil {
+		ev.Description = strings.TrimSpace(*body.Description)
+	}
 	if body.Location != nil {
 		ev.Location = strings.TrimSpace(*body.Location)
 	}
 }
 
-func textOK(c *gin.Context, title, location string) bool {
+func textOK(c *gin.Context, title, description, location string) bool {
 	if len(title) > maxGroupNameLen {
 		jsonError(c, http.StatusBadRequest, "title is too long")
+		return false
+	}
+	if len(description) > maxDescriptionLen {
+		jsonError(c, http.StatusBadRequest, "description is too long")
 		return false
 	}
 	if len(location) > maxLocationLen {
@@ -482,7 +491,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		CreatedBy: apiUser(c).ID,
 	}
 	applySpec(&ev, spec, body)
-	if !textOK(c, ev.Title, ev.Location) {
+	if !textOK(c, ev.Title, ev.Description, ev.Location) {
 		return
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
@@ -524,14 +533,17 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	if !ok {
 		return
 	}
-	title, location := ev.Title, ev.Location
+	title, description, location := ev.Title, ev.Description, ev.Location
 	if body.Title != nil {
 		title = strings.TrimSpace(*body.Title)
+	}
+	if body.Description != nil {
+		description = strings.TrimSpace(*body.Description)
 	}
 	if body.Location != nil {
 		location = strings.TrimSpace(*body.Location)
 	}
-	if !textOK(c, title, location) {
+	if !textOK(c, title, description, location) {
 		return
 	}
 	now := time.Now().UTC()

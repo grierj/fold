@@ -252,7 +252,7 @@ PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (leader, host,
 ```
 
 `event`: `{id, groupId?, groupName?, groupVisibility?, hostedBy?, title,
-startsLocal, durationMinutes, tzid, startsAt, endsAt, location,
+description, startsLocal, durationMinutes, tzid, startsAt, endsAt, location,
 recurrenceRule, rruleUntil, visibility, visibilitySource, churchWide,
 hosts?}`. `groupId` is omitted for a church-wide event and for an opened
 event whose group the viewer cannot see; `hostedBy` is the church name
@@ -261,7 +261,7 @@ church-wide event. `startsAt` and `endsAt` are UTC. `startsLocal` is the
 wall clock.
 
 `occurrence`: `{id, eventId, date, startsAt, endsAt, startsLocal, endsLocal,
-tzid, durationMinutes, location, title, recurrenceRule, rruleUntil,
+tzid, durationMinutes, location, title, description, recurrenceRule, rruleUntil,
 seriesStartsLocal, seriesTitle, seriesLocation, seriesDurationMinutes,
 overridden, registrations: {going, maybe, declined},
 myRegistration: "going"|"maybe"|"declined"|null, visibility,
@@ -272,9 +272,11 @@ per-date override. `overridden` is true when this date has its own time,
 title, or location. `attendees` (`{userId, name, status}`) is omitted when
 `attendeesVisible` is false. Counts stay either way.
 
-Create body: `{title?, startsLocal, durationMinutes, tzid?, location?,
-recurrenceRule?, rruleUntil?}`. `startsLocal` and `durationMinutes` (1 to
-10080) are required. Omit `tzid` to use the church time zone. The schedule
+Create body: `{title?, description?, startsLocal, durationMinutes, tzid?,
+location?, recurrenceRule?, rruleUntil?}`. `description` is plain text, at
+most 5000 characters, the same limit as a group description. `startsLocal`
+and `durationMinutes` (1 to 10080) are required. Omit `tzid` to use the
+church time zone. The schedule
 form sends the browser's time zone. An empty
 `recurrenceRule` is one date. The rule must not contain `DTSTART` or a
 newline; `rruleUntil` is a separate inclusive `YYYY-MM-DD`, not an `UNTIL`

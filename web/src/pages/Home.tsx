@@ -201,6 +201,7 @@ export function Home() {
                     {zoneSuffix(ev.startsAt, ev.tzid)}
                     {ev.location ? ` · ${ev.location}` : ""}
                   </div>
+                  {ev.description && <div className="text-sm text-gray-600 line-clamp-2">{ev.description}</div>}
                   {ev.hostedBy && <div className="text-sm text-gray-500">Hosted by {ev.hostedBy}</div>}
                 </div>
               </Link>

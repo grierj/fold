@@ -156,6 +156,7 @@ function SeriesEditor({
   const [duration, setDuration] = useState(instance.seriesDurationMinutes);
   const [tzid, setTzid] = useState(instance.tzid);
   const [title, setTitle] = useState(instance.seriesTitle);
+  const [description, setDescription] = useState(instance.description);
   const [location, setLocation] = useState(instance.seriesLocation);
   const [recurring, setRecurring] = useState(instance.recurrenceRule !== "");
   const [days, setDays] = useState<string[]>(() => {
@@ -185,6 +186,7 @@ function SeriesEditor({
     try {
       await Events.update(instance.eventId, {
         title,
+        description,
         startsLocal: `${date}T${time}`,
         durationMinutes: duration,
         tzid: tzid.trim(),
@@ -268,6 +270,19 @@ function SeriesEditor({
           <input id={`s-loc-${instance.id}`} className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
         </div>
       </div>
+      <div>
+        <label className="label" htmlFor={`s-desc-${instance.id}`}>
+          Description
+        </label>
+        <textarea
+          id={`s-desc-${instance.id}`}
+          className="input"
+          rows={3}
+          maxLength={5000}
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
+      </div>
       {simple ? (
         <div>
           <label className="flex items-center gap-2 font-semibold cursor-pointer">
@@ -320,6 +335,7 @@ function EventRow({
   groupVisibility,
   canManage,
   showVisibility,
+  showDescription,
   loggedIn,
   onRsvp,
   onCancelled,
@@ -331,6 +347,7 @@ function EventRow({
   canManage: boolean;
   // One control per series. Later dates of the same event omit it.
   showVisibility: boolean;
+  showDescription: boolean;
   loggedIn: boolean;
   onRsvp: (eventId: number, date: string, status: RegistrationStatus) => void;
   onCancelled: (eventId: number, date: string) => void;
@@ -360,6 +377,9 @@ function EventRow({
       <DateBadge local={instance.startsLocal} />
       <div className="grow min-w-0">
         <div className="font-bold text-lg">{name}</div>
+        {showDescription && instance.description && (
+          <p className="text-sm text-gray-700 whitespace-pre-wrap mt-1">{instance.description}</p>
+        )}
         <div className="text-sm text-gray-600">
           {time}
           {loc ? ` · ${loc}` : ""}
@@ -1030,6 +1050,7 @@ export function GroupDetail() {
                     groupVisibility={group.visibility}
                     canManage={canManage}
                     showVisibility={canManage && visibilityDate.get(m.eventId) === m.date}
+                    showDescription={visibilityDate.get(m.eventId) === m.date}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}
                     onCancelled={handleCancelled}

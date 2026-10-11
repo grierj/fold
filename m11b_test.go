@@ -435,3 +435,50 @@ func TestChurchWideHosts(t *testing.T) {
 		t.Fatal("a non-host can manage the event")
 	}
 }
+
+func TestEventDescription(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+
+	apiDo(t, admin, "POST", "/api/v1/events", map[string]any{
+		"title": "Too long", "startsLocal": "2026-12-02T19:00", "durationMinutes": 60,
+		"description": strings.Repeat("a", maxDescriptionLen+1),
+	}, http.StatusBadRequest)
+
+	w := admin.do("POST", "/api/v1/events", map[string]any{
+		"title": "Potluck", "startsLocal": "2026-12-02T19:00", "durationMinutes": 90,
+		"description": "  Bring a salad.  ",
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	if created.Event.Description != "Bring a salad." {
+		t.Fatalf("description: %q", created.Event.Description)
+	}
+	page, _ := getEvent(t, admin, created.Event.ID, http.StatusOK)
+	if page.Event.Description != "Bring a salad." || page.Occurrences[0].Description != "Bring a salad." {
+		t.Fatalf("page: %+v occ %+v", page.Event.Description, page.Occurrences[0].Description)
+	}
+
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", created.Event.ID), map[string]any{
+		"description": "Dessert too.",
+	}, http.StatusOK)
+	page, _ = getEvent(t, admin, created.Event.ID, http.StatusOK)
+	if page.Event.Description != "Dessert too." || page.Event.Title != "Potluck" {
+		t.Fatalf("update: %+v", page.Event)
+	}
+
+	gid := createGroupAs(t, admin, "Choir", "public")
+	raw := apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/groups/%d/events", gid), map[string]any{
+		"title": "Rehearsal", "startsLocal": "2026-12-03T19:00", "durationMinutes": 60,
+		"description": "Music stands are in the closet.",
+	}, http.StatusCreated)
+	if !strings.Contains(raw, "Music stands are in the closet.") {
+		t.Fatalf("group event: %s", raw)
+	}
+}

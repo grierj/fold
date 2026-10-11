@@ -156,6 +156,7 @@ export const Groups = {
     id: number | string,
     data: {
       title?: string;
+      description?: string;
       startsLocal: string;
       durationMinutes: number;
       tzid: string;
@@ -174,6 +175,7 @@ export const Events = {
   get: (id: number | string) => api<EventDetailResponse>(`/events/${id}`),
   createChurch: (data: {
     title: string;
+    description?: string;
     startsLocal: string;
     durationMinutes: number;
     tzid: string;
@@ -194,6 +196,7 @@ export const Events = {
     id: number,
     data: {
       title?: string;
+      description?: string;
       startsLocal?: string;
       durationMinutes?: number;
       tzid?: string;

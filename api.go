@@ -124,6 +124,7 @@ type occurrenceJSON struct {
 	DurationMinutes       int              `json:"durationMinutes"`
 	Location              string           `json:"location"`
 	Title                 string           `json:"title"`
+	Description           string           `json:"description"`
 	RecurrenceRule        string           `json:"recurrenceRule"`
 	RRuleUntil            string           `json:"rruleUntil,omitempty"`
 	SeriesStartsLocal     string           `json:"seriesStartsLocal"`
@@ -164,6 +165,7 @@ type eventJSON struct {
 	GroupVisibility  string     `json:"groupVisibility,omitempty"`
 	HostedBy         string     `json:"hostedBy,omitempty"`
 	Title            string     `json:"title"`
+	Description      string     `json:"description"`
 	StartsLocal      string     `json:"startsLocal"`
 	DurationMinutes  int        `json:"durationMinutes"`
 	TZID             string     `json:"tzid"`

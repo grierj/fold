@@ -344,7 +344,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		Visibility: vis, VisibilitySource: models.VisibilitySourceCustom, CreatedBy: creator.ID,
 	}
 	applySpec(&ev, spec, body.eventBody)
-	if !textOK(c, ev.Title, ev.Location) {
+	if !textOK(c, ev.Title, ev.Description, ev.Location) {
 		return
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {

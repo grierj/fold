@@ -13,12 +13,14 @@ test("an admin schedules a church-wide event from the browser zone", async ({ pa
   await expect(page.getByLabel("Time zone")).toHaveValue("America/New_York");
 
   await page.getByLabel("Title").fill("Church potluck");
+  await page.getByLabel("Description").fill("Bring a side dish.");
   await page.getByLabel("Date").fill(futureDate(18));
   await page.getByLabel("Start time").fill("18:00");
   await page.getByRole("button", { name: "Schedule event" }).click();
 
   await expect(page).toHaveURL(/\/events\/\d+$/);
   await expect(page.getByRole("heading", { name: "Church potluck" })).toBeVisible();
+  await expect(page.getByText("Bring a side dish.")).toBeVisible();
   await expect(page.getByText("Hosted by Fold e2e")).toBeVisible();
 
   await page.goto("/");

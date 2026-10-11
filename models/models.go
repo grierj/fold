@@ -171,6 +171,9 @@ type Event struct {
 	GroupID *uint  `gorm:"index"`
 	Group   Group  `gorm:"foreignKey:GroupID"`
 	Title   string `gorm:"not null"`
+	// Description is plain text, same 5000-character limit as a group.
+	// Sanitized HTML is a later milestone.
+	Description string `gorm:"not null"`
 	// Visibility is public, private, or invite_only. With VisibilitySource
 	// group, it tracks the group's visibility. Church-wide events are
 	// public or private and always custom (a CHECK enforces that).

@@ -76,6 +76,7 @@ export interface EventOccurrence {
   durationMinutes: number;
   location: string;
   title: string;
+  description: string;
   recurrenceRule: string;
   rruleUntil?: string;
   seriesStartsLocal: string;
@@ -126,6 +127,7 @@ export interface EventSeries {
   groupVisibility?: Visibility;
   hostedBy?: string;
   title: string;
+  description: string;
   startsLocal: string;
   durationMinutes: number;
   tzid: string;

@@ -14,6 +14,7 @@ export function NewEvent() {
   const [loading, setLoading] = useState(true);
 
   const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("19:00");
   const [durationMin, setDurationMin] = useState(90);
@@ -74,6 +75,7 @@ export function NewEvent() {
     try {
       await Groups.createEvent(id!, {
         title: title.trim(),
+        description: description.trim(),
         startsLocal: `${date}T${startTime}`,
         durationMinutes: durationMin,
         tzid: tzid.trim(),
@@ -135,6 +137,20 @@ export function NewEvent() {
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder={groupName || "Event name"}
+          />
+        </div>
+        <div>
+          <label className="label" htmlFor="event-description">
+            Description
+          </label>
+          <textarea
+            id="event-description"
+            className="input"
+            rows={4}
+            maxLength={5000}
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+            placeholder="What should people know before they come?"
           />
         </div>
         <div className="grid sm:grid-cols-2 gap-4">
