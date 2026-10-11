@@ -66,32 +66,39 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 func (a *App) buildOccurrences(groupIDs []uint, from, to string, startAfter *time.Time, me *models.User) []occurrenceJSON {
-	out := []occurrenceJSON{}
 	if len(groupIDs) == 0 {
+		return []occurrenceJSON{}
+	}
+	var ids []uint
+	if err := a.DB.Model(&models.Event{}).Where("group_id IN ?", groupIDs).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
+		return []occurrenceJSON{}
+	}
+	return a.occurrencesForEvents(ids, from, to, startAfter, me)
+}
+
+// occurrencesForEvents lists scheduled dates of these events and attaches
+// attendee names only where policy allows. A caller who cannot see an
+// event's group gets "Hosted by <church>" and no group id or name.
+func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User) []occurrenceJSON {
+	out := []occurrenceJSON{}
+	if len(eventIDs) == 0 {
 		return out
 	}
 	var evs []models.Event
-	if err := a.DB.Where("group_id IN ?", groupIDs).Find(&evs).Error; err != nil || len(evs) == 0 {
+	if err := a.DB.Where("id IN ?", eventIDs).Find(&evs).Error; err != nil || len(evs) == 0 {
 		return out
 	}
 	byID := make(map[uint]*models.Event, len(evs))
-	eventIDs := make([]uint, 0, len(evs))
 	gset := map[uint]struct{}{}
 	for i := range evs {
 		byID[evs[i].ID] = &evs[i]
-		eventIDs = append(eventIDs, evs[i].ID)
-		gset[evs[i].GroupID] = struct{}{}
+		if evs[i].GroupID != nil {
+			gset[*evs[i].GroupID] = struct{}{}
+		}
 	}
-	var groups []models.Group
-	gids := make([]uint, 0, len(gset))
-	for id := range gset {
-		gids = append(gids, id)
-	}
-	a.DB.Where("id IN ?", gids).Find(&groups)
-	groupLoc := map[uint]string{}
-	for i := range groups {
-		groupLoc[groups[i].ID] = groups[i].Location
-	}
+	groups := a.groupsByID(gset)
+	rels := a.relsFor(me, gset)
+	hosted := a.hostedEventIDs(me, eventIDs)
 
 	q := a.DB.Where("event_id IN ? AND status = ? AND original_date >= ? AND original_date <= ?",
 		eventIDs, models.OccurrenceScheduled, from, to)
@@ -145,10 +152,34 @@ func (a *App) buildOccurrences(groupIDs []uint, from, to string, startAfter *tim
 		}
 	}
 
+	showNames := map[uint]bool{}
+	p := asPerson(me)
+	for i := range evs {
+		ev := &evs[i]
+		g, rel := groupAndRel(ev, groups, rels)
+		gp := policy.Group{}
+		if g != nil {
+			gp = asGroup(g)
+		}
+		showNames[ev.ID] = policy.CanSeeAttendeeNames(p, viewOf(ev, hosted[ev.ID]), gp, rel)
+	}
+	names := a.attendeeNames(kept, showNames)
+
 	for i := range kept {
 		o := &kept[i]
 		ev := byID[o.EventID]
-		inst := occurrenceToJSON(ev, o, groupLoc[ev.GroupID])
+		if ev == nil {
+			continue
+		}
+		g, rel := groupAndRel(ev, groups, rels)
+		loc := ""
+		if g != nil {
+			loc = g.Location
+		}
+		inst := occurrenceToJSON(ev, o, loc)
+		inst.Visibility = shownVisibility(ev, g)
+		inst.VisibilitySource = ev.VisibilitySource
+		inst.ChurchWide = ev.GroupID == nil
 		inst.Registrations = map[string]int64{"going": 0, "maybe": 0, "declined": 0}
 		for s, n := range countOf[o.ID] {
 			inst.Registrations[s] = n
@@ -156,9 +187,55 @@ func (a *App) buildOccurrences(groupIDs []uint, from, to string, startAfter *tim
 		if s, ok := mine[o.ID]; ok {
 			inst.MyRegistration = &s
 		}
+		inst.AttendeesVisible = showNames[ev.ID]
+		if showNames[ev.ID] {
+			inst.Attendees = names[o.ID]
+		}
+		a.presentGroup(&inst, ev, g, me, rel)
 		out = append(out, inst)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartsAt.Before(out[j].StartsAt) })
+	return out
+}
+
+// attendeeNames loads listed registrants for the occurrences whose events
+// allow names. Disabled accounts stay out via listedUsers.
+func (a *App) attendeeNames(kept []models.EventOccurrence, show map[uint]bool) map[uint][]attendeeJSON {
+	out := map[uint][]attendeeJSON{}
+	ids := []uint{}
+	for _, o := range kept {
+		if show[o.EventID] {
+			ids = append(ids, o.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return out
+	}
+	type row struct {
+		OccurrenceID uint
+		UserID       uint
+		Name         string
+		DisplayName  string
+		Status       string
+	}
+	var rows []row
+	a.DB.Model(&models.Registration{}).Joins(listedUsers("registrations")).
+		Select("registrations.occurrence_id, registrations.user_id, users.name, users.display_name, registrations.status").
+		Where("registrations.occurrence_id IN ?", ids).
+		Order("users.display_name, users.name, users.id").
+		Scan(&rows)
+	for _, r := range rows {
+		name := r.DisplayName
+		if name == "" {
+			name = r.Name
+		}
+		if name == "" {
+			name = "Member"
+		}
+		out[r.OccurrenceID] = append(out[r.OccurrenceID], attendeeJSON{
+			UserID: r.UserID, Name: name, Status: r.Status,
+		})
+	}
 	return out
 }
 
@@ -214,6 +291,8 @@ func toEventJSON(ev *models.Event) eventJSON {
 		StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes, TZID: ev.TZID,
 		StartsAt: start.UTC(), EndsAt: end.UTC(),
 		Location: ev.Location, RecurrenceRule: ev.RRule, RRuleUntil: until,
+		Visibility: ev.Visibility, VisibilitySource: ev.VisibilitySource,
+		ChurchWide: ev.GroupID == nil,
 	}
 }
 
@@ -397,7 +476,11 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 	if !ok {
 		return
 	}
-	ev := models.Event{GroupID: g.ID, CreatedBy: apiUser(c).ID}
+	gid := g.ID
+	ev := models.Event{
+		GroupID: &gid, Visibility: g.Visibility, VisibilitySource: models.VisibilitySourceGroup,
+		CreatedBy: apiUser(c).ID,
+	}
 	applySpec(&ev, spec, body)
 	if !textOK(c, ev.Title, ev.Location) {
 		return
@@ -416,16 +499,15 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 }
 
 func (a *App) loadManagedEvent(c *gin.Context) (*models.Event, bool) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var ev models.Event
-	if err := a.DB.First(&ev, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "event not found")
+	ev, f, ok := a.loadVisibleEvent(c)
+	if !ok {
 		return nil, false
 	}
-	if _, _, ok := a.loadManagedGroupID(c, ev.GroupID); !ok {
+	if !policy.CanManageEvent(asPerson(apiUser(c)), f.view, f.rel) {
+		jsonError(c, http.StatusForbidden, "you can't change this event")
 		return nil, false
 	}
-	return &ev, true
+	return ev, true
 }
 
 func (a *App) apiUpdateEvent(c *gin.Context) {
@@ -533,8 +615,8 @@ func (a *App) apiDeleteEvent(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// deleteEventRows removes an event's registrations and occurrences, then
-// soft-deletes the event. tx is the caller's transaction.
+// deleteEventRows removes an event's registrations, occurrences, and hosts,
+// then soft-deletes the event. tx is the caller's transaction.
 func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 	if len(eventIDs) == 0 {
 		return nil
@@ -549,6 +631,9 @@ func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 		}
 	}
 	if err := tx.Where("event_id IN ?", eventIDs).Delete(&models.EventOccurrence{}).Error; err != nil {
+		return err
+	}
+	if err := tx.Where("event_id IN ?", eventIDs).Delete(&models.EventHost{}).Error; err != nil {
 		return err
 	}
 	return tx.Where("id IN ?", eventIDs).Delete(&models.Event{}).Error
@@ -653,9 +738,17 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not update this date")
 		return
 	}
-	var g models.Group
-	a.DB.First(&g, ev.GroupID)
-	inst := occurrenceToJSON(ev, &o, g.Location)
+	groupLoc := ""
+	if ev.GroupID != nil {
+		var g models.Group
+		if err := a.DB.First(&g, *ev.GroupID).Error; err == nil {
+			groupLoc = g.Location
+		}
+	}
+	inst := occurrenceToJSON(ev, &o, groupLoc)
+	inst.Visibility = ev.Visibility
+	inst.VisibilitySource = ev.VisibilitySource
+	inst.ChurchWide = ev.GroupID == nil
 	c.JSON(http.StatusOK, gin.H{"occurrence": inst})
 }
 
@@ -666,9 +759,12 @@ func (a *App) apiRegister(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return
 	}
-	var g models.Group
-	if err := a.DB.First(&g, ev.GroupID).Error; err != nil ||
-		!policy.CanRegister(asPerson(apiUser(c)), asGroup(&g), a.relOf(apiUser(c), g.ID)) {
+	f := a.factsFor(apiUser(c), &ev)
+	gp := policy.Group{}
+	if f.group != nil {
+		gp = asGroup(f.group)
+	}
+	if !policy.CanRegisterEvent(asPerson(apiUser(c)), f.view, gp, f.rel) {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return
 	}

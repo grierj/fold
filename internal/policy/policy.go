@@ -188,9 +188,169 @@ func CanRequestDeletion(p *Person, r Rel, otherMembers int64) bool {
 func CanCancelDeletion(p *Person, r Rel) bool { return CanManageGroup(p, r) }
 
 // CanRegister: signed-in people register for events of active groups they
-// can see. Guest registration comes in M1.4.
+// can see. Guest registration comes in M1.4. Group events that are open
+// wider than the group use CanRegisterEvent, which does not require seeing
+// the group.
 func CanRegister(p *Person, g Group, r Rel) bool {
 	return p != nil && g.Status == GroupActive && CanSeeGroup(p, g, r)
+}
+
+// Where an event's visibility comes from.
+const (
+	SourceGroup  = "group"
+	SourceCustom = "custom"
+)
+
+// EventView is what policy needs to know about an event. Host is true only
+// for a church-wide event this person hosts; a host row on a group event
+// grants nothing (DEC-7).
+type EventView struct {
+	ChurchWide bool
+	Visibility string
+	Source     string // group | custom
+	Host       bool
+}
+
+// openness ranks invite_only < private < public. Anything else is closed.
+func openness(v string) int {
+	switch v {
+	case Public:
+		return 2
+	case Private:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// MoreOpen reports whether the event's visibility lets more people in than
+// the group's. A reason is optional when this is true (DEC-28).
+func MoreOpen(eventVis, groupVis string) bool {
+	return openness(eventVis) > openness(groupVis)
+}
+
+// effectiveVisibility is the visibility that decides who can see the event.
+// Source group follows the group even when the stored value is stale.
+func effectiveVisibility(ev EventView, g Group) string {
+	if !ev.ChurchWide && ev.Source != SourceCustom {
+		return g.Visibility
+	}
+	return ev.Visibility
+}
+
+// CanSeeEvent: admins see every event. A group that isn't active is limited
+// to its leaders, even when the event is more open. Otherwise the event's
+// effective visibility applies. Seeing the event does not reveal the group.
+func CanSeeEvent(p *Person, ev EventView, g Group, r Rel) bool {
+	if p != nil && p.Admin {
+		return true
+	}
+	if ev.ChurchWide {
+		switch ev.Visibility {
+		case Public:
+			return true
+		case Private:
+			return p != nil
+		default:
+			return false
+		}
+	}
+	if g.Status != GroupActive {
+		return p != nil && r.Leader
+	}
+	switch effectiveVisibility(ev, g) {
+	case Public:
+		return true
+	case Private:
+		return p != nil
+	default:
+		return p != nil && r.Member
+	}
+}
+
+// CanManageEvent: admins, a leader of the event's group, or a host of that
+// church-wide event. A host row does not grant this on a group event.
+func CanManageEvent(p *Person, ev EventView, r Rel) bool {
+	if p == nil {
+		return false
+	}
+	if p.Admin {
+		return true
+	}
+	if ev.ChurchWide {
+		return ev.Host
+	}
+	return r.Leader
+}
+
+// CanSetEventVisibility: a leader or admin may set a group event to any of
+// the three values. Source group must match the group's visibility. A host
+// or admin may switch a church-wide event between public and private, and
+// its source stays custom.
+func CanSetEventVisibility(p *Person, ev EventView, g Group, r Rel, visibility, source string) bool {
+	if p == nil {
+		return false
+	}
+	if ev.ChurchWide {
+		if !(p.Admin || ev.Host) {
+			return false
+		}
+		return source == SourceCustom && (visibility == Public || visibility == Private)
+	}
+	if !(p.Admin || r.Leader) {
+		return false
+	}
+	if source == SourceGroup {
+		return visibility == g.Visibility && ValidVisibility(visibility)
+	}
+	return source == SourceCustom && ValidVisibility(visibility)
+}
+
+// CanAssignHost: only an admin assigns a host, and never a teen (DEC-18).
+// The handler also requires the account to be active.
+func CanAssignHost(p, target *Person) bool {
+	return p != nil && p.Admin && target != nil && !target.Teen
+}
+
+// CanSeeAttendeeNames: guests never see names (section 6). Leaders, admins,
+// and a church-wide event's hosts do. On an invite-only group's event that
+// was opened to private or public, people outside the group see a count
+// only; members of the group see names. Anyone else who can see the event
+// sees names. Teen and Child badges arrive in M1.10.
+func CanSeeAttendeeNames(p *Person, ev EventView, g Group, r Rel) bool {
+	if p == nil || !CanSeeEvent(p, ev, g, r) {
+		return false
+	}
+	if p.Admin || r.Leader || (ev.ChurchWide && ev.Host) {
+		return true
+	}
+	if !ev.ChurchWide && g.Visibility == InviteOnly && ev.Source == SourceCustom &&
+		ev.Visibility != InviteOnly && !r.Member {
+		return false
+	}
+	return true
+}
+
+// CanMessageEvent: the same people who can manage the event may message its
+// registrants (section 6). The composer arrives in M3; this is the rule.
+func CanMessageEvent(p *Person, ev EventView, r Rel) bool {
+	if p == nil {
+		return false
+	}
+	if p.Admin {
+		return true
+	}
+	if ev.ChurchWide {
+		return ev.Host
+	}
+	return r.Leader
+}
+
+// CanRegisterEvent: a signed-in person who can see the event may register.
+// That includes an outsider of an opened invite-only event. It does not add
+// them to the group. Guest registration comes in M1.4.
+func CanRegisterEvent(p *Person, ev EventView, g Group, r Rel) bool {
+	return p != nil && CanSeeEvent(p, ev, g, r)
 }
 
 // IsAdmin gates the admin area: approvals, users and roles, settings, and

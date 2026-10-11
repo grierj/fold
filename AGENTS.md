@@ -49,12 +49,16 @@ browser ──► single Go binary ──► /api/v1/* (JSON, cookie auth)
 ## Data model (Phase 1+)
 
 `User` → `Membership` → `Group` → `Event` → `EventOccurrence`;
-`Registration` links a user to one occurrence. The wall clock
-(`starts_local` + IANA `tzid`) is the source of truth; occurrences store
-UTC and are generated 18 months ahead (extended daily under an advisory
-lock). See `models/models.go`. Groups are ongoing entities; an event is a
-series (RRULE) or a single date. A series edit moves future occurrences
-that have no per-date override and keeps their registrations.
+`Registration` links a user to one occurrence. An event may instead be
+church-wide (`events.group_id` null), created by an admin and run by its
+`EventHost` rows. `visibility` plus `visibility_source` (`group` or
+`custom`) decide who can see it; `group` follows the group's visibility.
+The wall clock (`starts_local` + IANA `tzid`) is the source of truth;
+occurrences store UTC and are generated 18 months ahead (extended daily
+under an advisory lock). See `models/models.go`. Groups are ongoing
+entities; an event is a series (RRULE) or a single date. A series edit
+moves future occurrences that have no per-date override and keeps their
+registrations.
 
 `User` carries profile fields: `Name` (full name), `DisplayName` (shown in
 the UI), `Email` (the login: `citext`, unique, DEC-23), `PasswordHash` (nil
@@ -121,10 +125,12 @@ Postgres (`login_throttles`, see `api_auth.go`).
   browser (`browser-image-compression`) before POST — keeps big-phone-photo
   CPU off the server. Server still enforces type/size limits.
 - Notifications are derived, not stored (`GET /api/v1/notifications`):
-  approvals for admins, upcoming events for members, and a notice when a
-  date they registered going or maybe is cancelled. Dismissals live in
-  localStorage per user, keyed by the notice `id`; logout clears all
-  browser storage and reloads the page.
+  approvals for admins, upcoming events for members, a notice when a
+  date they registered going or maybe is cancelled, and a notice to other
+  leaders and admins when an event is made more open than its group.
+  Dismissals live in localStorage per user, keyed by the notice `id`;
+  logout clears all browser storage and reloads the page. Stored
+  notifications are M1.1c.
 
 ## Uploads & blob storage
 

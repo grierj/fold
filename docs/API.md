@@ -205,39 +205,72 @@ church time zone, or UTC when that setting is missing. An unknown name is 400.
 
 ### Events
 
-Events belong to groups. A series stores a wall clock (`startsLocal`,
-`YYYY-MM-DDTHH:MM` with no offset) and an IANA `tzid`. Occurrences are
-stored up to 18 months ahead and extended daily. A weekly 7:00 pm
-America/Boise event stays at 7:00 pm local on both sides of a
-daylight-saving change. `BYDAY` is the weekday in that zone.
+An event belongs to a group, or to no group (a church-wide event). A series
+stores a wall clock (`startsLocal`, `YYYY-MM-DDTHH:MM` with no offset) and
+an IANA `tzid`. Occurrences are stored up to 18 months ahead and extended
+daily. A weekly 7:00 pm America/Boise event stays at 7:00 pm local on both
+sides of a daylight-saving change. `BYDAY` is the weekday in that zone.
 
 Each date is addressed as `{eventId, date}` where `date` is the series
 date `YYYY-MM-DD`. A per-date time change does not change `date`.
 
+`visibility` is `public`, `private`, or `invite_only`. `visibilitySource`
+is `group` (the event follows the group, including later changes) or
+`custom` (it keeps its own value). Church-wide events are `public` or
+`private` and always `custom`. A leader of the event's group, or an admin,
+may set a group event to any of the three. A change more open than the
+group writes an audit row `event.visibility_override` (reason optional) and
+a derived in-app notice to the group's other leaders and the admins. Any
+other visibility change is `event.visibility_changed`, with no notice.
+
+An invite-only group's event that is `public` or `private` does not name
+or link the group to people outside it. The page says `hostedBy` is the
+church. The group still 404s. Registering does not join the group. People
+outside that group see a registration count; members, leaders, and admins
+see names (`attendeesVisible`).
+
 ```
+GET  /api/v1/events
+  → {events: [occurrence]}   (church-wide events, and group events the viewer
+     can see but whose group they cannot; from yesterday through 90 days)
+POST /api/v1/events                         → 201 {event}   (admin; church-wide)
+GET  /api/v1/events/:id                     → 200 {event, occurrences, canManage, canSetVisibility}
 GET  /api/v1/groups/:id/events?from=2026-10-06&to=2027-01-06
   → {events: [occurrence]}   (default: next 90 days, max 366-day window, max 100 per event)
 POST /api/v1/groups/:id/events              → 201 {event}   (group leader or admin)
-PUT  /api/v1/events/:id                     → 200 {event}   (group leader or admin; series edit)
-DELETE /api/v1/events/:id                   → 200 {}        (group leader or admin)
-POST /api/v1/events/:id/cancel              → 200 {}        (group leader or admin)
+PUT  /api/v1/events/:id                     → 200 {event}   (leader, host, or admin; series edit)
+PUT  /api/v1/events/:id/visibility          → 200 {event}   (leader, host, or admin)
+     body: {visibility, source: "group"|"custom", reason?}
+DELETE /api/v1/events/:id                   → 200 {}        (leader, host, or admin)
+POST /api/v1/events/:id/hosts               → 200 {hosts}   (admin; church-wide only)
+     body: {email}
+DELETE /api/v1/events/:id/hosts/:userId     → 200 {hosts}   (admin; refuses the last host)
+POST /api/v1/events/:id/cancel              → 200 {}        (leader, host, or admin)
      body: {date: "YYYY-MM-DD"} — cancels that stored date
-PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (group leader or admin)
+PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (leader, host, or admin)
      body: any of {startsLocal, durationMinutes, location, title} — this date only
 ```
 
-`event`: `{id, groupId, title, startsLocal, durationMinutes, tzid, startsAt,
-endsAt, location, recurrenceRule, rruleUntil}`. `startsAt` and `endsAt` are
-UTC. `startsLocal` is the wall clock.
+`event`: `{id, groupId?, groupName?, groupVisibility?, hostedBy?, title,
+startsLocal, durationMinutes, tzid, startsAt, endsAt, location,
+recurrenceRule, rruleUntil, visibility, visibilitySource, churchWide,
+hosts?}`. `groupId` is omitted for a church-wide event and for an opened
+event whose group the viewer cannot see; `hostedBy` is the church name
+then. `hosts` (`{userId, name, email}`) is present for an admin reading a
+church-wide event. `startsAt` and `endsAt` are UTC. `startsLocal` is the
+wall clock.
 
 `occurrence`: `{id, eventId, date, startsAt, endsAt, startsLocal, endsLocal,
 tzid, durationMinutes, location, title, recurrenceRule, rruleUntil,
 seriesStartsLocal, seriesTitle, seriesLocation, seriesDurationMinutes,
 overridden, registrations: {going, maybe, declined},
-myRegistration: "going"|"maybe"|"declined"|null}`. `startsAt`/`endsAt` are
-UTC. `startsLocal`/`endsLocal` are the wall clock in `tzid`, including a
+myRegistration: "going"|"maybe"|"declined"|null, visibility,
+visibilitySource, churchWide, groupId?, groupName?, hostedBy?,
+attendeesVisible, attendees?}`. `startsAt`/`endsAt` are UTC.
+`startsLocal`/`endsLocal` are the wall clock in `tzid`, including a
 per-date override. `overridden` is true when this date has its own time,
-title, or location.
+title, or location. `attendees` (`{userId, name, status}`) is omitted when
+`attendeesVisible` is false. Counts stay either way.
 
 Create body: `{title?, startsLocal, durationMinutes, tzid?, location?,
 recurrenceRule?, rruleUntil?}`. `startsLocal` and `durationMinutes` (1 to
@@ -269,9 +302,10 @@ PUT /api/v1/events/:id/registrations   → 200 {registration}   (auth)
 
 `registration`: `{userId, eventId, occurrenceId, date, status}`. One row per
 (user, occurrence); PUT is idempotent. The date must be a scheduled
-occurrence. The caller must be allowed to see the event's group; otherwise
-the response is 404. A disabled account's registration is kept and hidden
-from the counts.
+occurrence. The caller must be allowed to see the event; otherwise the response is
+404. Seeing an opened event does not require seeing its group, and
+registering does not add a membership. A disabled account's registration
+is kept and hidden from the counts.
 
 ### Admin
 

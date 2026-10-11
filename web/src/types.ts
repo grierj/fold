@@ -85,6 +85,15 @@ export interface EventOccurrence {
   overridden: boolean;
   registrations: Record<string, number>;
   myRegistration: RegistrationStatus | null;
+  visibility?: Visibility;
+  visibilitySource?: "group" | "custom";
+  churchWide?: boolean;
+  groupId?: number;
+  groupName?: string;
+  hostedBy?: string;
+  // False means the caller gets a count only. Names are omitted in that case.
+  attendeesVisible?: boolean;
+  attendees?: { userId: number; name: string; status: RegistrationStatus }[];
 }
 
 // NOTE: the implementation returns {group, members, upcomingEvents,
@@ -104,9 +113,18 @@ export interface PendingReturn {
   member: Member;
 }
 
+export interface EventHostRow {
+  userId: number;
+  name: string;
+  email: string;
+}
+
 export interface EventSeries {
   id: number;
-  groupId: number;
+  groupId?: number;
+  groupName?: string;
+  groupVisibility?: Visibility;
+  hostedBy?: string;
   title: string;
   startsLocal: string;
   durationMinutes: number;
@@ -116,6 +134,17 @@ export interface EventSeries {
   location: string;
   recurrenceRule: string;
   rruleUntil?: string;
+  visibility: Visibility;
+  visibilitySource: "group" | "custom";
+  churchWide: boolean;
+  hosts?: EventHostRow[];
+}
+
+export interface EventDetailResponse {
+  event: EventSeries;
+  occurrences: EventOccurrence[];
+  canManage: boolean;
+  canSetVisibility: boolean;
 }
 
 // A group the person being deleted leads alone, and who may take over (DEC-36).

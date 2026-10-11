@@ -4,6 +4,8 @@ import { ApiError, Events, GroupCover, Groups } from "../api";
 import type { EventOccurrence, GroupDetailResponse, RegistrationStatus, Visibility } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
+import { AttendeeNames } from "../components/EventIntro";
+import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
@@ -315,7 +317,9 @@ function SeriesEditor({
 function EventRow({
   instance,
   groupName,
+  groupVisibility,
   canManage,
+  showVisibility,
   loggedIn,
   onRsvp,
   onCancelled,
@@ -323,7 +327,10 @@ function EventRow({
 }: {
   instance: EventOccurrence;
   groupName: string;
+  groupVisibility: Visibility;
   canManage: boolean;
+  // One control per series. Later dates of the same event omit it.
+  showVisibility: boolean;
   loggedIn: boolean;
   onRsvp: (eventId: number, date: string, status: RegistrationStatus) => void;
   onCancelled: (eventId: number, date: string) => void;
@@ -364,6 +371,18 @@ function EventRow({
           {rsvpTotal(instance.registrations, "going")} going · {rsvpTotal(instance.registrations, "maybe")} maybe ·{" "}
           {rsvpTotal(instance.registrations, "declined")} can't go
         </div>
+        <AttendeeNames instance={instance} />
+        {showVisibility && (
+          <EventVisibilityControl
+            key={`${instance.eventId}-${instance.visibility}-${instance.visibilitySource}`}
+            eventId={instance.eventId}
+            groupName={groupName}
+            groupVisibility={groupVisibility}
+            visibility={instance.visibility ?? groupVisibility}
+            source={instance.visibilitySource ?? "group"}
+            onSaved={onChanged}
+          />
+        )}
         {loggedIn && (
           <div className="mt-2">
             <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
@@ -682,6 +701,11 @@ export function GroupDetail() {
   const { group, members, upcomingEvents, canManage, isMember } = detail;
   const pendingReturns = detail.pendingReturns ?? [];
   const events: EventOccurrence[] = upcomingEvents ?? [];
+  // The visibility control belongs to the series, so only its first date shows it.
+  const visibilityDate = new Map<number, string>();
+  for (const m of events) {
+    if (!visibilityDate.has(m.eventId)) visibilityDate.set(m.eventId, m.date);
+  }
   // Leadership comes from membership roles (several leaders allowed).
   const leaderCount = (members ?? []).filter((m) => m.role === "leader").length;
   const isLeader = !!user && (members ?? []).some((m) => m.id === user.id && m.role === "leader");
@@ -1003,7 +1027,9 @@ export function GroupDetail() {
                     key={`${m.eventId}-${m.date}`}
                     instance={m}
                     groupName={group.name}
+                    groupVisibility={group.visibility}
                     canManage={canManage}
+                    showVisibility={canManage && visibilityDate.get(m.eventId) === m.date}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}
                     onCancelled={handleCancelled}
