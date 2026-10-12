@@ -8,7 +8,7 @@ import { Home } from "./Home";
 function group(id: number, name: string, tags: string[]): GroupSummary {
   return {
     id, name, description: "", tags, imageUrl: "", coverFocalX: 50, coverFocalY: 50,
-    location: "", leaderName: "Grier", memberCount: 1, nextMeetingAt: null, status: "active",
+    location: "", leaderName: "Grier", memberCount: 1, nextEventAt: null, nextEventLocal: "", nextEventTzid: "", status: "active",
     leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null,
   };
 }
@@ -23,7 +23,10 @@ const all = [
 // Same rules as the API: search narrows, and any selected tag matches (OR,
 // case-insensitive).
 const { list } = vi.hoisted(() => ({ list: vi.fn() }));
-vi.mock("../api", () => ({ Groups: { list } }));
+vi.mock("../api", () => ({
+  Groups: { list },
+  Events: { listOpen: () => Promise.resolve({ events: [] }) },
+}));
 function listLikeTheAPI(search = "", tags: string[] = []) {
   const want = tags.map((t) => t.toLowerCase());
   return Promise.resolve({
