@@ -53,5 +53,13 @@ describe("GroupCard", () => {
     await userEvent.click(screen.getByRole("button", { name: /bible-study/ }));
     expect(onTagClick).toHaveBeenCalledWith("bible-study");
     expect(screen.getByRole("button", { name: "adults" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "adults" })).toHaveTextContent("✓adults");
+    expect(screen.getByRole("button", { name: "bible-study" })).not.toHaveTextContent("✓");
+  });
+
+  it("marks a selected tag whatever its case, like the filter", () => {
+    renderCard({ onTagClick: vi.fn(), selectedTags: ["ADULTS"] });
+    expect(screen.getByRole("button", { name: "adults" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "adults" })).toHaveTextContent("✓adults");
   });
 });

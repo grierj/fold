@@ -18,6 +18,18 @@ function tagsFromParams(params: URLSearchParams): string[] {
   return out;
 }
 
+const chipBase =
+  "inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-semibold border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2";
+const chipOn = `${chipBase} bg-brand border-brand text-white`;
+const chipOff = `${chipBase} bg-white border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50`;
+
+// Separator before the i-th of n tags: "a or b", "a, b, or c".
+function orSeparator(i: number, n: number): string {
+  if (i === 0) return "";
+  if (n === 2) return " or ";
+  return i === n - 1 ? ", or " : ", ";
+}
+
 export function Home() {
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedTags = tagsFromParams(searchParams);
@@ -136,14 +148,7 @@ export function Home() {
           </div>
           {chips.length > 0 && (
             <div className="mt-4 flex flex-wrap gap-2">
-              <button
-                onClick={clearTags}
-                className={
-                  selectedTags.length === 0
-                    ? "px-3 py-1 rounded-full text-sm font-semibold bg-brand text-white"
-                    : "px-3 py-1 rounded-full text-sm font-semibold bg-gray-100 text-gray-600 hover:bg-gray-200"
-                }
-              >
+              <button onClick={clearTags} className={selectedTags.length === 0 ? chipOn : chipOff}>
                 All
               </button>
               {chips.map((t) => {
@@ -153,12 +158,17 @@ export function Home() {
                     key={t}
                     onClick={() => toggleTag(t)}
                     aria-pressed={on}
-                    className={
-                      on
-                        ? "px-3 py-1 rounded-full text-sm font-semibold bg-brand text-white"
-                        : "px-3 py-1 rounded-full text-sm font-semibold bg-gray-100 text-gray-600 hover:bg-gray-200"
-                    }
+                    className={on ? chipOn : chipOff}
                   >
+                    {/* Checkmark on selected tags; once any tag is on, the
+                        others show "+" to say they add more groups. */}
+                    {on ? (
+                      <span aria-hidden="true">✓</span>
+                    ) : selectedTags.length > 0 ? (
+                      <span aria-hidden="true" className="text-gray-400">
+                        +
+                      </span>
+                    ) : null}
                     {t}
                   </button>
                 );
@@ -166,16 +176,19 @@ export function Home() {
             </div>
           )}
           {selectedTags.length > 0 && (
-            <p className="mt-3 text-sm text-gray-600">
+            <p className="mt-3 text-sm text-gray-600" aria-live="polite">
               Showing groups tagged{" "}
               {selectedTags.map((t, i) => (
                 <span key={t}>
-                  {i > 0 && " or "}
-                  <span className="font-semibold">{t}</span>
+                  {orSeparator(i, selectedTags.length)}
+                  <strong className="font-semibold text-gray-900">{t}</strong>
                 </span>
               ))}
               .{" "}
-              <button onClick={clearTags} className="text-brand hover:underline">
+              <button
+                onClick={clearTags}
+                className="font-semibold text-brand hover:underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+              >
                 Clear
               </button>
             </p>
@@ -217,7 +230,20 @@ export function Home() {
         {error && <div className="text-red-600">{error}</div>}
         {!loading && !error && groups.length === 0 && (
           <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
-            No groups found. Try a different search or start a new group.
+            {selectedTags.length > 0 && debounced.trim() ? (
+              <>
+                No groups match “{debounced.trim()}” with these tags. Try another search, or{" "}
+                <button
+                  onClick={clearTags}
+                  className="font-semibold text-brand hover:underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+                >
+                  Clear the tags
+                </button>
+                .
+              </>
+            ) : (
+              <>No groups found. Try a different search or start a new group.</>
+            )}
           </div>
         )}
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">

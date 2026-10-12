@@ -172,8 +172,10 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 			continue
 		}
 		g, rel := groupAndRel(ev, groups, rels)
+		// The group's meeting place is the default location only for people
+		// who can see the group; an opened invite-only event must not reveal it.
 		loc := ""
-		if g != nil {
+		if g != nil && policy.CanSeeGroup(p, asGroup(g), rel) {
 			loc = g.Location
 		}
 		inst := occurrenceToJSON(ev, o, loc)

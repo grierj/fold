@@ -15,6 +15,7 @@ export function coverImage(url: string | undefined | null): string {
 
 // Meetup-style group card: cover image, name, member count, next event, location.
 // Tags sit outside the link so they can toggle the directory filter.
+// Tags match case-insensitively (as the directory filter does).
 export function GroupCard({
   group,
   onTagClick,
@@ -24,6 +25,8 @@ export function GroupCard({
   onTagClick?: (tag: string) => void;
   selectedTags?: string[];
 }) {
+  const selectedLower = selectedTags.map((t) => t.toLowerCase());
+  const isSelected = (t: string) => selectedLower.includes(t.toLowerCase());
   return (
     <div className="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow overflow-hidden border border-gray-100 flex flex-col">
       <Link to={`/groups/${group.id}`} className="block">
@@ -70,13 +73,14 @@ export function GroupCard({
                 key={t}
                 type="button"
                 onClick={() => onTagClick(t)}
-                aria-pressed={selectedTags.includes(t)}
+                aria-pressed={isSelected(t)}
                 className={
-                  selectedTags.includes(t)
-                    ? "text-xs font-semibold bg-brand text-white rounded-full px-2 py-0.5"
-                    : "text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-full px-2 py-0.5"
+                  isSelected(t)
+                    ? "inline-flex items-center gap-0.5 text-xs font-semibold bg-brand text-white rounded-full px-2 py-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1"
+                    : "text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-full px-2 py-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1"
                 }
               >
+                {isSelected(t) && <span aria-hidden="true">✓</span>}
                 {t}
               </button>
             ) : (
