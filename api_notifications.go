@@ -77,7 +77,7 @@ func (a *App) apiNotifications(c *gin.Context) {
 // and tells other leaders and admins when an event was opened past its group.
 func (a *App) eventNotices(u *models.User) []notificationJSON {
 	now := time.Now().UTC()
-	out := a.cancelledNotices(u.ID, now)
+	out := a.cancelledNotices(u, now)
 	var memberships []models.Membership
 	a.DB.Where("user_id = ? AND status = ?", u.ID, "active").Find(&memberships)
 	if len(memberships) > 0 {
@@ -103,7 +103,8 @@ type noticeRow struct {
 	GroupLocation string
 }
 
-func (a *App) cancelledNotices(userID uint, now time.Time) []notificationJSON {
+func (a *App) cancelledNotices(u *models.User, now time.Time) []notificationJSON {
+	userID := u.ID
 	var rows []noticeRow
 	a.DB.Table("registrations").
 		Select(`event_occurrences.id as occ_id, events.id as event_id, events.group_id,
@@ -118,6 +119,14 @@ func (a *App) cancelledNotices(userID uint, now time.Time) []notificationJSON {
 		Order("event_occurrences.starts_at").Limit(10).Scan(&rows)
 	out := make([]notificationJSON, 0, len(rows))
 	for _, r := range rows {
+		// A registrant who can't see the group (an opened invite-only event,
+		// or someone since removed) gets no group name, place, or link.
+		if r.GroupID != nil {
+			var g models.Group
+			if err := a.DB.First(&g, *r.GroupID).Error; err != nil || !a.canSeeGroup(u, &g) {
+				r.GroupID, r.GroupName, r.GroupLocation = nil, "", ""
+			}
+		}
 		out = append(out, notificationJSON{
 			ID:    fmt.Sprintf("event-cancelled:%d", r.OccID),
 			Type:  "event",
