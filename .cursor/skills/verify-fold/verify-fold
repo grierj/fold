@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+# Isolated Fold instance for verification. Never uses the dev database
+# named "fold" or the shared make-e2e database.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+COMPOSE=(docker compose -f "$ROOT/deploy/docker-compose.dev.yml")
+ADMIN_DB=fold
+DEV_DATABASE_URL="postgres://fold:fold@127.0.0.1:5432/${ADMIN_DB}?sslmode=disable"
+
+die() { printf 'verify-fold: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+usage: verify-fold up
+       verify-fold doctor RUN_ID
+       verify-fold env RUN_ID
+       verify-fold drive RUN_ID sign-in
+       verify-fold down RUN_ID
+
+up starts a new Fold process on its own Postgres database and port.
+doctor checks that process. drive sign-in runs the sign-in proof.
+down stops that process and drops its database. Proof files under
+/tmp/fold-verify-proof/RUN_ID are left in place.
+EOF
+}
+
+work_dir() { printf '/tmp/fold-verify-%s\n' "$1"; }
+proof_dir() { printf '/tmp/fold-verify-proof/%s\n' "$1"; }
+
+db_name_ok() {
+  [[ "$1" =~ ^fold_verify_[a-z0-9_]+$ ]]
+}
+
+psql_admin() {
+  "${COMPOSE[@]}" exec -T db psql -U fold -d "$ADMIN_DB" -v ON_ERROR_STOP=1 "$@"
+}
+
+psql_named() {
+  local db="$1"
+  shift
+  db_name_ok "$db" || die "refusing to query database $db"
+  "${COMPOSE[@]}" exec -T db psql -U fold -d "$db" -v ON_ERROR_STOP=1 "$@"
+}
+
+ensure_db() {
+  "${COMPOSE[@]}" up -d --wait db
+}
+
+load_state() {
+  local run="$1"
+  STATE="$(work_dir "$run")/state.env"
+  [[ -f "$STATE" ]] || die "no state for $run at $STATE"
+  # shellcheck disable=SC1090
+  source "$STATE"
+  [[ "$RUN_ID" == "$run" ]] || die "state RUN_ID does not match $run"
+  db_name_ok "$DB_NAME" || die "state database name is not a verify database"
+}
+
+port_owned_by() {
+  python3 - "$1" "$2" <<'PY'
+import os, pathlib, sys
+pid = int(sys.argv[1])
+port = int(sys.argv[2])
+want = f"{port:04X}"
+inodes = set()
+for name in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        lines = open(name)
+    except FileNotFoundError:
+        continue
+    for i, line in enumerate(lines):
+        if i == 0:
+            continue
+        parts = line.split()
+        local, state, inode = parts[1], parts[3], parts[9]
+        if local.rsplit(":", 1)[1].upper() == want and state == "0A":
+            inodes.add(inode)
+owned = False
+fd_dir = pathlib.Path(f"/proc/{pid}/fd")
+if fd_dir.is_dir():
+    for fd in fd_dir.iterdir():
+        try:
+            target = os.readlink(fd)
+        except OSError:
+            continue
+        if target.startswith("socket:[") and target[8:-1] in inodes:
+            owned = True
+            break
+print("yes" if owned else "no")
+sys.exit(0 if owned else 1)
+PY
+}
+
+cmd_up() {
+  ensure_db
+  local run db port secret work evidence base url
+  run="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  db="fold_verify_$(printf '%s' "$run" | tr 'A-Z-' 'a-z_')"
+  db_name_ok "$db" || die "bad database name $db"
+  work="$(work_dir "$run")"
+  evidence="$(proof_dir "$run")"
+  mkdir -p "$work/uploads" "$evidence"
+  port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+  secret="verify-only-session-secret-0123456789abcdef"
+  base="${DEV_DATABASE_URL%%\?*}"
+  url="${base%/*}/${db}?sslmode=disable"
+  psql_admin -c "CREATE DATABASE \"${db}\""
+  printf 'building the SPA and the fold binary\n' >&2
+  (cd "$ROOT/web" && npm run build)
+  CGO_ENABLED=0 go build -C "$ROOT" -o "$work/fold" .
+  cat >"$work/state.env" <<EOF
+RUN_ID=$run
+PORT=$port
+URL=http://127.0.0.1:$port
+PID=
+DATABASE_URL=$url
+DB_NAME=$db
+WORK=$work
+EVIDENCE=$evidence
+BINARY=$work/fold
+DEV_DATABASE_URL=$DEV_DATABASE_URL
+EOF
+  (
+    cd "$ROOT"
+    export APP_ENV=prod PORT="$port" DATABASE_URL="$url" \
+      SESSION_SECRET="$secret" COOKIE_SECURE=false UPLOAD_DIR="$work/uploads"
+    exec python3 -c 'import os,sys; os.setsid(); os.execv(sys.argv[1], [sys.argv[1], "serve"])' "$work/fold"
+  ) >>"$work/server.log" 2>&1 &
+  local pid=$!
+  printf 'PID=%s\n' "$pid" >>"$work/state.env"
+  local i
+  for i in $(seq 1 60); do
+    if curl -sf -o /dev/null "http://127.0.0.1:${port}/healthz"; then
+      printf 'RUN_ID=%s\nURL=http://127.0.0.1:%s\nEVIDENCE=%s\n' "$run" "$port" "$evidence"
+      return 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      printf 'server exited; log follows\n' >&2
+      tail -n 40 "$work/server.log" >&2 || true
+      die "server exited before /healthz answered"
+    fi
+    sleep 0.5
+  done
+  tail -n 40 "$work/server.log" >&2 || true
+  die "timed out waiting for /healthz on port $port"
+}
+
+cmd_doctor() {
+  local run="$1"
+  load_state "$run"
+  [[ -n "${PID:-}" ]] || die "state has no PID"
+  kill -0 "$PID" || die "pid $PID is not running"
+  local exe
+  exe="$(readlink -f "/proc/$PID/exe")"
+  [[ "$exe" == "$BINARY" ]] || die "pid $PID is $exe, not $BINARY"
+  local cmd
+  cmd="$(tr '\0' ' ' <"/proc/$PID/cmdline")"
+  [[ "$cmd" == *"serve"* ]] || die "pid $PID command is not serve: $cmd"
+  port_owned_by "$PID" "$PORT" >/dev/null || die "pid $PID does not listen on port $PORT"
+  local live_url
+  live_url="$(tr '\0' '\n' <"/proc/$PID/environ" | sed -n 's/^DATABASE_URL=//p')"
+  [[ "$live_url" == "$DATABASE_URL" ]] || die "process DATABASE_URL does not match state"
+  [[ "$live_url" == *"/${DB_NAME}?"* ]] || die "process is not using $DB_NAME"
+  [[ "$DB_NAME" != "fold" && "$DB_NAME" != *"_e2e" ]] || die "refusing shared database $DB_NAME"
+  local code body
+  body="$(mktemp)"
+  code="$(curl -sS -o "$body" -w '%{http_code}' "http://127.0.0.1:${PORT}/healthz")"
+  [[ "$code" == "200" ]] || die "healthz returned $code"
+  [[ ! -s "$body" ]] || die "healthz body was not empty"
+  rm -f "$body"
+  local version
+  version="$("$BINARY" version)"
+  [[ "$version" == fold\ * ]] || die "unexpected version: $version"
+  printf 'ok\nrun %s\npid %s\nurl %s\ndatabase %s\nversion %s\nhealthz 200 empty\nport owned by pid\n' \
+    "$RUN_ID" "$PID" "$URL" "$DB_NAME" "$version"
+}
+
+cmd_env() {
+  local run="$1"
+  load_state "$run"
+  printf 'VERIFY_URL=%q\nVERIFY_EVIDENCE=%q\nVERIFY_DATABASE_URL=%q\nVERIFY_DEV_DATABASE_URL=%q\nVERIFY_RUN_ID=%q\nFOLD_ROOT=%q\n' \
+    "$URL" "$EVIDENCE" "$DATABASE_URL" "$DEV_DATABASE_URL" "$RUN_ID" "$ROOT"
+}
+
+cmd_drive() {
+  local run="$1" feature="$2"
+  load_state "$run"
+  [[ "$feature" == "sign-in" ]] || die "only the sign-in drive is packaged; other features are in features/"
+  cmd_doctor "$run" >/dev/null
+  mkdir -p "$EVIDENCE/sign-in"
+  local node_path="$ROOT/web/node_modules"
+  local script="$ROOT/.cursor/skills/verify-fold/drive-sign-in.mjs"
+  local log="$EVIDENCE/sign-in/drive.log"
+  if ! VERIFY_URL="$URL" VERIFY_EVIDENCE="$EVIDENCE" VERIFY_DATABASE_URL="$DATABASE_URL" \
+    NODE_PATH="$node_path" node "$script" >"$log" 2>&1; then
+    if grep -q "Executable doesn't exist" "$log"; then
+      (cd "$ROOT/web" && npx playwright install chromium)
+      if ! VERIFY_URL="$URL" VERIFY_EVIDENCE="$EVIDENCE" VERIFY_DATABASE_URL="$DATABASE_URL" \
+        NODE_PATH="$node_path" node "$script" >"$log" 2>&1; then
+        cat "$log" >&2
+        exit 1
+      fi
+    else
+      cat "$log" >&2
+      exit 1
+    fi
+  fi
+  psql_named "$DB_NAME" -c "COPY (SELECT email, name, role FROM users ORDER BY id) TO STDOUT WITH CSV HEADER" \
+    >"$EVIDENCE/sign-in/users.csv"
+  grep -q 'verify-admin@example.com,Verify Admin,admin' "$EVIDENCE/sign-in/users.csv" \
+    || die "verify database is missing the admin row"
+  local leaked
+  leaked="$(psql_admin -tA -c "SELECT count(*) FROM users WHERE email = 'verify-admin@example.com'" 2>/dev/null || true)"
+  leaked="$(printf '%s' "$leaked" | tr -d '[:space:]')"
+  if [[ -n "$leaked" && "$leaked" != "0" ]]; then
+    die "dev database fold contains the verify user"
+  fi
+  printf 'drove sign-in\nevidence %s/sign-in\n' "$EVIDENCE"
+}
+
+stop_pid() {
+  local pid="$1"
+  kill -0 "$pid" 2>/dev/null || return 0
+  kill -TERM "$pid" 2>/dev/null || true
+  local i
+  for i in $(seq 1 20); do
+    kill -0 "$pid" 2>/dev/null || return 0
+    sleep 0.25
+  done
+  kill -KILL "$pid" 2>/dev/null || true
+}
+
+cmd_down() {
+  local run="$1"
+  local work evidence
+  work="$(work_dir "$run")"
+  evidence="$(proof_dir "$run")"
+  if [[ -f "$work/state.env" ]]; then
+    # shellcheck disable=SC1090
+    source "$work/state.env"
+    if [[ -n "${PID:-}" ]]; then
+      stop_pid "$PID"
+    fi
+    if [[ -n "${DB_NAME:-}" ]]; then
+      db_name_ok "$DB_NAME" || die "refusing to drop $DB_NAME"
+      psql_admin -c "DROP DATABASE IF EXISTS \"${DB_NAME}\" WITH (FORCE)"
+    fi
+  fi
+  rm -rf "$work"
+  [[ "$work" != "$evidence" ]] || die "refusing to remove proof directory"
+  if [[ -d "$evidence" ]]; then
+    printf 'stopped %s\nproof kept at %s\n' "$run" "$evidence"
+  else
+    printf 'stopped %s\nno proof directory\n' "$run"
+  fi
+}
+
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    up) cmd_up ;;
+    doctor) [[ $# -eq 2 ]] || die "doctor needs RUN_ID"; cmd_doctor "$2" ;;
+    env) [[ $# -eq 2 ]] || die "env needs RUN_ID"; cmd_env "$2" ;;
+    drive) [[ $# -eq 3 ]] || die "drive needs RUN_ID and a feature"; cmd_drive "$2" "$3" ;;
+    down) [[ $# -eq 2 ]] || die "down needs RUN_ID"; cmd_down "$2" ;;
+    -h|--help|help|"") usage ;;
+    *) die "unknown command $cmd" ;;
+  esac
+}
+
+main "$@"
