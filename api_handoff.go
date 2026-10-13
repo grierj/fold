@@ -215,9 +215,9 @@ func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) e
 
 // restoreMemberships runs when a disabled account is enabled again. Its
 // kept memberships come back as plain members (DEC-38), one
-// membership.restored audit row each. A group at its member limit gets
-// pending_return instead, for a leader or admin to approve or decline
-// (DEC-39).
+// membership.restored audit row each. A group at its member limit leaves
+// them out instead: the membership is dropped, a membership.not_restored
+// row is written, and they get a notice to ask a leader (DEC-47).
 func restoreMemberships(c *gin.Context, tx *gorm.DB, userID uint) error {
 	actor := apiUser(c)
 	var kept []models.Membership
@@ -232,16 +232,26 @@ func restoreMemberships(c *gin.Context, tx *gorm.DB, userID uint) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&g, m.GroupID).Error; err != nil {
 			return err
 		}
-		status := "active"
 		if !policy.GroupHasRoom(g.MemberLimit, int(memberCount(tx, g.ID))) {
-			status = memberPendingReturn // a leader or admin decides (DEC-39)
+			// Full: left out. A leader can add them over the limit (DEC-47).
+			if err := tx.Delete(&m).Error; err != nil {
+				return err
+			}
+			meta := map[string]any{"userId": userID, "count": memberCount(tx, g.ID), "limit": *g.MemberLimit}
+			if err := audit.Write(tx, audit.Entry{
+				Actor: &actor.ID, Action: audit.MemberNotRestored, TargetType: "group", TargetID: m.GroupID,
+				Meta: meta, IP: c.ClientIP(),
+			}); err != nil {
+				return err
+			}
+			continue
 		}
-		if err := tx.Model(&m).Updates(map[string]any{"role": models.MembershipMember, "status": status}).Error; err != nil {
+		if err := tx.Model(&m).Updates(map[string]any{"role": models.MembershipMember, "status": "active"}).Error; err != nil {
 			return err
 		}
 		if err := audit.Write(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.MemberRestored, TargetType: "group", TargetID: m.GroupID,
-			Meta: map[string]any{"userId": userID, "status": status}, IP: c.ClientIP(),
+			Meta: map[string]any{"userId": userID, "status": "active"}, IP: c.ClientIP(),
 		}); err != nil {
 			return err
 		}

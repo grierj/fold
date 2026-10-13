@@ -76,11 +76,12 @@ import type {
   GroupSummary,
   Member,
   Notification,
-  PendingReturn,
+  OpenedDecision,
   RegistrationStatus,
   SoleLedGroup,
   User,
   Visibility,
+  VisibilityImpact,
 } from "./types";
 
 export const Auth = {
@@ -122,8 +123,12 @@ export const Groups = {
       coverFocal?: { x: number; y: number };
       visibility?: Visibility;
       memberLimit?: number | null;
+      // Keep or tighten each leader-opened event when the group becomes more private (DEC-48).
+      openedEvents?: Record<string, OpenedDecision>;
     }
   ) => api<{ group: GroupSummary }>(`/groups/${id}`, { method: "PUT", body: data }),
+  visibilityImpact: (id: number | string, visibility: Visibility) =>
+    api<VisibilityImpact>(`/groups/${id}/visibility-impact?visibility=${encodeURIComponent(visibility)}`),
   join: (id: number | string) => api<unknown>(`/groups/${id}/join`, { method: "POST" }),
   leave: (id: number | string) => api<unknown>(`/groups/${id}/leave`, { method: "POST" }),
   // Make a member a leader, or a leader a member again (audited; admins are notified).
@@ -132,9 +137,6 @@ export const Groups = {
   // overLimit: add even though the group is full (an explicit, audited choice; DEC-39).
   addMember: (id: number | string, email: string, overLimit = false) =>
     api<unknown>(`/groups/${id}/members`, { method: "POST", body: { email, overLimit } }),
-  // Approve or decline a re-enabled account waiting to return to a full group.
-  decideReturn: (id: number | string, userId: number, decision: "approve" | "decline") =>
-    api<unknown>(`/groups/${id}/members/${userId}/return`, { method: "POST", body: { decision } }),
   // Leaders and admins remove someone (audited; DEC-35). The note stays in the audit log.
   removeMember: (id: number | string, userId: number, note?: string) =>
     api<{ members: Member[] }>(`/groups/${id}/members/${userId}`, { method: "DELETE", body: { note } }),
@@ -186,7 +188,7 @@ export const Events = {
   }) => api<{ event: EventSeries }>("/events", { method: "POST", body: data }),
   setVisibility: (
     id: number,
-    data: { visibility: Visibility; source: "group" | "custom"; reason?: string }
+    data: { visibility: Visibility; reason?: string }
   ) => api<{ event: EventSeries }>(`/events/${id}/visibility`, { method: "PUT", body: data }),
   addHost: (id: number, email: string) =>
     api<{ hosts: EventHostRow[] }>(`/events/${id}/hosts`, { method: "POST", body: { email } }),
@@ -219,7 +221,6 @@ export const Events = {
 
 export const Admin = {
   pending: () => api<{ groups: GroupSummary[] }>("/admin/pending"),
-  pendingReturns: () => api<{ returns: PendingReturn[] }>("/admin/pending-returns"),
   approve: (id: number | string, tags: string[]) =>
     api<{ group: GroupSummary }>(`/admin/groups/${id}/approve`, { method: "POST", body: { tags } }),
   reject: (id: number | string) => api<unknown>(`/admin/groups/${id}/reject`, { method: "POST" }),

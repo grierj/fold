@@ -24,7 +24,7 @@ func seedEvent(t *testing.T, app *App, g *models.Group, createdBy uint, start ti
 		vis = models.VisibilityPublic
 	}
 	ev := models.Event{
-		GroupID: &gid, Visibility: vis, VisibilitySource: models.VisibilitySourceGroup,
+		GroupID: &gid, Visibility: vis,
 		StartsLocal:     start.Format("2006-01-02T15:04"),
 		DurationMinutes: 60, TZID: "UTC", Location: "", CreatedBy: createdBy,
 	}

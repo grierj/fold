@@ -46,9 +46,6 @@ type Rel struct {
 	// Removed: a leader or admin removed this person (DEC-35). They aren't a
 	// member and can't rejoin on their own.
 	Removed bool
-	// PendingReturn: the account was re-enabled while the group was full; a
-	// leader or admin decides (DEC-38, DEC-39). Not a member meanwhile.
-	PendingReturn bool
 }
 
 // CanSeeGroup: public groups are open to all, private groups to signed-in
@@ -87,9 +84,6 @@ func CanJoinGroup(p *Person, g Group, r Rel) bool {
 	}
 	if r.Removed && !p.Admin {
 		return false // removed people come back only when a leader adds them
-	}
-	if r.PendingReturn {
-		return false // a leader or admin approves the return instead
 	}
 	return p.Admin || r.Member || g.Visibility != InviteOnly
 }
@@ -195,19 +189,16 @@ func CanRegister(p *Person, g Group, r Rel) bool {
 	return p != nil && g.Status == GroupActive && CanSeeGroup(p, g, r)
 }
 
-// Where an event's visibility comes from.
-const (
-	SourceGroup  = "group"
-	SourceCustom = "custom"
-)
-
 // EventView is what policy needs to know about an event. Host is true only
 // for a church-wide event this person hosts; a host row on a group event
 // grants nothing (DEC-7).
+//
+// Visibility is the event's own value. A group event copies its group's
+// visibility when it is created; afterwards only a leader or admin changes
+// it, or a group becoming more private tightens it (DEC-48).
 type EventView struct {
 	ChurchWide bool
 	Visibility string
-	Source     string // group | custom
 	Host       bool
 }
 
@@ -229,18 +220,13 @@ func MoreOpen(eventVis, groupVis string) bool {
 	return openness(eventVis) > openness(groupVis)
 }
 
-// effectiveVisibility is the visibility that decides who can see the event.
-// Source group follows the group even when the stored value is stale.
-func effectiveVisibility(ev EventView, g Group) string {
-	if !ev.ChurchWide && ev.Source != SourceCustom {
-		return g.Visibility
-	}
-	return ev.Visibility
-}
+// Openness ranks a visibility: invite_only 0, private 1, public 2.
+// Anything unexpected is 0 (closed).
+func Openness(v string) int { return openness(v) }
 
 // CanSeeEvent: admins see every event. A group that isn't active is limited
 // to its leaders, even when the event is more open. Otherwise the event's
-// effective visibility applies. Seeing the event does not reveal the group.
+// own visibility applies (DEC-48). Seeing the event does not reveal the group.
 func CanSeeEvent(p *Person, ev EventView, g Group, r Rel) bool {
 	if p != nil && p.Admin {
 		return true
@@ -258,7 +244,7 @@ func CanSeeEvent(p *Person, ev EventView, g Group, r Rel) bool {
 	if g.Status != GroupActive {
 		return p != nil && r.Leader
 	}
-	switch effectiveVisibility(ev, g) {
+	switch ev.Visibility {
 	case Public:
 		return true
 	case Private:
@@ -284,26 +270,16 @@ func CanManageEvent(p *Person, ev EventView, r Rel) bool {
 }
 
 // CanSetEventVisibility: a leader or admin may set a group event to any of
-// the three values. Source group must match the group's visibility. A host
-// or admin may switch a church-wide event between public and private, and
-// its source stays custom.
-func CanSetEventVisibility(p *Person, ev EventView, g Group, r Rel, visibility, source string) bool {
+// the three values; wider than the group marks it leader-opened (DEC-48).
+// A host or admin may switch a church-wide event between public and private.
+func CanSetEventVisibility(p *Person, ev EventView, r Rel, visibility string) bool {
 	if p == nil {
 		return false
 	}
 	if ev.ChurchWide {
-		if !(p.Admin || ev.Host) {
-			return false
-		}
-		return source == SourceCustom && (visibility == Public || visibility == Private)
+		return (p.Admin || ev.Host) && (visibility == Public || visibility == Private)
 	}
-	if !(p.Admin || r.Leader) {
-		return false
-	}
-	if source == SourceGroup {
-		return visibility == g.Visibility && ValidVisibility(visibility)
-	}
-	return source == SourceCustom && ValidVisibility(visibility)
+	return (p.Admin || r.Leader) && ValidVisibility(visibility)
 }
 
 // CanAssignHost: only an admin assigns a host, and never a teen (DEC-18).
@@ -313,9 +289,9 @@ func CanAssignHost(p, target *Person) bool {
 }
 
 // CanSeeAttendeeNames: guests never see names (section 6). Leaders, admins,
-// and a church-wide event's hosts do. On an invite-only group's event that
-// was opened to private or public, people outside the group see a count
-// only; members of the group see names. Anyone else who can see the event
+// and a church-wide event's hosts do. When the group is invite-only and the
+// event isn't, people outside the group see a count only; members of the
+// group see names (DEC-48). Anyone else who can see the event
 // sees names. Teen and Child badges arrive in M1.10.
 func CanSeeAttendeeNames(p *Person, ev EventView, g Group, r Rel) bool {
 	if p == nil || !CanSeeEvent(p, ev, g, r) {
@@ -324,8 +300,7 @@ func CanSeeAttendeeNames(p *Person, ev EventView, g Group, r Rel) bool {
 	if p.Admin || r.Leader || (ev.ChurchWide && ev.Host) {
 		return true
 	}
-	if !ev.ChurchWide && g.Visibility == InviteOnly && ev.Source == SourceCustom &&
-		ev.Visibility != InviteOnly && !r.Member {
+	if !ev.ChurchWide && g.Visibility == InviteOnly && ev.Visibility != InviteOnly && !r.Member {
 		return false
 	}
 	return true
@@ -399,9 +374,8 @@ func CanDemoteOrDelete(p, target *Person, admins int) bool {
 
 // GroupHasRoom reports whether one more active member fits under a group's
 // member limit (DEC-39); nil means unlimited. When it is false, self-join
-// is refused, and a leader or admin may still add someone, approve a
-// return, or have a restore go through only by explicit choice. Groups
-// have no waitlist.
+// is refused, a re-enabled account is left out (DEC-47), and a leader or
+// admin may still add someone by explicit choice. Groups have no waitlist.
 func GroupHasRoom(limit *int, count int) bool {
 	return limit == nil || count < *limit
 }

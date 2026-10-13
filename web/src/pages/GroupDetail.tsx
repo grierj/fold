@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups } from "../api";
-import type { EventOccurrence, GroupDetailResponse, RegistrationStatus, Visibility } from "../types";
+import type { EventOccurrence, GroupDetailResponse, OpenedDecision, RegistrationStatus, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { AttendeeNames } from "../components/EventIntro";
-import { EventVisibilityControl } from "../components/EventVisibility";
+import { EventVisibilityControl, visibilityRank } from "../components/EventVisibility";
+import { GroupVisibilityReview } from "../components/GroupVisibilityReview";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
@@ -394,12 +395,12 @@ function EventRow({
         <AttendeeNames instance={instance} />
         {showVisibility && (
           <EventVisibilityControl
-            key={`${instance.eventId}-${instance.visibility}-${instance.visibilitySource}`}
+            key={`${instance.eventId}-${instance.visibility}-${instance.leaderOpened}`}
             eventId={instance.eventId}
             groupName={groupName}
             groupVisibility={groupVisibility}
             visibility={instance.visibility ?? groupVisibility}
-            source={instance.visibilitySource ?? "group"}
+            leaderOpened={instance.leaderOpened}
             onSaved={onChanged}
           />
         )}
@@ -674,6 +675,9 @@ export function GroupDetail() {
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("events");
   const [editing, setEditing] = useState(false);
+  const [review, setReview] = useState<{ data: GroupFormData; impact: VisibilityImpact } | null>(null);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
   const [joinBusy, setJoinBusy] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
   const [memberEmail, setMemberEmail] = useState("");
@@ -719,7 +723,6 @@ export function GroupDetail() {
   }
 
   const { group, members, upcomingEvents, canManage, isMember } = detail;
-  const pendingReturns = detail.pendingReturns ?? [];
   const events: EventOccurrence[] = upcomingEvents ?? [];
   // The visibility control belongs to the series, so only its first date shows it.
   const visibilityDate = new Map<number, string>();
@@ -775,6 +778,39 @@ export function GroupDetail() {
   }
 
   async function saveEdit(data: GroupFormData) {
+    // Making the group more private can change its events (DEC-48): show
+    // the leader the list and get a decision before anything is saved.
+    if (visibilityRank(data.visibility) < visibilityRank(group.visibility)) {
+      const impact = await Groups.visibilityImpact(id!, data.visibility);
+      if (impact.tightened.length > 0 || impact.leaderOpened.length > 0) {
+        setReview({ data, impact });
+        return;
+      }
+    }
+    await commitEdit(data);
+  }
+
+  async function confirmReview(decisions: Record<string, OpenedDecision>) {
+    if (!review) return;
+    setReviewBusy(true);
+    setReviewError(null);
+    try {
+      await commitEdit(review.data, decisions);
+      setReview(null);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        // The events changed since the preview; show the new list.
+        setReview({ data: review.data, impact: await Groups.visibilityImpact(id!, review.data.visibility) });
+        setReviewError("The group's events changed. Please review them again.");
+      } else {
+        setReviewError(e instanceof Error ? e.message : "Save failed");
+      }
+    } finally {
+      setReviewBusy(false);
+    }
+  }
+
+  async function commitEdit(data: GroupFormData, openedEvents?: Record<string, OpenedDecision>) {
     // Upload first. Sending imageUrl: "" before the upload clears the
     // current cover, and a failed upload would leave it blank.
     if (data.coverFile) {
@@ -789,6 +825,7 @@ export function GroupDetail() {
       ...(data.coverFocal ? { coverFocal: data.coverFocal } : {}),
       visibility: data.visibility,
       memberLimit: data.memberLimit,
+      ...(openedEvents ? { openedEvents } : {}),
     });
     setEditing(false);
     await load();
@@ -845,23 +882,6 @@ export function GroupDetail() {
       await load();
     } catch (e) {
       setMemberError(e instanceof Error ? e.message : "Could not add that person");
-    } finally {
-      setMemberBusy(false);
-    }
-  }
-
-  async function decideReturn(memberId: number, name: string, decision: "approve" | "decline") {
-    const question = decision === "approve"
-      ? `Let ${name} back into “${group.name}”? This can put the group over its limit.`
-      : `Decline ${name}'s return? They'll be removed from “${group.name}”.`;
-    if (!confirm(question)) return;
-    setMemberBusy(true);
-    setMemberError(null);
-    try {
-      await Groups.decideReturn(id!, memberId, decision);
-      await load();
-    } catch (e) {
-      setMemberError(e instanceof Error ? e.message : "Could not save that");
     } finally {
       setMemberBusy(false);
     }
@@ -997,6 +1017,21 @@ export function GroupDetail() {
       </div>
 
       <div className="max-w-6xl mx-auto px-4 py-6">
+        {editing && review && (
+          <>
+            {reviewError && <div className="text-red-600 text-sm mb-2">{reviewError}</div>}
+            <GroupVisibilityReview
+              key={JSON.stringify(review.impact)}
+              impact={review.impact}
+              busy={reviewBusy}
+              onConfirm={(d) => void confirmReview(d)}
+              onCancel={() => {
+                setReview(null);
+                setReviewError(null);
+              }}
+            />
+          </>
+        )}
         {editing ? (
           <GroupForm
             initial={{
@@ -1166,28 +1201,6 @@ export function GroupDetail() {
                       </ul>
                     ) : (
                       <p className="text-gray-600">No members yet.</p>
-                    )}
-                    {canManage && pendingReturns.length > 0 && (
-                      <section id="waiting" className="mt-6">
-                        <h3 className="font-bold">Waiting to return</h3>
-                        <p className="text-sm text-gray-500">
-                          Their accounts were turned back on while the group was full.
-                        </p>
-                        <ul className="divide-y divide-gray-100">
-                          {pendingReturns.map((m) => (
-                            <li key={m.id} className="py-3 flex items-center gap-3">
-                              <Avatar url={m.avatarUrl || undefined} name={m.name} focalX={m.avatarFocalX} focalY={m.avatarFocalY} />
-                              <div className="grow min-w-0 font-semibold">{m.name}</div>
-                              <button type="button" onClick={() => decideReturn(m.id, m.name, "approve")} disabled={memberBusy} className="text-sm font-medium text-brand hover:underline">
-                                Approve
-                              </button>
-                              <button type="button" onClick={() => decideReturn(m.id, m.name, "decline")} disabled={memberBusy} className="text-sm font-medium text-red-600 hover:underline">
-                                Decline
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      </section>
                     )}
                     {canManage && (
                       <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">

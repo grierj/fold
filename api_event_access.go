@@ -24,28 +24,14 @@ type eventFacts struct {
 }
 
 func viewOf(ev *models.Event, host bool) policy.EventView {
-	source := ev.VisibilitySource
-	if source == "" {
-		source = policy.SourceGroup
-	}
 	if ev.GroupID != nil {
 		host = false
 	}
 	return policy.EventView{
 		ChurchWide: ev.GroupID == nil,
 		Visibility: ev.Visibility,
-		Source:     source,
 		Host:       host,
 	}
-}
-
-// shownVisibility is what the API reports. Source group follows the group
-// even when the stored column is a step behind.
-func shownVisibility(ev *models.Event, g *models.Group) string {
-	if g != nil && ev.VisibilitySource != models.VisibilitySourceCustom {
-		return g.Visibility
-	}
-	return ev.Visibility
 }
 
 func (a *App) groupsByID(ids map[uint]struct{}) map[uint]*models.Group {
@@ -139,7 +125,6 @@ func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Gro
 
 func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) eventJSON {
 	j := toEventJSON(ev)
-	j.Visibility = shownVisibility(ev, f.group)
 	if ev.GroupID == nil || f.group == nil || !policy.CanSeeGroup(asPerson(me), asGroup(f.group), f.rel) {
 		j.GroupID = nil
 		j.GroupName = ""
@@ -170,18 +155,8 @@ func (a *App) eventHosts(eventID uint) []hostJSON {
 func (a *App) eventPermissions(me *models.User, f eventFacts) (manage, setVis bool) {
 	p := asPerson(me)
 	manage = policy.CanManageEvent(p, f.view, f.rel)
-	gp := policy.Group{}
-	if f.group != nil {
-		gp = asGroup(f.group)
-	}
-	if f.view.ChurchWide {
-		setVis = policy.CanSetEventVisibility(p, f.view, gp, f.rel, models.VisibilityPublic, policy.SourceCustom) ||
-			policy.CanSetEventVisibility(p, f.view, gp, f.rel, models.VisibilityPrivate, policy.SourceCustom)
-		return
-	}
-	if f.group != nil {
-		setVis = policy.CanSetEventVisibility(p, f.view, gp, f.rel, f.group.Visibility, policy.SourceGroup)
-	}
+	setVis = policy.CanSetEventVisibility(p, f.view, f.rel, models.VisibilityPublic) ||
+		policy.CanSetEventVisibility(p, f.view, f.rel, models.VisibilityPrivate)
 	return
 }
 
@@ -341,7 +316,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		hostIDs = append(hostIDs, u.ID)
 	}
 	ev := models.Event{
-		Visibility: vis, VisibilitySource: models.VisibilitySourceCustom, CreatedBy: creator.ID,
+		Visibility: vis, CreatedBy: creator.ID,
 	}
 	applySpec(&ev, spec, body.eventBody)
 	if !textOK(c, ev.Title, ev.Description, ev.Location) {
@@ -366,6 +341,10 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"event": a.presentEvent(&ev, creator, f)})
 }
 
+// apiSetEventVisibility sets an event's own visibility (DEC-48). On a group
+// event, a value wider than the group marks it leader-opened and is audited
+// as an override with a notice to the other leaders and admins (DEC-17,
+// DEC-28); anything else clears the marker and is audited as a change.
 func (a *App) apiSetEventVisibility(c *gin.Context) {
 	ev, f, ok := a.loadVisibleEvent(c)
 	if !ok {
@@ -373,64 +352,52 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 	}
 	var body struct {
 		Visibility string `json:"visibility"`
-		Source     string `json:"source"`
 		Reason     string `json:"reason"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")
 		return
 	}
-	source := strings.TrimSpace(body.Source)
 	vis := strings.TrimSpace(body.Visibility)
-	if f.view.ChurchWide && source == "" {
-		source = policy.SourceCustom
-	}
-	if f.group != nil && source == policy.SourceGroup {
-		vis = f.group.Visibility
-	}
 	reason := strings.TrimSpace(body.Reason)
 	if len(reason) > 500 {
 		jsonError(c, http.StatusBadRequest, "reason is too long")
 		return
 	}
 	me := apiUser(c)
-	gp := policy.Group{}
-	if f.group != nil {
-		gp = asGroup(f.group)
-	}
 	if !policy.CanManageEvent(asPerson(me), f.view, f.rel) {
 		jsonError(c, http.StatusForbidden, "you can't change this event")
 		return
 	}
-	if !policy.CanSetEventVisibility(asPerson(me), f.view, gp, f.rel, vis, source) {
+	if !policy.CanSetEventVisibility(asPerson(me), f.view, f.rel, vis) {
 		jsonError(c, http.StatusBadRequest, "that visibility isn't allowed on this event")
 		return
 	}
-	if ev.Visibility == vis && ev.VisibilitySource == source {
+	opened := f.group != nil && policy.MoreOpen(vis, f.group.Visibility)
+	if ev.Visibility == vis && ev.LeaderOpened == opened {
 		c.JSON(http.StatusOK, gin.H{"event": a.presentEvent(ev, me, f)})
 		return
 	}
 	action := audit.VisibilityChanged
-	if f.group != nil && source == policy.SourceCustom && policy.MoreOpen(vis, f.group.Visibility) {
+	if opened {
 		action = audit.VisibilityOverride
 	}
-	oldVis, oldSource := ev.Visibility, ev.VisibilitySource
+	oldVis, oldOpened := ev.Visibility, ev.LeaderOpened
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		locked.Visibility = vis
-		locked.VisibilitySource = source
-		if err := tx.Save(&locked).Error; err != nil {
+		if err := tx.Model(&locked).Updates(map[string]any{"visibility": vis, "leader_opened": opened}).Error; err != nil {
 			return err
 		}
+		locked.Visibility, locked.LeaderOpened = vis, opened
 		*ev = locked
 		meta := map[string]any{
-			"oldVisibility": oldVis,
-			"newVisibility": vis,
-			"oldSource":     oldSource,
-			"newSource":     source,
+			"oldVisibility":   oldVis,
+			"newVisibility":   vis,
+			"oldLeaderOpened": oldOpened,
+			"leaderOpened":    opened,
 		}
 		if f.group != nil {
 			meta["groupVisibility"] = f.group.Visibility
@@ -448,7 +415,6 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		return
 	}
 	f.view.Visibility = vis
-	f.view.Source = source
 	c.JSON(http.StatusOK, gin.H{"event": a.presentEvent(ev, me, f)})
 }
 

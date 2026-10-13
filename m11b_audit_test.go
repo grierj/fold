@@ -22,7 +22,7 @@ func TestOpenedEventHidesGroupLocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	ev := scheduleGroupEvent(t, admin, gid, "Open House")
-	setVisibility(t, admin, ev.ID, models.VisibilityPublic, models.VisibilitySourceCustom, "", http.StatusOK)
+	setVisibility(t, admin, ev.ID, models.VisibilityPublic, "", http.StatusOK)
 
 	newTestUser(t, app, "outsider", "password1234", models.RoleMember)
 	outsider := loginAPI(t, app, "outsider", "password1234")

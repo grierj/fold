@@ -135,7 +135,7 @@ type occurrenceJSON struct {
 	Registrations         map[string]int64 `json:"registrations"`
 	MyRegistration        *string          `json:"myRegistration"`
 	Visibility            string           `json:"visibility"`
-	VisibilitySource      string           `json:"visibilitySource"`
+	LeaderOpened          bool             `json:"leaderOpened"`
 	ChurchWide            bool             `json:"churchWide"`
 	GroupID               *uint            `json:"groupId,omitempty"`
 	GroupName             string           `json:"groupName,omitempty"`
@@ -159,25 +159,25 @@ type hostJSON struct {
 }
 
 type eventJSON struct {
-	ID               uint       `json:"id"`
-	GroupID          *uint      `json:"groupId,omitempty"`
-	GroupName        string     `json:"groupName,omitempty"`
-	GroupVisibility  string     `json:"groupVisibility,omitempty"`
-	HostedBy         string     `json:"hostedBy,omitempty"`
-	Title            string     `json:"title"`
-	Description      string     `json:"description"`
-	StartsLocal      string     `json:"startsLocal"`
-	DurationMinutes  int        `json:"durationMinutes"`
-	TZID             string     `json:"tzid"`
-	StartsAt         time.Time  `json:"startsAt"`
-	EndsAt           time.Time  `json:"endsAt"`
-	Location         string     `json:"location"`
-	RecurrenceRule   string     `json:"recurrenceRule"`
-	RRuleUntil       string     `json:"rruleUntil,omitempty"`
-	Visibility       string     `json:"visibility"`
-	VisibilitySource string     `json:"visibilitySource"`
-	ChurchWide       bool       `json:"churchWide"`
-	Hosts            []hostJSON `json:"hosts,omitempty"`
+	ID              uint       `json:"id"`
+	GroupID         *uint      `json:"groupId,omitempty"`
+	GroupName       string     `json:"groupName,omitempty"`
+	GroupVisibility string     `json:"groupVisibility,omitempty"`
+	HostedBy        string     `json:"hostedBy,omitempty"`
+	Title           string     `json:"title"`
+	Description     string     `json:"description"`
+	StartsLocal     string     `json:"startsLocal"`
+	DurationMinutes int        `json:"durationMinutes"`
+	TZID            string     `json:"tzid"`
+	StartsAt        time.Time  `json:"startsAt"`
+	EndsAt          time.Time  `json:"endsAt"`
+	Location        string     `json:"location"`
+	RecurrenceRule  string     `json:"recurrenceRule"`
+	RRuleUntil      string     `json:"rruleUntil,omitempty"`
+	Visibility      string     `json:"visibility"`
+	LeaderOpened    bool       `json:"leaderOpened"`
+	ChurchWide      bool       `json:"churchWide"`
+	Hosts           []hostJSON `json:"hosts,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -296,20 +296,15 @@ func (a *App) relOf(u *models.User, groupID uint) policy.Rel {
 func membershipRel(m models.Membership) policy.Rel {
 	active := m.ID != 0 && m.Status == "active"
 	return policy.Rel{
-		Member:        active,
-		Leader:        active && m.Role == models.MembershipLeader,
-		Removed:       m.ID != 0 && m.Status == memberRemoved,
-		PendingReturn: m.ID != 0 && m.Status == memberPendingReturn,
+		Member:  active,
+		Leader:  active && m.Role == models.MembershipLeader,
+		Removed: m.ID != 0 && m.Status == memberRemoved,
 	}
 }
 
 // memberRemoved is the Membership.Status of someone a leader or admin
 // removed (DEC-35).
 const memberRemoved = "removed"
-
-// memberPendingReturn is a re-enabled account's membership waiting for a
-// leader or admin because the group was full (DEC-38, DEC-39).
-const memberPendingReturn = "pending_return"
 
 // listedUsers joins memberships or registrations (the table name) to accounts
 // that are listed: not deleted and not disabled. A disabled account keeps its
@@ -419,7 +414,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.PUT("/groups/:id/members/:userId/role", a.apiAuth(), a.apiSetMemberRole)
 	v1.POST("/groups/:id/members", a.apiAuth(), a.apiAddGroupMember)
 	v1.DELETE("/groups/:id/members/:userId", a.apiAuth(), a.apiRemoveGroupMember)
-	v1.POST("/groups/:id/members/:userId/return", a.apiAuth(), a.apiDecideReturn)
 	v1.POST("/groups/:id/deletion-request", a.apiAuth(), a.apiRequestDeletion)
 	v1.DELETE("/groups/:id/deletion-request", a.apiAuth(), a.apiCancelDeletion)
 	v1.GET("/groups/:id/members", a.apiAuth(), a.apiGroupMembers)
@@ -440,6 +434,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.PUT("/events/:id", a.apiAuth(), a.apiUpdateEvent)
 	v1.DELETE("/events/:id", a.apiAuth(), a.apiDeleteEvent)
 	v1.PUT("/events/:id/visibility", a.apiAuth(), a.apiSetEventVisibility)
+	v1.GET("/groups/:id/visibility-impact", a.apiAuth(), a.apiGroupVisibilityImpact)
 	v1.POST("/events/:id/hosts", a.apiAuth(), a.apiAdmin(), a.apiAddEventHost)
 	v1.DELETE("/events/:id/hosts/:userId", a.apiAuth(), a.apiAdmin(), a.apiRemoveEventHost)
 	v1.POST("/events/:id/cancel", a.apiAuth(), a.apiCancelOccurrence)
@@ -448,7 +443,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 
 	// Admin.
 	v1.GET("/admin/pending", a.apiAuth(), a.apiAdmin(), a.apiPendingGroups)
-	v1.GET("/admin/pending-returns", a.apiAuth(), a.apiAdmin(), a.apiAdminPendingReturns)
 	v1.GET("/admin/deletions", a.apiAuth(), a.apiAdmin(), a.apiDeletionRequests)
 	v1.POST("/admin/groups/:id/approve", a.apiAuth(), a.apiAdmin(), a.apiApproveGroup)
 	v1.POST("/admin/groups/:id/reject", a.apiAuth(), a.apiAdmin(), a.apiRejectGroup)

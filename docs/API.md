@@ -128,9 +128,7 @@ for no limit (DEC-39); `memberCount` counts active members of listed accounts. `
 displayed primary contact only (one of the leaders); they grant nothing.
 
 `group` (detail response): `{group: groupSummary, members: [...],
-upcomingEvents: [occurrence], canManage: bool, isMember: bool,
-pendingReturns: [member]}`. `pendingReturns` (leaders and admins only, else `[]`)
-lists re-enabled accounts waiting because the group was full (DEC-39).
+upcomingEvents: [occurrence], canManage: bool, isMember: bool}`.
 `members` is filled only for the group's members and admins (people see each
 other only inside groups they share); otherwise it is `[]`. `canManage` is
 true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, role,
@@ -144,6 +142,32 @@ everyone and blocks joins until the count drops (DEC-39).
 `visibility` is `public` (the default), `private`, or `invite_only`;
 anything else is rejected with 400. On update, omit it to leave it
 unchanged.
+
+Changing a group's visibility (DEC-48). Making it more open never changes
+its events. Making it more private, in the same transaction:
+- events more open than the new value that aren't `leaderOpened` become the
+  new value (`event.visibility_changed`, reason `group_more_private`);
+- registrants of a tightened event who could no longer see it (on
+  `invite_only`: not a member of the group and not an admin) lose their
+  registrations on upcoming dates; each gets a `registration.cancelled`
+  audit row (meta `userId`, `dates`) and a notification ("Registration
+  cancelled: <event title>", id `registration-cancelled:<audit id>`, link
+  `/`; it never names the group or its place);
+- each `leaderOpened` event more open than the new value needs a decision
+  in `openedEvents: {"<eventId>": "keep"|"tighten"}`. `keep` writes an
+  `event.visibility_override` (with the usual notice); `tighten` works like
+  the inherited case. If any decision is missing or invalid, nothing is
+  saved and the answer is `409 {error, needsDecision: true, impact}`.
+
+```
+GET /api/v1/groups/:id/visibility-impact?visibility=invite_only → 200 impact  (leader or admin)
+```
+
+`impact`: `{visibility, tightened: [impactEvent], leaderOpened:
+[impactEvent]}`, with `impactEvent` `{id, title, visibility, registrants}`.
+`registrants` counts people registered for upcoming dates who would lose
+access if that event is tightened. Both lists are empty unless the change
+is more private. The SPA calls this before saving and shows the list.
 New groups enter `pending` until an admin approves them (the approval
 workflow survives); groups an admin creates start `active`.
 Name ≤ 200 characters, description ≤ 5000, location ≤ 300, joined tags ≤ 500.
@@ -159,9 +183,6 @@ POST /api/v1/groups/:id/leave   → 200 {}            (auth; 400 if you are the 
 POST /api/v1/groups/:id/members → 200 {membership}  (auth; leader or admin)
      body: {email, overLimit?} — adds that account as a member; a full group
      answers 409 {error: "This group is full", full: true} unless overLimit is true (audited)
-POST /api/v1/groups/:id/members/:userId/return → 200 {group, members, pendingReturns}  (auth; leader or admin; DEC-39)
-     body: {decision: "approve"|"decline"} — approve makes a pending_return membership
-     active (over the limit by explicit choice); decline sets it removed; both audited
 DELETE /api/v1/groups/:id/members/:userId → 200 {members: [...]}  (auth; leader or admin; DEC-35)
      body (optional): {note} — kept only in the audit row, never shown to the removed person
 PUT  /api/v1/groups/:id/members/:userId/role → 200 {members: [...]}  (auth; leader or admin)
@@ -214,14 +235,16 @@ sides of a daylight-saving change. `BYDAY` is the weekday in that zone.
 Each date is addressed as `{eventId, date}` where `date` is the series
 date `YYYY-MM-DD`. A per-date time change does not change `date`.
 
-`visibility` is `public`, `private`, or `invite_only`. `visibilitySource`
-is `group` (the event follows the group, including later changes) or
-`custom` (it keeps its own value). Church-wide events are `public` or
-`private` and always `custom`. A leader of the event's group, or an admin,
-may set a group event to any of the three. A change more open than the
-group writes an audit row `event.visibility_override` (reason optional) and
-a derived in-app notice to the group's other leaders and the admins. Any
-other visibility change is `event.visibility_changed`, with no notice.
+`visibility` is `public`, `private`, or `invite_only`: the event's own
+value (DEC-48). A group event copies the group's visibility when it is
+created and does not follow later group changes, except that making the
+group more private tightens it (see Groups below). Church-wide events are
+`public` or `private`. A leader of the event's group, or an admin, may set
+a group event to any of the three. A value wider than the group sets
+`leaderOpened: true` and writes an audit row `event.visibility_override`
+(reason optional) and a derived in-app notice to the group's other leaders
+and the admins. Any other visibility change clears `leaderOpened` and is
+`event.visibility_changed`, with no notice.
 
 An invite-only group's event that is `public` or `private` does not name
 or link the group to people outside it. The page says `hostedBy` is the
@@ -240,7 +263,7 @@ GET  /api/v1/groups/:id/events?from=2026-10-06&to=2027-01-06
 POST /api/v1/groups/:id/events              → 201 {event}   (group leader or admin)
 PUT  /api/v1/events/:id                     → 200 {event}   (leader, host, or admin; series edit)
 PUT  /api/v1/events/:id/visibility          → 200 {event}   (leader, host, or admin)
-     body: {visibility, source: "group"|"custom", reason?}
+     body: {visibility, reason?}
 DELETE /api/v1/events/:id                   → 200 {}        (leader, host, or admin)
 POST /api/v1/events/:id/hosts               → 200 {hosts}   (admin; church-wide only)
      body: {email}
@@ -253,7 +276,7 @@ PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (leader, host,
 
 `event`: `{id, groupId?, groupName?, groupVisibility?, hostedBy?, title,
 description, startsLocal, durationMinutes, tzid, startsAt, endsAt, location,
-recurrenceRule, rruleUntil, visibility, visibilitySource, churchWide,
+recurrenceRule, rruleUntil, visibility, leaderOpened, churchWide,
 hosts?}`. `groupId` is omitted for a church-wide event and for an opened
 event whose group the viewer cannot see; `hostedBy` is the church name
 then. `hosts` (`{userId, name, email}`) is present for an admin reading a
@@ -265,7 +288,7 @@ tzid, durationMinutes, location, title, description, recurrenceRule, rruleUntil,
 seriesStartsLocal, seriesTitle, seriesLocation, seriesDurationMinutes,
 overridden, registrations: {going, maybe, declined},
 myRegistration: "going"|"maybe"|"declined"|null, visibility,
-visibilitySource, churchWide, groupId?, groupName?, hostedBy?,
+leaderOpened, churchWide, groupId?, groupName?, hostedBy?,
 attendeesVisible, attendees?}`. `startsAt`/`endsAt` are UTC.
 `startsLocal`/`endsLocal` are the wall clock in `tzid`, including a
 per-date override. `overridden` is true when this date has its own time,
@@ -323,7 +346,6 @@ GET  /api/v1/admin/groups                  → {groups: [groupSummary]}  (admin;
 POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
      body: {userId, role: "member"|"leader", overLimit?} — role=leader adds a (co-)leader; audited;
      a full group needs overLimit (audited as membership.added_over_limit)
-GET  /api/v1/admin/pending-returns         → {returns: [{group: groupSummary, member}]}  (admin; DEC-39)
 DELETE /api/v1/admin/groups/:id/members/:userId → 200 {members}      (admin; same rules as the leader route)
 GET  /api/v1/admin/users                   → {users: [user]}           (admin)
 GET  /api/v1/admin/users/:id/sole-leader-groups → {groups: [{id, name, status, candidates: [{id, name, admin}]}]}  (admin; DEC-36)
@@ -345,7 +367,7 @@ their sessions (`session_version`). A disabled admin has no admin powers. `PUT /
 
 Rosters (`members` in group detail, `GET /groups/:id/members`, admin rosters) include `admin: true` for church admins, so the SPA can label them and hide Remove (DEC-38).
 
-Disabling (DEC-38): the account's memberships and registrations are kept, hidden from rosters, and left out of member counts, registration counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Enabling it again restores them as plain member, or as `pending_return` in a group at its member limit (DEC-39), writing `membership.restored` (with the resulting status) per membership and `user.enabled`. Deleting still ends memberships.
+Disabling (DEC-38): the account's memberships and registrations are kept, hidden from rosters, and left out of member counts, registration counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Enabling it again restores them as plain member, writing `membership.restored` per membership and `user.enabled`. In a group at its member limit the membership is dropped instead (DEC-47): `membership.not_restored` (meta `userId`, `count`, `limit`) is written and the person gets a notification ("You're not back in … yet", "Ask a leader to add you.", id `not-restored:<audit id>`, kept 30 days). A leader or admin can add them with `overLimit: true`. Deleting still ends memberships.
 
 Removing a member (DEC-35): leaders remove people from groups they lead,
 co-leaders included, but never an admin (they can't demote an admin

@@ -65,10 +65,10 @@ func scheduleGroupEvent(t *testing.T, c *apiClient, gid uint, title string) even
 	return created.Event
 }
 
-func setVisibility(t *testing.T, c *apiClient, eventID uint, visibility, source, reason string, want int) string {
+func setVisibility(t *testing.T, c *apiClient, eventID uint, visibility, reason string, want int) string {
 	t.Helper()
 	return apiDo(t, c, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", eventID), map[string]any{
-		"visibility": visibility, "source": source, "reason": reason,
+		"visibility": visibility, "reason": reason,
 	}, want)
 }
 
@@ -137,11 +137,11 @@ func TestVisibilityOverrideNotice(t *testing.T) {
 	randoC := loginAPI(t, app, "rando", "password1234")
 
 	ev := scheduleGroupEvent(t, admin, gid, "Potluck")
-	if ev.Visibility != models.VisibilityInviteOnly || ev.VisibilitySource != models.VisibilitySourceGroup || ev.ChurchWide {
+	if ev.Visibility != models.VisibilityInviteOnly || ev.LeaderOpened || ev.ChurchWide {
 		t.Fatalf("new group event: %+v", ev)
 	}
 
-	raw := setVisibility(t, leader, ev.ID, models.VisibilityPublic, models.VisibilitySourceCustom, "friends can come", http.StatusOK)
+	raw := setVisibility(t, leader, ev.ID, models.VisibilityPublic, "friends can come", http.StatusOK)
 	if strings.Contains(raw, "@") {
 		t.Fatalf("visibility response leaked contact: %s", raw)
 	}
@@ -186,8 +186,13 @@ func TestVisibilityOverrideNotice(t *testing.T) {
 		}
 	}
 
-	// Going back to the group is audited and does not add another override notice.
-	setVisibility(t, leader, ev.ID, "", models.VisibilitySourceGroup, "", http.StatusOK)
+	if page, _ := getEvent(t, admin, ev.ID, http.StatusOK); !page.Event.LeaderOpened {
+		t.Fatalf("opened wider should set the marker: %+v", page.Event)
+	}
+
+	// Going back to the group's value is audited, clears the marker, and
+	// does not add another override notice.
+	setVisibility(t, leader, ev.ID, models.VisibilityInviteOnly, "", http.StatusOK)
 	var changed int64
 	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", audit.VisibilityChanged, ev.ID).Count(&changed)
 	if changed != 1 {
@@ -199,54 +204,59 @@ func TestVisibilityOverrideNotice(t *testing.T) {
 		t.Fatalf("override rows: %d", overrides)
 	}
 	page, _ := getEvent(t, admin, ev.ID, http.StatusOK)
-	if page.Event.Visibility != models.VisibilityInviteOnly || page.Event.VisibilitySource != models.VisibilitySourceGroup {
+	if page.Event.Visibility != models.VisibilityInviteOnly || page.Event.LeaderOpened {
 		t.Fatalf("back to group: %+v", page.Event)
 	}
 }
 
-func TestVisibilityFollowsGroup(t *testing.T) {
+// DEC-48: an event copies the group's visibility at creation and keeps its
+// own value. Opening the group never changes events; making it more
+// private tightens inherited events.
+func TestEventKeepsItsOwnVisibility(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	admin := loginAPI(t, app, "admin", "password1234")
-	gid := createGroupAs(t, admin, "Choir", models.VisibilityPublic)
-	following := scheduleGroupEvent(t, admin, gid, "Rehearsal")
-	custom := scheduleGroupEvent(t, admin, gid, "Concert")
-	setVisibility(t, admin, custom.ID, models.VisibilityPublic, models.VisibilitySourceCustom, "", http.StatusOK)
+	gid := createGroupAs(t, admin, "Choir", models.VisibilityPrivate)
+	rehearsal := scheduleGroupEvent(t, admin, gid, "Rehearsal")
+	if rehearsal.Visibility != models.VisibilityPrivate || rehearsal.LeaderOpened {
+		t.Fatalf("copied at creation: %+v", rehearsal)
+	}
+	// Setting the group's own value is not an override.
+	setVisibility(t, admin, rehearsal.ID, models.VisibilityPrivate, "", http.StatusOK)
 	var overrides int64
-	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", audit.VisibilityOverride, custom.ID).Count(&overrides)
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", audit.VisibilityOverride, rehearsal.ID).Count(&overrides)
 	if overrides != 0 {
 		t.Fatal("matching the group is not an override")
 	}
 
-	apiDo(t, admin, "PUT", "/api/v1/groups/"+itoa(gid), map[string]any{"visibility": models.VisibilityPrivate}, http.StatusOK)
-	page, _ := getEvent(t, admin, following.ID, http.StatusOK)
-	if page.Event.Visibility != models.VisibilityPrivate || page.Event.VisibilitySource != models.VisibilitySourceGroup {
-		t.Fatalf("following: %+v", page.Event)
+	// More open group: events don't move.
+	apiDo(t, admin, "PUT", "/api/v1/groups/"+itoa(gid), map[string]any{"visibility": models.VisibilityPublic}, http.StatusOK)
+	page, _ := getEvent(t, admin, rehearsal.ID, http.StatusOK)
+	if page.Event.Visibility != models.VisibilityPrivate {
+		t.Fatalf("opening the group changed the event: %+v", page.Event)
 	}
-	page, _ = getEvent(t, admin, custom.ID, http.StatusOK)
-	if page.Event.Visibility != models.VisibilityPublic || page.Event.VisibilitySource != models.VisibilitySourceCustom {
-		t.Fatalf("custom: %+v", page.Event)
-	}
+	guest := newAPIClient(t, app)
+	getEvent(t, guest, rehearsal.ID, http.StatusNotFound)
 
-	// A stricter custom value is audited without a notice.
-	setVisibility(t, admin, custom.ID, models.VisibilityPrivate, models.VisibilitySourceCustom, "", http.StatusOK)
+	// A stricter value is audited without a notice.
+	concert := scheduleGroupEvent(t, admin, gid, "Concert")
+	setVisibility(t, admin, concert.ID, models.VisibilityPrivate, "", http.StatusOK)
 	var changed int64
-	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", audit.VisibilityChanged, custom.ID).Count(&changed)
-	if changed < 1 {
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", audit.VisibilityChanged, concert.ID).Count(&changed)
+	if changed != 1 {
 		t.Fatal("stricter change was not audited")
 	}
 	if hasVisibilityNotice(noticeIDs(t, admin), "Concert", "private") {
 		t.Fatal("stricter change notified")
 	}
 
+	// More private group: inherited events tighten, no decision needed.
 	apiDo(t, admin, "PUT", "/api/v1/groups/"+itoa(gid), map[string]any{"visibility": models.VisibilityInviteOnly}, http.StatusOK)
-	page, _ = getEvent(t, admin, following.ID, http.StatusOK)
-	if page.Event.Visibility != models.VisibilityInviteOnly {
-		t.Fatalf("following after invite-only: %+v", page.Event)
-	}
-	page, _ = getEvent(t, admin, custom.ID, http.StatusOK)
-	if page.Event.Visibility != models.VisibilityPrivate {
-		t.Fatalf("custom changed with the group: %+v", page.Event)
+	for _, id := range []uint{rehearsal.ID, concert.ID} {
+		page, _ = getEvent(t, admin, id, http.StatusOK)
+		if page.Event.Visibility != models.VisibilityInviteOnly || page.Event.LeaderOpened {
+			t.Fatalf("not tightened: %+v", page.Event)
+		}
 	}
 }
 
@@ -266,7 +276,7 @@ func TestOpenedEventHidesGroupAndNames(t *testing.T) {
 	apiDo(t, samC, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{
 		"status": "going", "date": "2026-12-01",
 	}, http.StatusOK)
-	setVisibility(t, admin, ev.ID, models.VisibilityPublic, models.VisibilitySourceCustom, "", http.StatusOK)
+	setVisibility(t, admin, ev.ID, models.VisibilityPublic, "", http.StatusOK)
 
 	outsiderUser := newTestUser(t, app, "outsider", "password1234", models.RoleMember)
 	outsider := loginAPI(t, app, "outsider", "password1234")
@@ -329,7 +339,7 @@ func TestOpenedEventHidesGroupAndNames(t *testing.T) {
 	if guestPage.Occurrences[0].AttendeesVisible || strings.Contains(guestRaw, "Secret Sam") || guestPage.Event.HostedBy != "Fold" {
 		t.Fatalf("guest: %s", guestRaw)
 	}
-	setVisibility(t, admin, ev.ID, models.VisibilityPrivate, models.VisibilitySourceCustom, "", http.StatusOK)
+	setVisibility(t, admin, ev.ID, models.VisibilityPrivate, "", http.StatusOK)
 	getEvent(t, guest, ev.ID, http.StatusNotFound)
 	privatePage, privateRaw := getEvent(t, outsider, ev.ID, http.StatusOK)
 	if privatePage.Occurrences[0].AttendeesVisible || strings.Contains(privateRaw, "Secret Sam") {
