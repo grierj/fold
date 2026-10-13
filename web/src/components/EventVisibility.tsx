@@ -9,20 +9,22 @@ const CHOICES: { value: Visibility; label: string }[] = [
   { value: "invite_only", label: "Invite only — group members" },
 ];
 
-function rank(v: string): number {
+export function visibilityRank(v: string): number {
   if (v === "public") return 2;
   if (v === "private") return 1;
   return 0;
 }
 
-// EventVisibilityControl sets who can see one event. A group event can follow
-// the group or keep its own value. A church-wide event is public or private.
+// EventVisibilityControl sets who can see one event. Every event keeps its
+// own value, copied from the group when it was created (DEC-48). A group
+// event set wider than its group is marked as opened by a leader. A
+// church-wide event is public or private.
 export function EventVisibilityControl({
   eventId,
   groupName,
   groupVisibility,
   visibility,
-  source,
+  leaderOpened,
   churchWide,
   onSaved,
 }: {
@@ -30,29 +32,23 @@ export function EventVisibilityControl({
   groupName?: string;
   groupVisibility?: Visibility;
   visibility: Visibility;
-  source: "group" | "custom";
+  leaderOpened?: boolean;
   churchWide?: boolean;
   onSaved: () => void;
 }) {
-  const [mode, setMode] = useState<"group" | "custom">(churchWide ? "custom" : source);
   const [value, setValue] = useState<Visibility>(visibility === "invite_only" && churchWide ? "public" : visibility);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const chosen: Visibility = churchWide ? value : mode === "group" ? (groupVisibility ?? "public") : value;
-  const opening = !churchWide && groupVisibility != null && rank(chosen) > rank(groupVisibility);
+  const opening = !churchWide && groupVisibility != null && visibilityRank(value) > visibilityRank(groupVisibility);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      await Events.setVisibility(eventId, {
-        visibility: chosen,
-        source: churchWide ? "custom" : mode,
-        reason: reason.trim() || undefined,
-      });
+      await Events.setVisibility(eventId, { visibility: value, reason: reason.trim() || undefined });
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update visibility");
@@ -76,25 +72,19 @@ export function EventVisibilityControl({
           <option value="private">Private — signed-in people</option>
         </select>
       ) : (
-        <>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="radio" name={`vis-${eventId}`} checked={mode === "group"} onChange={() => setMode("group")} />
-            Same as the group
-          </label>
-          <label className="flex items-center gap-2 text-sm">
-            <input type="radio" name={`vis-${eventId}`} checked={mode === "custom"} onChange={() => setMode("custom")} />
-            Choose for this event
-          </label>
-          {mode === "custom" && (
-            <select className="input" aria-label="Event visibility" value={value} onChange={(e) => setValue(e.target.value as Visibility)}>
-              {CHOICES.map((c) => (
-                <option key={c.value} value={c.value}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
-          )}
-        </>
+        <select className="input" aria-label="Event visibility" value={value} onChange={(e) => setValue(e.target.value as Visibility)}>
+          {CHOICES.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+              {c.value === groupVisibility ? " (same as the group)" : ""}
+            </option>
+          ))}
+        </select>
+      )}
+      {leaderOpened && !churchWide && (
+        <p className="text-xs text-gray-500">
+          A leader opened this event wider than the group. If the group becomes more private, you'll be asked whether to keep it open.
+        </p>
       )}
       {opening && groupName && (
         <p className="text-sm text-gray-700 bg-amber-50 border border-amber-200 rounded-lg p-3">{openedEventWarning(groupName)}</p>

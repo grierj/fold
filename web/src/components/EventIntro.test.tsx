@@ -36,7 +36,7 @@ describe("opened events", () => {
         groupName="Hidden Care"
         groupVisibility="invite_only"
         visibility="public"
-        source="custom"
+        leaderOpened
         onSaved={() => {}}
       />
     );

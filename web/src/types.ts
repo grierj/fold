@@ -87,7 +87,8 @@ export interface EventOccurrence {
   registrations: Record<string, number>;
   myRegistration: RegistrationStatus | null;
   visibility?: Visibility;
-  visibilitySource?: "group" | "custom";
+  // A leader set this event wider than its group (DEC-48).
+  leaderOpened?: boolean;
   churchWide?: boolean;
   groupId?: number;
   groupName?: string;
@@ -130,7 +131,7 @@ export interface EventSeries {
   recurrenceRule: string;
   rruleUntil?: string;
   visibility: Visibility;
-  visibilitySource: "group" | "custom";
+  leaderOpened: boolean;
   churchWide: boolean;
   hosts?: EventHostRow[];
 }
@@ -149,3 +150,20 @@ export interface SoleLedGroup {
   status: string;
   candidates: { id: number; name: string; admin: boolean }[];
 }
+
+// What making a group more private does to its events (DEC-48).
+export interface VisibilityImpactEvent {
+  id: number;
+  title: string;
+  visibility: Visibility;
+  // People registered for upcoming dates who would lose access if tightened.
+  registrants: number;
+}
+
+export interface VisibilityImpact {
+  visibility: Visibility;
+  tightened: VisibilityImpactEvent[];
+  leaderOpened: VisibilityImpactEvent[];
+}
+
+export type OpenedDecision = "keep" | "tighten";

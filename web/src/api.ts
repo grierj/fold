@@ -76,10 +76,12 @@ import type {
   GroupSummary,
   Member,
   Notification,
+  OpenedDecision,
   RegistrationStatus,
   SoleLedGroup,
   User,
   Visibility,
+  VisibilityImpact,
 } from "./types";
 
 export const Auth = {
@@ -121,8 +123,12 @@ export const Groups = {
       coverFocal?: { x: number; y: number };
       visibility?: Visibility;
       memberLimit?: number | null;
+      // Keep or tighten each leader-opened event when the group becomes more private (DEC-48).
+      openedEvents?: Record<string, OpenedDecision>;
     }
   ) => api<{ group: GroupSummary }>(`/groups/${id}`, { method: "PUT", body: data }),
+  visibilityImpact: (id: number | string, visibility: Visibility) =>
+    api<VisibilityImpact>(`/groups/${id}/visibility-impact?visibility=${encodeURIComponent(visibility)}`),
   join: (id: number | string) => api<unknown>(`/groups/${id}/join`, { method: "POST" }),
   leave: (id: number | string) => api<unknown>(`/groups/${id}/leave`, { method: "POST" }),
   // Make a member a leader, or a leader a member again (audited; admins are notified).
@@ -182,7 +188,7 @@ export const Events = {
   }) => api<{ event: EventSeries }>("/events", { method: "POST", body: data }),
   setVisibility: (
     id: number,
-    data: { visibility: Visibility; source: "group" | "custom"; reason?: string }
+    data: { visibility: Visibility; reason?: string }
   ) => api<{ event: EventSeries }>(`/events/${id}/visibility`, { method: "PUT", body: data }),
   addHost: (id: number, email: string) =>
     api<{ hosts: EventHostRow[] }>(`/events/${id}/hosts`, { method: "POST", body: { email } }),

@@ -142,6 +142,32 @@ everyone and blocks joins until the count drops (DEC-39).
 `visibility` is `public` (the default), `private`, or `invite_only`;
 anything else is rejected with 400. On update, omit it to leave it
 unchanged.
+
+Changing a group's visibility (DEC-48). Making it more open never changes
+its events. Making it more private, in the same transaction:
+- events more open than the new value that aren't `leaderOpened` become the
+  new value (`event.visibility_changed`, reason `group_more_private`);
+- registrants of a tightened event who could no longer see it (on
+  `invite_only`: not a member of the group and not an admin) lose their
+  registrations on upcoming dates; each gets a `registration.cancelled`
+  audit row (meta `userId`, `dates`) and a notification ("Registration
+  cancelled: <event title>", id `registration-cancelled:<audit id>`, link
+  `/`; it never names the group or its place);
+- each `leaderOpened` event more open than the new value needs a decision
+  in `openedEvents: {"<eventId>": "keep"|"tighten"}`. `keep` writes an
+  `event.visibility_override` (with the usual notice); `tighten` works like
+  the inherited case. If any decision is missing or invalid, nothing is
+  saved and the answer is `409 {error, needsDecision: true, impact}`.
+
+```
+GET /api/v1/groups/:id/visibility-impact?visibility=invite_only → 200 impact  (leader or admin)
+```
+
+`impact`: `{visibility, tightened: [impactEvent], leaderOpened:
+[impactEvent]}`, with `impactEvent` `{id, title, visibility, registrants}`.
+`registrants` counts people registered for upcoming dates who would lose
+access if that event is tightened. Both lists are empty unless the change
+is more private. The SPA calls this before saving and shows the list.
 New groups enter `pending` until an admin approves them (the approval
 workflow survives); groups an admin creates start `active`.
 Name ≤ 200 characters, description ≤ 5000, location ≤ 300, joined tags ≤ 500.
@@ -209,14 +235,16 @@ sides of a daylight-saving change. `BYDAY` is the weekday in that zone.
 Each date is addressed as `{eventId, date}` where `date` is the series
 date `YYYY-MM-DD`. A per-date time change does not change `date`.
 
-`visibility` is `public`, `private`, or `invite_only`. `visibilitySource`
-is `group` (the event follows the group, including later changes) or
-`custom` (it keeps its own value). Church-wide events are `public` or
-`private` and always `custom`. A leader of the event's group, or an admin,
-may set a group event to any of the three. A change more open than the
-group writes an audit row `event.visibility_override` (reason optional) and
-a derived in-app notice to the group's other leaders and the admins. Any
-other visibility change is `event.visibility_changed`, with no notice.
+`visibility` is `public`, `private`, or `invite_only`: the event's own
+value (DEC-48). A group event copies the group's visibility when it is
+created and does not follow later group changes, except that making the
+group more private tightens it (see Groups below). Church-wide events are
+`public` or `private`. A leader of the event's group, or an admin, may set
+a group event to any of the three. A value wider than the group sets
+`leaderOpened: true` and writes an audit row `event.visibility_override`
+(reason optional) and a derived in-app notice to the group's other leaders
+and the admins. Any other visibility change clears `leaderOpened` and is
+`event.visibility_changed`, with no notice.
 
 An invite-only group's event that is `public` or `private` does not name
 or link the group to people outside it. The page says `hostedBy` is the
@@ -235,7 +263,7 @@ GET  /api/v1/groups/:id/events?from=2026-10-06&to=2027-01-06
 POST /api/v1/groups/:id/events              → 201 {event}   (group leader or admin)
 PUT  /api/v1/events/:id                     → 200 {event}   (leader, host, or admin; series edit)
 PUT  /api/v1/events/:id/visibility          → 200 {event}   (leader, host, or admin)
-     body: {visibility, source: "group"|"custom", reason?}
+     body: {visibility, reason?}
 DELETE /api/v1/events/:id                   → 200 {}        (leader, host, or admin)
 POST /api/v1/events/:id/hosts               → 200 {hosts}   (admin; church-wide only)
      body: {email}
@@ -248,7 +276,7 @@ PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (leader, host,
 
 `event`: `{id, groupId?, groupName?, groupVisibility?, hostedBy?, title,
 description, startsLocal, durationMinutes, tzid, startsAt, endsAt, location,
-recurrenceRule, rruleUntil, visibility, visibilitySource, churchWide,
+recurrenceRule, rruleUntil, visibility, leaderOpened, churchWide,
 hosts?}`. `groupId` is omitted for a church-wide event and for an opened
 event whose group the viewer cannot see; `hostedBy` is the church name
 then. `hosts` (`{userId, name, email}`) is present for an admin reading a
@@ -260,7 +288,7 @@ tzid, durationMinutes, location, title, description, recurrenceRule, rruleUntil,
 seriesStartsLocal, seriesTitle, seriesLocation, seriesDurationMinutes,
 overridden, registrations: {going, maybe, declined},
 myRegistration: "going"|"maybe"|"declined"|null, visibility,
-visibilitySource, churchWide, groupId?, groupName?, hostedBy?,
+leaderOpened, churchWide, groupId?, groupName?, hostedBy?,
 attendeesVisible, attendees?}`. `startsAt`/`endsAt` are UTC.
 `startsLocal`/`endsLocal` are the wall clock in `tzid`, including a
 per-date override. `overridden` is true when this date has its own time,

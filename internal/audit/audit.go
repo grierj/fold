@@ -49,16 +49,25 @@ const (
 	// membership.return_approved / return_declined rows from DEC-39.
 	MemberNotRestored = "membership.not_restored"
 
-	// VisibilityOverride: a group event was made more open than its group
-	// (DEC-6, DEC-17, DEC-28). Target is the event. Meta has oldVisibility,
-	// newVisibility, oldSource, newSource, groupVisibility, and an optional
-	// reason. The group's other leaders and the admins see a derived notice.
+	// VisibilityOverride: a group event was made more open than its group,
+	// or kept open when the group became more private (DEC-6, DEC-17,
+	// DEC-28, DEC-48). Target is the event. Meta has oldVisibility,
+	// newVisibility, oldLeaderOpened, leaderOpened, groupVisibility, and an
+	// optional reason. Rows before DEC-48 have oldSource/newSource instead. The group's other leaders and the admins see a derived notice.
 	VisibilityOverride = "event.visibility_override"
 
 	// VisibilityChanged: any other visibility change (stricter, back to
-	// following the group, or a church-wide public/private switch). Same
-	// meta shape, without a notice.
+	// the group's value, tightened because the group became more private,
+	// or a church-wide public/private switch). Same meta shape, without a
+	// notice.
 	VisibilityChanged = "event.visibility_changed"
+
+	// RegistrationCancelled: an event became more private (its group was
+	// made more private, DEC-48) and this person could no longer see it, so
+	// their registrations on upcoming dates were removed. Target is the
+	// event. Meta: userId, dates, newVisibility, reason. The person sees a
+	// derived notice.
+	RegistrationCancelled = "registration.cancelled"
 )
 
 // Entry is one audit record. Actor is nil for system actions.

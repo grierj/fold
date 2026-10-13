@@ -89,13 +89,13 @@ export function EventDetail() {
 
       {canSetVisibility && (
         <EventVisibilityControl
-          key={`${event.id}-${event.visibility}-${event.visibilitySource}`}
+          key={`${event.id}-${event.visibility}-${event.leaderOpened}`}
           eventId={event.id}
           churchWide={event.churchWide}
           groupName={event.groupName}
           groupVisibility={event.groupVisibility}
           visibility={event.visibility}
-          source={event.visibilitySource}
+          leaderOpened={event.leaderOpened}
           onSaved={() => void load()}
         />
       )}

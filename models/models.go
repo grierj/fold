@@ -36,10 +36,7 @@ const (
 
 // Where an event's visibility comes from (DEC-6). group follows the group,
 // including later changes. custom keeps the event's own value.
-const (
-	VisibilitySourceGroup  = "group"
-	VisibilitySourceCustom = "custom"
-)
+const ()
 
 // Registration statuses (renamed from RSVP, M1.1a).
 const (
@@ -174,22 +171,27 @@ type Event struct {
 	// Description is plain text, same 5000-character limit as a group.
 	// Sanitized HTML is a later milestone.
 	Description string `gorm:"not null"`
-	// Visibility is public, private, or invite_only. With VisibilitySource
-	// group, it tracks the group's visibility. Church-wide events are
-	// public or private and always custom (a CHECK enforces that).
-	Visibility       string  `gorm:"not null"`
-	VisibilitySource string  `gorm:"not null;default:group"`
-	StartsLocal      string  `gorm:"not null"` // YYYY-MM-DDTHH:MM, no offset
-	DurationMinutes  int     `gorm:"not null"`
-	TZID             string  `gorm:"column:tzid;not null"`
-	RRule            string  `gorm:"column:rrule;not null"`
-	RRuleUntil       *string `gorm:"column:rrule_until"` // YYYY-MM-DD, inclusive
-	Location         string  `gorm:"not null"`           // empty = the group's location
-	CreatedBy        uint    `gorm:"not null"`
-	Creator          User    `gorm:"foreignKey:CreatedBy"`
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	DeletedAt        gorm.DeletedAt `gorm:"index"`
+	// Visibility is public, private, or invite_only: the event's own value.
+	// A group event copies the group's visibility when it is created
+	// (DEC-48). Church-wide events are public or private (a CHECK enforces
+	// that).
+	Visibility string `gorm:"not null"`
+	// LeaderOpened marks a group event a leader or admin deliberately set
+	// wider than its group (DEC-17, DEC-28). When the group becomes more
+	// private, these are not tightened automatically; the leader decides
+	// (DEC-48). Always false on church-wide events.
+	LeaderOpened    bool    `gorm:"not null;default:false"`
+	StartsLocal     string  `gorm:"not null"` // YYYY-MM-DDTHH:MM, no offset
+	DurationMinutes int     `gorm:"not null"`
+	TZID            string  `gorm:"column:tzid;not null"`
+	RRule           string  `gorm:"column:rrule;not null"`
+	RRuleUntil      *string `gorm:"column:rrule_until"` // YYYY-MM-DD, inclusive
+	Location        string  `gorm:"not null"`           // empty = the group's location
+	CreatedBy       uint    `gorm:"not null"`
+	Creator         User    `gorm:"foreignKey:CreatedBy"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	DeletedAt       gorm.DeletedAt `gorm:"index"`
 }
 
 // EventHost is an adult assigned to a church-wide event (DEC-7). Hosts get

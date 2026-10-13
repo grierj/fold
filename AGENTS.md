@@ -52,8 +52,10 @@ browser ──► single Go binary ──► /api/v1/* (JSON, cookie auth)
 `Registration` links a user to one occurrence. An event may instead be
 church-wide (`events.group_id` null), created by an admin and run by its
 `EventHost` rows. An event has a plain-text `description` (5000 characters,
-same as a group). `visibility` plus `visibility_source` (`group` or
-`custom`) decide who can see it; `group` follows the group's visibility.
+same as a group). `visibility` is the event's own value,
+copied from the group at creation (DEC-48); `leader_opened` marks one a
+leader set wider than its group. Making a group more private tightens
+inherited events and asks about leader-opened ones (`api_group_visibility.go`).
 The wall clock (`starts_local` + IANA `tzid`) is the source of truth;
 occurrences store UTC and are generated 18 months ahead (extended daily
 under an advisory lock). See `models/models.go`. Groups are ongoing

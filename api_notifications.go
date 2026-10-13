@@ -87,6 +87,7 @@ func (a *App) eventNotices(u *models.User) []notificationJSON {
 		}
 		out = append(out, a.upcomingNotices(groupIDs, now)...)
 	}
+	out = append(out, a.registrationCancelledNotices(u)...)
 	return append(out, a.visibilityNotices(u)...)
 }
 

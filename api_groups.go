@@ -184,6 +184,10 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			Y float64 `json:"y"`
 		} `json:"coverFocal"`
 		Visibility *string `json:"visibility"`
+		// OpenedEvents: when the group becomes more private, a "keep" or
+		// "tighten" decision for each leader-opened event that is wider than
+		// the new value, keyed by event id (DEC-48). See visibility-impact.
+		OpenedEvents map[string]string `json:"openedEvents"`
 		// MemberLimit: a number sets it, null clears it (DEC-39). Lowering it
 		// below the current count is fine; nobody is removed.
 		MemberLimit json.RawMessage `json:"memberLimit"`
@@ -255,25 +259,38 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		}
 		g.Visibility = visibility
 	}
+	var oldVis string
 	if limit, set, msg := parseMemberLimit(body.MemberLimit); msg != "" {
 		jsonError(c, http.StatusBadRequest, msg)
 		return
 	} else if set {
 		g.MemberLimit = limit
 	}
+	var impact visibilityImpactJSON
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Save(g).Error; err != nil {
+		// Lock the row and read the stored visibility, so a concurrent change
+		// can't skip the tightening (DEC-48).
+		var locked models.Group
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, g.ID).Error; err != nil {
 			return err
 		}
-		// Events that follow the group pick up a visibility change in the
-		// same transaction. Custom events keep their own value (DEC-6).
-		if body.Visibility == nil {
-			return nil
+		oldVis = locked.Visibility
+		if body.Visibility != nil {
+			var err error
+			if impact, err = applyGroupTightening(c, tx, g, oldVis, g.Visibility, body.OpenedEvents); err != nil {
+				return err
+			}
 		}
-		return tx.Model(&models.Event{}).
-			Where("group_id = ? AND visibility_source = ?", g.ID, models.VisibilitySourceGroup).
-			Update("visibility", g.Visibility).Error
+		return tx.Save(g).Error
 	})
+	if errors.Is(err, errNeedDecision) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":         "Choose whether to keep each event a leader opened up, or make it match the group",
+			"needsDecision": true,
+			"impact":        impact,
+		})
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not update group")
 		return

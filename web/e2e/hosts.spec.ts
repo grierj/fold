@@ -60,12 +60,13 @@ test("opening an invite-only group's event hides the group and the names", async
 
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
-  await page.getByRole("radio", { name: "Choose for this event" }).check();
   await page.getByLabel("Event visibility").selectOption("public");
   await expect(
     page.getByText("Only leaders will see who signed up, so members of Hidden Care aren't revealed.")
   ).toBeVisible();
+  const saved = page.waitForResponse((r) => r.url().includes("/visibility") && r.request().method() === "PUT");
   await page.getByRole("button", { name: "Save visibility" }).click();
+  expect((await saved).ok()).toBe(true);
   await expect(page.getByLabel("Event visibility")).toHaveValue("public");
 
   await page.getByRole("button", { name: "Log out" }).click();

@@ -135,7 +135,7 @@ type occurrenceJSON struct {
 	Registrations         map[string]int64 `json:"registrations"`
 	MyRegistration        *string          `json:"myRegistration"`
 	Visibility            string           `json:"visibility"`
-	VisibilitySource      string           `json:"visibilitySource"`
+	LeaderOpened          bool             `json:"leaderOpened"`
 	ChurchWide            bool             `json:"churchWide"`
 	GroupID               *uint            `json:"groupId,omitempty"`
 	GroupName             string           `json:"groupName,omitempty"`
@@ -159,25 +159,25 @@ type hostJSON struct {
 }
 
 type eventJSON struct {
-	ID               uint       `json:"id"`
-	GroupID          *uint      `json:"groupId,omitempty"`
-	GroupName        string     `json:"groupName,omitempty"`
-	GroupVisibility  string     `json:"groupVisibility,omitempty"`
-	HostedBy         string     `json:"hostedBy,omitempty"`
-	Title            string     `json:"title"`
-	Description      string     `json:"description"`
-	StartsLocal      string     `json:"startsLocal"`
-	DurationMinutes  int        `json:"durationMinutes"`
-	TZID             string     `json:"tzid"`
-	StartsAt         time.Time  `json:"startsAt"`
-	EndsAt           time.Time  `json:"endsAt"`
-	Location         string     `json:"location"`
-	RecurrenceRule   string     `json:"recurrenceRule"`
-	RRuleUntil       string     `json:"rruleUntil,omitempty"`
-	Visibility       string     `json:"visibility"`
-	VisibilitySource string     `json:"visibilitySource"`
-	ChurchWide       bool       `json:"churchWide"`
-	Hosts            []hostJSON `json:"hosts,omitempty"`
+	ID              uint       `json:"id"`
+	GroupID         *uint      `json:"groupId,omitempty"`
+	GroupName       string     `json:"groupName,omitempty"`
+	GroupVisibility string     `json:"groupVisibility,omitempty"`
+	HostedBy        string     `json:"hostedBy,omitempty"`
+	Title           string     `json:"title"`
+	Description     string     `json:"description"`
+	StartsLocal     string     `json:"startsLocal"`
+	DurationMinutes int        `json:"durationMinutes"`
+	TZID            string     `json:"tzid"`
+	StartsAt        time.Time  `json:"startsAt"`
+	EndsAt          time.Time  `json:"endsAt"`
+	Location        string     `json:"location"`
+	RecurrenceRule  string     `json:"recurrenceRule"`
+	RRuleUntil      string     `json:"rruleUntil,omitempty"`
+	Visibility      string     `json:"visibility"`
+	LeaderOpened    bool       `json:"leaderOpened"`
+	ChurchWide      bool       `json:"churchWide"`
+	Hosts           []hostJSON `json:"hosts,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +434,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.PUT("/events/:id", a.apiAuth(), a.apiUpdateEvent)
 	v1.DELETE("/events/:id", a.apiAuth(), a.apiDeleteEvent)
 	v1.PUT("/events/:id/visibility", a.apiAuth(), a.apiSetEventVisibility)
+	v1.GET("/groups/:id/visibility-impact", a.apiAuth(), a.apiGroupVisibilityImpact)
 	v1.POST("/events/:id/hosts", a.apiAuth(), a.apiAdmin(), a.apiAddEventHost)
 	v1.DELETE("/events/:id/hosts/:userId", a.apiAuth(), a.apiAdmin(), a.apiRemoveEventHost)
 	v1.POST("/events/:id/cancel", a.apiAuth(), a.apiCancelOccurrence)

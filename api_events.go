@@ -179,8 +179,8 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 			loc = g.Location
 		}
 		inst := occurrenceToJSON(ev, o, loc)
-		inst.Visibility = shownVisibility(ev, g)
-		inst.VisibilitySource = ev.VisibilitySource
+		inst.Visibility = ev.Visibility
+		inst.LeaderOpened = ev.LeaderOpened
 		inst.ChurchWide = ev.GroupID == nil
 		inst.Registrations = map[string]int64{"going": 0, "maybe": 0, "declined": 0}
 		for s, n := range countOf[o.ID] {
@@ -294,7 +294,7 @@ func toEventJSON(ev *models.Event) eventJSON {
 		StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes, TZID: ev.TZID,
 		StartsAt: start.UTC(), EndsAt: end.UTC(),
 		Location: ev.Location, RecurrenceRule: ev.RRule, RRuleUntil: until,
-		Visibility: ev.Visibility, VisibilitySource: ev.VisibilitySource,
+		Visibility: ev.Visibility, LeaderOpened: ev.LeaderOpened,
 		ChurchWide: ev.GroupID == nil,
 	}
 }
@@ -489,7 +489,9 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 	}
 	gid := g.ID
 	ev := models.Event{
-		GroupID: &gid, Visibility: g.Visibility, VisibilitySource: models.VisibilitySourceGroup,
+		// The group's visibility is copied once; later group changes only
+		// tighten it (DEC-48).
+		GroupID: &gid, Visibility: g.Visibility,
 		CreatedBy: apiUser(c).ID,
 	}
 	applySpec(&ev, spec, body)
@@ -761,7 +763,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 	}
 	inst := occurrenceToJSON(ev, &o, groupLoc)
 	inst.Visibility = ev.Visibility
-	inst.VisibilitySource = ev.VisibilitySource
+	inst.LeaderOpened = ev.LeaderOpened
 	inst.ChurchWide = ev.GroupID == nil
 	c.JSON(http.StatusOK, gin.H{"occurrence": inst})
 }
