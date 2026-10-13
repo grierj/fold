@@ -113,7 +113,7 @@ func TestGroupMemberLimitJoinOverrideAndLowering(t *testing.T) {
 	}
 }
 
-func TestReenableIntoFullGroupWaitsForLeader(t *testing.T) {
+func TestReenableIntoFullGroupLeavesThemOut(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	lead := newTestUser(t, app, "lead", "password1234", models.RoleMember)
@@ -146,84 +146,37 @@ func TestReenableIntoFullGroupWaitsForLeader(t *testing.T) {
 		}
 	}
 	cycle(pat)
-	if membershipStatus(app, pat, full) != memberPendingReturn || membershipStatus(app, pat, roomy) != "active" {
-		t.Fatalf("after enable: full %s, roomy %s", membershipStatus(app, pat, full), membershipStatus(app, pat, roomy))
+	if membershipStatus(app, pat, full) != "none" || membershipStatus(app, pat, roomy) != "active" {
+		t.Fatalf("after enable: full %q, roomy %s", membershipStatus(app, pat, full), membershipStatus(app, pat, roomy))
 	}
-	_, metas := auditRows(t, app, audit.MemberRestored)
-	if len(metas) != 2 || metas[0].Status != memberPendingReturn || metas[1].Status != "active" {
-		t.Fatalf("restore audit (stable group order): %+v", metas)
+	if _, metas := auditRows(t, app, audit.MemberRestored); len(metas) != 1 || metas[0].Status != "active" {
+		t.Fatalf("restore audit: %+v", metas)
+	}
+	if rows, m := auditRows(t, app, audit.MemberNotRestored); len(rows) != 1 || rows[0].TargetID != full.ID ||
+		m[0].UserID != pat.ID || m[0].Limit != 3 {
+		t.Fatalf("not-restored audit: %+v", m)
 	}
 	if activeCount(app, full) != 3 {
-		t.Fatalf("pending_return counted: %d", activeCount(app, full))
+		t.Fatalf("full count: %d", activeCount(app, full))
 	}
 
-	// The leader sees it on the roster and as a notice; admins too.
-	var d struct {
-		Members        []memberJSON `json:"members"`
-		PendingReturns []memberJSON `json:"pendingReturns"`
-	}
-	decodeJSON(t, leader.do("GET", "/api/v1/groups/"+itoa(full.ID), nil, false), &d)
-	if len(d.PendingReturns) != 1 || d.PendingReturns[0].ID != pat.ID {
-		t.Fatalf("roster pending: %+v", d.PendingReturns)
-	}
-	for _, m := range d.Members {
-		if m.ID == pat.ID {
-			t.Fatal("pending return listed as a member")
-		}
-	}
-	for _, c := range []*apiClient{leader, admin} {
-		if b := c.do("GET", "/api/v1/notifications", nil, false).Body.String(); !strings.Contains(b, "waiting to return to Full") {
-			t.Fatalf("notice missing: %s", b)
-		}
-	}
-	var ar struct {
-		Returns []pendingReturnJSON `json:"returns"`
-	}
-	decodeJSON(t, admin.do("GET", "/api/v1/admin/pending-returns", nil, false), &ar)
-	if len(ar.Returns) != 1 || ar.Returns[0].Member.ID != pat.ID || ar.Returns[0].Group.ID != full.ID {
-		t.Fatalf("admin pending: %+v", ar.Returns)
-	}
-	// Members can't decide, and pat can't self-join around it.
+	// Pat is told to ask a leader; the leader gets no queue to work.
 	patC := loginAs(t, app, "pat", "password1234")
+	if b := patC.do("GET", "/api/v1/notifications", nil, false).Body.String(); !strings.Contains(b, "not back in Full") ||
+		!strings.Contains(b, "Ask a leader") {
+		t.Fatalf("pat's notice missing: %s", b)
+	}
+	if b := leader.do("GET", "/api/v1/notifications", nil, false).Body.String(); strings.Contains(b, "not back in") {
+		t.Fatalf("leader got pat's notice: %s", b)
+	}
+	// Self-join is still refused while full (no way around the limit).
 	if c := patC.do("POST", "/api/v1/groups/"+itoa(full.ID)+"/join", nil, true).Code; c != http.StatusConflict {
-		t.Fatalf("pending self-join: %d", c)
+		t.Fatalf("self-join into full group: %d", c)
 	}
-	decide := "/api/v1/groups/" + itoa(full.ID) + "/members/"
-	samC := loginAs(t, app, "sam", "password1234")
-	if c := samC.do("POST", decide+itoa(pat.ID)+"/return", map[string]any{"decision": "approve"}, true).Code; c != http.StatusForbidden {
-		t.Fatalf("member decided: %d", c)
-	}
-
-	// Approve: an explicit over-limit choice.
-	if w := leader.do("POST", decide+itoa(pat.ID)+"/return", map[string]any{"decision": "approve"}, true); w.Code != http.StatusOK {
-		t.Fatalf("approve: %d %s", w.Code, w.Body.String())
-	}
-	if membershipStatus(app, pat, full) != "active" || activeCount(app, full) != 4 || relIn(app.DB, pat.ID, full.ID).Leader {
-		t.Fatalf("after approve: %s %d", membershipStatus(app, pat, full), activeCount(app, full))
-	}
-	if rows, m := auditRows(t, app, audit.ReturnApproved); len(rows) != 1 || m[0].UserID != pat.ID || m[0].Limit != 3 {
-		t.Fatalf("approve audit: %+v", m)
-	}
-
-	// Decline: sam comes back to a still-full group; an admin declines.
-	cycle(sam)
-	if membershipStatus(app, sam, full) != memberPendingReturn || membershipStatus(app, sam, roomy) != "active" {
-		t.Fatal("sam should wait in Full and be back in Roomy")
-	}
-	if w := admin.do("POST", decide+itoa(sam.ID)+"/return", map[string]any{"decision": "decline"}, true); w.Code != http.StatusOK {
-		t.Fatalf("decline: %d %s", w.Code, w.Body.String())
-	}
-	if membershipStatus(app, sam, full) != memberRemoved {
-		t.Fatalf("after decline: %s", membershipStatus(app, sam, full))
-	}
-	if rows, m := auditRows(t, app, audit.ReturnDeclined); len(rows) != 1 || m[0].UserID != sam.ID {
-		t.Fatalf("decline audit: %+v", m)
-	}
-	if c := leader.do("POST", decide+itoa(sam.ID)+"/return", map[string]any{"decision": "approve"}, true).Code; c != http.StatusNotFound {
-		t.Fatalf("decide twice: %d", c)
-	}
-	if b := leader.do("GET", "/api/v1/notifications", nil, false).Body.String(); strings.Contains(b, "waiting to return") {
-		t.Fatalf("stale notice: %s", b)
+	// The old decide endpoint is gone.
+	if c := leader.do("POST", "/api/v1/groups/"+itoa(full.ID)+"/members/"+itoa(pat.ID)+"/return",
+		map[string]any{"decision": "approve"}, true).Code; c != http.StatusNotFound {
+		t.Fatalf("return endpoint: %d", c)
 	}
 }
 
@@ -279,7 +232,7 @@ func TestConcurrentJoinsAndRestoreRespectLimit(t *testing.T) {
 	if n := activeCount(app, g); n != int64(limit) || joined+1+boolInt(patBack) != limit {
 		t.Fatalf("count %d (limit %d), joined %d, pat %s", n, limit, joined, membershipStatus(app, pat, g))
 	}
-	if !patBack && membershipStatus(app, pat, g) != memberPendingReturn {
+	if !patBack && membershipStatus(app, pat, g) != "none" {
 		t.Fatalf("pat: %s", membershipStatus(app, pat, g))
 	}
 }

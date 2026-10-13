@@ -296,20 +296,15 @@ func (a *App) relOf(u *models.User, groupID uint) policy.Rel {
 func membershipRel(m models.Membership) policy.Rel {
 	active := m.ID != 0 && m.Status == "active"
 	return policy.Rel{
-		Member:        active,
-		Leader:        active && m.Role == models.MembershipLeader,
-		Removed:       m.ID != 0 && m.Status == memberRemoved,
-		PendingReturn: m.ID != 0 && m.Status == memberPendingReturn,
+		Member:  active,
+		Leader:  active && m.Role == models.MembershipLeader,
+		Removed: m.ID != 0 && m.Status == memberRemoved,
 	}
 }
 
 // memberRemoved is the Membership.Status of someone a leader or admin
 // removed (DEC-35).
 const memberRemoved = "removed"
-
-// memberPendingReturn is a re-enabled account's membership waiting for a
-// leader or admin because the group was full (DEC-38, DEC-39).
-const memberPendingReturn = "pending_return"
 
 // listedUsers joins memberships or registrations (the table name) to accounts
 // that are listed: not deleted and not disabled. A disabled account keeps its
@@ -419,7 +414,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.PUT("/groups/:id/members/:userId/role", a.apiAuth(), a.apiSetMemberRole)
 	v1.POST("/groups/:id/members", a.apiAuth(), a.apiAddGroupMember)
 	v1.DELETE("/groups/:id/members/:userId", a.apiAuth(), a.apiRemoveGroupMember)
-	v1.POST("/groups/:id/members/:userId/return", a.apiAuth(), a.apiDecideReturn)
 	v1.POST("/groups/:id/deletion-request", a.apiAuth(), a.apiRequestDeletion)
 	v1.DELETE("/groups/:id/deletion-request", a.apiAuth(), a.apiCancelDeletion)
 	v1.GET("/groups/:id/members", a.apiAuth(), a.apiGroupMembers)
@@ -448,7 +442,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 
 	// Admin.
 	v1.GET("/admin/pending", a.apiAuth(), a.apiAdmin(), a.apiPendingGroups)
-	v1.GET("/admin/pending-returns", a.apiAuth(), a.apiAdmin(), a.apiAdminPendingReturns)
 	v1.GET("/admin/deletions", a.apiAuth(), a.apiAdmin(), a.apiDeletionRequests)
 	v1.POST("/admin/groups/:id/approve", a.apiAuth(), a.apiAdmin(), a.apiApproveGroup)
 	v1.POST("/admin/groups/:id/reject", a.apiAuth(), a.apiAdmin(), a.apiRejectGroup)

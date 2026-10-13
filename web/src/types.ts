@@ -105,13 +105,6 @@ export interface GroupDetailResponse {
   upcomingEvents: EventOccurrence[];
   canManage: boolean;
   isMember: boolean;
-  // Re-enabled accounts waiting because the group was full (leaders and admins only).
-  pendingReturns: Member[];
-}
-
-export interface PendingReturn {
-  group: GroupSummary;
-  member: Member;
 }
 
 export interface EventHostRow {

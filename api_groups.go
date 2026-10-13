@@ -139,18 +139,12 @@ func (a *App) apiGetGroup(c *gin.Context) {
 	now := time.Now().UTC()
 	upcoming := a.buildOccurrences([]uint{g.ID}, now.Add(-24*time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02"), &now, me)
 
-	pendingFor := []memberJSON{}
-	if policy.CanManageGroup(p, rel) {
-		pendingFor = a.membersWith(g.ID, memberPendingReturn)
-	}
 	c.JSON(http.StatusOK, gin.H{
 		"group":          a.groupSummary(g),
 		"members":        memberList,
 		"upcomingEvents": upcoming,
 		"canManage":      policy.CanManageGroup(p, rel),
 		"isMember":       rel.Member,
-		// Leaders and admins decide returns into a full group (DEC-39).
-		"pendingReturns": pendingFor,
 	})
 }
 
@@ -306,8 +300,6 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 		switch {
 		case rel.Removed:
 			jsonError(c, http.StatusForbidden, "A leader removed you from this group")
-		case rel.PendingReturn:
-			jsonError(c, http.StatusConflict, "Your return to this group is waiting for a leader")
 		default:
 			jsonError(c, http.StatusForbidden, "this group is invite only")
 		}

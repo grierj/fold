@@ -128,9 +128,7 @@ for no limit (DEC-39); `memberCount` counts active members of listed accounts. `
 displayed primary contact only (one of the leaders); they grant nothing.
 
 `group` (detail response): `{group: groupSummary, members: [...],
-upcomingEvents: [occurrence], canManage: bool, isMember: bool,
-pendingReturns: [member]}`. `pendingReturns` (leaders and admins only, else `[]`)
-lists re-enabled accounts waiting because the group was full (DEC-39).
+upcomingEvents: [occurrence], canManage: bool, isMember: bool}`.
 `members` is filled only for the group's members and admins (people see each
 other only inside groups they share); otherwise it is `[]`. `canManage` is
 true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, role,
@@ -159,9 +157,6 @@ POST /api/v1/groups/:id/leave   → 200 {}            (auth; 400 if you are the 
 POST /api/v1/groups/:id/members → 200 {membership}  (auth; leader or admin)
      body: {email, overLimit?} — adds that account as a member; a full group
      answers 409 {error: "This group is full", full: true} unless overLimit is true (audited)
-POST /api/v1/groups/:id/members/:userId/return → 200 {group, members, pendingReturns}  (auth; leader or admin; DEC-39)
-     body: {decision: "approve"|"decline"} — approve makes a pending_return membership
-     active (over the limit by explicit choice); decline sets it removed; both audited
 DELETE /api/v1/groups/:id/members/:userId → 200 {members: [...]}  (auth; leader or admin; DEC-35)
      body (optional): {note} — kept only in the audit row, never shown to the removed person
 PUT  /api/v1/groups/:id/members/:userId/role → 200 {members: [...]}  (auth; leader or admin)
@@ -323,7 +318,6 @@ GET  /api/v1/admin/groups                  → {groups: [groupSummary]}  (admin;
 POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
      body: {userId, role: "member"|"leader", overLimit?} — role=leader adds a (co-)leader; audited;
      a full group needs overLimit (audited as membership.added_over_limit)
-GET  /api/v1/admin/pending-returns         → {returns: [{group: groupSummary, member}]}  (admin; DEC-39)
 DELETE /api/v1/admin/groups/:id/members/:userId → 200 {members}      (admin; same rules as the leader route)
 GET  /api/v1/admin/users                   → {users: [user]}           (admin)
 GET  /api/v1/admin/users/:id/sole-leader-groups → {groups: [{id, name, status, candidates: [{id, name, admin}]}]}  (admin; DEC-36)
@@ -345,7 +339,7 @@ their sessions (`session_version`). A disabled admin has no admin powers. `PUT /
 
 Rosters (`members` in group detail, `GET /groups/:id/members`, admin rosters) include `admin: true` for church admins, so the SPA can label them and hide Remove (DEC-38).
 
-Disabling (DEC-38): the account's memberships and registrations are kept, hidden from rosters, and left out of member counts, registration counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Enabling it again restores them as plain member, or as `pending_return` in a group at its member limit (DEC-39), writing `membership.restored` (with the resulting status) per membership and `user.enabled`. Deleting still ends memberships.
+Disabling (DEC-38): the account's memberships and registrations are kept, hidden from rosters, and left out of member counts, registration counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Enabling it again restores them as plain member, writing `membership.restored` per membership and `user.enabled`. In a group at its member limit the membership is dropped instead (DEC-47): `membership.not_restored` (meta `userId`, `count`, `limit`) is written and the person gets a notification ("You're not back in … yet", "Ask a leader to add you.", id `not-restored:<audit id>`, kept 30 days). A leader or admin can add them with `overLimit: true`. Deleting still ends memberships.
 
 Removing a member (DEC-35): leaders remove people from groups they lead,
 co-leaders included, but never an admin (they can't demote an admin

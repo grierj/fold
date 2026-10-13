@@ -43,10 +43,11 @@ const (
 	// explicit choice (DEC-39). Meta: userId, count, limit, role.
 	AddedOverLimit = "membership.added_over_limit"
 
-	// ReturnApproved / ReturnDeclined: a leader or admin decided a
-	// pending_return membership (DEC-38, DEC-39). Meta: userId, count, limit.
-	ReturnApproved = "membership.return_approved"
-	ReturnDeclined = "membership.return_declined"
+	// MemberNotRestored: a disabled account was enabled while the group was
+	// full, so that membership was dropped and the person was told to ask a
+	// leader (DEC-47). Meta: userId, count, limit. Older logs may still hold
+	// membership.return_approved / return_declined rows from DEC-39.
+	MemberNotRestored = "membership.not_restored"
 
 	// VisibilityOverride: a group event was made more open than its group
 	// (DEC-6, DEC-17, DEC-28). Target is the event. Meta has oldVisibility,

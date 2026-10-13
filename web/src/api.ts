@@ -76,7 +76,6 @@ import type {
   GroupSummary,
   Member,
   Notification,
-  PendingReturn,
   RegistrationStatus,
   SoleLedGroup,
   User,
@@ -132,9 +131,6 @@ export const Groups = {
   // overLimit: add even though the group is full (an explicit, audited choice; DEC-39).
   addMember: (id: number | string, email: string, overLimit = false) =>
     api<unknown>(`/groups/${id}/members`, { method: "POST", body: { email, overLimit } }),
-  // Approve or decline a re-enabled account waiting to return to a full group.
-  decideReturn: (id: number | string, userId: number, decision: "approve" | "decline") =>
-    api<unknown>(`/groups/${id}/members/${userId}/return`, { method: "POST", body: { decision } }),
   // Leaders and admins remove someone (audited; DEC-35). The note stays in the audit log.
   removeMember: (id: number | string, userId: number, note?: string) =>
     api<{ members: Member[] }>(`/groups/${id}/members/${userId}`, { method: "DELETE", body: { note } }),
@@ -219,7 +215,6 @@ export const Events = {
 
 export const Admin = {
   pending: () => api<{ groups: GroupSummary[] }>("/admin/pending"),
-  pendingReturns: () => api<{ returns: PendingReturn[] }>("/admin/pending-returns"),
   approve: (id: number | string, tags: string[]) =>
     api<{ group: GroupSummary }>(`/admin/groups/${id}/approve`, { method: "POST", body: { tags } }),
   reject: (id: number | string) => api<unknown>(`/admin/groups/${id}/reject`, { method: "POST" }),

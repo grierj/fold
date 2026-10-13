@@ -5,7 +5,7 @@ import { apiAs, email, PASSWORD } from "./helpers";
 // Members-only circle (private) and Invite-only circle (Sam is a member).
 // Room 201 class (limit 3): Grier (admin, leader), Lee (leader), Sam
 // (member). Pat and Quinn were disabled while Sam took the last seat, so
-// re-enabling them left both waiting to return (DEC-38, DEC-39).
+// re-enabling them left both out of the group (DEC-47).
 setup("first-run setup and seed data", async ({ page, request }) => {
   await page.goto("/setup");
   await page.locator("[name=site_name]").fill("Fold e2e");

@@ -301,7 +301,4 @@ func TestGroupHasRoom(t *testing.T) {
 	if !GroupHasRoom(nil, 1000) || !GroupHasRoom(&two, 1) || GroupHasRoom(&two, 2) || GroupHasRoom(&two, 3) {
 		t.Error("nil is unlimited; full at or over the limit")
 	}
-	if CanJoinGroup(adult, active(Public), Rel{PendingReturn: true}) {
-		t.Error("a pending return isn't a self-join")
-	}
 }

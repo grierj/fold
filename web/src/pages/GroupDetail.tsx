@@ -719,7 +719,6 @@ export function GroupDetail() {
   }
 
   const { group, members, upcomingEvents, canManage, isMember } = detail;
-  const pendingReturns = detail.pendingReturns ?? [];
   const events: EventOccurrence[] = upcomingEvents ?? [];
   // The visibility control belongs to the series, so only its first date shows it.
   const visibilityDate = new Map<number, string>();
@@ -845,23 +844,6 @@ export function GroupDetail() {
       await load();
     } catch (e) {
       setMemberError(e instanceof Error ? e.message : "Could not add that person");
-    } finally {
-      setMemberBusy(false);
-    }
-  }
-
-  async function decideReturn(memberId: number, name: string, decision: "approve" | "decline") {
-    const question = decision === "approve"
-      ? `Let ${name} back into “${group.name}”? This can put the group over its limit.`
-      : `Decline ${name}'s return? They'll be removed from “${group.name}”.`;
-    if (!confirm(question)) return;
-    setMemberBusy(true);
-    setMemberError(null);
-    try {
-      await Groups.decideReturn(id!, memberId, decision);
-      await load();
-    } catch (e) {
-      setMemberError(e instanceof Error ? e.message : "Could not save that");
     } finally {
       setMemberBusy(false);
     }
@@ -1166,28 +1148,6 @@ export function GroupDetail() {
                       </ul>
                     ) : (
                       <p className="text-gray-600">No members yet.</p>
-                    )}
-                    {canManage && pendingReturns.length > 0 && (
-                      <section id="waiting" className="mt-6">
-                        <h3 className="font-bold">Waiting to return</h3>
-                        <p className="text-sm text-gray-500">
-                          Their accounts were turned back on while the group was full.
-                        </p>
-                        <ul className="divide-y divide-gray-100">
-                          {pendingReturns.map((m) => (
-                            <li key={m.id} className="py-3 flex items-center gap-3">
-                              <Avatar url={m.avatarUrl || undefined} name={m.name} focalX={m.avatarFocalX} focalY={m.avatarFocalY} />
-                              <div className="grow min-w-0 font-semibold">{m.name}</div>
-                              <button type="button" onClick={() => decideReturn(m.id, m.name, "approve")} disabled={memberBusy} className="text-sm font-medium text-brand hover:underline">
-                                Approve
-                              </button>
-                              <button type="button" onClick={() => decideReturn(m.id, m.name, "decline")} disabled={memberBusy} className="text-sm font-medium text-red-600 hover:underline">
-                                Decline
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      </section>
                     )}
                     {canManage && (
                       <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">

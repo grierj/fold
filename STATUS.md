@@ -23,3 +23,4 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | M1.10 Teen accounts, consent, badges | unclaimed | | |
 | M1.11 Contact privacy and direct-contact requests | unclaimed | | |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | unclaimed | | |
+| Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | in review | Codex | `simplicity` |

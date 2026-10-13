@@ -64,8 +64,8 @@ func (a *App) apiNotifications(c *gin.Context) {
 		}
 		out = append(out, a.leadershipNotices(u)...)
 	}
-	// Leaders hear about returns in their groups; admins about all (DEC-39).
-	out = append(out, a.pendingReturnNotices(u)...)
+	// Someone re-enabled into a full group hears they were left out (DEC-47).
+	out = append(out, a.leftOutNotices(u)...)
 
 	out = append(out, a.eventNotices(u)...)
 
