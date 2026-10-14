@@ -397,6 +397,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 	}
 	oldVis, oldOpened := ev.Visibility, ev.LeaderOpened
 	var impact visibilityImpactJSON
+	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
@@ -407,7 +408,9 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 			if impact = eventImpactOf(tx, &locked, vis); !body.Confirm && len(impact.Tightened) == 1 && impact.Tightened[0].Registrants > 0 {
 				return errNeedDecision
 			}
-			if err := cancelLosers(c, tx, &locked, vis, time.Now().UTC()); err != nil {
+			ids, err := cancelLosers(c, tx, &locked, vis, time.Now().UTC())
+			emailed = append(emailed, ids...)
+			if err != nil {
 				return err
 			}
 		}
@@ -435,7 +438,9 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 			return err
 		}
 		if action == audit.VisibilityOverride && f.group != nil {
-			return notifyVisibilityOverride(tx, me.ID, ev, f.group, vis, reason)
+			ids, err := notifyVisibilityOverride(tx, me.ID, ev, f.group, vis, reason)
+			emailed = append(emailed, ids...)
+			return err
 		}
 		return nil
 	})
@@ -451,6 +456,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not update visibility")
 		return
 	}
+	a.deliverNotificationEmails(emailed)
 	f.view.Visibility = vis
 	c.JSON(http.StatusOK, gin.H{"event": a.presentEvent(ev, me, f)})
 }

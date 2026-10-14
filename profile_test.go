@@ -105,13 +105,28 @@ func TestUpdateMeValidation(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("long name: got %d, want 400", w.Code)
 	}
-	// The email is the login: members can't clear or change it themselves
-	// until verified changes arrive (M1.2).
-	for _, e := range []string{"", "other@example.com"} {
-		w = c.do("PUT", "/api/v1/me", map[string]string{"email": e}, true)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("change email to %q: got %d, want 400", e, w.Code)
-		}
+	// The email is the login: it can't be cleared, and changing it starts
+	// a verification flow (M1.2) instead of applying directly.
+	w = c.do("PUT", "/api/v1/me", map[string]string{"email": ""}, true)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("clear email: got %d, want 400", w.Code)
+	}
+	w = c.do("PUT", "/api/v1/me", map[string]string{"email": "other@example.com"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("change email: got %d, want 200", w.Code)
+	}
+	var changed struct {
+		VerificationSent bool `json:"verificationSent"`
+		User             struct {
+			Email string `json:"email"`
+		} `json:"user"`
+	}
+	decodeJSON(t, w, &changed)
+	if !changed.VerificationSent {
+		t.Fatalf("no verification started: %s", w.Body.String())
+	}
+	if changed.User.Email != "grier@example.com" {
+		t.Fatalf("email changed before verification: %q", changed.User.Email)
 	}
 }
 

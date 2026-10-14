@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ApiError, Events, GroupCover, Groups } from "../api";
+import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
 import type { EventOccurrence, GroupDetailResponse, OpenedDecision, RegistrationStatus, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
@@ -682,6 +682,10 @@ export function GroupDetail() {
   const [coverBusy, setCoverBusy] = useState(false);
   const [memberEmail, setMemberEmail] = useState("");
   const [memberBusy, setMemberBusy] = useState(false);
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteOverLimit, setInviteOverLimit] = useState(false);
+  const [inviteStatus, setInviteStatus] = useState<string | null>(null);
   const [memberError, setMemberError] = useState<string | null>(null);
   const coverRef = useRef<HTMLInputElement>(null);
 
@@ -884,6 +888,29 @@ export function GroupDetail() {
       setMemberError(e instanceof Error ? e.message : "Could not add that person");
     } finally {
       setMemberBusy(false);
+    }
+  }
+
+  // Invite someone to Fold and into this group (M1.2, 5.10). Leaders
+  // invite only into groups they lead; the person sets a password on
+  // acceptance. Going over the member limit is an explicit, audited
+  // choice (DEC-39).
+  async function inviteMember(e: React.FormEvent) {
+    e.preventDefault();
+    const email = inviteEmail.trim();
+    if (!email) return;
+    setInviteBusy(true);
+    setMemberError(null);
+    setInviteStatus(null);
+    try {
+      await Invitations.create({ email, groupId: Number(id), overLimit: inviteOverLimit });
+      setInviteEmail("");
+      setInviteOverLimit(false);
+      setInviteStatus(`Invitation sent to ${email}.`);
+    } catch (err) {
+      setMemberError(err instanceof Error ? err.message : "Could not send the invitation");
+    } finally {
+      setInviteBusy(false);
     }
   }
 
@@ -1203,6 +1230,39 @@ export function GroupDetail() {
                       <p className="text-gray-600">No members yet.</p>
                     )}
                     {canManage && (
+                      <>
+                      <form onSubmit={inviteMember} className="mt-4 flex gap-2 flex-wrap items-end">
+                        <div className="grow min-w-[12rem]">
+                          <label className="label" htmlFor="invite-member">Invite someone to Fold</label>
+                          <input
+                            id="invite-member"
+                            className="input"
+                            value={inviteEmail}
+                            onChange={(e) => setInviteEmail(e.target.value)}
+                            type="email"
+                            placeholder="name@example.com"
+                            autoComplete="off"
+                          />
+                        </div>
+                        <button
+                          type="submit"
+                          disabled={inviteBusy || !inviteEmail.trim()}
+                          className="btn-secondary"
+                        >
+                          {inviteBusy ? "…" : "Invite"}
+                        </button>
+                        {group.memberLimit != null && group.memberCount >= group.memberLimit && (
+                          <label className="text-xs text-gray-600 flex items-center gap-1.5 w-full">
+                            <input
+                              type="checkbox"
+                              checked={inviteOverLimit}
+                              onChange={(e) => setInviteOverLimit(e.target.checked)}
+                            />
+                            This group is full — invite over the limit anyway (audited)
+                          </label>
+                        )}
+                      </form>
+                      {inviteStatus && <p className="text-green-700 text-sm mt-2">{inviteStatus}</p>}
                       <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">
                         <div className="grow min-w-[12rem]">
                           <label className="label" htmlFor="add-member">Add a member by email</label>
@@ -1224,6 +1284,7 @@ export function GroupDetail() {
                           {memberBusy ? "…" : "Add"}
                         </button>
                       </form>
+                      </>
                     )}
                     {isLeader && (
                       <div className="mt-6 border-t border-gray-100 pt-4">

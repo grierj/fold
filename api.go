@@ -395,6 +395,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/auth/login", a.apiLogin)
 	v1.POST("/auth/logout", a.apiLogout)
 	v1.GET("/auth/me", a.apiAuth(), a.apiMe)
+	// Password reset (M1.2): uniform response, single-use expiring tokens.
+	v1.POST("/auth/password-reset", a.apiRequestPasswordReset)
+	v1.POST("/auth/password-reset/confirm", a.apiConfirmPasswordReset)
 
 	// Profile.
 	v1.PUT("/me", a.apiAuth(), a.apiUpdateMe)
@@ -402,6 +405,14 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/me/avatar", a.apiAuth(), a.apiUploadAvatar)
 	v1.POST("/me/avatar/url", a.apiAuth(), a.apiFetchAvatar)
 	v1.DELETE("/me/avatar", a.apiAuth(), a.apiDeleteAvatar)
+	// Verified email change (M1.2): the token is the credential.
+	v1.POST("/me/email/verify", a.apiVerifyEmailChange)
+
+	// Invitations (M1.2): admins and leaders invite; the person accepts
+	// with a token and sets a password. No approval step.
+	v1.POST("/invitations", a.apiAuth(), a.apiCreateInvitation)
+	v1.GET("/invitations/:token", a.apiGetInvitation)
+	v1.POST("/invitations/accept", a.apiAcceptInvitation)
 
 	// Groups.
 	v1.GET("/groups", a.optionalUser(), a.apiListGroups)

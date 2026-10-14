@@ -302,9 +302,12 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	}
 	if len(updates) > 0 {
 		disabling := updates["status"] == models.UserDisabled
+		var emailed []uint
 		err := a.DB.Transaction(func(tx *gorm.DB) error {
 			if disabling {
-				if err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled"); err != nil {
+				ids, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled")
+				emailed = append(emailed, ids...)
+				if err != nil {
 					return err
 				}
 				if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled,
@@ -313,7 +316,9 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				}
 			}
 			if s, ok := updates["status"].(string); ok && u.Status == models.UserDisabled && s != models.UserDisabled {
-				if err := restoreMemberships(c, tx, u.ID); err != nil {
+				ids, err := restoreMemberships(c, tx, u.ID)
+				emailed = append(emailed, ids...)
+				if err != nil {
 					return err
 				}
 				if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserEnabled,
@@ -334,6 +339,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			jsonError(c, http.StatusInternalServerError, "could not update user")
 			return
 		}
+		a.deliverNotificationEmails(emailed)
 	}
 	var updated models.User
 	a.DB.First(&updated, u.ID)
@@ -364,8 +370,11 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// and ending their memberships. The email is replaced so the address is
 	// free for a new account, and the session version is bumped so open
 	// sessions end.
+	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted"); err != nil {
+		ids, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
+		emailed = append(emailed, ids...)
+		if err != nil {
 			return err
 		}
 		if err := tx.Model(u).Updates(map[string]any{
@@ -391,6 +400,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not delete user")
 		return
 	}
+	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{})
 }
 

@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Admin, AdminGroups, AdminUsers, ApiError, Groups, Site } from "../api";
+import { Admin, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
 import { COMMON_ZONES } from "../lib/eventForm";
 import type { GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
 
-type AdminTab = "approvals" | "groups" | "users";
+type AdminTab = "approvals" | "groups" | "users" | "invite";
 
 // ---------------------------------------------------------------------------
 // Approvals
@@ -837,6 +837,103 @@ function ChurchTimezone() {
   );
 }
 
+// Invite someone to Fold (M1.2, 5.10): admins invite into any group or
+// none. The person sets a password on acceptance; no approval step.
+function InviteTab() {
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [groupId, setGroupId] = useState("");
+  const [groups, setGroups] = useState<GroupSummary[]>([]);
+  const [status, setStatus] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    Groups.list()
+      .then((res) => setGroups(res.groups))
+      .catch(() => {});
+  }, []);
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setStatus(null);
+    try {
+      await Invitations.create({
+        email,
+        name: name || undefined,
+        groupId: groupId ? Number(groupId) : null,
+      });
+      setStatus(`Invitation sent to ${email}.`);
+      setEmail("");
+      setName("");
+      setGroupId("");
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Could not send the invitation.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4 max-w-xl">
+      {error && <div className="text-red-600 text-sm">{error}</div>}
+      {status && <div className="text-green-700 text-sm">{status}</div>}
+      <p className="text-sm text-gray-600">
+        They'll get an email link, set a password, and join with an active account — no
+        approval step.
+      </p>
+      <div>
+        <label className="label" htmlFor="inv-email">
+          Email
+        </label>
+        <input
+          id="inv-email"
+          type="email"
+          className="input"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+        />
+      </div>
+      <div>
+        <label className="label" htmlFor="inv-name">
+          Name (optional)
+        </label>
+        <input
+          id="inv-name"
+          className="input"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          maxLength={100}
+        />
+      </div>
+      <div>
+        <label className="label" htmlFor="inv-group">
+          Group (optional)
+        </label>
+        <select
+          id="inv-group"
+          className="input"
+          value={groupId}
+          onChange={(e) => setGroupId(e.target.value)}
+        >
+          <option value="">No group — they join Fold only</option>
+          {groups.map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      <button type="submit" disabled={busy} className="btn-primary">
+        {busy ? "Sending…" : "Send invitation"}
+      </button>
+    </form>
+  );
+}
+
 export function AdminPage() {
   const { user, loading: authLoading, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -873,6 +970,7 @@ export function AdminPage() {
     { id: "approvals", label: "Approvals", badge: pendingCount },
     { id: "groups", label: "Groups" },
     { id: "users", label: "Users" },
+    { id: "invite", label: "Invite" },
   ];
 
   return (
@@ -909,6 +1007,7 @@ export function AdminPage() {
       {tab === "users" && (
         usersLoading ? <div className="text-gray-500">Loading…</div> : <UsersTab users={users} reload={loadUsers} />
       )}
+      {tab === "invite" && <InviteTab />}
     </div>
   );
 }

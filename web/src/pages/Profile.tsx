@@ -22,6 +22,10 @@ export function ProfilePage() {
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordSaved, setPasswordSaved] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [newEmail, setNewEmail] = useState("");
+  const [emailSaving, setEmailSaving] = useState(false);
+  const [emailStatus, setEmailStatus] = useState<string | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
 
   if (loading) {
     return <div className="max-w-2xl mx-auto px-4 py-12 text-gray-500">Loading…</div>;
@@ -110,6 +114,27 @@ export function ProfilePage() {
       setPictureError(err instanceof Error ? err.message : "Could not fetch that picture");
     } finally {
       setPictureBusy(false);
+    }
+  }
+
+  async function changeEmail(e: React.FormEvent) {
+    e.preventDefault();
+    setEmailError(null);
+    setEmailStatus(null);
+    setEmailSaving(true);
+    try {
+      const res = await ProfileApi.update({ email: newEmail });
+      if (res.verificationSent) {
+        setEmailStatus(`Verification link sent to ${newEmail}. It expires in 24 hours.`);
+        setNewEmail("");
+      } else {
+        await refresh();
+        setEmailStatus("Email updated.");
+      }
+    } catch (err) {
+      setEmailError(err instanceof Error ? err.message : "Could not start email change");
+    } finally {
+      setEmailSaving(false);
     }
   }
 
@@ -230,7 +255,9 @@ export function ProfilePage() {
           <div>
             <label className="label">Email (you sign in with it)</label>
             <input type="email" className="input bg-gray-50" value={user.email} readOnly />
-            <p className="text-xs text-gray-500 mt-1">Ask an admin to change your sign-in email.</p>
+            <p className="text-xs text-gray-500 mt-1">
+              Change it below; the new address gets a verification link first.
+            </p>
           </div>
           <div>
             <label className="label">Phone</label>
@@ -246,6 +273,33 @@ export function ProfilePage() {
             {saving ? "Saving…" : "Save profile"}
           </button>
         </div>
+      </form>
+
+      <form onSubmit={changeEmail} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4 mt-6">
+        <h2 className="text-xl font-bold">Change sign-in email</h2>
+        {emailError && <div className="text-red-600 text-sm">{emailError}</div>}
+        {emailStatus && <div className="text-green-700 text-sm">{emailStatus}</div>}
+        <div>
+          <label className="label" htmlFor="new-email">
+            New email
+          </label>
+          <input
+            id="new-email"
+            type="email"
+            className="input"
+            value={newEmail}
+            onChange={(e) => setNewEmail(e.target.value)}
+            autoComplete="email"
+            required
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            A verification link goes to the new address, and a notice to {user.email}. The
+            change applies after you verify, and your other sessions are signed out.
+          </p>
+        </div>
+        <button type="submit" disabled={emailSaving} className="btn-primary">
+          {emailSaving ? "Sending…" : "Send verification link"}
+        </button>
       </form>
 
       <form onSubmit={changePassword} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4 mt-6">

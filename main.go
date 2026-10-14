@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"fold/internal/events"
+	"fold/internal/mail"
 	"fold/models"
 	"fold/storage"
 
@@ -32,6 +33,7 @@ type App struct {
 	Store   *sessions.CookieStore
 	Config  Config
 	Uploads storage.Store // blob store for avatars and group covers
+	Mailer  mail.Sender   // transactional email (C6, M1.2)
 
 	// setupDone is set once any user exists. The wizard cannot be re-entered
 	// without a process restart after that, which is the normal case.
@@ -84,6 +86,7 @@ func serve(stderr io.Writer) int {
 
 	app := &App{
 		DB: db, Store: store, Config: cfg, Uploads: uploads,
+		Mailer: newMailer(cfg, db),
 	}
 	r := app.setupRouter()
 
@@ -107,6 +110,24 @@ func serve(stderr io.Writer) int {
 		log.Printf("Shutdown: %v", err)
 	}
 	return 0
+}
+
+// newMailer picks the transactional email sender (C6, 5.6, M1.2): the
+// devoutbox in dev, SMTP from FOLD_SMTP_URL otherwise. Without a sender,
+// sends fail loudly instead of silently dropping password resets.
+func newMailer(cfg Config, db *gorm.DB) mail.Sender {
+	if cfg.IsDev() {
+		return mail.NewDevOutbox(db, cfg.EmailFrom)
+	}
+	if cfg.SMTPURL == "" {
+		log.Println("WARNING: FOLD_SMTP_URL is not set; transactional email (password resets, invitations) will fail")
+		return mail.NoSender{}
+	}
+	s, err := mail.NewSMTP(cfg.SMTPURL, cfg.EmailFrom)
+	if err != nil {
+		log.Fatalf("FOLD_SMTP_URL: %v", err)
+	}
+	return s
 }
 
 // startOccurrenceTicker extends stored occurrences out to 18 months, once
@@ -194,6 +215,9 @@ func (a *App) setupRouter() *gin.Engine {
 	// Setup wizard (only reachable when no users exist; server-rendered).
 	r.GET("/setup", a.showSetup)
 	r.POST("/setup", a.handleSetup)
+
+	// Dev-only mail outbox (M1.2). The handler 404s unless APP_ENV=dev.
+	r.GET("/dev/outbox", a.devOutbox)
 
 	// JSON API.
 	a.registerAPIRoutes(r)

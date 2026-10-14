@@ -595,6 +595,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		}
 	}
 	actions := events.ApplySeries(existing, whens, now)
+	var emailed []uint
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
@@ -630,12 +631,15 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				}
 			}
 		}
-		return notifyOccurrencesCancelled(tx, apiUser(c).ID, cancelled)
+		ids, err := notifyOccurrencesCancelled(tx, apiUser(c).ID, cancelled)
+		emailed = append(emailed, ids...)
+		return err
 	})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not update event")
 		return
 	}
+	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{"event": toEventJSON(ev)})
 }
 
@@ -699,18 +703,22 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return
 	}
+	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&models.EventOccurrence{}).Where("id = ? AND status <> ?", occ.ID, models.OccurrenceCancelled).
 			Update("status", models.OccurrenceCancelled)
 		if res.Error != nil || res.RowsAffected == 0 {
 			return res.Error // already cancelled: nobody is told twice
 		}
-		return notifyOccurrencesCancelled(tx, apiUser(c).ID, []uint{occ.ID})
+		ids, err := notifyOccurrencesCancelled(tx, apiUser(c).ID, []uint{occ.ID})
+		emailed = append(emailed, ids...)
+		return err
 	})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not cancel")
 		return
 	}
+	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{})
 }
 

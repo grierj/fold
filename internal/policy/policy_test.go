@@ -302,3 +302,33 @@ func TestGroupHasRoom(t *testing.T) {
 		t.Error("nil is unlimited; full at or over the limit")
 	}
 }
+
+// Section 6, "Invite a new person (no approval needed)" (DEC-4, M1.2):
+// admins may invite anyone; leaders only into a group they lead, or with no
+// group; hosts, members, teens and guests may not invite.
+func TestCanInvite(t *testing.T) {
+	cases := []struct {
+		name          string
+		p             *Person
+		groupNamed    bool
+		leadsTarget   bool
+		leadsAnywhere bool
+		want          bool
+	}{
+		{"admin invites with no group", admin, false, false, false, true},
+		{"admin invites into any group", admin, true, false, false, true},
+		{"leader invites into own group", adult, true, true, true, true},
+		{"leader invites with no group", adult, false, false, true, true},
+		{"leader can't invite into a group they don't lead", adult, true, false, true, false},
+		{"member can't invite into a group", adult, true, false, false, false},
+		{"member can't invite with no group", adult, false, false, false, false},
+		{"host (not a leader) can't invite", adult, false, false, false, false},
+		{"teen can't invite", teen, false, false, true, false},
+		{"guest can't invite", guest, false, false, false, false},
+	}
+	for _, c := range cases {
+		if got := CanInvite(c.p, c.groupNamed, c.leadsTarget, c.leadsAnywhere); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}

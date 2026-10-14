@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"fold/internal/mail"
 	"fold/internal/testdb"
 	"fold/models"
 	"fold/storage"
@@ -48,6 +49,7 @@ func testApp(t *testing.T) *App {
 		Store:   store,
 		Config:  Config{Env: "dev", Port: "8080"},
 		Uploads: uploads,
+		Mailer:  mail.NewDevOutbox(db, "Fold <noreply@example.com>"),
 	}
 }
 

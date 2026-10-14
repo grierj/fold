@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,10 +18,13 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/models"
 	"fold/storage"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // ---------------------------------------------------------------------------
@@ -72,11 +78,12 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		}
 		updates["display_name"] = dn
 	}
-	// The email is the login. Changing it needs a verification link (10.1),
-	// which arrives with email in M1.2; until then an admin changes it.
+	// The email is the login. Changing it sends a verification link to the
+	// new address and a notice to the old one; the change applies only after
+	// verification (10.1, M1.2).
+	var emailChange *string
 	if body.Email != nil && normalizeEmail(*body.Email) != normalizeEmail(u.Email) {
-		jsonError(c, http.StatusBadRequest, "ask an admin to change your sign-in email")
-		return
+		emailChange = body.Email
 	}
 	if body.Phone != nil {
 		phone := strings.TrimSpace(*body.Phone)
@@ -90,23 +97,171 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		updates["avatar_focal_x"] = clampFocal(body.AvatarFocal.X)
 		updates["avatar_focal_y"] = clampFocal(body.AvatarFocal.Y)
 	}
-	if len(updates) == 0 {
+	if len(updates) == 0 && emailChange == nil {
 		c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(u)})
 		return
 	}
-	if err := a.DB.Model(u).Updates(updates).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not save profile")
-		return
-	}
-	// Reload so the response reflects the saved state.
-	var updated models.User
-	if err := a.DB.First(&updated, u.ID).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not reload profile")
-		return
+	updated := *u
+	if len(updates) > 0 {
+		if err := a.DB.Model(u).Updates(updates).Error; err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not save profile")
+			return
+		}
+		// Reload so the response reflects the saved state.
+		if err := a.DB.First(&updated, u.ID).Error; err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not reload profile")
+			return
+		}
 	}
 	// Refresh the request-scoped user so later handlers see the update.
 	c.Set("apiUser", &updated)
+	if emailChange != nil {
+		a.apiRequestEmailChange(c, &updated, normalizeEmail(*emailChange))
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&updated)})
+}
+
+// apiRequestEmailChange starts a verified email change (10.1, M1.2): a
+// verification link goes to the new address, a notice to the old one. The
+// change applies only after verification, and then ends every other
+// session.
+func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail string) {
+	if !validEmail(newEmail) {
+		jsonError(c, http.StatusBadRequest, "enter a valid email address")
+		return
+	}
+	var taken int64
+	a.DB.Model(&models.User{}).Where("email = ? AND id <> ?", newEmail, u.ID).Count(&taken)
+	if taken > 0 {
+		jsonError(c, http.StatusConflict, "an account with that email already exists")
+		return
+	}
+	oldEmail := u.Email
+	var raw string
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		raw, err = createAccountToken(tx, models.TokenEmailVerify, u.ID,
+			map[string]any{"new_email": newEmail}, tokenTTL)
+		if err != nil {
+			return err
+		}
+		return audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.EmailChangeRequested,
+			TargetType: "user", TargetID: u.ID,
+			Meta: map[string]any{"oldEmail": oldEmail, "newEmail": newEmail}, IP: c.ClientIP()})
+	})
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not start email change")
+		return
+	}
+	if err := a.sendEmailVerification(newEmail, raw); err != nil {
+		log.Printf("email verification to %s: %v", newEmail, err)
+	}
+	if err := a.sendEmailChangeNotice(oldEmail, newEmail); err != nil {
+		log.Printf("email change notice to %s: %v", oldEmail, err)
+	}
+	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(u), "verificationSent": true})
+}
+
+// sendEmailVerification sends the new-address verification link (C6).
+func (a *App) sendEmailVerification(to, raw string) error {
+	link := a.emailBaseURL() + "/verify-email?token=" + raw
+	return a.Mailer.Send(context.Background(), mail.Message{
+		To:      to,
+		Subject: "Verify your new Fold email",
+		Text: fmt.Sprintf(`Someone asked to change the sign-in email for a Fold account to this address.
+
+Verify it here (the link works once and expires in 24 hours):
+%s
+
+The change takes effect only after you use the link. If that wasn't you, you can ignore this email.`,
+			link),
+	})
+}
+
+// sendEmailChangeNotice tells the old address what's happening (10.1).
+func (a *App) sendEmailChangeNotice(to, newEmail string) error {
+	return a.Mailer.Send(context.Background(), mail.Message{
+		To:      to,
+		Subject: "Your Fold sign-in email is changing",
+		Text: fmt.Sprintf(`The sign-in email for your Fold account at %s is being changed to %s.
+
+The change takes effect only after the new address is verified.
+
+If this wasn't you, contact your church office right away.`,
+			a.siteName(), newEmail),
+	})
+}
+
+// apiVerifyEmailChange redeems an email verification token: the new address
+// takes effect and every other session ends (10.1). The token is the
+// credential, so this needs no login; the current session stays logged in
+// when it belongs to the same user.
+func (a *App) apiVerifyEmailChange(c *gin.Context) {
+	var body struct {
+		Token string `json:"token"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Token == "" {
+		jsonError(c, http.StatusBadRequest, "token is required")
+		return
+	}
+	var userID uint
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		tok, err := consumeAccountToken(tx, models.TokenEmailVerify, body.Token)
+		if err != nil {
+			return err
+		}
+		var payload struct {
+			NewEmail string `json:"new_email"`
+		}
+		if err := json.Unmarshal([]byte(tok.Payload), &payload); err != nil || !validEmail(payload.NewEmail) {
+			return errTokenInvalid
+		}
+		var u models.User
+		if err := tx.First(&u, tok.UserID).Error; err != nil || u.Status == models.UserDisabled {
+			return errTokenInvalid
+		}
+		var taken int64
+		tx.Model(&models.User{}).Where("email = ? AND id <> ?", payload.NewEmail, u.ID).Count(&taken)
+		if taken > 0 {
+			return errEmailTaken
+		}
+		oldEmail := u.Email
+		userID = u.ID
+		if err := tx.Model(&u).Updates(map[string]any{
+			"email":           payload.NewEmail,
+			"session_version": gorm.Expr("session_version + 1"),
+		}).Error; err != nil {
+			return err
+		}
+		return audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.EmailChanged,
+			TargetType: "user", TargetID: u.ID,
+			Meta: map[string]any{"oldEmail": oldEmail, "newEmail": payload.NewEmail}, IP: c.ClientIP()})
+	})
+	switch {
+	case errors.Is(err, errTokenInvalid):
+		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
+		return
+	case errors.Is(err, errEmailTaken):
+		jsonError(c, http.StatusConflict, "an account with that email already exists")
+		return
+	case err != nil:
+		jsonError(c, http.StatusInternalServerError, "could not verify email")
+		return
+	}
+	var fresh models.User
+	if err := a.DB.First(&fresh, userID).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not verify email")
+		return
+	}
+	// This browser stays logged in; every other session ends.
+	if session, serr := a.Store.Get(c.Request, sessionName); serr == nil {
+		if uid, ok := session.Values["userID"].(uint); ok && uid == fresh.ID {
+			session.Values["sessionVersion"] = fresh.SessionVersion
+			_ = session.Save(c.Request, c.Writer)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh)})
 }
 
 // clampFocal keeps a focal-point percentage in the 0-100 range.
