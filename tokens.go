@@ -43,10 +43,17 @@ func hashToken(raw string) string {
 
 // createAccountToken stores a single-use hashed token of kind for userID.
 // payload carries kind-specific data (for example the new email address).
-// It returns the raw token, which goes to the person's email.
+// It returns the raw token, which goes to the person's email. Issuing a
+// token revokes every still-unused token of the same kind for the user, so
+// at most one live link exists per kind: requesting a fresh reset link
+// kills the previous one instead of leaving it usable until expiry.
 func createAccountToken(tx *gorm.DB, kind string, userID uint, payload map[string]any, ttl time.Duration) (string, error) {
 	raw, err := newRawToken()
 	if err != nil {
+		return "", err
+	}
+	if err := tx.Where("kind = ? AND user_id = ? AND used_at IS NULL", kind, userID).
+		Delete(&models.AccountToken{}).Error; err != nil {
 		return "", err
 	}
 	var payloadJSON string
