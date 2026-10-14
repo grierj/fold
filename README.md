@@ -17,7 +17,7 @@ docker compose up --build -d
 Open `https://<DOMAIN>`. The first visit shows a setup wizard to create the
 church site and its admin account.
 
-A single DigitalOcean droplet is the supported production install.
+A single DigitalOcean droplet is the recommended production install.
 `docs/DEPLOY-DIGITALOCEAN.md` and `deploy/digitalocean/provision.sh`
 harden Ubuntu and start this Compose stack. The script never creates
 droplets or other DigitalOcean resources.

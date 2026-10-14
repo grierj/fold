@@ -1,7 +1,7 @@
 # Deploy Fold on one DigitalOcean droplet
 
 Fold runs as one Docker Compose stack on one virtual machine: Caddy for
-HTTPS, the Fold app, and Postgres 16. That is the supported shape. The
+HTTPS, the Fold app, and Postgres 16. That is the recommended shape. The
 church owns the DigitalOcean account, the domain, and the email account.
 
 `deploy/digitalocean/provision.sh` hardens a fresh Ubuntu droplet and
@@ -313,5 +313,5 @@ Certificate problems are almost always DNS (the name does not point here yet), p
 ## Choices still open
 
 - **Images.** Plan C10 publishes `ghcr.io/grierj/fold` and a backup image. This repo still builds on the host (`build: .` in `docker-compose.yml`). The script refuses to build unless you pass `--allow-onbox-build`. `--image` is ready for the day a tag exists.
-- **Ubuntu.** The script accepts 24.04 and 26.04. The create command above uses `ubuntu-26-04-x64` because that is the current LTS DigitalOcean offers. `ubuntu-24-04-x64` remains a supported choice.
+- **Ubuntu.** The script accepts 24.04 and 26.04. The create command above uses `ubuntu-26-04-x64` because that is the current LTS DigitalOcean offers. `ubuntu-24-04-x64` is also tested.
 - **Backup destination.** Local dumps always land in `/var/backups/fold`. Offsite is whatever S3-compatible bucket the church creates. The product plan recommends Backblaze B2. Spaces stays in the same DigitalOcean account and costs more at the low end. The script ships to whichever endpoint is in `backup.env`.
