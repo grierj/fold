@@ -175,6 +175,8 @@ export const Groups = {
       tzid: string;
       location?: string;
       recurrenceRule?: string;
+      visibility?: Visibility;
+      visibilityReason?: string;
     }
   ) => api<{ event: EventSeries }>(`/groups/${id}/events`, { method: "POST", body: data }),
 };
@@ -235,7 +237,7 @@ export const Events = {
     tzid: string;
     location?: string;
     recurrenceRule?: string;
-    visibility?: "public" | "private";
+    visibility?: Visibility;
     hosts?: string[];
   }) => api<{ event: EventSeries }>("/events", { method: "POST", body: data }),
   setVisibility: (

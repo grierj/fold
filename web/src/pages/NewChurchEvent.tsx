@@ -1,3 +1,5 @@
+import { VisibilityField } from "../components/EventVisibility";
+import type { Visibility } from "../types";
 import { ZoneSelect } from "../components/ZoneSelect";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -16,7 +18,7 @@ export function NewChurchEvent() {
   const [durationMin, setDurationMin] = useState(90);
   const { tzid, setTzid } = useEventZone();
   const [location, setLocation] = useState("");
-  const [visibility, setVisibility] = useState<"public" | "private">("public");
+  const [visibility, setVisibility] = useState<Visibility>("public");
   const [hostEmail, setHostEmail] = useState("");
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
@@ -175,20 +177,14 @@ export function NewChurchEvent() {
           </label>
           <input id="church-event-location" className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
         </div>
-        <div>
-          <label className="label" htmlFor="church-event-visibility">
-            Who can see it
-          </label>
-          <select
-            id="church-event-visibility"
-            className="input"
-            value={visibility}
-            onChange={(e) => setVisibility(e.target.value as "public" | "private")}
-          >
-            <option value="public">Public — anyone</option>
-            <option value="private">Private — signed-in people</option>
-          </select>
-        </div>
+        <VisibilityField
+          id="church-event-visibility"
+          churchWide
+          value={visibility}
+          onChange={setVisibility}
+          reason=""
+          onReason={() => {}}
+        />
         <div>
           <label className="label" htmlFor="church-event-host">
             Another host's email (optional)

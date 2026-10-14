@@ -1,3 +1,5 @@
+import { VisibilityField } from "../components/EventVisibility";
+import type { Visibility } from "../types";
 import { ZoneSelect } from "../components/ZoneSelect";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -21,6 +23,10 @@ export function NewEvent() {
   const [durationMin, setDurationMin] = useState(90);
   const { tzid, setTzid } = useEventZone();
   const [location, setLocation] = useState("");
+  // Asked at creation, defaulting to the group's value (DEC-51).
+  const [groupVisibility, setGroupVisibility] = useState<Visibility>("public");
+  const [visibility, setVisibility] = useState<Visibility>("public");
+  const [visReason, setVisReason] = useState("");
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -35,6 +41,8 @@ export function NewEvent() {
         setGroupName(d.group.name);
         setCanManage(d.canManage);
         setLocation(d.group.location);
+        setGroupVisibility(d.group.visibility);
+        setVisibility(d.group.visibility);
       })
       .catch(() => {
         if (alive) setCanManage(false);
@@ -81,6 +89,8 @@ export function NewEvent() {
         tzid: tzid.trim(),
         location: location.trim(),
         recurrenceRule: recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "",
+        visibility,
+        ...(visReason.trim() ? { visibilityReason: visReason.trim() } : {}),
       });
       navigate(`/groups/${id}`);
     } catch (err) {
@@ -223,6 +233,15 @@ export function NewEvent() {
             placeholder="e.g. Room 201, Main Campus"
           />
         </div>
+        <VisibilityField
+          id="event-visibility"
+          value={visibility}
+          onChange={setVisibility}
+          groupName={groupName}
+          groupVisibility={groupVisibility}
+          reason={visReason}
+          onReason={setVisReason}
+        />
         <div className="border-t border-gray-100 pt-4">
           <label className="flex items-center gap-2 font-semibold cursor-pointer">
             <input

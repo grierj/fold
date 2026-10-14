@@ -98,18 +98,6 @@ export function EventDetail() {
       {event.description && <p className="text-gray-700 whitespace-pre-wrap mt-3">{event.description}</p>}
       {error && <div className="text-red-600 mt-3">{error}</div>}
 
-      {canSetVisibility && (
-        <EventVisibilityControl
-          key={`${event.id}-${event.visibility}-${event.leaderOpened}`}
-          eventId={event.id}
-          churchWide={event.churchWide}
-          groupName={event.groupName}
-          groupVisibility={event.groupVisibility}
-          visibility={event.visibility}
-          leaderOpened={event.leaderOpened}
-          onSaved={() => void load()}
-        />
-      )}
 
       {isAdmin && event.churchWide && (
         <HostEditor eventId={event.id} hosts={event.hosts ?? []} onChanged={() => void load()} />
@@ -119,13 +107,25 @@ export function EventDetail() {
         <div className="mt-4">
           <div className="flex flex-wrap items-center gap-4">
             <button type="button" className="text-sm text-brand font-medium" onClick={() => setEditing((v) => !v)}>
-              {editing ? "Close editor" : "Edit series"}
+              {editing ? "Close editor" : event.recurrenceRule ? "Edit series" : "Edit event"}
             </button>
             <button type="button" className="text-sm text-red-600 hover:text-red-800 font-medium" onClick={() => void deleteEvent()}>
               Delete event
             </button>
           </div>
           {editing && <SeriesForm event={event} onSaved={() => { setEditing(false); void load(); }} />}
+          {editing && canSetVisibility && (
+            <EventVisibilityControl
+              key={`${event.id}-${event.visibility}-${event.leaderOpened}`}
+              eventId={event.id}
+              churchWide={event.churchWide}
+              groupName={event.groupName}
+              groupVisibility={event.groupVisibility}
+              visibility={event.visibility}
+              leaderOpened={event.leaderOpened}
+              onSaved={() => void load()}
+            />
+          )}
         </div>
       )}
 

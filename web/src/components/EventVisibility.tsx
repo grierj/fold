@@ -43,8 +43,6 @@ export function EventVisibilityControl({
   const [error, setError] = useState<string | null>(null);
   const [review, setReview] = useState<VisibilityImpact | null>(null);
 
-  const opening = !churchWide && groupVisibility != null && visibilityRank(value) > visibilityRank(groupVisibility);
-
   // More private: preview first and confirm, the same as a group (DEC-48).
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -85,50 +83,18 @@ export function EventVisibilityControl({
 
   return (
     <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
-      <div className="text-sm font-semibold">Who can see this event</div>
       {error && <div className="text-sm text-red-600">{error}</div>}
-      {churchWide ? (
-        <select
-          className="input"
-          aria-label="Who can see this event"
-          value={value === "invite_only" ? "public" : value}
-          onChange={(e) => setValue(e.target.value as Visibility)}
-        >
-          <option value="public">Public — anyone</option>
-          <option value="private">Private — signed-in people</option>
-        </select>
-      ) : (
-        <select className="input" aria-label="Event visibility" value={value} onChange={(e) => setValue(e.target.value as Visibility)}>
-          {CHOICES.map((c) => (
-            <option key={c.value} value={c.value}>
-              {c.label}
-              {c.value === groupVisibility ? " (same as the group)" : ""}
-            </option>
-          ))}
-        </select>
-      )}
-      {leaderOpened && !churchWide && (
-        <p className="text-xs text-gray-500">
-          A leader opened this event wider than the group. If the group becomes more private, you'll be asked whether to keep it open.
-        </p>
-      )}
-      {opening && groupName && (
-        <p className="text-sm text-gray-700 bg-amber-50 border border-amber-200 rounded-lg p-3">{openedEventWarning(groupName)}</p>
-      )}
-      {opening && (
-        <div>
-          <label className="label" htmlFor={`reason-${eventId}`}>
-            Reason (optional)
-          </label>
-          <input
-            id={`reason-${eventId}`}
-            className="input"
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            maxLength={500}
-          />
-        </div>
-      )}
+      <VisibilityField
+        id={`event-visibility-${eventId}`}
+        value={value}
+        onChange={setValue}
+        churchWide={churchWide}
+        groupName={groupName}
+        groupVisibility={groupVisibility}
+        leaderOpened={leaderOpened}
+        reason={reason}
+        onReason={setReason}
+      />
       {review && (
         <GroupVisibilityReview
           key={JSON.stringify(review)}
@@ -143,5 +109,68 @@ export function EventVisibilityControl({
         {busy ? "Saving…" : "Save visibility"}
       </button>
     </form>
+  );
+}
+
+// VisibilityField is the one "Who can see this event" control, used on every
+// event create form and inside every event/series editor. A group event
+// defaults to its group's value; choosing wider than the group asks for an
+// optional reason and is saved as a leader-opened override (DEC-17/28).
+// A church-wide event is public or private.
+export function VisibilityField({
+  id,
+  value,
+  onChange,
+  churchWide,
+  groupName,
+  groupVisibility,
+  leaderOpened,
+  reason,
+  onReason,
+}: {
+  id: string;
+  value: Visibility;
+  onChange: (v: Visibility) => void;
+  churchWide?: boolean;
+  groupName?: string;
+  groupVisibility?: Visibility;
+  leaderOpened?: boolean;
+  reason: string;
+  onReason: (v: string) => void;
+}) {
+  const opening = !churchWide && groupVisibility != null && visibilityRank(value) > visibilityRank(groupVisibility);
+  const choices = churchWide ? CHOICES.filter((c) => c.value !== "invite_only") : CHOICES;
+  return (
+    <div className="space-y-3">
+      <div>
+        <label className="label" htmlFor={id}>
+          Who can see this event
+        </label>
+        <select id={id} className="input" value={value} onChange={(e) => onChange(e.target.value as Visibility)}>
+          {choices.map((c) => (
+            <option key={c.value} value={c.value}>
+              {c.label}
+              {!churchWide && c.value === groupVisibility ? " (same as the group)" : ""}
+            </option>
+          ))}
+        </select>
+      </div>
+      {leaderOpened && !churchWide && (
+        <p className="text-xs text-gray-500">
+          A leader opened this event wider than the group. If the group becomes more private, you'll be asked whether to keep it open.
+        </p>
+      )}
+      {opening && groupName && (
+        <p className="text-sm text-gray-700 bg-amber-50 border border-amber-200 rounded-lg p-3">{openedEventWarning(groupName)}</p>
+      )}
+      {opening && (
+        <div>
+          <label className="label" htmlFor={`${id}-reason`}>
+            Reason (optional)
+          </label>
+          <input id={`${id}-reason`} className="input" value={reason} onChange={(e) => onReason(e.target.value)} maxLength={500} />
+        </div>
+      )}
+    </div>
   );
 }

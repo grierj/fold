@@ -324,7 +324,6 @@ function EventRow({
   groupName,
   groupVisibility,
   canManage,
-  showVisibility,
   showDescription,
   loggedIn,
   onRsvp,
@@ -335,8 +334,6 @@ function EventRow({
   groupName: string;
   groupVisibility: Visibility;
   canManage: boolean;
-  // One control per series. Later dates of the same event omit it.
-  showVisibility: boolean;
   showDescription: boolean;
   loggedIn: boolean;
   onRsvp: (eventId: number, date: string, status: RegistrationStatus) => void;
@@ -382,24 +379,26 @@ function EventRow({
           {rsvpTotal(instance.registrations, "declined")} can't go
         </div>
         <AttendeeNames instance={instance} />
-        {showVisibility && (
-          <EventVisibilityControl
-            key={`${instance.eventId}-${instance.visibility}-${instance.leaderOpened}`}
-            eventId={instance.eventId}
-            groupName={groupName}
-            groupVisibility={groupVisibility}
-            visibility={instance.visibility ?? groupVisibility}
-            leaderOpened={instance.leaderOpened}
-            onSaved={onChanged}
-          />
-        )}
         {loggedIn && (
           <div className="mt-2">
             <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
           </div>
         )}
         {editor === "date" && <DateEditor instance={instance} onSaved={onChanged} onClose={() => setEditor(null)} />}
-        {editor === "series" && <SeriesEditor instance={instance} onSaved={onChanged} onClose={() => setEditor(null)} />}
+        {editor === "series" && (
+          <>
+            <SeriesEditor instance={instance} onSaved={onChanged} onClose={() => setEditor(null)} />
+            <EventVisibilityControl
+              key={`${instance.eventId}-${instance.visibility}-${instance.leaderOpened}`}
+              eventId={instance.eventId}
+              groupName={groupName}
+              groupVisibility={groupVisibility}
+              visibility={instance.visibility ?? groupVisibility}
+              leaderOpened={instance.leaderOpened}
+              onSaved={onChanged}
+            />
+          </>
+        )}
       </div>
       {canManage && (
         <div className="shrink-0 flex flex-col items-end gap-2">
@@ -407,7 +406,7 @@ function EventRow({
             Edit this date
           </button>
           <button type="button" onClick={() => setEditor(editor === "series" ? null : "series")} className="text-sm text-brand font-medium">
-            Edit series
+            {instance.recurrenceRule ? "Edit series" : "Edit event"}
           </button>
           <button
             onClick={cancel}
@@ -695,7 +694,7 @@ export function GroupDetail() {
 
   const { group, members, upcomingEvents, canManage, isMember } = detail;
   const events: EventOccurrence[] = upcomingEvents ?? [];
-  // The visibility control belongs to the series, so only its first date shows it.
+  // The series description shows only on its first listed date.
   const visibilityDate = new Map<number, string>();
   for (const m of events) {
     if (!visibilityDate.has(m.eventId)) visibilityDate.set(m.eventId, m.date);
@@ -1077,7 +1076,6 @@ export function GroupDetail() {
                     groupName={group.name}
                     groupVisibility={group.visibility}
                     canManage={canManage}
-                    showVisibility={canManage && visibilityDate.get(m.eventId) === m.date}
                     showDescription={visibilityDate.get(m.eventId) === m.date}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}

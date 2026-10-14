@@ -68,3 +68,59 @@ func TestNewSeriesCopiesOnlyGroupVisibility(t *testing.T) {
 		t.Fatal("second series not listed")
 	}
 }
+
+// DEC-51: visibility is chosen at creation. Wider than the group goes
+// through the override path (audit row, notice, leader_opened).
+func TestCreateEventWithVisibility(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	w := admin.do("POST", "/api/v1/groups", map[string]any{"name": "Choir", "visibility": "private"}, true)
+	var created struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, w, &created)
+	gid := itoa(created.Group.ID)
+	start := time.Now().AddDate(0, 0, 3).Format("2006-01-02") + "T19:00"
+	mk := func(body map[string]any) models.Event {
+		body["startsLocal"], body["durationMinutes"], body["tzid"] = start, 60, "America/Boise"
+		w := admin.do("POST", "/api/v1/groups/"+gid+"/events", body, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		var r struct {
+			Event struct {
+				ID uint `json:"id"`
+			} `json:"event"`
+		}
+		decodeJSON(t, w, &r)
+		var ev models.Event
+		app.DB.First(&ev, r.Event.ID)
+		return ev
+	}
+	plain := mk(map[string]any{"title": "Plain"})
+	if plain.Visibility != "private" || plain.LeaderOpened {
+		t.Fatalf("default: %s %v", plain.Visibility, plain.LeaderOpened)
+	}
+	opened := mk(map[string]any{"title": "Open house", "visibility": "public", "visibilityReason": "guests welcome"})
+	if opened.Visibility != "public" || !opened.LeaderOpened {
+		t.Fatalf("opened: %s %v", opened.Visibility, opened.LeaderOpened)
+	}
+	var n int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", "event.visibility_override", opened.ID).Count(&n)
+	if n != 1 {
+		t.Fatalf("override audit rows: %d", n)
+	}
+	app.DB.Model(&models.Notification{}).Where("kind = ?", "event.visibility_override").Count(&n)
+	if n == 0 {
+		t.Fatal("no override notice")
+	}
+	tight := mk(map[string]any{"title": "Members", "visibility": "invite_only"})
+	if tight.Visibility != "invite_only" || tight.LeaderOpened {
+		t.Fatalf("tightened: %s %v", tight.Visibility, tight.LeaderOpened)
+	}
+	if w := admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{"startsLocal": start, "durationMinutes": 60, "visibility": "secret"}, true); w.Code != http.StatusBadRequest {
+		t.Fatalf("bad visibility: %d", w.Code)
+	}
+}
