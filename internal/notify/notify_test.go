@@ -88,7 +88,7 @@ func TestValidLink(t *testing.T) {
 	}
 	db := testdb.Shared(t)
 	uid := user(t, db, "pat")
-	if err := Send(db, Msg{Kind: MemberNotRestored, To: []uint{uid}, Link: "https://evil.example"}); err != ErrBadLink {
+	if _, err := Send(db, Msg{Kind: MemberNotRestored, To: []uint{uid}, Link: "https://evil.example"}); err != ErrBadLink {
 		t.Fatalf("bad link: %v", err)
 	}
 	// The table refuses it too, whatever writes the row.
@@ -102,7 +102,7 @@ func TestDedupeAndActorSkipped(t *testing.T) {
 	a, b := user(t, db, "a"), user(t, db, "b")
 	m := Msg{Kind: GroupPending, To: []uint{a, b, b}, Actor: &a, SubjectType: "group", SubjectID: 9, Link: "/admin", DedupeKey: "group.pending:9", Vars: Vars{Actor: "a", Group: "G"}}
 	for i := 0; i < 2; i++ {
-		if err := Send(db, m); err != nil {
+		if _, err := Send(db, m); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -127,8 +127,12 @@ func TestBatching(t *testing.T) {
 	uid := user(t, db, "lead")
 	send := func(who string) {
 		t.Helper()
-		if err := Send(db, Msg{Kind: "test.joined", To: []uint{uid}, Link: "/groups/1", GroupKey: "joined:1", Vars: Vars{Actor: who, Group: "Youth"}}); err != nil {
+		ids, err := Send(db, Msg{Kind: "test.joined", To: []uint{uid}, Link: "/groups/1", GroupKey: "joined:1", Vars: Vars{Actor: who, Group: "Youth"}})
+		if err != nil {
 			t.Fatal(err)
+		}
+		if len(ids) != 1 {
+			t.Fatalf("send returned %d ids", len(ids))
 		}
 	}
 	send("Pat")
@@ -151,13 +155,17 @@ func itoa(n int) string { return strconv.Itoa(n) }
 func TestStatesBadgeAndReadAll(t *testing.T) {
 	db := testdb.Shared(t)
 	uid, other := user(t, db, "admin"), user(t, db, "other")
-	must := func(err error) {
+	must := func(ids []uint, err error) []uint {
 		t.Helper()
 		if err != nil {
 			t.Fatal(err)
 		}
+		return ids
 	}
-	must(Send(db, Msg{Kind: GroupPending, To: []uint{uid}, SubjectID: 5, Link: "/admin", Vars: Vars{Group: "G"}}))
+	ids := must(Send(db, Msg{Kind: GroupPending, To: []uint{uid}, SubjectID: 5, Link: "/admin", Vars: Vars{Group: "G"}}))
+	if len(ids) != 1 {
+		t.Fatalf("send returned %d ids", len(ids))
+	}
 	must(Send(db, Msg{Kind: LeadershipChanged, To: []uint{uid}, SubjectID: 5, Link: "/groups/5"}))
 	past := time.Now().Add(-time.Hour)
 	must(Send(db, Msg{Kind: OccurrenceCancelled, To: []uint{uid}, SubjectID: 7, Link: "/events/1", ExpiresAt: &past}))
@@ -165,7 +173,9 @@ func TestStatesBadgeAndReadAll(t *testing.T) {
 	if err != nil || unread != 1 || waiting != 1 {
 		t.Fatalf("badge %d %d %v", unread, waiting, err)
 	}
-	must(ReadAll(db, uid))
+	if err := ReadAll(db, uid); err != nil {
+		t.Fatal(err)
+	}
 	if unread, waiting, _ = Badge(db, uid); unread != 0 || waiting != 1 {
 		t.Fatalf("after read-all: %d %d", unread, waiting)
 	}
@@ -207,7 +217,7 @@ func TestFeedCursor(t *testing.T) {
 	db := testdb.Shared(t)
 	uid := user(t, db, "pat")
 	for i := 0; i < 5; i++ {
-		if err := Send(db, Msg{Kind: LeadershipChanged, To: []uint{uid}, Link: "/"}); err != nil {
+		if _, err := Send(db, Msg{Kind: LeadershipChanged, To: []uint{uid}, Link: "/"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -263,5 +273,58 @@ func TestPrune(t *testing.T) {
 	db.Model(&models.Notification{}).Order("id").Pluck("title", &left)
 	if strings.Join(left, ",") != "read young,unread 100d,open task" {
 		t.Fatalf("left %v", left)
+	}
+}
+
+// M1.2 (5.12): a sensitive kind's email names nobody and only links into
+// Fold. No contact-request, consent, or minor kind exists yet (M1.10/M1.11),
+// so a synthetic kind proves the RenderEmailSafe mechanism; the delivery
+// path uses RenderForEmail, which prefers the safe variant.
+func TestRenderEmailSafeNamesNobody(t *testing.T) {
+	register(Kind{
+		Key:        "test.contact_request",
+		Category:   CatAdmin,
+		AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return v.Actor + " requested " + v.Person + "'s contact details",
+				"Sign in to review it."
+		},
+		RenderEmailSafe: func(v Vars) (string, string) {
+			return "You have a contact request in Fold",
+				"Sign in to review it."
+		},
+	})
+	defer delete(registry, "test.contact_request")
+
+	k, ok := Lookup("test.contact_request")
+	if !ok || !k.AllowEmail {
+		t.Fatal("synthetic kind not registered")
+	}
+	v := Vars{Actor: "Pat Lee", Person: "Sam Kim"}
+	title, body := k.RenderForEmail(v)
+	text := title + "\n" + body
+	for _, name := range []string{"Pat", "Lee", "Sam", "Kim"} {
+		if strings.Contains(text, name) {
+			t.Fatalf("email names someone: %q", text)
+		}
+	}
+	// And Send stores the safe rendering on the row, which is what the
+	// delivery path emails.
+	db := testdb.Shared(t)
+	uid := user(t, db, "recipient")
+	ids, err := Send(db, Msg{Kind: "test.contact_request", To: []uint{uid},
+		SubjectID: 1, Link: "/admin", Vars: v})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("send: %v %d", err, len(ids))
+	}
+	var n models.Notification
+	if err := db.First(&n, ids[0]).Error; err != nil {
+		t.Fatalf("row: %v", err)
+	}
+	if n.EmailTitle != title || n.EmailBody != body {
+		t.Fatalf("row stores %q %q, want safe rendering", n.EmailTitle, n.EmailBody)
+	}
+	if strings.Contains(n.EmailTitle+n.EmailBody, "Pat") {
+		t.Fatalf("stored email rendering names someone")
 	}
 }

@@ -379,3 +379,22 @@ func CanDemoteOrDelete(p, target *Person, admins int) bool {
 func GroupHasRoom(limit *int, count int) bool {
 	return limit == nil || count < *limit
 }
+
+// CanInvite reports whether p may create an invitation (5.10, DEC-4, M1.2).
+// Admins may invite anyone, into any group or none. Leaders may invite into
+// a group they lead, or with no group at all. leadsTarget is p's leadership
+// in the named group; leadsAnywhere covers the no-group case. Hosts,
+// members, teens and guests may not invite (a member's "invite a friend"
+// creates an account request instead, M1.3).
+func CanInvite(p *Person, groupNamed, leadsTarget, leadsAnywhere bool) bool {
+	if p == nil || p.Teen {
+		return false
+	}
+	if p.Admin {
+		return true
+	}
+	if groupNamed {
+		return leadsTarget
+	}
+	return leadsAnywhere
+}

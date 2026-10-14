@@ -297,13 +297,98 @@ type LoginThrottle struct {
 	LockedUntil *time.Time
 }
 
+// Account token kinds (10.1): single-use hashed tokens, valid 24 hours.
+const (
+	TokenPasswordReset = "password_reset"
+	TokenEmailVerify   = "email_verify"
+)
+
+// AccountToken is a single-use hashed token for a password reset or an
+// email-change verification (10.1, M1.2). The raw token goes to the
+// person's email; only its SHA-256 is stored. payload carries the new
+// email for an email_verify token.
+type AccountToken struct {
+	ID        uint      `gorm:"primaryKey"`
+	Kind      string    `gorm:"not null"` // password_reset | email_verify
+	UserID    uint      `gorm:"not null;index"`
+	User      User      `gorm:"foreignKey:UserID"`
+	TokenHash string    `gorm:"not null;uniqueIndex:idx_account_tokens_token_hash"`
+	Payload   string    `gorm:"type:jsonb;not null;default:'{}'"`
+	ExpiresAt time.Time `gorm:"not null"`
+	UsedAt    *time.Time
+	CreatedAt time.Time `gorm:"not null;default:now()"`
+}
+
+// Invitation is an admin's or leader's invitation (5.10, DEC-4, M1.2): no
+// approval step. The person sets a password on acceptance and gets an
+// active account. A leader's invitation names only a group they lead.
+// OverLimit records the inviting leader's or admin's explicit choice to
+// join over the group's member limit on acceptance (DEC-39, audited).
+type Invitation struct {
+	ID          uint      `gorm:"primaryKey"`
+	Email       string    `gorm:"type:citext;not null"`
+	Phone       string    `gorm:"not null;default:''"`
+	Name        string    `gorm:"not null;default:''"`
+	InvitedBy   uint      `gorm:"not null;index"`
+	Role        string    `gorm:"not null;default:member"` // member | leader (group role on accept)
+	AccountType string    `gorm:"not null;default:adult"`  // adult | teen (teens arrive in M1.10)
+	GroupID     *uint     `gorm:"index"`
+	Group       Group     `gorm:"foreignKey:GroupID"`
+	OverLimit   bool      `gorm:"not null;default:false"`
+	TokenHash   string    `gorm:"not null;uniqueIndex:idx_invitations_token_hash"`
+	ExpiresAt   time.Time `gorm:"not null"`
+	AcceptedAt  *time.Time
+	CreatedAt   time.Time `gorm:"not null;default:now()"`
+}
+
+// MailOutbox is one email the devoutbox sender stored (5.6, M1.2): the
+// sender for dev and tests. /dev/outbox shows them; tests read links from
+// them.
+type MailOutbox struct {
+	ID          uint      `gorm:"primaryKey"`
+	ToAddress   string    `gorm:"not null"`
+	FromAddress string    `gorm:"not null;default:''"`
+	Subject     string    `gorm:"not null"`
+	Body        string    `gorm:"not null;default:''"`
+	CreatedAt   time.Time `gorm:"not null;default:now()"`
+}
+
+// Notification delivery channels and statuses (5.3, 5.12).
+const (
+	DeliveryEmail = "email"
+	DeliverySMS   = "sms"
+
+	DeliverySent       = "sent"
+	DeliveryFailed     = "failed"
+	DeliveryQueued     = "queued"
+	DeliverySuppressed = "suppressed"
+	DeliveryDeferred   = "deferred"
+	DeliveryDelivered  = "delivered"
+	DeliveryBounced    = "bounced"
+)
+
+// NotificationDelivery records one email (later SMS) send of a stored
+// notification (5.12, M1.2). Unique (notification_id, channel).
+type NotificationDelivery struct {
+	ID                uint   `gorm:"primaryKey"`
+	NotificationID    uint   `gorm:"not null;uniqueIndex:idx_notification_deliveries_channel"`
+	Channel           string `gorm:"not null;uniqueIndex:idx_notification_deliveries_channel"` // email | sms
+	UserID            uint   `gorm:"not null;index"`
+	Status            string `gorm:"not null"` // sent | failed | ...
+	Reason            string `gorm:"not null;default:''"`
+	ScheduledFor      *time.Time
+	ProviderMessageID *string
+	SentAt            *time.Time
+	CreatedAt         time.Time `gorm:"not null;default:now()"`
+}
+
 // All lists every model, in dependency order. The drift check and the test
 // helpers use it; a new model must be added here and to a migration.
 func All() []any {
 	return []any{
 		&User{}, &Group{}, &Event{}, &EventHost{}, &EventOccurrence{},
 		&Membership{}, &Registration{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
-		&Notification{},
+		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 	}
 }
 
@@ -312,19 +397,25 @@ func All() []any {
 // rendered when the row is written. Waiting rows are tasks: they stay in
 // the badge until ResolvedAt is set.
 type Notification struct {
-	ID           uint   `gorm:"primaryKey"`
-	UserID       uint   `gorm:"not null"`
-	Kind         string `gorm:"not null"`
-	Category     string `gorm:"not null"`
-	Priority     int    `gorm:"not null;default:0"`
-	Waiting      bool   `gorm:"not null;default:false"`
-	ActorID      *uint
-	SubjectType  string `gorm:"not null;default:''"`
-	SubjectID    *uint
-	GroupKey     *string
-	DedupeKey    *string
-	Title        string    `gorm:"not null"`
-	Body         string    `gorm:"not null;default:''"`
+	ID          uint   `gorm:"primaryKey"`
+	UserID      uint   `gorm:"not null"`
+	Kind        string `gorm:"not null"`
+	Category    string `gorm:"not null"`
+	Priority    int    `gorm:"not null;default:0"`
+	Waiting     bool   `gorm:"not null;default:false"`
+	ActorID     *uint
+	SubjectType string `gorm:"not null;default:''"`
+	SubjectID   *uint
+	GroupKey    *string
+	DedupeKey   *string
+	Title       string `gorm:"not null"`
+	Body        string `gorm:"not null;default:''"`
+	// EmailTitle/EmailBody are the link-only rendering for email (5.12,
+	// M1.2): RenderEmailSafe when the kind has one, Render otherwise. The
+	// in-app title/body may name people; the email variants of sensitive
+	// kinds name nobody.
+	EmailTitle   string    `gorm:"not null;default:''"`
+	EmailBody    string    `gorm:"not null;default:''"`
 	Link         string    `gorm:"not null"`
 	Actions      string    `gorm:"type:jsonb;not null;default:'[]'"`
 	BatchCount   int       `gorm:"not null;default:1"`

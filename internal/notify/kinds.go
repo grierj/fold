@@ -58,6 +58,23 @@ type Kind struct {
 	BatchWindow time.Duration // 0: never batched
 	Actions     []Action      // the inline allow-list
 	Render      func(Vars) (title, body string)
+	// AllowEmail sends a transactional email through the minimal sender
+	// right after the writing transaction commits (5.12, M1.2). The send
+	// is recorded in notification_deliveries.
+	AllowEmail bool
+	// RenderEmailSafe is the link-only variant for sensitive kinds
+	// (minors, consent, contact access): it names nobody and only links
+	// into Fold. Nil means Render is already safe.
+	RenderEmailSafe func(Vars) (title, body string)
+}
+
+// RenderForEmail renders k for email: the link-only safe variant when the
+// kind has one, Render otherwise.
+func (k Kind) RenderForEmail(v Vars) (title, body string) {
+	if k.RenderEmailSafe != nil {
+		return k.RenderEmailSafe(v)
+	}
+	return k.Render(v)
 }
 
 var registry = map[string]Kind{}
@@ -113,7 +130,7 @@ func join(parts ...string) string {
 
 func init() {
 	register(Kind{
-		Key: GroupPending, Category: CatAdmin, Waiting: true,
+		Key: GroupPending, Category: CatAdmin, Waiting: true, AllowEmail: true,
 		Actions: []Action{{Key: ActionApproveGroup, Label: "Approve"}},
 		Render: func(v Vars) (string, string) {
 			return or(v.Actor, "Someone") + " started a group: " + or(v.Group, "a new group"),
@@ -121,14 +138,14 @@ func init() {
 		},
 	})
 	register(Kind{
-		Key: GroupDeletion, Category: CatAdmin, Waiting: true,
+		Key: GroupDeletion, Category: CatAdmin, Waiting: true, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			return or(v.Actor, "Someone") + " asked to delete " + or(v.Group, "a group"),
 				"They are its only member. Delete the group or keep it."
 		},
 	})
 	register(Kind{
-		Key: LeadershipChanged, Category: CatAdmin,
+		Key: LeadershipChanged, Category: CatAdmin, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			actor, person := or(v.Actor, "Fold"), or(v.Person, "Someone")
 			var title string
@@ -146,27 +163,27 @@ func init() {
 		},
 	})
 	register(Kind{
-		Key: MemberNotRestored, Category: CatGroups,
+		Key: MemberNotRestored, Category: CatGroups, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			return "You're not back in " + or(v.Group, "one of your groups") + " yet",
 				"The group was full when your account was turned back on. Ask a leader to add you."
 		},
 	})
 	register(Kind{
-		Key: OccurrenceCancelled, Category: CatEvents,
+		Key: OccurrenceCancelled, Category: CatEvents, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			return "Cancelled: " + or(v.Event, "Church event"), join(v.When, v.Place)
 		},
 	})
 	register(Kind{
-		Key: RegistrationCancelled, Category: CatEvents,
+		Key: RegistrationCancelled, Category: CatEvents, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			return "Registration cancelled: " + or(v.Event, "An event you registered for"),
 				"This event is now limited to its group's members, so your registration for upcoming dates was cancelled."
 		},
 	})
 	register(Kind{
-		Key: VisibilityOverride, Category: CatGroups,
+		Key: VisibilityOverride, Category: CatGroups, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			body := fmt.Sprintf("%s opened it up. Now %s. The group is %s.", or(v.Actor, "Someone"), v.Visibility, v.GroupVis)
 			if v.Note != "" {

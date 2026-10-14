@@ -58,20 +58,24 @@ func ValidLink(s string) bool {
 	return !strings.Contains(strings.SplitN(s, "?", 2)[0], ":")
 }
 
-// Send writes (or merges) one row per recipient, skipping the actor.
-func Send(tx *gorm.DB, m Msg) error {
+// Send writes (or merges) one row per recipient, skipping the actor. It
+// returns the IDs of the rows written or merged, so the caller can deliver
+// email for AllowEmail kinds after the transaction commits (5.12, M1.2).
+// A dedupe hit writes nothing and returns no ID: the first send already
+// delivered.
+func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 	k, ok := Lookup(m.Kind)
 	if !ok {
-		return fmt.Errorf("notify: unknown kind %q", m.Kind)
+		return nil, fmt.Errorf("notify: unknown kind %q", m.Kind)
 	}
 	if !ValidLink(m.Link) {
-		return ErrBadLink
+		return nil, ErrBadLink
 	}
 	data := "{}"
 	if len(m.Data) > 0 {
 		b, err := json.Marshal(m.Data)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		data = string(b)
 	}
@@ -82,24 +86,28 @@ func Send(tx *gorm.DB, m Msg) error {
 	}
 	now := time.Now().UTC()
 	seen := map[uint]bool{}
+	var ids []uint
 	for _, uid := range m.To {
 		if uid == 0 || seen[uid] || (m.Actor != nil && *m.Actor == uid) {
 			continue
 		}
 		seen[uid] = true
 		if k.BatchWindow > 0 && m.GroupKey != "" {
-			merged, err := merge(tx, k, m, uid, now)
+			merged, id, err := merge(tx, k, m, uid, now)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if merged {
+				ids = append(ids, id)
 				continue
 			}
 		}
 		title, body := k.Render(withCount(m.Vars, 1))
+		emailTitle, emailBody := k.RenderForEmail(withCount(m.Vars, 1))
 		row := models.Notification{
 			UserID: uid, Kind: k.Key, Category: k.Category, Waiting: k.Waiting,
 			ActorID: m.Actor, SubjectType: m.SubjectType, Title: title, Body: body,
+			EmailTitle: emailTitle, EmailBody: emailBody,
 			Link: m.Link, Actions: actions, BatchCount: 1, Data: data,
 			CreatedAt: now, UpdatedAt: now, ExpiresAt: m.ExpiresAt,
 		}
@@ -123,34 +131,43 @@ func Send(tx *gorm.DB, m Msg) error {
 				DoNothing:   true,
 			})
 		}
-		if err := q.Create(&row).Error; err != nil {
-			return err
+		res := q.Create(&row)
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		if res.RowsAffected > 0 {
+			ids = append(ids, row.ID)
 		}
 	}
-	return nil
+	return ids, nil
 }
 
 func withCount(v Vars, n int) Vars { v.Count = n; return v }
 
 // merge folds m into an open unread row with the same group key inside the
-// kind's window, re-rendering its text with the new count (6.5).
-func merge(tx *gorm.DB, k Kind, m Msg, uid uint, now time.Time) (bool, error) {
+// kind's window, re-rendering its text with the new count (6.5). It returns
+// the merged row's ID for post-commit delivery.
+func merge(tx *gorm.DB, k Kind, m Msg, uid uint, now time.Time) (bool, uint, error) {
 	var open models.Notification
 	err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("user_id = ? AND group_key = ? AND kind = ? AND read_at IS NULL AND archived_at IS NULL AND updated_at > ?",
 			uid, m.GroupKey, k.Key, now.Add(-k.BatchWindow)).
 		Order("updated_at DESC").First(&open).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return false, nil
+		return false, 0, nil
 	}
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	n := open.BatchCount + 1
 	title, body := k.Render(withCount(m.Vars, n))
-	return true, tx.Model(&open).Updates(map[string]any{
-		"batch_count": n, "title": title, "body": body, "updated_at": now, "seen_at": nil,
+	emailTitle, emailBody := k.RenderForEmail(withCount(m.Vars, n))
+	err = tx.Model(&open).Updates(map[string]any{
+		"batch_count": n, "title": title, "body": body,
+		"email_title": emailTitle, "email_body": emailBody,
+		"updated_at": now, "seen_at": nil,
 	}).Error
+	return true, open.ID, err
 }
 
 // Resolve closes every open copy of a task (all admins' rows about one
