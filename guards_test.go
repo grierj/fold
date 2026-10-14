@@ -68,6 +68,7 @@ var tsContracts = []struct {
 	{hostJSON{}, "EventHostRow"},
 	{impactEventJSON{}, "VisibilityImpactEvent"},
 	{visibilityImpactJSON{}, "VisibilityImpact"},
+	{invitationJSON{}, "Invitation"},
 }
 
 var tsFieldRe = regexp.MustCompile(`^\s+(\w+)\??:`)

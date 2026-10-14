@@ -216,3 +216,23 @@ main.setup {
         padding: 16px;
     }
 }
+
+/* Dev outbox (M1.2): the devoutbox sender's stored mail. */
+.outbox-mail {
+    border: 1px solid #e5e7eb;
+    border-radius: 0.75rem;
+    padding: 1rem 1.25rem;
+    margin-bottom: 1rem;
+    background: #fff;
+}
+.outbox-mail h2 {
+    margin: 0 0 0.25rem;
+    font-size: 1.1rem;
+}
+.outbox-mail pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #f9fafb;
+    padding: 0.75rem;
+    border-radius: 0.5rem;
+}

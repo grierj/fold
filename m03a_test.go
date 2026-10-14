@@ -127,7 +127,7 @@ func TestLoginThrottlePerEmailAndIP(t *testing.T) {
 		t.Fatalf("lock: %+v", row)
 	}
 	// It is stored in Postgres, so a new App (a restart) still sees it.
-	restarted := &App{DB: app.DB, Store: app.Store, Config: app.Config, Uploads: app.Uploads}
+	restarted := &App{DB: app.DB, Store: app.Store, Config: app.Config, Uploads: app.Uploads, Mailer: app.Mailer}
 	if code, _ := tryLogin(t, restarted, "203.0.113.9", "alice@example.com", "password1234"); code != http.StatusTooManyRequests {
 		t.Fatalf("after restart: got %d, want 429", code)
 	}

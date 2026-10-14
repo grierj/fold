@@ -30,7 +30,17 @@ clears local/session storage and reloads `/`.
 POST /api/v1/auth/login    {email, password} → 200 {user} | 401 | 429
 POST /api/v1/auth/logout                         → 200 {}
 GET  /api/v1/auth/me                             → 200 {user} | 401
+POST /api/v1/auth/password-reset         {email} → 200 {message}  (public)
+POST /api/v1/auth/password-reset/confirm {token, password} → 200 {user} | 400  (public)
 ```
+
+Password reset (M1.2): the request answers `200 {"message":"If that email
+has an account, we've sent a link"}` for every address, known or not, after
+one bcrypt comparison on a miss (no account enumeration). Per-IP (10/hour)
+and per-address (5/hour) throttles live in `login_throttles`; throttled
+requests still answer uniformly. Tokens are 32 random bytes, stored as
+SHA-256, single use, and expire after 24 hours. Confirming sets the password
+(≥ 10 chars), ends every other session, and signs the browser in.
 
 Sign-in is by email in any letter case (`users.email` is `citext`, unique).
 Only an `active` account with a password signs in. Every failure, whether
@@ -46,19 +56,24 @@ successful sign-in clears the email's counter but not the IP's.
 ### Profile
 
 ```
-PUT    /api/v1/me           → 200 {user}  (auth; partial update)
+PUT    /api/v1/me           → 200 {user, verificationSent?}  (auth; partial update)
 POST   /api/v1/me/password  → 200 {}  (auth)
 POST   /api/v1/me/avatar    → 200 {avatarUrl}  (auth; multipart, field "avatar")
 POST   /api/v1/me/avatar/url → 200 {avatarUrl} (auth)
      body: {url} — the server downloads the image and stores it like an upload
 DELETE /api/v1/me/avatar    → 200 {}  (auth)
+POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public)
 ```
 
-Profile update body: any of `{name, displayName, phone, avatarFocal: {x, y}}`.
+Profile update body: any of `{name, displayName, phone, email, avatarFocal: {x, y}}`.
 Limits: names ≤ 100 chars, phone ≤ 30 chars, focal clamped to 0-100. The
-email is the login: sending a different `email` answers 400 ("ask an admin
-to change your sign-in email") until verified email changes arrive (M1.2).
-Sending the current address (any case) is accepted and changes nothing.
+email is the login: sending a different `email` starts a verified change
+(M1.2, 10.1) — a verification link goes to the new address and a notice to
+the old one, and the response carries `verificationSent: true`. The change
+applies only after `POST /me/email/verify` redeems the (single-use,
+24-hour) token; every other session then ends, while the verifying browser
+stays logged in. Sending the current address (any case) is accepted and
+changes nothing. Changing to an address another account uses answers 409.
 
 `POST /me/password` body: `{current, password}`. `password` is at least 10
 characters. The current browser stays logged in. Every other session for
@@ -222,6 +237,34 @@ request withdraws it without deleting the group.
 
 `membership`: `{id, userId, user: {id, name}, groupId, role: "leader"|"member",
 status, joinedAt}`
+
+### Invitations
+
+```
+POST /api/v1/invitations          → 201 {invitation}  (auth)
+GET  /api/v1/invitations/:token   → 200 {invitation, site} | 400  (public)
+POST /api/v1/invitations/accept   → 200 {user, groupId?} | 400 | 409  (public)
+```
+
+Invitations (M1.2, 5.10, DEC-4): admins invite into any group or none;
+leaders invite only into groups they lead or none (403 otherwise); members,
+teens, and guests get 403, signed-out visitors 401. There is no approval
+step: the person sets a password on acceptance and gets an active account.
+Create body: `{email, name?, phone?, groupId?, role? ("member"|"leader"),
+accountType? ("adult"|"teen"), overLimit?}`. 409 when the email already has
+an account or a pending invitation. Leaders are limited to 20 invitations
+per rolling day; the 21st gets 429 and is audited
+(`invitation.rate_limited`).
+
+Tokens are 32 random bytes, stored as SHA-256, single use, and expire after
+24 hours. Accept body: `{token, name, password}` (password ≥ 10 chars);
+accepting signs the browser in. Accepting into a full group joins over
+`member_limit` only when the inviter set `overLimit` (an explicit, audited
+choice, DEC-39); otherwise it answers `409 {"error":"This group is
+full","full":true}` without consuming the token. The over-limit join is
+audited as `membership.added_over_limit`.
+
+`invitation`: `{id, email, name, groupId?, groupName?, expiresAt}`.
 
 ### Site
 
