@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Dev outbox — Fold</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <h1>Dev outbox</h1>
+    </header>
+    <main class="setup">
+        <p>Every email the <code>devoutbox</code> sender stored, newest first.
+        This page exists only when <code>APP_ENV=dev</code>.</p>
+        {{if .Messages}}
+        {{range .Messages}}
+        <section class="outbox-mail">
+            <h2>{{.Subject}}</h2>
+            <p class="hint">To: {{.To}} &middot; {{.CreatedAt}}</p>
+            <pre>{{.Body}}</pre>
+        </section>
+        {{end}}
+        {{else}}
+        <p>No emails sent yet.</p>
+        {{end}}
+    </main>
+</body>
+</html>
