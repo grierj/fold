@@ -47,3 +47,4 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Start a group](./start-a-group.md) covers the admin's live group and a member's group that waits for approval.
 - [Schedule an event](./schedule-event.md) covers a leader scheduling a group event and seeing it on the group page.
 - [Log out](./log-out.md) covers the header control clearing the session, including after Back.
+- [Event visibility](./event-visibility.md) covers one event narrower or wider than its group and the review when a group becomes more private.

@@ -92,6 +92,9 @@ func parseTrustedProxies(s string) ([]string, error) {
 }
 
 // LoadConfig reads everything `fold serve` needs.
+// minSessionSecretLen is the shortest SESSION_SECRET accepted outside dev.
+const minSessionSecretLen = 32
+
 func LoadConfig() (Config, error) {
 	env := getEnv("APP_ENV", "prod")
 	isDev := env == "dev"
@@ -103,6 +106,10 @@ func LoadConfig() (Config, error) {
 		}
 		secret = "dev-only-insecure-secret-do-not-use-in-prod"
 		log.Println("WARNING: SESSION_SECRET not set; using insecure dev default")
+	} else if !isDev && len(secret) < minSessionSecretLen {
+		// A short secret can be guessed offline from one cookie, and then
+		// anyone can sign an admin session.
+		return Config{}, fmt.Errorf("SESSION_SECRET must be at least %d characters; generate one with: openssl rand -base64 32", minSessionSecretLen)
 	}
 
 	dbURL, err := databaseURL()

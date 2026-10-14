@@ -100,6 +100,27 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	rels := a.relsFor(me, gset)
 	hosted := a.hostedEventIDs(me, eventIDs)
 
+	// The one place event dates are listed: drop every event this viewer
+	// can't see, so no caller has to remember to (hardening review).
+	visibleIDs := make([]uint, 0, len(evs))
+	for i := range evs {
+		ev := &evs[i]
+		g, rel := groupAndRel(ev, groups, rels)
+		gp := policy.Group{}
+		if g != nil {
+			gp = asGroup(g)
+		}
+		if policy.CanSeeEvent(asPerson(me), viewOf(ev, hosted[ev.ID]), gp, rel) {
+			visibleIDs = append(visibleIDs, ev.ID)
+		} else {
+			delete(byID, ev.ID)
+		}
+	}
+	if len(visibleIDs) == 0 {
+		return out
+	}
+	eventIDs = visibleIDs
+
 	q := a.DB.Where("event_id IN ? AND status = ? AND original_date >= ? AND original_date <= ?",
 		eventIDs, models.OccurrenceScheduled, from, to)
 	if startAfter != nil {
@@ -175,8 +196,8 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		// The group's meeting place is the default location only for people
 		// who can see the group; an opened invite-only event must not reveal it.
 		loc := ""
-		if g != nil && policy.CanSeeGroup(p, asGroup(g), rel) {
-			loc = g.Location
+		if shown := a.groupShownTo(me, g, rel); shown != nil {
+			loc = shown.Location
 		}
 		inst := occurrenceToJSON(ev, o, loc)
 		inst.Visibility = ev.Visibility
@@ -327,10 +348,10 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 		}
 	}
 	return groupSummaryJSON{
-		ID: g.ID, Name: g.Name, Description: g.Description,
+		ID: g.ID, Name: g.Name, Description: g.Description, // group-ok: groupSummary is served only after CanSeeGroup
 		Tags: splitTags(g.Tags), ImageURL: g.ImageURL,
 		CoverFocalX: g.CoverFocalX, CoverFocalY: g.CoverFocalY,
-		Location: g.Location, LeaderName: leaderName, MemberCount: members,
+		Location: g.Location, LeaderName: leaderName, MemberCount: members, // group-ok: as above
 		NextEventAt: next, NextEventLocal: nextLocal, NextEventTzid: nextTZ,
 		Status: g.Status, LeaderID: g.LeaderID, Visibility: g.Visibility,
 		DeletionRequested: g.DeletionRequested, MemberLimit: g.MemberLimit,
@@ -758,7 +779,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 	if ev.GroupID != nil {
 		var g models.Group
 		if err := a.DB.First(&g, *ev.GroupID).Error; err == nil {
-			groupLoc = g.Location
+			groupLoc = g.Location // group-ok: loadManagedEvent, only managers reach here
 		}
 	}
 	inst := occurrenceToJSON(ev, &o, groupLoc)

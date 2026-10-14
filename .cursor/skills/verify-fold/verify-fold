@@ -6,7 +6,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 COMPOSE=(docker compose -f "$ROOT/deploy/docker-compose.dev.yml")
 ADMIN_DB=fold
-DEV_DATABASE_URL="postgres://fold:fold@127.0.0.1:5432/${ADMIN_DB}?sslmode=disable"
+# VERIFY_PG_URL points at an already-running Postgres when there is no
+# Docker (any database the role may CREATE DATABASE from). Unset, the dev
+# compose database is used.
+DEV_DATABASE_URL="${VERIFY_PG_URL:-postgres://fold:fold@127.0.0.1:5432/${ADMIN_DB}?sslmode=disable}"
+
+# url_for DB prints DEV_DATABASE_URL pointed at database DB.
+url_for() {
+  local base="${DEV_DATABASE_URL%%\?*}" query=""
+  [[ "$DEV_DATABASE_URL" == *\?* ]] && query="?${DEV_DATABASE_URL#*\?}"
+  printf '%s/%s%s\n' "${base%/*}" "$1" "$query"
+}
 
 die() { printf 'verify-fold: %s\n' "$*" >&2; exit 1; }
 
@@ -33,18 +43,30 @@ db_name_ok() {
 }
 
 psql_admin() {
-  "${COMPOSE[@]}" exec -T db psql -U fold -d "$ADMIN_DB" -v ON_ERROR_STOP=1 "$@"
+  if [[ -n "${VERIFY_PG_URL:-}" ]]; then
+    psql "$VERIFY_PG_URL" -v ON_ERROR_STOP=1 "$@"
+  else
+    "${COMPOSE[@]}" exec -T db psql -U fold -d "$ADMIN_DB" -v ON_ERROR_STOP=1 "$@"
+  fi
 }
 
 psql_named() {
   local db="$1"
   shift
   db_name_ok "$db" || die "refusing to query database $db"
-  "${COMPOSE[@]}" exec -T db psql -U fold -d "$db" -v ON_ERROR_STOP=1 "$@"
+  if [[ -n "${VERIFY_PG_URL:-}" ]]; then
+    psql "$(url_for "$db")" -v ON_ERROR_STOP=1 "$@"
+  else
+    "${COMPOSE[@]}" exec -T db psql -U fold -d "$db" -v ON_ERROR_STOP=1 "$@"
+  fi
 }
 
 ensure_db() {
-  "${COMPOSE[@]}" up -d --wait db
+  if [[ -n "${VERIFY_PG_URL:-}" ]]; then
+    psql_admin -tAc 'SELECT 1' >/dev/null || die "cannot reach VERIFY_PG_URL"
+  else
+    "${COMPOSE[@]}" up -d --wait db
+  fi
 }
 
 load_state() {
@@ -57,39 +79,19 @@ load_state() {
   db_name_ok "$DB_NAME" || die "state database name is not a verify database"
 }
 
+# port_owned_by PID PORT succeeds when PID owns the listening socket.
 port_owned_by() {
-  python3 - "$1" "$2" <<'PY'
-import os, pathlib, sys
-pid = int(sys.argv[1])
-port = int(sys.argv[2])
-want = f"{port:04X}"
-inodes = set()
-for name in ("/proc/net/tcp", "/proc/net/tcp6"):
-    try:
-        lines = open(name)
-    except FileNotFoundError:
-        continue
-    for i, line in enumerate(lines):
-        if i == 0:
-            continue
-        parts = line.split()
-        local, state, inode = parts[1], parts[3], parts[9]
-        if local.rsplit(":", 1)[1].upper() == want and state == "0A":
-            inodes.add(inode)
-owned = False
-fd_dir = pathlib.Path(f"/proc/{pid}/fd")
-if fd_dir.is_dir():
-    for fd in fd_dir.iterdir():
-        try:
-            target = os.readlink(fd)
-        except OSError:
-            continue
-        if target.startswith("socket:[") and target[8:-1] in inodes:
-            owned = True
-            break
-print("yes" if owned else "no")
-sys.exit(0 if owned else 1)
-PY
+  ss -Hltnp "sport = :$2" 2>/dev/null | grep -q "pid=$1," && echo yes
+}
+
+# free_port prints an unused TCP port on 127.0.0.1.
+free_port() {
+  local p
+  for _ in $(seq 1 50); do
+    p=$(( (RANDOM % 20000) + 30000 ))
+    ss -Hltn "sport = :$p" | grep -q . || { echo "$p"; return 0; }
+  done
+  die "no free port"
 }
 
 cmd_up() {
@@ -101,10 +103,9 @@ cmd_up() {
   work="$(work_dir "$run")"
   evidence="$(proof_dir "$run")"
   mkdir -p "$work/uploads" "$evidence"
-  port="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+  port="$(free_port)"
   secret="verify-only-session-secret-0123456789abcdef"
-  base="${DEV_DATABASE_URL%%\?*}"
-  url="${base%/*}/${db}?sslmode=disable"
+  url="$(url_for "$db")"
   psql_admin -c "CREATE DATABASE \"${db}\""
   printf 'building the SPA and the fold binary\n' >&2
   (cd "$ROOT/web" && npm run build)
@@ -125,7 +126,7 @@ EOF
     cd "$ROOT"
     export APP_ENV=prod PORT="$port" DATABASE_URL="$url" \
       SESSION_SECRET="$secret" COOKIE_SECURE=false UPLOAD_DIR="$work/uploads"
-    exec python3 -c 'import os,sys; os.setsid(); os.execv(sys.argv[1], [sys.argv[1], "serve"])' "$work/fold"
+    exec setsid "$work/fold" serve
   ) >>"$work/server.log" 2>&1 &
   local pid=$!
   printf 'PID=%s\n' "$pid" >>"$work/state.env"
@@ -179,7 +180,7 @@ cmd_doctor() {
 cmd_env() {
   local run="$1"
   load_state "$run"
-  printf 'VERIFY_URL=%q\nVERIFY_EVIDENCE=%q\nVERIFY_DATABASE_URL=%q\nVERIFY_DEV_DATABASE_URL=%q\nVERIFY_RUN_ID=%q\nFOLD_ROOT=%q\n' \
+  printf 'export VERIFY_URL=%q VERIFY_EVIDENCE=%q VERIFY_DATABASE_URL=%q VERIFY_DEV_DATABASE_URL=%q VERIFY_RUN_ID=%q FOLD_ROOT=%q\n' \
     "$URL" "$EVIDENCE" "$DATABASE_URL" "$DEV_DATABASE_URL" "$RUN_ID" "$ROOT"
 }
 

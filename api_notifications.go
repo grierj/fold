@@ -125,7 +125,7 @@ func (a *App) cancelledNotices(u *models.User, now time.Time) []notificationJSON
 		if r.GroupID != nil {
 			var g models.Group
 			if err := a.DB.First(&g, *r.GroupID).Error; err != nil || !a.canSeeGroup(u, &g) {
-				r.GroupID, r.GroupName, r.GroupLocation = nil, "", ""
+				r.GroupID, r.GroupName, r.GroupLocation = nil, "", "" // group-ok: clearing, not reading
 			}
 		}
 		out = append(out, notificationJSON{
@@ -152,7 +152,7 @@ func (a *App) upcomingNotices(groupIDs []uint, now time.Time) []notificationJSON
 		Order("event_occurrences.starts_at").Limit(10).Scan(&rows)
 	out := make([]notificationJSON, 0, len(rows))
 	for _, r := range rows {
-		title := r.GroupName
+		title := r.GroupName // group-ok: upcomingNotices lists only the viewer's own groups
 		if r.Title != "" {
 			title = r.Title
 		}
@@ -202,7 +202,7 @@ func (a *App) visibilityNotices(me *models.User) []notificationJSON {
 		}
 		name := ev.Title
 		if name == "" {
-			name = g.Name
+			name = g.Name // group-ok: visibility notices go only to the group's leaders and admins
 		}
 		body := a.actorName(r.ActorID) + " opened it up. Now " + visWord(meta.NewVisibility) + ". The group is " + visWord(meta.GroupVisibility) + "."
 		if meta.Reason != "" {
@@ -243,8 +243,8 @@ func noticeTitle(r noticeRow) string {
 	if r.Title != "" {
 		return r.Title
 	}
-	if r.GroupName != "" {
-		return r.GroupName
+	if r.GroupName != "" { // group-ok: see below
+		return r.GroupName // group-ok: cancelledNotices clears it when the group is hidden
 	}
 	return "Church event"
 }
@@ -257,7 +257,7 @@ func noticeWhen(r noticeRow) string {
 	body := r.StartsAt.In(loc).Format("Mon, Jan 2 · 3:04 PM")
 	place := r.Location
 	if place == "" {
-		place = r.GroupLocation
+		place = r.GroupLocation // group-ok: as above
 	}
 	if place != "" {
 		body += " · " + place
@@ -304,7 +304,7 @@ func (a *App) leadershipNotices(me *models.User) []notificationJSON {
 			ID:    fmt.Sprintf("leadership:%d", r.ID),
 			Type:  "leadership",
 			Title: title,
-			Body:  g.Name + " · " + r.At.Format("Jan 2"),
+			Body:  g.Name + " · " + r.At.Format("Jan 2"), // group-ok: leadership notices go to leaders and admins
 			Link:  fmt.Sprintf("/groups/%d#role-change-%d", r.TargetID, r.ID),
 		})
 	}

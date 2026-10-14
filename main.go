@@ -154,6 +154,9 @@ func (a *App) setupRouter() *gin.Engine {
 	// must stay off.
 	r.RedirectTrailingSlash = false
 	r.Use(gin.Logger(), gin.Recovery(), securityHeaders(a.Config.CookieSecure))
+	// Cap every request body before anything parses it (the CSRF check
+	// reads form fields, and Gin spools big multipart bodies to disk).
+	r.Use(limitBody(maxRequestBytes))
 	// Believe X-Forwarded-For only from the reverse proxy (C17). LoadConfig
 	// validated the list; an empty one trusts nobody.
 	if err := r.SetTrustedProxies(a.Config.TrustedProxies); err != nil {
@@ -444,4 +447,21 @@ func (a *App) handleSetup(c *gin.Context) {
 
 	log.Printf("Setup complete: site=%q timezone=%q", siteName, timezone)
 	c.Redirect(http.StatusSeeOther, "/login")
+}
+
+// maxRequestBytes is the largest request body accepted: one image upload
+// plus room for the multipart envelope.
+const maxRequestBytes = maxUploadBytes + 1<<20
+
+// limitBody makes reads past n fail, so oversized bodies are refused
+// instead of buffered.
+func limitBody(n int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.Request.ContentLength > n {
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request too large"})
+			return
+		}
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, n)
+		c.Next()
+	}
 }

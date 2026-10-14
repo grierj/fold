@@ -393,6 +393,9 @@ func (a *App) ipAllowed(ip net.IP) bool {
 	if a.Config.IsDev() && ip.IsLoopback() {
 		return true
 	}
+	if cgnat.Contains(ip) || thisNetwork.Contains(ip) {
+		return false
+	}
 	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
 		ip.IsMulticast() || ip.IsInterfaceLocalMulticast() || ip.IsUnspecified() {
 		return false
@@ -508,3 +511,10 @@ func (a *App) serveUpload(c *gin.Context) {
 	c.Header("Cache-Control", "public, max-age=86400")
 	http.ServeContent(c.Writer, c.Request, st.Name(), st.ModTime(), f)
 }
+
+// Ranges net.IP has no predicate for: carrier-grade NAT (often a cloud
+// provider's internal network) and "this network".
+var (
+	_, cgnat, _       = net.ParseCIDR("100.64.0.0/10")
+	_, thisNetwork, _ = net.ParseCIDR("0.0.0.0/8")
+)
