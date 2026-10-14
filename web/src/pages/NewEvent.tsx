@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Groups } from "../api";
 import { useAuth } from "../auth";
-import { COMMON_ZONES, WEEKDAYS, weekdayCode } from "../lib/eventForm";
-import { browserTimeZone } from "../lib/wall";
+import { WEEKDAYS, weekdayCode } from "../lib/eventForm";
+import { useEventZone } from "../lib/useEventZone";
 
 export function NewEvent() {
   const { id } = useParams<{ id: string }>();
@@ -18,8 +18,7 @@ export function NewEvent() {
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("19:00");
   const [durationMin, setDurationMin] = useState(90);
-  // The person scheduling the series is sitting in this browser.
-  const [tzid, setTzid] = useState(browserTimeZone);
+  const { tzid, setTzid, options: zones } = useEventZone();
   const [location, setLocation] = useState("");
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
@@ -215,12 +214,12 @@ export function NewEvent() {
               aria-describedby="tz-hint"
             />
             <datalist id="event-zones">
-              {COMMON_ZONES.map((z) => (
-                <option key={z} value={z} />
+              {zones.map((z) => (
+                <option key={z.value} value={z.value} label={z.label} />
               ))}
             </datalist>
             <p id="tz-hint" className="text-sm text-gray-500 mt-1">
-              Your computer's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving.
+              The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving.
             </p>
           </div>
         </div>

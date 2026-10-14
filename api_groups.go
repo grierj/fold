@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -70,7 +68,6 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
 		Tags        []string        `json:"tags"`
-		ImageURL    string          `json:"imageUrl"`
 		Location    string          `json:"location"`
 		Visibility  string          `json:"visibility"`
 		MemberLimit json.RawMessage `json:"memberLimit"`
@@ -97,16 +94,10 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, msg)
 		return
 	}
-	coverURL, cerr := cleanCoverURL(body.ImageURL)
-	if cerr != nil {
-		jsonError(c, http.StatusBadRequest, cerr.Error())
-		return
-	}
 	g := models.Group{
 		Name:        name,
 		Description: description,
 		Tags:        tags,
-		ImageURL:    coverURL,
 		Location:    location,
 		LeaderID:    u.ID, // displayed primary contact
 		Status:      policy.NewGroupStatus(asPerson(u)),
@@ -194,7 +185,6 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		Name        *string  `json:"name"`
 		Description *string  `json:"description"`
 		Tags        []string `json:"tags"`
-		ImageURL    *string  `json:"imageUrl"`
 		Location    *string  `json:"location"`
 		Status      *string  `json:"status"`
 		CoverFocal  *struct {
@@ -241,14 +231,6 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			return
 		}
 		g.Tags = tags
-	}
-	if body.ImageURL != nil {
-		img, err := cleanCoverURL(*body.ImageURL)
-		if err != nil {
-			jsonError(c, http.StatusBadRequest, err.Error())
-			return
-		}
-		g.ImageURL = img
 	}
 	if body.CoverFocal != nil {
 		g.CoverFocalX = clampFocal(body.CoverFocal.X)
@@ -905,22 +887,4 @@ func (a *App) removeMember(c *gin.Context, g *models.Group) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"members": a.roster(g.ID)})
-}
-
-// cleanCoverURL accepts an https image link (the visitor's browser loads it;
-// the server never fetches it) or a local /uploads/ path. Anything else,
-// such as javascript: or http: links, is refused.
-func cleanCoverURL(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", nil
-	}
-	if _, ok := uploadKeyFromURL(raw); ok {
-		return raw, nil
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || len(raw) > 2048 {
-		return "", fmt.Errorf("cover image must be an https:// link or an upload")
-	}
-	return raw, nil
 }

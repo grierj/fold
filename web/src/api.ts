@@ -120,7 +120,6 @@ export const Groups = {
     name: string;
     description: string;
     tags: string[];
-    imageUrl: string;
     location: string;
     visibility: Visibility;
     memberLimit: number | null;
@@ -131,7 +130,6 @@ export const Groups = {
       name?: string;
       description?: string;
       tags?: string[];
-      imageUrl?: string;
       location?: string;
       coverFocal?: { x: number; y: number };
       visibility?: Visibility;
@@ -347,8 +345,6 @@ export const Profile = {
   changePassword: (current: string, password: string) =>
     api<Record<string, never>>("/me/password", { method: "POST", body: { current, password } }),
   uploadAvatar: (file: File) => apiUpload<{ avatarUrl: string }>("/me/avatar", "avatar", file),
-  fetchAvatar: (url: string) =>
-    api<{ avatarUrl: string }>("/me/avatar/url", { method: "POST", body: { url } }),
   deleteAvatar: () => api<Record<string, never>>("/me/avatar", { method: "DELETE" }),
 };
 

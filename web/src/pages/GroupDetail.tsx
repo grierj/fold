@@ -1,3 +1,4 @@
+import { useZoneOptions } from "../lib/useEventZone";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
@@ -13,7 +14,7 @@ import { ImageUpload } from "../components/ImageUpload";
 import { coverImage } from "../components/GroupCard";
 import { focalPosition, prepareUpload } from "../lib/image";
 import { formatNextEvent, formatWallClock, zoneSuffix } from "../lib/wall";
-import { COMMON_ZONES, WEEKDAYS, bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
+import { WEEKDAYS, bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
 
 type Tab = "events" | "about" | "members";
 
@@ -152,6 +153,7 @@ function SeriesEditor({
   onClose: () => void;
 }) {
   const simple = isSimpleWeekly(instance.recurrenceRule);
+  const zones = useZoneOptions();
   const [date, setDate] = useState(instance.seriesStartsLocal.slice(0, 10));
   const [time, setTime] = useState(instance.seriesStartsLocal.slice(11, 16) || "19:00");
   const [duration, setDuration] = useState(instance.seriesDurationMinutes);
@@ -251,9 +253,9 @@ function SeriesEditor({
             required
           />
           <datalist id={`series-zones-${instance.id}`}>
-            {COMMON_ZONES.map((z) => (
-              <option key={z} value={z} />
-            ))}
+            {zones.map((z) => (
+                <option key={z.value} value={z.value} label={z.label} />
+              ))}
           </datalist>
         </div>
       </div>
@@ -438,8 +440,8 @@ export interface GroupFormData {
   description: string;
   location: string;
   tags: string[];
-  imageUrl: string;
   coverFile?: File | null;
+  removeCover?: boolean;
   coverFocal?: { x: number; y: number };
   visibility: Visibility;
   memberLimit: number | null;
@@ -465,8 +467,7 @@ function GroupForm({
   const [description, setDescription] = useState(initial.description);
   const [location, setLocation] = useState(initial.location);
   const [tags, setTags] = useState(initial.tags.join(", "));
-  const [imageUrl, setImageUrl] = useState(initial.imageUrl);
-  const [coverMode, setCoverMode] = useState<"url" | "upload">("url");
+  const [removeCover, setRemoveCover] = useState(false);
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverFocal, setCoverFocal] = useState<{ x: number; y: number } | null>(null);
   const [visibility, setVisibility] = useState<Visibility>(initial.visibility ?? "public");
@@ -486,10 +487,9 @@ function GroupForm({
             name,
             description,
             location,
-            // Upload mode with a new file replaces any URL; otherwise keep it.
-            imageUrl: coverMode === "upload" && coverFile ? "" : imageUrl,
-            coverFile: coverMode === "upload" ? coverFile : null,
-            coverFocal: coverMode === "upload" ? coverFocal ?? undefined : undefined,
+            coverFile,
+            removeCover: !coverFile && removeCover,
+            coverFocal: coverFocal ?? undefined,
             tags: tags
               .split(",")
               .map((t) => t.trim())
@@ -599,40 +599,20 @@ function GroupForm({
         </div>
       </fieldset>
       <div>
-        <label className="label">Cover image</label>
-        <div className="flex gap-2 mb-2">
-          {(["url", "upload"] as const).map((m) => (
-            <button
-              key={m}
-              type="button"
-              onClick={() => setCoverMode(m)}
-              className={`text-sm px-3 py-1 rounded-full border ${
-                coverMode === m
-                  ? "bg-brand text-white border-brand"
-                  : "text-gray-600 border-gray-300 hover:border-brand"
-              }`}
-            >
-              {m === "url" ? "Image URL" : "Upload"}
-            </button>
-          ))}
-        </div>
-        {coverMode === "url" ? (
-          <input
-            className="input"
-            value={imageUrl}
-            onChange={(e) => setImageUrl(e.target.value)}
-            placeholder="https://…"
-          />
-        ) : (
-          <ImageUpload
-            label=""
-            initialUrl={initial.imageUrl || undefined}
-            initialFocal={{ x: initial.coverFocalX, y: initial.coverFocalY }}
-            maxDim={1600}
-            aspectClass="aspect-[16/9]"
-            onFile={setCoverFile}
-            onFocal={setCoverFocal}
-          />
+        <ImageUpload
+          label="Cover image"
+          initialUrl={initial.imageUrl || undefined}
+          initialFocal={{ x: initial.coverFocalX, y: initial.coverFocalY }}
+          maxDim={1600}
+          aspectClass="aspect-[16/9]"
+          onFile={setCoverFile}
+          onFocal={setCoverFocal}
+        />
+        {initial.imageUrl && !coverFile && (
+          <label className="flex items-center gap-2 text-sm mt-2">
+            <input type="checkbox" checked={removeCover} onChange={(e) => setRemoveCover(e.target.checked)} />
+            Remove the current cover
+          </label>
         )}
       </div>
       <div className="flex gap-3">
@@ -815,17 +795,16 @@ export function GroupDetail() {
   }
 
   async function commitEdit(data: GroupFormData, openedEvents?: Record<string, OpenedDecision>) {
-    // Upload first. Sending imageUrl: "" before the upload clears the
-    // current cover, and a failed upload would leave it blank.
     if (data.coverFile) {
       await GroupCover.upload(id!, data.coverFile);
+    } else if (data.removeCover) {
+      await GroupCover.remove(id!);
     }
     await Groups.update(id!, {
       name: data.name,
       description: data.description,
       tags: data.tags,
       location: data.location,
-      ...(data.coverFile ? {} : { imageUrl: data.imageUrl }),
       ...(data.coverFocal ? { coverFocal: data.coverFocal } : {}),
       visibility: data.visibility,
       memberLimit: data.memberLimit,

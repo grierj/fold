@@ -13,7 +13,6 @@ export function ProfilePage() {
   const [pictureBusy, setPictureBusy] = useState(false);
   const [pictureStatus, setPictureStatus] = useState<string | null>(null);
   const [pictureError, setPictureError] = useState<string | null>(null);
-  const [avatarURL, setAvatarURL] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -98,26 +97,6 @@ export function ProfilePage() {
     }
   }
 
-  async function fetchPicture(e: React.FormEvent) {
-    e.preventDefault();
-    const url = avatarURL.trim();
-    if (!url) return;
-    setPictureBusy(true);
-    setPictureError(null);
-    setPictureStatus("Fetching picture…");
-    try {
-      await ProfileApi.fetchAvatar(url);
-      setAvatarURL("");
-      await refresh();
-      setPictureStatus("Picture saved.");
-    } catch (err) {
-      setPictureStatus(null);
-      setPictureError(err instanceof Error ? err.message : "Could not fetch that picture");
-    } finally {
-      setPictureBusy(false);
-    }
-  }
-
   async function changeEmail(e: React.FormEvent) {
     e.preventDefault();
     setEmailError(null);
@@ -197,24 +176,8 @@ export function ProfilePage() {
           onFocal={saveFocal}
         />
         <p className="text-xs text-gray-500 mt-3">
-          A new picture is saved as soon as you choose it. You can also paste an image address.
+          A new picture is saved as soon as you choose it.
         </p>
-        <form onSubmit={fetchPicture} className="mt-3 flex gap-2 flex-wrap items-end">
-          <div className="grow min-w-[12rem]">
-            <label className="label" htmlFor="avatar-url">Image URL</label>
-            <input
-              id="avatar-url"
-              className="input"
-              value={avatarURL}
-              onChange={(e) => setAvatarURL(e.target.value)}
-              placeholder="https://…"
-              inputMode="url"
-            />
-          </div>
-          <button type="submit" disabled={pictureBusy || !avatarURL.trim()} className="btn-secondary">
-            {pictureBusy ? "…" : "Fetch"}
-          </button>
-        </form>
         {pictureStatus && <div className="text-green-700 text-sm mt-3">{pictureStatus}</div>}
         {pictureError && <div className="text-red-600 text-sm mt-3">{pictureError}</div>}
         {user.avatarUrl && (
