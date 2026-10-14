@@ -83,6 +83,54 @@ test("opening an invite-only group's event hides the group and the names", async
   await expect(page.getByRole("heading", { name: "Group not found" })).toBeVisible();
 });
 
+test("an admin edits one date, cancels a date, and deletes a church-wide event", async ({ page, request }) => {
+  page.on("dialog", (d) => d.accept());
+  const admin = await apiAs(request, "grier");
+  const mk = async (title: string, days: number) =>
+    ((await admin("POST", "/events", {
+      title,
+      startsLocal: `${futureDate(days)}T19:00`,
+      durationMinutes: 60,
+      tzid: "America/Boise",
+      location: "Hall",
+      visibility: "public",
+      hosts: [],
+      recurrenceRule: "",
+    })) as { event: { id: number } }).event;
+
+  // Per-date edit: only that date changes.
+  const edited = await mk("Date night", 26);
+  await signIn(page, "grier");
+  await page.goto(`/events/${edited.id}`);
+  await page.getByRole("button", { name: "Edit this date" }).click();
+  await page.getByLabel("Location", { exact: true }).fill("Gym");
+  await page.getByRole("button", { name: "Save this date" }).click();
+  await expect(page.getByText(/Gym/)).toBeVisible();
+  await expect(page.getByText(/edited on its own/)).toBeVisible();
+
+  // Cancelling the only date leaves no upcoming dates.
+  const cancelled = await mk("Cancel night", 27);
+  await page.goto(`/events/${cancelled.id}`);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByText("No upcoming dates.")).toBeVisible();
+
+  // Members without manage rights see none of these controls.
+  await signOut(page);
+  await signIn(page, "sam");
+  await page.goto(`/events/${edited.id}`);
+  await expect(page.getByRole("button", { name: "Edit this date" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Delete event" })).toHaveCount(0);
+  await signOut(page);
+
+  // Delete removes the event entirely.
+  await signIn(page, "grier");
+  await page.goto(`/events/${edited.id}`);
+  await page.getByRole("button", { name: "Delete event" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await page.goto(`/events/${edited.id}`);
+  await expect(page.getByRole("heading", { name: "Event not found" })).toBeVisible();
+});
+
 test("a non-admin host can edit the church-wide event they host", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
   const date = futureDate(24);

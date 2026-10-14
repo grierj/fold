@@ -1730,13 +1730,13 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Depends on: M1.2
 - Scope: the account doors in 5.10 (DEC-4): self-signup `AccountRequest`, member "invite a friend", the admin approval queue for accounts (kept, DEC-30), uniform responses with no account enumeration, `self_signup` setting (`off|request`, default `request`), the age gate (under 13 refused; teens routed to `pending_consent`, finished in M1.10), rate limits and honeypot on public forms.
 - Acceptance:
-  - [ ] Self-signup creates a pending `AccountRequest`; nobody can sign in until an admin approves; the person is emailed either way
-  - [ ] A member's "invite a friend" creates a pending request; the friend gets no email until an admin approves
-  - [ ] A request for an email that already has an account gets the same on-screen response as any other; the address is emailed a sign-in and reset hint instead (no account enumeration)
-  - [ ] Choosing "under 13" on any door stores nothing and shows the household explanation
-  - [ ] Requests expire after 30 days
-  - [ ] Public forms are rate limited (10 per IP per hour) and have a honeypot
-  - [ ] An admin's bell item for an adult account request with no warnings has inline Approve; a teen request or one with a duplicate, rate-limit, or honeypot flag shows only Review, and the server refuses inline approval of it (DEC-44)
+  - [x] Self-signup creates a pending `AccountRequest`; nobody can sign in until an admin approves; the person is emailed either way
+  - [x] A member's "invite a friend" creates a pending request; the friend gets no email until an admin approves
+  - [x] A request for an email that already has an account gets the same on-screen response as any other; the address is emailed a sign-in and reset hint instead (no account enumeration)
+  - [x] Choosing "under 13" on any door stores nothing and shows the household explanation
+  - [x] Requests expire after 30 days
+  - [x] Public forms are rate limited (10 per IP per hour) and have a honeypot
+  - [x] An admin's bell item for an adult account request with no warnings has inline Approve; a teen request or one with a duplicate, rate-limit, or honeypot flag shows only Review, and the server refuses inline approval of it (DEC-44)
 - Tests: API tests for each door.
 
 **M1.4 Guest registration**

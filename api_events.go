@@ -36,7 +36,7 @@ func (a *App) churchTimezone() string {
 }
 
 func (a *App) apiSite(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"name": a.siteName(), "timezone": a.churchTimezone()})
+	c.JSON(http.StatusOK, gin.H{"name": a.siteName(), "timezone": a.churchTimezone(), "selfSignup": a.selfSignupMode()})
 }
 
 func (a *App) apiSetTimezone(c *gin.Context) {

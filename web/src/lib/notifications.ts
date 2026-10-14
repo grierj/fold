@@ -187,7 +187,13 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
     setBusy((b) => ({ ...b, [n.id]: true }));
     setRowError((e) => ({ ...e, [n.id]: "" }));
     try {
-      await Api.approveGroup(n.subjectId, n.id);
+      // Inline Approve exists on exactly two kinds (DEC-44); the server
+      // allow-lists both and refuses anything else (6.6).
+      if (n.kind === "account.requested") {
+        await Api.approveAccountRequest(n.subjectId, n.id);
+      } else {
+        await Api.approveGroup(n.subjectId, n.id);
+      }
       patch(n.id, {
         waiting: false, actions: [],
         resolution: { outcome: "approved", by: "", byMe: true, at: new Date().toISOString() },

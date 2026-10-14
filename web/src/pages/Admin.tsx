@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Admin, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
+import { Admin, AdminAccountRequests, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
 import { COMMON_ZONES } from "../lib/eventForm";
-import type { GroupSummary, Member, User } from "../types";
+import type { AccountRequest, GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
@@ -151,9 +151,81 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
   );
 }
 
+function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDone: () => void }) {
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function decide(approve: boolean) {
+    if (!approve && !confirm(`Reject the account request from ${request.name}? They'll be emailed.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (approve) {
+        await AdminAccountRequests.approve(request.id, note || undefined);
+      } else {
+        await AdminAccountRequests.reject(request.id, note || undefined);
+      }
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That didn't work");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const warnings: string[] = [];
+  if (request.accountType === "teen") warnings.push("Teen — needs consent after approval");
+  if (request.warnings.duplicate) warnings.push("Duplicate pending request");
+  if (request.warnings.honeypot) warnings.push("Honeypot filled");
+  if (request.warnings.rateLimited) warnings.push("Many requests from one connection");
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="grow min-w-0">
+          <span className="text-xl font-bold">{request.name}</span>
+          {request.accountType === "teen" && (
+            <span className="ml-2 inline-block rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-800">Teen</span>
+          )}
+          <div className="text-sm text-gray-500 mt-0.5">
+            {request.email}
+            {request.phone ? ` · ${request.phone}` : ""}
+            {request.birthDate ? ` · born ${request.birthDate}` : ""}
+          </div>
+          <div className="text-sm text-gray-500">
+            {request.source === "member_invite"
+              ? `Invited by ${request.requestedByName || "a member"}`
+              : "Self-signup"}{" "}
+            · asked {new Date(request.createdAt).toLocaleDateString()}
+          </div>
+          {request.message && <p className="text-gray-700 mt-3 whitespace-pre-wrap">{request.message}</p>}
+          {warnings.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {warnings.map((w) => (
+                <span key={w} className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">{w}</span>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="mt-4">
+        <label className="label" htmlFor={`note-${request.id}`}>Note (optional, emailed on rejection)</label>
+        <input id={`note-${request.id}`} className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} />
+      </div>
+      {error && <div className="text-red-600 text-sm mt-2">{error}</div>}
+      <div className="flex gap-3 mt-4">
+        <button onClick={() => decide(true)} disabled={busy} className="btn-primary">{busy ? "…" : "Approve"}</button>
+        <button onClick={() => decide(false)} disabled={busy} className="btn-secondary !text-red-600 !border-red-200 hover:!border-red-400">Reject</button>
+      </div>
+    </div>
+  );
+}
+
 function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [deletions, setDeletions] = useState<GroupSummary[]>([]);
+  const [requests, setRequests] = useState<AccountRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -161,10 +233,13 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
     setLoading(true);
     setError(null);
     try {
-      const [pending, requested] = await Promise.all([Admin.pending(), Admin.deletions()]);
+      const [pending, requested, accounts] = await Promise.all([
+        Admin.pending(), Admin.deletions(), AdminAccountRequests.list(),
+      ]);
       setGroups(pending.groups);
       setDeletions(requested.groups);
-      onCount(pending.groups.length + requested.groups.length);
+      setRequests(accounts.requests);
+      onCount(pending.groups.length + requested.groups.length + accounts.requests.length);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load approval queue");
     } finally {
@@ -180,9 +255,17 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
     <div>
       {loading && <div className="text-gray-500">Loading…</div>}
       {error && <div className="text-red-600">{error}</div>}
-      {!loading && !error && groups.length === 0 && deletions.length === 0 && (
+      {!loading && !error && groups.length === 0 && deletions.length === 0 && requests.length === 0 && (
         <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
           Nothing pending. All caught up.
+        </div>
+      )}
+      {requests.length > 0 && (
+        <div className="space-y-4 mb-8">
+          <h2 className="text-xl font-bold">Account requests</h2>
+          {requests.map((r) => (
+            <AccountRequestCard key={r.id} request={r} onDone={load} />
+          ))}
         </div>
       )}
       {groups.length > 0 && (
@@ -717,6 +800,11 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                       {u.status}
                     </span>
                   )}
+                  {u.accountType === "teen" && (
+                    <span className="ml-1 inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-sky-100 text-sky-800">
+                      Teen
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   <button
@@ -934,6 +1022,63 @@ function InviteTab() {
   );
 }
 
+// Self-signup mode (DEC-4, M1.3): request (default) or off. There is
+// no open mode; every request waits for an admin either way.
+function SelfSignupSetting() {
+  const [mode, setMode] = useState<"request" | "off">("request");
+  const [saved, setSaved] = useState<"request" | "off">("request");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    Site.get()
+      .then((s) => {
+        if (!alive) return;
+        setMode(s.selfSignup);
+        setSaved(s.selfSignup);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setOk(false);
+    try {
+      const r = await AdminAccountRequests.setSelfSignup(mode);
+      setMode(r.selfSignup);
+      setSaved(r.selfSignup);
+      setOk(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the setting");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="mb-6 flex flex-wrap items-end gap-3">
+      <div>
+        <label className="label" htmlFor="self-signup">Self-signup</label>
+        <select id="self-signup" className="input w-full sm:!w-[26rem]" value={mode} onChange={(e) => { setMode(e.target.value as "request" | "off"); setOk(false); }}>
+          <option value="request">On — requests wait for approval</option>
+          <option value="off">Off — office creates accounts</option>
+        </select>
+        <p className="text-sm text-gray-500 mt-1">People ask for an account on /join. Turning this off never removes existing accounts.</p>
+      </div>
+      <button type="submit" className="btn-secondary" disabled={busy || mode === saved}>{busy ? "Saving…" : "Save self-signup"}</button>
+      {ok && <span className="text-sm text-gray-600">Saved</span>}
+      {error && <span className="text-sm text-red-600">{error}</span>}
+    </form>
+  );
+}
+
 export function AdminPage() {
   const { user, loading: authLoading, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -977,6 +1122,7 @@ export function AdminPage() {
     <div className="max-w-5xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-extrabold mb-6">Admin</h1>
       <ChurchTimezone />
+      <SelfSignupSetting />
       <p className="mb-6">
         <Link to="/events/new" className="text-brand font-semibold">
           Schedule a church-wide event

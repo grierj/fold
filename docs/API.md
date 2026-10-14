@@ -81,9 +81,12 @@ that account ends. An admin password reset ends all of that account's
 sessions, including the one that requested it.
 
 `user`: `{id, name, displayName, email, phone, avatarUrl,
-avatarFocalX, avatarFocalY, role, status, hasPassword}`. `status` is
-`active`, `invited` (no password yet), or `disabled` (`guest` and
-`pending_consent` come later). `displayName` falls back to name in the UI. `avatarUrl` is a
+avatarFocalX, avatarFocalY, role, status, hasPassword, accountType,
+birthDate?}`. `status` is
+`active`, `invited` (no password yet), `pending_consent` (a teen waiting
+for consent, M1.10), or `disabled` (`guest` comes in M1.4).
+`accountType` is `adult` or `teen` (DEC-8); `birthDate` (`YYYY-MM-DD`)
+is present for teens. `displayName` falls back to name in the UI. `avatarUrl` is a
 `/uploads/...` URL, or empty when no avatar is set. `avatarFocalX/Y` are
 0-100 percentages for CSS `object-position`.
 
@@ -266,10 +269,62 @@ audited as `membership.added_over_limit`.
 
 `invitation`: `{id, email, name, groupId?, groupName?, expiresAt}`.
 
+### Account requests
+
+```
+POST /api/v1/account-requests              → 200 {message} | 400 | 403 | 429  (public)
+POST /api/v1/account-requests/invite-friend → 200 {message} | 400 | 403 | 409 | 429  (auth)
+POST /api/v1/account-requests/confirm      {token, password} → 200 {user, pendingConsent?} | 400  (public)
+GET  /api/v1/admin/account-requests?status=pending → {requests: [accountRequest]}  (admin)
+POST /api/v1/admin/account-requests/:id/approve → 200 {request, userId}  (admin)
+     body: {note?, fromNotification?}
+POST /api/v1/admin/account-requests/:id/reject  → 200 {request, userId: 0}  (admin)
+     body: {note?, fromNotification?} — rejection is never inline (403 with fromNotification)
+PUT  /api/v1/admin/self-signup             {mode: "request"|"off"} → 200 {selfSignup}  (admin)
+```
+
+Self-signup and invite-a-friend (M1.3, 5.10, DEC-4) create a pending
+`AccountRequest`; only an admin approves. There is no open mode: the
+`self_signup` setting is `request` (default) or `off`, and `off` refuses
+the public door with 403 (the member door still works). Create body:
+`{name, email, phone?, ageBand: "adult"|"teen"|"under13", birthDate?,
+message?, website?}`. `website` is a honeypot people never fill in.
+
+The age gate is on every door (DEC-8): `under13` stores nothing and
+answers 400 with the household explanation; `teen` needs a `birthDate`
+aged 13–17 and creates a teen request; `adult` needs no date (adults
+only confirm 18+, and any date sent is dropped). Approval creates the
+account (`invited` for adults, `pending_consent` for teens until M1.10
+consent) and emails a single-use set-password link (24 hours) to
+`/set-password`; approval creates the account only, never a group
+membership. Confirming sets the password: adults sign in, teens stay
+`pending_consent` (`pendingConsent: true`, no session). Rejection emails
+the person too, with the admin's optional note. Requests expire after
+30 days (checked lazily in the queue and daily); deciding an expired
+request answers 409.
+
+No enumeration (10.1): a self-signup for an email that already has an
+account stores nothing, answers the same `200 {"message":"Thanks —
+check your email for next steps."}`, and emails that address a sign-in
+and reset hint instead. A member inviting an address that already has
+an account gets 409, like an invitation. Public forms allow 10 submits
+per IP per hour (429 past that); a duplicate pending request, a filled
+honeypot, or 5+ submits in the hour flags the stored row.
+
+Admins get a waiting bell item per request. Only a clean adult request
+carries inline Approve (DEC-44): a teen or flagged request shows Review
+only, and approving it with `fromNotification` answers 403 whatever the
+client sends. A lost inline race answers 409 with `resolvedBy`.
+
+`accountRequest`: `{id, name, email, phone, accountType, birthDate?,
+message, source, requestedBy?, requestedByName?, groupId?, status,
+hasWarnings, warnings: {duplicate, honeypot, rateLimited},
+decisionNote, expiresAt, createdAt, decidedAt?}`.
+
 ### Site
 
 ```
-GET /api/v1/site → {name, timezone}   (public)
+GET /api/v1/site → {name, timezone, selfSignup}   (public)
 PUT /api/v1/admin/timezone → 200 {timezone}   (admin)
     body: {timezone} — an IANA name, for example America/Denver
 ```

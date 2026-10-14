@@ -61,6 +61,25 @@ const (
 	UserDisabled       = "disabled"
 )
 
+// Account types (DEC-8). Nobody under 13 gets a User row.
+const (
+	AccountAdult = "adult"
+	AccountTeen  = "teen"
+)
+
+// Account request sources and statuses (5.3, DEC-4, M1.3).
+const (
+	RequestSelfSignup   = "self_signup"
+	RequestMemberInvite = "member_invite"
+	RequestGuestUpgrade = "guest_upgrade"
+
+	RequestPending   = "pending"
+	RequestApproved  = "approved"
+	RequestRejected  = "rejected"
+	RequestExpired   = "expired"
+	RequestWithdrawn = "withdrawn"
+)
+
 type User struct {
 	ID uint `gorm:"primaryKey"`
 	// Email is the login (DEC-23, C16): citext, so any letter case matches.
@@ -79,6 +98,11 @@ type User struct {
 	// Status is active, invited, guest, pending_consent or disabled (a CHECK
 	// enforces it).
 	Status string `gorm:"not null;default:active"`
+	// AccountType is adult or teen (DEC-8). BirthDate is required for teens
+	// (so Fold knows when they turn 18) and optional for adults, who only
+	// confirm they are 18 or older (5.3).
+	AccountType string     `gorm:"not null;default:adult"`
+	BirthDate   *time.Time `gorm:"type:date"`
 	// SessionVersion is bumped when the password, email, role or status
 	// changes, so older cookies stop working (10.1).
 	SessionVersion int `gorm:"not null;default:0"`
@@ -301,6 +325,7 @@ type LoginThrottle struct {
 const (
 	TokenPasswordReset = "password_reset"
 	TokenEmailVerify   = "email_verify"
+	TokenAccountSetup  = "account_setup"
 )
 
 // AccountToken is a single-use hashed token for a password reset or an
@@ -382,6 +407,47 @@ type NotificationDelivery struct {
 	CreatedAt         time.Time `gorm:"not null;default:now()"`
 }
 
+// RequestFlags are the abuse warnings stored with an account request at
+// creation (DEC-44): they decide whether an admin may approve it inline
+// from the bell. They never reach the requester.
+type RequestFlags struct {
+	Duplicate   bool `json:"duplicate"`
+	Honeypot    bool `json:"honeypot"`
+	RateLimited bool `json:"rateLimited"`
+}
+
+// HasWarnings reports whether any flag is set.
+func (f RequestFlags) HasWarnings() bool { return f.Duplicate || f.Honeypot || f.RateLimited }
+
+// AccountRequest is one request for an account (5.3, DEC-4, M1.3):
+// self-signup, a member's invite-a-friend, or (M1.4) a guest upgrade.
+// Only admins decide it. Approval creates the User and emails a
+// set-password link; a teen's account starts pending_consent (DEC-8).
+// GroupID is reserved for the guest-upgrade door (M1.4); M1.3 approvals
+// create the account only and never join a group.
+type AccountRequest struct {
+	ID           uint       `gorm:"primaryKey"`
+	Name         string     `gorm:"not null"`
+	Email        string     `gorm:"type:citext;not null;index"`
+	Phone        string     `gorm:"not null;default:''"`
+	AccountType  string     `gorm:"not null;default:adult"` // adult | teen
+	BirthDate    *time.Time `gorm:"type:date"`
+	Message      string     `gorm:"type:text;not null;default:''"`
+	Source       string     `gorm:"not null"` // self_signup | member_invite | guest_upgrade
+	RequestedBy  *uint      `gorm:"index"`
+	GroupID      *uint      `gorm:"index"`
+	Status       string     `gorm:"not null;default:pending;index"` // pending | approved | rejected | expired | withdrawn
+	DecidedBy    *uint
+	DecidedAt    *time.Time
+	DecisionNote string `gorm:"not null;default:''"`
+	// Flags holds the RequestFlags JSON (duplicate, honeypot, rateLimited).
+	Flags     string    `gorm:"type:jsonb;not null;default:'{}'"`
+	IP        string    `gorm:"not null;default:''"`
+	ExpiresAt time.Time `gorm:"not null;index"`
+	CreatedAt time.Time `gorm:"not null;default:now()"`
+	UpdatedAt time.Time `gorm:"not null;default:now()"`
+}
+
 // All lists every model, in dependency order. The drift check and the test
 // helpers use it; a new model must be added here and to a migration.
 func All() []any {
@@ -389,6 +455,7 @@ func All() []any {
 		&User{}, &Group{}, &Event{}, &EventHost{}, &EventOccurrence{},
 		&Membership{}, &Registration{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
+		&AccountRequest{},
 	}
 }
 

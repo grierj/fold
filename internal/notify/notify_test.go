@@ -63,14 +63,18 @@ func TestEveryKindRendersNoContactDetails(t *testing.T) {
 }
 
 func TestOnlyApproveGroupIsAllowListed(t *testing.T) {
+	// The v1 allow-list (5.12, DEC-44): approve a new group, and approve
+	// a clean adult account request. Nothing else changes state inline.
+	allowed := map[string]bool{GroupPending: true, AccountRequested: true}
 	for _, k := range Kinds() {
 		for _, a := range k.Actions {
-			if k.Key != GroupPending || a.Key != ActionApproveGroup {
+			if !allowed[k.Key] || a.Key != ActionApproveGroup {
 				t.Errorf("unexpected inline action %s on %s", a.Key, k.Key)
 			}
 		}
 	}
-	if !Allows(GroupPending, ActionApproveGroup) || Allows(GroupPending, "reject") || Allows(LeadershipChanged, ActionApproveGroup) || Allows("nope", ActionApproveGroup) {
+	if !Allows(GroupPending, ActionApproveGroup) || !Allows(AccountRequested, ActionApproveAccount) ||
+		Allows(GroupPending, "reject") || Allows(LeadershipChanged, ActionApproveGroup) || Allows("nope", ActionApproveGroup) {
 		t.Fatal("Allows")
 	}
 }

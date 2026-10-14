@@ -99,6 +99,30 @@ const (
 	// M1.2). Target is the user; meta has oldEmail and newEmail.
 	EmailChangeRequested = "email.change_requested"
 	EmailChanged         = "email.changed"
+
+	// AccountRequested: a self-signup or member invite-a-friend created
+	// an account request (DEC-4, M1.3). Target is the request; meta has
+	// source, accountType, and hasWarnings (never the email or phone).
+	AccountRequested = "account.requested"
+
+	// AccountApproved / AccountRejected: an admin decided an account
+	// request (DEC-4). Target is the request; meta has userId (created
+	// or already existing) on approval and the optional decisionNote is
+	// kept on the request row, not here.
+	AccountApproved = "account.approved"
+	AccountRejected = "account.rejected"
+
+	// AccountExpired: a pending request passed its 30-day expiry
+	// (DEC-4). Target is the request; the actor is nil (system).
+	AccountExpired = "account.expired"
+
+	// AccountSetupCompleted: an approved person set their first
+	// password from the emailed link. Target is the user.
+	AccountSetupCompleted = "account.setup_completed"
+
+	// SelfSignupChanged: an admin turned self-signup between request
+	// and off (DEC-4). Target type is setting; meta has mode.
+	SelfSignupChanged = "setting.self_signup_changed"
 )
 
 // Entry is one audit record. Actor is nil for system actions.

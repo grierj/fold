@@ -44,6 +44,11 @@ type Msg struct {
 	DedupeKey   string         // optional: a second Send with it is a no-op
 	GroupKey    string         // batching key for kinds with a BatchWindow
 	ExpiresAt   *time.Time     // after this the row shows under Archived only
+	// SuppressActions drops the kind's inline actions for this row
+	// (DEC-44: a teen or flagged account request is Review-only). The
+	// endpoint still checks eligibility itself; this only hides the
+	// button.
+	SuppressActions bool
 }
 
 // ErrBadLink: a link that isn't an internal path.
@@ -80,7 +85,7 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 		data = string(b)
 	}
 	actions := "[]"
-	if len(k.Actions) > 0 {
+	if len(k.Actions) > 0 && !m.SuppressActions {
 		b, _ := json.Marshal(k.Actions)
 		actions = string(b)
 	}

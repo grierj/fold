@@ -23,6 +23,7 @@ const (
 	OccurrenceCancelled   = "event.cancelled"
 	RegistrationCancelled = "registration.cancelled"
 	VisibilityOverride    = "event.visibility_override"
+	AccountRequested      = "account.requested"
 )
 
 // Action is an inline button. Only allow-listed kinds carry one (6.6).
@@ -33,6 +34,11 @@ type Action struct {
 
 // ActionApproveGroup approves a pending group from the bell.
 const ActionApproveGroup = "approve"
+
+// ActionApproveAccount approves an adult account request with no
+// warnings from the bell (DEC-44). Send suppresses it per row for teen
+// or flagged requests; the endpoint checks again (policy).
+const ActionApproveAccount = "approve"
 
 // Vars are the only things a kind can say. Callers fill in names and places
 // the recipient may see; empty means "don't say".
@@ -48,6 +54,7 @@ type Vars struct {
 	GroupVis   string // the group's visibility, in words
 	Note       string // a short reason the actor gave
 	Count      int    // set by Send: how many events this row covers
+	Teen       bool   // the subject is a teen account (badge in words; no contact details ever)
 }
 
 // Kind is one registry entry (5.12).
@@ -190,6 +197,25 @@ func init() {
 				body += " " + v.Note
 			}
 			return "Event opened up: " + or(v.Event, "an event"), body
+		},
+	})
+	register(Kind{
+		// An account request waits on an admin (DEC-4, DEC-44). Inline
+		// Approve is emitted only for a clean adult request: Send is
+		// told to suppress it for teens and flagged requests, and the
+		// approval endpoint checks policy again. The email variant
+		// names nobody (minors may be involved) and only links in.
+		Key: AccountRequested, Category: CatAdmin, Waiting: true, AllowEmail: true,
+		Actions: []Action{{Key: ActionApproveAccount, Label: "Approve"}},
+		Render: func(v Vars) (string, string) {
+			who := or(v.Person, "Someone")
+			if v.Teen {
+				who += " (teen)"
+			}
+			return who + " requested an account", or(v.Change, "Self-signup") + ". Needs an admin's approval."
+		},
+		RenderEmailSafe: func(Vars) (string, string) {
+			return "New account request in Fold", "Someone asked for an account. Sign in to review it."
 		},
 	})
 }

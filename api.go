@@ -44,6 +44,8 @@ type userJSON struct {
 	Role         string  `json:"role"`
 	Status       string  `json:"status"`
 	HasPassword  bool    `json:"hasPassword"`
+	AccountType  string  `json:"accountType"`
+	BirthDate    string  `json:"birthDate,omitempty"`
 }
 
 func (a *App) toUserJSON(u *models.User) userJSON {
@@ -51,12 +53,17 @@ func (a *App) toUserJSON(u *models.User) userJSON {
 	if u.AvatarKey != "" {
 		avatarURL = a.Uploads.URL(u.AvatarKey)
 	}
+	accountType := u.AccountType
+	if accountType == "" {
+		accountType = models.AccountAdult
+	}
 	return userJSON{
 		ID: u.ID, Name: u.Name,
 		DisplayName: u.DisplayName, Email: u.Email, Phone: u.Phone,
 		AvatarURL:    avatarURL,
 		AvatarFocalX: u.AvatarFocalX, AvatarFocalY: u.AvatarFocalY,
 		Role: u.Role, Status: u.Status, HasPassword: u.PasswordHash != nil,
+		AccountType: accountType, BirthDate: formatBirthDate(u.BirthDate),
 	}
 }
 
@@ -277,7 +284,10 @@ func asPerson(u *models.User) *policy.Person {
 		return nil
 	}
 	// A disabled admin has no admin powers (and can't sign in anyway).
-	return &policy.Person{ID: u.ID, Admin: u.Role == models.RoleAdmin && u.Status == models.UserActive}
+	return &policy.Person{
+		ID: u.ID, Admin: u.Role == models.RoleAdmin && u.Status == models.UserActive,
+		Teen: u.AccountType == models.AccountTeen,
+	}
 }
 
 func asGroup(g *models.Group) policy.Group {
@@ -413,6 +423,16 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/invitations", a.apiAuth(), a.apiCreateInvitation)
 	v1.GET("/invitations/:token", a.apiGetInvitation)
 	v1.POST("/invitations/accept", a.apiAcceptInvitation)
+
+	// Account requests (M1.3): self-signup (public) and member
+	// invite-a-friend create a pending request an admin decides.
+	v1.POST("/account-requests", a.apiCreateAccountRequest)
+	v1.POST("/account-requests/invite-friend", a.apiAuth(), a.apiInviteFriend)
+	v1.POST("/account-requests/confirm", a.apiConfirmAccountSetup)
+	v1.GET("/admin/account-requests", a.apiAuth(), a.apiAdmin(), a.apiListAccountRequests)
+	v1.POST("/admin/account-requests/:id/approve", a.apiAuth(), a.apiAdmin(), a.apiApproveAccountRequest)
+	v1.POST("/admin/account-requests/:id/reject", a.apiAuth(), a.apiAdmin(), a.apiRejectAccountRequest)
+	v1.PUT("/admin/self-signup", a.apiAuth(), a.apiAdmin(), a.apiSetSelfSignup)
 
 	// Groups.
 	v1.GET("/groups", a.optionalUser(), a.apiListGroups)

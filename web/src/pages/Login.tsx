@@ -84,11 +84,11 @@ export function Login() {
         </p>
       </form>
       <p className="text-sm text-gray-500 mt-4 text-center">
-        New here? An account is created by your church admin, or{" "}
-        <Link to="/groups/new" className="text-brand font-semibold">
-          start a group
+        New here?{" "}
+        <Link to="/join" className="text-brand font-semibold">
+          Request an account
         </Link>{" "}
-        after logging in.
+        — an admin reviews every request.
       </p>
     </div>
   );
