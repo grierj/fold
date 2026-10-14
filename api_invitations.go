@@ -282,8 +282,16 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			return err
 		}
 		now := time.Now().UTC()
-		if err := tx.Model(inv).Update("accepted_at", now).Error; err != nil {
-			return err
+		// Claim the invitation atomically: a concurrent accept of the same
+		// token must lose here, not rely on the users.email unique index.
+		res := tx.Model(&models.Invitation{}).
+			Where("id = ? AND accepted_at IS NULL", inv.ID).
+			Update("accepted_at", now)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errTokenInvalid // another accept claimed it first
 		}
 		meta := map[string]any{"userId": u.ID}
 		if group != nil {

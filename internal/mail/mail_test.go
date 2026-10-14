@@ -3,11 +3,19 @@ package mail
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
+	"math/big"
 	"net"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"fold/internal/testdb"
 )
@@ -154,6 +162,215 @@ func TestFromAddress(t *testing.T) {
 	}
 	if got := fromAddress("noreply@example.com"); got != "noreply@example.com" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// testCert makes a self-signed certificate for 127.0.0.1, for the TLS
+// fake SMTP servers below.
+func testCert(t *testing.T) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:     []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// fakeTLSSMTP serves one SMTP session, optionally with implicit TLS
+// (TLS from the first byte) or a STARTTLS upgrade after the first EHLO.
+type fakeTLSSMTP struct {
+	ln   net.Listener
+	cert tls.Certificate
+	from string
+	to   string
+	data string
+	done chan struct{}
+}
+
+func newFakeTLSSMTP(t *testing.T, implicit bool) *fakeTLSSMTP {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeTLSSMTP{ln: ln, cert: testCert(t), done: make(chan struct{})}
+	go f.serve(implicit)
+	t.Cleanup(func() { ln.Close() })
+	return f
+}
+
+// rootPool trusts the fake server's self-signed certificate, so tests
+// exercise the sender's real certificate verification (ServerName check
+// included) instead of skipping it.
+func (f *fakeTLSSMTP) rootPool(t *testing.T) *x509.CertPool {
+	t.Helper()
+	leaf, err := x509.ParseCertificate(f.cert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(leaf)
+	return pool
+}
+
+func (f *fakeTLSSMTP) addr() string { return f.ln.Addr().String() }
+
+func (f *fakeTLSSMTP) serve(implicit bool) {
+	defer close(f.done)
+	conn, err := f.ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	tlsCfg := &tls.Config{Certificates: []tls.Certificate{f.cert}}
+	if implicit {
+		tconn := tls.Server(conn, tlsCfg)
+		if err := tconn.Handshake(); err != nil {
+			return
+		}
+		conn = tconn
+	}
+	r := bufio.NewReader(conn)
+	w := bufio.NewWriter(conn)
+	line := func() string {
+		s, err := r.ReadString('\n')
+		if err != nil {
+			return ""
+		}
+		return strings.TrimRight(s, "\r\n")
+	}
+	say := func(s string) { fmt.Fprintf(w, "%s\r\n", s); w.Flush() }
+	say("220 fake ESMTP")
+	tlsActive := implicit
+	for {
+		cmd := line()
+		upper := strings.ToUpper(cmd)
+		switch {
+		case strings.HasPrefix(upper, "EHLO"), strings.HasPrefix(upper, "HELO"):
+			if !tlsActive {
+				say("250-fake")
+				say("250 STARTTLS")
+			} else {
+				say("250 fake")
+			}
+		case upper == "STARTTLS":
+			say("220 go ahead")
+			tconn := tls.Server(conn, tlsCfg)
+			if err := tconn.Handshake(); err != nil {
+				return
+			}
+			conn = tconn
+			r = bufio.NewReader(conn)
+			w = bufio.NewWriter(conn)
+			tlsActive = true
+		case strings.HasPrefix(upper, "MAIL FROM:"):
+			f.from = strings.TrimPrefix(cmd, "MAIL FROM:")
+			say("250 ok")
+		case strings.HasPrefix(upper, "RCPT TO:"):
+			f.to = strings.TrimPrefix(cmd, "RCPT TO:")
+			say("250 ok")
+		case upper == "DATA":
+			say("354 go ahead")
+			var b strings.Builder
+			for {
+				l := line()
+				if l == "." {
+					break
+				}
+				b.WriteString(l + "\n")
+			}
+			f.data = b.String()
+			say("250 queued")
+		case upper == "QUIT":
+			say("221 bye")
+			return
+		default:
+			say("502 unimplemented")
+		}
+	}
+}
+
+func testSender(t *testing.T, rawURL string, fake *fakeTLSSMTP) *SMTPSender {
+	t.Helper()
+	s, err := NewSMTP(rawURL, "Fold <noreply@example.com>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Verify like production (ServerName = host), trusting the fake's
+	// self-signed certificate as the root.
+	s.tlsConfig = &tls.Config{RootCAs: fake.rootPool(t), ServerName: "127.0.0.1", MinVersion: tls.VersionTLS12}
+	return s
+}
+
+// The smtp:// sender must upgrade with STARTTLS when the server offers it
+// (before the fix it passed a nil TLS config and every upgrade failed).
+func TestSMTPStartTLS(t *testing.T) {
+	fake := newFakeTLSSMTP(t, false)
+	s := testSender(t, "smtp://"+fake.addr(), fake)
+	if err := s.Send(context.Background(), Message{
+		To: "sam@example.com", Subject: "Hello", Text: "plain body",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-fake.done
+	if !strings.Contains(fake.data, "Subject: Hello") || !strings.Contains(fake.data, "plain body") {
+		t.Fatalf("data: %q", fake.data)
+	}
+}
+
+// The smtps:// sender must speak TLS from the first byte (before the fix
+// it sent plaintext SMTP to the TLS port and could never deliver).
+func TestSMTPImplicitTLS(t *testing.T) {
+	fake := newFakeTLSSMTP(t, true)
+	s := testSender(t, "smtps://"+fake.addr(), fake)
+	if err := s.Send(context.Background(), Message{
+		To: "sam@example.com", Subject: "Hello", Text: "plain body",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-fake.done
+	if !strings.Contains(fake.to, "sam@example.com") || !strings.Contains(fake.data, "plain body") {
+		t.Fatalf("to=%q data=%q", fake.to, fake.data)
+	}
+}
+
+// A newline in a header value must never reach the wire: recipients are
+// rejected, and subjects have CR/LF flattened.
+func TestSMTPHeaderInjection(t *testing.T) {
+	s, err := NewSMTP("smtp://127.0.0.1:1", "Fold <noreply@example.com>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = s.Send(context.Background(), Message{
+		To: "a@example.com\r\nBcc: victim@example.com", Subject: "Hi", Text: "x",
+	})
+	if err == nil || !strings.Contains(err.Error(), "newline") {
+		t.Fatalf("newline recipient accepted: %v", err)
+	}
+	fake := newFakeTLSSMTP(t, true)
+	s2 := testSender(t, "smtps://"+fake.addr(), fake)
+	if err := s2.Send(context.Background(), Message{
+		To: "sam@example.com", Subject: "Hi\r\nBcc: victim@example.com", Text: "body",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-fake.done
+	if strings.Contains(fake.data, "\nBcc:") || !strings.Contains(fake.data, "Subject: Hi  Bcc:") {
+		t.Fatalf("subject not flattened: %q", fake.data)
 	}
 }
 

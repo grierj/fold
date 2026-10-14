@@ -8,6 +8,7 @@ package mail
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -116,6 +117,18 @@ type SMTPSender struct {
 	password string
 	from     string
 	implicit bool
+	// tlsConfig overrides the TLS client config (tests only); production
+	// verifies the server certificate against host.
+	tlsConfig *tls.Config
+}
+
+// tlsCfg is the TLS client config for this server: certificate verification
+// against the configured host, TLS 1.2 or newer.
+func (s *SMTPSender) tlsCfg() *tls.Config {
+	if s.tlsConfig != nil {
+		return s.tlsConfig
+	}
+	return &tls.Config{ServerName: s.host, MinVersion: tls.VersionTLS12}
 }
 
 // NewSMTP parses rawURL (a FOLD_SMTP_URL value) into a sender.
@@ -161,19 +174,45 @@ func NewSMTP(rawURL, from string) (*SMTPSender, error) {
 	}, nil
 }
 
+// headerSafe reports whether v may appear in a message header: no CR or
+// LF, which would let a crafted value inject extra headers.
+func headerSafe(v string) bool {
+	return !strings.ContainsAny(v, "\r\n")
+}
+
 // Send delivers m through the SMTP server.
 func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 	if strings.TrimSpace(m.To) == "" {
 		return errors.New("mail: no recipient")
 	}
+	if !headerSafe(m.To) {
+		return errors.New("mail: recipient contains a newline")
+	}
 	from := s.from
 	if from == "" {
 		return errors.New("mail: no from address (set FOLD_EMAIL_FROM)")
 	}
+	if !headerSafe(from) {
+		return errors.New("mail: from address contains a newline")
+	}
+	// Subjects come from templates that interpolate names; a newline in one
+	// must never become a header boundary.
+	subject := strings.NewReplacer("\r", " ", "\n", " ").Replace(m.Subject)
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", s.addr)
 	if err != nil {
 		return fmt.Errorf("mail: dial: %w", err)
+	}
+	// A stuck server must not block the calling handler forever.
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	if s.implicit {
+		// smtps://: TLS from the first byte, before any SMTP greeting.
+		tconn := tls.Client(conn, s.tlsCfg())
+		if err := tconn.HandshakeContext(ctx); err != nil {
+			conn.Close()
+			return fmt.Errorf("mail: tls: %w", err)
+		}
+		conn = tconn
 	}
 	c, err := smtp.NewClient(conn, s.host)
 	if err != nil {
@@ -183,7 +222,7 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 	defer c.Close()
 	if !s.implicit {
 		if ok, _ := c.Extension("STARTTLS"); ok {
-			if err := c.StartTLS(nil); err != nil {
+			if err := c.StartTLS(s.tlsCfg()); err != nil {
 				return fmt.Errorf("mail: starttls: %w", err)
 			}
 		}
@@ -208,7 +247,7 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 		return fmt.Errorf("mail: data: %w", err)
 	}
 	if _, err := fmt.Fprintf(w, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n",
-		from, m.To, m.Subject, m.Text); err != nil {
+		from, m.To, subject, m.Text); err != nil {
 		w.Close()
 		return fmt.Errorf("mail: write: %w", err)
 	}
