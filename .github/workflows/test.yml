@@ -28,6 +28,8 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: make lint
       # Known vulnerabilities in reachable Go code (DEC-37). Pinned version.
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
@@ -85,3 +87,14 @@ jobs:
           name: playwright-traces
           path: web/test-results/
           retention-days: 7
+
+  # DigitalOcean provisioner: shellcheck plus a dry-run that must not
+  # change the container it runs in. No DigitalOcean API calls.
+  provision:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: make lint-sh
+      - run: make provision-dry-run

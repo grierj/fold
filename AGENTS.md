@@ -196,6 +196,13 @@ CLI (C11): `fold` (same as `fold serve`), `fold healthcheck`,
   `/fold healthcheck` because distroless has no shell or curl.
 - A live `docker compose up` is still the check that Caddy, TLS, and the
   volumes work together.
+- Production is one VPS with this Compose stack. DigitalOcean steps and
+  the idempotent hardener live in `docs/DEPLOY-DIGITALOCEAN.md` and
+  `deploy/digitalocean/provision.sh`. The church owns the droplet, DNS,
+  and email account. SMS is optional (Telnyx when they want it). The
+  script never calls `doctl` and never creates droplets, firewalls,
+  snapshots, backup plans, or Spaces buckets. Postgres is the Compose
+  `db` service. Run `provision.sh --dry-run` before a real run.
 
 ## SMS (Phase 2, not yet)
 

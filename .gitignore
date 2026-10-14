@@ -23,6 +23,8 @@ go.work.sum
 
 # env file
 .env
+# Offsite backup credentials (deploy/digitalocean/backup.env.example is the template).
+backup.env
 
 # Binary output from go build
 fold

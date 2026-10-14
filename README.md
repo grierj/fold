@@ -17,6 +17,11 @@ docker compose up --build -d
 Open `https://<DOMAIN>`. The first visit shows a setup wizard to create the
 church site and its admin account.
 
+A single DigitalOcean droplet is the supported production install.
+`docs/DEPLOY-DIGITALOCEAN.md` and `deploy/digitalocean/provision.sh`
+harden Ubuntu and start this Compose stack. The script never creates
+droplets or other DigitalOcean resources.
+
 Postgres data is the `pgdata` volume. Avatars and cover photos are the
 `uploads` volume, mounted at `/data` in the app container. Rebuilding the
 image keeps both. Fold runs only on PostgreSQL and refuses to start without
@@ -51,6 +56,9 @@ docker run --rm -v fold_uploads:/data:ro -v "$PWD":/backup alpine \
 
 Restore by loading the SQL dump with `psql` and extracting the archive onto
 the same volume while the app is stopped.
+
+On a droplet, `/opt/fold/backup.sh` does the nightly `pg_dump` and an
+optional encrypted offsite copy. See `docs/DEPLOY-DIGITALOCEAN.md`.
 
 ## Local development
 

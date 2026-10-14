@@ -3,7 +3,7 @@
 DEV_COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 DEV_DATABASE_URL := postgres://fold:fold@localhost:5432/fold?sslmode=disable
 
-.PHONY: dev test lint devdb e2e
+.PHONY: dev test lint devdb e2e lint-sh provision-dry-run
 
 # Start the dev database and wait until it accepts connections.
 devdb:
@@ -38,6 +38,15 @@ e2e:
 		cd web && npx playwright test; \
 	fi
 
-lint:
+lint: lint-sh
 	go vet ./...
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+
+# Shell scripts under deploy/digitalocean (provision.sh, backup.sh).
+lint-sh:
+	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required (apt-get install shellcheck)"; exit 1; }
+	shellcheck deploy/digitalocean/provision.sh deploy/digitalocean/backup.sh deploy/digitalocean/dry-run-test.sh deploy/digitalocean/dry-run-inside.sh
+
+# provision.sh --dry-run inside a fresh Ubuntu container. Needs Docker.
+provision-dry-run:
+	bash deploy/digitalocean/dry-run-test.sh
