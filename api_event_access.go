@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -363,6 +364,8 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 	var body struct {
 		Visibility string `json:"visibility"`
 		Reason     string `json:"reason"`
+		// Confirm acknowledges that registrants will be cancelled (the preview).
+		Confirm bool `json:"confirm"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")
@@ -393,6 +396,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		action = audit.VisibilityOverride
 	}
 	oldVis, oldOpened := ev.Visibility, ev.LeaderOpened
+	var impact visibilityImpactJSON
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
@@ -400,6 +404,9 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		}
 		// More private: the same cancel-and-notify as a group tightening (DEC-48).
 		if policy.Openness(vis) < policy.Openness(locked.Visibility) {
+			if impact = eventImpactOf(tx, &locked, vis); !body.Confirm && len(impact.Tightened) == 1 && impact.Tightened[0].Registrants > 0 {
+				return errNeedDecision
+			}
 			if err := cancelLosers(c, tx, &locked, vis, time.Now().UTC()); err != nil {
 				return err
 			}
@@ -426,6 +433,14 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 			Meta: meta, IP: c.ClientIP(),
 		})
 	})
+	if errors.Is(err, errNeedDecision) {
+		c.JSON(http.StatusConflict, gin.H{
+			"error":         "Confirm cancelling the registrations of people who can no longer see this event",
+			"needsDecision": true,
+			"impact":        impact,
+		})
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not update visibility")
 		return

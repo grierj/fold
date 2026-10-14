@@ -202,6 +202,14 @@ It is **not built yet**, and none is required to run Fold. When you build it:
 put it behind a `Notifier` interface (`internal/notify/`), broadcast-only v1,
 replies route to the group leader. Don't start early.
 
+## Consistency
+
+Similar things behave the same way (Grier, Oct 2026). When one path gets a
+rule (a preview, a confirmation, an audit row, a notice), give its siblings
+the same rule with the same API shape and UI component, or write down why
+not. Example: group and single-event tightening share `visibility-impact`,
+`cancelLosers`, and `GroupVisibilityReview`.
+
 ## Rules and what enforces them
 
 Add a row when Grier corrects a repeat mistake; drop it once the mistake
@@ -211,6 +219,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 |------|-------------|
 | Every list of event dates hides events the viewer can't see | Structure: `occurrencesForEvents` filters with `policy.CanSeeEvent`; `TestNarrowEventHiddenFromGroupLists` |
 | Event and notice output never shows a hidden group's name, place or id (PR #41) | `a.groupShownTo` plus `TestGroupDetailsGoThroughGroupShownTo` (lines needing an exception end with `// group-ok: <reason>`) |
+| Making a group or one event more private previews the cancellations and needs confirmation | `visibility-impact` for both, a 409 without `confirm`; `TestEventMorePrivateCancelsShutOutRegistrants`, `e2e/event-visibility.spec.ts` |
 | Making an event more private cancels and tells people it shuts out, whether the group or the event changed | `cancelLosers` in both paths; `TestGroupMorePrivateTightensAndCancels`, `TestEventMorePrivateCancelsShutOutRegistrants` |
 | `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
 | State-changing routes outside CSRF are listed exactly | `TestCSRFExemptRoutesAreExact` |
