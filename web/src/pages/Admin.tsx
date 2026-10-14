@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
-import { COMMON_ZONES } from "../lib/eventForm";
+import { ZoneSelect } from "../components/ZoneSelect";
 import type { AccountRequest, GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Avatar } from "../components/Avatar";
@@ -895,25 +895,18 @@ function ChurchTimezone() {
         <label className="label" htmlFor="church-tz">
           Church time zone
         </label>
-        <input
+        <ZoneSelect
           id="church-tz"
-          className="input"
-          list="church-zones"
+          forChurchSetting
           value={tz}
-          onChange={(e) => {
-            setTz(e.target.value);
+          onChange={(v) => {
+            setTz(v);
             setOk(false);
           }}
-          required
-          aria-describedby="church-tz-hint"
+          describedBy="church-tz-hint"
         />
-        <datalist id="church-zones">
-          {COMMON_ZONES.map((z) => (
-            <option key={z} value={z} />
-          ))}
-        </datalist>
         <p id="church-tz-hint" className="text-sm text-gray-500 mt-1">
-          The schedule form starts in the leader's time zone. This is the fallback when a request doesn't name one. An IANA name, for example America/Denver.
+          New events start in this time zone; leaders can pick another when they schedule.
         </p>
       </div>
       <button type="submit" className="btn-secondary" disabled={busy || tz.trim() === saved}>

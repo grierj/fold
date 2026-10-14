@@ -12,14 +12,19 @@ export function ZoneSelect({
   onChange,
   describedBy,
   ariaLabel,
+  forChurchSetting,
 }: {
   id: string;
   value: string;
   onChange: (v: string) => void;
   describedBy?: string;
   ariaLabel?: string;
+  // The admin's church-zone setting: the field *is* the church zone, so no
+  // separate "Church time zone" entry.
+  forChurchSetting?: boolean;
 }) {
-  const options = zoneSelectOptions(useChurchZone(), browserTimeZone(), value);
+  const church = useChurchZone();
+  const options = zoneSelectOptions(forChurchSetting ? null : church, browserTimeZone(), value);
   return (
     <select
       id={id}

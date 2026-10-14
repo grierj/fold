@@ -44,3 +44,13 @@ test("series edit form lists the browser zone first", async ({ page, request }) 
   await page.getByRole("button", { name: "Edit series" }).click();
   await expectBrowserZoneFirst(page, "series-tz");
 });
+
+test("admin church time zone setting lists the browser zone first", async ({ page }) => {
+  await signIn(page, "grier");
+  await page.goto("/admin");
+  const sel = page.locator("select#church-tz");
+  await expect(sel).toHaveValue("America/Boise");
+  await expect(sel.locator("option").first()).toHaveText("Your time zone: America/Indiana/Knox");
+  await expect(sel.locator('option[value="America/Boise"]')).toHaveCount(1);
+  await expect(sel.locator("option", { hasText: "Church time zone" })).toHaveCount(0);
+});
