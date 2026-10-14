@@ -34,6 +34,12 @@ type Config struct {
 	// TrustedProxies are the CIDRs or IPs whose X-Forwarded-For is believed
 	// (C17). The default is the compose network's fixed subnet.
 	TrustedProxies []string
+	// SMTPURL configures the minimal SMTP sender (C6, M1.2), e.g.
+	// "smtp://user:pass@smtp.example.org:587". Empty means devoutbox in
+	// dev, and no sender (sends fail loudly) in prod.
+	SMTPURL string
+	// EmailFrom is the From address on transactional email.
+	EmailFrom string
 }
 
 // defaultTrustedProxies is the fixed subnet of the compose network
@@ -140,6 +146,8 @@ func LoadConfig() (Config, error) {
 		SiteURL:        os.Getenv("SITE_URL"),
 		UploadDir:      getEnv("UPLOAD_DIR", "./data/uploads"),
 		TrustedProxies: proxies,
+		SMTPURL:        os.Getenv("FOLD_SMTP_URL"),
+		EmailFrom:      getEnv("FOLD_EMAIL_FROM", "Fold <noreply@localhost>"),
 	}, nil
 }
 

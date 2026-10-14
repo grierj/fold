@@ -74,6 +74,31 @@ const (
 	// resolved in the same transaction.
 	GroupApproved = "group.approved"
 	GroupRejected = "group.rejected"
+
+	// InvitationCreated: an admin or leader invited someone (M1.2, DEC-4).
+	// Target is the invitation; meta has email and the optional groupId and
+	// overLimit.
+	InvitationCreated = "invitation.created"
+
+	// InvitationAccepted: the person accepted and got an active account.
+	// Target is the invitation; meta has userId and the optional groupId.
+	InvitationAccepted = "invitation.accepted"
+
+	// InvitationRateLimited: a leader hit the daily invitation limit (10.1).
+	// Target is the leader's user row; meta has email and the limit.
+	InvitationRateLimited = "invitation.rate_limited"
+
+	// PasswordResetRequested / PasswordResetCompleted: a password reset was
+	// requested and completed (M1.2). Target is the user. The request is
+	// only audited when the address has an account (the response is uniform
+	// either way, 10.1).
+	PasswordResetRequested = "password.reset_requested"
+	PasswordResetCompleted = "password.reset_completed"
+
+	// EmailChangeRequested / EmailChanged: a verified email change (10.1,
+	// M1.2). Target is the user; meta has oldEmail and newEmail.
+	EmailChangeRequested = "email.change_requested"
+	EmailChanged         = "email.changed"
 )
 
 // Entry is one audit record. Actor is nil for system actions.
