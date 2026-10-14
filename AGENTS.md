@@ -201,3 +201,17 @@ Group SMS goes through SMS provider adapters (Telnyx default, Twilio next).
 It is **not built yet**, and none is required to run Fold. When you build it:
 put it behind a `Notifier` interface (`internal/notify/`), broadcast-only v1,
 replies route to the group leader. Don't start early.
+
+## Rules and what enforces them
+
+Add a row when Grier corrects a repeat mistake; drop it once the mistake
+can't happen. Prefer structure, then types, then a check, then a test.
+
+| Rule | Enforced by |
+|------|-------------|
+| Every list of event dates hides events the viewer can't see | Structure: `occurrencesForEvents` filters with `policy.CanSeeEvent`; `TestNarrowEventHiddenFromGroupLists` |
+| Event and notice output never shows a hidden group's name, place or id (PR #41) | `a.groupShownTo` plus `TestGroupDetailsGoThroughGroupShownTo` (lines needing an exception end with `// group-ok: <reason>`) |
+| Making an event more private cancels and tells people it shuts out, whether the group or the event changed | `cancelLosers` in both paths; `TestGroupMorePrivateTightensAndCancels`, `TestEventMorePrivateCancelsShutOutRegistrants` |
+| `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
+| State-changing routes outside CSRF are listed exactly | `TestCSRFExemptRoutesAreExact` |
+| Logout leaves nothing on screen or in cache | `no-store` on API and shell; `session_fix_test.go`, `web/e2e/session.spec.ts` |

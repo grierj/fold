@@ -107,6 +107,16 @@ func (a *App) factsFor(u *models.User, ev *models.Event) eventFacts {
 	return f
 }
 
+// groupShownTo returns g when the viewer may see the group, else nil.
+// Read a group's name, place or id for event and notice output only through
+// its result (TestGroupDetailsGoThroughGroupShownTo enforces this).
+func (a *App) groupShownTo(me *models.User, g *models.Group, rel policy.Rel) *models.Group {
+	if g == nil || !policy.CanSeeGroup(asPerson(me), asGroup(g), rel) {
+		return nil
+	}
+	return g
+}
+
 // presentGroup hides a group the viewer cannot see. An opened invite-only
 // event then says it is hosted by the church and names nobody (DEC-17).
 func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Group, me *models.User, rel policy.Rel) {
@@ -114,10 +124,10 @@ func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Gro
 		inst.HostedBy = a.siteName()
 		return
 	}
-	if g != nil && policy.CanSeeGroup(asPerson(me), asGroup(g), rel) {
-		gid := *ev.GroupID
+	if shown := a.groupShownTo(me, g, rel); shown != nil {
+		gid := shown.ID
 		inst.GroupID = &gid
-		inst.GroupName = g.Name
+		inst.GroupName = shown.Name
 		return
 	}
 	inst.HostedBy = a.siteName()
@@ -125,13 +135,13 @@ func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Gro
 
 func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) eventJSON {
 	j := toEventJSON(ev)
-	if ev.GroupID == nil || f.group == nil || !policy.CanSeeGroup(asPerson(me), asGroup(f.group), f.rel) {
+	if shown := a.groupShownTo(me, f.group, f.rel); ev.GroupID == nil || shown == nil {
 		j.GroupID = nil
 		j.GroupName = ""
 		j.HostedBy = a.siteName()
 	} else {
-		j.GroupName = f.group.Name
-		j.GroupVisibility = f.group.Visibility
+		j.GroupName = shown.Name
+		j.GroupVisibility = shown.Visibility
 	}
 	if policy.IsAdmin(asPerson(me)) && ev.GroupID == nil {
 		j.Hosts = a.eventHosts(ev.ID)
