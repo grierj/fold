@@ -388,6 +388,12 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
+		// More private: the same cancel-and-notify as a group tightening (DEC-48).
+		if policy.Openness(vis) < policy.Openness(locked.Visibility) {
+			if err := cancelLosers(c, tx, &locked, vis, time.Now().UTC()); err != nil {
+				return err
+			}
+		}
 		if err := tx.Model(&locked).Updates(map[string]any{"visibility": vis, "leader_opened": opened}).Error; err != nil {
 			return err
 		}

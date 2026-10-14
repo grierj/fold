@@ -67,7 +67,7 @@ Useful env vars:
 |---|---|---|
 | `APP_ENV` | `prod` | `dev` enables debug logging + insecure cookie defaults |
 | `PORT` | `8080` | |
-| `SESSION_SECRET` | — | **Required** unless `APP_ENV=dev` |
+| `SESSION_SECRET` | — | **Required** unless `APP_ENV=dev`; at least 32 characters |
 | `DATABASE_URL` | — | Postgres DSN. **Required** everywhere |
 | `FOLD_TRUSTED_PROXIES` | `172.30.0.0/24` | Proxies allowed to set `X-Forwarded-For` (the compose subnet) |
 | `COOKIE_SECURE` | true in prod | Set `false` only for plain-http local testing |

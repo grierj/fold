@@ -100,6 +100,27 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	rels := a.relsFor(me, gset)
 	hosted := a.hostedEventIDs(me, eventIDs)
 
+	// The one place event dates are listed: drop every event this viewer
+	// can't see, so no caller has to remember to (hardening review).
+	visibleIDs := make([]uint, 0, len(evs))
+	for i := range evs {
+		ev := &evs[i]
+		g, rel := groupAndRel(ev, groups, rels)
+		gp := policy.Group{}
+		if g != nil {
+			gp = asGroup(g)
+		}
+		if policy.CanSeeEvent(asPerson(me), viewOf(ev, hosted[ev.ID]), gp, rel) {
+			visibleIDs = append(visibleIDs, ev.ID)
+		} else {
+			delete(byID, ev.ID)
+		}
+	}
+	if len(visibleIDs) == 0 {
+		return out
+	}
+	eventIDs = visibleIDs
+
 	q := a.DB.Where("event_id IN ? AND status = ? AND original_date >= ? AND original_date <= ?",
 		eventIDs, models.OccurrenceScheduled, from, to)
 	if startAfter != nil {
