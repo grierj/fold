@@ -7,15 +7,18 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ---------------------------------------------------------------------------
@@ -231,7 +234,7 @@ func canSeeGroupIn(tx *gorm.DB, u *models.User, g *models.Group) bool {
 const approvalsLink = "/admin?tab=approvals"
 
 // notifyGroupPending asks every admin to approve a new group (a task).
-func notifyGroupPending(tx *gorm.DB, g *models.Group, actor uint) error {
+func notifyGroupPending(tx *gorm.DB, g *models.Group, actor uint) ([]uint, error) {
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.GroupPending, To: adminIDs(tx), Actor: &actor,
 		SubjectType: "group", SubjectID: g.ID, Link: approvalsLink,
@@ -242,7 +245,7 @@ func notifyGroupPending(tx *gorm.DB, g *models.Group, actor uint) error {
 }
 
 // notifyDeletionRequested asks every admin to delete or keep a group.
-func notifyDeletionRequested(tx *gorm.DB, g *models.Group, actor uint) error {
+func notifyDeletionRequested(tx *gorm.DB, g *models.Group, actor uint) ([]uint, error) {
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.GroupDeletion, To: adminIDs(tx), Actor: &actor,
 		SubjectType: "group", SubjectID: g.ID, Link: approvalsLink,
@@ -253,7 +256,7 @@ func notifyDeletionRequested(tx *gorm.DB, g *models.Group, actor uint) error {
 
 // notifyLeadership tells the other admins about a leadership change, from
 // the RoleChanged or MemberRemoved entry just written (DEC-31).
-func notifyLeadership(tx *gorm.DB, e audit.Entry) error {
+func notifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
 	var userID uint
 	switch v := e.Meta["userId"].(type) {
 	case uint:
@@ -267,7 +270,7 @@ func notifyLeadership(tx *gorm.DB, e audit.Entry) error {
 	switch {
 	case e.Action == audit.MemberRemoved:
 		if oldRole != models.MembershipLeader {
-			return nil // removing a plain member isn't a leadership change
+			return nil, nil // removing a plain member isn't a leadership change
 		}
 		change = "removed_from_group"
 	case newRole == models.MembershipLeader:
@@ -294,7 +297,7 @@ func notifyLeadership(tx *gorm.DB, e audit.Entry) error {
 // notifyNotRestored tells a re-enabled person they were left out of a full
 // group (DEC-47). Their membership is already gone in tx, so an
 // invite-only group's name and link are left out.
-func notifyNotRestored(tx *gorm.DB, actor uint, g *models.Group, userID uint) error {
+func notifyNotRestored(tx *gorm.DB, actor uint, g *models.Group, userID uint) ([]uint, error) {
 	vars, link := notify.Vars{}, "/"
 	if canSeeGroupIn(tx, userIn(tx, userID), g) {
 		vars.Group, link = g.Name, fmt.Sprintf("/groups/%d", g.ID) // group-ok: only when canSeeGroupIn says the person may see it
@@ -308,9 +311,9 @@ func notifyNotRestored(tx *gorm.DB, actor uint, g *models.Group, userID uint) er
 // notifyOccurrencesCancelled tells everyone going or maybe on these dates.
 // A registrant who can't see the group gets no group name, place, or link
 // (PR #41). Each item archives itself when the date would have ended.
-func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) error {
+func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint, error) {
 	if len(occIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 	var rows []struct {
 		UserID uint
@@ -319,8 +322,9 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) error {
 	if err := tx.Table("registrations").Select("user_id, occurrence_id AS occ_id").
 		Where("occurrence_id IN ? AND status IN ?", occIDs, []string{models.RegGoing, models.RegMaybe}).
 		Order("occurrence_id, user_id").Scan(&rows).Error; err != nil {
-		return err
+		return nil, err
 	}
+	var ids []uint
 	for _, r := range rows {
 		var o models.EventOccurrence
 		var ev models.Event
@@ -345,22 +349,24 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) error {
 		if end.IsZero() {
 			end = o.StartsAt
 		}
-		if err := notify.Send(tx, notify.Msg{
+		sent, err := notify.Send(tx, notify.Msg{
 			Kind: notify.OccurrenceCancelled, To: []uint{r.UserID}, Actor: &actor,
 			SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 			Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
 			DedupeKey: fmt.Sprintf("event.cancelled:%d", o.ID), ExpiresAt: &end,
-		}); err != nil {
-			return err
+		})
+		if err != nil {
+			return nil, err
 		}
+		ids = append(ids, sent...)
 	}
-	return nil
+	return ids, nil
 }
 
 // notifyRegistrationCancelled tells someone who can no longer see an event
 // that their registrations were cancelled. It names neither the group nor
 // the place and links nowhere private (PR #41).
-func notifyRegistrationCancelled(tx *gorm.DB, actor uint, ev *models.Event, userID uint) error {
+func notifyRegistrationCancelled(tx *gorm.DB, actor uint, ev *models.Event, userID uint) ([]uint, error) {
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationCancelled, To: []uint{userID}, Actor: &actor,
 		SubjectType: "event", SubjectID: ev.ID, Link: "/", Vars: notify.Vars{Event: ev.Title},
@@ -369,7 +375,7 @@ func notifyRegistrationCancelled(tx *gorm.DB, actor uint, ev *models.Event, user
 
 // notifyVisibilityOverride tells the group's other leaders and the admins
 // that an event is more open than its group (DEC-17, DEC-28).
-func notifyVisibilityOverride(tx *gorm.DB, actor uint, ev *models.Event, g *models.Group, newVis, note string) error {
+func notifyVisibilityOverride(tx *gorm.DB, actor uint, ev *models.Event, g *models.Group, newVis, note string) ([]uint, error) {
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.VisibilityOverride, To: append(leaderIDs(tx, g.ID), adminIDs(tx)...), Actor: &actor,
 		SubjectType: "event", SubjectID: ev.ID, Link: fmt.Sprintf("/groups/%d", g.ID),
@@ -439,4 +445,85 @@ func (a *App) startNotificationPruning(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// ---------------------------------------------------------------------------
+// Email delivery (5.12, M1.2). Kinds marked AllowEmail send a transactional
+// email through the minimal sender right after the writing transaction
+// commits, with no delay. Each send is recorded in
+// notification_deliveries. Sensitive kinds use the link-only RenderEmailSafe
+// variant, which names nobody. The 15-minute "if not seen" escalation waits
+// for the jobs table (M3.1). Delivery failures are logged, never returned:
+// the notification row is already committed.
+// ---------------------------------------------------------------------------
+
+// deliverNotificationEmails sends email for the AllowEmail kinds among ids.
+// Call it after the writing transaction committed, never inside it.
+func (a *App) deliverNotificationEmails(ids []uint) {
+	if len(ids) == 0 || a.Mailer == nil {
+		return
+	}
+	ctx := context.Background()
+	for _, id := range ids {
+		a.deliverNotificationEmail(ctx, id)
+	}
+}
+
+func (a *App) deliverNotificationEmail(ctx context.Context, id uint) {
+	var n models.Notification
+	if err := a.DB.First(&n, id).Error; err != nil {
+		return // rolled back or pruned after commit; nothing to send
+	}
+	k, ok := notify.Lookup(n.Kind)
+	if !ok || !k.AllowEmail {
+		return
+	}
+	var u models.User
+	if err := a.DB.Where("id = ?", n.UserID).First(&u).Error; err != nil || u.Status != models.UserActive {
+		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "recipient not active")
+		return
+	}
+	text := n.EmailTitle
+	if n.EmailBody != "" {
+		text += "\n\n" + n.EmailBody
+	}
+	text += "\n\n" + a.emailLink(n.Link)
+	if err := a.Mailer.Send(ctx, mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text}); err != nil {
+		log.Printf("notification email for notification %d: %v", n.ID, err)
+		a.recordDelivery(n.ID, u.ID, models.DeliveryFailed, err.Error())
+		return
+	}
+	a.recordDelivery(n.ID, u.ID, models.DeliverySent, "")
+}
+
+// recordDelivery writes one notification_deliveries row. The unique
+// (notification_id, channel) keeps a second delivery of the same row from
+// duplicating the record.
+func (a *App) recordDelivery(notificationID, userID uint, status, reason string) {
+	var sentAt *time.Time
+	if status == models.DeliverySent {
+		now := time.Now().UTC()
+		sentAt = &now
+	}
+	_ = a.DB.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "notification_id"}, {Name: "channel"}},
+		DoNothing: true,
+	}).Create(&models.NotificationDelivery{
+		NotificationID: notificationID, Channel: models.DeliveryEmail,
+		UserID: userID, Status: status, Reason: reason, SentAt: sentAt,
+	}).Error
+}
+
+// emailBaseURL is the absolute base for links in transactional email:
+// SITE_URL in prod, localhost in dev.
+func (a *App) emailBaseURL() string {
+	if a.Config.SiteURL != "" {
+		return strings.TrimSuffix(a.Config.SiteURL, "/")
+	}
+	return "http://localhost:" + a.Config.Port
+}
+
+// emailLink makes an absolute URL from a notification's internal path.
+func (a *App) emailLink(path string) string {
+	return a.emailBaseURL() + path
 }
