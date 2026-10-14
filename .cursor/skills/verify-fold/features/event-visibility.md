@@ -10,7 +10,7 @@ Each event has its own visibility, copied from its group when it is scheduled. A
 
 ## How to get to it (user POV)
 
-- On a group page you lead, each event series shows `Who can see this event` with the `Event visibility` select and `Save visibility`.
+- Visibility is chosen when the event is created: the schedule forms have a `Who can see this event` select that starts at the group's value (church-wide: public). After creation there is no control on the event list; it lives inside `Edit series` (or `Edit event` for a single event) on the group page and the event page, with `Save visibility`.
 - On `/events/<id>`, the same control appears for a leader.
 - On a group page you lead, `Edit group`, pick a more private option under `Who can see this group`, and `Save changes` opens the review dialog.
 
@@ -23,8 +23,8 @@ Preconditions:
 - Eval `verify-fold env "$RUN_ID"`. Load Playwright with `createRequire` from `$FOLD_ROOT/web/package.json`.
 - Save files under `$VERIFY_EVIDENCE/event-visibility/`.
 
-- **Narrow one event.** On the group page run `page.getByLabel("Event visibility").selectOption("invite_only")` and `page.getByRole("button", { name: "Save visibility" }).click()`. A dialog `Making this event invite-only` lists the event and any registrations it cancels; nothing is saved yet. Choose `page.getByRole("dialog").getByRole("button", { name: "Make this event invite-only" })`. The select reads `invite_only`. Choose `Log out` and open the same group URL. The level-1 group heading is visible and `Wednesday class` is not.
-- **Open one event wider.** Create a group, schedule an event, then `Edit group`, check `page.getByRole("radio", { name: /^Private/ })`, and `Save changes`. A dialog lists the event to match the group; confirm with `page.getByRole("dialog").getByRole("button", { name: /Make the group/ })`. Set `Event visibility` to `public` and save. The text `A leader opened this event wider than the group.` appears.
+- **Narrow one event.** On the group page choose `page.getByRole("button", { name: "Edit event" })` (or `Edit series`), then run `page.getByLabel("Who can see this event").selectOption("invite_only")` and `page.getByRole("button", { name: "Save visibility" }).click()`. A dialog `Making this event invite-only` lists the event and any registrations it cancels; nothing is saved yet. Choose `page.getByRole("dialog").getByRole("button", { name: "Make this event invite-only" })`. Reopen the editor if it closed; the select reads `invite_only`. Choose `Log out` and open the same group URL. The level-1 group heading is visible and `Wednesday class` is not.
+- **Open one event wider.** Create a group, schedule an event, then `Edit group`, check `page.getByRole("radio", { name: /^Private/ })`, and `Save changes`. A dialog lists the event to match the group; confirm with `page.getByRole("dialog").getByRole("button", { name: /Make the group/ })`. Open `Edit event`, set `Who can see this event` to `public`, and choose `Save visibility`. Or pick `public` on the schedule form when creating the event: the warning and `Reason (optional)` appear, and the event is saved leader-opened. The text `A leader opened this event wider than the group.` appears.
 - **Review on tightening.** `Edit group`, check `/^Invite only/`, `Save changes`. The dialog text `Making the group invite-only changes some events` is visible and `Make the group invite-only` is disabled. Check `page.getByRole("dialog").getByRole("radio", { name: /Keep it public/ })`. The button enables; choose it. The dialog closes and the event's select still reads `public`.
 - **Proof.** `event-visibility/signed-out-hidden.png` shows the group heading without the narrowed event. `event-visibility/review.png` shows the dialog with the disabled confirm. `event-visibility/kept-open.png` shows the kept-open event. `event-visibility/result.txt` names the sub-feature and entry point.
 

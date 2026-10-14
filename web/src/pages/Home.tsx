@@ -198,7 +198,7 @@ export function Home() {
 
       {openEvents.length > 0 && (
         <section className="max-w-6xl mx-auto px-4 pt-8">
-          <h2 className="text-2xl font-bold mb-4">Coming up</h2>
+          <h2 className="text-2xl font-bold mb-4">Church Events</h2>
           <div className="space-y-3">
             {openEvents.map((ev) => (
               <Link
@@ -225,7 +225,7 @@ export function Home() {
 
       {/* Group grid */}
       <section className="max-w-6xl mx-auto px-4 py-8">
-        <h2 className="text-2xl font-bold mb-4">Upcoming groups</h2>
+        <h2 className="text-2xl font-bold mb-4">Church Groups</h2>
         {loading && <div className="text-gray-500">Loading groups…</div>}
         {error && <div className="text-red-600">{error}</div>}
         {!loading && !error && groups.length === 0 && (

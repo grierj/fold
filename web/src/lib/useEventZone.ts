@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { Site } from "../api";
-import { browserTimeZone } from "./wall";
-import { zoneOptions, type ZoneOption } from "./eventForm";
 
 // The church's time zone from /site, or null until it loads.
 export function useChurchZone(): string | null {
@@ -20,14 +18,10 @@ export function useChurchZone(): string | null {
   return zone;
 }
 
-export function useZoneOptions(): ZoneOption[] {
-  return zoneOptions(useChurchZone(), browserTimeZone());
-}
-
 // A new event's zone (DEC-50): the church's zone, not the browser's. Until
 // /site answers the field is empty (the server also defaults to the church
 // zone); once the person edits it we leave it alone.
-export function useEventZone(): { tzid: string; setTzid: (v: string) => void; options: ZoneOption[] } {
+export function useEventZone(): { tzid: string; setTzid: (v: string) => void } {
   const church = useChurchZone();
   const [tzid, setRaw] = useState("");
   const touched = useRef(false);
@@ -40,6 +34,5 @@ export function useEventZone(): { tzid: string; setTzid: (v: string) => void; op
       touched.current = true;
       setRaw(v);
     },
-    options: zoneOptions(church, browserTimeZone()),
   };
 }

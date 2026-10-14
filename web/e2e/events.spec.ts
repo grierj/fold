@@ -13,10 +13,10 @@ test("a new series defaults to the church time zone", async ({ page }) => {
   await page.getByRole("link", { name: "Schedule event" }).click();
   await expect(page).toHaveURL(/\/groups\/\d+\/events\/new/);
   await expect(page.getByLabel("Time zone")).toHaveValue("America/Boise");
-  const first = page.locator("#event-zones option").first();
+  const first = page.locator("#event-tz option").first();
   await expect(first).toHaveAttribute("value", "America/New_York");
-  await expect(first).toHaveAttribute("label", "Your time zone");
-  await expect(page.locator('#event-zones option[value="America/Boise"]')).toHaveCount(1);
+  await expect(first).toHaveText("Your time zone: America/New_York");
+  await expect(page.locator('#event-tz option[value="America/Boise"]')).toHaveCount(1);
 
   const when = new Date(Date.now() + 20 * 24 * 60 * 60 * 1000);
   const ymd = when.toISOString().slice(0, 10);

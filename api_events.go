@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/audit"
 	"fold/internal/events"
 	"fold/internal/policy"
 	"fold/models"
@@ -380,6 +381,10 @@ type eventBody struct {
 	Location        *string `json:"location"`
 	RecurrenceRule  *string `json:"recurrenceRule"`
 	RRuleUntil      *string `json:"rruleUntil"`
+	// Create only: who can see the new event, defaulting to the group's
+	// value (DEC-51). Wider than the group is a leader-opened override.
+	Visibility       *string `json:"visibility"`
+	VisibilityReason *string `json:"visibilityReason"`
 }
 
 func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creating bool) (events.Spec, bool) {
@@ -504,7 +509,7 @@ func (a *App) apiListEvents(c *gin.Context) {
 
 func (a *App) apiCreateEvent(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	g, _, ok := a.loadManagedGroupID(c, uint(id))
+	g, rel, ok := a.loadManagedGroupID(c, uint(id))
 	if !ok {
 		return
 	}
@@ -528,9 +533,50 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 	if !textOK(c, ev.Title, ev.Description, ev.Location) {
 		return
 	}
+	me := apiUser(c)
+	reason := ""
+	if body.VisibilityReason != nil {
+		reason = strings.TrimSpace(*body.VisibilityReason)
+	}
+	if len(reason) > 500 {
+		jsonError(c, http.StatusBadRequest, "reason is too long")
+		return
+	}
+	if body.Visibility != nil && strings.TrimSpace(*body.Visibility) != "" {
+		vis := strings.TrimSpace(*body.Visibility)
+		if !policy.CanSetEventVisibility(asPerson(me), viewOf(&ev, false), rel, vis) {
+			jsonError(c, http.StatusBadRequest, "that visibility isn't allowed on this event")
+			return
+		}
+		ev.Visibility = vis
+		ev.LeaderOpened = policy.MoreOpen(vis, g.Visibility)
+	}
+	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&ev).Error; err != nil {
 			return err
+		}
+		if ev.Visibility != g.Visibility {
+			action := audit.VisibilityChanged
+			if ev.LeaderOpened {
+				action = audit.VisibilityOverride
+			}
+			meta := map[string]any{"oldVisibility": g.Visibility, "newVisibility": ev.Visibility,
+				"oldLeaderOpened": false, "leaderOpened": ev.LeaderOpened, "groupVisibility": g.Visibility, "atCreation": true}
+			if reason != "" {
+				meta["reason"] = reason
+			}
+			if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: action, TargetType: "event", TargetID: ev.ID,
+				Meta: meta, IP: c.ClientIP()}); err != nil {
+				return err
+			}
+			if ev.LeaderOpened {
+				ids, err := notifyVisibilityOverride(tx, me.ID, &ev, g, ev.Visibility, reason)
+				emailed = append(emailed, ids...)
+				if err != nil {
+					return err
+				}
+			}
 		}
 		return events.Ensure(tx, &ev, time.Now().UTC())
 	})
@@ -538,6 +584,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not create event")
 		return
 	}
+	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusCreated, gin.H{"event": toEventJSON(&ev)})
 }
 

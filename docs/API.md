@@ -370,6 +370,9 @@ GET  /api/v1/events/:id                     → 200 {event, occurrences, canMana
 GET  /api/v1/groups/:id/events?from=2026-10-06&to=2027-01-06
   → {events: [occurrence]}   (default: next 90 days, max 366-day window, max 100 per event)
 POST /api/v1/groups/:id/events              → 201 {event}   (group leader or admin)
+     body adds optional {visibility, visibilityReason} (DEC-51): defaults to the
+     group's value; wider than the group is saved leader-opened with an
+     event.visibility_override audit row and notice, as with PUT .../visibility
 PUT  /api/v1/events/:id                     → 200 {event}   (leader, host, or admin; series edit)
 PUT  /api/v1/events/:id/visibility          → 200 {event}   (leader, host, or admin)
      body: {visibility, reason?}

@@ -24,7 +24,7 @@ test("an admin schedules a church-wide event in the church time zone", async ({ 
   await expect(page.getByText("Hosted by Fold e2e")).toBeVisible();
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Coming up" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Church Events" })).toBeVisible();
   await expect(page.getByRole("link", { name: /Church potluck/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Church potluck/ })).toContainText("Hosted by Fold e2e");
 });
@@ -60,14 +60,18 @@ test("opening an invite-only group's event hides the group and the names", async
 
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
-  await page.getByLabel("Event visibility").selectOption("public");
+  await page.getByRole("button", { name: "Edit event" }).click();
+  await page.getByLabel("Who can see this event").selectOption("public");
   await expect(
     page.getByText("Only leaders will see who signed up, so members of Hidden Care aren't revealed.")
   ).toBeVisible();
   const saved = page.waitForResponse((r) => r.url().includes("/visibility") && r.request().method() === "PUT");
   await page.getByRole("button", { name: "Save visibility" }).click();
   expect((await saved).ok()).toBe(true);
-  await expect(page.getByLabel("Event visibility")).toHaveValue("public");
+  if ((await page.getByLabel("Who can see this event").count()) === 0) {
+    await page.getByRole("button", { name: "Edit event" }).click();
+  }
+  await expect(page.getByLabel("Who can see this event")).toHaveValue("public");
 
   await signOut(page);
 
@@ -148,7 +152,7 @@ test("a non-admin host can edit the church-wide event they host", async ({ page,
   await signIn(page, "lee");
   await page.goto(`/events/${event.id}`);
   await expect(page.getByText("grier@example.com")).toHaveCount(0);
-  await page.getByRole("button", { name: "Edit series" }).click();
+  await page.getByRole("button", { name: "Edit event" }).click();
   await page.getByLabel("Title").fill("Host night revised");
   await page.getByRole("button", { name: "Save series" }).click();
   await expect(page.getByRole("heading", { name: "Host night revised" })).toBeVisible();

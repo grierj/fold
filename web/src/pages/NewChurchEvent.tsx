@@ -1,3 +1,6 @@
+import { VisibilityField } from "../components/EventVisibility";
+import type { Visibility } from "../types";
+import { ZoneSelect } from "../components/ZoneSelect";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Events } from "../api";
@@ -13,9 +16,9 @@ export function NewChurchEvent() {
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("19:00");
   const [durationMin, setDurationMin] = useState(90);
-  const { tzid, setTzid, options: zones } = useEventZone();
+  const { tzid, setTzid } = useEventZone();
   const [location, setLocation] = useState("");
-  const [visibility, setVisibility] = useState<"public" | "private">("public");
+  const [visibility, setVisibility] = useState<Visibility>("public");
   const [hostEmail, setHostEmail] = useState("");
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
@@ -165,19 +168,7 @@ export function NewChurchEvent() {
             <label className="label" htmlFor="church-event-tz">
               Time zone
             </label>
-            <input
-              id="church-event-tz"
-              className="input"
-              list="church-event-zones"
-              value={tzid}
-              onChange={(e) => setTzid(e.target.value)}
-              required
-            />
-            <datalist id="church-event-zones">
-              {zones.map((z) => (
-                <option key={z.value} value={z.value} label={z.label} />
-              ))}
-            </datalist>
+            <ZoneSelect id="church-event-tz" value={tzid} onChange={setTzid} />
           </div>
         </div>
         <div>
@@ -186,20 +177,14 @@ export function NewChurchEvent() {
           </label>
           <input id="church-event-location" className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
         </div>
-        <div>
-          <label className="label" htmlFor="church-event-visibility">
-            Who can see it
-          </label>
-          <select
-            id="church-event-visibility"
-            className="input"
-            value={visibility}
-            onChange={(e) => setVisibility(e.target.value as "public" | "private")}
-          >
-            <option value="public">Public — anyone</option>
-            <option value="private">Private — signed-in people</option>
-          </select>
-        </div>
+        <VisibilityField
+          id="church-event-visibility"
+          churchWide
+          value={visibility}
+          onChange={setVisibility}
+          reason=""
+          onReason={() => {}}
+        />
         <div>
           <label className="label" htmlFor="church-event-host">
             Another host's email (optional)

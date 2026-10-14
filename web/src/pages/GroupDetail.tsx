@@ -1,4 +1,4 @@
-import { useZoneOptions } from "../lib/useEventZone";
+import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
@@ -14,7 +14,6 @@ import { ImageUpload } from "../components/ImageUpload";
 import { coverImage } from "../components/GroupCard";
 import { focalPosition, prepareUpload } from "../lib/image";
 import { formatNextEvent, formatWallClock, zoneSuffix } from "../lib/wall";
-import { WEEKDAYS, bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
 
 type Tab = "events" | "about" | "members";
 
@@ -22,26 +21,6 @@ function rsvpTotal(r: Record<string, number>, key: string): number {
   return r[key] ?? 0;
 }
 
-function WeekdayPicker({ days, onToggle }: { days: string[]; onToggle: (value: string) => void }) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {WEEKDAYS.map((w) => (
-        <button
-          type="button"
-          key={w.value}
-          onClick={() => onToggle(w.value)}
-          className={
-            days.includes(w.value)
-              ? "px-3 py-1.5 rounded-full text-sm font-semibold bg-brand text-white"
-              : "px-3 py-1.5 rounded-full text-sm font-semibold bg-gray-100 text-gray-600 hover:bg-gray-200"
-          }
-        >
-          {w.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 function DateEditor({
   instance,
@@ -143,201 +122,12 @@ function DateEditor({
   );
 }
 
-function SeriesEditor({
-  instance,
-  onSaved,
-  onClose,
-}: {
-  instance: EventOccurrence;
-  onSaved: () => void;
-  onClose: () => void;
-}) {
-  const simple = isSimpleWeekly(instance.recurrenceRule);
-  const zones = useZoneOptions();
-  const [date, setDate] = useState(instance.seriesStartsLocal.slice(0, 10));
-  const [time, setTime] = useState(instance.seriesStartsLocal.slice(11, 16) || "19:00");
-  const [duration, setDuration] = useState(instance.seriesDurationMinutes);
-  const [tzid, setTzid] = useState(instance.tzid);
-  const [title, setTitle] = useState(instance.seriesTitle);
-  const [description, setDescription] = useState(instance.description);
-  const [location, setLocation] = useState(instance.seriesLocation);
-  const [recurring, setRecurring] = useState(instance.recurrenceRule !== "");
-  const [days, setDays] = useState<string[]>(() => {
-    const picked = bydays(instance.recurrenceRule);
-    if (picked.length > 0) return picked;
-    if (instance.recurrenceRule.startsWith("FREQ=WEEKLY")) return [weekdayCode(instance.seriesStartsLocal.slice(0, 10))];
-    return [];
-  });
-  const [rule, setRule] = useState(instance.recurrenceRule);
-  const [until, setUntil] = useState(instance.rruleUntil ?? "");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  function toggleDay(v: string) {
-    setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
-  }
-
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
-    if (simple && recurring && days.length === 0) {
-      setError("Pick at least one day to repeat weekly.");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    const recurrenceRule = simple ? (recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "") : rule.trim();
-    try {
-      await Events.update(instance.eventId, {
-        title,
-        description,
-        startsLocal: `${date}T${time}`,
-        durationMinutes: duration,
-        tzid: tzid.trim(),
-        location,
-        recurrenceRule,
-        rruleUntil: until,
-      });
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update the series");
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
-      <p className="text-sm text-gray-600">
-        This changes every future date that has not been edited on its own. Customized dates stay as they are. Dates
-        the new schedule drops are cancelled, and people who were going or maybe are told.
-      </p>
-      {error && <div className="text-sm text-red-600">{error}</div>}
-      <div className="grid sm:grid-cols-2 gap-3">
-        <div>
-          <label className="label" htmlFor={`s-date-${instance.id}`}>
-            First date
-          </label>
-          <input id={`s-date-${instance.id}`} type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} required />
-        </div>
-        <div>
-          <label className="label" htmlFor={`s-time-${instance.id}`}>
-            Start time
-          </label>
-          <input id={`s-time-${instance.id}`} type="time" className="input" value={time} onChange={(e) => setTime(e.target.value)} required />
-        </div>
-      </div>
-      <div className="grid sm:grid-cols-2 gap-3">
-        <div>
-          <label className="label" htmlFor={`s-dur-${instance.id}`}>
-            Duration (minutes)
-          </label>
-          <input
-            id={`s-dur-${instance.id}`}
-            type="number"
-            min={1}
-            max={10080}
-            className="input"
-            value={duration}
-            onChange={(e) => setDuration(Number(e.target.value))}
-          />
-        </div>
-        <div>
-          <label className="label" htmlFor={`s-tz-${instance.id}`}>
-            Time zone
-          </label>
-          <input
-            id={`s-tz-${instance.id}`}
-            className="input"
-            list={`series-zones-${instance.id}`}
-            value={tzid}
-            onChange={(e) => setTzid(e.target.value)}
-            required
-          />
-          <datalist id={`series-zones-${instance.id}`}>
-            {zones.map((z) => (
-                <option key={z.value} value={z.value} label={z.label} />
-              ))}
-          </datalist>
-        </div>
-      </div>
-      <div className="grid sm:grid-cols-2 gap-3">
-        <div>
-          <label className="label" htmlFor={`s-title-${instance.id}`}>
-            Title
-          </label>
-          <input id={`s-title-${instance.id}`} className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
-        </div>
-        <div>
-          <label className="label" htmlFor={`s-loc-${instance.id}`}>
-            Location (blank = group's location)
-          </label>
-          <input id={`s-loc-${instance.id}`} className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
-        </div>
-      </div>
-      <div>
-        <label className="label" htmlFor={`s-desc-${instance.id}`}>
-          Description
-        </label>
-        <textarea
-          id={`s-desc-${instance.id}`}
-          className="input"
-          rows={3}
-          maxLength={5000}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-        />
-      </div>
-      {simple ? (
-        <div>
-          <label className="flex items-center gap-2 font-semibold cursor-pointer">
-            <input
-              type="checkbox"
-              checked={recurring}
-              onChange={(e) => {
-                setRecurring(e.target.checked);
-                if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
-              }}
-              className="w-4 h-4 accent-[#f64060]"
-            />
-            Repeat weekly
-          </label>
-          {recurring && (
-            <div className="mt-3">
-              <WeekdayPicker days={days} onToggle={toggleDay} />
-            </div>
-          )}
-        </div>
-      ) : (
-        <div>
-          <label className="label" htmlFor={`s-rule-${instance.id}`}>
-            Recurrence rule
-          </label>
-          <input id={`s-rule-${instance.id}`} className="input" value={rule} onChange={(e) => setRule(e.target.value)} />
-        </div>
-      )}
-      <div>
-        <label className="label" htmlFor={`s-until-${instance.id}`}>
-          Repeat until (optional)
-        </label>
-        <input id={`s-until-${instance.id}`} type="date" className="input" value={until} onChange={(e) => setUntil(e.target.value)} />
-      </div>
-      <div className="flex gap-2">
-        <button type="submit" disabled={busy} className="btn-primary">
-          {busy ? "Saving…" : "Save series"}
-        </button>
-        <button type="button" onClick={onClose} className="btn-secondary">
-          Close
-        </button>
-      </div>
-    </form>
-  );
-}
 
 function EventRow({
   instance,
   groupName,
   groupVisibility,
   canManage,
-  showVisibility,
   showDescription,
   loggedIn,
   onRsvp,
@@ -348,8 +138,6 @@ function EventRow({
   groupName: string;
   groupVisibility: Visibility;
   canManage: boolean;
-  // One control per series. Later dates of the same event omit it.
-  showVisibility: boolean;
   showDescription: boolean;
   loggedIn: boolean;
   onRsvp: (eventId: number, date: string, status: RegistrationStatus) => void;
@@ -395,24 +183,42 @@ function EventRow({
           {rsvpTotal(instance.registrations, "declined")} can't go
         </div>
         <AttendeeNames instance={instance} />
-        {showVisibility && (
-          <EventVisibilityControl
-            key={`${instance.eventId}-${instance.visibility}-${instance.leaderOpened}`}
-            eventId={instance.eventId}
-            groupName={groupName}
-            groupVisibility={groupVisibility}
-            visibility={instance.visibility ?? groupVisibility}
-            leaderOpened={instance.leaderOpened}
-            onSaved={onChanged}
-          />
-        )}
         {loggedIn && (
           <div className="mt-2">
             <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
           </div>
         )}
         {editor === "date" && <DateEditor instance={instance} onSaved={onChanged} onClose={() => setEditor(null)} />}
-        {editor === "series" && <SeriesEditor instance={instance} onSaved={onChanged} onClose={() => setEditor(null)} />}
+        {editor === "series" && (
+          <>
+            <SeriesEditor
+              series={{
+                eventId: instance.eventId,
+                startsLocal: instance.seriesStartsLocal,
+                durationMinutes: instance.seriesDurationMinutes,
+                tzid: instance.tzid,
+                title: instance.seriesTitle,
+                description: instance.description,
+                location: instance.seriesLocation,
+                recurrenceRule: instance.recurrenceRule,
+                rruleUntil: instance.rruleUntil,
+              }}
+              idPrefix={`${instance.id}`}
+              locationLabel="Location (blank = group's location)"
+              onSaved={onChanged}
+              onClose={() => setEditor(null)}
+            />
+            <EventVisibilityControl
+              key={`${instance.eventId}-${instance.visibility}-${instance.leaderOpened}`}
+              eventId={instance.eventId}
+              groupName={groupName}
+              groupVisibility={groupVisibility}
+              visibility={instance.visibility ?? groupVisibility}
+              leaderOpened={instance.leaderOpened}
+              onSaved={onChanged}
+            />
+          </>
+        )}
       </div>
       {canManage && (
         <div className="shrink-0 flex flex-col items-end gap-2">
@@ -420,7 +226,7 @@ function EventRow({
             Edit this date
           </button>
           <button type="button" onClick={() => setEditor(editor === "series" ? null : "series")} className="text-sm text-brand font-medium">
-            Edit series
+            {instance.recurrenceRule ? "Edit series" : "Edit event"}
           </button>
           <button
             onClick={cancel}
@@ -708,7 +514,7 @@ export function GroupDetail() {
 
   const { group, members, upcomingEvents, canManage, isMember } = detail;
   const events: EventOccurrence[] = upcomingEvents ?? [];
-  // The visibility control belongs to the series, so only its first date shows it.
+  // The series description shows only on its first listed date.
   const visibilityDate = new Map<number, string>();
   for (const m of events) {
     if (!visibilityDate.has(m.eventId)) visibilityDate.set(m.eventId, m.date);
@@ -1090,7 +896,6 @@ export function GroupDetail() {
                     groupName={group.name}
                     groupVisibility={group.visibility}
                     canManage={canManage}
-                    showVisibility={canManage && visibilityDate.get(m.eventId) === m.date}
                     showDescription={visibilityDate.get(m.eventId) === m.date}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}
