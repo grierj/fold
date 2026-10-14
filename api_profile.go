@@ -12,10 +12,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"fold/internal/audit"
@@ -434,20 +436,32 @@ func (a *App) apiDeleteAvatar(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// fetchRemoteImage downloads an http(s) image. The connection is dialed to
-// an address that passed ipAllowed, so a name that resolves to a private
-// or link-local host is refused. Loopback is allowed only when APP_ENV=dev
-// so local tests can serve a fixture. Redirects are checked the same way.
+// fetchRemoteImage downloads an http(s) image without letting a user point
+// the server at an internal host (SSRF). Defence in depth:
+//   - only http/https, no userinfo, and only ports 80/443 outside dev;
+//   - the name is resolved once and an allowed IP is dialed directly, so a
+//     DNS rebind between check and connect has nothing to swap;
+//   - the dialer's Control hook re-checks the exact socket address, so no
+//     path (redirects, IPv4-mapped IPv6, odd IP spellings) can reach a
+//     blocked range even if a check above is missed;
+//   - redirects are limited and re-checked; no proxy is used;
+//   - size and time are capped, and the bytes themselves must sniff as a
+//     JPEG/PNG/GIF/WebP (the server's Content-Type header is not trusted).
+//
+// Loopback is allowed only when APP_ENV=dev so local tests can serve a
+// fixture.
 func (a *App) fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, string, error) {
 	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Host == "" || parsed.User != nil ||
-		(parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if err != nil {
 		return nil, "", fmt.Errorf("url must be an http or https address")
+	}
+	if err := a.urlAllowed(parsed); err != nil {
+		return nil, "", err
 	}
 	if err := a.hostAllowed(ctx, parsed.Hostname()); err != nil {
 		return nil, "", err
 	}
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: a.dialControl}
 	transport := &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -461,8 +475,10 @@ func (a *App) fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, stri
 			}
 			return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
 		},
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
+		TLSHandshakeTimeout:    5 * time.Second,
+		ResponseHeaderTimeout:  10 * time.Second,
+		MaxResponseHeaderBytes: 64 << 10,
+		DisableKeepAlives:      true,
 	}
 	client := &http.Client{
 		Timeout:   15 * time.Second,
@@ -471,9 +487,8 @@ func (a *App) fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, stri
 			if len(via) >= 3 {
 				return fmt.Errorf("too many redirects")
 			}
-			if req.URL == nil || req.URL.User != nil ||
-				(req.URL.Scheme != "http" && req.URL.Scheme != "https") {
-				return fmt.Errorf("url must be an http or https address")
+			if err := a.urlAllowed(req.URL); err != nil {
+				return err
 			}
 			return a.hostAllowed(req.Context(), req.URL.Hostname())
 		},
@@ -485,11 +500,18 @@ func (a *App) fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, stri
 	req.Header.Set("User-Agent", "fold")
 	resp, err := client.Do(req)
 	if err != nil {
+		var refused *blockedAddrError
+		if errors.As(err, &refused) {
+			return nil, "", fmt.Errorf("that address is not allowed")
+		}
 		return nil, "", fmt.Errorf("could not fetch that image")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, "", fmt.Errorf("could not fetch that image")
+	}
+	if resp.ContentLength > maxUploadBytes {
+		return nil, "", fmt.Errorf("file too large (max 5MB)")
 	}
 	buf, err := io.ReadAll(io.LimitReader(resp.Body, maxUploadBytes+1))
 	if err != nil {
@@ -508,6 +530,39 @@ func (a *App) fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, stri
 	return buf, mime, nil
 }
 
+// urlAllowed checks scheme, userinfo and port. Outside dev only the
+// default web ports are allowed, so the fetch can't be used to probe other
+// services on a public host.
+func (a *App) urlAllowed(u *url.URL) error {
+	if u == nil || u.Host == "" || u.User != nil ||
+		(u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("url must be an http or https address")
+	}
+	if p := u.Port(); p != "" && !a.Config.IsDev() && p != "80" && p != "443" {
+		return fmt.Errorf("that port is not allowed (use 80 or 443)")
+	}
+	return nil
+}
+
+type blockedAddrError struct{ addr string }
+
+func (e *blockedAddrError) Error() string { return "blocked address " + e.addr }
+
+// dialControl runs on the real socket address just before connect. It is
+// the last line of defence: whatever produced the address, a blocked range
+// is never dialed.
+func (a *App) dialControl(network, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return &blockedAddrError{address}
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !a.ipAllowed(ip) {
+		return &blockedAddrError{address}
+	}
+	return nil
+}
+
 func (a *App) hostAllowed(ctx context.Context, host string) error {
 	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
 	if host == "" {
@@ -520,12 +575,19 @@ func (a *App) hostAllowed(ctx context.Context, host string) error {
 	return err
 }
 
+// resolveAllowedIP returns the first allowed address for host. Names that
+// are all digits/dots/hex (decimal "2130706433", octal "0177.0.0.1",
+// "0x7f.1") are refused rather than handed to a resolver that might
+// interpret them as an IP.
 func (a *App) resolveAllowedIP(ctx context.Context, host string) (net.IP, error) {
 	if ip := net.ParseIP(host); ip != nil {
 		if !a.ipAllowed(ip) {
 			return nil, fmt.Errorf("that address is not allowed")
 		}
 		return ip, nil
+	}
+	if numericHost(host) {
+		return nil, fmt.Errorf("that address is not allowed")
 	}
 	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil || len(ips) == 0 {
@@ -539,21 +601,47 @@ func (a *App) resolveAllowedIP(ctx context.Context, host string) (net.IP, error)
 	return nil, fmt.Errorf("that address is not allowed")
 }
 
-// ipAllowed refuses private, link-local, multicast, and unspecified
-// addresses. Loopback is allowed only in dev.
-func (a *App) ipAllowed(ip net.IP) bool {
-	if ip == nil {
+// numericHost reports a host made only of digits, dots and an 0x prefix,
+// i.e. an alternate IPv4 spelling rather than a DNS name.
+func numericHost(host string) bool {
+	h := strings.ToLower(host)
+	if h == "" {
 		return false
 	}
-	if a.Config.IsDev() && ip.IsLoopback() {
+	for _, part := range strings.Split(h, ".") {
+		p := strings.TrimPrefix(part, "0x")
+		if p == "" && part != "0x" {
+			continue
+		}
+		for _, r := range p {
+			if !(r >= '0' && r <= '9') && !(strings.HasPrefix(part, "0x") && r >= 'a' && r <= 'f') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// ipAllowed refuses every non-global range: private, loopback, link-local
+// (incl. 169.254.169.254 metadata), CGNAT, unspecified, multicast,
+// reserved/documentation, and IPv6 forms that embed or translate to IPv4
+// (IPv4-mapped, NAT64, 6to4, Teredo). Loopback is allowed only in dev.
+func (a *App) ipAllowed(ip net.IP) bool {
+	addr, ok := netip.AddrFromSlice(ip)
+	if !ok {
+		return false
+	}
+	addr = addr.Unmap()
+	if a.Config.IsDev() && addr.IsLoopback() {
 		return true
 	}
-	if cgnat.Contains(ip) || thisNetwork.Contains(ip) {
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() {
 		return false
 	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || ip.IsInterfaceLocalMulticast() || ip.IsUnspecified() {
-		return false
+	for _, p := range blockedPrefixes {
+		if p.Contains(addr) {
+			return false
+		}
 	}
 	return true
 }
@@ -667,9 +755,18 @@ func (a *App) serveUpload(c *gin.Context) {
 	http.ServeContent(c.Writer, c.Request, st.Name(), st.ModTime(), f)
 }
 
-// Ranges net.IP has no predicate for: carrier-grade NAT (often a cloud
-// provider's internal network) and "this network".
-var (
-	_, cgnat, _       = net.ParseCIDR("100.64.0.0/10")
-	_, thisNetwork, _ = net.ParseCIDR("0.0.0.0/8")
-)
+// Ranges that are not public internet but that netip's predicates don't
+// cover (IANA special-purpose registries).
+var blockedPrefixes = func() []netip.Prefix {
+	var out []netip.Prefix
+	for _, c := range []string{
+		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+		"172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24", "192.88.99.0/24", "192.168.0.0/16",
+		"198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+		"::/128", "::1/128", "::ffff:0:0/96", "64:ff9b::/96", "64:ff9b:1::/48", "100::/64",
+		"2001::/23", "2001:db8::/32", "2002::/16", "fc00::/7", "fe80::/10", "fec0::/10", "ff00::/8",
+	} {
+		out = append(out, netip.MustParsePrefix(c))
+	}
+	return out
+}()

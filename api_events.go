@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -329,9 +330,11 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 	}
 	var next *time.Time
 	nextLocal, nextTZ := "", ""
+	// Explicit column names: GORM would map a bare TZID field to
+	// "t_z_i_d", silently leaving the zone empty (the "1:00 AM UTC" bug).
 	var row struct {
-		StartsAt time.Time
-		TZID     string
+		StartsAt time.Time `gorm:"column:starts_at"`
+		TZID     string    `gorm:"column:tzid"`
 	}
 	err := a.DB.Table("event_occurrences").
 		Select("event_occurrences.starts_at, events.tzid").
@@ -342,9 +345,15 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 	if err == nil && !row.StartsAt.IsZero() {
 		t := row.StartsAt.UTC()
 		next = &t
-		nextTZ = row.TZID
-		if loc, lerr := time.LoadLocation(row.TZID); lerr == nil {
-			nextLocal = events.FormatWall(t, loc)
+		// time.LoadLocation("") is UTC, so an empty zone must not reach it.
+		if row.TZID != "" {
+			if loc, lerr := time.LoadLocation(row.TZID); lerr == nil {
+				nextTZ = row.TZID
+				nextLocal = events.FormatWall(t, loc)
+			}
+		}
+		if nextTZ == "" {
+			log.Printf("groupSummary: group %d next event has no usable time zone %q", g.ID, row.TZID)
 		}
 	}
 	return groupSummaryJSON{
