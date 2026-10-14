@@ -5,7 +5,7 @@
 # backup.env alone, and reapplies the same host configuration.
 #
 # This script never calls doctl and never creates droplets, firewalls,
-# Spaces buckets, snapshots, or backup plans. Those are paid or account
+# object-storage buckets, snapshots, or backup plans. Those are paid or account
 # resources. The church creates them; the commands live in
 # docs/DEPLOY-DIGITALOCEAN.md.
 #

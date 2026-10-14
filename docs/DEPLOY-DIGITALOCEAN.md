@@ -7,7 +7,7 @@ church owns the DigitalOcean account, the domain, and the email account.
 `deploy/digitalocean/provision.sh` hardens a fresh Ubuntu droplet and
 starts the stack. It is idempotent. `--dry-run` prints every action and
 changes nothing. It never calls `doctl` and never creates a droplet, a
-Cloud Firewall, a snapshot, a Droplet Backup plan, or a Spaces bucket.
+Cloud Firewall, a snapshot, a Droplet Backup plan, or an object-storage bucket.
 Those commands are below so a person can run them in the church's account.
 
 Prices below were checked in October 2026 against
@@ -20,23 +20,24 @@ Re-check before telling a church a number.
 - An SSH key pair. Droplets are created with that public key and no root password.
 - The church's DigitalOcean account. A helper can be added as a team member.
   The helper does not open the account in their own name.
-- An email provider the church already pays for, or a new one in the
-  church's name. Postmark is the usual choice; any SMTP host works.
-  Fold starts without it and then refuses to send password resets and
-  invitations until `FOLD_SMTP_URL` is set.
-- SMS is optional. Fold runs with email alone. When a church wants
-  texting, Telnyx is the provider to set up, on the church's own account.
-  Twilio is a later adapter and is not part of bringing a site up.
+- Email, in the church's name. Postmark is the recommendation. Any SMTP
+  host works, including one the church already pays for. Fold starts
+  without it and then refuses to send password resets and invitations
+  until `FOLD_SMTP_URL` is set.
+- SMS is optional. Fold runs with email alone. Telnyx is the recommendation
+  when a church wants texting, on the church's own account. Twilio can be
+  added later and is not required to bring a site up.
 
 The database is Postgres in the Compose file (`postgres:16-alpine`, user
 `church`, database `fold`). That service is the only database.
 
 ## Size
 
-Pull a published image. Building the Node and Go stages on the droplet
-can exhaust a 1–2 GB machine, and this repo's `docker-compose.yml` still
-says `build: .` until prebuilt images are published (plan C10, open
-question below).
+This repo's `docker-compose.yml` builds the image on the droplet
+(`build: .`, `--allow-onbox-build`). Use the 2 GB size for that build.
+A 1 GB droplet is enough only after a published image exists to pull
+(`--image`). Building the Node and Go stages on a 1 GB machine can run
+out of memory. No separate build machine is part of this guide.
 
 | Droplet | Slug | Disk / transfer | When |
 |---|---|---|---|
@@ -45,9 +46,12 @@ question below).
 | 2 GiB, 2 vCPU, $18/mo | `s-2vcpu-2gb` | 60 GiB, 3,000 GiB | When the 1 vCPU size is busy. |
 
 Weekly Droplet Backups add 20% of the droplet price. Daily adds 30%.
-Snapshots are $0.06 per GB-month. Spaces object storage starts at $5/month.
-Cloud Firewalls and the metrics agent are free. Pick a region near the
-church; `nyc3` below is only an example.
+Snapshots are $0.06 per GB-month. Offsite dumps use Backblaze B2, a few
+cents at this size (first 10 GB free, then $6.95 per TB per month:
+[B2 pricing](https://www.backblaze.com/cloud-storage/pricing)). Spaces
+works instead and starts at $5/month. Cloud Firewalls and the metrics
+agent are free. Pick a region near the church; `nyc3` below is only an
+example.
 
 ## 1. SSH key and the droplet
 
@@ -248,10 +252,10 @@ does not replace the live `fold` database. Run it after the first real
 dump and again after the first upgrade.
 
 **Offsite.** A disk in the same region is not a backup of the region.
-The plan's default store is Backblaze B2. Spaces is the same-vendor
-option and has a $5/month minimum. Either is S3-compatible. Create the
-bucket and a write-only key in the church's account (control panel).
-The script will not create them.
+Backblaze B2 is the recommendation: it is the cheapest store in the plan
+for a small backup. Any S3-compatible bucket works the same way, including
+DigitalOcean Spaces. Create the bucket and a write-only key in the church's
+account (control panel). The script will not create them.
 
 On a laptop, not the server:
 
@@ -262,9 +266,9 @@ age-keygen -o fold-backup.key
 Put `fold-backup.key` in the password manager. Copy the `age1...` public
 key into `/opt/fold/backup.env` (start from
 `deploy/digitalocean/backup.env.example`), mode 600. Set the bucket,
-endpoint, and region. Spaces endpoints look like
-`https://nyc3.digitaloceanspaces.com`. B2 endpoints look like
-`https://s3.us-west-004.backblazeb2.com`.
+endpoint, and region. The example file uses B2:
+`https://s3.us-west-004.backblazeb2.com`, region `us-west-004`.
+A Spaces bucket uses `https://nyc3.digitaloceanspaces.com`, region `nyc3`.
 
 The next backup encrypts with that public key and uploads only the
 `.age` files, using the `amazon/aws-cli` image. Plaintext dumps stay on
@@ -310,8 +314,8 @@ the previous image tag or git revision.
 
 Certificate problems are almost always DNS (the name does not point here yet), port 80 blocked, or a Cloudflare proxy in front of Caddy. `sudo docker compose --project-directory /opt/fold logs caddy --tail 100` shows the ACME error. The shipped Caddyfile does not set a contact email, so Let's Encrypt will not mail you when a certificate is close to expiry. The health check and the Caddy log are how you notice.
 
-## Choices still open
+## Decisions
 
-- **Images.** Plan C10 publishes `ghcr.io/grierj/fold` and a backup image. This repo still builds on the host (`build: .` in `docker-compose.yml`). The script refuses to build unless you pass `--allow-onbox-build`. `--image` is ready for the day a tag exists.
-- **Ubuntu.** The script accepts 24.04 and 26.04. The create command above uses `ubuntu-26-04-x64` because that is the current LTS DigitalOcean offers. `ubuntu-24-04-x64` is also tested.
-- **Backup destination.** Local dumps always land in `/var/backups/fold`. Offsite is whatever S3-compatible bucket the church creates. The product plan recommends Backblaze B2. Spaces stays in the same DigitalOcean account and costs more at the low end. The script ships to whichever endpoint is in `backup.env`.
+- **Images.** Keep the Compose build on the droplet (`--allow-onbox-build` on the 2 GB size). `--image` is for a later published tag. No separate build setup.
+- **Ubuntu.** The create command uses `ubuntu-26-04-x64`. The script also runs on 24.04 (`ubuntu-24-04-x64`).
+- **Services.** One recommendation each, and another provider still works. Postmark for email (any SMTP host works). Telnyx for SMS when a church wants texting (Fold runs without it). Backblaze B2 for offsite dumps (any S3-compatible bucket, including DigitalOcean Spaces, works).

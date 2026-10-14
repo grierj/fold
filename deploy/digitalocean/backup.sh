@@ -2,10 +2,11 @@
 # Nightly backup of Fold's Compose Postgres and the uploads volume.
 #
 # Writes mode-600 files under /var/backups/fold. When /opt/fold/backup.env
-# is complete, encrypts them with age and uploads the ciphertext to an
-# S3-compatible bucket (DigitalOcean Spaces, Backblaze B2, or similar).
+# is complete, encrypts them with age and uploads the ciphertext.
+# Backblaze B2 is the recommendation. Any S3-compatible bucket works,
+# including DigitalOcean Spaces.
 #
-# Never creates a bucket, a Spaces key, or any other paid resource.
+# Never creates a bucket, a key, or any other paid resource.
 # Never uploads a plaintext dump. The age private key stays off this machine.
 #
 # --dry-run prints the plan and does not dump, encrypt, upload, or delete.

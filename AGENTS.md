@@ -201,7 +201,7 @@ CLI (C11): `fold` (same as `fold serve`), `fold healthcheck`,
   `deploy/digitalocean/provision.sh`. The church owns the droplet, DNS,
   and email account. SMS is optional (Telnyx when they want it). The
   script never calls `doctl` and never creates droplets, firewalls,
-  snapshots, backup plans, or Spaces buckets. Postgres is the Compose
+  snapshots, backup plans, or object-storage buckets. Postgres is the Compose
   `db` service. Run `provision.sh --dry-run` before a real run.
 
 ## SMS (Phase 2, not yet)
