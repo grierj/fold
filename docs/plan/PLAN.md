@@ -1706,7 +1706,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] `GET /notifications/badge` returns `{unread, waiting}` and 304 when unchanged; the SPA refreshes it on focus and navigation and pauses while hidden
   - [x] Every kind, rendered with teen and hidden-adult fixtures, contains no `@` or phone pattern (unit test over the registry)
   - [x] A notification `link` that isn't an internal path is rejected
-- Built in #PR (Oct 13, 2026). The settings gear and `/settings/notifications` wait for M3.12; no kind batches yet (batching is built and tested with a test kind).
+- Built in #46 (Oct 13, 2026). The settings gear and `/settings/notifications` wait for M3.12; no kind batches yet (batching is built and tested with a test kind).
 - Tests: notify tests (state transitions, batching, dedupe, task resolution, own-rows-only); Playwright for the bell, archive and Undo, and the waiting count.
 
 **M1.2 Email basics, password reset, invitations**

@@ -11,7 +11,7 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | M0.4 Frontend and browser test tooling | done (merged, #22) | Codex | `m0.4-frontend-test-tooling` |
 | M1.1a Events, time zones, occurrences, series edits | done (merged, #38) | Grok | `m1.1a-events-occurrences` |
 | M1.1b Church-wide hosts, event visibility, audit, attendee privacy | done (merged, #39) | Grok | `m1.1b-hosts-visibility` |
-| M1.1c Stored in-app notifications | in review | Codex | `m1.1c-notifications` |
+| M1.1c Stored in-app notifications | in review (#46) | Codex | `m1.1c-notifications` |
 | M1.2 Email basics, password reset, invitations | unclaimed | | |
 | M1.3 Self-signup, account requests, age gate | unclaimed | | |
 | M1.4 Guest registration | unclaimed | | |
