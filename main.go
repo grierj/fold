@@ -90,6 +90,7 @@ func serve(stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	app.startOccurrenceTicker(ctx)
+	app.startNotificationPruning(ctx)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 	go func() {

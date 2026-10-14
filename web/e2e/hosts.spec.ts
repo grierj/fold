@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, email, signIn } from "./helpers";
+import { apiAs, email, signIn, signOut } from "./helpers";
 
 test.use({ locale: "en-US", timezoneId: "America/New_York" });
 
@@ -69,8 +69,7 @@ test("opening an invite-only group's event hides the group and the names", async
   expect((await saved).ok()).toBe(true);
   await expect(page.getByLabel("Event visibility")).toHaveValue("public");
 
-  await page.getByRole("button", { name: "Log out" }).click();
-  await expect(page.getByRole("link", { name: "Log in" })).toBeVisible();
+  await signOut(page);
 
   await page.goto(`/events/${event.id}`);
   await expect(page.getByRole("heading", { name: "Quiet supper" })).toBeVisible();

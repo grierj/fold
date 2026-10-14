@@ -51,12 +51,41 @@ export interface Member {
   admin: boolean; // church admin: labeled on rosters, never removable by leaders
 }
 
+// A stored notification (5.12). Text is plain and rendered by the server;
+// link is always an internal path. waiting: an open task, counted in the
+// badge until someone resolves it.
 export interface Notification {
-  id: string;
-  type: "approval" | "event" | "leadership";
+  id: number;
+  kind: string;
+  subjectId?: number;
+  category: "admin" | "groups" | "events" | "messages" | "safety";
   title: string;
   body: string;
   link: string;
+  actions: { key: string; label: string }[];
+  batchCount: number;
+  createdAt: string;
+  updatedAt: string;
+  read: boolean;
+  archived: boolean;
+  waiting: boolean;
+  resolution?: NotificationResolution;
+}
+
+export interface NotificationResolution {
+  outcome: "approved" | "rejected" | "deleted" | "kept" | "withdrawn" | string;
+  by: string;
+  byMe: boolean;
+  at: string;
+}
+
+export type NotificationFilter = "all" | "unread" | "waiting" | "archived";
+
+export interface NotificationFeed {
+  waiting: Notification[];
+  waitingTotal: number;
+  notifications: Notification[];
+  next: string;
 }
 
 export type RegistrationStatus = "going" | "maybe" | "declined";

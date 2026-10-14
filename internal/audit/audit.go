@@ -53,21 +53,27 @@ const (
 	// or kept open when the group became more private (DEC-6, DEC-17,
 	// DEC-28, DEC-48). Target is the event. Meta has oldVisibility,
 	// newVisibility, oldLeaderOpened, leaderOpened, groupVisibility, and an
-	// optional reason. Rows before DEC-48 have oldSource/newSource instead. The group's other leaders and the admins see a derived notice.
+	// optional reason. Rows before DEC-48 have oldSource/newSource instead. The group's other leaders and the admins get a stored notification (M1.1c).
 	VisibilityOverride = "event.visibility_override"
 
 	// VisibilityChanged: any other visibility change (stricter, back to
 	// the group's value, tightened because the group became more private,
 	// or a church-wide public/private switch). Same meta shape, without a
-	// notice.
+	// notification.
 	VisibilityChanged = "event.visibility_changed"
 
 	// RegistrationCancelled: an event became more private (its group was
 	// made more private, DEC-48) and this person could no longer see it, so
 	// their registrations on upcoming dates were removed. Target is the
-	// event. Meta: userId, dates, newVisibility, reason. The person sees a
-	// derived notice.
+	// event. Meta: userId, dates, newVisibility, reason. The person gets a
+	// stored notification.
 	RegistrationCancelled = "registration.cancelled"
+
+	// GroupApproved / GroupRejected: an admin decided a pending group
+	// (M1.1c). Target is the group. The admins' notification tasks are
+	// resolved in the same transaction.
+	GroupApproved = "group.approved"
+	GroupRejected = "group.rejected"
 )
 
 // Entry is one audit record. Actor is nil for system actions.

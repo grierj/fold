@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"fold/models"
@@ -47,8 +48,8 @@ func TestLogoutEndsSession(t *testing.T) {
 	}
 }
 
-// A member's new group shows admins an approval notice whose id changes
-// for each new pending group, so an earlier dismissal can't hide it.
+// A member's new group gives every admin its own task, resolved when it is
+// approved; the next group is a new row, so nothing earlier can hide it.
 func TestMemberGroupNotifiesAdmins(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
@@ -56,14 +57,10 @@ func TestMemberGroupNotifiesAdmins(t *testing.T) {
 	admin := loginAs(t, app, "admin", "password1234")
 	sam := loginAs(t, app, "sam", "password1234")
 
-	approval := func() (n notificationJSON) {
+	approval := func(name string) (n notificationJSON) {
 		t.Helper()
-		var body struct {
-			Notifications []notificationJSON `json:"notifications"`
-		}
-		decodeJSON(t, admin.do("GET", "/api/v1/notifications", nil, false), &body)
-		for _, x := range body.Notifications {
-			if x.Type == "approval" && x.Link == "/admin?tab=approvals" {
+		for _, x := range feed(t, admin, "") {
+			if x.Kind == "group.pending" && strings.HasSuffix(x.Title, ": "+name) && x.Link == "/admin?tab=approvals" {
 				return x
 			}
 		}
@@ -82,23 +79,26 @@ func TestMemberGroupNotifiesAdmins(t *testing.T) {
 		return body.Group
 	}
 
-	if n := approval(); n.ID != "" {
-		t.Fatalf("notice before any group: %+v", n)
+	if ns := feed(t, admin, ""); len(ns) != 0 {
+		t.Fatalf("notice before any group: %+v", ns)
 	}
 	first := create("First")
 	if first.Status != models.GroupPending {
 		t.Fatalf("member group status %q", first.Status)
 	}
-	n1 := approval()
-	if n1.Title != "1 group needs approval" || n1.ID == "" {
+	n1 := approval("First")
+	if n1.ID == 0 || !n1.Waiting || n1.Title != "sam started a group: First" {
 		t.Fatalf("first notice: %+v", n1)
 	}
 	if w := admin.do("POST", "/api/v1/admin/groups/"+itoa(first.ID)+"/approve", map[string]any{}, true); w.Code != http.StatusOK {
 		t.Fatalf("approve: %d", w.Code)
 	}
+	if n := approval("First"); n.Waiting || n.Resolution == nil || n.Resolution.Outcome != "approved" || !n.Resolution.ByMe {
+		t.Fatalf("first after approve: %+v", n)
+	}
 	create("Second")
-	n2 := approval()
-	if n2.Title != "1 group needs approval" || n2.ID == n1.ID {
-		t.Fatalf("second notice reuses the first id: %+v vs %+v", n2, n1)
+	n2 := approval("Second")
+	if !n2.Waiting || n2.ID == n1.ID {
+		t.Fatalf("second notice: %+v vs %+v", n2, n1)
 	}
 }

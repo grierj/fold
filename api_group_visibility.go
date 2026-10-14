@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -198,13 +197,18 @@ func applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group, oldVis, 
 			IP: c.ClientIP()}); err != nil {
 			return impact, err
 		}
+		kept := *g
+		kept.Visibility = newVis
+		if err := notifyVisibilityOverride(tx, actor.ID, ev, &kept, ev.Visibility, "Kept open when the group became "+visWord(newVis)+"."); err != nil {
+			return impact, err
+		}
 	}
 	return impact, nil
 }
 
 // cancelLosers deletes upcoming registrations of people who could not see
 // ev at newVis, writing one registration.cancelled audit row per person;
-// the person sees a derived notice.
+// the person gets a stored notification.
 func cancelLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time) error {
 	var rows []struct {
 		ID     uint
@@ -239,35 +243,11 @@ func cancelLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, 
 			IP:   c.ClientIP()}); err != nil {
 			return err
 		}
+		if err := notifyRegistrationCancelled(tx, actor.ID, ev, uid); err != nil {
+			return err
+		}
 	}
 	return nil
-}
-
-// registrationCancelledNotices tells people whose registration was
-// cancelled because an event became more private. They can't see the
-// event or its group any more, so the notice names neither the group nor
-// the place and links nowhere private (PR #41 rules).
-func (a *App) registrationCancelledNotices(me *models.User) []notificationJSON {
-	var rows []models.AuditLog
-	a.DB.Where("action = ? AND at > ? AND meta_json->>'userId' = ?",
-		audit.RegistrationCancelled, time.Now().Add(-30*24*time.Hour), fmt.Sprint(me.ID)).
-		Order("at DESC").Limit(20).Find(&rows)
-	out := []notificationJSON{}
-	for _, r := range rows {
-		title := "An event you registered for"
-		var ev models.Event
-		if a.DB.Unscoped().First(&ev, r.TargetID).Error == nil && ev.Title != "" {
-			title = ev.Title
-		}
-		out = append(out, notificationJSON{
-			ID:    fmt.Sprintf("registration-cancelled:%d", r.ID),
-			Type:  "event",
-			Title: "Registration cancelled: " + title,
-			Body:  "This event is now limited to its group's members, so your registration for upcoming dates was cancelled.",
-			Link:  "/",
-		})
-	}
-	return out
 }
 
 // eventImpactOf is what setting one event to newVis would do, in the same

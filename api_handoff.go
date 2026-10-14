@@ -146,7 +146,7 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 		if err := tx.Model(&models.Group{}).Where("id = ?", g.ID).Update("leader_id", sid).Error; err != nil {
 			return err
 		}
-		if err := audit.Write(tx, audit.Entry{
+		if err := auditAndNotifyLeadership(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: g.ID,
 			Meta: map[string]any{"userId": sid, "oldRole": oldRole, "newRole": models.MembershipLeader,
 				"reason": reason, "departingUserId": leaving},
@@ -201,7 +201,7 @@ func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) e
 		if err := tx.Model(&m).Update("role", models.MembershipMember).Error; err != nil {
 			return err
 		}
-		if err := audit.Write(tx, audit.Entry{
+		if err := auditAndNotifyLeadership(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: m.GroupID,
 			Meta: map[string]any{"userId": userID, "oldRole": models.MembershipLeader,
 				"newRole": models.MembershipMember, "reason": reason},
@@ -242,6 +242,9 @@ func restoreMemberships(c *gin.Context, tx *gorm.DB, userID uint) error {
 				Actor: &actor.ID, Action: audit.MemberNotRestored, TargetType: "group", TargetID: m.GroupID,
 				Meta: meta, IP: c.ClientIP(),
 			}); err != nil {
+				return err
+			}
+			if err := notifyNotRestored(tx, actor.ID, &g, userID); err != nil {
 				return err
 			}
 			continue

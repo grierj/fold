@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -237,12 +238,7 @@ func TestNotifications(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", "admin")
 	member := newTestUser(t, app, "grier", "password1234", "member")
-	// Pending group → admin sees an approval notification.
-	pg := models.Group{Name: "Pending", LeaderID: member.ID, Status: models.GroupPending}
-	if err := app.DB.Create(&pg).Error; err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	// Active group with a meeting in 2 days → member sees an event notification.
+	// Active group with a meeting in 2 days: no upcoming-event item (DEC-44).
 	g := models.Group{Name: "Active", LeaderID: member.ID, Status: models.GroupActive}
 	if err := app.DB.Create(&g).Error; err != nil {
 		t.Fatalf("create group: %v", err)
@@ -251,44 +247,28 @@ func TestNotifications(t *testing.T) {
 	seedEvent(t, app, &g, member.ID, start)
 	app.DB.Create(&models.Membership{UserID: member.ID, GroupID: g.ID, Role: "member", Status: "active", JoinedAt: time.Now().UTC()})
 
+	// A member's new group is a task for the admin.
+	memberClient := loginAs(t, app, "grier", "password1234")
+	if w := memberClient.do("POST", "/api/v1/groups", map[string]any{"name": "Pending"}, true); w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
 	adminClient := loginAs(t, app, "admin", "password1234")
-	w := adminClient.do("GET", "/api/v1/notifications", nil, false)
-	if w.Code != http.StatusOK {
-		t.Fatalf("admin notifications: %d", w.Code)
-	}
-	var an struct {
-		Notifications []notificationJSON `json:"notifications"`
-	}
-	decodeJSON(t, w, &an)
 	foundApproval := false
-	for _, n := range an.Notifications {
-		if n.Type == "approval" {
+	for _, n := range feed(t, adminClient, "") {
+		if n.Kind == "group.pending" && n.Waiting && strings.Contains(n.Title, "Pending") {
 			foundApproval = true
 		}
 	}
 	if !foundApproval {
-		t.Fatalf("admin missing approval notification: %+v", an.Notifications)
+		t.Fatalf("admin missing approval notification: %+v", feed(t, adminClient, ""))
 	}
-
-	memberClient := loginAs(t, app, "grier", "password1234")
-	w = memberClient.do("GET", "/api/v1/notifications", nil, false)
-	var mn struct {
-		Notifications []notificationJSON `json:"notifications"`
-	}
-	decodeJSON(t, w, &mn)
-	foundEvent := false
-	for _, n := range mn.Notifications {
-		if n.Type == "event" && n.Title == "Active" {
-			foundEvent = true
-		}
-	}
-	if !foundEvent {
-		t.Fatalf("member missing event notification: %+v", mn.Notifications)
+	if ns := feed(t, memberClient, ""); len(ns) != 0 {
+		t.Fatalf("member has items (upcoming events left the bell): %+v", ns)
 	}
 
 	// Unauthenticated → 401.
 	anon := newAPIClient(t, app)
-	w = anon.do("GET", "/api/v1/notifications", nil, false)
+	w := anon.do("GET", "/api/v1/notifications", nil, false)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("anon notifications: got %d, want 401", w.Code)
 	}

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, signIn } from "./helpers";
+import { apiAs, signIn, signOut } from "./helpers";
 
 // Grier's Oct 10 reports: logout left the previous session on screen, and
 // an admin signing in after a member created a group saw no notice.
@@ -16,9 +16,7 @@ test("logout clears the session's data, including through back", async ({ page }
   const session = async () => (await page.context().cookies()).find((c) => c.name === "fold-session")?.value;
   const before = await session();
 
-  await page.getByRole("button", { name: "Log out" }).click();
-  await expect(page).toHaveURL("/");
-  await expect(page.getByRole("link", { name: "Log in" })).toBeVisible();
+  await signOut(page);
   await expect(page.getByRole("heading", { name: "Room 201 class" })).toBeVisible();
   for (const text of ["Members-only circle", "Invite-only circle", "Sam Member", "Log out"]) {
     await expect(page.getByText(text)).toHaveCount(0);
@@ -53,27 +51,25 @@ test("an admin signing in after a member's new group sees the notice", async ({ 
   await page.getByLabel("Group name").fill("Sam's new study");
   await page.getByRole("button", { name: "Create group" }).click();
   await expect(page.getByRole("heading", { name: "Pending approval" })).toBeVisible();
-  await page.getByRole("button", { name: "Log out" }).click();
-  await expect(page.getByRole("link", { name: "Log in" })).toBeVisible();
+  await signOut(page);
 
   await signIn(page, "grier");
-  const bell = page.getByRole("button", { name: "Notifications" });
+  const bell = page.getByRole("button", { name: /^Notifications/ });
+  await expect(bell).toHaveAccessibleName(/waiting on you/);
   await bell.click();
-  const notice = page.getByRole("link", { name: /1 group needs approval/ });
+  const notice = page.getByRole("link", { name: /Sam Member started a group: Sam's new study/ });
   await expect(notice).toBeVisible();
 
-  // Dismiss it, then let another member's group arrive while signed in:
-  // the next navigation shows a fresh notice despite the same wording.
+  // Opening it doesn't clear a task. Another member's group arriving while
+  // signed in is its own row on the next navigation.
   await notice.click();
   await expect(page).toHaveURL(/tab=approvals/);
-  const admin = await apiAs(request, "grier");
-  const { groups } = await admin("GET", "/admin/pending");
-  for (const g of groups) await admin("POST", `/admin/groups/${g.id}/approve`, {});
   const sam = await apiAs(request, "sam");
   await sam("POST", "/groups", { name: "Another study", description: "", tags: [], imageUrl: "", location: "", visibility: "public", memberLimit: null });
   await page.getByRole("link", { name: "My groups" }).click();
   await bell.click();
-  await expect(page.getByRole("link", { name: /1 group needs approval/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /started a group: Another study/ })).toBeVisible();
+  await expect(page.getByRole("link", { name: /started a group: Sam's new study/ })).toBeVisible();
 
   // Leave nothing pending for other specs.
   const again = await apiAs(request, "grier"); // the request context is Sam's now

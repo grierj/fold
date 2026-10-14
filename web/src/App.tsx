@@ -11,6 +11,7 @@ import { EventDetail } from "./pages/EventDetail";
 import { MyGroups } from "./pages/MyGroups";
 import { ProfilePage } from "./pages/Profile";
 import { AdminPage } from "./pages/Admin";
+import { NotificationsPage } from "./pages/Notifications";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 
@@ -47,6 +48,7 @@ export default function App() {
         <Route path="/my-groups" element={<MyGroups />} />
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/admin" element={<AdminPage />} />
+        <Route path="/notifications" element={<NotificationsPage />} />
         <Route
           path="*"
           element={

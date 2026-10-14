@@ -1,16 +1,41 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Notification } from "../types";
 import { NotificationBell } from "./Notifications";
 
-const list = vi.fn();
-vi.mock("../api", () => ({ Notifications: { list: () => list() } }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 7 } }) }));
+const api = vi.hoisted(() => ({
+  list: vi.fn(),
+  badge: vi.fn(),
+  seen: vi.fn(),
+  read: vi.fn(),
+  readAll: vi.fn(),
+  archive: vi.fn(),
+  approveGroup: vi.fn(),
+}));
+vi.mock("../api", () => {
+  class ApiError extends Error {
+    status: number;
+    data: Record<string, unknown>;
+    constructor(status: number, message: string, data: Record<string, unknown> = {}) {
+      super(message);
+      this.status = status;
+      this.data = data;
+    }
+  }
+  return { Notifications: api, ApiError };
+});
 
-const notice = (id: string): Notification => ({
-  id, type: "approval", title: "1 group needs approval", body: "", link: "/admin?tab=approvals",
+const item = (over: Partial<Notification>): Notification => ({
+  id: 1, kind: "group.leadership_changed", category: "admin", title: "Pat made Sam a leader", body: "Youth",
+  link: "/groups/1", actions: [], batchCount: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  read: false, archived: false, waiting: false, ...over,
+});
+
+const task = item({
+  id: 2, kind: "group.pending", subjectId: 9, title: "Sam started a group: Breakfast", waiting: true,
+  actions: [{ key: "approve", label: "Approve" }], link: "/admin?tab=approvals",
 });
 
 function renderBell() {
@@ -21,37 +46,109 @@ function renderBell() {
   );
 }
 
+beforeEach(() => {
+  Object.values(api).forEach((f) => f.mockReset());
+  api.seen.mockResolvedValue({});
+  api.read.mockResolvedValue({});
+  api.badge.mockResolvedValue({ badge: { unread: 1, waiting: 1 }, etag: '"1-1"' });
+  api.list.mockResolvedValue({ waiting: [task], waitingTotal: 1, notifications: [item({})], next: "" });
+  localStorage.clear();
+});
+afterEach(() => vi.useRealTimers());
+
 describe("NotificationBell", () => {
-  beforeEach(() => {
-    list.mockReset();
-    localStorage.clear();
+  it("shows one plain count and names both numbers", async () => {
+    renderBell();
+    const bell = await screen.findByRole("button", { name: "Notifications, 1 unread, 1 waiting on you" });
+    expect(within(bell).getByText("2")).toBeInTheDocument();
   });
 
-  it("refetches when the window regains focus", async () => {
-    list.mockResolvedValue({ notifications: [] });
+  it("caps the badge at 9+ and shows nothing at zero", async () => {
+    api.badge.mockResolvedValue({ badge: { unread: 8, waiting: 3 }, etag: "x" });
+    const { unmount } = renderBell();
+    expect(await screen.findByText("9+")).toBeInTheDocument();
+    unmount();
+    api.badge.mockResolvedValue({ badge: { unread: 0, waiting: 0 }, etag: "y" });
     renderBell();
-    await act(async () => {});
-    expect(list).toHaveBeenCalledTimes(1);
-    list.mockResolvedValue({ notifications: [notice("approval:groups:5:1")] });
+    expect(await screen.findByRole("button", { name: "Notifications" })).toBeInTheDocument();
+    expect(screen.queryByText("0")).toBeNull();
+  });
+
+  it("refetches on focus, sends its ETag, and keeps the count on 304", async () => {
+    renderBell();
+    await screen.findByText("2");
+    api.badge.mockResolvedValue(null);
     await act(async () => {
       fireEvent.focus(window);
     });
-    expect(list).toHaveBeenCalledTimes(2);
-    expect(await screen.findByText("1")).toBeInTheDocument();
+    expect(api.badge).toHaveBeenLastCalledWith('"1-1"');
+    expect(screen.getByText("2")).toBeInTheDocument();
   });
 
-  it("a dismissed notice doesn't hide a new one with the same wording", async () => {
-    localStorage.setItem("fold-dismissed-notifications:7", JSON.stringify(["approval:groups:5:1"]));
-    list.mockResolvedValue({ notifications: [notice("approval:groups:5:1")] });
+  it("polls every 60 seconds and pauses while hidden", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
     renderBell();
     await act(async () => {});
-    expect(screen.queryByText("1")).toBeNull();
-
-    list.mockResolvedValue({ notifications: [notice("approval:groups:9:1")] });
+    const calls = api.badge.mock.calls.length;
     await act(async () => {
-      fireEvent.focus(window);
+      vi.advanceTimersByTime(60_000);
     });
-    await userEvent.click(screen.getByRole("button", { name: "Notifications" }));
-    expect(screen.getByText("1 group needs approval")).toBeInTheDocument();
+    expect(api.badge.mock.calls.length).toBe(calls + 1);
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(api.badge.mock.calls.length).toBe(calls + 1);
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+  });
+
+  it("lists waiting items first, approves inline, and keeps nothing in storage", async () => {
+    api.approveGroup.mockImplementation(async () => {
+      // The server now has it resolved by me; the refetch shows that.
+      const done = { ...task, waiting: false, actions: [], resolution: { outcome: "approved", by: "Me", byMe: true, at: "" } };
+      api.list.mockResolvedValue({ waiting: [], waitingTotal: 0, notifications: [done, item({})], next: "" });
+      return {};
+    });
+    renderBell();
+    await userEvent.click(await screen.findByRole("button", { name: /^Notifications/ }));
+    expect(await screen.findByText("Waiting on you", { selector: "h3" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(api.approveGroup).toHaveBeenCalledWith(9, 2);
+    expect(await screen.findByText("You approved this")).toBeInTheDocument();
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  it("shows who won when an inline approve loses the race", async () => {
+    const { ApiError } = await import("../api");
+    api.approveGroup.mockImplementation(async () => {
+      const done = { ...task, waiting: false, actions: [], resolution: { outcome: "approved", by: "Kim", byMe: false, at: "" } };
+      api.list.mockResolvedValue({ waiting: [], waitingTotal: 0, notifications: [done], next: "" });
+      throw new ApiError(409, "handled", { resolvedBy: "Kim", resolution: "approved" });
+    });
+    renderBell();
+    await userEvent.click(await screen.findByRole("button", { name: /^Notifications/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByText("Already approved by Kim")).toBeInTheDocument();
+  });
+
+  it("archives with × and offers Undo", async () => {
+    api.archive.mockResolvedValue({});
+    renderBell();
+    await userEvent.click(await screen.findByRole("button", { name: /^Notifications/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Archive: Pat made Sam a leader" }));
+    expect(api.archive).toHaveBeenCalledWith(1, true);
+    await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(api.archive).toHaveBeenLastCalledWith(1, false);
+  });
+
+  it("Escape closes the panel and returns focus to the bell", async () => {
+    renderBell();
+    const bell = await screen.findByRole("button", { name: /^Notifications/ });
+    await userEvent.click(bell);
+    expect(bell).toHaveAttribute("aria-expanded", "true");
+    await userEvent.keyboard("{Escape}");
+    expect(bell).toHaveAttribute("aria-expanded", "false");
+    expect(bell).toHaveFocus();
   });
 });

@@ -12,6 +12,18 @@ export async function signIn(page: Page, name: string) {
   await expect(page).not.toHaveURL(/\/login/);
 }
 
+// Sign out through the header button. Logout ends with a full load of "/"
+// (window.location.replace), so wait for that load to finish before the
+// next page.goto, or the reload aborts it (the old hosts.spec.ts flake).
+export async function signOut(page: Page) {
+  await Promise.all([
+    page.waitForEvent("load"),
+    page.getByRole("button", { name: "Log out" }).click(),
+  ]);
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("link", { name: "Log in" })).toBeVisible();
+}
+
 // A signed-in JSON API client for seeding (cookie session + CSRF header).
 export async function apiAs(request: APIRequestContext, name: string) {
   const csrf = async () => (await (await request.get("/api/v1/auth/csrf")).json()).csrfToken as string;

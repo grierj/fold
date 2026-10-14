@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -110,10 +111,16 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 			return err
 		}
 		// The creator is the group's first leader.
-		return tx.Create(&models.Membership{
+		if err := tx.Create(&models.Membership{
 			UserID: u.ID, GroupID: g.ID,
 			Role: models.MembershipLeader, Status: "active", JoinedAt: time.Now().UTC(),
-		}).Error
+		}).Error; err != nil {
+			return err
+		}
+		if g.Status == models.GroupPending {
+			return notifyGroupPending(tx, &g, u.ID)
+		}
+		return nil
 	})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not create group")
@@ -281,6 +288,17 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 				return err
 			}
 		}
+		// An admin activating or archiving a pending group by editing it
+		// decides the approval task too.
+		if locked.Status == models.GroupPending && g.Status != models.GroupPending {
+			outcome := "approved"
+			if g.Status != models.GroupActive {
+				outcome = "rejected"
+			}
+			if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &u.ID, outcome); err != nil {
+				return err
+			}
+		}
 		return tx.Save(g).Error
 	})
 	if errors.Is(err, errNeedDecision) {
@@ -347,7 +365,7 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 // is in the group, and answers with the membership.
 func (a *App) membershipAdded(c *gin.Context, g *models.Group, userID uint) {
 	if g.DeletionRequested && memberCount(a.DB, g.ID) > 1 {
-		a.DB.Model(&models.Group{}).Where("id = ?", g.ID).Update("deletion_requested", false)
+		a.clearDeletionRequest(g.ID, nil, "withdrawn")
 	}
 	var m models.Membership
 	a.DB.Where("user_id = ? AND group_id = ?", userID, g.ID).First(&m)
@@ -599,7 +617,7 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, 
 			if note != "" {
 				meta["note"] = note
 			}
-			return audit.Write(tx, audit.Entry{
+			return auditAndNotifyLeadership(tx, audit.Entry{
 				Actor: &actor.ID, Action: audit.MemberRemoved,
 				TargetType: "group", TargetID: g.ID, Meta: meta, IP: c.ClientIP(),
 			})
@@ -607,7 +625,7 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, 
 		if oldRole != models.MembershipLeader && newRole != models.MembershipLeader {
 			return nil
 		}
-		return audit.Write(tx, audit.Entry{
+		return auditAndNotifyLeadership(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.RoleChanged,
 			TargetType: "group", TargetID: g.ID,
 			Meta: map[string]any{"userId": userID, "oldRole": roleOrNone(oldRole), "newRole": roleOrNone(newRole)},
@@ -708,7 +726,14 @@ func (a *App) apiRequestDeletion(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "the group still has other members")
 		return
 	}
-	if err := a.DB.Model(g).Update("deletion_requested", true).Error; err != nil {
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&models.Group{}).Where("id = ? AND NOT deletion_requested", g.ID).Update("deletion_requested", true)
+		if res.Error != nil || res.RowsAffected == 0 {
+			return res.Error // already requested: the admins already have the task
+		}
+		return notifyDeletionRequested(tx, g, u.ID)
+	})
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not request deletion")
 		return
 	}
@@ -727,17 +752,38 @@ func (a *App) apiCancelDeletion(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, "forbidden")
 		return
 	}
-	if err := a.DB.Model(g).Update("deletion_requested", false).Error; err != nil {
+	if err := a.clearDeletionRequest(g.ID, &apiUser(c).ID, "withdrawn"); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not cancel deletion")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})
 }
 
+// clearDeletionRequest turns a deletion request off and resolves the
+// admins' task with outcome (kept, withdrawn).
+func (a *App) clearDeletionRequest(groupID uint, by *uint, outcome string) error {
+	return a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.Group{}).Where("id = ?", groupID).Update("deletion_requested", false).Error; err != nil {
+			return err
+		}
+		_, err := notify.Resolve(tx, notify.GroupDeletion, groupID, by, outcome)
+		return err
+	})
+}
+
+// auditAndNotifyLeadership writes a RoleChanged or MemberRemoved row and
+// tells the other admins about a leadership change in the same transaction.
+func auditAndNotifyLeadership(tx *gorm.DB, e audit.Entry) error {
+	if err := audit.Write(tx, e); err != nil {
+		return err
+	}
+	return notifyLeadership(tx, e)
+}
+
 // deleteGroup removes the group and the rows that belong to it. Events and
 // the group itself are soft-deleted. Registrations, occurrences, and
 // memberships have no deleted-at column, so they are removed outright.
-func (a *App) deleteGroup(ctx context.Context, g *models.Group) error {
+func (a *App) deleteGroup(ctx context.Context, g *models.Group, by *uint) error {
 	imageURL := g.ImageURL
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var eventIDs []uint
@@ -749,6 +795,12 @@ func (a *App) deleteGroup(ctx context.Context, g *models.Group) error {
 		}
 		if err := tx.Where("group_id = ?", g.ID).Delete(&models.Membership{}).Error; err != nil {
 			return err
+		}
+		// Any task still open about the group is done.
+		for _, kind := range []string{notify.GroupPending, notify.GroupDeletion} {
+			if _, err := notify.Resolve(tx, kind, g.ID, by, "deleted"); err != nil {
+				return err
+			}
 		}
 		return tx.Delete(&models.Group{}, g.ID).Error
 	})
