@@ -25,7 +25,7 @@ Preconditions:
 - Save files under `$VERIFY_EVIDENCE/directory/`.
 
 - **Create a public group to list.** Choose `Start a group`. Run `page.getByRole("link", { name: "Start a group" }).click()` from `/`, then `page.getByLabel("Group name").fill("Room 201 class")` and `page.getByRole("button", { name: "Create group" }).click()`. The heading `Group created` appears. Choose `Go to the group`. The level-1 heading reads `Room 201 class`.
-- **Return to the directory.** Choose the `Fold` logo. Run `page.getByRole("link", { name: "Fold", exact: true }).click()`. The heading `Upcoming groups` is visible and a heading `Room 201 class` is visible.
+- **Return to the directory.** Choose the `Fold` logo. Run `page.getByRole("link", { name: "Fold", exact: true }).click()`. The heading `Church Groups` is visible and a heading `Room 201 class` is visible.
 - **Open the group.** Choose the `Room 201 class` heading. Run `page.getByRole("heading", { name: "Room 201 class" }).click()`. The URL matches `/groups/` followed by digits, and the level-1 heading reads `Room 201 class`.
 - **Search.** Go back to `/`. Fill the search box. Run `page.getByPlaceholder("Search groups…").fill("Room 201")`. The `Room 201 class` heading stays visible. Replace the text with `zzzz-no-such`. The text `No groups found. Try a different search or start a new group.` appears and the `Room 201 class` heading is gone. Clear the box. The group heading returns.
 - **Filter by tag.** Create a second public group named `Choir practice` with tags `choir` (the tags field placeholder is `e.g. young-adults, bible-study`; that label is not tied to the input, so fill `page.getByPlaceholder("e.g. young-adults, bible-study")`). On `/`, choose the `choir` chip. Run `page.getByRole("button", { name: "choir", exact: true }).first().click()` (each group card also has a `choir` tag button; the chip row comes first). The URL contains `tag=choir`, the chip has `aria-pressed="true"` and a checkmark, the line `Showing groups tagged choir. Clear` appears, `Choir practice` is visible, and `Room 201 class` is not. Choose `Clear`. The URL is `/` and both headings are visible.
@@ -38,5 +38,5 @@ Preconditions:
 - Group cards repeat their tags as buttons with the same names as the chips. Scope a chip locator with `.first()` or check `aria-pressed`.
 - Tag chips match case-insensitively. A link `/?tag=CHOIR` still selects the `choir` chip.
 - Group cards use a level-3 heading inside a link. Clicking the heading opens the group. The group page then shows a level-1 heading of the same name.
-- `Upcoming groups` is the directory section. `Coming up` is the event list and is absent when there are no events.
+- `Church Groups` is the directory section. `Church Events` is the event list and is absent when there are no events.
 - An invite-only group shows an `Invite only` pill. A signed-out visitor does not see that group in the directory.

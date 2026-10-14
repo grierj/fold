@@ -1,4 +1,4 @@
-import { useZoneOptions } from "../lib/useEventZone";
+import { ZoneSelect } from "../components/ZoneSelect";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
@@ -153,7 +153,6 @@ function SeriesEditor({
   onClose: () => void;
 }) {
   const simple = isSimpleWeekly(instance.recurrenceRule);
-  const zones = useZoneOptions();
   const [date, setDate] = useState(instance.seriesStartsLocal.slice(0, 10));
   const [time, setTime] = useState(instance.seriesStartsLocal.slice(11, 16) || "19:00");
   const [duration, setDuration] = useState(instance.seriesDurationMinutes);
@@ -244,19 +243,7 @@ function SeriesEditor({
           <label className="label" htmlFor={`s-tz-${instance.id}`}>
             Time zone
           </label>
-          <input
-            id={`s-tz-${instance.id}`}
-            className="input"
-            list={`series-zones-${instance.id}`}
-            value={tzid}
-            onChange={(e) => setTzid(e.target.value)}
-            required
-          />
-          <datalist id={`series-zones-${instance.id}`}>
-            {zones.map((z) => (
-                <option key={z.value} value={z.value} label={z.label} />
-              ))}
-          </datalist>
+          <ZoneSelect id={`s-tz-${instance.id}`} value={tzid} onChange={setTzid} />
         </div>
       </div>
       <div className="grid sm:grid-cols-2 gap-3">

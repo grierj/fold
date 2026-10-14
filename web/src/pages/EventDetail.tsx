@@ -1,4 +1,4 @@
-import { useZoneOptions } from "../lib/useEventZone";
+import { ZoneSelect } from "../components/ZoneSelect";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
@@ -426,7 +426,6 @@ function SeriesForm({ event, onSaved }: { event: EventDetailResponse["event"]; o
   const [time, setTime] = useState(event.startsLocal.slice(11, 16));
   const [duration, setDuration] = useState(event.durationMinutes);
   const [tzid, setTzid] = useState(event.tzid);
-  const zones = useZoneOptions();
   const [location, setLocation] = useState(event.location);
   const [recurring, setRecurring] = useState(event.recurrenceRule.startsWith("FREQ=WEEKLY"));
   const [days, setDays] = useState<string[]>(() => {
@@ -485,12 +484,7 @@ function SeriesForm({ event, onSaved }: { event: EventDetailResponse["event"]; o
           value={duration}
           onChange={(e) => setDuration(Number(e.target.value))}
         />
-        <input className="input" aria-label="Time zone" list="series-zones" value={tzid} onChange={(e) => setTzid(e.target.value)} required />
-        <datalist id="series-zones">
-          {zones.map((z) => (
-                <option key={z.value} value={z.value} label={z.label} />
-              ))}
-        </datalist>
+        <ZoneSelect id="series-tz" ariaLabel="Time zone" value={tzid} onChange={setTzid} />
       </div>
       <input className="input" aria-label="Location" value={location} onChange={(e) => setLocation(e.target.value)} />
       <label className="flex items-center gap-2 text-sm font-semibold">

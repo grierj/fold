@@ -1,3 +1,4 @@
+import { ZoneSelect } from "../components/ZoneSelect";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Events } from "../api";
@@ -13,7 +14,7 @@ export function NewChurchEvent() {
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("19:00");
   const [durationMin, setDurationMin] = useState(90);
-  const { tzid, setTzid, options: zones } = useEventZone();
+  const { tzid, setTzid } = useEventZone();
   const [location, setLocation] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [hostEmail, setHostEmail] = useState("");
@@ -165,19 +166,7 @@ export function NewChurchEvent() {
             <label className="label" htmlFor="church-event-tz">
               Time zone
             </label>
-            <input
-              id="church-event-tz"
-              className="input"
-              list="church-event-zones"
-              value={tzid}
-              onChange={(e) => setTzid(e.target.value)}
-              required
-            />
-            <datalist id="church-event-zones">
-              {zones.map((z) => (
-                <option key={z.value} value={z.value} label={z.label} />
-              ))}
-            </datalist>
+            <ZoneSelect id="church-event-tz" value={tzid} onChange={setTzid} />
           </div>
         </div>
         <div>

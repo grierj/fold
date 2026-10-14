@@ -59,3 +59,33 @@ export function zoneOptions(church: string | null | undefined, browser: string |
   for (const z of COMMON_ZONES) add(z, z);
   return out;
 }
+
+function allZones(): string[] {
+  try {
+    const f = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf;
+    return f ? f("timeZone") : [];
+  } catch {
+    return [];
+  }
+}
+
+// Options for <ZoneSelect>: the browser zone first, then the church zone,
+// the common list, and every other IANA zone; the current value is always
+// present (an existing series may use any zone). Labels name the zone.
+export function zoneSelectOptions(
+  church: string | null | undefined,
+  browser: string | null | undefined,
+  current: string | null | undefined,
+): ZoneOption[] {
+  const out = zoneOptions(church, browser).map((z) =>
+    z.label === z.value ? z : { value: z.value, label: `${z.label}: ${z.value}` },
+  );
+  const seen = new Set(out.map((z) => z.value));
+  for (const z of [...allZones(), current ?? ""]) {
+    if (z && !seen.has(z)) {
+      seen.add(z);
+      out.push({ value: z, label: z });
+    }
+  }
+  return out;
+}

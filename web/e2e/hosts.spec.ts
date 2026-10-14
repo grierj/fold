@@ -24,7 +24,7 @@ test("an admin schedules a church-wide event in the church time zone", async ({ 
   await expect(page.getByText("Hosted by Fold e2e")).toBeVisible();
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Coming up" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Church Events" })).toBeVisible();
   await expect(page.getByRole("link", { name: /Church potluck/ })).toBeVisible();
   await expect(page.getByRole("link", { name: /Church potluck/ })).toContainText("Hosted by Fold e2e");
 });
