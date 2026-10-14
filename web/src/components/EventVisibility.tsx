@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Events } from "../api";
-import type { Visibility } from "../types";
+import { ApiError, Events } from "../api";
+import type { Visibility, VisibilityImpact } from "../types";
+import { GroupVisibilityReview } from "./GroupVisibilityReview";
 import { openedEventWarning } from "./EventIntro";
 
 const CHOICES: { value: Visibility; label: string }[] = [
@@ -40,17 +41,42 @@ export function EventVisibilityControl({
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [review, setReview] = useState<VisibilityImpact | null>(null);
 
   const opening = !churchWide && groupVisibility != null && visibilityRank(value) > visibilityRank(groupVisibility);
 
+  // More private: preview first and confirm, the same as a group (DEC-48).
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    setError(null);
+    if (visibilityRank(value) < visibilityRank(visibility)) {
+      try {
+        const impact = await Events.visibilityImpact(eventId, value);
+        if (impact.tightened.length > 0) {
+          setReview(impact);
+          return;
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not check this event");
+        return;
+      }
+    }
+    await commit(false);
+  }
+
+  async function commit(confirm: boolean) {
     setBusy(true);
     setError(null);
     try {
-      await Events.setVisibility(eventId, { visibility: value, reason: reason.trim() || undefined });
+      await Events.setVisibility(eventId, { visibility: value, reason: reason.trim() || undefined, confirm });
+      setReview(null);
       onSaved();
     } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setReview(await Events.visibilityImpact(eventId, value));
+        setError("Registrations changed. Please review again.");
+        return;
+      }
       setError(err instanceof Error ? err.message : "Could not update visibility");
     } finally {
       setBusy(false);
@@ -102,6 +128,16 @@ export function EventVisibilityControl({
             maxLength={500}
           />
         </div>
+      )}
+      {review && (
+        <GroupVisibilityReview
+          key={JSON.stringify(review)}
+          impact={review}
+          subject="event"
+          busy={busy}
+          onConfirm={() => void commit(true)}
+          onCancel={() => setReview(null)}
+        />
       )}
       <button type="submit" className="btn-secondary" disabled={busy}>
         {busy ? "Saving…" : "Save visibility"}
