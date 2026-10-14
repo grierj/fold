@@ -10,8 +10,10 @@ describe("ZoneSelect", () => {
   it("shows the browser zone first when the value is the church zone", async () => {
     render(<ZoneSelect id="tz" ariaLabel="Time zone" value="America/Los_Angeles" onChange={() => {}} />);
     const sel = screen.getByLabelText("Time zone") as HTMLSelectElement;
-    await waitFor(() => expect(sel.options[1]?.textContent).toMatch(/Church time zone/));
-    expect(sel.options[0].textContent).toBe("Your time zone: America/Boise");
+    await waitFor(() => expect(sel.options[1]?.textContent).toBe("Los Angeles — Pacific Time (church)"));
+    expect(sel.options[0].textContent).toBe("Boise — Mountain Time (yours)");
+    expect(sel.options[1].value).toBe("America/Los_Angeles");
+    expect(sel.title).toBe("Los Angeles — Pacific Time (church) · America/Los_Angeles");
     expect(sel.value).toBe("America/Los_Angeles");
   });
 });
@@ -20,8 +22,8 @@ describe("ZoneSelect for the church setting", () => {
   it("lists the browser zone first, keeps the current value, and has no church entry", async () => {
     render(<ZoneSelect id="church-tz" ariaLabel="Church zone" forChurchSetting value="America/Los_Angeles" onChange={() => {}} />);
     const sel = screen.getByLabelText("Church zone") as HTMLSelectElement;
-    await waitFor(() => expect(sel.options[0].textContent).toBe("Your time zone: America/Boise"));
-    expect([...sel.options].some((o) => /Church time zone/.test(o.textContent ?? ""))).toBe(false);
+    await waitFor(() => expect(sel.options[0].textContent).toBe("Boise — Mountain Time (yours)"));
+    expect([...sel.options].some((o) => /\(church\)|church\)/.test(o.textContent ?? ""))).toBe(false);
     expect([...sel.options].filter((o) => o.value === "America/Los_Angeles")).toHaveLength(1);
     expect(sel.value).toBe("America/Los_Angeles");
   });

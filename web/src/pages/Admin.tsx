@@ -891,7 +891,7 @@ function ChurchTimezone() {
 
   return (
     <form onSubmit={save} className="mb-6 flex flex-wrap items-end gap-3">
-      <div>
+      <div className="w-full sm:w-auto sm:flex-1 sm:max-w-md">
         <label className="label" htmlFor="church-tz">
           Church time zone
         </label>
