@@ -31,7 +31,9 @@ export function ZoneSelect({
   return (
     <select
       id={id}
-      className="input"
+      // px-3 on phones: the tagged labels need the room; the font stays 16px
+      // so iOS does not zoom on focus.
+      className="input !px-3 sm:!px-4 !text-base"
       value={value}
       onChange={(e) => onChange(e.target.value)}
       required

@@ -13,8 +13,8 @@ function futureDate(days: number): string {
 async function expectBrowserZoneFirst(page: import("@playwright/test").Page, selectId: string) {
   const sel = page.locator(`select#${selectId}`);
   await expect(sel).toHaveValue("America/Boise");
-  await expect(sel.locator("option").first()).toHaveText("Knox, Indiana — Central Time (yours)");
-  await expect(sel.locator("option").nth(1)).toHaveText("Boise — Mountain Time (church)");
+  await expect(sel.locator("option").first()).toHaveText("Yours · Knox, Indiana (Central)");
+  await expect(sel.locator("option").nth(1)).toHaveText("Church · Boise (Mountain)");
   await expect(sel.locator('option[value="America/Boise"]')).toHaveCount(1);
 }
 
@@ -54,7 +54,7 @@ test("admin church time zone setting lists the browser zone first", async ({ pag
   await page.goto("/admin");
   const sel = page.locator("select#church-tz");
   await expect(sel).toHaveValue("America/Boise");
-  await expect(sel.locator("option").first()).toHaveText("Knox, Indiana — Central Time (yours)");
+  await expect(sel.locator("option").first()).toHaveText("Yours · Knox, Indiana (Central)");
   await expect(sel.locator('option[value="America/Boise"]')).toHaveCount(1);
-  await expect(sel.locator("option", { hasText: "church" })).toHaveCount(0);
+  await expect(sel.locator("option", { hasText: /church/i })).toHaveCount(0);
 });

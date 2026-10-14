@@ -15,7 +15,7 @@ test("a new series defaults to the church time zone", async ({ page }) => {
   await expect(page.getByLabel("Time zone")).toHaveValue("America/Boise");
   const first = page.locator("#event-tz option").first();
   await expect(first).toHaveAttribute("value", "America/New_York");
-  await expect(first).toHaveText("New York — Eastern Time (yours)");
+  await expect(first).toHaveText("Yours · New York (Eastern)");
   await expect(page.locator('#event-tz option[value="America/Boise"]')).toHaveCount(1);
 
   const when = new Date(Date.now() + 20 * 24 * 60 * 60 * 1000);
