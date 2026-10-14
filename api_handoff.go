@@ -100,11 +100,11 @@ func (errNeedSuccessors) Error() string {
 // primary contact at them, and audits it with reason. Then deletion ends all
 // of leaving's memberships, while disabling keeps them as plain
 // memberships (DEC-38).
-func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map[string]uint, reason string) error {
+func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map[string]uint, reason string) ([]uint, error) {
 	actor := apiUser(c)
 	groups, err := soleLedGroups(tx, leaving)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var missing []soleLedGroupJSON
 	picks := map[uint]uint{}
@@ -120,17 +120,18 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 		picks[g.ID] = sid
 	}
 	if len(missing) > 0 {
-		return errNeedSuccessors{missing}
+		return nil, errNeedSuccessors{missing}
 	}
+	var emailed []uint
 	for _, g := range groups {
 		g := g
 		sid := picks[g.ID]
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&g, g.ID).Error; err != nil {
-			return err
+			return nil, err
 		}
 		var m models.Membership
 		if err := tx.Where("user_id = ? AND group_id = ?", sid, g.ID).Limit(1).Find(&m).Error; err != nil {
-			return err
+			return nil, err
 		}
 		oldRole := "none"
 		if membershipRel(m).Member {
@@ -141,40 +142,46 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 			m.JoinedAt = time.Now().UTC()
 		}
 		if err := tx.Save(&m).Error; err != nil {
-			return err
+			return nil, err
 		}
 		if err := tx.Model(&models.Group{}).Where("id = ?", g.ID).Update("leader_id", sid).Error; err != nil {
-			return err
+			return nil, err
 		}
-		if err := auditAndNotifyLeadership(tx, audit.Entry{
+		ids, err := auditAndNotifyLeadership(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: g.ID,
 			Meta: map[string]any{"userId": sid, "oldRole": oldRole, "newRole": models.MembershipLeader,
 				"reason": reason, "departingUserId": leaving},
 			IP: c.ClientIP(),
-		}); err != nil {
-			return err
+		})
+		emailed = append(emailed, ids...)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if reason == "account_deleted" {
 		if err := tx.Where("user_id = ?", leaving).Delete(&models.Membership{}).Error; err != nil {
-			return err
+			return nil, err
 		}
-	} else if err := demoteEverywhere(c, tx, leaving, reason); err != nil {
-		// Disabling keeps memberships (DEC-38); they are hidden while the
-		// account is disabled, and any leadership becomes plain membership.
-		return err
+	} else {
+		ids, err := demoteEverywhere(c, tx, leaving, reason)
+		emailed = append(emailed, ids...)
+		if err != nil {
+			// Disabling keeps memberships (DEC-38); they are hidden while the
+			// account is disabled, and any leadership becomes plain membership.
+			return nil, err
+		}
 	}
 	// Groups they co-led still show them as the primary contact; move it.
 	var contactOf []models.Group
 	if err := tx.Where("leader_id = ?", leaving).Find(&contactOf).Error; err != nil {
-		return err
+		return nil, err
 	}
 	for i := range contactOf {
 		if err := fixPrimaryContact(tx, &contactOf[i]); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return emailed, nil
 }
 
 // needSuccessors answers 400 with the groups still missing a successor.
@@ -190,27 +197,30 @@ func needSuccessors(c *gin.Context, err error) bool {
 // demoteEverywhere makes every leadership of userID a plain membership, with
 // a membership.role_changed audit row per group (DEC-38: a disabled
 // account keeps its memberships but never its leadership).
-func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) error {
+func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) ([]uint, error) {
 	actor := apiUser(c)
 	var led []models.Membership
 	if err := tx.Where("user_id = ? AND role = ? AND status = 'active'", userID, models.MembershipLeader).
 		Find(&led).Error; err != nil {
-		return err
+		return nil, err
 	}
+	var emailed []uint
 	for _, m := range led {
 		if err := tx.Model(&m).Update("role", models.MembershipMember).Error; err != nil {
-			return err
+			return nil, err
 		}
-		if err := auditAndNotifyLeadership(tx, audit.Entry{
+		ids, err := auditAndNotifyLeadership(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.RoleChanged, TargetType: "group", TargetID: m.GroupID,
 			Meta: map[string]any{"userId": userID, "oldRole": models.MembershipLeader,
 				"newRole": models.MembershipMember, "reason": reason},
 			IP: c.ClientIP(),
-		}); err != nil {
-			return err
+		})
+		emailed = append(emailed, ids...)
+		if err != nil {
+			return nil, err
 		}
 	}
-	return nil
+	return emailed, nil
 }
 
 // restoreMemberships runs when a disabled account is enabled again. Its
@@ -218,46 +228,49 @@ func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) e
 // membership.restored audit row each. A group at its member limit leaves
 // them out instead: the membership is dropped, a membership.not_restored
 // row is written, and they get a notice to ask a leader (DEC-47).
-func restoreMemberships(c *gin.Context, tx *gorm.DB, userID uint) error {
+func restoreMemberships(c *gin.Context, tx *gorm.DB, userID uint) ([]uint, error) {
 	actor := apiUser(c)
 	var kept []models.Membership
 	// Stable order (by group) so concurrent restores lock groups the same way.
 	if err := tx.Where("user_id = ? AND status = 'active'", userID).Order("group_id").Find(&kept).Error; err != nil {
-		return err
+		return nil, err
 	}
+	var emailed []uint
 	for _, m := range kept {
 		// Lock the group so a concurrent join or restore can't race the
 		// count. The account is still disabled here, so it isn't counted.
 		var g models.Group
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&g, m.GroupID).Error; err != nil {
-			return err
+			return nil, err
 		}
 		if !policy.GroupHasRoom(g.MemberLimit, int(memberCount(tx, g.ID))) {
 			// Full: left out. A leader can add them over the limit (DEC-47).
 			if err := tx.Delete(&m).Error; err != nil {
-				return err
+				return nil, err
 			}
 			meta := map[string]any{"userId": userID, "count": memberCount(tx, g.ID), "limit": *g.MemberLimit}
 			if err := audit.Write(tx, audit.Entry{
 				Actor: &actor.ID, Action: audit.MemberNotRestored, TargetType: "group", TargetID: m.GroupID,
 				Meta: meta, IP: c.ClientIP(),
 			}); err != nil {
-				return err
+				return nil, err
 			}
-			if err := notifyNotRestored(tx, actor.ID, &g, userID); err != nil {
-				return err
+			ids, err := notifyNotRestored(tx, actor.ID, &g, userID)
+			emailed = append(emailed, ids...)
+			if err != nil {
+				return nil, err
 			}
 			continue
 		}
 		if err := tx.Model(&m).Updates(map[string]any{"role": models.MembershipMember, "status": "active"}).Error; err != nil {
-			return err
+			return nil, err
 		}
 		if err := audit.Write(tx, audit.Entry{
 			Actor: &actor.ID, Action: audit.MemberRestored, TargetType: "group", TargetID: m.GroupID,
 			Meta: map[string]any{"userId": userID, "status": "active"}, IP: c.ClientIP(),
 		}); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return emailed, nil
 }
