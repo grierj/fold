@@ -210,7 +210,14 @@ Similar things behave the same way (Grier, Oct 2026). When one path gets a
 rule (a preview, a confirmation, an audit row, a notice), give its siblings
 the same rule with the same API shape and UI component, or write down why
 not. Example: group and single-event tightening share `visibility-impact`,
-`cancelLosers`, and `GroupVisibilityReview`.
+`cancelLosers`, and `GroupVisibilityReview`. In the UI, one shared component
+per kind of control: `ZoneSelect` (every time zone field), `VisibilityField`
+/ `EventVisibilityControl` (every event visibility choice), and
+`SeriesEditor` (Edit series / Edit event on the group and event pages).
+
+Exception (Grier, Oct 14, 2026): one-off pages outside the standard
+presentation layer, such as the server-rendered first-run setup page
+(`templates/setup.html`), don't have to match the React components.
 
 ## Rules and what enforces them
 

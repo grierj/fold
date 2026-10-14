@@ -42,7 +42,11 @@ test("series edit form lists the browser zone first", async ({ page, request }) 
   await expectBrowserZoneFirst(page, "event-tz");
   await page.goto(`/events/${event.id}`);
   await page.getByRole("button", { name: "Edit series" }).click();
-  await expectBrowserZoneFirst(page, "series-tz");
+  await expectBrowserZoneFirst(page, `s-tz-ev${event.id}`);
+  // Same shared editor as the group page: visible labels, same fields.
+  for (const label of ["First date", "Start time", "Duration (minutes)", "Title", "Location", "Description", "Repeat until (optional)"]) {
+    await expect(page.locator("label", { hasText: label }).first()).toBeVisible();
+  }
 });
 
 test("admin church time zone setting lists the browser zone first", async ({ page }) => {

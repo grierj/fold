@@ -1,4 +1,4 @@
-import { ZoneSelect } from "../components/ZoneSelect";
+import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
@@ -7,7 +7,6 @@ import { DateBadge } from "../components/DateBadge";
 import { AttendeeNames, EventIntro } from "../components/EventIntro";
 import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
-import { WEEKDAYS, weekdayCode } from "../lib/eventForm";
 import { formatWallClock, zoneSuffix } from "../lib/wall";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, RegistrationStatus } from "../types";
 
@@ -113,7 +112,14 @@ export function EventDetail() {
               Delete event
             </button>
           </div>
-          {editing && <SeriesForm event={event} onSaved={() => { setEditing(false); void load(); }} />}
+          {editing && (
+            <SeriesEditor
+              series={{ ...event, eventId: event.id }}
+              idPrefix={`ev${event.id}`}
+              onSaved={() => { setEditing(false); void load(); }}
+              onClose={() => setEditing(false)}
+            />
+          )}
           {editing && canSetVisibility && (
             <EventVisibilityControl
               key={`${event.id}-${event.visibility}-${event.leaderOpened}`}
@@ -419,106 +425,3 @@ function HostEditor({
   );
 }
 
-function SeriesForm({ event, onSaved }: { event: EventDetailResponse["event"]; onSaved: () => void }) {
-  const [title, setTitle] = useState(event.title);
-  const [description, setDescription] = useState(event.description);
-  const [date, setDate] = useState(event.startsLocal.slice(0, 10));
-  const [time, setTime] = useState(event.startsLocal.slice(11, 16));
-  const [duration, setDuration] = useState(event.durationMinutes);
-  const [tzid, setTzid] = useState(event.tzid);
-  const [location, setLocation] = useState(event.location);
-  const [recurring, setRecurring] = useState(event.recurrenceRule.startsWith("FREQ=WEEKLY"));
-  const [days, setDays] = useState<string[]>(() => {
-    const m = event.recurrenceRule.match(/BYDAY=([A-Z,]+)/);
-    return m ? m[1].split(",").filter(Boolean) : [];
-  });
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      await Events.update(event.id, {
-        title: title.trim(),
-        description: description.trim(),
-        startsLocal: `${date}T${time}`,
-        durationMinutes: duration,
-        tzid: tzid.trim(),
-        location: location.trim(),
-        recurrenceRule: recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "",
-      });
-      onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update the series");
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form onSubmit={save} className="mt-3 bg-white rounded-xl border border-gray-200 p-4 space-y-3">
-      {error && <div className="text-sm text-red-600">{error}</div>}
-      <p className="text-sm text-gray-600">Future dates without their own edits move. Past dates stay.</p>
-      <input className="input" aria-label="Title" value={title} onChange={(e) => setTitle(e.target.value)} />
-      <textarea
-        className="input"
-        rows={4}
-        maxLength={5000}
-        aria-label="Description"
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-      />
-      <div className="grid sm:grid-cols-2 gap-3">
-        <input className="input" type="date" aria-label="Date" value={date} onChange={(e) => setDate(e.target.value)} required />
-        <input className="input" type="time" aria-label="Start time" value={time} onChange={(e) => setTime(e.target.value)} required />
-      </div>
-      <div className="grid sm:grid-cols-2 gap-3">
-        <input
-          className="input"
-          type="number"
-          min={1}
-          max={10080}
-          step={1}
-          aria-label="Duration in minutes"
-          value={duration}
-          onChange={(e) => setDuration(Number(e.target.value))}
-        />
-        <ZoneSelect id="series-tz" ariaLabel="Time zone" value={tzid} onChange={setTzid} />
-      </div>
-      <input className="input" aria-label="Location" value={location} onChange={(e) => setLocation(e.target.value)} />
-      <label className="flex items-center gap-2 text-sm font-semibold">
-        <input
-          type="checkbox"
-          checked={recurring}
-          onChange={(e) => {
-            setRecurring(e.target.checked);
-            if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
-          }}
-        />
-        Repeat weekly
-      </label>
-      {recurring && (
-        <div className="flex flex-wrap gap-2">
-          {WEEKDAYS.map((w) => (
-            <button
-              type="button"
-              key={w.value}
-              onClick={() => setDays((prev) => (prev.includes(w.value) ? prev.filter((d) => d !== w.value) : [...prev, w.value]))}
-              className={
-                days.includes(w.value)
-                  ? "px-3 py-1.5 rounded-full text-sm font-semibold bg-brand text-white"
-                  : "px-3 py-1.5 rounded-full text-sm font-semibold bg-gray-100 text-gray-600"
-              }
-            >
-              {w.label}
-            </button>
-          ))}
-        </div>
-      )}
-      <button type="submit" className="btn-primary" disabled={busy}>
-        {busy ? "Saving…" : "Save series"}
-      </button>
-    </form>
-  );
-}
