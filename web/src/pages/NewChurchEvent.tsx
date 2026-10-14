@@ -148,7 +148,7 @@ export function NewChurchEvent() {
             />
           </div>
         </div>
-        <div className="grid sm:grid-cols-2 gap-4">
+        <div className="grid sm:grid-cols-[11rem_minmax(0,1fr)] gap-4">
           <div>
             <label className="label" htmlFor="church-event-duration">
               Duration (minutes)

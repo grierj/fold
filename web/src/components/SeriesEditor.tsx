@@ -123,7 +123,7 @@ export function SeriesEditor({
           <input id={`s-time-${idPrefix}`} type="time" className="input" value={time} onChange={(e) => setTime(e.target.value)} required />
         </div>
       </div>
-      <div className="grid sm:grid-cols-2 gap-3">
+      <div className="grid sm:grid-cols-[11rem_minmax(0,1fr)] gap-3">
         <div>
           <label className="label" htmlFor={`s-dur-${idPrefix}`}>
             Duration (minutes)
