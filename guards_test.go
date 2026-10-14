@@ -62,6 +62,7 @@ var tsContracts = []struct {
 	{groupSummaryJSON{}, "GroupSummary"},
 	{memberJSON{}, "Member"},
 	{notificationJSON{}, "Notification"},
+	{resolutionJSON{}, "NotificationResolution"},
 	{occurrenceJSON{}, "EventOccurrence"},
 	{eventJSON{}, "EventSeries"},
 	{hostJSON{}, "EventHostRow"},

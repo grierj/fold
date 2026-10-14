@@ -94,20 +94,12 @@ func getEvent(t *testing.T, c *apiClient, id uint, want int) (eventPage, string)
 
 func noticeIDs(t *testing.T, c *apiClient) []notificationJSON {
 	t.Helper()
-	w := c.do("GET", "/api/v1/notifications", nil, false)
-	if w.Code != http.StatusOK {
-		t.Fatalf("notices: %d %s", w.Code, w.Body.String())
-	}
-	var body struct {
-		Notifications []notificationJSON `json:"notifications"`
-	}
-	decodeJSON(t, w, &body)
-	return body.Notifications
+	return feed(t, c, "")
 }
 
 func hasVisibilityNotice(ns []notificationJSON, titlePart, reason string) bool {
 	for _, n := range ns {
-		if strings.HasPrefix(n.ID, "visibility:") && strings.Contains(n.Title, titlePart) && strings.Contains(n.Body, reason) {
+		if n.Kind == "event.visibility_override" && strings.Contains(n.Title, titlePart) && strings.Contains(n.Body, reason) {
 			return true
 		}
 	}
@@ -178,10 +170,10 @@ func TestVisibilityOverrideNotice(t *testing.T) {
 	}
 	adminNotes := noticeIDs(t, admin)
 	for _, n := range adminNotes {
-		if strings.HasPrefix(n.ID, "visibility:") && strings.Contains(n.Body, "@") {
+		if n.Kind == "event.visibility_override" && strings.Contains(n.Body, "@") {
 			t.Fatalf("notice has contact: %+v", n)
 		}
-		if strings.HasPrefix(n.ID, "visibility:") && !strings.Contains(n.Body, "leader2") {
+		if n.Kind == "event.visibility_override" && !strings.Contains(n.Body, "leader2") {
 			t.Fatalf("notice should name the actor: %+v", n)
 		}
 	}

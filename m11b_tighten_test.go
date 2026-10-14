@@ -91,7 +91,7 @@ func TestGroupMorePrivateTightensAndCancels(t *testing.T) {
 
 	found := false
 	for _, n := range noticeIDs(t, outC) {
-		if strings.HasPrefix(n.ID, "registration-cancelled:") {
+		if n.Kind == "registration.cancelled" {
 			found = true
 			raw, _ := json.Marshal(n)
 			if !strings.Contains(n.Title, "Picnic") || strings.Contains(string(raw), "Garden Club") ||
@@ -104,7 +104,7 @@ func TestGroupMorePrivateTightensAndCancels(t *testing.T) {
 		t.Fatalf("outsider not told: %+v", noticeIDs(t, outC))
 	}
 	for _, n := range noticeIDs(t, memC) {
-		if strings.HasPrefix(n.ID, "registration-cancelled:") {
+		if n.Kind == "registration.cancelled" {
 			t.Fatalf("member told: %+v", n)
 		}
 	}

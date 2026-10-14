@@ -30,13 +30,13 @@ func roleChangeRows(t *testing.T, app *App) []models.AuditLog {
 
 func notificationTitles(t *testing.T, c *apiClient) []string {
 	t.Helper()
-	var body struct {
-		Notifications []notificationJSON `json:"notifications"`
-	}
-	decodeJSON(t, c.do("GET", "/api/v1/notifications", nil, false), &body)
 	var out []string
-	for _, n := range body.Notifications {
-		out = append(out, n.Type+": "+n.Title)
+	for _, n := range feed(t, c, "") {
+		kind := n.Kind
+		if kind == "group.leadership_changed" {
+			kind = "leadership"
+		}
+		out = append(out, kind+": "+n.Title)
 	}
 	return out
 }

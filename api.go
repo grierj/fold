@@ -459,6 +459,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.DELETE("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminDeleteUser)
 	v1.POST("/admin/users/:id/password", a.apiAuth(), a.apiAdmin(), a.apiAdminResetPassword)
 
-	// Notifications.
-	v1.GET("/notifications", a.apiAuth(), a.apiNotifications)
+	// Notifications (5.12).
+	a.registerNotificationRoutes(v1)
 }

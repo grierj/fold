@@ -135,7 +135,7 @@ Features already built:
 - Meetings belong to a group, with an optional RRULE. Single instances can be cancelled with `MeetingException`. Per-instance RSVPs (going / maybe / declined), addressed by `(meetingId, date)`.
 - Profiles with avatar upload or fetch-from-URL (SSRF-guarded), focal points, and client-side image compression.
 - Admin panel: pending groups, deletion requests, users, memberships.
-- Derived notifications (not stored), dismissed in the browser's localStorage. Logout clears that storage, so dismissals reset on the next sign-in. From M1.1c, stored notifications built in Fold replace them, with dismissal (`archived_at`) and read state kept per user on the server (5.12, DEC-42).
+- Derived notifications (not stored), dismissed in the browser's localStorage. Logout clears that storage, so dismissals reset on the next sign-in. M1.1c replaced them with stored notifications built in Fold, with dismissal (`archived_at`) and read state kept per user on the server (5.12, DEC-42).
 
 ### 3.2 Goals already written in the repo
 
@@ -386,7 +386,7 @@ The field lists show the important columns, not every column. Every table has `i
 
 **Notifications (5.12, DEC-42; from M1.1c)**
 
-- `notifications(user_id, kind, category admin|groups|events|messages|safety, priority, actor_id?, subject_type?, subject_id?, group_key?, dedupe_key?, title, body, link, actions jsonb, batch_count, data jsonb, created_at, updated_at, seen_at?, read_at?, archived_at?, resolved_at?, expires_at?)`. One row per recipient. `kind` keys the Go registry. `link` is an internal path (starts with `/`) and is validated. `actions` holds at most 2 buttons, emitted only for allow-listed kinds. `data` is small and non-sensitive. `title`, `body`, and `data` never contain contact details of a teen or of a hidden adult (DEC-31). Indexes:
+- `notifications(user_id, kind, category admin|groups|events|messages|safety, priority, waiting, actor_id?, subject_type?, subject_id?, group_key?, dedupe_key?, title, body, link, actions jsonb, batch_count, data jsonb, created_at, updated_at, seen_at?, read_at?, archived_at?, resolved_at?, resolved_by_id?, resolution, expires_at?)`. `waiting` marks a task (set from the kind when the row is written) so the badge query needs no registry; `resolved_by_id` and `resolution` (approved, rejected, deleted, kept, withdrawn) give other admins "Done · approved by Pat" (M1.1c). One row per recipient. `kind` keys the Go registry. `link` is an internal path (starts with `/`) and is validated. `actions` holds at most 2 buttons, emitted only for allow-listed kinds. `data` is small and non-sensitive. `title`, `body`, and `data` never contain contact details of a teen or of a hidden adult (DEC-31). Indexes:
   - unique `(user_id, dedupe_key)` where `dedupe_key` is set (idempotent writes)
   - feed: `(user_id, archived_at, updated_at DESC, id DESC)`
   - partial index for the badge: unread or unresolved, and not archived
@@ -1695,17 +1695,18 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - Run the 60-second badge poll plus refresh on focus and navigation.
   - From M1.2 on, the same changes also send a transactional email.
 - Acceptance:
-  - [ ] Notifications are stored rows (5.12); nothing is derived on read, and the SPA writes no notification state to localStorage
-  - [ ] Archiving an item survives logout and shows on another device; Undo (and the Archived filter) restores it
-  - [ ] The badge counts unread plus unresolved waiting items; "Mark all as read" leaves waiting items counted until they are resolved, on both server and UI (DEC-44: one plain count, no needs-action dot)
-  - [ ] The bell shows no upcoming-event items (DEC-44)
-  - [ ] Approving or rejecting a pending group resolves every admin's copy in the same transaction; a second admin sees "Done · approved by …"; an inline Approve that loses the race gets 409 with `resolvedBy`
-  - [ ] An inline action posted for a kind that isn't allow-listed is refused by the server
-  - [ ] A user can't read, mark, or archive another user's notification (404)
-  - [ ] Writing the same `dedupe_key` twice creates one row
-  - [ ] `GET /notifications/badge` returns `{unread, waiting}` and 304 when unchanged; the SPA refreshes it on focus and navigation and pauses while hidden
-  - [ ] Every kind, rendered with teen and hidden-adult fixtures, contains no `@` or phone pattern (unit test over the registry)
-  - [ ] A notification `link` that isn't an internal path is rejected
+  - [x] Notifications are stored rows (5.12); nothing is derived on read, and the SPA writes no notification state to localStorage
+  - [x] Archiving an item survives logout and shows on another device; Undo (and the Archived filter) restores it
+  - [x] The badge counts unread plus unresolved waiting items; "Mark all as read" leaves waiting items counted until they are resolved, on both server and UI (DEC-44: one plain count, no needs-action dot)
+  - [x] The bell shows no upcoming-event items (DEC-44)
+  - [x] Approving or rejecting a pending group resolves every admin's copy in the same transaction; a second admin sees "Done · approved by …"; an inline Approve that loses the race gets 409 with `resolvedBy`
+  - [x] An inline action posted for a kind that isn't allow-listed is refused by the server
+  - [x] A user can't read, mark, or archive another user's notification (404)
+  - [x] Writing the same `dedupe_key` twice creates one row
+  - [x] `GET /notifications/badge` returns `{unread, waiting}` and 304 when unchanged; the SPA refreshes it on focus and navigation and pauses while hidden
+  - [x] Every kind, rendered with teen and hidden-adult fixtures, contains no `@` or phone pattern (unit test over the registry)
+  - [x] A notification `link` that isn't an internal path is rejected
+- Built in #46 (Oct 13, 2026). The settings gear and `/settings/notifications` wait for M3.12; no kind batches yet (batching is built and tested with a test kind).
 - Tests: notify tests (state transitions, batching, dedupe, task resolution, own-rows-only); Playwright for the bell, archive and Undo, and the waiting count.
 
 **M1.2 Email basics, password reset, invitations**

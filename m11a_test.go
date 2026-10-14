@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -268,22 +267,17 @@ func TestSeriesEditKeepsRegistrationsAndOverrides(t *testing.T) {
 		t.Fatalf("cancelled registration rows: %d", kept)
 	}
 
-	wantID := fmt.Sprintf("event-cancelled:%d", cancelled.ID)
 	assertNotice := func(c *apiClient, want bool) {
 		t.Helper()
-		w := c.do("GET", "/api/v1/notifications", nil, false)
-		var body struct {
-			Notifications []notificationJSON `json:"notifications"`
-		}
-		decodeJSON(t, w, &body)
+		ns := feed(t, c, "")
 		found := false
-		for _, n := range body.Notifications {
-			if n.ID == wantID && n.Type == "event" && n.Title == "Cancelled: Prayer" {
+		for _, n := range ns {
+			if n.Kind == "event.cancelled" && n.Title == "Cancelled: Prayer" {
 				found = true
 			}
 		}
 		if found != want {
-			t.Fatalf("notice found=%v want=%v in %+v", found, want, body.Notifications)
+			t.Fatalf("notice found=%v want=%v in %+v", found, want, ns)
 		}
 	}
 	assertNotice(pat, true)

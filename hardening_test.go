@@ -87,7 +87,7 @@ func TestEventMorePrivateCancelsShutOutRegistrants(t *testing.T) {
 	}
 	found := false
 	for _, n := range noticeIDs(t, outC) {
-		if strings.HasPrefix(n.ID, "registration-cancelled:") {
+		if n.Kind == "registration.cancelled" {
 			found = true
 		}
 	}

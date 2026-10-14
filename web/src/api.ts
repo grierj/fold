@@ -11,9 +11,11 @@ export function setOnUnauthorized(fn: (() => void) | null) {
 
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  data: Record<string, unknown>;
+  constructor(status: number, message: string, data: Record<string, unknown> = {}) {
     super(message);
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -60,7 +62,7 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
   const data = raw as T;
   const apiErr = (raw as { error?: string } | null)?.error;
   if (!res.ok) {
-    throw new ApiError(res.status, apiErr ?? `request failed (${res.status})`);
+    throw new ApiError(res.status, apiErr ?? `request failed (${res.status})`, (raw ?? {}) as Record<string, unknown>);
   }
   return data;
 }
@@ -76,6 +78,8 @@ import type {
   GroupSummary,
   Member,
   Notification,
+  NotificationFeed,
+  NotificationFilter,
   OpenedDecision,
   RegistrationStatus,
   SoleLedGroup,
@@ -283,8 +287,38 @@ export const GroupCover = {
     api<Record<string, never>>(`/groups/${id}/cover`, { method: "DELETE" }),
 };
 
+export interface Badge {
+  unread: number;
+  waiting: number;
+}
+
 export const Notifications = {
-  list: () => api<{ notifications: Notification[] }>("/notifications"),
+  list: (filter: NotificationFilter = "all", before = "") =>
+    api<NotificationFeed>(
+      `/notifications?filter=${filter}${before ? `&before=${encodeURIComponent(before)}` : ""}`
+    ),
+  // badge sends the last ETag; null means "unchanged" (304).
+  badge: async (etag: string): Promise<{ badge: Badge; etag: string } | null> => {
+    const res = await fetch("/api/v1/notifications/badge", {
+      headers: { Accept: "application/json", ...(etag ? { "If-None-Match": etag } : {}) },
+      credentials: "include",
+    });
+    if (res.status === 304) return null;
+    if (!res.ok) throw new ApiError(res.status, "could not load notifications");
+    return { badge: (await res.json()) as Badge, etag: res.headers.get("ETag") ?? "" };
+  },
+  seen: (ids: number[]) => api<unknown>("/notifications/seen", { method: "POST", body: { ids } }),
+  read: (id: number, read = true) =>
+    api<{ notification: Notification }>(`/notifications/${id}/read`, { method: read ? "POST" : "DELETE" }),
+  readAll: () => api<unknown>("/notifications/read-all", { method: "POST" }),
+  archive: (id: number, archived = true) =>
+    api<{ notification: Notification }>(`/notifications/${id}/archive`, { method: archived ? "POST" : "DELETE" }),
+  // Inline Approve on a pending group (the only allow-listed action, 6.6).
+  approveGroup: (groupId: number, notificationId: number) =>
+    api<unknown>(`/admin/groups/${groupId}/approve`, {
+      method: "POST",
+      body: { fromNotification: notificationId },
+    }),
 };
 
 export interface AdminUserInput {

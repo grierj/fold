@@ -48,7 +48,7 @@ func TestOpenedEventHidesGroupLocation(t *testing.T) {
 
 	var found bool
 	for _, n := range noticeIDs(t, outsider) {
-		if !strings.HasPrefix(n.ID, "event-cancelled:") {
+		if n.Kind != "event.cancelled" {
 			continue
 		}
 		found = true

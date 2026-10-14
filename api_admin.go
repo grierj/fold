@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"fold/internal/audit"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -30,38 +31,73 @@ func (a *App) apiPendingGroups(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"groups": out})
 }
 
+// apiApproveGroup and apiRejectGroup decide a pending group. Both are
+// conditional on the group still being pending, and resolve every admin's
+// task in the same transaction (5.12). A request from the bell names its
+// notification (fromNotification); only Approve is allow-listed (6.6).
 func (a *App) apiApproveGroup(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	}
 	var body struct {
-		Tags []string `json:"tags"`
+		Tags             []string `json:"tags"`
+		FromNotification *uint    `json:"fromNotification"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	if body.Tags != nil {
-		g.Tags = joinTags(body.Tags)
-	}
-	g.Status = models.GroupActive
-	if err := a.DB.Save(&g).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not approve group")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"group": a.groupSummary(&g)})
+	a.decideGroup(c, notify.ActionApproveGroup, body.FromNotification, func(g *models.Group) {
+		if body.Tags != nil {
+			g.Tags = joinTags(body.Tags)
+		}
+		g.Status = models.GroupActive
+	})
 }
 
 func (a *App) apiRejectGroup(c *gin.Context) {
+	var body struct {
+		FromNotification *uint `json:"fromNotification"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	a.decideGroup(c, "reject", body.FromNotification, func(g *models.Group) { g.Status = models.GroupArchived })
+}
+
+func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint, apply func(*models.Group)) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var g models.Group
 	if err := a.DB.First(&g, id).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "group not found")
 		return
 	}
-	g.Status = models.GroupArchived
-	if err := a.DB.Save(&g).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not reject group")
+	if !a.fromNotification(c, fromNotification, action, g.ID) {
+		return
+	}
+	me := apiUser(c)
+	outcome, auditAction := "approved", audit.GroupApproved
+	if action != notify.ActionApproveGroup {
+		outcome, auditAction = "rejected", audit.GroupRejected
+	}
+	apply(&g)
+	errHandled := errors.New("already handled")
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&models.Group{}).Where("id = ? AND status = ?", g.ID, models.GroupPending).
+			Updates(map[string]any{"status": g.Status, "tags": g.Tags})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errHandled
+		}
+		if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &me.ID, outcome); err != nil {
+			return err
+		}
+		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction, TargetType: "group", TargetID: g.ID, IP: c.ClientIP()})
+	})
+	if errors.Is(err, errHandled) {
+		a.alreadyHandled(c, notify.GroupPending, g.ID)
+		return
+	}
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not "+action+" group")
+		return
+	}
+	if action == notify.ActionApproveGroup {
+		c.JSON(http.StatusOK, gin.H{"group": a.groupSummary(&g)})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})
@@ -342,6 +378,10 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
 			return err
 		}
+		// Notifications go with the person (5.3); the audit log stays.
+		if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
+			return err
+		}
 		return tx.Delete(u).Error
 	})
 	if needSuccessors(c, err) {
@@ -444,7 +484,7 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 	var m models.Membership
 	a.DB.Where("user_id = ? AND group_id = ?", u.ID, g.ID).First(&m)
 	if g.DeletionRequested && memberCount(a.DB, g.ID) > 1 {
-		a.DB.Model(&models.Group{}).Where("id = ?", g.ID).Update("deletion_requested", false)
+		a.clearDeletionRequest(g.ID, nil, "withdrawn")
 	}
 	c.JSON(http.StatusOK, gin.H{"membership": gin.H{
 		"id": m.ID, "userId": m.UserID, "groupId": m.GroupID, "role": role,
@@ -479,7 +519,7 @@ func (a *App) apiRejectDeletion(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "group not found")
 		return
 	}
-	if err := a.DB.Model(&g).Update("deletion_requested", false).Error; err != nil {
+	if err := a.clearDeletionRequest(g.ID, &apiUser(c).ID, "kept"); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not reject deletion")
 		return
 	}
@@ -495,7 +535,7 @@ func (a *App) apiAdminDeleteGroup(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "group not found")
 		return
 	}
-	if err := a.deleteGroup(c.Request.Context(), &g); err != nil {
+	if err := a.deleteGroup(c.Request.Context(), &g, &apiUser(c).ID); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not delete group")
 		return
 	}

@@ -127,13 +127,15 @@ Postgres (`login_throttles`, see `api_auth.go`).
 - Client-side image prep: `web/src/lib/image.ts` resizes uploads in the
   browser (`browser-image-compression`) before POST — keeps big-phone-photo
   CPU off the server. Server still enforces type/size limits.
-- Notifications are derived, not stored (`GET /api/v1/notifications`):
-  approvals for admins, upcoming events for members, a notice when a
-  date they registered going or maybe is cancelled, and a notice to other
-  leaders and admins when an event is made more open than its group.
-  Dismissals live in localStorage per user, keyed by the notice `id`;
-  logout clears all browser storage and reloads the page. Stored
-  notifications are M1.1c.
+- Notifications are stored rows (M1.1c, PLAN 5.12): one `notifications`
+  row per recipient, written by `notify.Send(tx, notify.Msg{...})` in the
+  same transaction as the change and its `AuditLog` row. The kind
+  registry (`internal/notify/kinds.go`) owns category, wording, batching
+  and the inline-action allow-list; it never looks anything up, so the
+  caller decides what the recipient may see (pass a group's name, place or
+  link only when `canSeeGroupIn` says so). Tasks (`waiting`) are closed
+  with `notify.Resolve` wherever the subject is decided. The SPA keeps the
+  feed in memory only and polls `GET /notifications/badge`.
 
 ## Uploads & blob storage
 
@@ -199,7 +201,7 @@ CLI (C11): `fold` (same as `fold serve`), `fold healthcheck`,
 
 Group SMS goes through SMS provider adapters (Telnyx default, Twilio next).
 It is **not built yet**, and none is required to run Fold. When you build it:
-put it behind a `Notifier` interface (`internal/notify/`), broadcast-only v1,
+put it behind provider adapters fed by `internal/notify` deliveries (PLAN 5.12), broadcast-only v1,
 replies route to the group leader. Don't start early.
 
 ## Consistency
@@ -221,6 +223,8 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Event and notice output never shows a hidden group's name, place or id (PR #41) | `a.groupShownTo` plus `TestGroupDetailsGoThroughGroupShownTo` (lines needing an exception end with `// group-ok: <reason>`) |
 | Making a group or one event more private previews the cancellations and needs confirmation | `visibility-impact` for both, a 409 without `confirm`; `TestEventMorePrivateCancelsShutOutRegistrants`, `e2e/event-visibility.spec.ts` |
 | Making an event more private cancels and tells people it shuts out, whether the group or the event changed | `cancelLosers` in both paths; `TestGroupMorePrivateTightensAndCancels`, `TestEventMorePrivateCancelsShutOutRegistrants` |
+| Every notification kind says no email address or phone number; only Approve-a-group is inline | `TestEveryKindRendersNoContactDetails`, `TestOnlyApproveGroupIsAllowListed` (internal/notify) |
+| Notification rows are private to their owner and inline actions are checked on the server | `notify` queries filter by `user_id`; `TestStoredNotificationsAcceptance` |
 | `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
 | State-changing routes outside CSRF are listed exactly | `TestCSRFExemptRoutesAreExact` |
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `session_fix_test.go`, `web/e2e/session.spec.ts` |

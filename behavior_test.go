@@ -491,7 +491,7 @@ func TestLeadershipAndDeletion(t *testing.T) {
 		t.Fatalf("deletion queue: %s", w.Body.String())
 	}
 	w = admin.do("GET", "/api/v1/notifications", nil, false)
-	if !strings.Contains(w.Body.String(), "waiting to be deleted") {
+	if !strings.Contains(w.Body.String(), "asked to delete Solo") {
 		t.Fatalf("notification: %s", w.Body.String())
 	}
 	if w := admin.do("POST", "/api/v1/admin/groups/"+gid+"/reject-deletion", map[string]any{}, true); w.Code != http.StatusOK {

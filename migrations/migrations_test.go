@@ -3,6 +3,7 @@ package migrations_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +204,54 @@ func TestSimplicityMigrations(t *testing.T) {
 	}
 	if _, err := p.Up(ctx); err != nil {
 		t.Fatalf("up again: %v", err)
+	}
+}
+
+// 00010 carries open admin tasks (pending groups, deletion requests) over
+// as stored notifications for active admins only.
+func TestNotificationsBackfill(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 9); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO users (id, email, name, role, status) VALUES (1, 'a@example.com', 'Ann', 'admin', 'active'),
+			(2, 'b@example.com', 'Bob', 'admin', 'disabled'), (3, 'c@example.com', 'Cy', 'member', 'active')`,
+		`INSERT INTO groups (id, name, leader_id, status, deletion_requested) VALUES (1, 'New', 3, 'pending', false),
+			(2, 'Old', 3, 'active', true), (3, 'Fine', 3, 'active', false)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := p.UpTo(ctx, 10); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(`SELECT user_id, kind, title, waiting FROM notifications ORDER BY kind`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var uid int
+		var kind, title string
+		var waiting bool
+		if err := rows.Scan(&uid, &kind, &title, &waiting); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%d %s %s %v", uid, kind, title, waiting))
+	}
+	want := []string{"1 group.deletion Cy asked to delete Old true", "1 group.pending Cy started a group: New true"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("backfill:\n%v\nwant\n%v", got, want)
+	}
+	if _, err := p.DownTo(ctx, 9); err != nil {
+		t.Fatal(err)
 	}
 }

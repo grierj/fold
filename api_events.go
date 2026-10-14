@@ -605,6 +605,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			return err
 		}
 		*ev = locked
+		var cancelled []uint
 		for _, act := range actions {
 			switch act.Kind {
 			case "move":
@@ -617,6 +618,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 					Update("status", models.OccurrenceCancelled).Error; err != nil {
 					return err
 				}
+				cancelled = append(cancelled, act.ID)
 			case "add":
 				row := models.EventOccurrence{
 					EventID: ev.ID, OriginalDate: act.When.OriginalDate,
@@ -628,7 +630,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				}
 			}
 		}
-		return nil
+		return notifyOccurrencesCancelled(tx, apiUser(c).ID, cancelled)
 	})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not update event")
@@ -692,15 +694,21 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "date must be YYYY-MM-DD")
 		return
 	}
-	res := a.DB.Model(&models.EventOccurrence{}).
-		Where("event_id = ? AND original_date = ?", ev.ID, body.Date).
-		Update("status", models.OccurrenceCancelled)
-	if res.Error != nil {
-		jsonError(c, http.StatusInternalServerError, "could not cancel")
+	var occ models.EventOccurrence
+	if err := a.DB.Where("event_id = ? AND original_date = ?", ev.ID, body.Date).First(&occ).Error; err != nil {
+		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return
 	}
-	if res.RowsAffected == 0 {
-		jsonError(c, http.StatusNotFound, "that date is not on this event")
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		res := tx.Model(&models.EventOccurrence{}).Where("id = ? AND status <> ?", occ.ID, models.OccurrenceCancelled).
+			Update("status", models.OccurrenceCancelled)
+		if res.Error != nil || res.RowsAffected == 0 {
+			return res.Error // already cancelled: nobody is told twice
+		}
+		return notifyOccurrencesCancelled(tx, apiUser(c).ID, []uint{occ.ID})
+	})
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not cancel")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})

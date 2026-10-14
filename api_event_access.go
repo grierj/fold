@@ -428,10 +428,16 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		if reason != "" {
 			meta["reason"] = reason
 		}
-		return audit.Write(tx, audit.Entry{
+		if err := audit.Write(tx, audit.Entry{
 			Actor: &me.ID, Action: action, TargetType: "event", TargetID: ev.ID,
 			Meta: meta, IP: c.ClientIP(),
-		})
+		}); err != nil {
+			return err
+		}
+		if action == audit.VisibilityOverride && f.group != nil {
+			return notifyVisibilityOverride(tx, me.ID, ev, f.group, vis, reason)
+		}
+		return nil
 	})
 	if errors.Is(err, errNeedDecision) {
 		c.JSON(http.StatusConflict, gin.H{

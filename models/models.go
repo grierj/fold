@@ -303,5 +303,39 @@ func All() []any {
 	return []any{
 		&User{}, &Group{}, &Event{}, &EventHost{}, &EventOccurrence{},
 		&Membership{}, &Registration{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
+		&Notification{},
 	}
+}
+
+// Notification is one stored in-app notification for one recipient (5.12,
+// DEC-42). Write it through internal/notify. Title, body and link are
+// rendered when the row is written. Waiting rows are tasks: they stay in
+// the badge until ResolvedAt is set.
+type Notification struct {
+	ID           uint   `gorm:"primaryKey"`
+	UserID       uint   `gorm:"not null"`
+	Kind         string `gorm:"not null"`
+	Category     string `gorm:"not null"`
+	Priority     int    `gorm:"not null;default:0"`
+	Waiting      bool   `gorm:"not null;default:false"`
+	ActorID      *uint
+	SubjectType  string `gorm:"not null;default:''"`
+	SubjectID    *uint
+	GroupKey     *string
+	DedupeKey    *string
+	Title        string    `gorm:"not null"`
+	Body         string    `gorm:"not null;default:''"`
+	Link         string    `gorm:"not null"`
+	Actions      string    `gorm:"type:jsonb;not null;default:'[]'"`
+	BatchCount   int       `gorm:"not null;default:1"`
+	Data         string    `gorm:"type:jsonb;not null;default:'{}'"`
+	CreatedAt    time.Time `gorm:"not null;default:now()"`
+	UpdatedAt    time.Time `gorm:"not null;default:now()"`
+	SeenAt       *time.Time
+	ReadAt       *time.Time
+	ArchivedAt   *time.Time
+	ResolvedAt   *time.Time
+	ResolvedByID *uint
+	Resolution   string `gorm:"not null;default:''"`
+	ExpiresAt    *time.Time
 }
