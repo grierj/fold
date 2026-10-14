@@ -196,3 +196,14 @@ export interface VisibilityImpact {
 }
 
 export type OpenedDecision = "keep" | "tighten";
+
+// An invitation to join Fold (M1.2, 5.10). Admins and leaders invite; the
+// person sets a password on acceptance and gets an active account.
+export interface Invitation {
+  id: number;
+  email: string;
+  name: string;
+  groupId?: number;
+  groupName?: string;
+  expiresAt: string;
+}

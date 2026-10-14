@@ -77,6 +77,11 @@ export function Login() {
         <button type="submit" disabled={busy} className="btn-primary w-full">
           {busy ? "Logging in…" : "Log in"}
         </button>
+        <p className="text-sm text-center mt-2">
+          <Link to="/forgot-password" className="text-brand font-semibold">
+            Forgot your password?
+          </Link>
+        </p>
       </form>
       <p className="text-sm text-gray-500 mt-4 text-center">
         New here? An account is created by your church admin, or{" "}

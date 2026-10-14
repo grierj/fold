@@ -12,6 +12,10 @@ import { MyGroups } from "./pages/MyGroups";
 import { ProfilePage } from "./pages/Profile";
 import { AdminPage } from "./pages/Admin";
 import { NotificationsPage } from "./pages/Notifications";
+import { ForgotPassword } from "./pages/ForgotPassword";
+import { ResetPassword } from "./pages/ResetPassword";
+import { Invite } from "./pages/Invite";
+import { VerifyEmail } from "./pages/VerifyEmail";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 
@@ -40,6 +44,10 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/forgot-password" element={<ForgotPassword />} />
+        <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/invite" element={<Invite />} />
+        <Route path="/verify-email" element={<VerifyEmail />} />
         <Route path="/groups/new" element={<NewGroup />} />
         <Route path="/groups/:id" element={<GroupDetail />} />
         <Route path="/groups/:id/events/new" element={<NewEvent />} />

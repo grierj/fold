@@ -76,6 +76,7 @@ import type {
   EventSeries,
   GroupDetailResponse,
   GroupSummary,
+  Invitation,
   Member,
   Notification,
   NotificationFeed,
@@ -93,6 +94,12 @@ export const Auth = {
   login: (email: string, password: string) =>
     api<{ user: User }>("/auth/login", { method: "POST", body: { email, password } }),
   logout: () => api<Record<string, never>>("/auth/logout", { method: "POST" }),
+  // Password reset (M1.2): the response is uniform for known and unknown
+  // addresses, so the message is shown as-is.
+  requestPasswordReset: (email: string) =>
+    api<{ message: string }>("/auth/password-reset", { method: "POST", body: { email } }),
+  confirmPasswordReset: (token: string, password: string) =>
+    api<{ user: User }>("/auth/password-reset/confirm", { method: "POST", body: { token, password } }),
 };
 
 export const Groups = {
@@ -226,6 +233,24 @@ export const Events = {
   delete: (id: number) => api<unknown>(`/events/${id}`, { method: "DELETE" }),
 };
 
+// Invitations (M1.2, 5.10): admins and leaders invite; the person sets a
+// password on acceptance and gets an active account. No approval step.
+export const Invitations = {
+  create: (data: {
+    email: string;
+    name?: string;
+    phone?: string;
+    groupId?: number | null;
+    role?: "member" | "leader";
+    accountType?: "adult" | "teen";
+    overLimit?: boolean;
+  }) => api<{ invitation: Invitation }>("/invitations", { method: "POST", body: data }),
+  get: (token: string) =>
+    api<{ invitation: Invitation; site: string }>(`/invitations/${encodeURIComponent(token)}`),
+  accept: (data: { token: string; name: string; password: string }) =>
+    api<{ user: User; groupId?: number }>(`/invitations/accept`, { method: "POST", body: data }),
+};
+
 export const Admin = {
   pending: () => api<{ groups: GroupSummary[] }>("/admin/pending"),
   approve: (id: number | string, tags: string[]) =>
@@ -271,7 +296,11 @@ export interface ProfileUpdate {
 }
 
 export const Profile = {
-  update: (data: ProfileUpdate) => api<{ user: User }>("/me", { method: "PUT", body: data }),
+  update: (data: ProfileUpdate) =>
+    api<{ user: User; verificationSent?: boolean }>("/me", { method: "PUT", body: data }),
+  // Verified email change (M1.2): the token is the credential.
+  verifyEmail: (token: string) =>
+    api<{ user: User }>("/me/email/verify", { method: "POST", body: { token } }),
   changePassword: (current: string, password: string) =>
     api<Record<string, never>>("/me/password", { method: "POST", body: { current, password } }),
   uploadAvatar: (file: File) => apiUpload<{ avatarUrl: string }>("/me/avatar", "avatar", file),
