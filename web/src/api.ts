@@ -188,8 +188,11 @@ export const Events = {
   }) => api<{ event: EventSeries }>("/events", { method: "POST", body: data }),
   setVisibility: (
     id: number,
-    data: { visibility: Visibility; reason?: string }
+    // confirm: the leader saw the preview of registrations this cancels.
+    data: { visibility: Visibility; reason?: string; confirm?: boolean }
   ) => api<{ event: EventSeries }>(`/events/${id}/visibility`, { method: "PUT", body: data }),
+  visibilityImpact: (id: number, visibility: Visibility) =>
+    api<VisibilityImpact>(`/events/${id}/visibility-impact?visibility=${encodeURIComponent(visibility)}`),
   addHost: (id: number, email: string) =>
     api<{ hosts: EventHostRow[] }>(`/events/${id}/hosts`, { method: "POST", body: { email } }),
   removeHost: (id: number, userId: number) =>

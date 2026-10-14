@@ -10,7 +10,7 @@ UI). Deployments stay one artifact: `docker compose up`.
 
 ```bash
 cp .env.example .env
-# edit .env: set DOMAIN, SESSION_SECRET (openssl rand -base64 32), DB_PASSWORD
+# edit .env: set DOMAIN, SESSION_SECRET (openssl rand -base64 48; at least 32 characters), DB_PASSWORD
 docker compose up --build -d
 ```
 
@@ -24,6 +24,14 @@ image keeps both. Fold runs only on PostgreSQL and refuses to start without
 
 To run the setup wizard again, delete the users and restart the app. The
 process remembers that setup finished until it exits.
+
+## Upgrade notes
+
+- **Oct 2026 (PR #44): `SESSION_SECRET` must be at least 32 characters.** An older
+  install with a shorter secret will not start. `docker compose logs app` shows
+  one line naming the problem and its length (never the value). Fix: run
+  `openssl rand -base64 48`, put the result in `.env` as `SESSION_SECRET=...`,
+  and run `docker compose up -d`. Everyone is signed out once.
 
 ## Backup
 

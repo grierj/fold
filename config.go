@@ -92,6 +92,15 @@ func parseTrustedProxies(s string) ([]string, error) {
 }
 
 // LoadConfig reads everything `fold serve` needs.
+// shortSecretMessage is the one startup error for a short secret: what is
+// wrong (its length, never its value), how to fix it, and where to set it.
+func shortSecretMessage(n int) string {
+	return fmt.Sprintf("SESSION_SECRET is too short: it is %d characters and must be at least %d. "+
+		"Fix: generate a new one with `openssl rand -base64 48` and set SESSION_SECRET to it, "+
+		"in .env next to docker-compose.yml for Docker Compose (then run `docker compose up -d`), "+
+		"or in the environment of `fold serve`. Changing it signs everyone out once.", n, minSessionSecretLen)
+}
+
 // minSessionSecretLen is the shortest SESSION_SECRET accepted outside dev.
 const minSessionSecretLen = 32
 
@@ -109,7 +118,7 @@ func LoadConfig() (Config, error) {
 	} else if !isDev && len(secret) < minSessionSecretLen {
 		// A short secret can be guessed offline from one cookie, and then
 		// anyone can sign an admin session.
-		return Config{}, fmt.Errorf("SESSION_SECRET must be at least %d characters; generate one with: openssl rand -base64 32", minSessionSecretLen)
+		return Config{}, fmt.Errorf("%s", shortSecretMessage(len(secret)))
 	}
 
 	dbURL, err := databaseURL()

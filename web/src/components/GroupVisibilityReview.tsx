@@ -16,13 +16,17 @@ function people(n: number) {
 // inherited the group's visibility are tightened. Events a leader opened
 // wider need a choice: keep open (logged) or match the group. Registrants
 // who could no longer see a tightened event are cancelled and told.
+// subject "event" reuses the same panel for one event made more private (the
+// impact then lists only that event under tightened).
 export function GroupVisibilityReview({
   impact,
+  subject = "group",
   busy,
   onConfirm,
   onCancel,
 }: {
   impact: VisibilityImpact;
+  subject?: "group" | "event";
   busy: boolean;
   onConfirm: (decisions: Record<string, OpenedDecision>) => void;
   onCancel: () => void;
@@ -31,6 +35,7 @@ export function GroupVisibilityReview({
   const next = WORD[impact.visibility];
   const ready = impact.leaderOpened.every((e) => decisions[String(e.id)]);
   const label = (title: string) => title || "Untitled event";
+  const who = subject === "group" ? "the group" : "this event";
 
   return (
     <section
@@ -39,12 +44,15 @@ export function GroupVisibilityReview({
       className="bg-white rounded-xl border border-amber-300 p-6 space-y-4 mb-4"
     >
       <h2 id="vis-review-title" className="text-lg font-bold">
-        Making the group {next} changes some events
+        {subject === "group" ? `Making the group ${next} changes some events` : `Making this event ${next}`}
       </h2>
       {impact.tightened.length > 0 && (
         <div>
-          <h3 className="font-semibold text-sm">These events will become {next} too</h3>
-          <ul className="mt-1 text-sm list-disc pl-5" aria-label="Events that will match the group">
+          <h3 className="font-semibold text-sm">{subject === "group" ? `These events will become ${next} too` : `This event will become ${next}`}</h3>
+          <ul
+            className="mt-1 text-sm list-disc pl-5"
+            aria-label={subject === "group" ? "Events that will match the group" : "Event that will change"}
+          >
             {impact.tightened.map((e) => (
               <li key={e.id}>
                 {label(e.title)} <span className="text-gray-500">(now {WORD[e.visibility]})</span>
@@ -94,7 +102,7 @@ export function GroupVisibilityReview({
       )}
       <div className="flex gap-2">
         <button type="button" className="btn-primary" disabled={busy || !ready} onClick={() => onConfirm(decisions)}>
-          {busy ? "Saving…" : `Make the group ${next}`}
+          {busy ? "Saving…" : `Make ${who} ${next}`}
         </button>
         <button type="button" className="btn-secondary" disabled={busy} onClick={onCancel}>
           Cancel

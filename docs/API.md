@@ -168,6 +168,17 @@ GET /api/v1/groups/:id/visibility-impact?visibility=invite_only → 200 impact  
 `registrants` counts people registered for upcoming dates who would lose
 access if that event is tightened. Both lists are empty unless the change
 is more private. The SPA calls this before saving and shows the list.
+
+One event works the same way (DEC-48):
+
+```
+GET /api/v1/events/:id/visibility-impact?visibility=invite_only → 200 impact  (leader, host, or admin)
+PUT /api/v1/events/:id/visibility  body {visibility, reason?, confirm?}
+```
+
+The impact lists only that event, under `tightened`, when the change is more
+private. If it would cancel registrations, the PUT answers 409
+`{needsDecision: true, impact}` unless `confirm` is true.
 New groups enter `pending` until an admin approves them (the approval
 workflow survives); groups an admin creates start `active`.
 Name ≤ 200 characters, description ≤ 5000, location ≤ 300, joined tags ≤ 500.

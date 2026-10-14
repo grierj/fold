@@ -269,3 +269,34 @@ func (a *App) registrationCancelledNotices(me *models.User) []notificationJSON {
 	}
 	return out
 }
+
+// eventImpactOf is what setting one event to newVis would do, in the same
+// shape as a group change: the event is listed under tightened when newVis
+// is more private, with the registrants that would be cancelled.
+func eventImpactOf(tx *gorm.DB, ev *models.Event, newVis string) visibilityImpactJSON {
+	impact := visibilityImpactJSON{Visibility: newVis, Tightened: []impactEventJSON{}, LeaderOpened: []impactEventJSON{}}
+	if policy.Openness(newVis) < policy.Openness(ev.Visibility) {
+		impact.Tightened = toImpact(tx, []models.Event{*ev}, newVis, time.Now().UTC())
+	}
+	return impact
+}
+
+// apiEventVisibilityImpact previews a single-event visibility change, like
+// apiGroupVisibilityImpact does for a group. Managers only.
+// GET /events/:id/visibility-impact?visibility=...
+func (a *App) apiEventVisibilityImpact(c *gin.Context) {
+	ev, f, ok := a.loadVisibleEvent(c)
+	if !ok {
+		return
+	}
+	if !policy.CanManageEvent(asPerson(apiUser(c)), f.view, f.rel) {
+		jsonError(c, http.StatusForbidden, "you can't change this event")
+		return
+	}
+	vis, msg := normalizeVisibility(c.Query("visibility"))
+	if msg != "" {
+		jsonError(c, http.StatusBadRequest, msg)
+		return
+	}
+	c.JSON(http.StatusOK, eventImpactOf(a.DB, ev, vis))
+}

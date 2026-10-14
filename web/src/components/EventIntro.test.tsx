@@ -5,7 +5,8 @@ import { EventIntro, openedEventWarning } from "./EventIntro";
 import { EventVisibilityControl } from "./EventVisibility";
 
 vi.mock("../api", () => ({
-  Events: { setVisibility: vi.fn(), addHost: vi.fn(), removeHost: vi.fn() },
+  ApiError: class extends Error {},
+  Events: { setVisibility: vi.fn(), visibilityImpact: vi.fn(), addHost: vi.fn(), removeHost: vi.fn() },
 }));
 
 describe("opened events", () => {

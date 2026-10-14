@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -68,7 +69,19 @@ func TestEventMorePrivateCancelsShutOutRegistrants(t *testing.T) {
 	register(t, memC, ev.ID)
 	register(t, outC, ev.ID)
 
-	setVisibility(t, admin, ev.ID, models.VisibilityInviteOnly, "", http.StatusOK)
+	// Preview first, like a group change: the outsider is counted.
+	var impact visibilityImpactJSON
+	decodeJSON(t, admin.do("GET", fmt.Sprintf("/api/v1/events/%d/visibility-impact?visibility=invite_only", ev.ID), nil, false), &impact)
+	if len(impact.Tightened) != 1 || impact.Tightened[0].Registrants != 1 || len(impact.LeaderOpened) != 0 {
+		t.Fatalf("impact: %+v", impact)
+	}
+	apiDo(t, memC, "GET", fmt.Sprintf("/api/v1/events/%d/visibility-impact?visibility=invite_only", ev.ID), nil, http.StatusForbidden)
+	// Without confirm nothing is saved.
+	setVisibility(t, admin, ev.ID, models.VisibilityInviteOnly, "", http.StatusConflict)
+	if e := eventRow(t, app, ev.ID); e.Visibility != models.VisibilityPublic || regCount(app, out, ev.ID) != 1 {
+		t.Fatalf("saved without confirm: %+v", e)
+	}
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID), map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, http.StatusOK)
 	if regCount(app, out, ev.ID) != 0 || regCount(app, mem, ev.ID) != 1 {
 		t.Fatalf("registrations: out %d, mem %d", regCount(app, out, ev.ID), regCount(app, mem, ev.ID))
 	}
@@ -109,5 +122,20 @@ func TestShortSessionSecretRefusedOutsideDev(t *testing.T) {
 	t.Setenv("SESSION_SECRET", "changeme")
 	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "at least 32") {
 		t.Fatalf("short secret: %v", err)
+	}
+}
+
+func TestShortSecretMessageIsActionableAndHidesTheValue(t *testing.T) {
+	t.Setenv("APP_ENV", "prod")
+	t.Setenv("SESSION_SECRET", "hunter2-secret")
+	_, err := LoadConfig()
+	msg := err.Error()
+	for _, want := range []string{"14 characters", "at least 32", "openssl rand -base64 48", ".env", "docker compose up -d"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message lacks %q: %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "hunter2") || strings.Contains(msg, "\n") {
+		t.Errorf("message leaks the value or spans lines: %s", msg)
 	}
 }
