@@ -303,6 +303,34 @@ func TestGroupHasRoom(t *testing.T) {
 	}
 }
 
+// Section 6, accounts doors (DEC-4, DEC-44, M1.3): a member's
+// invite-a-friend always waits for an admin; only admins decide; inline
+// approval from the bell is for adult requests with no warnings only.
+func TestAccountRequestRules(t *testing.T) {
+	if !CanInviteFriend(adult) || !CanInviteFriend(admin) {
+		t.Error("signed-in adults may invite a friend (still admin-approved)")
+	}
+	if CanInviteFriend(teen) || CanInviteFriend(guest) {
+		t.Error("teens and guests may not invite a friend")
+	}
+	if !CanDecideAccountRequest(admin) || CanDecideAccountRequest(adult) || CanDecideAccountRequest(teen) {
+		t.Error("only admins decide account requests")
+	}
+	if !InlineApproveAccountOK("adult", false) {
+		t.Error("a clean adult request may be approved inline")
+	}
+	for _, tc := range []struct {
+		typ  string
+		warn bool
+	}{
+		{"adult", true}, {"teen", false}, {"teen", true},
+	} {
+		if InlineApproveAccountOK(tc.typ, tc.warn) {
+			t.Errorf("inline approve allowed for %+v", tc)
+		}
+	}
+}
+
 // Section 6, "Invite a new person (no approval needed)" (DEC-4, M1.2):
 // admins may invite anyone; leaders only into a group they lead, or with no
 // group; hosts, members, teens and guests may not invite.

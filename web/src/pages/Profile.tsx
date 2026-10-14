@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Profile as ProfileApi } from "../api";
+import { AccountRequests, Profile as ProfileApi } from "../api";
 import { useAuth } from "../auth";
 import { ImageUpload } from "../components/ImageUpload";
+import { AccountRequestForm } from "../components/AccountRequestForm";
 
 export function ProfilePage() {
   const { user, loading, refresh } = useAuth();
@@ -347,6 +348,22 @@ export function ProfilePage() {
           {passwordSaving ? "Saving…" : "Change password"}
         </button>
       </form>
+
+      {user.accountType !== "teen" && (
+        <div className="mt-6">
+          <h2 className="text-xl font-bold mb-3">Invite a friend</h2>
+          <p className="text-sm text-gray-600 mb-3">
+            Ask for an account for a friend. An admin reviews it first, and your friend
+            only hears from us once it&rsquo;s approved — leaders and admins can also send
+            a direct invitation from the Admin page.
+          </p>
+          <AccountRequestForm
+            submitLabel="Ask an admin to invite them"
+            subject="friend"
+            onSubmit={(data) => AccountRequests.inviteFriend(data)}
+          />
+        </div>
+      )}
     </div>
   );
 }

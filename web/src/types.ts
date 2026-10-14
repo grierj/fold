@@ -12,6 +12,8 @@ export interface User {
   role: string;
   status: "active" | "invited" | "guest" | "pending_consent" | "disabled";
   hasPassword: boolean;
+  accountType: "adult" | "teen";
+  birthDate?: string;
 }
 
 export interface GroupSummary {
@@ -206,4 +208,36 @@ export interface Invitation {
   groupId?: number;
   groupName?: string;
   expiresAt: string;
+}
+
+export type AgeBand = "adult" | "teen" | "under13";
+export type AccountRequestStatus = "pending" | "approved" | "rejected" | "expired" | "withdrawn";
+
+export interface RequestWarnings {
+  duplicate: boolean;
+  honeypot: boolean;
+  rateLimited: boolean;
+}
+
+// One account request in the admin queue (M1.3, DEC-4). Warnings decide
+// whether the bell may approve it inline (DEC-44); the queue always can.
+export interface AccountRequest {
+  id: number;
+  name: string;
+  email: string;
+  phone: string;
+  accountType: "adult" | "teen";
+  birthDate?: string;
+  message: string;
+  source: "self_signup" | "member_invite" | "guest_upgrade";
+  requestedBy?: number;
+  requestedByName?: string;
+  groupId?: number;
+  status: AccountRequestStatus;
+  hasWarnings: boolean;
+  warnings: RequestWarnings;
+  decisionNote: string;
+  expiresAt: string;
+  createdAt: string;
+  decidedAt?: string;
 }

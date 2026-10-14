@@ -94,6 +94,7 @@ func serve(stderr io.Writer) int {
 	defer stop()
 	app.startOccurrenceTicker(ctx)
 	app.startNotificationPruning(ctx)
+	app.startAccountRequestExpiry(ctx)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 	go func() {

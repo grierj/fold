@@ -64,12 +64,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 </button>
               </>
             ) : (
-              <NavLink
-                to="/login"
-                className="btn-primary !py-1.5 !px-4 text-sm"
-              >
-                Log in
-              </NavLink>
+              <>
+                <NavLink to="/join" className="text-gray-700 hover:text-brand">
+                  Join
+                </NavLink>
+                <NavLink
+                  to="/login"
+                  className="btn-primary !py-1.5 !px-4 text-sm"
+                >
+                  Log in
+                </NavLink>
+              </>
             )}
           </nav>
         </div>

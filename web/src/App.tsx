@@ -16,6 +16,8 @@ import { ForgotPassword } from "./pages/ForgotPassword";
 import { ResetPassword } from "./pages/ResetPassword";
 import { Invite } from "./pages/Invite";
 import { VerifyEmail } from "./pages/VerifyEmail";
+import { Join } from "./pages/Join";
+import { SetPassword } from "./pages/SetPassword";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 
@@ -47,6 +49,8 @@ export default function App() {
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/invite" element={<Invite />} />
+        <Route path="/join" element={<Join />} />
+        <Route path="/set-password" element={<SetPassword />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
         <Route path="/groups/new" element={<NewGroup />} />
         <Route path="/groups/:id" element={<GroupDetail />} />

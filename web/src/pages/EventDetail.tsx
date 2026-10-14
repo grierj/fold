@@ -79,6 +79,16 @@ export function EventDetail() {
   const { event, occurrences, canManage, canSetVisibility } = page;
   const title = event.title || (event.hostedBy ? "Church event" : event.groupName || "Event");
 
+  async function deleteEvent() {
+    if (!confirm(`Delete “${title}”? This removes every date and its registrations.`)) return;
+    try {
+      await Events.delete(event.id);
+      navigate("/", { replace: true });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete the event");
+    }
+  }
+
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-extrabold mb-2">{title}</h1>
@@ -106,9 +116,14 @@ export function EventDetail() {
 
       {canManage && (
         <div className="mt-4">
-          <button type="button" className="text-sm text-brand font-medium" onClick={() => setEditing((v) => !v)}>
-            {editing ? "Close editor" : "Edit series"}
-          </button>
+          <div className="flex flex-wrap items-center gap-4">
+            <button type="button" className="text-sm text-brand font-medium" onClick={() => setEditing((v) => !v)}>
+              {editing ? "Close editor" : "Edit series"}
+            </button>
+            <button type="button" className="text-sm text-red-600 hover:text-red-800 font-medium" onClick={() => void deleteEvent()}>
+              Delete event
+            </button>
+          </div>
           {editing && <SeriesForm event={event} onSaved={() => { setEditing(false); void load(); }} />}
         </div>
       )}
@@ -121,7 +136,9 @@ export function EventDetail() {
             key={`${m.eventId}-${m.date}`}
             instance={m}
             loggedIn={!!user}
+            canManage={canManage}
             onRsvp={handleRsvp}
+            onChanged={() => void load()}
             onNeedLogin={() => navigate("/login", { state: { from: `/events/${id}` } })}
           />
         ))}
@@ -133,15 +150,34 @@ export function EventDetail() {
 function DateRow({
   instance,
   loggedIn,
+  canManage,
   onRsvp,
+  onChanged,
   onNeedLogin,
 }: {
   instance: EventOccurrence;
   loggedIn: boolean;
+  canManage: boolean;
   onRsvp: (eventId: number, date: string, status: RegistrationStatus) => void;
+  onChanged: () => void;
   onNeedLogin: () => void;
 }) {
+  const [editingDate, setEditingDate] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
   const time = formatWallClock(instance.startsLocal) + zoneSuffix(instance.startsAt, instance.tzid);
+
+  async function cancel() {
+    if (!confirm(`Cancel this date on ${instance.date}?`)) return;
+    setCancelling(true);
+    try {
+      await Events.cancelOccurrence(instance.eventId, instance.date);
+      onChanged();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Cancel failed");
+      setCancelling(false);
+    }
+  }
+
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 flex gap-4">
       <DateBadge local={instance.startsLocal} />
@@ -151,6 +187,9 @@ function DateRow({
           {time}
           {instance.location ? ` · ${instance.location}` : ""}
         </div>
+        {instance.overridden && (
+          <div className="text-sm text-gray-500">This date was edited on its own, so series changes leave it alone.</div>
+        )}
         <div className="text-sm text-gray-500 mt-1">
           {count(instance.registrations, "going")} going · {count(instance.registrations, "maybe")} maybe ·{" "}
           {count(instance.registrations, "declined")} can't go
@@ -165,8 +204,140 @@ function DateRow({
             </button>
           )}
         </div>
+        {editingDate && (
+          <DateEditor
+            instance={instance}
+            onSaved={() => {
+              setEditingDate(false);
+              onChanged();
+            }}
+            onClose={() => setEditingDate(false)}
+          />
+        )}
       </div>
+      {canManage && (
+        <div className="shrink-0 flex flex-col items-end gap-2">
+          <button
+            type="button"
+            onClick={() => setEditingDate((v) => !v)}
+            className="text-sm text-brand font-medium"
+          >
+            Edit this date
+          </button>
+          <button
+            type="button"
+            onClick={() => void cancel()}
+            disabled={cancelling}
+            className="text-sm text-red-600 hover:text-red-800 font-medium"
+          >
+            {cancelling ? "Cancelling…" : "Cancel"}
+          </button>
+        </div>
+      )}
     </div>
+  );
+}
+
+// DateEditor changes one occurrence only (time, duration, title,
+// location). It mirrors the group page's editor: later series changes
+// leave an edited date alone.
+function DateEditor({
+  instance,
+  onSaved,
+  onClose,
+}: {
+  instance: EventOccurrence;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  const [date, setDate] = useState(instance.startsLocal.slice(0, 10));
+  const [time, setTime] = useState(instance.startsLocal.slice(11, 16));
+  const [duration, setDuration] = useState(instance.durationMinutes);
+  const [title, setTitle] = useState(instance.title);
+  const [location, setLocation] = useState(instance.location);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    const body: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string } = {};
+    const startsLocal = `${date}T${time}`;
+    if (startsLocal !== instance.startsLocal) body.startsLocal = startsLocal;
+    if (duration !== instance.durationMinutes) body.durationMinutes = duration;
+    if (title !== instance.title) body.title = title;
+    if (location !== instance.location) body.location = location;
+    if (Object.keys(body).length === 0) {
+      onClose();
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await Events.updateOccurrence(instance.eventId, instance.date, body);
+      onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not update this date");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
+      <p className="text-sm text-gray-600">
+        This date only. Later series changes leave it alone. The series date stays {instance.date}.
+      </p>
+      {error && <div className="text-sm text-red-600">{error}</div>}
+      <div className="grid sm:grid-cols-3 gap-3">
+        <div>
+          <label className="label" htmlFor={`cev-date-${instance.id}`}>
+            Date
+          </label>
+          <input id={`cev-date-${instance.id}`} type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} required />
+        </div>
+        <div>
+          <label className="label" htmlFor={`cev-time-${instance.id}`}>
+            Start time
+          </label>
+          <input id={`cev-time-${instance.id}`} type="time" className="input" value={time} onChange={(e) => setTime(e.target.value)} required />
+        </div>
+        <div>
+          <label className="label" htmlFor={`cev-dur-${instance.id}`}>
+            Minutes
+          </label>
+          <input
+            id={`cev-dur-${instance.id}`}
+            type="number"
+            min={1}
+            max={10080}
+            className="input"
+            value={duration}
+            onChange={(e) => setDuration(Number(e.target.value))}
+          />
+        </div>
+      </div>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <div>
+          <label className="label" htmlFor={`cev-title-${instance.id}`}>
+            Title
+          </label>
+          <input id={`cev-title-${instance.id}`} className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
+        </div>
+        <div>
+          <label className="label" htmlFor={`cev-loc-${instance.id}`}>
+            Location
+          </label>
+          <input id={`cev-loc-${instance.id}`} className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <button type="submit" disabled={busy} className="btn-primary">
+          {busy ? "Saving…" : "Save this date"}
+        </button>
+        <button type="button" onClick={onClose} className="btn-secondary">
+          Close
+        </button>
+      </div>
+    </form>
   );
 }
 

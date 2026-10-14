@@ -70,6 +70,8 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
 // ---- endpoint wrappers ----
 
 import type {
+  AccountRequest,
+  AgeBand,
   EventDetailResponse,
   EventHostRow,
   EventOccurrence,
@@ -180,7 +182,48 @@ export const Groups = {
 };
 
 export const Site = {
-  get: () => api<{ name: string; timezone: string }>("/site"),
+  get: () => api<{ name: string; timezone: string; selfSignup: "request" | "off" }>("/site"),
+};
+
+export interface AccountRequestInput {
+  name: string;
+  email: string;
+  phone?: string;
+  ageBand: AgeBand;
+  birthDate?: string;
+  message?: string;
+  website?: string; // honeypot: people leave it blank
+}
+
+// Account requests (M1.3, DEC-4): self-signup waits for an admin; the
+// answer is the same whether or not the email already has an account.
+export const AccountRequests = {
+  create: (data: AccountRequestInput) =>
+    api<{ message: string }>("/account-requests", { method: "POST", body: data }),
+  inviteFriend: (data: AccountRequestInput) =>
+    api<{ message: string }>("/account-requests/invite-friend", { method: "POST", body: data }),
+  confirm: (token: string, password: string) =>
+    api<{ user: User; pendingConsent?: boolean }>("/account-requests/confirm", {
+      method: "POST",
+      body: { token, password },
+    }),
+};
+
+export const AdminAccountRequests = {
+  list: (status = "pending") =>
+    api<{ requests: AccountRequest[] }>(`/admin/account-requests?status=${encodeURIComponent(status)}`),
+  approve: (id: number, note?: string, fromNotification?: number) =>
+    api<{ request: AccountRequest; userId: number }>(`/admin/account-requests/${id}/approve`, {
+      method: "POST",
+      body: { note: note || undefined, fromNotification },
+    }),
+  reject: (id: number, note?: string) =>
+    api<{ request: AccountRequest; userId: number }>(`/admin/account-requests/${id}/reject`, {
+      method: "POST",
+      body: { note: note || undefined },
+    }),
+  setSelfSignup: (mode: "request" | "off") =>
+    api<{ selfSignup: "request" | "off" }>("/admin/self-signup", { method: "PUT", body: { mode } }),
 };
 
 export const Events = {
@@ -345,6 +388,12 @@ export const Notifications = {
   // Inline Approve on a pending group (the only allow-listed action, 6.6).
   approveGroup: (groupId: number, notificationId: number) =>
     api<unknown>(`/admin/groups/${groupId}/approve`, {
+      method: "POST",
+      body: { fromNotification: notificationId },
+    }),
+  // Inline Approve on a clean adult account request (DEC-44).
+  approveAccountRequest: (requestId: number, notificationId: number) =>
+    api<unknown>(`/admin/account-requests/${requestId}/approve`, {
       method: "POST",
       body: { fromNotification: notificationId },
     }),

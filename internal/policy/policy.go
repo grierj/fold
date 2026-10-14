@@ -380,6 +380,26 @@ func GroupHasRoom(limit *int, count int) bool {
 	return limit == nil || count < *limit
 }
 
+// CanInviteFriend reports whether p may use the member "invite a
+// friend" door (5.10, DEC-4, M1.3): a signed-in adult member. It always
+// creates an account request an admin decides, never an account, so
+// leaders and admins who use it get no shortcut either. Teens may not
+// (section 6); guests use self-signup instead.
+func CanInviteFriend(p *Person) bool { return p != nil && !p.Teen }
+
+// CanDecideAccountRequest: only admins approve or reject account
+// requests (5.10, DEC-4).
+func CanDecideAccountRequest(p *Person) bool { return IsAdmin(p) }
+
+// InlineApproveAccountOK reports whether an account request may be
+// approved inline from an admin's bell (DEC-44): an adult request with
+// no warnings (duplicate, honeypot, or rate-limit flags). Every teen
+// request and every flagged request goes to Review, and the approval
+// endpoint refuses inline approval of it whatever the client sends.
+func InlineApproveAccountOK(accountType string, hasWarnings bool) bool {
+	return accountType == "adult" && !hasWarnings
+}
+
 // CanInvite reports whether p may create an invitation (5.10, DEC-4, M1.2).
 // Admins may invite anyone, into any group or none. Leaders may invite into
 // a group they lead, or with no group at all. leadsTarget is p's leadership

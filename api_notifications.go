@@ -244,6 +244,29 @@ func notifyGroupPending(tx *gorm.DB, g *models.Group, actor uint) ([]uint, error
 	})
 }
 
+// notifyAccountRequested asks every admin to decide an account
+// request (a task, DEC-4). Only a clean adult request carries the
+// inline Approve (DEC-44); teens and flagged requests are Review-only.
+// The row names the requester for admins but never their contact
+// details, and the email variant names nobody at all.
+func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags models.RequestFlags) ([]uint, error) {
+	source := "Self-signup"
+	var actor *uint
+	if req.Source == models.RequestMemberInvite && req.RequestedBy != nil {
+		source = "Invited by " + nameIn(tx, *req.RequestedBy)
+		actor = req.RequestedBy
+	}
+	eligible := policy.InlineApproveAccountOK(req.AccountType, flags.HasWarnings())
+	return notify.Send(tx, notify.Msg{
+		Kind: notify.AccountRequested, To: adminIDs(tx), Actor: actor,
+		SubjectType: "account_request", SubjectID: req.ID, Link: approvalsLink,
+		Vars:            notify.Vars{Person: req.Name, Change: source, Teen: req.AccountType == models.AccountTeen},
+		Data:            map[string]any{"requestId": req.ID},
+		DedupeKey:       fmt.Sprintf("account.requested:%d", req.ID),
+		SuppressActions: !eligible,
+	})
+}
+
 // notifyDeletionRequested asks every admin to delete or keep a group.
 func notifyDeletionRequested(tx *gorm.DB, g *models.Group, actor uint) ([]uint, error) {
 	return notify.Send(tx, notify.Msg{
