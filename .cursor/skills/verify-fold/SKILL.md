@@ -1,6 +1,6 @@
 ---
 name: verify-fold
-description: Drive the Fold church small-group web app in a browser against an isolated Postgres database and capture proof. Use when a change to Fold's sign-in, directory, groups, events, or session needs evidence that the real app works.
+description: Drive the Fold church small-group web app in a browser against an isolated Postgres database and capture proof. Use when a change to Fold's sign-in, directory, groups, events, notifications, or session needs evidence that the real app works.
 ---
 
 # Verify Fold

@@ -291,11 +291,14 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		// An admin activating or archiving a pending group by editing it
 		// decides the approval task too.
 		if locked.Status == models.GroupPending && g.Status != models.GroupPending {
-			outcome := "approved"
+			outcome, action := "approved", audit.GroupApproved
 			if g.Status != models.GroupActive {
-				outcome = "rejected"
+				outcome, action = "rejected", audit.GroupRejected
 			}
 			if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &u.ID, outcome); err != nil {
+				return err
+			}
+			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: action, TargetType: "group", TargetID: g.ID, IP: c.ClientIP()}); err != nil {
 				return err
 			}
 		}

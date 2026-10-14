@@ -66,6 +66,10 @@ test("archive survives signing out, and Undo or the Archived filter restores it"
   await page.getByRole("button", { name: "Archived" }).click();
   await expect(page).toHaveURL(/filter=archived/);
   await expect(page.getByRole("link", { name: new RegExp(title) })).toBeVisible();
+  await page.getByRole("button", { name: `Restore: ${title}` }).click();
+  await expect(page.getByRole("link", { name: new RegExp(title) })).toHaveCount(0);
+  await page.getByRole("button", { name: "All" }).click();
+  await expect(page.getByRole("link", { name: new RegExp(title) })).toBeVisible();
 });
 
 test.describe("on a phone", () => {

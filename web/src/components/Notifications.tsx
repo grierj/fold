@@ -110,6 +110,16 @@ export function NotificationRow({
         )}
         {feed.rowError[n.id] && <p className="mt-1 text-sm text-red-600">{feed.rowError[n.id]}</p>}
       </div>
+      {n.archived && (
+        <button
+          className="absolute right-1 top-1 h-11 px-3 text-sm text-brand font-semibold hover:underline"
+          aria-label={`Restore: ${n.title}`}
+          disabled={feed.offline}
+          onClick={() => feed.unarchive(n).catch(() => {})}
+        >
+          Restore
+        </button>
+      )}
       {!n.waiting && !n.archived && (
         <button
           className="absolute right-1 top-1 w-11 h-11 flex items-center justify-center text-gray-500 hover:text-gray-800 rounded-full"

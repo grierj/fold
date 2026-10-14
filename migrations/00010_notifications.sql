@@ -48,7 +48,7 @@ SELECT a.id, 'group.pending', 'admin', true, g.leader_id, 'group', g.id, 'group.
        'It needs an admin''s approval before people can find it.',
        '/admin?tab=approvals', '[{"key":"approve","label":"Approve"}]', jsonb_build_object('groupId', g.id)
 FROM groups g
-JOIN users a ON a.role = 'admin' AND a.deleted_at IS NULL
+JOIN users a ON a.role = 'admin' AND a.status = 'active' AND a.deleted_at IS NULL
 LEFT JOIN users l ON l.id = g.leader_id
 WHERE g.status = 'pending' AND g.deleted_at IS NULL;
 
@@ -58,7 +58,7 @@ SELECT a.id, 'group.deletion', 'admin', true, g.leader_id, 'group', g.id,
        'They are its only member. Delete the group or keep it.',
        '/admin?tab=approvals', jsonb_build_object('groupId', g.id)
 FROM groups g
-JOIN users a ON a.role = 'admin' AND a.deleted_at IS NULL
+JOIN users a ON a.role = 'admin' AND a.status = 'active' AND a.deleted_at IS NULL
 LEFT JOIN users l ON l.id = g.leader_id
 WHERE g.deletion_requested AND g.deleted_at IS NULL;
 

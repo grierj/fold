@@ -48,3 +48,4 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Schedule an event](./schedule-event.md) covers a leader scheduling a group event and seeing it on the group page.
 - [Log out](./log-out.md) covers the header control clearing the session, including after Back.
 - [Event visibility](./event-visibility.md) covers one event narrower or wider than its group and the review when a group becomes more private.
+- [Notifications](./notifications.md) covers the bell's count, approving a waiting group inline, archive with Undo that survives signing out, and the phone-width page.
