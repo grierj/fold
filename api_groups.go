@@ -68,7 +68,6 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
 		Tags        []string        `json:"tags"`
-		ImageURL    string          `json:"imageUrl"`
 		Location    string          `json:"location"`
 		Visibility  string          `json:"visibility"`
 		MemberLimit json.RawMessage `json:"memberLimit"`
@@ -99,7 +98,6 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 		Name:        name,
 		Description: description,
 		Tags:        tags,
-		ImageURL:    strings.TrimSpace(body.ImageURL),
 		Location:    location,
 		LeaderID:    u.ID, // displayed primary contact
 		Status:      policy.NewGroupStatus(asPerson(u)),
@@ -187,7 +185,6 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		Name        *string  `json:"name"`
 		Description *string  `json:"description"`
 		Tags        []string `json:"tags"`
-		ImageURL    *string  `json:"imageUrl"`
 		Location    *string  `json:"location"`
 		Status      *string  `json:"status"`
 		CoverFocal  *struct {
@@ -234,9 +231,6 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			return
 		}
 		g.Tags = tags
-	}
-	if body.ImageURL != nil {
-		g.ImageURL = strings.TrimSpace(*body.ImageURL)
 	}
 	if body.CoverFocal != nil {
 		g.CoverFocalX = clampFocal(body.CoverFocal.X)

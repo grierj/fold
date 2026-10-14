@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -10,13 +9,10 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"fold/internal/audit"
 	"fold/internal/mail"
@@ -389,33 +385,6 @@ func (a *App) saveAvatar(ctx context.Context, u *models.User, r io.Reader, size 
 	return a.Uploads.URL(key), nil
 }
 
-// apiFetchAvatar downloads an image from a URL the user supplies and stores
-// it the same way an uploaded file is stored. The browser cannot fetch
-// arbitrary hosts itself, so the server does it with the checks in
-// fetchRemoteImage.
-func (a *App) apiFetchAvatar(c *gin.Context) {
-	u := apiUser(c)
-	var body struct {
-		URL string `json:"url"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.URL) == "" {
-		jsonError(c, http.StatusBadRequest, "url is required")
-		return
-	}
-	data, mime, err := a.fetchRemoteImage(c.Request.Context(), strings.TrimSpace(body.URL))
-	if err != nil {
-		jsonError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	avatarURL, err := a.saveAvatar(c.Request.Context(), u, bytes.NewReader(data), int64(len(data)), mime)
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not store avatar")
-		return
-	}
-	c.Set("apiUser", u)
-	c.JSON(http.StatusOK, gin.H{"avatarUrl": avatarURL})
-}
-
 // apiDeleteAvatar removes the current user's avatar.
 func (a *App) apiDeleteAvatar(c *gin.Context) {
 	u := apiUser(c)
@@ -432,130 +401,6 @@ func (a *App) apiDeleteAvatar(c *gin.Context) {
 	u.AvatarKey = ""
 	c.Set("apiUser", u)
 	c.JSON(http.StatusOK, gin.H{})
-}
-
-// fetchRemoteImage downloads an http(s) image. The connection is dialed to
-// an address that passed ipAllowed, so a name that resolves to a private
-// or link-local host is refused. Loopback is allowed only when APP_ENV=dev
-// so local tests can serve a fixture. Redirects are checked the same way.
-func (a *App) fetchRemoteImage(ctx context.Context, rawURL string) ([]byte, string, error) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil || parsed.Host == "" || parsed.User != nil ||
-		(parsed.Scheme != "http" && parsed.Scheme != "https") {
-		return nil, "", fmt.Errorf("url must be an http or https address")
-	}
-	if err := a.hostAllowed(ctx, parsed.Hostname()); err != nil {
-		return nil, "", err
-	}
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	transport := &http.Transport{
-		Proxy: nil,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				return nil, err
-			}
-			ip, err := a.resolveAllowedIP(ctx, host)
-			if err != nil {
-				return nil, err
-			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-		},
-		TLSHandshakeTimeout:   5 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-	}
-	client := &http.Client{
-		Timeout:   15 * time.Second,
-		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 3 {
-				return fmt.Errorf("too many redirects")
-			}
-			if req.URL == nil || req.URL.User != nil ||
-				(req.URL.Scheme != "http" && req.URL.Scheme != "https") {
-				return fmt.Errorf("url must be an http or https address")
-			}
-			return a.hostAllowed(req.Context(), req.URL.Hostname())
-		},
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
-	if err != nil {
-		return nil, "", fmt.Errorf("could not fetch that image")
-	}
-	req.Header.Set("User-Agent", "fold")
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, "", fmt.Errorf("could not fetch that image")
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, "", fmt.Errorf("could not fetch that image")
-	}
-	buf, err := io.ReadAll(io.LimitReader(resp.Body, maxUploadBytes+1))
-	if err != nil {
-		return nil, "", fmt.Errorf("could not fetch that image")
-	}
-	if len(buf) == 0 {
-		return nil, "", fmt.Errorf("empty file")
-	}
-	if len(buf) > maxUploadBytes {
-		return nil, "", fmt.Errorf("file too large (max 5MB)")
-	}
-	mime := http.DetectContentType(buf)
-	if _, ok := allowedImageTypes[mime]; !ok {
-		return nil, "", fmt.Errorf("only JPEG, PNG, GIF, and WebP images are allowed")
-	}
-	return buf, mime, nil
-}
-
-func (a *App) hostAllowed(ctx context.Context, host string) error {
-	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	if host == "" {
-		return fmt.Errorf("url must be an http or https address")
-	}
-	if !a.Config.IsDev() && (host == "localhost" || strings.HasSuffix(host, ".localhost")) {
-		return fmt.Errorf("that address is not allowed")
-	}
-	_, err := a.resolveAllowedIP(ctx, host)
-	return err
-}
-
-func (a *App) resolveAllowedIP(ctx context.Context, host string) (net.IP, error) {
-	if ip := net.ParseIP(host); ip != nil {
-		if !a.ipAllowed(ip) {
-			return nil, fmt.Errorf("that address is not allowed")
-		}
-		return ip, nil
-	}
-	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-	if err != nil || len(ips) == 0 {
-		return nil, fmt.Errorf("could not fetch that image")
-	}
-	for _, ip := range ips {
-		if a.ipAllowed(ip.IP) {
-			return ip.IP, nil
-		}
-	}
-	return nil, fmt.Errorf("that address is not allowed")
-}
-
-// ipAllowed refuses private, link-local, multicast, and unspecified
-// addresses. Loopback is allowed only in dev.
-func (a *App) ipAllowed(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	if a.Config.IsDev() && ip.IsLoopback() {
-		return true
-	}
-	if cgnat.Contains(ip) || thisNetwork.Contains(ip) {
-		return false
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
-		ip.IsMulticast() || ip.IsInterfaceLocalMulticast() || ip.IsUnspecified() {
-		return false
-	}
-	return true
 }
 
 // uploadKeyFromURL returns the storage key for an /uploads/... URL, or
@@ -666,10 +511,3 @@ func (a *App) serveUpload(c *gin.Context) {
 	c.Header("Cache-Control", "public, max-age=86400")
 	http.ServeContent(c.Writer, c.Request, st.Name(), st.ModTime(), f)
 }
-
-// Ranges net.IP has no predicate for: carrier-grade NAT (often a cloud
-// provider's internal network) and "this network".
-var (
-	_, cgnat, _       = net.ParseCIDR("100.64.0.0/10")
-	_, thisNetwork, _ = net.ParseCIDR("0.0.0.0/8")
-)

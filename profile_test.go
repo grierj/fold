@@ -251,3 +251,27 @@ func TestServeUploadRejectsTraversal(t *testing.T) {
 		}
 	}
 }
+
+// Covers are upload-only: an imageUrl in a create or update body is ignored.
+func TestGroupCoverLinkIgnored(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	c := loginAPI(t, app, "admin", "password1234")
+	w := c.do("POST", "/api/v1/groups", map[string]any{"name": "Choir", "imageUrl": "https://example.com/a.jpg"}, true)
+	var created struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, w, &created)
+	if created.Group.ImageURL != "" {
+		t.Fatalf("create stored link: %q", created.Group.ImageURL)
+	}
+	c.do("PUT", "/api/v1/groups/"+itoa(created.Group.ID), map[string]any{"imageUrl": "javascript:alert(1)"}, true)
+	var g models.Group
+	app.DB.First(&g, created.Group.ID)
+	if g.ImageURL != "" {
+		t.Fatalf("update stored link: %q", g.ImageURL)
+	}
+	if w := c.do("POST", "/api/v1/me/avatar/url", map[string]string{"url": "https://example.com/a.png"}, true); w.Code != http.StatusNotFound {
+		t.Fatalf("avatar url endpoint still exists: %d", w.Code)
+	}
+}

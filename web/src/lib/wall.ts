@@ -37,6 +37,21 @@ function ymdInZone(instant: Date, tzid: string): string {
   }
 }
 
+// YYYY-MM-DDTHH:MM wall clock of instant in tzid.
+export function localInZone(instant: Date, tzid: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tzid,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(instant);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+}
+
 function addDays(ymd: string, days: number): string {
   const [y, m, d] = ymd.split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, d + days)).toISOString().slice(0, 10);
@@ -67,7 +82,15 @@ export function formatNextEvent(
   utcIso: string | null | undefined
 ): string {
   if (!local) return "No events scheduled yet";
-  const zone = tzid || "UTC";
+  // The API always sends tzid with a next event (guarded by a Go test). If
+  // it is ever missing, show the instant in the viewer's own zone rather
+  // than labelling the event's wall clock as UTC, which shows the wrong day.
+  if (!tzid) {
+    if (!utcIso) return "No events scheduled yet";
+    const zone = browserTimeZone();
+    return formatNextEvent(localInZone(new Date(utcIso), zone), zone, utcIso);
+  }
+  const zone = tzid;
   const day = local.slice(0, 10);
   const today = ymdInZone(new Date(), zone);
   const time = formatWallClock(local);

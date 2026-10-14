@@ -29,8 +29,6 @@ export function NewGroup() {
       name: data.name,
       description: data.description,
       tags: data.tags,
-      // A picked file is uploaded next and sets the URL itself.
-      imageUrl: data.coverFile ? "" : data.imageUrl,
       location: data.location,
       visibility: data.visibility,
       memberLimit: data.memberLimit,
@@ -39,7 +37,6 @@ export function NewGroup() {
       await GroupCover.upload(group.id, data.coverFile);
     }
     if (data.coverFocal) {
-      // Omit imageUrl so this update cannot clear the cover just stored.
       await Groups.update(group.id, { coverFocal: data.coverFocal });
     }
     setCreated(group);

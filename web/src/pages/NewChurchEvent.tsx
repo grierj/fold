@@ -2,8 +2,8 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Events } from "../api";
 import { useAuth } from "../auth";
-import { COMMON_ZONES, WEEKDAYS, weekdayCode } from "../lib/eventForm";
-import { browserTimeZone } from "../lib/wall";
+import { WEEKDAYS, weekdayCode } from "../lib/eventForm";
+import { useEventZone } from "../lib/useEventZone";
 
 export function NewChurchEvent() {
   const navigate = useNavigate();
@@ -13,7 +13,7 @@ export function NewChurchEvent() {
   const [date, setDate] = useState("");
   const [startTime, setStartTime] = useState("19:00");
   const [durationMin, setDurationMin] = useState(90);
-  const [tzid, setTzid] = useState(browserTimeZone);
+  const { tzid, setTzid, options: zones } = useEventZone();
   const [location, setLocation] = useState("");
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [hostEmail, setHostEmail] = useState("");
@@ -174,8 +174,8 @@ export function NewChurchEvent() {
               required
             />
             <datalist id="church-event-zones">
-              {COMMON_ZONES.map((z) => (
-                <option key={z} value={z} />
+              {zones.map((z) => (
+                <option key={z.value} value={z.value} label={z.label} />
               ))}
             </datalist>
           </div>

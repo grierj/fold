@@ -7,10 +7,10 @@ function futureDate(days: number): string {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-test("an admin schedules a church-wide event from the browser zone", async ({ page }) => {
+test("an admin schedules a church-wide event in the church time zone", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/events/new");
-  await expect(page.getByLabel("Time zone")).toHaveValue("America/New_York");
+  await expect(page.getByLabel("Time zone")).toHaveValue("America/Boise");
 
   await page.getByLabel("Title").fill("Church potluck");
   await page.getByLabel("Description").fill("Bring a side dish.");

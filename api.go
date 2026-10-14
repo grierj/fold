@@ -413,7 +413,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.PUT("/me", a.apiAuth(), a.apiUpdateMe)
 	v1.POST("/me/password", a.apiAuth(), a.apiChangePassword)
 	v1.POST("/me/avatar", a.apiAuth(), a.apiUploadAvatar)
-	v1.POST("/me/avatar/url", a.apiAuth(), a.apiFetchAvatar)
 	v1.DELETE("/me/avatar", a.apiAuth(), a.apiDeleteAvatar)
 	// Verified email change (M1.2): the token is the credential.
 	v1.POST("/me/email/verify", a.apiVerifyEmailChange)

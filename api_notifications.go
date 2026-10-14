@@ -420,7 +420,7 @@ func localWhen(t time.Time, tzid string) string {
 	if l, err := time.LoadLocation(tzid); err == nil {
 		loc = l
 	}
-	return t.In(loc).Format("Mon, Jan 2 · 3:04 PM")
+	return t.In(loc).Format("Mon, Jan 2 · 3:04 PM MST")
 }
 
 func visWord(v string) string {

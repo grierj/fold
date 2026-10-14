@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -102,18 +101,6 @@ func TestOversizedBodyRefused(t *testing.T) {
 	big := map[string]any{"email": strings.Repeat("a", maxRequestBytes), "password": "x"}
 	if w := c.do("POST", "/api/v1/auth/login", big, true); w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversized login: %d", w.Code)
-	}
-}
-
-func TestAvatarFetchRefusesInternalRanges(t *testing.T) {
-	app := testApp(t)
-	for _, ip := range []string{"100.64.0.1", "100.127.255.254", "0.1.2.3", "10.0.0.1", "169.254.169.254"} {
-		if app.ipAllowed(net.ParseIP(ip)) {
-			t.Errorf("%s allowed", ip)
-		}
-	}
-	if !app.ipAllowed(net.ParseIP("93.184.216.34")) {
-		t.Error("public address refused")
 	}
 }
 

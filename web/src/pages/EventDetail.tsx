@@ -1,3 +1,4 @@
+import { useZoneOptions } from "../lib/useEventZone";
 import { useCallback, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
@@ -6,7 +7,7 @@ import { DateBadge } from "../components/DateBadge";
 import { AttendeeNames, EventIntro } from "../components/EventIntro";
 import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
-import { COMMON_ZONES, WEEKDAYS, weekdayCode } from "../lib/eventForm";
+import { WEEKDAYS, weekdayCode } from "../lib/eventForm";
 import { formatWallClock, zoneSuffix } from "../lib/wall";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, RegistrationStatus } from "../types";
 
@@ -425,6 +426,7 @@ function SeriesForm({ event, onSaved }: { event: EventDetailResponse["event"]; o
   const [time, setTime] = useState(event.startsLocal.slice(11, 16));
   const [duration, setDuration] = useState(event.durationMinutes);
   const [tzid, setTzid] = useState(event.tzid);
+  const zones = useZoneOptions();
   const [location, setLocation] = useState(event.location);
   const [recurring, setRecurring] = useState(event.recurrenceRule.startsWith("FREQ=WEEKLY"));
   const [days, setDays] = useState<string[]>(() => {
@@ -485,9 +487,9 @@ function SeriesForm({ event, onSaved }: { event: EventDetailResponse["event"]; o
         />
         <input className="input" aria-label="Time zone" list="series-zones" value={tzid} onChange={(e) => setTzid(e.target.value)} required />
         <datalist id="series-zones">
-          {COMMON_ZONES.map((z) => (
-            <option key={z} value={z} />
-          ))}
+          {zones.map((z) => (
+                <option key={z.value} value={z.value} label={z.label} />
+              ))}
         </datalist>
       </div>
       <input className="input" aria-label="Location" value={location} onChange={(e) => setLocation(e.target.value)} />

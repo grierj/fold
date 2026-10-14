@@ -59,8 +59,6 @@ successful sign-in clears the email's counter but not the IP's.
 PUT    /api/v1/me           → 200 {user, verificationSent?}  (auth; partial update)
 POST   /api/v1/me/password  → 200 {}  (auth)
 POST   /api/v1/me/avatar    → 200 {avatarUrl}  (auth; multipart, field "avatar")
-POST   /api/v1/me/avatar/url → 200 {avatarUrl} (auth)
-     body: {url} — the server downloads the image and stores it like an upload
 DELETE /api/v1/me/avatar    → 200 {}  (auth)
 POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public)
 ```
@@ -92,9 +90,8 @@ is present for teens. `displayName` falls back to name in the UI. `avatarUrl` is
 
 Avatar uploads must be JPEG, PNG, GIF, or WebP (content-sniffed, not by
 extension), ≤ 5MB. Uploading replaces the old avatar; the old blob is
-deleted. `POST /me/avatar/url` fetches an `http` or `https` URL and applies
-the same checks. Private, link-local, and loopback addresses are refused
-(loopback is allowed only when `APP_ENV=dev`). The CSRF token goes in the
+deleted. Pictures are upload-only; the server never fetches a URL (Oct 14
+decision). The CSRF token goes in the
 `X-CSRF-Token` header for multipart posts, same as JSON.
 
 ### Uploads
@@ -152,8 +149,11 @@ other only inside groups they share); otherwise it is `[]`. `canManage` is
 true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, role,
 joinedAt, admin}` — `name` is the member's display name; `admin` marks church admins (DEC-38).
 
-Create/update body: `{name, description, tags[], imageUrl, location,
-coverFocal: {x, y}, visibility, memberLimit}`.
+Create/update body: `{name, description, tags[], location,
+coverFocal: {x, y}, visibility, memberLimit}`. Covers are upload-only: set
+one with `POST /groups/:id/cover`, clear it with `DELETE /groups/:id/cover`;
+an `imageUrl` in this body is ignored, so `imageUrl` is always empty or an
+`/uploads/...` path.
 `memberLimit` is a positive whole number, or null for no limit (the default);
 on update, omit it to leave it unchanged. Lowering it below the count keeps
 everyone and blocks joins until the count drops (DEC-39).
