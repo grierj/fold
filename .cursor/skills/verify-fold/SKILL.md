@@ -17,7 +17,7 @@ From the repo root:
 .cursor/skills/verify-fold/verify-fold up
 ```
 
-The command starts the dev Postgres container if it is not already up (`deploy/docker-compose.dev.yml`, database `fold` on `127.0.0.1:5432`). It then creates a new database named `fold_verify_<run>`, builds `web/` and a `CGO_ENABLED=0` binary, and starts `fold serve` in `APP_ENV=prod` with `COOKIE_SECURE=false` so the session cookie works on plain `http://127.0.0.1`. Uploads go to that run's work directory, not `/data`.
+The command starts the dev Postgres container if it is not already up (`deploy/docker-compose.dev.yml`, database `fold` on `127.0.0.1:5432`). With no Docker, point it at a running Postgres instead: `VERIFY_PG_URL=postgres://<user>:<pass>@127.0.0.1:5432/postgres?sslmode=disable` (any database that role can `CREATE DATABASE` from). Export the same `VERIFY_PG_URL` for every later `verify-fold` command in the run, including `down`. It then creates a new database named `fold_verify_<run>`, builds `web/` and a `CGO_ENABLED=0` binary, and starts `fold serve` in `APP_ENV=prod` with `COOKIE_SECURE=false` so the session cookie works on plain `http://127.0.0.1`. Uploads go to that run's work directory, not `/data`.
 
 Ready means `GET /healthz` returns 200 with an empty body. The server log line is `Starting server on :<port>`. `up` prints:
 
@@ -55,7 +55,7 @@ Packaged drive, and the one to run for a first proof:
 
 That command runs doctor, then drives sign-in in Chromium through the real pages. The recipe is in [features/sign-in.md](features/sign-in.md). If the Playwright browser is missing, the command installs Chromium once with `npx playwright install chromium` from `web/` and retries.
 
-Other features do not have a packaged drive. Read the feature file and run its commands with the environment from:
+Other features do not have a packaged drive. Read the feature file and run its commands with the environment from: (it prints `export` lines, so a `node` child sees them)
 
 ```bash
 eval "$(.cursor/skills/verify-fold/verify-fold env "$RUN_ID")"

@@ -22,9 +22,9 @@ Preconditions:
 - Save files under `$VERIFY_EVIDENCE/log-out/`.
 
 - **Note the session.** On `/`, the header shows `Verify Admin` and `Log out`. Read the `fold-session` cookie value from the browser context.
-- **Log out.** Choose `Log out`. Run `page.getByRole("button", { name: "Log out" }).click()`. The URL is `/`. The header link `Log in` is visible. The text `Verify Admin` and the button `Log out` are absent. A public heading `Room 201 class` is still visible. A private group name is not.
+- **Log out.** Choose `Log out`. Run `page.getByRole("button", { name: "Log out" }).click()`. The URL is `/`. The header link `Log in` is visible. The header (`page.locator("header")`) no longer shows `Verify Admin`, and the button `Log out` is absent. Group cards still read `Organized by Verify Admin`, so check the header, not the page. A public heading `Room 201 class` is still visible. A private group name is not.
 - **Confirm the server session.** `GET /api/v1/auth/me` from this browser returns 401. The `fold-session` cookie value is not the value captured before logout.
-- **Back.** Use the browser Back control to return to a group URL that was open while signed in, then Back again to `/`. Each page still shows `Log in` and does not show `Verify Admin`.
+- **Back.** Use the browser Back control to return to a group URL that was open while signed in, then Back again to `/`. Each page still shows `Log in`, and its header does not show `Verify Admin`.
 - **Proof.** `log-out/directory.png` shows the Fold header, `Log in`, and the public group, without the admin's name. `log-out/me.txt` records status 401. `log-out/result.txt` names `log-out-header` and the header `Log out` button.
 
 ## Gotchas
