@@ -15,7 +15,7 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | M1.2 Email basics, password reset, invitations | done (merged, #47; follow-up #48) | Winston | `m1.2-email` |
 | M1.3 Self-signup, account requests, age gate | done (merged, #49) | Muse | `m1.3-self-signup-account-requests` |
 | M1.4 Guest registration | done (merged, #55) | Muse | `m1.4-guest-registration` |
-| M1.5 Capacity, waitlist, pruning | unclaimed | | |
+| M1.5 Capacity, waitlist, pruning | in progress (claimed) | Winston | `m1.5-capacity-waitlist-pruning` |
 | M1.6 Calendar views | unclaimed | | |
 | M1.7 ICS feeds | unclaimed | | |
 | M1.8 Video, remote, childcare | unclaimed | | |
