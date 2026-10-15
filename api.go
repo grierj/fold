@@ -151,12 +151,29 @@ type occurrenceJSON struct {
 	// allowed list is omitted; the bool is what says names were allowed.
 	AttendeesVisible bool           `json:"attendeesVisible"`
 	Attendees        []attendeeJSON `json:"attendees,omitempty"`
+	// Capacity, waitlist, and guests (M1.5). Capacity is the effective
+	// cap for this date (per-date override wins); null means unlimited.
+	// SpotsLeft is null when unlimited and never below 0. SeatsUsed
+	// counts seats (1 + guest_count per going party of a listed
+	// account); the Registrations map counts rows.
+	Capacity        *int `json:"capacity"`
+	SeatsUsed       int  `json:"seatsUsed"`
+	SpotsLeft       *int `json:"spotsLeft"`
+	WaitlistEnabled bool `json:"waitlistEnabled"`
+	GuestsAllowed   int  `json:"guestsAllowed"`
+	// MyGuestCount and MyWaitlistPosition describe the signed-in
+	// viewer's own registration; both are absent without one. Position
+	// is set only when the viewer is waitlisted.
+	MyGuestCount       *int `json:"myGuestCount,omitempty"`
+	MyWaitlistPosition *int `json:"myWaitlistPosition,omitempty"`
 }
 
 type attendeeJSON struct {
 	UserID uint   `json:"userId"`
 	Name   string `json:"name"`
 	Status string `json:"status"`
+	// GuestCount is the extra unnamed guests this party brings (M1.5).
+	GuestCount int `json:"guestCount"`
 }
 
 type hostJSON struct {
@@ -185,6 +202,11 @@ type eventJSON struct {
 	LeaderOpened    bool       `json:"leaderOpened"`
 	ChurchWide      bool       `json:"churchWide"`
 	Hosts           []hostJSON `json:"hosts,omitempty"`
+	// Capacity, waitlist, and guests (M1.5). Capacity null means
+	// unlimited.
+	Capacity        *int `json:"capacity"`
+	WaitlistEnabled bool `json:"waitlistEnabled"`
+	GuestsAllowed   int  `json:"guestsAllowed"`
 }
 
 // ---------------------------------------------------------------------------
@@ -471,6 +493,12 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/events/:id/cancel", a.apiAuth(), a.apiCancelOccurrence)
 	v1.PUT("/events/:id/occurrences/:date", a.apiAuth(), a.apiUpdateOccurrence)
 	v1.PUT("/events/:id/registrations", a.apiAuth(), a.apiRegister)
+	// Pruning and hand promotion (M1.5, DEC-20, DEC-30): leaders and hosts
+	// remove anyone, promote one waitlisted row by hand, or add someone
+	// directly (over capacity only by explicit choice).
+	v1.POST("/events/:id/registrations/remove", a.apiAuth(), a.apiRemoveRegistration)
+	v1.POST("/events/:id/registrations/promote", a.apiAuth(), a.apiPromoteRegistration)
+	v1.POST("/events/:id/registrations/add", a.apiAuth(), a.apiAddRegistration)
 	// Guest registration (M1.4): the form and the emailed verification
 	// link are public; the manage token in the confirmation email is
 	// the credential for cancelling. All POSTs ride the CSRF flow like

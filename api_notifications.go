@@ -334,9 +334,10 @@ func notifyNotRestored(tx *gorm.DB, actor uint, g *models.Group, userID uint) ([
 	})
 }
 
-// notifyOccurrencesCancelled tells everyone going or maybe on these dates.
-// A registrant who can't see the group gets no group name, place, or link
-// (PR #41). Each item archives itself when the date would have ended.
+// notifyOccurrencesCancelled tells everyone going or waitlisted on
+// these dates (M1.5: maybe no longer gets one). A registrant who can't
+// see the group gets no group name, place, or link (PR #41). Each item
+// archives itself when the date would have ended.
 func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint, error) {
 	if len(occIDs) == 0 {
 		return nil, nil
@@ -346,7 +347,8 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 		OccID  uint
 	}
 	if err := tx.Table("registrations").Select("user_id, occurrence_id AS occ_id").
-		Where("occurrence_id IN ? AND status IN ?", occIDs, []string{models.RegGoing, models.RegMaybe}).
+		Where("occurrence_id IN ? AND status IN ?", occIDs,
+			[]string{models.RegGoing, models.RegWaitlisted}).
 		Order("occurrence_id, user_id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -505,7 +507,8 @@ func (a *App) deliverNotificationEmail(ctx context.Context, id uint) {
 		return
 	}
 	var u models.User
-	if err := a.DB.Where("id = ?", n.UserID).First(&u).Error; err != nil || u.Status != models.UserActive {
+	if err := a.DB.Where("id = ?", n.UserID).First(&u).Error; err != nil ||
+		(u.Status != models.UserActive && u.Status != models.UserGuest) {
 		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "recipient not active")
 		return
 	}
