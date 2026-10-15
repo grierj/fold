@@ -349,6 +349,13 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			wlAt = &now
 		}
 		reg := models.Registration{UserID: user.ID, OccurrenceID: occ.ID}
+		var prior models.Registration
+		if tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).
+			First(&prior).RowsAffected == 1 && prior.Status == models.RegRemoved {
+			// A pruned guest can't re-enter through the public form;
+			// a leader or host adds them back (mirrors registerLocked).
+			return errRemovedBlocked
+		}
 		err = tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).
 			Attrs(models.Registration{Status: status, Source: models.RegSourceGuestForm}).
 			FirstOrCreate(&reg).Error
@@ -391,6 +398,9 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		return
 	case errors.Is(err, errGuestHasAccount):
 		jsonError(c, http.StatusConflict, "that email already has an account; sign in to register")
+		return
+	case errors.Is(err, errRemovedBlocked):
+		jsonError(c, http.StatusConflict, errRemovedBlocked.Error())
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not confirm your registration")
@@ -448,6 +458,7 @@ func liveTokenManage(db *gorm.DB, raw string) (*models.Registration, *models.Eve
 	var reg models.Registration
 	if err := db.Preload("Occurrence.Event").
 		Where("manage_token_hash = ? AND manage_token_hash <> ?", hashToken(raw), "").
+		Where("status <> ?", models.RegRemoved).
 		First(&reg).Error; err != nil {
 		return nil, nil, nil, nil, errTokenInvalid
 	}
@@ -513,6 +524,11 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 			Where("id = ? AND status IN ?", reg.ID,
 				[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).
 			Updates(map[string]any{"status": models.RegCancelled, "waitlisted_at": nil, "promoted_at": nil})
+			// The manage token stays live: cancel is idempotent (a second
+			// POST with the same link is a 200 no-op), and the token can
+			// then only ever show or re-cancel this dead registration.
+			// It still dies at the date end, and any new manage email
+			// rotates it. Removal (not cancel) is what kills the link.
 		if res.Error != nil {
 			return res.Error
 		}

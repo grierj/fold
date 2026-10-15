@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/notify"
 	"fold/models"
 	"net/http"
 	"strings"
@@ -336,6 +337,146 @@ func TestGuestVisibilityAndTightening(t *testing.T) {
 	guestSubmit(t, anon, ev.ID, guestBody("Late", "late@example.com", true), http.StatusNotFound)
 	if regCount(app, &u, ev.ID) != 0 || regCount(app, mem, ev.ID) != 1 {
 		t.Fatalf("after tightening: guest %d, member %d", regCount(app, &u, ev.ID), regCount(app, mem, ev.ID))
+	}
+}
+
+// Tightening an event must cancel waitlisted rows too: a waitlisted
+// guest who loses access must not be promoted into the event later.
+func TestTighteningCancelsWaitlistedGuest(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID),
+		map[string]any{"capacity": 1, "waitlistEnabled": true}, http.StatusOK)
+
+	// A group member takes the one seat.
+	mem := newTestUser(t, app, "mem", "password1234", models.RoleMember)
+	addMemberEmail(t, admin, gid, mem.Email)
+	memC := loginAPI(t, app, "mem", "password1234")
+	register(t, memC, ev.ID)
+
+	// A guest lands on the waitlist.
+	anon := anonClient(t, app, "10.4.4.9")
+	reg, _ := guestConfirm(t, app, anon, ev.ID, "Willa Guest", "willa@example.com", false)
+	if reg.Status != models.RegWaitlisted {
+		t.Fatalf("guest status = %q, want waitlisted", reg.Status)
+	}
+	u := guestUser(t, app, "willa@example.com")
+	if regCount(app, &u, ev.ID) != 1 {
+		t.Fatal("expected one waitlisted guest registration")
+	}
+
+	// Tightening to invite-only cancels the waitlisted guest row and
+	// tells them; the member's seat is untouched.
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID),
+		map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, http.StatusOK)
+	if regCount(app, &u, ev.ID) != 0 || regCount(app, mem, ev.ID) != 1 {
+		t.Fatalf("after tightening: guest %d, member %d", regCount(app, &u, ev.ID), regCount(app, mem, ev.ID))
+	}
+	var n int64
+	app.DB.Model(&models.Notification{}).Where("user_id = ? AND kind = ?", u.ID, notify.RegistrationCancelled).Count(&n)
+	if n != 1 {
+		t.Fatalf("guest cancellation notices: %d, want 1", n)
+	}
+}
+
+// A promoted guest must never get the group's name, place, or link:
+// the guest is a nil viewer in the notice builders, like guestDisplay.
+func TestPromotedGuestEmailHidesPrivateGroup(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Hidden Care", models.VisibilityPrivate)
+	if err := app.DB.Model(&models.Group{}).Where("id = ?", gid).Update("location", "12 Elm St").Error; err != nil {
+		t.Fatal(err)
+	}
+	ev := scheduleGroupEvent(t, admin, gid, "Open House")
+	// Empty event location: with the bug, the group fallback place leaks.
+	if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Update("location", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	// Open the event so guests can register, then cap it at one seat.
+	setVisibility(t, admin, ev.ID, models.VisibilityPublic, "", http.StatusOK)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID),
+		map[string]any{"capacity": 1, "waitlistEnabled": true}, http.StatusOK)
+
+	mem := newTestUser(t, app, "mem", "password1234", models.RoleMember)
+	addMemberEmail(t, admin, gid, mem.Email)
+	memC := loginAPI(t, app, "mem", "password1234")
+	register(t, memC, ev.ID)
+
+	anon := anonClient(t, app, "10.4.4.10")
+	reg, _ := guestConfirm(t, app, anon, ev.ID, "Gail Guest", "gail@example.com", false)
+	if reg.Status != models.RegWaitlisted {
+		t.Fatalf("guest status = %q, want waitlisted", reg.Status)
+	}
+
+	// The member declines; the guest is promoted and emailed.
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", ev.ID).First(&occ)
+	if code, _ := registerAs(memC, ev.ID, occ.OriginalDate, "declined", nil); code != http.StatusOK {
+		t.Fatalf("member decline: %d", code)
+	}
+	u := guestUser(t, app, "gail@example.com")
+	if got := regStatus(t, app, u.ID, occ.ID); got != models.RegGoing {
+		t.Fatalf("guest status after promotion = %q, want going", got)
+	}
+	m := latestEmail(t, app, "gail@example.com")
+	if strings.Contains(m.Subject, "Hidden Care") || strings.Contains(m.Body, "Hidden Care") ||
+		strings.Contains(m.Body, "12 Elm St") || strings.Contains(m.Body, "/groups/") {
+		t.Fatalf("promotion email leaked the group: %q %q", m.Subject, m.Body)
+	}
+	var n models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", u.ID, notify.RegistrationPromoted).Order("id DESC").First(&n).Error; err != nil {
+		t.Fatalf("promotion notice: %v", err)
+	}
+	if n.Link != fmt.Sprintf("/events/%d", ev.ID) {
+		t.Fatalf("promotion link = %q, want /events/%d", n.Link, ev.ID)
+	}
+}
+
+// A pruned guest can't re-enter through the public form; the leader add
+// action is the way back in.
+func TestGuestRemoveThenReconfirm(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+
+	anon := anonClient(t, app, "10.4.4.11")
+	reg, _ := guestConfirm(t, app, anon, ev.ID, "Rita Guest", "rita@example.com", false)
+	if reg.Status != models.RegGoing {
+		t.Fatalf("guest status = %q, want going", reg.Status)
+	}
+	u := guestUser(t, app, "rita@example.com")
+
+	// A leader prunes the guest.
+	apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", ev.ID),
+		map[string]any{"userId": u.ID, "date": guestDate, "note": "no room"}, http.StatusOK)
+	if got := regStatus(t, app, u.ID, reg.OccurrenceID); got != models.RegRemoved {
+		t.Fatalf("after remove: %q, want removed", got)
+	}
+
+	// Re-submitting the public form and confirming is refused.
+	guestSubmit(t, anon, ev.ID, guestBody("Rita Guest", "rita@example.com", true), http.StatusOK)
+	m := latestEmail(t, app, "rita@example.com")
+	token := tokenInEmail(t, m)
+	w := anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": token}, true)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("reconfirm after removal: %d %s", w.Code, w.Body.String())
+	}
+	if got := regStatus(t, app, u.ID, reg.OccurrenceID); got != models.RegRemoved {
+		t.Fatalf("after reconfirm: %q, want removed", got)
+	}
+
+	// The leader add action seats them again.
+	apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/add", ev.ID),
+		map[string]any{"userId": u.ID, "date": guestDate}, http.StatusOK)
+	if got := regStatus(t, app, u.ID, reg.OccurrenceID); got != models.RegGoing {
+		t.Fatalf("after leader add: %q, want going", got)
 	}
 }
 
