@@ -42,7 +42,7 @@ export function GuestManage() {
 
   return (
     <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-extrabold mb-6">Your guest registration</h1>
+      <h1 className="text-3xl font-extrabold mb-6">Your registration</h1>
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         {!reg && !error && <p className="text-sm text-gray-500">Loading…</p>}
         {error && <p className="text-sm text-red-600">{error}</p>}
@@ -65,7 +65,14 @@ export function GuestManage() {
               </>
             ) : (
               <>
-                <p className="text-sm mt-4">You&rsquo;re registered as going.</p>
+                {reg.status === "waitlisted" ? (
+                  <p className="text-sm mt-4">
+                    You&apos;re on the waitlist{reg.waitlistPosition != null ? ` — position ${reg.waitlistPosition}` : ""}.
+                    We&apos;ll email you if a spot opens.
+                  </p>
+                ) : (
+                  <p className="text-sm mt-4">You&apos;re registered as going.</p>
+                )}
                 <button type="button" onClick={() => void cancel()} disabled={busy} className="btn-primary w-full mt-4">
                   {busy ? "Cancelling…" : "Cancel my registration"}
                 </button>

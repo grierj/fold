@@ -2,7 +2,7 @@ import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
-import type { EventOccurrence, GroupDetailResponse, OpenedDecision, RegistrationStatus, Visibility, VisibilityImpact } from "../types";
+import type { EventOccurrence, GroupDetailResponse, OpenedDecision, RegistrationResponse, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { AttendeeNames } from "../components/EventIntro";
@@ -141,7 +141,7 @@ function EventRow({
   canManage: boolean;
   showDescription: boolean;
   loggedIn: boolean;
-  onRsvp: (eventId: number, date: string, status: RegistrationStatus) => void;
+  onRsvp: (eventId: number, date: string, reg: RegistrationResponse) => void;
   onCancelled: (eventId: number, date: string) => void;
   onChanged: () => void;
 }) {
@@ -186,7 +186,7 @@ function EventRow({
         <AttendeeNames instance={instance} />
         {loggedIn && (
           <div className="mt-2">
-            <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
+            <RsvpButtons instance={instance} onChange={(reg) => onRsvp(instance.eventId, instance.date, reg)} />
           </div>
         )}
         {!loggedIn && instance.visibility === "public" && (
@@ -208,6 +208,9 @@ function EventRow({
                 location: instance.seriesLocation,
                 recurrenceRule: instance.recurrenceRule,
                 rruleUntil: instance.rruleUntil,
+                capacity: instance.capacity,
+                waitlistEnabled: instance.waitlistEnabled,
+                guestsAllowed: instance.guestsAllowed,
               }}
               idPrefix={`${instance.id}`}
               locationLabel="Location (blank = group's location)"
@@ -546,17 +549,28 @@ export function GroupDetail() {
     }
   }
 
-  function handleRsvp(eventId: number, date: string, status: RegistrationStatus) {
+  function handleRsvp(eventId: number, date: string, reg: RegistrationResponse) {
     setDetail((d) => {
       if (!d) return d;
       return {
         ...d,
         upcomingEvents: (d.upcomingEvents ?? []).map((m) => {
-          if (m.eventId !== eventId || m.date !== date || m.myRegistration === status) return m;
+          if (m.eventId !== eventId || m.date !== date) return m;
           const registrations = { ...m.registrations };
-          if (m.myRegistration) registrations[m.myRegistration] = Math.max(0, (registrations[m.myRegistration] ?? 0) - 1);
-          registrations[status] = (registrations[status] ?? 0) + 1;
-          return { ...m, myRegistration: status, registrations };
+          const before = m.myRegistration;
+          if (before && before !== reg.status) {
+            registrations[before] = Math.max(0, (registrations[before] ?? 0) - 1);
+          }
+          if (!before || before !== reg.status) {
+            registrations[reg.status] = (registrations[reg.status] ?? 0) + 1;
+          }
+          return {
+            ...m,
+            myRegistration: reg.status,
+            myGuestCount: reg.guestCount,
+            myWaitlistPosition: reg.waitlistPosition ?? undefined,
+            registrations,
+          };
         }),
       };
     });

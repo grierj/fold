@@ -12,35 +12,57 @@ export function GuestConfirm() {
   const token = params.get("token") ?? "";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [full, setFull] = useState(false);
   const [result, setResult] = useState<{ registration: GuestRegistration; manageToken: string } | null>(null);
 
   async function confirm() {
     setBusy(true);
     setError(null);
+    setFull(false);
     try {
       setResult(await Guests.confirm(token));
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "That link is invalid or has expired.");
+      if (err instanceof ApiError && err.data["full"] === true) {
+        setFull(true);
+      } else {
+        setError(err instanceof ApiError ? err.message : "That link is invalid or has expired.");
+      }
     } finally {
       setBusy(false);
     }
   }
 
   const reg = result?.registration;
+  const waitlisted = reg?.status === "waitlisted";
   return (
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-extrabold mb-6">Confirm your registration</h1>
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        {reg && result ? (
+        {full ? (
+          <p className="text-sm text-gray-700">
+            This event is full. The link has been used up, so it won&apos;t work again.
+          </p>
+        ) : reg && result ? (
           <>
             <p className="text-sm">
-              You&rsquo;re registered for <strong>{reg.title}</strong>
-              {reg.groupName ? ` with ${reg.groupName}` : reg.hostedBy ? ` hosted by ${reg.hostedBy}` : ""},{" "}
-              {formatNextEvent(reg.startsLocal, reg.tzid, null)}.
+              {waitlisted ? (
+                <>
+                  You&apos;re on the waitlist for <strong>{reg.title}</strong>
+                  {reg.waitlistPosition != null ? ` — position ${reg.waitlistPosition}` : ""}
+                  {reg.groupName ? ` with ${reg.groupName}` : reg.hostedBy ? ` hosted by ${reg.hostedBy}` : ""},{" "}
+                  {formatNextEvent(reg.startsLocal, reg.tzid, null)}. We&apos;ll email you if a spot opens.
+                </>
+              ) : (
+                <>
+                  You&apos;re registered for <strong>{reg.title}</strong>
+                  {reg.groupName ? ` with ${reg.groupName}` : reg.hostedBy ? ` hosted by ${reg.hostedBy}` : ""},{" "}
+                  {formatNextEvent(reg.startsLocal, reg.tzid, null)}.
+                </>
+              )}
             </p>
             {reg.location && <p className="text-sm text-gray-600 mt-2">{reg.location}</p>}
             <p className="text-sm text-gray-600 mt-2">
-              We also emailed you this confirmation with a link to cancel if you can&rsquo;t come.
+              We also emailed you this confirmation with a link to manage it if your plans change.
             </p>
             <p className="mt-4 flex gap-4">
               <Link to={`/guest/manage/${result.manageToken}`} className="text-brand font-semibold text-sm">
