@@ -93,11 +93,20 @@ func losersQuery(tx *gorm.DB, ev *models.Event, newVis string, now time.Time) *g
 		Joins("JOIN users ON users.id = registrations.user_id").
 		Where("event_occurrences.event_id = ? AND event_occurrences.starts_at > ?", ev.ID, now).
 		Where("registrations.status IN ?", []string{models.RegGoing, models.RegMaybe})
-	if newVis != models.VisibilityInviteOnly || ev.GroupID == nil {
+	switch newVis {
+	case models.VisibilityPrivate:
+		// Signed-in people keep their registrations at private. Guests
+		// (M1.4) can no longer see the event at all, so theirs go.
+		return q.Where("users.status = ?", models.UserGuest)
+	case models.VisibilityInviteOnly:
+		if ev.GroupID == nil {
+			return q.Where("1 = 0")
+		}
+		return q.Where("users.role <> ?", models.RoleAdmin).
+			Where("NOT EXISTS (SELECT 1 FROM memberships WHERE memberships.user_id = registrations.user_id AND memberships.group_id = ? AND memberships.status = 'active')", *ev.GroupID)
+	default:
 		return q.Where("1 = 0")
 	}
-	return q.Where("users.role <> ?", models.RoleAdmin).
-		Where("NOT EXISTS (SELECT 1 FROM memberships WHERE memberships.user_id = registrations.user_id AND memberships.group_id = ? AND memberships.status = 'active')", *ev.GroupID)
 }
 
 func toImpact(tx *gorm.DB, evs []models.Event, newVis string, now time.Time) []impactEventJSON {

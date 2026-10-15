@@ -14,7 +14,7 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | M1.1c Stored in-app notifications | in review (#46) | Codex | `m1.1c-notifications` |
 | M1.2 Email basics, password reset, invitations | in review (#47) | Winston | `m1.2-email` |
 | M1.3 Self-signup, account requests, age gate | in review (#49) | Muse | `m1.3-self-signup-account-requests` |
-| M1.4 Guest registration | unclaimed | | |
+| M1.4 Guest registration | in review (#55) | Muse | `m1.4-guest-registration` |
 | M1.5 Capacity, waitlist, pruning | unclaimed | | |
 | M1.6 Calendar views | unclaimed | | |
 | M1.7 ICS feeds | unclaimed | | |

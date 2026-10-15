@@ -471,6 +471,14 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/events/:id/cancel", a.apiAuth(), a.apiCancelOccurrence)
 	v1.PUT("/events/:id/occurrences/:date", a.apiAuth(), a.apiUpdateOccurrence)
 	v1.PUT("/events/:id/registrations", a.apiAuth(), a.apiRegister)
+	// Guest registration (M1.4): the form and the emailed verification
+	// link are public; the manage token in the confirmation email is
+	// the credential for cancelling. All POSTs ride the CSRF flow like
+	// the other public forms.
+	v1.POST("/events/:id/guest-registrations", a.apiCreateGuestRegistration)
+	v1.POST("/guest-registrations/confirm", a.apiConfirmGuestRegistration)
+	v1.GET("/guest-registrations/manage/:token", a.apiGetGuestRegistration)
+	v1.POST("/guest-registrations/manage/:token/cancel", a.apiCancelGuestRegistration)
 
 	// Admin.
 	v1.GET("/admin/pending", a.apiAuth(), a.apiAdmin(), a.apiPendingGroups)

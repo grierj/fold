@@ -18,6 +18,8 @@ import { Invite } from "./pages/Invite";
 import { VerifyEmail } from "./pages/VerifyEmail";
 import { Join } from "./pages/Join";
 import { SetPassword } from "./pages/SetPassword";
+import { GuestConfirm } from "./pages/GuestConfirm";
+import { GuestManage } from "./pages/GuestManage";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 
@@ -52,6 +54,8 @@ export default function App() {
         <Route path="/join" element={<Join />} />
         <Route path="/set-password" element={<SetPassword />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
+        <Route path="/guest/confirm" element={<GuestConfirm />} />
+        <Route path="/guest/manage/:token" element={<GuestManage />} />
         <Route path="/groups/new" element={<NewGroup />} />
         <Route path="/groups/:id" element={<GroupDetail />} />
         <Route path="/groups/:id/events/new" element={<NewEvent />} />

@@ -38,11 +38,22 @@ const (
 // including later changes. custom keeps the event's own value.
 const ()
 
-// Registration statuses (renamed from RSVP, M1.1a).
+// Registration statuses (renamed from RSVP, M1.1a). Cancelled arrives
+// with the guest manage link (M1.4): the person withdrew a registration
+// they had made, which is not the same answer as declining an event.
 const (
-	RegGoing    = "going"
-	RegMaybe    = "maybe"
-	RegDeclined = "declined"
+	RegGoing     = "going"
+	RegMaybe     = "maybe"
+	RegDeclined  = "declined"
+	RegCancelled = "cancelled"
+)
+
+// Where a registration came from (5.3). Guest form registrations are the
+// ones a signed-out visitor made and verified by email (M1.4).
+const (
+	RegSourceWeb       = "web"
+	RegSourceAdmin     = "admin"
+	RegSourceGuestForm = "guest_form"
 )
 
 // Occurrence statuses. A cancelled date is a row, not a separate exception.
@@ -279,15 +290,45 @@ type Membership struct {
 }
 
 // Registration is a user's response to one occurrence (renamed from RSVP).
+// A guest's registration (M1.4) is an ordinary row against their guest
+// User (C5), with Source guest_form and a hashed manage token: the raw
+// token travels only in the confirmation email and lets the guest cancel
+// without an account.
 type Registration struct {
+	ID              uint            `gorm:"primaryKey"`
+	OccurrenceID    uint            `gorm:"not null;uniqueIndex:idx_registration"`
+	Occurrence      EventOccurrence `gorm:"foreignKey:OccurrenceID"`
+	UserID          uint            `gorm:"not null;uniqueIndex:idx_registration"`
+	User            User            `gorm:"foreignKey:UserID"`
+	Status          string          `gorm:"not null"`             // going | maybe | declined | cancelled
+	Source          string          `gorm:"not null;default:web"` // web | admin | guest_form
+	ManageTokenHash string          `gorm:"not null;default:''"`
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+// GuestSignup is one unverified guest registration intent (M1.4): a
+// signed-out visitor's name and email for one occurrence, waiting for the
+// emailed link to be redeemed. Nothing else exists until then, so an
+// unverified address never lands on an attendee list. The raw token goes
+// to the person's email; only its SHA-256 is stored. ConfirmedAt is set
+// when the link is redeemed, which is also what makes the token dead.
+type GuestSignup struct {
 	ID           uint            `gorm:"primaryKey"`
-	OccurrenceID uint            `gorm:"not null;uniqueIndex:idx_registration"`
+	Name         string          `gorm:"not null"`
+	Email        string          `gorm:"type:citext;not null;index"`
+	OccurrenceID uint            `gorm:"not null;index"`
 	Occurrence   EventOccurrence `gorm:"foreignKey:OccurrenceID"`
-	UserID       uint            `gorm:"not null;uniqueIndex:idx_registration"`
-	User         User            `gorm:"foreignKey:UserID"`
-	Status       string          `gorm:"not null"` // going | maybe | declined
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// CreateAccount records the guest ticking "create an account" on the
+	// form; redeeming the link then also opens a guest_upgrade account
+	// request for an admin to decide (5.10).
+	CreateAccount bool      `gorm:"not null;default:false"`
+	TokenHash     string    `gorm:"not null;uniqueIndex:idx_guest_signups_token_hash"`
+	ExpiresAt     time.Time `gorm:"not null"`
+	ConfirmedAt   *time.Time
+	IP            string    `gorm:"not null;default:''"`
+	CreatedAt     time.Time `gorm:"not null;default:now()"`
+	UpdatedAt     time.Time `gorm:"not null;default:now()"`
 }
 
 // Setting is a simple key/value store for site configuration
@@ -455,7 +496,7 @@ func All() []any {
 		&User{}, &Group{}, &Event{}, &EventHost{}, &EventOccurrence{},
 		&Membership{}, &Registration{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
-		&AccountRequest{},
+		&AccountRequest{}, &GuestSignup{},
 	}
 }
 

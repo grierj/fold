@@ -25,7 +25,13 @@ export default defineConfig({
     },
   },
   // Vitest (npm test): component tests next to the code. Browser tests
-  // live in e2e/ and run with Playwright (make e2e).
+  // live in e2e/ and run with Playwright (make e2e). The test script in
+  // package.json passes --no-experimental-webstorage: Node 25+
+  // predefines a global localStorage accessor that returns undefined
+  // without --localstorage-file, and being already on globalThis it
+  // blocks jsdom's real Storage when vitest populates the environment,
+  // so every bare localStorage in a test is undefined. The flag removes
+  // Node's accessor and jsdom wins, on Node 22 (CI) and newer alike.
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],

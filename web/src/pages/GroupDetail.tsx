@@ -9,6 +9,7 @@ import { AttendeeNames } from "../components/EventIntro";
 import { EventVisibilityControl, visibilityRank } from "../components/EventVisibility";
 import { GroupVisibilityReview } from "../components/GroupVisibilityReview";
 import { RsvpButtons } from "../components/RsvpButtons";
+import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
 import { coverImage } from "../components/GroupCard";
@@ -186,6 +187,11 @@ function EventRow({
         {loggedIn && (
           <div className="mt-2">
             <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
+          </div>
+        )}
+        {!loggedIn && instance.visibility === "public" && (
+          <div className="mt-2">
+            <GuestRegistrationForm instance={instance} />
           </div>
         )}
         {editor === "date" && <DateEditor instance={instance} onSaved={onChanged} onClose={() => setEditor(null)} />}

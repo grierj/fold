@@ -131,7 +131,9 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 	}
 
 	var existing models.User
-	if a.DB.Where("email = ?", email).Limit(1).Find(&existing).RowsAffected == 1 {
+	// A guest row (M1.4) may be invited: accepting upgrades it in place.
+	if a.DB.Where("email = ?", email).Limit(1).Find(&existing).RowsAffected == 1 &&
+		existing.Status != models.UserGuest {
 		jsonError(c, http.StatusConflict, "an account with that email already exists")
 		return
 	}
@@ -253,9 +255,12 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		if name == "" {
 			return errNeedName
 		}
-		var taken int64
-		tx.Model(&models.User{}).Where("email = ?", inv.Email).Count(&taken)
-		if taken > 0 {
+		// A guest row with this email (M1.4) is upgraded in place below
+		// (C5), so their guest registrations stay theirs. Any other
+		// existing account refuses the accept.
+		var existing models.User
+		guestRow := tx.Where("email = ?", inv.Email).Limit(1).Find(&existing).RowsAffected == 1
+		if guestRow && existing.Status != models.UserGuest {
 			return errEmailTaken
 		}
 		var group *models.Group
@@ -275,10 +280,19 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			group = &g
 		}
 		u := models.User{Email: inv.Email, Name: name, Role: models.RoleMember, Status: models.UserActive}
+		if guestRow {
+			u = existing
+			u.Name = name
+			u.Status = models.UserActive
+		}
 		if err := u.SetPassword(body.Password); err != nil {
 			return err
 		}
-		if err := tx.Create(&u).Error; err != nil {
+		if guestRow {
+			if err := tx.Save(&u).Error; err != nil {
+				return err
+			}
+		} else if err := tx.Create(&u).Error; err != nil {
 			return err
 		}
 		now := time.Now().UTC()
