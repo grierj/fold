@@ -251,6 +251,9 @@ func notifyGroupPending(tx *gorm.DB, g *models.Group, actor uint) ([]uint, error
 // details, and the email variant names nobody at all.
 func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags models.RequestFlags) ([]uint, error) {
 	source := "Self-signup"
+	if req.Source == models.RequestGuestUpgrade {
+		source = "Guest asking for an account"
+	}
 	var actor *uint
 	if req.Source == models.RequestMemberInvite && req.RequestedBy != nil {
 		source = "Invited by " + nameIn(tx, *req.RequestedBy)

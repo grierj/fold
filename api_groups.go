@@ -578,6 +578,15 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, 
 		// Adding someone (or bringing them back) needs room under the member
 		// limit, or an explicit over-limit choice, which is audited (DEC-39).
 		adding := !targetRel.Member && (newRole == models.MembershipLeader || newRole == models.MembershipMember)
+		if adding {
+			// A guest (M1.4) has no account to hold a membership with:
+			// they join a group only after an account upgrade or an
+			// invitation turns the guest row into one.
+			var target models.User
+			if err := tx.First(&target, userID).Error; err != nil || target.Status == models.UserGuest {
+				return errRoleRefused
+			}
+		}
 		count := 0
 		if adding {
 			count = int(memberCount(tx, g.ID))

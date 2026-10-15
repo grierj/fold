@@ -115,8 +115,16 @@ func (a *App) toAccountRequestJSON(r *models.AccountRequest) accountRequestJSON 
 // accountRequestHit counts one public-form submission from ip and
 // reports the running count in the last hour (login_throttles, own key).
 func (a *App) accountRequestHit(ctx context.Context, ip string) (int, error) {
+	return a.throttleHit(ctx, "acctreq:ip:"+ip, time.Hour)
+}
+
+// throttleHit counts one hit against key and reports the running count
+// inside the window. It lives in login_throttles, so it survives
+// restarts and is shared by every replica. Public forms each use their
+// own key prefix, so one form's traffic never throttles another's.
+func (a *App) throttleHit(ctx context.Context, key string, window time.Duration) (int, error) {
 	var failures int
-	windowArg := fmt.Sprintf("%d seconds", int(time.Hour.Seconds()))
+	windowArg := fmt.Sprintf("%d seconds", int(window.Seconds()))
 	err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		return tx.Raw(`
 INSERT INTO login_throttles (key, failures, window_start) VALUES (?, 1, now())
@@ -125,7 +133,7 @@ ON CONFLICT (key) DO UPDATE SET
                   THEN 1 ELSE login_throttles.failures + 1 END,
   window_start = CASE WHEN login_throttles.window_start < now() - ?::interval
                       THEN now() ELSE login_throttles.window_start END
-RETURNING failures`, "acctreq:ip:"+ip, windowArg, windowArg).Scan(&failures).Error
+RETURNING failures`, key, windowArg, windowArg).Scan(&failures).Error
 	})
 	return failures, err
 }
@@ -214,7 +222,10 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		return false
 	}
 	var existing models.User
-	hasAccount := a.DB.Where("email = ?", v.email).Limit(1).Find(&existing).RowsAffected == 1
+	// A guest row (M1.4) is not an account yet: its owner asking for one
+	// is the normal upgrade path, not the already-have-an-account path.
+	hasAccount := a.DB.Where("email = ?", v.email).Limit(1).Find(&existing).RowsAffected == 1 &&
+		existing.Status != models.UserGuest
 	if hasAccount {
 		if source == models.RequestMemberInvite {
 			// An authenticated member learns what an inviter learns
@@ -416,7 +427,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		outcome, auditAction = "approved", audit.AccountApproved
 	}
 	var userID uint
-	var created bool
+	var created, upgraded bool
 	var raw string
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
@@ -438,7 +449,29 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		meta := map[string]any{"accountType": req.AccountType}
 		if approve {
 			var existing models.User
-			if tx.Where("email = ?", req.Email).Limit(1).Find(&existing).RowsAffected == 1 {
+			found := tx.Where("email = ?", req.Email).Limit(1).Find(&existing).RowsAffected == 1
+			if found && existing.Status == models.UserGuest {
+				// A guest becomes an account on the same row (C5), so
+				// every guest registration stays theirs. From here it
+				// is the created path: a set-password link, not the
+				// already-have-an-account hint.
+				status := models.UserInvited
+				if req.AccountType == models.AccountTeen {
+					status = models.UserPendingConsent
+				}
+				if err := tx.Model(&existing).Updates(map[string]any{
+					"status": status, "name": req.Name, "phone": req.Phone,
+					"account_type": req.AccountType, "birth_date": req.BirthDate,
+				}).Error; err != nil {
+					return err
+				}
+				userID, upgraded = existing.ID, true
+				var err error
+				raw, err = createAccountToken(tx, models.TokenAccountSetup, existing.ID, nil, tokenTTL)
+				if err != nil {
+					return err
+				}
+			} else if found {
 				userID = existing.ID
 			} else {
 				status := models.UserInvited
@@ -464,6 +497,9 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			}
 			meta["userId"] = userID
 			meta["created"] = created
+			if upgraded {
+				meta["upgradedGuest"] = true
+			}
 		}
 		if _, err := notify.Resolve(tx, notify.AccountRequested, req.ID, &me.ID, outcome); err != nil {
 			return err
@@ -482,7 +518,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	// Decision emails go out after the decision is committed; the
 	// person is emailed either way (M1.3 acceptance).
 	if approve {
-		if created {
+		if created || upgraded {
 			if err := a.sendAccountApprovedEmail(req, raw); err != nil {
 				log.Printf("account approved email to %s: %v", req.Email, err)
 			}

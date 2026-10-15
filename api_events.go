@@ -156,7 +156,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	var counts []countRow
 	a.DB.Model(&models.Registration{}).Joins(listedUsers("registrations")).
 		Select("registrations.occurrence_id, registrations.status, count(*) as n").
-		Where("registrations.occurrence_id IN ?", ids).
+		Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).
 		Group("registrations.occurrence_id, registrations.status").
 		Scan(&counts)
 	countOf := map[uint]map[string]int64{}
@@ -169,7 +169,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	mine := map[uint]string{}
 	if me != nil {
 		var rows []models.Registration
-		a.DB.Where("user_id = ? AND occurrence_id IN ?", me.ID, ids).Find(&rows)
+		a.DB.Where("user_id = ? AND occurrence_id IN ? AND status <> ?", me.ID, ids, models.RegCancelled).Find(&rows)
 		for _, r := range rows {
 			mine[r.OccurrenceID] = r.Status
 		}
@@ -246,7 +246,7 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show map[uint]bool) m
 	var rows []row
 	a.DB.Model(&models.Registration{}).Joins(listedUsers("registrations")).
 		Select("registrations.occurrence_id, registrations.user_id, users.name, users.display_name, registrations.status").
-		Where("registrations.occurrence_id IN ?", ids).
+		Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).
 		Order("users.display_name, users.name, users.id").
 		Scan(&rows)
 	for _, r := range rows {
