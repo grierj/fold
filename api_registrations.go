@@ -207,15 +207,24 @@ func eventNoticeVars(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, u
 	var g *models.Group
 	if ev.GroupID != nil {
 		var row models.Group
-		if tx.First(&row, *ev.GroupID).Error == nil && canSeeGroupIn(tx, userIn(tx, userID), &row) {
+		if tx.First(&row, *ev.GroupID).Error == nil && canSeeGroupIn(tx, viewerIn(tx, userID), &row) {
 			g = &row
 		}
 	}
-	vars := notify.Vars{Event: ev.Title, When: localWhen(o.StartsAt, ev.TZID), Place: ev.Location}
+	// The place resolves through the date's override, like
+	// occurrenceToJSON: a date with its own place keeps it even when
+	// the viewer may see the group.
+	place := ev.Location
+	if o.LocationOverride != nil {
+		place = *o.LocationOverride
+	}
+	vars := notify.Vars{Event: ev.Title, When: localWhen(o.StartsAt, ev.TZID), Place: place}
 	link := fmt.Sprintf("/events/%d", ev.ID)
 	if g != nil {
-		vars.Event = firstNonEmpty(ev.Title, g.Name)        // group-ok: g is set only when canSeeGroupIn is true
-		vars.Place = firstNonEmpty(ev.Location, g.Location) // group-ok: g is set only when canSeeGroupIn is true
+		vars.Event = firstNonEmpty(ev.Title, g.Name) // group-ok: g is set only when canSeeGroupIn is true
+		if o.LocationOverride == nil {
+			vars.Place = firstNonEmpty(ev.Location, g.Location) // group-ok: g is set only when canSeeGroupIn is true
+		}
 		link = fmt.Sprintf("/groups/%d", g.ID)
 	}
 	return vars, link
@@ -270,6 +279,11 @@ func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 // that its time or place changed. One item per person per occurrence per
 // change; the item is never batched.
 func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, variant string, actor uint) ([]uint, error) {
+	if o.Status != models.OccurrenceScheduled {
+		// No fan-out into a cancelled date: nobody is going, and the
+		// waitlist must not be mailed about a dead event.
+		return nil, nil
+	}
 	var userIDs []uint
 	if err := tx.Table("registrations").Select("user_id").
 		Joins(listedUsers("registrations")).
@@ -306,10 +320,15 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 	userID uint, note string, actor uint) ([]uint, error) {
 	vars, link := eventNoticeVars(tx, ev, o, userID)
 	vars.Note = note
+	end := o.EndsAt
+	if end.IsZero() {
+		end = o.StartsAt
+	}
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationRemoved, To: []uint{userID}, Actor: &actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-		Data: map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+		Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+		ExpiresAt: &end,
 	})
 }
 
@@ -317,10 +336,15 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 // registration was dropped from a full occurrence (DEC-47).
 func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, userID uint, actor uint) ([]uint, error) {
 	vars, link := eventNoticeVars(tx, ev, o, userID)
+	end := o.EndsAt
+	if end.IsZero() {
+		end = o.StartsAt
+	}
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationNotRestored, To: []uint{userID}, Actor: &actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-		Data: map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+		Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+		ExpiresAt: &end,
 	})
 }
 
@@ -332,6 +356,10 @@ func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.Even
 // and gets a rotated manage token for the "I can't come" link. Returns
 // notification ids to email after commit.
 func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, now time.Time, actor *uint) ([]uint, error) {
+	if o.Status != models.OccurrenceScheduled {
+		// Nobody is promoted into a cancelled date.
+		return nil, nil
+	}
 	cap := events.EffectiveCapacity(ev.Capacity, o.CapacityOverride)
 	wl, err := loadWaitlist(tx, o.ID)
 	if err != nil {
@@ -440,6 +468,11 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 		} else {
 			updates["waitlisted_at"] = nil
 			updates["promoted_at"] = nil
+			if status == models.RegMaybe || status == models.RegDeclined {
+				// Leaving kills the emailed manage link, so an old
+				// link can't cancel a future re-registration (M1.5).
+				updates["manage_token_hash"] = ""
+			}
 		}
 		return tx.Model(&models.Registration{}).Where("id = ?", existing.ID).Updates(updates).Error
 	}
@@ -707,7 +740,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		}
 		if err := tx.Model(&models.Registration{}).Where("id = ?", r.ID).Updates(map[string]any{
 			"status": models.RegRemoved, "removed_by": me.ID, "removal_note": note,
-			"waitlisted_at": nil, "promoted_at": nil,
+			"waitlisted_at": nil, "promoted_at": nil, "manage_token_hash": "",
 		}).Error; err != nil {
 			return err
 		}
@@ -843,17 +876,34 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		return
 	}
 	var target models.User
+	// A pruned guest keeps status=guest (never active); the add action is
+	// their way back in, so both statuses resolve here.
 	if body.UserID != 0 {
-		if err := a.DB.Where("id = ? AND status = ?", body.UserID, models.UserActive).First(&target).Error; err != nil {
+		if err := a.DB.Where("id = ? AND status IN ?", body.UserID,
+			[]string{models.UserActive, models.UserGuest}).First(&target).Error; err != nil {
 			jsonError(c, http.StatusNotFound, "person not found")
 			return
 		}
 	} else {
-		// The leader UI adds by email; resolve it to the active account.
-		if err := a.DB.Where("email = ? AND status = ?", strings.TrimSpace(body.Email), models.UserActive).First(&target).Error; err != nil {
-			jsonError(c, http.StatusNotFound, "no active account has that email")
+		// The leader UI adds by email; resolve it to the account.
+		if err := a.DB.Where("email = ? AND status IN ?", strings.TrimSpace(body.Email),
+			[]string{models.UserActive, models.UserGuest}).First(&target).Error; err != nil {
+			jsonError(c, http.StatusNotFound, "person not found")
 			return
 		}
+	}
+	// The leader can't seat someone on an event the person couldn't see
+	// themselves: that would bypass the audited visibility path and
+	// mail them the event's place. Mirrors the register route's check,
+	// run for the target instead of the actor.
+	tf := a.factsFor(&target, ev)
+	tgp := policy.Group{}
+	if tf.group != nil {
+		tgp = asGroup(tf.group)
+	}
+	if !policy.CanRegisterEvent(asPerson(&target), tf.view, tgp, tf.rel) {
+		jsonError(c, http.StatusNotFound, "event not found")
+		return
 	}
 	var o models.EventOccurrence
 	if err := a.DB.Where("event_id = ? AND original_date = ? AND status = ?",

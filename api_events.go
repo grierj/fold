@@ -785,30 +785,43 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		// event.changed, time variant: one item per moved occurrence per
-		// going or waitlisted person. The move actions already skip
-		// frozen and customized dates (TimeFrozen semantics), so the
-		// fan-out mails exactly the dates that moved.
+		// event.changed: one item per occurrence per going or waitlisted
+		// person. A date that both moved and took the series place change
+		// gets the combined "time and place" variant, not two items. The
+		// move actions already skip frozen and customized dates (TimeFrozen
+		// semantics), so the time fan-out mails exactly the dates that moved.
+		placeChanged := body.Location != nil && strings.TrimSpace(*body.Location) != oldPlace
+		movedSet := map[uint]bool{}
 		for _, occID := range moved {
+			movedSet[occID] = true
 			var o models.EventOccurrence
 			if err := tx.First(&o, occID).Error; err != nil {
 				continue
 			}
-			ids, err := notifyEventChanged(tx, &locked, &o, "time", me.ID)
+			variant := "time"
+			if placeChanged && o.LocationOverride == nil {
+				variant = "time and place"
+			}
+			ids, err := notifyEventChanged(tx, &locked, &o, variant, me.ID)
 			emailed = append(emailed, ids...)
 			if err != nil {
 				return err
 			}
 		}
 		// event.changed, place variant: the event place changed, so every
-		// future scheduled date changed place with it.
-		if body.Location != nil && strings.TrimSpace(*body.Location) != oldPlace {
+		// future scheduled date without its own place changed place with it.
+		if placeChanged {
 			var occs []models.EventOccurrence
 			if err := tx.Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID,
 				models.OccurrenceScheduled, now).Find(&occs).Error; err != nil {
 				return err
 			}
 			for i := range occs {
+				if occs[i].LocationOverride != nil || movedSet[occs[i].ID] {
+					// That date keeps its own place, or already got the
+					// combined notice above.
+					continue
+				}
 				ids, err := notifyEventChanged(tx, &locked, &occs[i], "place", me.ID)
 				emailed = append(emailed, ids...)
 				if err != nil {
@@ -1036,16 +1049,19 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			return err
 		}
 		// event.changed fans out when the date's time or place actually
-		// changed, one item per going or waitlisted person.
-		if !o.StartsAt.Equal(oldStart) || !o.EndsAt.Equal(oldEnd) {
-			ids, err := notifyEventChanged(tx, ev, &o, "time", me.ID)
-			emailed = append(emailed, ids...)
-			if err != nil {
-				return err
+		// changed: one item per going or waitlisted person, with the
+		// combined variant when both changed.
+		timeChanged := !o.StartsAt.Equal(oldStart) || !o.EndsAt.Equal(oldEnd)
+		placeChanged := newPlace != oldPlace
+		if timeChanged || placeChanged {
+			variant := "time"
+			if placeChanged {
+				variant = "place"
 			}
-		}
-		if newPlace != oldPlace {
-			ids, err := notifyEventChanged(tx, ev, &o, "place", me.ID)
+			if timeChanged && placeChanged {
+				variant = "time and place"
+			}
+			ids, err := notifyEventChanged(tx, ev, &o, variant, me.ID)
 			emailed = append(emailed, ids...)
 			if err != nil {
 				return err
