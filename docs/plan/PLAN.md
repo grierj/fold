@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-45) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
+Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-51; progress synced to merged work on 2026-10-15) and the Codex reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
 Repo: https://github.com/grierj/fold (first read at commit `aa992e2`; re-checked at `e7c0e8f`, "Merge pull request #7 from grierj/admin-invite-and-rename", merged 2026-10-09 4:31 PM MT).
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions (nothing is open).
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Do one milestone per work session and one PR per milestone. Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-45) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-51) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -40,7 +40,7 @@ How to use this document:
 ### Goals
 
 1. Give a church one place for groups, events, RSVPs, rooms, and group messaging (email and SMS). It replaces the social and group parts of ChurchTrac and borrows Meetup's events-and-groups model.
-2. Self-host first. A church member who is comfortable with a Linux VPS can install it in under an hour with `docker compose`. A VPS with Compose is the only supported deployment for now; a managed platform (Render) is a later, on-request option (12.5, DEC-26).
+2. Self-host first. A church member who is comfortable with a Linux VPS can install it in under an hour with `docker compose`. A VPS with Compose is the only recommended deployment for now; a managed platform (Render) is a later, on-request option (12.5, DEC-26).
 3. Single-tenant. One deployment serves one church. Fold is free, open-source (MIT) give-away software (DEC-11). "Hosted" means someone (Grier, rarely, or anyone) runs one deployment per church. Hosting terms and any fee are agreed case by case and are not meant to make money (DEC-10). The church brings and owns its own email, SMS, and hosting accounts, even when hosted, unless there is a special agreement (DEC-2).
 4. Few external dependencies. Only email, the host, and (for texting) SMS are needed outside the box. The only database is PostgreSQL, run by Docker Compose in production, development, and tests (DEC-1, DEC-24). Everything else (object storage, video, DNS automation) is optional. **Self-contained by default (DEC-43):** Fold builds what it needs itself and adds an outside service only when that keeps deployments simple or a church asks for it. Notifications, for example, are built in Fold with no vendor (DEC-42, 5.12).
 5. Every external dependency can be set up by API: by the app's setup wizard, by the `fold` CLI, or by an AI agent following `AGENTS.md`. A power user can still do every step by hand.
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (DEC-1 to DEC-45) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (DEC-1 to DEC-51) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -1155,7 +1155,7 @@ Not v1 scope; milestone M6.14. Until then, the regular `AuditLog` (created in M0
 
 ### 11.1 Shape
 
-One supported deployment for now: one VPS with Docker Compose (DEC-26). A managed platform (Render) is evaluated in 12.5 as a later, on-request option.
+One recommended deployment for now: one VPS with Docker Compose (DEC-26). A managed platform (Render) is evaluated in 12.5 as a later, on-request option.
 
 - One VPS per church: 2 GB RAM, 1 to 2 vCPU, 40 GB or more of disk, Ubuntu LTS or Debian, and Docker Engine with the compose plugin.
 - Everything lives in `/opt/fold`: `docker-compose.yml`, `Caddyfile`, `.env`.
@@ -1371,7 +1371,7 @@ All of these work with one S3-compatible adapter, so switching is a config chang
 
 ### 12.5 Hosting
 
-Fold runs on one VPS with Docker Compose. That is the only supported deployment for now (DEC-26).
+Fold runs on one VPS with Docker Compose. That is the only recommended deployment for now (DEC-26). The step-by-step guide is [`docs/DEPLOY-DIGITALOCEAN.md`](../DEPLOY-DIGITALOCEAN.md) (one droplet; Ubuntu 24.04 and 26.04 tested), with `deploy/digitalocean/provision.sh` and `backup.sh` (#53).
 
 | Option | Price (cited) | API setup | Notes |
 |---|---|---|---|
@@ -1381,7 +1381,7 @@ Fold runs on one VPS with Docker Compose. That is the only supported deployment 
 | **Akamai/Linode** (VPS) | 1 GB $5/mo, 2 GB $12/mo per third-party trackers; pricing not verified (the vendor page blocked access) | Yes: full API | Fine alternative. |
 | **Church-owned box** (old PC, mini PC, on-site server) | Hardware the church owns | n/a | Supported for power users; needs ports 80/443 open or a tunnel. |
 
-**Later / on request: Render (managed PaaS).** Not supported yet and not in the committed roadmap (DEC-26). This evaluation and the `render.yaml` outline in Appendix A are kept as reference, for when a church asks or when Grier wants an easy path to host for others (future M5.5). Facts are from Render's own pages, October 2026. Pricing: Hobby workspace $0 + compute; Pro workspace $25/mo + compute. Web service 0.5 CPU / 512 MB $7/mo (1 CPU / 2 GB $25/mo). Postgres 0.1 CPU / 256 MB $6/mo, 0.5 CPU / 1 GB $19/mo, plus storage at $0.30/GB/mo. Persistent disk $0.25/GB/mo. Bandwidth: 5 GB included on Hobby (25 GB on Pro), then $0.15/GB. https://render.com/pricing. Configurable by REST API and `render.yaml` Blueprints (https://render.com/docs/api, https://render.com/docs/blueprint-spec).
+**Later / on request: Render (managed PaaS).** Not recommended or tested yet and not in the committed roadmap (DEC-26). This evaluation and the `render.yaml` outline in Appendix A are kept as reference, for when a church asks or when Grier wants an easy path to host for others (future M5.5). Facts are from Render's own pages, October 2026. Pricing: Hobby workspace $0 + compute; Pro workspace $25/mo + compute. Web service 0.5 CPU / 512 MB $7/mo (1 CPU / 2 GB $25/mo). Postgres 0.1 CPU / 256 MB $6/mo, 0.5 CPU / 1 GB $19/mo, plus storage at $0.30/GB/mo. Persistent disk $0.25/GB/mo. Bandwidth: 5 GB included on Hobby (25 GB on Pro), then $0.15/GB. https://render.com/pricing. Configurable by REST API and `render.yaml` Blueprints (https://render.com/docs/api, https://render.com/docs/blueprint-spec).
 
 - **Typical cost for one small church** (Hobby workspace, prices from https://render.com/pricing):
   - Web service 0.5 CPU / 512 MB: $7. Fold's single Go binary fits.
@@ -1429,7 +1429,7 @@ Fold runs on one VPS with Docker Compose. That is the only supported deployment 
 - **SMS**: Telnyx by default, because churches are cost-conscious rather than feature-seeking. Twilio second (most documentation, built-in compliance tools, and a sole-proprietor path). Plivo only on request. All go through the same adapter interface, and none is required.
 - **Storage**: local disk by default. Backblaze B2 for offsite backups. Cloudflare R2 when public galleries grow.
 - **Video**: link-out plus generated Jitsi links. Zoom adapter later.
-- **Hosting**: a VPS with Compose by default: DigitalOcean or Vultr (2 GB) in the US, Hetzner in the EU. This is the only supported deployment for now; Render is a later, on-request option (12.5, DEC-26).
+- **Hosting**: a VPS with Compose by default: DigitalOcean or Vultr (2 GB) in the US, Hetzner in the EU. This is the only recommended deployment for now; Render is a later, on-request option (12.5, DEC-26).
 - **DNS/TLS**: Caddy for TLS. Cloudflare DNS optional, for automatic email records.
 - **AWS check (DEC-21, DEC-26)**: Fold uses no AWS service directly. "S3-compatible" storage is only a protocol (B2, R2, and the others are not Amazon). Vendors that run on AWS underneath are fine.
 
@@ -1664,6 +1664,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] A weekly 7:00 pm America/Boise event stays at 7:00 pm local on both sides of 2026-11-01 and 2027-03-14
   - [x] The API returns both UTC and local times
   - [x] A series edit moves future occurrences, keeps their registrations, cancels dates that no longer exist (registrants told), and leaves per-date overrides alone
+- Built in #38 (Oct 10, 2026). Later changes: church time zone default and browser zone first in the shared `ZoneSelect` (#50, #51, #52; DEC-50); one shared `SeriesEditor` on the group and event pages (#51).
 - Tests: DST table tests (America/Boise, America/New_York, America/Phoenix, Europe/London); occurrence generation; series edit.
 
 **M1.1b Church-wide hosts, event visibility, audit, attendee privacy**
@@ -1680,6 +1681,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] ~~With `visibility_source=group`, changing the group's visibility changes the event's; with `custom`, it does not~~ Replaced by DEC-48: a new event copies the group's visibility; making the group more open changes no events; making it more private tightens inherited events (audited), cancels and notifies registrants who lose access, and asks the leader to keep or tighten each leader-opened event before saving
   - [x] A church-wide event cannot be saved without at least one host, and cannot be `invite_only`; a non-admin host can switch it between `public` and `private`
   - [x] A non-admin host can edit, message, and see registrants of the events they host, and nothing else (policy tests)
+- Built in #39 (Oct 10, 2026). Later changes: the PR #41 location fix for opened invite-only groups; event visibility stored on the event (#43, DEC-48); group event lists filtered by each event's own visibility, and single-event tightening that previews, confirms, cancels and notifies like a group change (#44, #45); visibility chosen at creation and edited inside Edit series / Edit event (#51, DEC-51).
 - Tests: policy tables for visibility, hosts, and attendee lists; API tests for the audit row, the notice, hosted-by, and the count.
 
 **M1.1c Stored in-app notifications**
@@ -1713,17 +1715,18 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Depends on: M1.1b, M1.1c, M0.3
 - Scope: `internal/mail` minimal sender (`devoutbox` in dev and tests, SMTP from `FOLD_SMTP_URL`) and plain transactional templates (C6). Password reset with a uniform response. Verified email change (10.1). Admin and leader `Invitation`s (no approval), with the per-leader daily limit. Email copies of M1.1b's visibility notices. Email delivery of notifications (5.12): kinds marked `AllowEmail` send a transactional email through the minimal sender right after the transaction commits, recorded in `notification_deliveries`. Sensitive kinds use the link-only `RenderEmailSafe` variant. The 15-minute "if not seen" delay waits for jobs (M3.1). `/dev/outbox` page in dev only.
 - Acceptance:
-  - [ ] `/dev/outbox` is unreachable unless `APP_ENV=dev`
-  - [ ] SMTP sends through a test SMTP server in CI
-  - [ ] An admin's or leader's invitation creates an active account on acceptance (the person sets a password), with no approval step
-  - [ ] A leader's invitation can add the person only to a group that leader leads (403 otherwise)
-  - [ ] Accepting an invitation into a full group follows the leader's add rule: it joins over the `member_limit` only when the inviting leader or admin chose to go over it, and that is audited (DEC-39)
-  - [ ] Reset and invite tokens are single use and expire
-  - [ ] Password reset answers "If that email has an account, we've sent a link" for every address, known or not
-  - [ ] Changing your email sends a verification link to the new address and a notice to the old one; the change applies only after verification and ends every other session
-  - [ ] A leader's 21st invitation in a day gets 429 (default limit 20) and is audited
-  - [ ] A visibility-override notice reaches the other leaders and the admins in the bell and by email, with one `notification_deliveries` row each
-  - [ ] Email for a contact-request, consent, or minor-related kind names nobody and only links into Fold
+  - [x] `/dev/outbox` is unreachable unless `APP_ENV=dev`
+  - [x] SMTP sends through a test SMTP server in CI
+  - [x] An admin's or leader's invitation creates an active account on acceptance (the person sets a password), with no approval step
+  - [x] A leader's invitation can add the person only to a group that leader leads (403 otherwise)
+  - [x] Accepting an invitation into a full group follows the leader's add rule: it joins over the `member_limit` only when the inviting leader or admin chose to go over it, and that is audited (DEC-39)
+  - [x] Reset and invite tokens are single use and expire
+  - [x] Password reset answers "If that email has an account, we've sent a link" for every address, known or not
+  - [x] Changing your email sends a verification link to the new address and a notice to the old one; the change applies only after verification and ends every other session
+  - [x] A leader's 21st invitation in a day gets 429 (default limit 20) and is audited
+  - [x] A visibility-override notice reaches the other leaders and the admins in the bell and by email, with one `notification_deliveries` row each
+  - [x] Email for a contact-request, consent, or minor-related kind names nobody and only links into Fold
+- Built in #47, with the #48 follow-up (Oct 13, 2026): SMTP STARTTLS/implicit TLS delivery fixed, and a new reset or verify token revokes the earlier one.
 - Tests: API tests reading links from the devoutbox; policy table for who may invite; notification email tests.
 
 **M1.3 Self-signup, account requests, age gate**
@@ -1737,18 +1740,20 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] Requests expire after 30 days
   - [x] Public forms are rate limited (10 per IP per hour) and have a honeypot
   - [x] An admin's bell item for an adult account request with no warnings has inline Approve; a teen request or one with a duplicate, rate-limit, or honeypot flag shows only Review, and the server refuses inline approval of it (DEC-44)
+- Built in #49 (Oct 14, 2026).
 - Tests: API tests for each door.
 
 **M1.4 Guest registration**
 - Depends on: M1.3
 - Scope: guests on public events (name + email, verified by an emailed link; "I am 18 or older"); manage link; guest upgrade request (C5); verification emails limited per target address as well as per IP (10.1).
 - Acceptance:
-  - [ ] A guest registers without an account, gets a confirmation email with a manage link, and can cancel from it
-  - [ ] Without "I am 18 or older", nothing is stored and the guardian message shows
-  - [ ] A guest who later gets an account keeps their registrations (same email, `citext`)
-  - [ ] Verification emails to one address stop after 3 in an hour or 10 in a day (defaults), whatever the IP
-  - [ ] A guest form for an email that already has an account gets the usual response, and the email asks the person to sign in
-- Tests: API tests with the devoutbox.
+  - [x] A guest registers without an account, gets a confirmation email with a manage link, and can cancel from it
+  - [x] Without "I am 18 or older", nothing is stored and the guardian message shows
+  - [x] A guest who later gets an account keeps their registrations (same email, `citext`)
+  - [x] Verification emails to one address stop after 3 in an hour or 10 in a day (defaults), whatever the IP
+  - [x] A guest form for an email that already has an account gets the usual response, and the email asks the person to sign in
+- Built in #55 (Oct 14, 2026). Build choices not spelled out above (made in the PR, not Grier decisions): registrations gain a distinct `cancelled` status (counts and name lists exclude it) instead of reusing `declined`; the manage link stops working once the date has ended; guests register as `going` only (capacity, waitlist, plus-ones and maybe/declined for guests wait for M1.5); the form answers the same thanks message, never 429, when a limit is hit; the confirm page posts the token from a button, so mail scanners confirm nothing; tightening an event to `private` cancels guest registrations through the usual preview and confirm. The "you already have an account" hint email on the guest form shares the 3-per-hour address limit (fixed in the Oct 15 sync PR; it was unlimited).
+- Tests: API tests with the devoutbox (`api_guest_test.go`), the `CanRegisterGuest` policy table, and `web/e2e/guest-registration.spec.ts`.
 
 **M1.5 Capacity, waitlist, pruning**
 - Depends on: M1.2
@@ -2228,7 +2233,7 @@ Built only when a church asks: Resend and Mailgun email adapters, a Plivo SMS ad
 
 ### 15.1 Decisions
 
-Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, numbered after the original questions), then made more decisions the same day: DEC-17 to DEC-25 (Grier's items A to I), DEC-26 to DEC-30, and DEC-31 to DEC-33 (after Codex's final review), DEC-34 to DEC-37 (Grier's answers to the M0.1 and M0.2 PR questions), and DEC-38 (Grier's answers to the M0.3b PR questions), and DEC-39 (Grier's group member limit, from the same PR). On Oct 10, 2026 Grier added DEC-40 to DEC-44 (roster sync, the session-cookie gap, notifications built in Fold, the self-contained directive, and the notification product answers). On Oct 12, 2026 Grier added DEC-46 (per-date event visibility). On Oct 13, 2026 Grier approved Whittler's simplicity audit: DEC-47 (no `pending_return`) and DEC-48 (event visibility stored on the event, with Codex's tighten-and-ask rule). Each has been carried through the sections listed. These decisions win over the original requirement wording and over the repo.
+Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, numbered after the original questions), then made more decisions the same day: DEC-17 to DEC-25 (Grier's items A to I), DEC-26 to DEC-30, and DEC-31 to DEC-33 (after Codex's final review), DEC-34 to DEC-37 (Grier's answers to the M0.1 and M0.2 PR questions), and DEC-38 (Grier's answers to the M0.3b PR questions), and DEC-39 (Grier's group member limit, from the same PR). On Oct 10, 2026 Grier added DEC-40 to DEC-44 (roster sync, the session-cookie gap, notifications built in Fold, the self-contained directive, and the notification product answers). On Oct 12, 2026 Grier added DEC-46 (per-date event visibility). On Oct 13, 2026 Grier approved Whittler's simplicity audit: DEC-47 (no `pending_return`) and DEC-48 (event visibility stored on the event, with Codex's tighten-and-ask rule). On Oct 14, 2026 Grier added DEC-49 (upload-only images), DEC-50 (new events default to the church's time zone) and DEC-51 (event visibility chosen at creation and edited inside the event's editor). Each has been carried through the sections listed. These decisions win over the original requirement wording and over the repo.
 
 | ID | Decision (2026-10-09) | Where it flows |
 |---|---|---|
@@ -2257,7 +2262,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-23 (G) | **Log in by email** instead of username; the email is unique. A shared email is one account; that person brings the others as household people on RSVPs. Guidance for churches and members is documented. | 3.1, 3.4, C16, 5.3, 5.10, 6, 10.1, 11.3, M0.3, M1.9, M4.5 |
 | DEC-24 (H) | **Postgres for dev and tests too**, via Docker Compose; SQLite dropped entirely. Confirms DEC-1. | 1, 3.1, 3.3, C14, 11.9, 14.1, M0.1 |
 | DEC-25 (I) | **Quiet hours use the recipient's time zone**: default 8 AM to 8 PM, configurable, with a warning outside TCPA's 8 AM to 9 PM, falling back to the church time zone when the recipient hasn't set one. Confirms DEC-9. | 5.3, 5.9, 7.1, 7.5, 11.3, M3.8 |
-| DEC-26 | **Hosting: VPS only for now.** Vendors that run on AWS underneath are fine; the objection is to using AWS services directly, because of vendor lock-in. A VPS with Docker Compose is the only supported deployment. Render stays as a reference evaluation and `render.yaml` outline; M5.5 is optional and future, added when a church asks or when Grier wants an easy path to host for others. | 1, 2 (D4), 5.1, 11, 12 intro, 12.5, 12.7, 14.2, M5.5, Appendix A |
+| DEC-26 | **Hosting: VPS only for now.** Vendors that run on AWS underneath are fine; the objection is to using AWS services directly, because of vendor lock-in. A VPS with Docker Compose is the only recommended deployment. Render stays as a reference evaluation and `render.yaml` outline; M5.5 is optional and future, added when a church asks or when Grier wants an easy path to host for others. | 1, 2 (D4), 5.1, 11, 12 intro, 12.5, 12.7, 14.2, M5.5, Appendix A |
 | DEC-27 | **Opt-outs are automatic and immediate, always.** STOP-type keywords and any reply that reasonably reads as an opt-out (FCC rules or plain wording) opt the person out at once, and Fold sends the confirmation text. No review queue, no timer, no human work. Admins get a read-only opt-out log; a person opts back in with `START`. | 5.3, 5.5, 6, 7.4, 10.4, M3.7 |
 | DEC-28 | **A reason for making an event more open stays optional.** The change is always audited, and the group's other leaders (and admins) are notified. | 5.3, 6, M1.1b |
 | DEC-29 | **Guardian copies go by email only**, never by SMS, because texts cost money. | 5.3, 5.10, 7.1, 11.3, M3.5 |
@@ -2284,7 +2289,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-50 | **New events default to the church's time zone** (Grier, Oct 14, 2026). The schedule forms start at the church zone from `/site`; the zone list offers the browser's zone first ("Your time zone"), unless it is the church's zone, so no entry repeats. | 5.3, M1.1a |
 | DEC-51 | **Event visibility is chosen at creation and edited inside the event's editor** (Grier, Oct 14, 2026). Every event create form (group and church-wide) has the shared "Who can see this event" field: a group event defaults to its group's value, a church-wide event to public. Choosing wider than the group takes the DEC-17/DEC-28 path at creation (`event.visibility_override` audit row, notice, `leader_opened`). The standalone control on the event list and event page is removed; the same component sits inside "Edit series" / "Edit event", keeping the tightening preview and confirm (DEC-48). | 5.3, M1.1b |
 
-The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions.
+The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, and DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51.
 
 ### 15.2 Still open
 
@@ -2316,7 +2321,7 @@ Add this to `AGENTS.md` in M5.4. Each item is a heading with short, exact instru
    8. Storage: local or S3-compatible (and which), and offsite backup bucket plus an `age` public key
    9. Hosting: VPS provider and size, or an existing server, and whose account it is on
 
-**Deployment: one VPS with Docker Compose (the only supported path, DEC-26)**
+**Deployment: one VPS with Docker Compose (the only recommended path, DEC-26)**
 
 2. **Preflight**: check the VPS is reachable over SSH; at least 2 GB RAM and 20 GB free disk; ports 80 and 443 open; Docker and the compose plugin installed (`docker compose version`); the domain's A/AAAA records point at the server (`dig +short`).
 3. **Server prep**: create the `/opt/fold` directory; enable unattended security updates; firewall allows 22, 80, 443 only.
@@ -2328,7 +2333,7 @@ Add this to `AGENTS.md` in M5.4. Each item is a heading with short, exact instru
 9. **Upgrades**: `docker compose exec backup backup.sh now`; set the new `FOLD_VERSION`; `docker compose pull && docker compose up -d`; check `/healthz` and the version; read `docs/UPGRADING.md` first.
 10. **Troubleshooting**: `docker compose logs app --tail 200`; certificate problems (DNS not pointing, port 80 blocked, Cloudflare proxy on); email not verified (DNS propagation, check records); SMS blocked (registration status); restore from backup (`docker compose exec backup restore.sh <file>`, 11.8).
 
-**Reference only, not supported yet: Render (future M5.5, DEC-26)**
+**Reference only, not recommended yet: Render (future M5.5, DEC-26)**
 
 Kept so the work is ready if a church asks. Do not offer this path until M5.5 is done.
 

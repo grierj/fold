@@ -224,6 +224,24 @@ func TestGuestExistingEmailIsUniform(t *testing.T) {
 	}
 }
 
+// The account-exists hint is an email too: repeated guest forms for a
+// real account's address, from many IPs, send at most 3 an hour.
+func TestGuestExistingEmailHintIsRateLimited(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	newTestUser(t, app, "taken", "password1234", models.RoleMember)
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	for i := 1; i <= 6; i++ {
+		c := anonClient(t, app, fmt.Sprintf("10.4.5.%d", i))
+		guestSubmit(t, c, ev.ID, guestBody("Taken", "taken@example.com", true), http.StatusOK)
+	}
+	if n := guestEmailCount(t, app, "taken@example.com"); n != guestVerifyPerHour {
+		t.Fatalf("hint emails: got %d, want %d", n, guestVerifyPerHour)
+	}
+}
+
 // M1.4 acceptance: verification emails to one address stop after 3 in
 // an hour or 10 in a day, whatever the IP.
 func TestGuestVerificationRateLimitPerAddress(t *testing.T) {
