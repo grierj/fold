@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -139,10 +140,118 @@ func TestWebTypesMatchGoJSON(t *testing.T) {
 }
 
 // The contract check catches the M1.1a rename (nextMeetingAt -> nextEventAt).
-func TestWebTypesGuardCatchesM11aRename(t *testing.T) {
+func TestWebTypesGuardCatchesFieldRename(t *testing.T) {
 	old := "export interface GroupSummary {\n  nextMeetingAt: string | null;\n}\n"
 	missing, extra := contractDiff(map[string]bool{"nextEventAt": true}, tsFields(old, "GroupSummary"))
 	if len(missing) != 1 || len(extra) != 1 {
 		t.Fatalf("missing %v extra %v", missing, extra)
+	}
+}
+
+func TestDependabotCoversEveryEcosystem(t *testing.T) {
+	b, err := os.ReadFile(".github/dependabot.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, eco := range []string{"gomod", "npm", "github-actions", "docker"} {
+		if !strings.Contains(string(b), "package-ecosystem: "+eco) {
+			t.Errorf("dependabot.yml has no %s entry", eco)
+		}
+	}
+	ci, err := os.ReadFile(".github/workflows/test.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []string{"govulncheck@v", "npm audit --omit=dev --audit-level=high"} {
+		if !strings.Contains(string(ci), step) {
+			t.Errorf("CI has no %q step", step)
+		}
+	}
+}
+
+// testLayoutAllowed are the only test files with no same-named source file:
+// shared helpers, these repo-wide guards, and the migration drift check.
+var testLayoutAllowed = map[string]bool{
+	"testhelpers_test.go":      true,
+	"guards_test.go":           true,
+	"migrations/drift_test.go": true,
+}
+
+// milestoneNameRe matches a test file named after when it was written
+// (m11b_test.go, m03b_limit_test.go, milestone-2.spec.ts) instead of what it tests.
+var milestoneNameRe = regexp.MustCompile(`(?i)(^|[_.-])m\d+[a-z]?([_.-]|$)|milestone`)
+
+// testLayoutViolations checks one repo-relative test file path against the
+// layout rule; exists reports whether a repo-relative path exists.
+func testLayoutViolations(path string, exists func(string) bool) []string {
+	dir, base := filepath.Split(path)
+	var out []string
+	if milestoneNameRe.MatchString(base) {
+		out = append(out, path+": named after a milestone. Move its tests into the file for the code they test (X_test.go next to X.go, Foo.test.tsx next to Foo.tsx, e2e specs by feature); shared helpers go in testhelpers_test.go")
+		return out
+	}
+	if testLayoutAllowed[path] || strings.HasPrefix(path, "web/e2e/") {
+		return out
+	}
+	var sources []string
+	switch {
+	case strings.HasSuffix(base, "_test.go"):
+		sources = []string{strings.TrimSuffix(base, "_test.go") + ".go"}
+	case strings.Contains(base, ".test."):
+		stem := base[:strings.Index(base, ".test.")]
+		sources = []string{stem + ".ts", stem + ".tsx"}
+	default:
+		return out
+	}
+	for _, s := range sources {
+		if exists(dir + s) {
+			return out
+		}
+	}
+	out = append(out, path+": no matching source file ("+strings.Join(sources, " or ")+" in the same directory). Move these tests into the _test file of the code they test; put shared helpers in testhelpers_test.go; only add to testLayoutAllowed in guards_test.go for helpers, integration or migration tests")
+	return out
+}
+
+func TestTestFilesSitNextToTheirSource(t *testing.T) {
+	exists := func(p string) bool { _, err := os.Stat(p); return err == nil }
+	var bad []string
+	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "node_modules", "dist", "test-results", "playwright-report", "data":
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		n := d.Name()
+		if strings.HasSuffix(n, "_test.go") || strings.Contains(n, ".test.") || strings.HasSuffix(n, ".spec.ts") {
+			bad = append(bad, testLayoutViolations(filepath.ToSlash(p), exists)...)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bad) > 0 {
+		t.Fatalf("test layout (AGENTS.md, Tests):\n%s", strings.Join(bad, "\n"))
+	}
+}
+
+// The layout check catches the files this rule replaced.
+func TestTestLayoutGuardCatchesMilestoneFiles(t *testing.T) {
+	none := func(string) bool { return false }
+	for _, p := range []string{"m11b_test.go", "m03b_limit_test.go", "web/e2e/m12.spec.ts", "milestone_test.go", "tz_guard_test.go", "web/src/Orphan.test.tsx"} {
+		if len(testLayoutViolations(p, none)) == 0 {
+			t.Errorf("%s passed the layout check", p)
+		}
+	}
+	if v := testLayoutViolations("api_events_test.go", func(p string) bool { return p == "api_events.go" }); len(v) != 0 {
+		t.Errorf("api_events_test.go flagged: %v", v)
+	}
+	if v := testLayoutViolations("web/e2e/events.spec.ts", none); len(v) != 0 {
+		t.Errorf("events.spec.ts flagged: %v", v)
 	}
 }

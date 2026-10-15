@@ -126,7 +126,7 @@ Layout (flat `package main` at the root):
 - `models/models.go`: `User`, `Group`, `Meeting`, `MeetingException`, `Membership`, `RSVP`, `Setting`.
 - `storage/storage.go`: a `Store` interface with `LocalStore`. Its comments describe an S3 seam.
 - `docs/API.md`: the API contract.
-- Tests: `auth_test.go`, `behavior_test.go`, `admin_test.go`, `profile_test.go`, `storage/storage_test.go`.
+- Tests (at the time): `auth_test.go`, `behavior_test.go`, `admin_test.go`, `profile_test.go`, `storage/storage_test.go`. Since Oct 2026 tests sit next to their source (`X_test.go` beside `X.go`; see AGENTS.md).
 
 Features already built:
 

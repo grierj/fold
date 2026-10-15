@@ -1,66 +1,13 @@
 package main
 
-// Tests for M1.3: self-signup account requests, member invite-a-friend,
-// the age gate, the admin approval queue, uniform answers, rate limits
-// and honeypot flags, expiry, and inline approval (DEC-44). Links are
-// read from the devoutbox; nothing touches a live service.
-
 import (
+	"fold/internal/audit"
+	"fold/models"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
-
-	"fold/internal/audit"
-	"fold/internal/notify"
-	"fold/models"
 )
-
-func anonClient(t *testing.T, app *App, ip string) *apiClient {
-	t.Helper()
-	c := newAPIClient(t, app)
-	c.ip = ip
-	c.fetchCSRF()
-	return c
-}
-
-func signupBody(name, email, band, birth string) map[string]any {
-	body := map[string]any{"name": name, "email": email, "ageBand": band}
-	if birth != "" {
-		body["birthDate"] = birth
-	}
-	return body
-}
-
-func pendingRequest(t *testing.T, app *App, email string) models.AccountRequest {
-	t.Helper()
-	var req models.AccountRequest
-	if err := app.DB.Where("email = ? AND status = ?", email, models.RequestPending).First(&req).Error; err != nil {
-		t.Fatalf("pending request for %s: %v", email, err)
-	}
-	return req
-}
-
-func requestCount(t *testing.T, app *App, email string) int64 {
-	t.Helper()
-	var n int64
-	app.DB.Model(&models.AccountRequest{}).Where("email = ?", email).Count(&n)
-	return n
-}
-
-func adminNotification(t *testing.T, app *App, adminID, requestID uint) models.Notification {
-	t.Helper()
-	var n models.Notification
-	if err := app.DB.Where("user_id = ? AND kind = ? AND subject_id = ?", adminID, notify.AccountRequested, requestID).
-		First(&n).Error; err != nil {
-		t.Fatalf("admin notification for request %d: %v", requestID, err)
-	}
-	return n
-}
-
-func teenBirthDate() string {
-	return time.Now().UTC().AddDate(-15, 0, 0).Format("2006-01-02")
-}
 
 // M1.3 acceptance: self-signup creates a pending request; nobody can
 // sign in until an admin approves; approval emails a set-password link

@@ -97,8 +97,16 @@ Postgres (`login_throttles`, see `api_auth.go`).
   runs it on a throwaway database and fails on any CREATE or ALTER.
 - Tests: `make test` (`go test ./...` against `DATABASE_URL`; starts the
   dev database if unset). Handler tests use `httptest` and the package's
-  Postgres database from `internal/testdb` (see `auth_test.go` for the
+  Postgres database from `internal/testdb` (see `testhelpers_test.go` for the
   cookie-jar + CSRF-dance pattern — reuse it).
+- Test layout: tests live with what they test, never with the milestone
+  that added them. Go: `X_test.go` next to `X.go`, same package (handler
+  tests for `api_events.go` go in `api_events_test.go`). Helpers shared
+  across test files go in `testhelpers_test.go`. Web: `Foo.test.tsx` next
+  to `Foo.tsx`. Playwright: `web/e2e/<feature>.spec.ts`. Put a new test in
+  the right file when you write it, not in a later cleanup. Only
+  `testLayoutAllowed` in `guards_test.go` (helpers, repo guards, the
+  migration drift check) may skip the same-named source file.
 - Frontend: `cd web && npm test` runs Vitest component tests
   (`src/**/*.test.tsx`, jsdom + Testing Library). `make e2e` runs Playwright
   (Chromium only) in `web/e2e` against the real binary on a fresh
@@ -241,4 +249,5 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Notification rows are private to their owner and inline actions are checked on the server | `notify` queries filter by `user_id`; `TestStoredNotificationsAcceptance` |
 | `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
 | State-changing routes outside CSRF are listed exactly | `TestCSRFExemptRoutesAreExact` |
-| Logout leaves nothing on screen or in cache | `no-store` on API and shell; `session_fix_test.go`, `web/e2e/session.spec.ts` |
+| Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore` (`api_test.go`), `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |
+| Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (`guards_test.go`, run by `make test` in CI); its error names the file to move to |

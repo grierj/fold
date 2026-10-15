@@ -3,40 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"fold/internal/audit"
+	"fold/models"
 	"net/http"
 	"strings"
 	"testing"
-
-	"fold/internal/audit"
-	"fold/models"
 )
-
-// DEC-48 tightening, the leader prompt, the leader-opened marker, and
-// cancel-and-notify.
-
-func register(t *testing.T, c *apiClient, eventID uint) {
-	t.Helper()
-	apiDo(t, c, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", eventID), map[string]any{
-		"status": "going", "date": "2026-12-01",
-	}, http.StatusOK)
-}
-
-func regCount(app *App, u *models.User, eventID uint) int64 {
-	var n int64
-	app.DB.Table("registrations").
-		Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
-		Where("registrations.user_id = ? AND event_occurrences.event_id = ?", u.ID, eventID).Count(&n)
-	return n
-}
-
-func eventRow(t *testing.T, app *App, id uint) models.Event {
-	t.Helper()
-	var ev models.Event
-	if err := app.DB.First(&ev, id).Error; err != nil {
-		t.Fatal(err)
-	}
-	return ev
-}
 
 func TestGroupMorePrivateTightensAndCancels(t *testing.T) {
 	app := testApp(t)
