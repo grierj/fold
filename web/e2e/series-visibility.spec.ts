@@ -27,8 +27,9 @@ test("visibility is chosen at creation and edited inside Edit series", async ({ 
       await expect(page.getByText("Only leaders will see who signed up")).toBeVisible();
       await page.getByLabel("Reason (optional)").fill("Open rehearsal");
     }
+    // Turning on "Repeat weekly" selects the start date's weekday. Clicking
+    // a fixed day here toggled it off whenever that date was a Monday.
     await page.getByText("Repeat weekly").click();
-    await page.getByRole("button", { name: "Mon", exact: true }).click();
     await page.getByRole("button", { name: "Schedule event" }).click();
     await expect(page).toHaveURL(new RegExp(`/groups/${group.id}$`));
   };
