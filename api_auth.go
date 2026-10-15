@@ -299,7 +299,11 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	throttled := err != nil || !ipOK || !addrOK
 
 	var user models.User
-	found := a.DB.Where("email = ?", email).Limit(1).Find(&user).RowsAffected == 1
+	// Only real accounts get a reset: guests (M1.4) have no password to
+	// reset and disabled accounts can't sign in. Both get the same
+	// answer as an unknown address, so guest status isn't revealed (DEC-53).
+	found := a.DB.Where("email = ? AND status = ?", email, models.UserActive).
+		Limit(1).Find(&user).RowsAffected == 1
 	if !found || throttled {
 		// Same cost as a real request's password check, and the same
 		// answer: nothing here reveals whether the account exists.

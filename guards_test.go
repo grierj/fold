@@ -256,3 +256,26 @@ func TestTestLayoutGuardCatchesMilestoneFiles(t *testing.T) {
 		t.Errorf("events.spec.ts flagged: %v", v)
 	}
 }
+
+// DEC-52: rate limits and account checks never reach a user on a public
+// form; it answers as usual and logs. Only sign-in (an actionable,
+// familiar lockout) and a signed-in leader's invitation limit answer 429.
+func TestOnlyLoginAndInvitesAnswer429(t *testing.T) {
+	allowed := map[string]bool{"api_auth.go": true, "api_invitations.go": true}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") || allowed[f] {
+			continue
+		}
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), "StatusTooManyRequests") {
+			t.Errorf("%s answers 429; public forms answer as usual and log instead (DEC-52)", f)
+		}
+	}
+}

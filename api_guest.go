@@ -164,8 +164,9 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		return
 	}
 	if hits > guestIPLimit {
-		// No 429 here: refusing out loud would confirm the address is
-		// being mailed. The emails simply stop.
+		// No 429 here (DEC-52): refusing out loud would confirm the
+		// address is being mailed. The emails simply stop.
+		log.Printf("guest registration rate limited: ip=%s", c.ClientIP())
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return
 	}
@@ -187,6 +188,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		return
 	}
 	if a.guestVerifyLimited(email, time.Now().UTC()) {
+		log.Printf("guest verification emails to one address limited (DEC-52)")
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return
 	}
