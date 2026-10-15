@@ -90,12 +90,12 @@ export interface NotificationFeed {
   next: string;
 }
 
-export type RegistrationStatus = "going" | "maybe" | "declined";
+export type RegistrationStatus = "going" | "maybe" | "declined" | "waitlisted" | "removed" | "cancelled";
 
 // A guest's registration as the confirm and manage pages see it (M1.4):
 // the event fitted for a signed-out visitor, with no email and no
-// attendee names. status is going, or cancelled after the manage link
-// cancels it.
+// attendee names. status is going, waitlisted (M1.5), or cancelled after
+// the manage link cancels it.
 export interface GuestRegistration {
   eventId: number;
   occurrenceId: number;
@@ -107,6 +107,15 @@ export interface GuestRegistration {
   startsLocal: string;
   tzid: string;
   location: string;
+  waitlistPosition?: number;
+}
+
+// One attendee entry on an occurrence (M1.5 adds guestCount).
+export interface Attendee {
+  userId: number;
+  name: string;
+  status: RegistrationStatus;
+  guestCount: number;
 }
 
 // One date of an event. date is the series date and stays put when a
@@ -143,7 +152,18 @@ export interface EventOccurrence {
   hostedBy?: string;
   // False means the caller gets a count only. Names are omitted in that case.
   attendeesVisible?: boolean;
-  attendees?: { userId: number; name: string; status: RegistrationStatus }[];
+  attendees?: Attendee[];
+  // Capacity, waitlist, and guests (M1.5). capacity is the effective cap
+  // for this date; null means unlimited. spotsLeft is null when
+  // unlimited and never below 0. seatsUsed counts seats while
+  // registrations counts rows.
+  capacity: number | null;
+  seatsUsed: number;
+  spotsLeft: number | null;
+  waitlistEnabled: boolean;
+  guestsAllowed: number;
+  myGuestCount?: number;
+  myWaitlistPosition?: number;
 }
 
 // NOTE: the implementation returns {group, members, upcomingEvents,
@@ -182,6 +202,22 @@ export interface EventSeries {
   leaderOpened: boolean;
   churchWide: boolean;
   hosts?: EventHostRow[];
+  // Capacity, waitlist, and guests (M1.5). capacity null means unlimited.
+  capacity: number | null;
+  waitlistEnabled: boolean;
+  guestsAllowed: number;
+}
+
+// The register endpoint's registration object (M1.5): the final status,
+// the guest count, and the waitlist position (null unless waitlisted).
+export interface RegistrationResponse {
+  userId: number;
+  eventId: number;
+  occurrenceId: number;
+  date: string;
+  status: RegistrationStatus;
+  guestCount: number;
+  waitlistPosition: number | null;
 }
 
 export interface EventDetailResponse {

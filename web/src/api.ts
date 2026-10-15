@@ -85,6 +85,7 @@ import type {
   NotificationFeed,
   NotificationFilter,
   OpenedDecision,
+  RegistrationResponse,
   RegistrationStatus,
   SoleLedGroup,
   User,
@@ -178,6 +179,9 @@ export const Groups = {
       recurrenceRule?: string;
       visibility?: Visibility;
       visibilityReason?: string;
+      capacity?: number | null;
+      waitlistEnabled?: boolean;
+      guestsAllowed?: number | null;
     }
   ) => api<{ event: EventSeries }>(`/groups/${id}/events`, { method: "POST", body: data }),
 };
@@ -240,6 +244,9 @@ export const Events = {
     recurrenceRule?: string;
     visibility?: Visibility;
     hosts?: string[];
+    capacity?: number | null;
+    waitlistEnabled?: boolean;
+    guestsAllowed?: number | null;
   }) => api<{ event: EventSeries }>("/events", { method: "POST", body: data }),
   setVisibility: (
     id: number,
@@ -263,16 +270,30 @@ export const Events = {
       location?: string;
       recurrenceRule?: string;
       rruleUntil?: string;
+      capacity?: number | null;
+      waitlistEnabled?: boolean;
+      guestsAllowed?: number | null;
     }
   ) => api<{ event: EventSeries }>(`/events/${id}`, { method: "PUT", body: data }),
-  register: (id: number, status: RegistrationStatus, date: string) =>
-    api<unknown>(`/events/${id}/registrations`, { method: "PUT", body: { status, date } }),
+  register: (id: number, status: RegistrationStatus, date: string, guestCount?: number) =>
+    api<{ registration: RegistrationResponse }>(`/events/${id}/registrations`, {
+      method: "PUT",
+      body: { status, date, guestCount },
+    }),
+  // Pruning and hand promotion (M1.5): leaders and hosts remove anyone,
+  // promote one waitlisted row by hand, or add someone directly.
+  removeRegistration: (id: number, date: string, userId: number, note?: string) =>
+    api<unknown>(`/events/${id}/registrations/remove`, { method: "POST", body: { date, userId, note } }),
+  promoteRegistration: (id: number, date: string, userId: number) =>
+    api<unknown>(`/events/${id}/registrations/promote`, { method: "POST", body: { date, userId } }),
+  addRegistration: (id: number, date: string, email: string, overCapacity?: boolean) =>
+    api<unknown>(`/events/${id}/registrations/add`, { method: "POST", body: { date, email, overCapacity } }),
   cancelOccurrence: (id: number, date: string) =>
     api<unknown>(`/events/${id}/cancel`, { method: "POST", body: { date } }),
   updateOccurrence: (
     id: number,
     date: string,
-    data: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string }
+    data: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string; capacityOverride?: number | null }
   ) => api<{ occurrence: EventOccurrence }>(`/events/${id}/occurrences/${date}`, { method: "PUT", body: data }),
   delete: (id: number) => api<unknown>(`/events/${id}`, { method: "DELETE" }),
 };

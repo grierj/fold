@@ -34,6 +34,9 @@ export interface SeriesFields {
   location: string;
   recurrenceRule: string;
   rruleUntil?: string;
+  capacity: number | null;
+  waitlistEnabled: boolean;
+  guestsAllowed: number;
 }
 
 // SeriesEditor is the one "Edit series" / "Edit event" form, used on the
@@ -68,6 +71,9 @@ export function SeriesEditor({
   });
   const [rule, setRule] = useState(instance.recurrenceRule);
   const [until, setUntil] = useState(instance.rruleUntil ?? "");
+  const [capacity, setCapacity] = useState(instance.capacity === null ? "" : String(instance.capacity));
+  const [waitlistEnabled, setWaitlistEnabled] = useState(instance.waitlistEnabled);
+  const [guestsAllowed, setGuestsAllowed] = useState(instance.guestsAllowed);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -84,17 +90,38 @@ export function SeriesEditor({
     setBusy(true);
     setError(null);
     const recurrenceRule = simple ? (recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "") : rule.trim();
+    const capTrimmed = capacity.trim();
+    const capInitial = instance.capacity === null ? "" : String(instance.capacity);
+    // Only send capacity fields that changed: on the group page the
+    // initial capacity is the date's effective value, and an untouched
+    // field must not clobber a per-date override.
+    const body: {
+      title: string;
+      description: string;
+      startsLocal: string;
+      durationMinutes: number;
+      tzid: string;
+      location: string;
+      recurrenceRule: string;
+      rruleUntil: string;
+      capacity?: number | null;
+      waitlistEnabled?: boolean;
+      guestsAllowed?: number;
+    } = {
+      title: title.trim(),
+      description: description.trim(),
+      startsLocal: `${date}T${time}`,
+      durationMinutes: duration,
+      tzid: tzid.trim(),
+      location: location.trim(),
+      recurrenceRule,
+      rruleUntil: until,
+    };
+    if (capTrimmed !== capInitial) body.capacity = capTrimmed === "" ? null : Number(capTrimmed);
+    if (waitlistEnabled !== instance.waitlistEnabled) body.waitlistEnabled = waitlistEnabled;
+    if (guestsAllowed !== instance.guestsAllowed) body.guestsAllowed = guestsAllowed;
     try {
-      await Events.update(instance.eventId, {
-        title: title.trim(),
-        description: description.trim(),
-        startsLocal: `${date}T${time}`,
-        durationMinutes: duration,
-        tzid: tzid.trim(),
-        location: location.trim(),
-        recurrenceRule,
-        rruleUntil: until,
-      });
+      await Events.update(instance.eventId, body);
       onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not update the series");
@@ -206,6 +233,53 @@ export function SeriesEditor({
         </label>
         <input id={`s-until-${idPrefix}`} type="date" className="input" value={until} onChange={(e) => setUntil(e.target.value)} />
       </div>
+      <div className="grid sm:grid-cols-3 gap-3">
+        <div>
+          <label className="label" htmlFor={`s-cap-${idPrefix}`}>
+            Capacity
+          </label>
+          <input
+            id={`s-cap-${idPrefix}`}
+            type="number"
+            min={1}
+            className="input"
+            placeholder="No limit"
+            value={capacity}
+            onChange={(e) => setCapacity(e.target.value)}
+          />
+          <p className="text-xs text-gray-500 mt-1">Seats per date. Empty means no limit.</p>
+        </div>
+        <div>
+          <label className="label" htmlFor={`s-guests-${idPrefix}`}>
+            Guests allowed
+          </label>
+          <input
+            id={`s-guests-${idPrefix}`}
+            type="number"
+            min={0}
+            max={5}
+            className="input"
+            value={guestsAllowed}
+            onChange={(e) => setGuestsAllowed(Math.max(0, Math.min(5, Number(e.target.value))))}
+          />
+          <p className="text-xs text-gray-500 mt-1">Extra guests one registration may bring (0–5).</p>
+        </div>
+        <div className="flex items-end pb-1">
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={waitlistEnabled}
+              onChange={(e) => setWaitlistEnabled(e.target.checked)}
+              className="w-4 h-4 accent-[#f64060]"
+            />
+            Waitlist when full
+          </label>
+        </div>
+      </div>
+      <p className="text-xs text-gray-500">
+        When the waitlist is off, a full date refuses new registrations. When it is on, extra people join the
+        waitlist in order and move up automatically as spots open.
+      </p>
       <div className="flex gap-2">
         <button type="submit" disabled={busy} className="btn-primary">
           {busy ? "Saving…" : "Save series"}
