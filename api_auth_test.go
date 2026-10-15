@@ -439,3 +439,28 @@ func TestLogoutEndsSession(t *testing.T) {
 		t.Fatalf("me after logout: %d", c)
 	}
 }
+
+// DEC-53: guests have no password reset. A guest's address gets the
+// same answer as an unknown one, and no token or email.
+func TestPasswordResetSkipsGuests(t *testing.T) {
+	app := testApp(t)
+	guest := models.User{Email: "guest@example.com", Name: "Gail",
+		Role: models.RoleMember, Status: models.UserGuest, AccountType: models.AccountAdult}
+	if err := app.DB.Create(&guest).Error; err != nil {
+		t.Fatal(err)
+	}
+	anon := newAPIClient(t, app)
+	anon.fetchCSRF()
+	for _, email := range []string{"nobody@example.com", "guest@example.com"} {
+		w := anon.do("POST", "/api/v1/auth/password-reset", map[string]string{"email": email}, true)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), resetRequestMessage) {
+			t.Fatalf("%s: %d %s", email, w.Code, w.Body.String())
+		}
+	}
+	var tokens, mails int64
+	app.DB.Model(&models.AccountToken{}).Count(&tokens)
+	app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", "guest@example.com").Count(&mails)
+	if tokens != 0 || mails != 0 {
+		t.Fatalf("guest got a reset: tokens %d, emails %d", tokens, mails)
+	}
+}

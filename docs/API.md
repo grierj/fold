@@ -273,8 +273,8 @@ audited as `membership.added_over_limit`.
 ### Account requests
 
 ```
-POST /api/v1/account-requests              → 200 {message} | 400 | 403 | 429  (public)
-POST /api/v1/account-requests/invite-friend → 200 {message} | 400 | 403 | 409 | 429  (auth)
+POST /api/v1/account-requests              → 200 {message} | 400 | 403  (public)
+POST /api/v1/account-requests/invite-friend → 200 {message} | 400 | 403 | 409  (auth)
 POST /api/v1/account-requests/confirm      {token, password} → 200 {user, pendingConsent?} | 400  (public)
 GET  /api/v1/admin/account-requests?status=pending → {requests: [accountRequest]}  (admin)
 POST /api/v1/admin/account-requests/:id/approve → 200 {request, userId}  (admin)
@@ -309,7 +309,7 @@ account stores nothing, answers the same `200 {"message":"Thanks —
 check your email for next steps."}`, and emails that address a sign-in
 and reset hint instead. A member inviting an address that already has
 an account gets 409, like an invitation. Public forms allow 10 submits
-per IP per hour (429 past that); a duplicate pending request, a filled
+per IP per hour (past that, the usual 200 message, nothing stored, logged server-side; DEC-52); a duplicate pending request, a filled
 honeypot, or 5+ submits in the hour flags the stored row.
 
 Admins get a waiting bell item per request. Only a clean adult request

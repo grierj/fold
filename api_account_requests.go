@@ -218,7 +218,11 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		return false
 	}
 	if hits > accountRequestIPLimit {
-		jsonError(c, http.StatusTooManyRequests, "too many requests from this connection; try again in an hour")
+		// A rate limit is not something the person can act on, and a 429
+		// tells a prober the form is being watched: answer as usual and
+		// log it (DEC-52). Nothing is stored and nobody is emailed.
+		log.Printf("account request rate limited: ip=%s source=%s", c.ClientIP(), source)
+		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return false
 	}
 	var existing models.User

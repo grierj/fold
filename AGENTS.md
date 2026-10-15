@@ -242,6 +242,12 @@ per kind of control: `ZoneSelect` (every time zone field), `VisibilityField`
 / `EventVisibilityControl` (every event visibility choice), and
 `SeriesEditor` (Edit series / Edit event on the group and event pages).
 
+Errors a person can't act on, or that are a security risk, never reach them
+(Grier, Oct 15, 2026, DEC-52). Rate limits and anything that could reveal
+whether an account exists answer with the form's usual success message and
+are logged server-side. Exceptions: sign-in keeps its lockout message, and a
+signed-in leader's invitation limit keeps its 429.
+
 Exception (Grier, Oct 14, 2026): one-off pages outside the standard
 presentation layer, such as the server-rendered first-run setup page
 (`templates/setup.html`), don't have to match the React components.
@@ -262,4 +268,5 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
 | State-changing routes outside CSRF are listed exactly | `TestCSRFExemptRoutesAreExact` |
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore` (`api_test.go`), `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |
+| Public forms never show a rate limit or reveal an account (DEC-52); only sign-in and a leader's invitation limit answer 429 | `TestOnlyLoginAndInvitesAnswer429` (`guards_test.go`); `TestGuestExistingEmailHintIsRateLimited`, `TestPasswordResetSkipsGuests` |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (`guards_test.go`, run by `make test` in CI); its error names the file to move to |

@@ -158,26 +158,37 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return
 	}
+	hits, err := a.throttleHit(c.Request.Context(), "guestreg:ip:"+c.ClientIP(), time.Hour)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not save your registration")
+		return
+	}
+	if hits > guestIPLimit {
+		// No 429 here (DEC-52): refusing out loud would confirm the
+		// address is being mailed. The emails simply stop.
+		log.Printf("guest registration rate limited: ip=%s", c.ClientIP())
+		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		return
+	}
 	var existing models.User
 	if a.DB.Where("email = ?", email).Limit(1).Find(&existing).RowsAffected == 1 &&
 		existing.Status != models.UserGuest {
 		// About the same cost as storing a signup, and the hint travels
 		// by email instead (10.1).
 		(&models.User{}).CheckPassword("not a real password")
-		if err := a.sendAlreadyHaveAccountEmail(email); err != nil {
-			log.Printf("account-exists email to %s: %v", email, err)
+		// The hint is an email to that address too, so it shares the
+		// per-address limit (3 an hour) whatever the IP (10.1).
+		if ok, err := a.throttleAllow(c.Request.Context(), "guestreg:hint:"+email,
+			guestVerifyPerHour, time.Hour); err == nil && ok {
+			if err := a.sendAlreadyHaveAccountEmail(email); err != nil {
+				log.Printf("account-exists email to %s: %v", email, err)
+			}
 		}
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return
 	}
-	hits, err := a.throttleHit(c.Request.Context(), "guestreg:ip:"+c.ClientIP(), time.Hour)
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not save your registration")
-		return
-	}
-	if hits > guestIPLimit || a.guestVerifyLimited(email, time.Now().UTC()) {
-		// No 429 here: refusing out loud would confirm the address is
-		// being mailed. The emails simply stop.
+	if a.guestVerifyLimited(email, time.Now().UTC()) {
+		log.Printf("guest verification emails to one address limited (DEC-52)")
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return
 	}

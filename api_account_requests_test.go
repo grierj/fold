@@ -297,7 +297,8 @@ func TestPublicFormRateLimitAndHoneypot(t *testing.T) {
 		t.Fatalf("inline honeypot approval: %d", w.Code)
 	}
 
-	// Rate limit: ten from one IP pass, the eleventh is a 429.
+	// Rate limit: ten from one IP pass; the eleventh gets the usual
+	// answer but stores nothing (DEC-52).
 	anon := anonClient(t, app, "10.6.0.2")
 	for i := 1; i <= accountRequestIPLimit; i++ {
 		w = anon.do("POST", "/api/v1/account-requests",
@@ -308,8 +309,8 @@ func TestPublicFormRateLimitAndHoneypot(t *testing.T) {
 	}
 	w = anon.do("POST", "/api/v1/account-requests",
 		signupBody("Person", "person11@example.com", "adult", ""), true)
-	if w.Code != http.StatusTooManyRequests {
-		t.Fatalf("11th submit: %d %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), signupThanks) {
+		t.Fatalf("11th submit: %d %s, want the usual thanks", w.Code, w.Body.String())
 	}
 	if n := requestCount(t, app, "person11@example.com"); n != 0 {
 		t.Fatalf("rate-limited submit stored %d rows", n)
