@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"sort"
@@ -156,7 +158,8 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	var counts []countRow
 	a.DB.Model(&models.Registration{}).Joins(listedUsers("registrations")).
 		Select("registrations.occurrence_id, registrations.status, count(*) as n").
-		Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).
+		Where("registrations.occurrence_id IN ? AND registrations.status NOT IN ?",
+			ids, []string{models.RegCancelled, models.RegRemoved}).
 		Group("registrations.occurrence_id, registrations.status").
 		Scan(&counts)
 	countOf := map[uint]map[string]int64{}
@@ -166,13 +169,22 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		}
 		countOf[r.OccurrenceID][r.Status] = r.N
 	}
-	mine := map[uint]string{}
+	// The viewer's own registration: myRegistration may read waitlisted
+	// or removed, so only cancelled rows are left out. The row id feeds
+	// myWaitlistPosition.
+	mine := map[uint]models.Registration{}
 	if me != nil {
 		var rows []models.Registration
 		a.DB.Where("user_id = ? AND occurrence_id IN ? AND status <> ?", me.ID, ids, models.RegCancelled).Find(&rows)
 		for _, r := range rows {
-			mine[r.OccurrenceID] = r.Status
+			mine[r.OccurrenceID] = r
 		}
+	}
+	// Seats used per occurrence, in one query (M1.5). The counts above
+	// count rows; this counts seats.
+	usedMap, err := seatsUsedMap(a.DB, ids)
+	if err != nil {
+		usedMap = map[uint]int{}
 	}
 
 	showNames := map[uint]bool{}
@@ -205,12 +217,29 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		inst.Visibility = ev.Visibility
 		inst.LeaderOpened = ev.LeaderOpened
 		inst.ChurchWide = ev.GroupID == nil
-		inst.Registrations = map[string]int64{"going": 0, "maybe": 0, "declined": 0}
+		inst.Registrations = map[string]int64{"going": 0, "maybe": 0, "declined": 0, "waitlisted": 0}
 		for s, n := range countOf[o.ID] {
 			inst.Registrations[s] = n
 		}
-		if s, ok := mine[o.ID]; ok {
+		used := usedMap[o.ID]
+		inst.SeatsUsed = used
+		if inst.Capacity != nil {
+			left := *inst.Capacity - used
+			if left < 0 {
+				left = 0
+			}
+			inst.SpotsLeft = &left
+		}
+		if r, ok := mine[o.ID]; ok {
+			s := r.Status
 			inst.MyRegistration = &s
+			gc := r.GuestCount
+			inst.MyGuestCount = &gc
+			if r.Status == models.RegWaitlisted {
+				if pos, perr := waitlistPosition(a.DB, o.ID, r.ID); perr == nil {
+					inst.MyWaitlistPosition = &pos
+				}
+			}
 		}
 		inst.AttendeesVisible = showNames[ev.ID]
 		if showNames[ev.ID] {
@@ -224,7 +253,10 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 }
 
 // attendeeNames loads listed registrants for the occurrences whose events
-// allow names. Disabled accounts stay out via listedUsers.
+// allow names. Disabled accounts stay out via listedUsers, and removed
+// registrations are never listed. Waitlisted names follow the same
+// CanSeeAttendeeNames rule as going names; they come back in promotion
+// (line) order so the UI can render the waitlist section.
 func (a *App) attendeeNames(kept []models.EventOccurrence, show map[uint]bool) map[uint][]attendeeJSON {
 	out := map[uint][]attendeeJSON{}
 	ids := []uint{}
@@ -242,24 +274,51 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show map[uint]bool) m
 		Name         string
 		DisplayName  string
 		Status       string
+		GuestCount   int
+		WaitlistedAt *time.Time
 	}
 	var rows []row
 	a.DB.Model(&models.Registration{}).Joins(listedUsers("registrations")).
-		Select("registrations.occurrence_id, registrations.user_id, users.name, users.display_name, registrations.status").
-		Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).
+		Select("registrations.occurrence_id, registrations.user_id, users.name, users.display_name, registrations.status, registrations.guest_count, registrations.waitlisted_at").
+		Where("registrations.occurrence_id IN ? AND registrations.status NOT IN ?",
+			ids, []string{models.RegCancelled, models.RegRemoved}).
 		Order("users.display_name, users.name, users.id").
 		Scan(&rows)
+	byOcc := map[uint][]row{}
 	for _, r := range rows {
-		name := r.DisplayName
-		if name == "" {
-			name = r.Name
+		byOcc[r.OccurrenceID] = append(byOcc[r.OccurrenceID], r)
+	}
+	for occID, rs := range byOcc {
+		var rest, wait []row
+		for _, r := range rs {
+			if r.Status == models.RegWaitlisted {
+				wait = append(wait, r)
+			} else {
+				rest = append(rest, r)
+			}
 		}
-		if name == "" {
-			name = "Member"
-		}
-		out[r.OccurrenceID] = append(out[r.OccurrenceID], attendeeJSON{
-			UserID: r.UserID, Name: name, Status: r.Status,
+		sort.SliceStable(wait, func(i, j int) bool {
+			ai, aj := wait[i].WaitlistedAt, wait[j].WaitlistedAt
+			if ai != nil && aj != nil && !ai.Equal(*aj) {
+				return ai.Before(*aj)
+			}
+			if (ai == nil) != (aj == nil) {
+				return aj == nil
+			}
+			return wait[i].UserID < wait[j].UserID
 		})
+		for _, r := range append(rest, wait...) {
+			name := r.DisplayName
+			if name == "" {
+				name = r.Name
+			}
+			if name == "" {
+				name = "Member"
+			}
+			out[occID] = append(out[occID], attendeeJSON{
+				UserID: r.UserID, Name: name, Status: r.Status, GuestCount: r.GuestCount,
+			})
+		}
 	}
 	return out
 }
@@ -298,7 +357,10 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 		RecurrenceRule: ev.RRule, RRuleUntil: until, SeriesStartsLocal: ev.StartsLocal,
 		Overridden:  o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil,
 		SeriesTitle: ev.Title, SeriesLocation: ev.Location, SeriesDurationMinutes: ev.DurationMinutes,
-		Registrations: map[string]int64{"going": 0, "maybe": 0, "declined": 0},
+		Registrations:   map[string]int64{"going": 0, "maybe": 0, "declined": 0, "waitlisted": 0},
+		Capacity:        events.EffectiveCapacity(ev.Capacity, o.CapacityOverride),
+		WaitlistEnabled: ev.WaitlistEnabled,
+		GuestsAllowed:   ev.GuestsAllowed,
 	}
 }
 
@@ -319,6 +381,8 @@ func toEventJSON(ev *models.Event) eventJSON {
 		Location: ev.Location, RecurrenceRule: ev.RRule, RRuleUntil: until,
 		Visibility: ev.Visibility, LeaderOpened: ev.LeaderOpened,
 		ChurchWide: ev.GroupID == nil,
+		Capacity:   ev.Capacity, WaitlistEnabled: ev.WaitlistEnabled,
+		GuestsAllowed: ev.GuestsAllowed,
 	}
 }
 
@@ -385,6 +449,12 @@ type eventBody struct {
 	// value (DEC-51). Wider than the group is a leader-opened override.
 	Visibility       *string `json:"visibility"`
 	VisibilityReason *string `json:"visibilityReason"`
+	// Capacity, waitlist, and guests (M1.5). Capacity is raw JSON so null
+	// (clear to unlimited) is distinguishable from absent (leave it).
+	// guestsAllowed is a number 0-5; null clears to 0.
+	Capacity        *json.RawMessage `json:"capacity"`
+	WaitlistEnabled *bool            `json:"waitlistEnabled"`
+	GuestsAllowed   *json.RawMessage `json:"guestsAllowed"`
 }
 
 func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creating bool) (events.Spec, bool) {
@@ -428,7 +498,7 @@ func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creat
 	return spec, true
 }
 
-func applySpec(ev *models.Event, spec events.Spec, body eventBody) {
+func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEdits) {
 	ev.StartsLocal = spec.StartsLocal
 	ev.DurationMinutes = spec.DurationMinutes
 	ev.TZID = spec.TZID
@@ -447,6 +517,17 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody) {
 	}
 	if body.Location != nil {
 		ev.Location = strings.TrimSpace(*body.Location)
+	}
+	// Capacity, waitlist, and guests (M1.5). A set capacity of nil clears
+	// to unlimited; a set guestsAllowed of null clears to 0.
+	if ed.capSet {
+		ev.Capacity = ed.cap
+	}
+	if body.WaitlistEnabled != nil {
+		ev.WaitlistEnabled = *body.WaitlistEnabled
+	}
+	if ed.guestsSet {
+		ev.GuestsAllowed = ed.guests
 	}
 }
 
@@ -518,6 +599,11 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "startsLocal and durationMinutes are required")
 		return
 	}
+	ed, ok := parseCapacityEdits(c, body)
+	if !ok {
+		return
+	}
+
 	spec, ok := a.specFrom(c, body, nil, true)
 	if !ok {
 		return
@@ -529,7 +615,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		GroupID: &gid, Visibility: g.Visibility,
 		CreatedBy: apiUser(c).ID,
 	}
-	applySpec(&ev, spec, body)
+	applySpec(&ev, spec, body, ed)
 	if !textOK(c, ev.Title, ev.Description, ev.Location) {
 		return
 	}
@@ -651,18 +737,24 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		}
 	}
 	actions := events.ApplySeries(existing, whens, now)
+	ed, ok := parseCapacityEdits(c, body)
+	if !ok {
+		return
+	}
+	me := apiUser(c)
 	var emailed []uint
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		applySpec(&locked, spec, body)
+		oldCap, oldPlace := locked.Capacity, locked.Location
+		applySpec(&locked, spec, body, ed)
 		if err := tx.Save(&locked).Error; err != nil {
 			return err
 		}
 		*ev = locked
-		var cancelled []uint
+		var cancelled, moved []uint
 		for _, act := range actions {
 			switch act.Kind {
 			case "move":
@@ -670,6 +762,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 					Updates(map[string]any{"starts_at": act.When.StartsAt, "ends_at": act.When.EndsAt}).Error; err != nil {
 					return err
 				}
+				moved = append(moved, act.ID)
 			case "cancel":
 				if err := tx.Model(&models.EventOccurrence{}).Where("id = ?", act.ID).
 					Update("status", models.OccurrenceCancelled).Error; err != nil {
@@ -687,9 +780,70 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				}
 			}
 		}
-		ids, err := notifyOccurrencesCancelled(tx, apiUser(c).ID, cancelled)
+		ids, err := notifyOccurrencesCancelled(tx, me.ID, cancelled)
 		emailed = append(emailed, ids...)
-		return err
+		if err != nil {
+			return err
+		}
+		// event.changed, time variant: one item per moved occurrence per
+		// going or waitlisted person. The move actions already skip
+		// frozen and customized dates (TimeFrozen semantics), so the
+		// fan-out mails exactly the dates that moved.
+		for _, occID := range moved {
+			var o models.EventOccurrence
+			if err := tx.First(&o, occID).Error; err != nil {
+				continue
+			}
+			ids, err := notifyEventChanged(tx, &locked, &o, "time", me.ID)
+			emailed = append(emailed, ids...)
+			if err != nil {
+				return err
+			}
+		}
+		// event.changed, place variant: the event place changed, so every
+		// future scheduled date changed place with it.
+		if body.Location != nil && strings.TrimSpace(*body.Location) != oldPlace {
+			var occs []models.EventOccurrence
+			if err := tx.Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID,
+				models.OccurrenceScheduled, now).Find(&occs).Error; err != nil {
+				return err
+			}
+			for i := range occs {
+				ids, err := notifyEventChanged(tx, &locked, &occs[i], "place", me.ID)
+				emailed = append(emailed, ids...)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		// Capacity change: promote per future occurrence where the
+		// effective capacity changed (old vs new). Lowering promotes
+		// nobody new; the fits check inside promotion makes that a
+		// no-op, and nobody is ever removed (Decision 3).
+		if ed.capSet && !intPtrEqual(oldCap, ed.cap) {
+			var occs []models.EventOccurrence
+			if err := tx.Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID,
+				models.OccurrenceScheduled, now).Find(&occs).Error; err != nil {
+				return err
+			}
+			for i := range occs {
+				oldEff := events.EffectiveCapacity(oldCap, occs[i].CapacityOverride)
+				newEff := events.EffectiveCapacity(ed.cap, occs[i].CapacityOverride)
+				if intPtrEqual(oldEff, newEff) {
+					continue
+				}
+				lockedOcc, err := lockOccurrence(tx, occs[i].ID)
+				if err != nil {
+					return err
+				}
+				ids, err := a.promoteLocked(tx, &locked, lockedOcc, now, &me.ID)
+				emailed = append(emailed, ids...)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not update event")
@@ -788,65 +942,47 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "date must be YYYY-MM-DD")
 		return
 	}
-	var o models.EventOccurrence
-	if err := a.DB.Where("event_id = ? AND original_date = ?", ev.ID, date).First(&o).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "that date is not on this event")
-		return
-	}
 	var body struct {
-		StartsLocal     *string `json:"startsLocal"`
-		DurationMinutes *int    `json:"durationMinutes"`
-		Location        *string `json:"location"`
-		Title           *string `json:"title"`
+		StartsLocal      *string          `json:"startsLocal"`
+		DurationMinutes  *int             `json:"durationMinutes"`
+		Location         *string          `json:"location"`
+		Title            *string          `json:"title"`
+		CapacityOverride *json.RawMessage `json:"capacityOverride"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")
 		return
 	}
-	dur := ev.DurationMinutes
-	if o.DurationOverride != nil {
-		dur = *o.DurationOverride
+	newOverride, overrideSet, capMsg := parseCapacity(body.CapacityOverride)
+	if capMsg != "" {
+		jsonError(c, http.StatusBadRequest, capMsg)
+		return
 	}
-	if body.DurationMinutes != nil {
-		if *body.DurationMinutes < 1 || *body.DurationMinutes > events.MaxDurationMinutes {
-			jsonError(c, http.StatusBadRequest, "duration must be between 1 minute and 7 days")
-			return
-		}
-		dur = *body.DurationMinutes
-		o.DurationOverride = body.DurationMinutes
+	// Validate everything that doesn't need the row before the lock.
+	if body.DurationMinutes != nil &&
+		(*body.DurationMinutes < 1 || *body.DurationMinutes > events.MaxDurationMinutes) {
+		jsonError(c, http.StatusBadRequest, "duration must be between 1 minute and 7 days")
+		return
 	}
-	start := o.StartsAt
+	var wallStart *time.Time
 	if body.StartsLocal != nil {
 		t, _, err := events.ParseWall(strings.TrimSpace(*body.StartsLocal), ev.TZID)
 		if err != nil {
 			jsonError(c, http.StatusBadRequest, err.Error())
 			return
 		}
-		start = t.UTC()
-		o.StartsAtOverride = &start
+		u := t.UTC()
+		wallStart = &u
 	}
-	if body.Location != nil {
-		loc := strings.TrimSpace(*body.Location)
-		if len(loc) > maxLocationLen {
-			jsonError(c, http.StatusBadRequest, "location is too long")
-			return
-		}
-		o.LocationOverride = &loc
-	}
-	if body.Title != nil {
-		title := strings.TrimSpace(*body.Title)
-		if len(title) > maxGroupNameLen {
-			jsonError(c, http.StatusBadRequest, "title is too long")
-			return
-		}
-		o.TitleOverride = &title
-	}
-	o.StartsAt = start
-	o.EndsAt = start.Add(time.Duration(dur) * time.Minute)
-	if err := a.DB.Save(&o).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not update this date")
+	if body.Location != nil && len(strings.TrimSpace(*body.Location)) > maxLocationLen {
+		jsonError(c, http.StatusBadRequest, "location is too long")
 		return
 	}
+	if body.Title != nil && len(strings.TrimSpace(*body.Title)) > maxGroupNameLen {
+		jsonError(c, http.StatusBadRequest, "title is too long")
+		return
+	}
+	me := apiUser(c)
 	groupLoc := ""
 	if ev.GroupID != nil {
 		var g models.Group
@@ -854,61 +990,119 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			groupLoc = g.Location // group-ok: loadManagedEvent, only managers reach here
 		}
 	}
-	inst := occurrenceToJSON(ev, &o, groupLoc)
-	inst.Visibility = ev.Visibility
-	inst.LeaderOpened = ev.LeaderOpened
-	inst.ChurchWide = ev.GroupID == nil
-	c.JSON(http.StatusOK, gin.H{"occurrence": inst})
-}
-
-func (a *App) apiRegister(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var ev models.Event
-	if err := a.DB.First(&ev, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "event not found")
-		return
-	}
-	f := a.factsFor(apiUser(c), &ev)
-	gp := policy.Group{}
-	if f.group != nil {
-		gp = asGroup(f.group)
-	}
-	if !policy.CanRegisterEvent(asPerson(apiUser(c)), f.view, gp, f.rel) {
-		jsonError(c, http.StatusNotFound, "event not found")
-		return
-	}
-	var body struct {
-		Status string `json:"status"`
-		Date   string `json:"date"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		jsonError(c, http.StatusBadRequest, "status and date are required")
-		return
-	}
-	switch body.Status {
-	case models.RegGoing, models.RegMaybe, models.RegDeclined:
-	default:
-		jsonError(c, http.StatusBadRequest, "status must be going, maybe, or declined")
-		return
-	}
-	var o models.EventOccurrence
-	if err := a.DB.Where("event_id = ? AND original_date = ? AND status = ?",
-		ev.ID, body.Date, models.OccurrenceScheduled).First(&o).Error; err != nil {
+	var emailed []uint
+	var inst occurrenceJSON
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		var o models.EventOccurrence
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("event_id = ? AND original_date = ?", ev.ID, date).First(&o).Error; err != nil {
+			return errOccurrenceNotFound
+		}
+		oldStart, oldEnd := o.StartsAt, o.EndsAt
+		oldPlace := ev.Location
+		if o.LocationOverride != nil {
+			oldPlace = *o.LocationOverride
+		}
+		oldOverride := o.CapacityOverride
+		dur := ev.DurationMinutes
+		if o.DurationOverride != nil {
+			dur = *o.DurationOverride
+		}
+		if body.DurationMinutes != nil {
+			dur = *body.DurationMinutes
+			o.DurationOverride = body.DurationMinutes
+		}
+		start := o.StartsAt
+		if wallStart != nil {
+			start = *wallStart
+			o.StartsAtOverride = wallStart
+		}
+		newPlace := oldPlace
+		if body.Location != nil {
+			loc := strings.TrimSpace(*body.Location)
+			o.LocationOverride = &loc
+			newPlace = loc
+		}
+		if body.Title != nil {
+			title := strings.TrimSpace(*body.Title)
+			o.TitleOverride = &title
+		}
+		if overrideSet {
+			o.CapacityOverride = newOverride
+		}
+		o.StartsAt = start
+		o.EndsAt = start.Add(time.Duration(dur) * time.Minute)
+		if err := tx.Save(&o).Error; err != nil {
+			return err
+		}
+		// event.changed fans out when the date's time or place actually
+		// changed, one item per going or waitlisted person.
+		if !o.StartsAt.Equal(oldStart) || !o.EndsAt.Equal(oldEnd) {
+			ids, err := notifyEventChanged(tx, ev, &o, "time", me.ID)
+			emailed = append(emailed, ids...)
+			if err != nil {
+				return err
+			}
+		}
+		if newPlace != oldPlace {
+			ids, err := notifyEventChanged(tx, ev, &o, "place", me.ID)
+			emailed = append(emailed, ids...)
+			if err != nil {
+				return err
+			}
+		}
+		// A raised per-date cap promotes into the new seats; a lowered
+		// one promotes nobody and removes nobody (Decision 3).
+		if overrideSet && !intPtrEqual(oldOverride, newOverride) {
+			oldEff := events.EffectiveCapacity(ev.Capacity, oldOverride)
+			newEff := events.EffectiveCapacity(ev.Capacity, newOverride)
+			if !intPtrEqual(oldEff, newEff) {
+				ids, err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
+				emailed = append(emailed, ids...)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		inst = occurrenceToJSON(ev, &o, groupLoc)
+		inst.Visibility = ev.Visibility
+		inst.LeaderOpened = ev.LeaderOpened
+		inst.ChurchWide = ev.GroupID == nil
+		used, err := seatsUsed(tx, o.ID)
+		if err != nil {
+			return err
+		}
+		inst.SeatsUsed = used
+		if inst.Capacity != nil {
+			left := *inst.Capacity - used
+			if left < 0 {
+				left = 0
+			}
+			inst.SpotsLeft = &left
+		}
+		var mineReg models.Registration
+		if tx.Where("user_id = ? AND occurrence_id = ? AND status <> ?",
+			me.ID, o.ID, models.RegCancelled).First(&mineReg).Error == nil {
+			s := mineReg.Status
+			inst.MyRegistration = &s
+			gc := mineReg.GuestCount
+			inst.MyGuestCount = &gc
+			if mineReg.Status == models.RegWaitlisted {
+				if pos, perr := waitlistPosition(tx, o.ID, mineReg.ID); perr == nil {
+					inst.MyWaitlistPosition = &pos
+				}
+			}
+		}
+		return nil
+	})
+	switch {
+	case errors.Is(err, errOccurrenceNotFound):
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return
-	}
-	u := apiUser(c)
-	r := models.Registration{UserID: u.ID, OccurrenceID: o.ID}
-	a.DB.Where("user_id = ? AND occurrence_id = ?", u.ID, o.ID).
-		Attrs(models.Registration{Status: body.Status}).
-		FirstOrCreate(&r)
-	r.Status = body.Status
-	if err := a.DB.Save(&r).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not save registration")
+	case err != nil:
+		jsonError(c, http.StatusInternalServerError, "could not update this date")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"registration": gin.H{
-		"userId": r.UserID, "eventId": ev.ID, "occurrenceId": o.ID,
-		"date": body.Date, "status": r.Status,
-	}})
+	a.deliverNotificationEmails(emailed)
+	c.JSON(http.StatusOK, gin.H{"occurrence": inst})
 }
