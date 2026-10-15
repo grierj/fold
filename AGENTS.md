@@ -144,6 +144,18 @@ Postgres (`login_throttles`, see `api_auth.go`).
   link only when `canSeeGroupIn` says so). Tasks (`waiting`) are closed
   with `notify.Resolve` wherever the subject is decided. The SPA keeps the
   feed in memory only and polls `GET /notifications/badge`.
+- Guest registration (M1.4, C5): a signed-out adult registers for a public
+  event by name and email. The submit stores only a `guest_signups` row;
+  the guest `User` (`status=guest`, no password, `CanSignIn` false) and
+  their ordinary `Registration` (`source=guest_form`, hashed manage
+  token) exist only after the emailed link is redeemed. The rule is
+  `policy.CanRegisterGuest`; never widen `CanRegisterEvent` to a nil
+  person, and never load a guest row as an actor (`asPerson` would treat
+  it as signed in). Public answers stay uniform (no enumeration), and
+  verification emails cap per target address (3/hour, 10/day). Upgrading
+  a guest to an account, by request approval or invitation, reuses the
+  same row so registrations stay theirs; until then `changeRole` refuses
+  to give a guest a membership.
 
 ## Uploads & blob storage
 

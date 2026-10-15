@@ -82,7 +82,8 @@ sessions, including the one that requested it.
 avatarFocalX, avatarFocalY, role, status, hasPassword, accountType,
 birthDate?}`. `status` is
 `active`, `invited` (no password yet), `pending_consent` (a teen waiting
-for consent, M1.10), or `disabled` (`guest` comes in M1.4).
+for consent, M1.10), `guest` (a verified guest registrant with no
+password and no sign-in, M1.4), or `disabled`.
 `accountType` is `adult` or `teen` (DEC-8); `birthDate` (`YYYY-MM-DD`)
 is present for teens. `displayName` falls back to name in the UI. `avatarUrl` is a
 `/uploads/...` URL, or empty when no avatar is set. `avatarFocalX/Y` are
@@ -443,6 +444,44 @@ occurrence. The caller must be allowed to see the event; otherwise the response 
 404. Seeing an opened event does not require seeing its group, and
 registering does not add a membership. A disabled account's registration
 is kept and hidden from the counts.
+
+Guest registration (M1.4, C5) is the signed-out door for public events:
+
+```
+POST /api/v1/events/:id/guest-registrations        → 200 {message} | 400 | 404  (public)
+  body: {name, email, date, over18, createAccount?, website?}
+POST /api/v1/guest-registrations/confirm           {token} → 200 {registration, manageToken} | 400 | 409  (public)
+GET  /api/v1/guest-registrations/manage/:token     → 200 {registration} | 404  (public, token is the credential)
+POST /api/v1/guest-registrations/manage/:token/cancel → 200 {registration} | 404  (public)
+```
+
+Submitting stores only an unverified signup and emails a single-use
+confirmation link (24 hours) to `/guest/confirm`; nothing is an
+attendee until the link is redeemed. Confirming creates or reuses the
+guest `User` row (`status: guest`, no password, cannot sign in) and an
+ordinary `going` registration against it, then emails a confirmation
+with the manage link. The manage token is stored hashed; using it to
+cancel sets the registration `cancelled` (out of every count and name
+list) and writes `registration.cancelled`. It stops working after the
+date has passed.
+
+The door is public events only (`policy.CanRegisterGuest`); anything
+narrower answers 404. Without `over18: true` nothing is stored and the
+answer is 400 with the guardian wording. An email that already has an
+account gets the same `200 {message}` as any other submit, and a
+sign-in hint by email (no enumeration); an email that already has a
+guest row merges into that row. Verification emails stop after 3 per
+address per hour and 10 per day, whatever the IP, with the same
+uniform answer; the per-IP ceiling matches the other public forms.
+With `createAccount: true`, confirming also opens a `guest_upgrade`
+account request; approval upgrades the same row (as does accepting an
+invitation), so guest registrations stay the person's. A guest cannot
+hold a group membership until that upgrade happens.
+
+`guest registration` (the confirm and manage responses): `{eventId,
+occurrenceId, date, title, hostedBy?, groupName?, status, startsLocal,
+tzid, location}` — the event fitted for a signed-out viewer, so an
+opened invite-only event never names its group.
 
 ### Admin
 
