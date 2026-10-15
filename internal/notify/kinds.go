@@ -16,14 +16,19 @@ const (
 // Kind keys. Add a kind here and in registry; the registry test renders
 // every kind with teen and hidden-adult fixtures.
 const (
-	GroupPending          = "group.pending"
-	GroupDeletion         = "group.deletion"
-	LeadershipChanged     = "group.leadership_changed"
-	MemberNotRestored     = "membership.not_restored"
-	OccurrenceCancelled   = "event.cancelled"
-	RegistrationCancelled = "registration.cancelled"
-	VisibilityOverride    = "event.visibility_override"
-	AccountRequested      = "account.requested"
+	GroupPending            = "group.pending"
+	GroupDeletion           = "group.deletion"
+	LeadershipChanged       = "group.leadership_changed"
+	MemberNotRestored       = "membership.not_restored"
+	OccurrenceCancelled     = "event.cancelled"
+	RegistrationCancelled   = "registration.cancelled"
+	VisibilityOverride      = "event.visibility_override"
+	AccountRequested        = "account.requested"
+	EventChanged            = "event.changed"
+	RegistrationPromoted    = "registration.promoted"
+	RegistrationRemoved     = "registration.removed"
+	RegistrationNotRestored = "registration.not_restored"
+	WaitlistCutoff          = "waitlist.cutoff"
 )
 
 // Action is an inline button. Only allow-listed kinds carry one (6.6).
@@ -55,6 +60,10 @@ type Vars struct {
 	Note       string // a short reason the actor gave
 	Count      int    // set by Send: how many events this row covers
 	Teen       bool   // the subject is a teen account (badge in words; no contact details ever)
+	// ManageURL is a full signed URL the recipient can act on (for
+	// example a registration manage link). It appears in the email body
+	// only, never in the bell, and only on rows for that recipient.
+	ManageURL string
 }
 
 // Kind is one registry entry (5.12).
@@ -69,15 +78,24 @@ type Kind struct {
 	// right after the writing transaction commits (5.12, M1.2). The send
 	// is recorded in notification_deliveries.
 	AllowEmail bool
+	// RenderEmail renders the email title and body. Nil means
+	// RenderForEmail: the RenderEmailSafe link-only variant when the
+	// kind has one, Render otherwise. A kind whose email must carry
+	// something the bell must not (for example a signed manage link)
+	// sets this.
+	RenderEmail func(Vars) (title, body string)
 	// RenderEmailSafe is the link-only variant for sensitive kinds
 	// (minors, consent, contact access): it names nobody and only links
 	// into Fold. Nil means Render is already safe.
 	RenderEmailSafe func(Vars) (title, body string)
 }
 
-// RenderForEmail renders k for email: the link-only safe variant when the
-// kind has one, Render otherwise.
+// RenderForEmail renders k for email: the kind's RenderEmail when set,
+// the link-only safe variant when the kind has one, Render otherwise.
 func (k Kind) RenderForEmail(v Vars) (title, body string) {
+	if k.RenderEmail != nil {
+		return k.RenderEmail(v)
+	}
 	if k.RenderEmailSafe != nil {
 		return k.RenderEmailSafe(v)
 	}
@@ -216,6 +234,65 @@ func init() {
 		},
 		RenderEmailSafe: func(Vars) (string, string) {
 			return "New account request in Fold", "Someone asked for an account. Sign in to review it."
+		},
+	})
+	register(Kind{
+		// An event's time or place changed (5.12, M1.5). Vars.Change is
+		// "time", "place", or "time and place". Never batched: one item
+		// per person per occurrence per change.
+		Key: EventChanged, Category: CatEvents, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			what := or(v.Change, "details")
+			return "Updated: " + or(v.Event, "an event"),
+				"The " + what + " changed. " + join(v.When, v.Place)
+		},
+	})
+	register(Kind{
+		// "You're in" off the waitlist (5.12, M1.5). The email carries
+		// the signed manage link with the one-click "I can't come"
+		// cancel; the bell never shows the token.
+		Key: RegistrationPromoted, Category: CatEvents, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return "You're in: " + or(v.Event, "an event"), join(v.When, v.Place)
+		},
+		RenderEmail: func(v Vars) (string, string) {
+			title, body := "You're in: "+or(v.Event, "an event"), join(v.When, v.Place)
+			if v.ManageURL != "" {
+				body += "\n\nCan't come after all? Cancel your registration here:\n" + v.ManageURL
+			}
+			return title, body
+		},
+	})
+	register(Kind{
+		// A leader or host pruned a registration (DEC-20, DEC-30, M1.5).
+		// The note reaches only the removed person.
+		Key: RegistrationRemoved, Category: CatEvents, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			body := "A leader or host removed your registration for " + or(v.Event, "an event") + "."
+			if v.Note != "" {
+				body += " Note: " + v.Note
+			}
+			return "Registration removed: " + or(v.Event, "an event"), body
+		},
+	})
+	register(Kind{
+		// A re-enabled account was left out of a full occurrence
+		// (DEC-38, DEC-47, M1.5): the registration was dropped and the
+		// person is told to ask a leader or host.
+		Key: RegistrationNotRestored, Category: CatEvents, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return "You're not back in " + or(v.Event, "one of your events") + " yet",
+				"The event was full when your account was turned back on. Ask a leader or host to add you."
+		},
+	})
+	register(Kind{
+		// Inside the 2-hour cutoff a freed seat does not auto-promote
+		// (5.4, M1.5). The leaders or hosts get this instead and promote
+		// by hand. No inline button: the action lives on the event page.
+		Key: WaitlistCutoff, Category: CatEvents, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return "Seat opened too close to the start: " + or(v.Event, "an event"),
+				"A seat opened within 2 hours of " + or(v.When, "the start") + ", so nobody was promoted automatically. Promote someone from the waitlist by hand."
 		},
 	})
 }
