@@ -399,32 +399,52 @@ wall clock.
 `occurrence`: `{id, eventId, date, startsAt, endsAt, startsLocal, endsLocal,
 tzid, durationMinutes, location, title, description, recurrenceRule, rruleUntil,
 seriesStartsLocal, seriesTitle, seriesLocation, seriesDurationMinutes,
-overridden, registrations: {going, maybe, declined},
-myRegistration: "going"|"maybe"|"declined"|null, visibility,
+overridden, registrations: {going, maybe, declined, waitlisted},
+myRegistration: "going"|"maybe"|"declined"|"waitlisted"|"removed"|null,
+myGuestCount?, myWaitlistPosition?, visibility,
 leaderOpened, churchWide, groupId?, groupName?, hostedBy?,
-attendeesVisible, attendees?}`. `startsAt`/`endsAt` are UTC.
+attendeesVisible, attendees?, capacity, seatsUsed, spotsLeft,
+waitlistEnabled, guestsAllowed}`. `startsAt`/`endsAt` are UTC.
 `startsLocal`/`endsLocal` are the wall clock in `tzid`, including a
 per-date override. `overridden` is true when this date has its own time,
-title, or location. `attendees` (`{userId, name, status}`) is omitted when
-`attendeesVisible` is false. Counts stay either way.
+title, or location. `attendees` (`{userId, name, status, guestCount}`) is
+omitted when `attendeesVisible` is false. Counts stay either way.
+`capacity` is the effective seat cap for the date (per-date override wins);
+null means unlimited. `seatsUsed` counts seats (1 + `guestCount` per going
+party of a listed account) while `registrations` counts rows — keep the two
+meanings apart. `spotsLeft` is null when unlimited and never below 0.
+`myWaitlistPosition` is set only when the viewer is waitlisted.
 
 Create body: `{title?, description?, startsLocal, durationMinutes, tzid?,
-location?, recurrenceRule?, rruleUntil?}`. `description` is plain text, at
+location?, recurrenceRule?, rruleUntil?, capacity?, waitlistEnabled?,
+guestsAllowed?}`. `description` is plain text, at
 most 5000 characters, the same limit as a group description. `startsLocal`
 and `durationMinutes` (1 to 10080) are required. Omit `tzid` to use the
 church time zone. The schedule
 form sends the browser's time zone. An empty
 `recurrenceRule` is one date. The rule must not contain `DTSTART` or a
 newline; `rruleUntil` is a separate inclusive `YYYY-MM-DD`, not an `UNTIL`
-inside the rule. A rule that does not parse is 400.
+inside the rule. A rule that does not parse is 400. `capacity` is a
+positive whole number or null (null clears to unlimited); `waitlistEnabled`
+holds overflow sign-ups on a waitlist when a capacity is set;
+`guestsAllowed` is 0–5 (null clears to 0), capping extra unnamed guests on
+one registration.
 
 A series edit (`PUT /events/:id`) applies to every future date. Future
 means `startsAt` is strictly after now; a date already underway stays.
 Future dates without a per-date override move onto the new times and keep
 their registrations (same occurrence row). A future date the new rule no
-longer contains is cancelled, and people who registered going or maybe see
-a derived notice. Per-date overrides, including a location-only override,
-are left alone. Dates the new rule adds are inserted.
+longer contains is cancelled, and people who registered going or waitlisted
+see a derived notice. A date whose time moves sends `event.changed`
+(variant `time`) to going and waitlisted people; a changed event place sends
+`event.changed` (variant `place`) on every future date. Raising the capacity
+promotes waitlisted parties in line order on each future date whose
+effective capacity grew; lowering it removes nobody. Per-date overrides,
+including a location-only override, are left alone. Dates the new rule adds
+are inserted. The per-date update (`PUT /events/:id/occurrences/:date`)
+takes `startsLocal?`, `durationMinutes?`, `location?`, `title?`, and
+`capacityOverride?` (number or null, like `capacity`); time or place changes
+fan out `event.changed`, and a raised override promotes.
 
 Occurrences are returned in chronological order. `from`/`to` are inclusive
 `YYYY-MM-DD` and at most 366 days apart. Cancelled dates are left out of
@@ -435,15 +455,35 @@ now through 90 days.
 
 ```
 PUT /api/v1/events/:id/registrations   → 200 {registration}   (auth)
-  body: {status: "going"|"maybe"|"declined", date: "YYYY-MM-DD"}
+  body: {status: "going"|"maybe"|"declined", date: "YYYY-MM-DD", guestCount?}
+POST /api/v1/events/:id/registrations/remove  → 200 {} | 403 | 404  (leader/host)
+  body: {date: "YYYY-MM-DD", userId, note?}
+POST /api/v1/events/:id/registrations/promote → 200 {} | 403 | 404 | 409  (leader/host)
+  body: {date: "YYYY-MM-DD", userId}
+POST /api/v1/events/:id/registrations/add     → 200 {} | 403 | 404 | 409  (leader/host)
+  body: {date: "YYYY-MM-DD", userId?, email?, guestCount?, overCapacity?}
 ```
 
-`registration`: `{userId, eventId, occurrenceId, date, status}`. One row per
-(user, occurrence); PUT is idempotent. The date must be a scheduled
-occurrence. The caller must be allowed to see the event; otherwise the response is
-404. Seeing an opened event does not require seeing its group, and
-registering does not add a membership. A disabled account's registration
-is kept and hidden from the counts.
+`registration`: `{userId, eventId, occurrenceId, date, status, guestCount,
+waitlistPosition}`. `waitlistPosition` is null unless the person is
+waitlisted. One row per (user, occurrence); PUT is idempotent. The date must
+be a scheduled occurrence. The caller must be allowed to see the event;
+otherwise the response is 404. Seeing an opened event does not require
+seeing its group, and registering does not add a membership. A disabled
+account's registration is kept and hidden from the counts.
+
+Capacity (M1.5): one seat bucket per date. `guestCount` (0 to the event's
+`guestsAllowed`) counts extra seats with the party. Going past a set
+capacity waitlists when the event's `waitlistEnabled` is on (409 when off).
+A removed person cannot re-register alone (409). `overCapacity` is refused
+on self-registration (400). Cancelling, declining, or moving going→maybe
+promotes the earliest waitlisted party that fits; inside 2 hours of the
+start nobody is auto-promoted and leaders/hosts get `waitlist.cutoff`.
+
+Leaders and hosts can remove anyone's registration (sets `removed`, tells
+the person with the note, audited), hand-promote one waitlisted party
+(409 when it doesn't fit, even in the cutoff), or add someone directly —
+over capacity only with explicit `overCapacity: true` (audited).
 
 Guest registration (M1.4, C5) is the signed-out door for public events:
 
@@ -480,8 +520,11 @@ hold a group membership until that upgrade happens.
 
 `guest registration` (the confirm and manage responses): `{eventId,
 occurrenceId, date, title, hostedBy?, groupName?, status, startsLocal,
-tzid, location}` — the event fitted for a signed-out viewer, so an
-opened invite-only event never names its group.
+tzid, location, waitlistPosition?}` — the event fitted for a signed-out viewer, so an
+opened invite-only event never names its group. `waitlistPosition` is set
+only when the guest is waitlisted. Confirming on a full event with the
+waitlist on waitlists the guest; with the waitlist off it answers 409
+`{full: true}`, creates nothing, and the link dies.
 
 ### Admin
 
@@ -518,7 +561,7 @@ their sessions (`session_version`). A disabled admin has no admin powers. `PUT /
 
 Rosters (`members` in group detail, `GET /groups/:id/members`, admin rosters) include `admin: true` for church admins, so the SPA can label them and hide Remove (DEC-38).
 
-Disabling (DEC-38): the account's memberships and registrations are kept, hidden from rosters, and left out of member counts, registration counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Enabling it again restores them as plain member, writing `membership.restored` per membership and `user.enabled`. In a group at its member limit the membership is dropped instead (DEC-47): `membership.not_restored` (meta `userId`, `count`, `limit`) is written and the person gets a notification ("You're not back in … yet", "Ask a leader to add you.", id `not-restored:<audit id>`, kept 30 days). A leader or admin can add them with `overLimit: true`. Deleting still ends memberships.
+Disabling (DEC-38): the account's memberships and registrations are kept, hidden from rosters, and left out of member counts, registration counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Disabling frees every seat the account held on future dates, promoting waitlisted parties into them. Enabling it again restores them as plain member, writing `membership.restored` per membership and `user.enabled`. Going registrations are restored when they fit; one that would overfill is deleted instead (DEC-47): `registration.not_restored` is written and the person gets an ask-a-leader notice. Waitlisted rows keep their place. In a group at its member limit the membership is dropped instead (DEC-47): `membership.not_restored` (meta `userId`, `count`, `limit`) is written and the person gets a notification ("You're not back in … yet", "Ask a leader to add you.", id `not-restored:<audit id>`, kept 30 days). A leader or admin can add them with `overLimit: true`. Deleting still ends memberships.
 
 Removing a member (DEC-35): leaders remove people from groups they lead,
 co-leaders included, but never an admin (they can't demote an admin
