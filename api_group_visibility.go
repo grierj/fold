@@ -86,13 +86,15 @@ func affectedEvents(tx *gorm.DB, groupID uint, oldVis, newVis string, lock bool)
 
 // losersQuery selects registrations on upcoming dates of ev whose people
 // could not see ev at newVis. Only invite_only shuts anyone out: everyone
-// registered has an account, and admins see every event.
+// registered has an account, and admins see every event. Waitlisted rows
+// are included: a waitlisted person who loses access must not be promoted
+// into the event later.
 func losersQuery(tx *gorm.DB, ev *models.Event, newVis string, now time.Time) *gorm.DB {
 	q := tx.Table("registrations").
 		Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
 		Joins("JOIN users ON users.id = registrations.user_id").
 		Where("event_occurrences.event_id = ? AND event_occurrences.starts_at > ?", ev.ID, now).
-		Where("registrations.status IN ?", []string{models.RegGoing, models.RegMaybe})
+		Where("registrations.status IN ?", []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted})
 	switch newVis {
 	case models.VisibilityPrivate:
 		// Signed-in people keep their registrations at private. Guests

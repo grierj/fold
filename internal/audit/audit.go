@@ -69,6 +69,32 @@ const (
 	// stored notification.
 	RegistrationCancelled = "registration.cancelled"
 
+	// RegistrationRemoved: a leader or host pruned someone's registration
+	// (DEC-20, DEC-30, M1.5). Target is the event. Meta: userId,
+	// occurrenceId, note.
+	RegistrationRemoved = "registration.removed"
+
+	// RegistrationAdded: a leader, host, or admin added someone to an
+	// occurrence directly (M1.5). Target is the event. Meta: userId,
+	// occurrenceId.
+	RegistrationAdded = "registration.added"
+
+	// RegistrationPromoted: a leader or host promoted one waitlisted row
+	// by hand (M1.5). Target is the event. Meta: userId, occurrenceId.
+	// Automatic promotions are not audited; the notification row exists.
+	RegistrationPromoted = "registration.promoted"
+
+	// RegistrationAddedOverCapacity: a leader, host, or admin added
+	// someone over the event capacity by explicit choice (M1.5, DEC-47).
+	// Target is the event. Meta: userId, occurrenceId, seats, capacity.
+	RegistrationAddedOverCapacity = "registration.added_over_capacity"
+
+	// RegistrationNotRestored: a disabled account was enabled while the
+	// occurrence was full, so that registration was dropped and the
+	// person was told to ask a leader or host (DEC-38, DEC-47, M1.5).
+	// Meta: userId, occurrenceId, seats, capacity.
+	RegistrationNotRestored = "registration.not_restored"
+
 	// GroupApproved / GroupRejected: an admin decided a pending group
 	// (M1.1c). Target is the group. The admins' notification tasks are
 	// resolved in the same transaction.

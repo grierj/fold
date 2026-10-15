@@ -25,6 +25,11 @@ ALTER TABLE registrations ADD CONSTRAINT registrations_status_check
     CHECK (status IN ('going', 'maybe', 'declined', 'cancelled', 'waitlisted', 'removed'));
 
 -- +goose Down
+-- A down migration must not fail on a database that used the M1.5
+-- statuses: fold waitlisted and removed back to the old vocabulary
+-- before the old CHECK goes back on.
+UPDATE registrations SET status = 'cancelled'
+    WHERE status IN ('waitlisted', 'removed');
 ALTER TABLE registrations DROP CONSTRAINT registrations_status_check;
 ALTER TABLE registrations ADD CONSTRAINT registrations_status_check
     CHECK (status IN ('going', 'maybe', 'declined', 'cancelled'));

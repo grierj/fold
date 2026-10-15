@@ -304,6 +304,10 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "visibility must be public or private")
 		return
 	}
+	ed, ok := parseCapacityEdits(c, body.eventBody)
+	if !ok {
+		return
+	}
 	spec, ok := a.specFrom(c, body.eventBody, nil, true)
 	if !ok {
 		return
@@ -329,7 +333,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 	ev := models.Event{
 		Visibility: vis, CreatedBy: creator.ID,
 	}
-	applySpec(&ev, spec, body.eventBody)
+	applySpec(&ev, spec, body.eventBody, ed)
 	if !textOK(c, ev.Title, ev.Description, ev.Location) {
 		return
 	}
