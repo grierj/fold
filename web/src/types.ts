@@ -92,6 +92,23 @@ export interface NotificationFeed {
 
 export type RegistrationStatus = "going" | "maybe" | "declined";
 
+// A guest's registration as the confirm and manage pages see it (M1.4):
+// the event fitted for a signed-out visitor, with no email and no
+// attendee names. status is going, or cancelled after the manage link
+// cancels it.
+export interface GuestRegistration {
+  eventId: number;
+  occurrenceId: number;
+  date: string;
+  title: string;
+  hostedBy?: string;
+  groupName?: string;
+  status: string;
+  startsLocal: string;
+  tzid: string;
+  location: string;
+}
+
 // One date of an event. date is the series date and stays put when a
 // per-date edit moves the clock. startsAt/endsAt are UTC; startsLocal and
 // endsLocal are the wall clock in tzid.

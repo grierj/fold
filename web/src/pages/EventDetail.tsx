@@ -7,6 +7,7 @@ import { DateBadge } from "../components/DateBadge";
 import { AttendeeNames, EventIntro } from "../components/EventIntro";
 import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
+import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { formatWallClock, zoneSuffix } from "../lib/wall";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, RegistrationStatus } from "../types";
 
@@ -205,6 +206,16 @@ function DateRow({
         <div className="mt-2">
           {loggedIn ? (
             <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
+          ) : instance.visibility === "public" ? (
+            <div className="space-y-2">
+              <GuestRegistrationForm instance={instance} />
+              <p className="text-sm text-gray-500">
+                Already have an account?{" "}
+                <button type="button" onClick={onNeedLogin} className="text-brand font-semibold">
+                  Log in to register
+                </button>
+              </p>
+            </div>
           ) : (
             <button type="button" onClick={onNeedLogin} className="text-sm text-brand font-semibold">
               Log in to register

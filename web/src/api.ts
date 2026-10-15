@@ -77,6 +77,7 @@ import type {
   EventOccurrence,
   EventSeries,
   GroupDetailResponse,
+  GuestRegistration,
   GroupSummary,
   Invitation,
   Member,
@@ -274,6 +275,36 @@ export const Events = {
     data: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string }
   ) => api<{ occurrence: EventOccurrence }>(`/events/${id}/occurrences/${date}`, { method: "PUT", body: data }),
   delete: (id: number) => api<unknown>(`/events/${id}`, { method: "DELETE" }),
+};
+
+// Guest registration (M1.4): a signed-out adult registers for a public
+// event by name and email. The server answers the same way whether or
+// not the address already has an account. Nothing is registered until
+// the emailed link is confirmed on /guest/confirm.
+export interface GuestRegistrationInput {
+  name: string;
+  email: string;
+  date: string;
+  over18: boolean;
+  createAccount?: boolean;
+  // Honeypot. People never fill this in.
+  website?: string;
+}
+
+export const Guests = {
+  register: (eventId: number, data: GuestRegistrationInput) =>
+    api<{ message: string }>(`/events/${eventId}/guest-registrations`, { method: "POST", body: data }),
+  confirm: (token: string) =>
+    api<{ registration: GuestRegistration; manageToken: string }>("/guest-registrations/confirm", {
+      method: "POST",
+      body: { token },
+    }),
+  getManage: (token: string) =>
+    api<{ registration: GuestRegistration }>(`/guest-registrations/manage/${encodeURIComponent(token)}`),
+  cancelManage: (token: string) =>
+    api<{ registration: GuestRegistration }>(`/guest-registrations/manage/${encodeURIComponent(token)}/cancel`, {
+      method: "POST",
+    }),
 };
 
 // Invitations (M1.2, 5.10): admins and leaders invite; the person sets a
