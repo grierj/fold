@@ -531,6 +531,34 @@ func TestCanSeeAttendeeNames(t *testing.T) {
 	}
 }
 
+// Section 6, "Register for a public event" for a guest (M1.4): public
+// events only, on active groups. The 18-or-older and verified-email
+// halves of the rule live at the handler boundary.
+func TestCanRegisterGuest(t *testing.T) {
+	cases := []struct {
+		name string
+		ev   EventView
+		g    Group
+		want bool
+	}{
+		{"public church-wide", churchEvent(Public, false), Group{}, true},
+		{"private church-wide", churchEvent(Private, false), Group{}, false},
+		{"invite-only church-wide fails closed", churchEvent(InviteOnly, false), Group{}, false},
+		{"public group event on a public group", groupEvent(Public), active(Public), true},
+		{"public event opened from an invite-only group", groupEvent(Public), active(InviteOnly), true},
+		{"private group event", groupEvent(Private), active(Public), false},
+		{"invite-only group event", groupEvent(InviteOnly), active(Public), false},
+		{"public event on a pending group", groupEvent(Public), pending, false},
+		{"public event on an archived group", groupEvent(Public), archived, false},
+		{"unknown visibility fails closed", groupEvent("secret"), active(Public), false},
+	}
+	for _, c := range cases {
+		if got := CanRegisterGuest(c.ev, c.g); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestCanRegisterEvent(t *testing.T) {
 	hidden := active(InviteOnly)
 	if !CanRegisterEvent(adult, groupEvent(Public), hidden, none) {

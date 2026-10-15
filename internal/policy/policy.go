@@ -323,9 +323,18 @@ func CanMessageEvent(p *Person, ev EventView, r Rel) bool {
 
 // CanRegisterEvent: a signed-in person who can see the event may register.
 // That includes an outsider of an opened invite-only event. It does not add
-// them to the group. Guest registration comes in M1.4.
+// them to the group. Signed-out visitors use CanRegisterGuest instead.
 func CanRegisterEvent(p *Person, ev EventView, g Group, r Rel) bool {
 	return p != nil && CanSeeEvent(p, ev, g, r)
+}
+
+// CanRegisterGuest: a signed-out visitor may register for a public event
+// with a name, a verified email, and "I am 18 or older" (section 6, M1.4).
+// This is the visibility half of that rule. The handler enforces the age
+// confirmation and the emailed verification link before it creates
+// anything. It does not add the guest to the group.
+func CanRegisterGuest(ev EventView, g Group) bool {
+	return CanSeeEvent(nil, ev, g, Rel{})
 }
 
 // IsAdmin gates the admin area: approvals, users and roles, settings, and
