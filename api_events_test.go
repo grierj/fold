@@ -1,0 +1,727 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"fold/internal/audit"
+	"fold/internal/events"
+	"fold/models"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestMeetingInstancesAreChronological(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+
+	w := admin.do("POST", "/api/v1/groups", map[string]any{"name": "Choir"}, true)
+	var created struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, w, &created)
+	gid := itoa(created.Group.ID)
+	admin.do("POST", "/api/v1/admin/groups/"+gid+"/approve", map[string]any{}, true)
+
+	now := time.Now().UTC().Truncate(time.Minute)
+	later := now.Add(30 * 24 * time.Hour)
+	sooner := now.Add(48 * time.Hour)
+	for _, start := range []time.Time{later, sooner} {
+		w = admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+			"startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC",
+		}, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create event: %d %s", w.Code, w.Body.String())
+		}
+	}
+
+	from := now.Add(-time.Hour).Format("2006-01-02")
+	to := now.Add(60 * 24 * time.Hour).Format("2006-01-02")
+	w = admin.do("GET", "/api/v1/groups/"+gid+"/events?from="+from+"&to="+to, nil, false)
+	var list struct {
+		Events []occurrenceJSON `json:"events"`
+	}
+	decodeJSON(t, w, &list)
+	if len(list.Events) != 2 {
+		t.Fatalf("occurrences: got %d", len(list.Events))
+	}
+	if !list.Events[0].StartsAt.Before(list.Events[1].StartsAt) {
+		t.Fatalf("not chronological: %s then %s", list.Events[0].StartsAt, list.Events[1].StartsAt)
+	}
+
+	w = admin.do("GET", "/api/v1/groups/"+gid, nil, false)
+	var detail struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, w, &detail)
+	if detail.Group.NextEventAt == nil || !detail.Group.NextEventAt.UTC().Equal(sooner) {
+		t.Fatalf("nextEventAt: got %v want %s", detail.Group.NextEventAt, sooner)
+	}
+}
+
+func TestMeetingValidation(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	w := admin.do("POST", "/api/v1/groups", map[string]any{"name": "Study"}, true)
+	var created struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, w, &created)
+	gid := itoa(created.Group.ID)
+	admin.do("POST", "/api/v1/admin/groups/"+gid+"/approve", map[string]any{}, true)
+
+	w = admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"startsLocal": "2026-10-20T18:00", "durationMinutes": 60, "tzid": "UTC",
+		"recurrenceRule": "NOT_A_RULE",
+	}, true)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("bad rule: got %d %s", w.Code, w.Body.String())
+	}
+
+	w = admin.do("GET", "/api/v1/groups/"+gid+"/events?from=2000-01-01&to=2026-01-01", nil, false)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("wide range: got %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A weekly 7:00 pm America/Boise event stays at 7:00 pm local on both sides
+// of the 2026-11-01 and 2027-03-14 changes, and the API returns both clocks.
+func TestBoiseWeeklyKeepsLocalTime(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Boise")
+
+	w := admin.do("PUT", "/api/v1/admin/timezone", map[string]any{"timezone": "Not/AZone"}, true)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("bad zone: %d %s", w.Code, w.Body.String())
+	}
+	w = admin.do("PUT", "/api/v1/admin/timezone", map[string]any{"timezone": "America/Boise"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("set zone: %d %s", w.Code, w.Body.String())
+	}
+	anon := newAPIClient(t, app)
+	w = anon.do("GET", "/api/v1/site", nil, false)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"timezone":"America/Boise"`) {
+		t.Fatalf("site: %d %s", w.Code, w.Body.String())
+	}
+
+	w = admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"title": "Evening", "startsLocal": "2026-10-28T19:00", "durationMinutes": 60,
+		"tzid": "America/Boise", "recurrenceRule": "FREQ=WEEKLY",
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	if created.Event.StartsLocal != "2026-10-28T19:00" || created.Event.StartsAt.UTC().Hour() != 1 {
+		t.Fatalf("create clocks: local %s utc %s", created.Event.StartsLocal, created.Event.StartsAt.UTC())
+	}
+
+	// Fall back is Nov 1 (MDT → MST). Spring forward is Mar 14 (MST → MDT).
+	// 19:00 MDT is 01:00 UTC the next day; 19:00 MST is 02:00 UTC.
+	checks := []struct {
+		from, to string
+		hours    map[string]int
+	}{
+		{"2026-10-28", "2026-11-04", map[string]int{"2026-10-28": 1, "2026-11-04": 2}},
+		{"2027-03-10", "2027-03-17", map[string]int{"2027-03-10": 2, "2027-03-17": 1}},
+	}
+	for _, c := range checks {
+		list := listOccurrences(t, admin, gid, c.from, c.to)
+		for date, hour := range c.hours {
+			o := occurrenceOn(t, list, date)
+			if o.StartsLocal != date+"T19:00" || o.EndsLocal != date+"T20:00" {
+				t.Fatalf("%s local: %s–%s", date, o.StartsLocal, o.EndsLocal)
+			}
+			if o.StartsAt.UTC().Hour() != hour || o.TZID != "America/Boise" {
+				t.Fatalf("%s utc hour %d tz %s, want %d", date, o.StartsAt.UTC().Hour(), o.TZID, hour)
+			}
+		}
+	}
+}
+
+// A series edit moves future dates and keeps their registrations, cancels
+// dates the new rule drops (and tells going/maybe), and leaves per-date
+// overrides alone. A date already underway stays put.
+func TestSeriesEditKeepsRegistrationsAndOverrides(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Prayer")
+	samUser := newTestUser(t, app, "sam", "password1234", models.RoleMember)
+	patUser := newTestUser(t, app, "pat", "password1234", models.RoleMember)
+	sam := loginAPI(t, app, "sam", "password1234")
+	pat := loginAPI(t, app, "pat", "password1234")
+	for _, c := range []*apiClient{sam, pat} {
+		if w := c.do("POST", "/api/v1/groups/"+gid+"/join", map[string]any{}, true); w.Code != http.StatusOK {
+			t.Fatalf("join: %d %s", w.Code, w.Body.String())
+		}
+	}
+
+	start := atUTC(time.Now().AddDate(0, 0, 14), 19, 0)
+	d0 := start.Format("2006-01-02")
+	d1 := start.AddDate(0, 0, 7).Format("2006-01-02")
+	d2 := start.AddDate(0, 0, 14).Format("2006-01-02")
+	d3 := start.AddDate(0, 0, 21).Format("2006-01-02")
+	d4 := start.AddDate(0, 0, 28).Format("2006-01-02")
+	w := admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"title": "Prayer", "startsLocal": start.Format("2006-01-02T15:04"),
+		"durationMinutes": 60, "tzid": "UTC", "recurrenceRule": weeklyRule(start),
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	eid := itoa(created.Event.ID)
+	windowEnd := start.AddDate(0, 0, 35).Format("2006-01-02")
+
+	register := func(c *apiClient, date, status string) {
+		t.Helper()
+		w := c.do("PUT", "/api/v1/events/"+eid+"/registrations", map[string]any{"date": date, "status": status}, true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("register %s: %d %s", date, w.Code, w.Body.String())
+		}
+	}
+	register(sam, d1, "going")
+	register(pat, d3, "maybe")
+
+	// One date moves to 9:00 pm. Another only changes its room.
+	w = admin.do("PUT", "/api/v1/events/"+eid+"/occurrences/"+d2, map[string]any{
+		"startsLocal": d2 + "T21:00",
+	}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("override time: %d %s", w.Code, w.Body.String())
+	}
+	w = admin.do("PUT", "/api/v1/events/"+eid+"/occurrences/"+d4, map[string]any{
+		"location": "Chapel",
+	}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("override location: %d %s", w.Code, w.Body.String())
+	}
+	moved := occurrenceOn(t, listOccurrences(t, admin, gid, d0, windowEnd), d1)
+	var reg models.Registration
+	if err := app.DB.Where("user_id = ? AND occurrence_id = ?", samUser.ID, moved.ID).First(&reg).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	// The series moves to 8:00 pm. Future plain dates follow; overrides do not.
+	w = admin.do("PUT", "/api/v1/events/"+eid, map[string]any{
+		"startsLocal": start.Format("2006-01-02") + "T20:00",
+	}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("series edit: %d %s", w.Code, w.Body.String())
+	}
+	after := listOccurrences(t, admin, gid, d0, windowEnd)
+	if got := occurrenceOn(t, after, d1); got.ID != moved.ID || got.StartsLocal != d1+"T20:00" {
+		t.Fatalf("moved date: %+v", got)
+	}
+	if got := occurrenceOn(t, after, d2); got.StartsLocal != d2+"T21:00" {
+		t.Fatalf("time override moved: %s", got.StartsLocal)
+	}
+	if got := occurrenceOn(t, after, d4); got.StartsLocal != d4+"T19:00" || got.Location != "Chapel" {
+		t.Fatalf("location override: %s %q", got.StartsLocal, got.Location)
+	}
+	var still models.Registration
+	if err := app.DB.First(&still, reg.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if still.OccurrenceID != moved.ID || still.Status != models.RegGoing {
+		t.Fatalf("registration changed: %+v", still)
+	}
+
+	// Ending the series on d1 drops d3. d2 and d4 are overrides, so they stay.
+	w = admin.do("PUT", "/api/v1/events/"+eid, map[string]any{"rruleUntil": d1}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("until: %d %s", w.Code, w.Body.String())
+	}
+	left := listOccurrences(t, admin, gid, d0, windowEnd)
+	for _, date := range []string{d0, d1, d2, d4} {
+		if occurrenceOn(t, left, date).Date != date {
+			t.Fatalf("lost %s", date)
+		}
+	}
+	for _, o := range left {
+		if o.Date == d3 {
+			t.Fatalf("dropped date still listed: %+v", o)
+		}
+	}
+	var cancelled models.EventOccurrence
+	if err := app.DB.Where("event_id = ? AND original_date = ?", created.Event.ID, d3).First(&cancelled).Error; err != nil {
+		t.Fatal(err)
+	}
+	if cancelled.Status != models.OccurrenceCancelled {
+		t.Fatalf("status %s", cancelled.Status)
+	}
+	var kept int64
+	app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND user_id = ?", cancelled.ID, patUser.ID).Count(&kept)
+	if kept != 1 {
+		t.Fatalf("cancelled registration rows: %d", kept)
+	}
+
+	assertNotice := func(c *apiClient, want bool) {
+		t.Helper()
+		ns := feed(t, c, "")
+		found := false
+		for _, n := range ns {
+			if n.Kind == "event.cancelled" && n.Title == "Cancelled: Prayer" {
+				found = true
+			}
+		}
+		if found != want {
+			t.Fatalf("notice found=%v want=%v in %+v", found, want, ns)
+		}
+	}
+	assertNotice(pat, true)
+	assertNotice(sam, false)
+}
+
+func TestPastOccurrenceStaysOnSeriesEdit(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "History")
+	start := atUTC(time.Now().AddDate(0, 0, -35), 19, 0)
+	w := admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60,
+		"tzid": "UTC", "recurrenceRule": weeklyRule(start),
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	w = admin.do("PUT", "/api/v1/events/"+itoa(created.Event.ID), map[string]any{
+		"startsLocal": start.Format("2006-01-02") + "T20:00",
+	}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("edit: %d %s", w.Code, w.Body.String())
+	}
+	list := listOccurrences(t, admin, gid, start.Format("2006-01-02"), time.Now().AddDate(0, 0, 21).Format("2006-01-02"))
+	var sawPast, sawFuture bool
+	now := time.Now()
+	for _, o := range list {
+		want := "T19:00"
+		if o.StartsAt.After(now) {
+			want = "T20:00"
+			sawFuture = true
+		} else {
+			sawPast = true
+		}
+		if !strings.HasSuffix(o.StartsLocal, want) {
+			t.Fatalf("%s starts %s (at %s), want %s", o.Date, o.StartsLocal, o.StartsAt, want)
+		}
+	}
+	if !sawPast || !sawFuture {
+		t.Fatalf("past %v future %v (%d rows)", sawPast, sawFuture, len(list))
+	}
+}
+
+// The daily extender only inserts dates that are missing. A second run, and
+// a run that cannot take the advisory lock, leaves cancelled rows cancelled.
+func TestExtendInsertsOnlyMissingDates(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Horizon")
+	start := atUTC(time.Now().AddDate(0, 0, 7), 19, 0)
+	w := admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60,
+		"tzid": "UTC", "recurrenceRule": weeklyRule(start),
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+
+	var n int64
+	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", created.Event.ID).Count(&n)
+	if n < 70 || n > 90 {
+		t.Fatalf("18-month weekly count %d", n)
+	}
+	if err := events.Extend(app.DB, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	var again int64
+	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", created.Event.ID).Count(&again)
+	if again != n {
+		t.Fatalf("extend rewrote the series: %d then %d", n, again)
+	}
+
+	var cancel models.EventOccurrence
+	if err := app.DB.Where("event_id = ? AND original_date = ?", created.Event.ID, start.Format("2006-01-02")).First(&cancel).Error; err != nil {
+		t.Fatal(err)
+	}
+	app.DB.Model(&cancel).Update("status", models.OccurrenceCancelled)
+	if err := events.Extend(app.DB, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	var kept models.EventOccurrence
+	if err := app.DB.First(&kept, cancel.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if kept.Status != models.OccurrenceCancelled {
+		t.Fatalf("extend un-cancelled: %s", kept.Status)
+	}
+
+	var drop models.EventOccurrence
+	if err := app.DB.Where("event_id = ? AND original_date <> ?", created.Event.ID, cancel.OriginalDate).First(&drop).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Delete(&drop).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	sqlDB, err := app.DB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := sqlDB.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var got bool
+	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", events.LockID).Scan(&got); err != nil || !got {
+		t.Fatalf("lock: got %v err %v", got, err)
+	}
+	if err := events.ExtendLocked(ctx, app.DB, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	var missing int64
+	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ? AND original_date = ?", created.Event.ID, drop.OriginalDate).Count(&missing)
+	if missing != 0 {
+		t.Fatal("extend ran while the advisory lock was held")
+	}
+	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", events.LockID); err != nil {
+		t.Fatal(err)
+	}
+	if err := events.ExtendLocked(ctx, app.DB, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ? AND original_date = ?", created.Event.ID, drop.OriginalDate).Count(&missing)
+	if missing != 1 {
+		t.Fatalf("missing date not restored: %d", missing)
+	}
+}
+
+// DEC-48: an event copies the group's visibility at creation and keeps its
+// own value. Opening the group never changes events; making it more
+// private tightens inherited events.
+func TestEventKeepsItsOwnVisibility(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Choir", models.VisibilityPrivate)
+	rehearsal := scheduleGroupEvent(t, admin, gid, "Rehearsal")
+	if rehearsal.Visibility != models.VisibilityPrivate || rehearsal.LeaderOpened {
+		t.Fatalf("copied at creation: %+v", rehearsal)
+	}
+	// Setting the group's own value is not an override.
+	setVisibility(t, admin, rehearsal.ID, models.VisibilityPrivate, "", http.StatusOK)
+	var overrides int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", audit.VisibilityOverride, rehearsal.ID).Count(&overrides)
+	if overrides != 0 {
+		t.Fatal("matching the group is not an override")
+	}
+
+	// More open group: events don't move.
+	apiDo(t, admin, "PUT", "/api/v1/groups/"+itoa(gid), map[string]any{"visibility": models.VisibilityPublic}, http.StatusOK)
+	page, _ := getEvent(t, admin, rehearsal.ID, http.StatusOK)
+	if page.Event.Visibility != models.VisibilityPrivate {
+		t.Fatalf("opening the group changed the event: %+v", page.Event)
+	}
+	guest := newAPIClient(t, app)
+	getEvent(t, guest, rehearsal.ID, http.StatusNotFound)
+
+	// A stricter value is audited without a notice.
+	concert := scheduleGroupEvent(t, admin, gid, "Concert")
+	setVisibility(t, admin, concert.ID, models.VisibilityPrivate, "", http.StatusOK)
+	var changed int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", audit.VisibilityChanged, concert.ID).Count(&changed)
+	if changed != 1 {
+		t.Fatal("stricter change was not audited")
+	}
+	if hasVisibilityNotice(noticeIDs(t, admin), "Concert", "private") {
+		t.Fatal("stricter change notified")
+	}
+
+	// More private group: inherited events tighten, no decision needed.
+	apiDo(t, admin, "PUT", "/api/v1/groups/"+itoa(gid), map[string]any{"visibility": models.VisibilityInviteOnly}, http.StatusOK)
+	for _, id := range []uint{rehearsal.ID, concert.ID} {
+		page, _ = getEvent(t, admin, id, http.StatusOK)
+		if page.Event.Visibility != models.VisibilityInviteOnly || page.Event.LeaderOpened {
+			t.Fatalf("not tightened: %+v", page.Event)
+		}
+	}
+}
+
+func TestChurchWideHosts(t *testing.T) {
+	app := testApp(t)
+	adminUser := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	hostUser := newTestUser(t, app, "host", "password1234", models.RoleMember)
+	host := loginAPI(t, app, "host", "password1234")
+	guest := newAPIClient(t, app)
+
+	apiDo(t, host, "POST", "/api/v1/events", map[string]any{
+		"title": "Nope", "startsLocal": "2026-12-01T19:00", "durationMinutes": 60,
+	}, http.StatusForbidden)
+	apiDo(t, admin, "POST", "/api/v1/events", map[string]any{
+		"title": "Nope", "startsLocal": "2026-12-01T19:00", "durationMinutes": 60,
+		"visibility": "invite_only",
+	}, http.StatusBadRequest)
+
+	w := admin.do("POST", "/api/v1/events", map[string]any{
+		"title": "Potluck", "startsLocal": "2026-12-01T19:00", "durationMinutes": 90,
+		"tzid": "UTC", "hosts": []string{hostUser.Email},
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	ev := created.Event
+	if !ev.ChurchWide || ev.GroupID != nil || ev.HostedBy != "Fold" || ev.Visibility != models.VisibilityPublic {
+		t.Fatalf("church event: %+v", ev)
+	}
+	if len(ev.Hosts) != 2 {
+		t.Fatalf("hosts: %+v", ev.Hosts)
+	}
+	got := map[uint]bool{}
+	for _, h := range ev.Hosts {
+		got[h.UserID] = true
+		if strings.Contains(h.Email, " ") {
+			t.Fatalf("host email: %+v", h)
+		}
+	}
+	if !got[adminUser.ID] || !got[hostUser.ID] {
+		t.Fatalf("creator was not kept as a host: %+v", ev.Hosts)
+	}
+
+	// The host list is an admin view. A guest sees the event and no names or emails.
+	guestPage, guestRaw := getEvent(t, guest, ev.ID, http.StatusOK)
+	if guestPage.Event.HostedBy != "Fold" || len(guestPage.Event.Hosts) != 0 || strings.Contains(guestRaw, "admin@example.com") {
+		t.Fatalf("guest church event: %s", guestRaw)
+	}
+	if guestPage.CanManage || guestPage.CanSetVisibility {
+		t.Fatalf("guest permissions: %+v", guestPage)
+	}
+
+	apiDo(t, admin, "DELETE", fmt.Sprintf("/api/v1/events/%d/hosts/%d", ev.ID, adminUser.ID), nil, http.StatusOK)
+	apiDo(t, admin, "DELETE", fmt.Sprintf("/api/v1/events/%d/hosts/%d", ev.ID, hostUser.ID), nil, http.StatusBadRequest)
+
+	page, _ := getEvent(t, host, ev.ID, http.StatusOK)
+	if !page.CanManage || !page.CanSetVisibility {
+		t.Fatalf("host permissions: %+v", page)
+	}
+	apiDo(t, host, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID), map[string]any{"title": "Christmas Potluck"}, http.StatusOK)
+	apiDo(t, host, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID), map[string]any{
+		"visibility": "private", "source": "custom",
+	}, http.StatusOK)
+	getEvent(t, guest, ev.ID, http.StatusNotFound)
+	apiDo(t, host, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID), map[string]any{
+		"visibility": "invite_only", "source": "custom",
+	}, http.StatusBadRequest)
+	apiDo(t, host, "POST", fmt.Sprintf("/api/v1/events/%d/hosts", ev.ID), map[string]any{"email": adminUser.Email}, http.StatusForbidden)
+
+	// A host of this event cannot manage another event or a group they can't see.
+	pub := createGroupAs(t, admin, "Public Choir", models.VisibilityPublic)
+	other := scheduleGroupEvent(t, admin, pub, "Rehearsal")
+	apiDo(t, host, "PUT", fmt.Sprintf("/api/v1/events/%d", other.ID), map[string]any{"title": "Taken"}, http.StatusForbidden)
+	hidden := createGroupAs(t, admin, "Hidden Care", models.VisibilityInviteOnly)
+	secret := scheduleGroupEvent(t, admin, hidden, "Secret")
+	apiDo(t, host, "GET", fmt.Sprintf("/api/v1/events/%d", secret.ID), nil, http.StatusNotFound)
+	apiDo(t, host, "PUT", fmt.Sprintf("/api/v1/events/%d", secret.ID), map[string]any{"title": "Taken"}, http.StatusNotFound)
+
+	// Switch back so a signed-in non-host can see registrants' names.
+	apiDo(t, host, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID), map[string]any{
+		"visibility": "public", "source": "custom",
+	}, http.StatusOK)
+	apiDo(t, host, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{
+		"status": "going", "date": "2026-12-01",
+	}, http.StatusOK)
+	reader := newTestUser(t, app, "reader", "password1234", models.RoleMember)
+	_ = reader
+	readerC := loginAPI(t, app, "reader", "password1234")
+	seen, raw := getEvent(t, readerC, ev.ID, http.StatusOK)
+	if !seen.Occurrences[0].AttendeesVisible || !strings.Contains(raw, `"name":"host"`) {
+		t.Fatalf("signed-in names: %s", raw)
+	}
+	if seen.CanManage {
+		t.Fatal("a non-host can manage the event")
+	}
+}
+
+func TestEventDescription(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+
+	apiDo(t, admin, "POST", "/api/v1/events", map[string]any{
+		"title": "Too long", "startsLocal": "2026-12-02T19:00", "durationMinutes": 60,
+		"description": strings.Repeat("a", maxDescriptionLen+1),
+	}, http.StatusBadRequest)
+
+	w := admin.do("POST", "/api/v1/events", map[string]any{
+		"title": "Potluck", "startsLocal": "2026-12-02T19:00", "durationMinutes": 90,
+		"description": "  Bring a salad.  ",
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	if created.Event.Description != "Bring a salad." {
+		t.Fatalf("description: %q", created.Event.Description)
+	}
+	page, _ := getEvent(t, admin, created.Event.ID, http.StatusOK)
+	if page.Event.Description != "Bring a salad." || page.Occurrences[0].Description != "Bring a salad." {
+		t.Fatalf("page: %+v occ %+v", page.Event.Description, page.Occurrences[0].Description)
+	}
+
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", created.Event.ID), map[string]any{
+		"description": "Dessert too.",
+	}, http.StatusOK)
+	page, _ = getEvent(t, admin, created.Event.ID, http.StatusOK)
+	if page.Event.Description != "Dessert too." || page.Event.Title != "Potluck" {
+		t.Fatalf("update: %+v", page.Event)
+	}
+
+	gid := createGroupAs(t, admin, "Choir", "public")
+	raw := apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/groups/%d/events", gid), map[string]any{
+		"title": "Rehearsal", "startsLocal": "2026-12-03T19:00", "durationMinutes": 60,
+		"description": "Music stands are in the closet.",
+	}, http.StatusCreated)
+	if !strings.Contains(raw, "Music stands are in the closet.") {
+		t.Fatalf("group event: %s", raw)
+	}
+}
+
+// Regression (Grier, Oct 14): a second series in a group must copy only the
+// group's visibility, never a sibling series' override.
+func TestNewSeriesCopiesOnlyGroupVisibility(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	w := admin.do("POST", "/api/v1/groups", map[string]any{"name": "Choir", "visibility": "private"}, true)
+	var created struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, w, &created)
+	gid := itoa(created.Group.ID)
+	admin.do("POST", "/api/v1/admin/groups/"+gid+"/approve", map[string]any{}, true)
+
+	start := time.Now().AddDate(0, 0, 3).Format("2006-01-02") + "T19:00"
+	mk := func(title string) uint {
+		w := admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+			"title": title, "startsLocal": start, "durationMinutes": 60, "tzid": "America/Boise",
+			"recurrenceRule": "FREQ=WEEKLY;BYDAY=MO",
+		}, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", title, w.Code, w.Body.String())
+		}
+		var r struct {
+			Event struct {
+				ID uint `json:"id"`
+			} `json:"event"`
+		}
+		decodeJSON(t, w, &r)
+		return r.Event.ID
+	}
+	first := mk("First")
+	if w := admin.do("PUT", "/api/v1/events/"+itoa(first)+"/visibility", map[string]any{"visibility": "public", "reason": "open house"}, true); w.Code != http.StatusOK {
+		t.Fatalf("open first: %d %s", w.Code, w.Body.String())
+	}
+	second := mk("Second")
+
+	var ev models.Event
+	app.DB.First(&ev, second)
+	if ev.Visibility != "private" || ev.LeaderOpened {
+		t.Fatalf("second series: visibility=%s leaderOpened=%v", ev.Visibility, ev.LeaderOpened)
+	}
+	w = admin.do("GET", "/api/v1/groups/"+gid, nil, false)
+	var detail struct {
+		UpcomingEvents []occurrenceJSON `json:"upcomingEvents"`
+	}
+	decodeJSON(t, w, &detail)
+	seen := false
+	for _, o := range detail.UpcomingEvents {
+		if o.EventID == second {
+			seen = true
+			if o.Visibility != "private" || o.LeaderOpened {
+				t.Fatalf("second series date %s: visibility=%s leaderOpened=%v", o.Date, o.Visibility, o.LeaderOpened)
+			}
+		}
+	}
+	if !seen {
+		t.Fatal("second series not listed")
+	}
+}
+
+// DEC-51: visibility is chosen at creation. Wider than the group goes
+// through the override path (audit row, notice, leader_opened).
+func TestCreateEventWithVisibility(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	newTestUser(t, app, "admin2", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	w := admin.do("POST", "/api/v1/groups", map[string]any{"name": "Choir", "visibility": "private"}, true)
+	var created struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, w, &created)
+	gid := itoa(created.Group.ID)
+	start := time.Now().AddDate(0, 0, 3).Format("2006-01-02") + "T19:00"
+	mk := func(body map[string]any) models.Event {
+		body["startsLocal"], body["durationMinutes"], body["tzid"] = start, 60, "America/Boise"
+		w := admin.do("POST", "/api/v1/groups/"+gid+"/events", body, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		var r struct {
+			Event struct {
+				ID uint `json:"id"`
+			} `json:"event"`
+		}
+		decodeJSON(t, w, &r)
+		var ev models.Event
+		app.DB.First(&ev, r.Event.ID)
+		return ev
+	}
+	plain := mk(map[string]any{"title": "Plain"})
+	if plain.Visibility != "private" || plain.LeaderOpened {
+		t.Fatalf("default: %s %v", plain.Visibility, plain.LeaderOpened)
+	}
+	opened := mk(map[string]any{"title": "Open house", "visibility": "public", "visibilityReason": "guests welcome"})
+	if opened.Visibility != "public" || !opened.LeaderOpened {
+		t.Fatalf("opened: %s %v", opened.Visibility, opened.LeaderOpened)
+	}
+	var n int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", "event.visibility_override", opened.ID).Count(&n)
+	if n != 1 {
+		t.Fatalf("override audit rows: %d", n)
+	}
+	app.DB.Model(&models.Notification{}).Where("kind = ?", "event.visibility_override").Count(&n)
+	if n == 0 {
+		t.Fatal("no override notice")
+	}
+	tight := mk(map[string]any{"title": "Members", "visibility": "invite_only"})
+	if tight.Visibility != "invite_only" || tight.LeaderOpened {
+		t.Fatalf("tightened: %s %v", tight.Visibility, tight.LeaderOpened)
+	}
+	if w := admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{"startsLocal": start, "durationMinutes": 60, "visibility": "secret"}, true); w.Code != http.StatusBadRequest {
+		t.Fatalf("bad visibility: %d", w.Code)
+	}
+}

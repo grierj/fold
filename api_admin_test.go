@@ -1,18 +1,12 @@
 package main
 
 import (
+	"fold/internal/audit"
+	"fold/models"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
-
-	"fold/models"
 )
-
-func loginAs(t *testing.T, app *App, name, password string) *apiClient {
-	t.Helper()
-	return loginAPI(t, app, name, password)
-}
 
 func TestAdminUserCRUD(t *testing.T) {
 	app := testApp(t)
@@ -135,16 +129,6 @@ func TestAdminResetPassword(t *testing.T) {
 	}
 }
 
-// loginAPIExpectFail reports whether login succeeded (it shouldn't).
-func loginAPIExpectFail(t *testing.T, app *App, name, password string) bool {
-	t.Helper()
-	c := newAPIClient(t, app)
-	c.fetchCSRF()
-	w := c.do("POST", "/api/v1/auth/login",
-		map[string]string{"email": testEmail(name), "password": password}, true)
-	return w.Code == http.StatusOK
-}
-
 func TestAdminGroupMembers(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", "admin")
@@ -234,113 +218,106 @@ func TestAdminListGroups(t *testing.T) {
 	}
 }
 
-func TestNotifications(t *testing.T) {
+func TestAdminGroupsStartActive(t *testing.T) {
 	app := testApp(t)
-	newTestUser(t, app, "admin", "password1234", "admin")
-	member := newTestUser(t, app, "grier", "password1234", "member")
-	// Active group with a meeting in 2 days: no upcoming-event item (DEC-44).
-	g := models.Group{Name: "Active", LeaderID: member.ID, Status: models.GroupActive}
-	if err := app.DB.Create(&g).Error; err != nil {
-		t.Fatalf("create group: %v", err)
-	}
-	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
-	seedEvent(t, app, &g, member.ID, start)
-	app.DB.Create(&models.Membership{UserID: member.ID, GroupID: g.ID, Role: "member", Status: "active", JoinedAt: time.Now().UTC()})
-
-	// A member's new group is a task for the admin.
-	memberClient := loginAs(t, app, "grier", "password1234")
-	if w := memberClient.do("POST", "/api/v1/groups", map[string]any{"name": "Pending"}, true); w.Code != http.StatusCreated {
-		t.Fatalf("create: %d %s", w.Code, w.Body.String())
-	}
-	adminClient := loginAs(t, app, "admin", "password1234")
-	foundApproval := false
-	for _, n := range feed(t, adminClient, "") {
-		if n.Kind == "group.pending" && n.Waiting && strings.Contains(n.Title, "Pending") {
-			foundApproval = true
-		}
-	}
-	if !foundApproval {
-		t.Fatalf("admin missing approval notification: %+v", feed(t, adminClient, ""))
-	}
-	if ns := feed(t, memberClient, ""); len(ns) != 0 {
-		t.Fatalf("member has items (upcoming events left the bell): %+v", ns)
-	}
-
-	// Unauthenticated → 401.
-	anon := newAPIClient(t, app)
-	w := anon.do("GET", "/api/v1/notifications", nil, false)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("anon notifications: got %d, want 401", w.Code)
-	}
-}
-
-func TestFocalPoints(t *testing.T) {
-	app := testApp(t)
-	newTestUser(t, app, "grier", "password1234", "member")
-	leader := newTestUser(t, app, "leader", "password1234", "member")
-	c := loginAs(t, app, "grier", "password1234")
-
-	w := c.do("PUT", "/api/v1/me", map[string]interface{}{
-		"avatarFocal": map[string]float64{"x": 30, "y": 70},
-	}, true)
-	if w.Code != http.StatusOK {
-		t.Fatalf("PUT /me focal: %d %s", w.Code, w.Body.String())
-	}
-	var me struct {
-		User userJSON `json:"user"`
-	}
-	decodeJSON(t, w, &me)
-	if me.User.AvatarFocalX != 30 || me.User.AvatarFocalY != 70 {
-		t.Fatalf("focal not saved: %+v", me.User)
-	}
-
-	// Clamping.
-	w = c.do("PUT", "/api/v1/me", map[string]interface{}{
-		"avatarFocal": map[string]float64{"x": 150, "y": -20},
-	}, true)
-	decodeJSON(t, w, &me)
-	if me.User.AvatarFocalX != 100 || me.User.AvatarFocalY != 0 {
-		t.Fatalf("focal not clamped: %+v", me.User)
-	}
-
-	// Group cover focal (leader). Management checks the leader membership,
-	// which the API creates alongside LeaderID.
-	g := models.Group{Name: "G", LeaderID: leader.ID, Status: models.GroupActive}
-	app.DB.Create(&g)
-	app.DB.Create(&models.Membership{
-		UserID: leader.ID, GroupID: g.ID,
-		Role: models.MembershipLeader, Status: "active", JoinedAt: time.Now().UTC(),
-	})
-	lc := loginAs(t, app, "leader", "password1234")
-	w = lc.do("PUT", "/api/v1/groups/"+itoa2(g.ID), map[string]interface{}{
-		"coverFocal": map[string]float64{"x": 25, "y": 25},
-	}, true)
-	if w.Code != http.StatusOK {
-		t.Fatalf("PUT group focal: %d %s", w.Code, w.Body.String())
-	}
-	var gr struct {
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	adminC := loginAPI(t, app, "admin", "password1234")
+	var body struct {
 		Group groupSummaryJSON `json:"group"`
 	}
-	decodeJSON(t, w, &gr)
-	if gr.Group.CoverFocalX != 25 || gr.Group.CoverFocalY != 25 {
-		t.Fatalf("cover focal not saved: %+v", gr.Group)
+	decodeJSON(t, adminC.do("POST", "/api/v1/groups", map[string]any{"name": "Staff"}, true), &body)
+	if body.Group.Status != models.GroupActive {
+		t.Fatalf("admin-created group status = %q", body.Group.Status)
 	}
 }
 
-func itoa2(i uint) string {
-	return uintToStringTest(i)
-}
+// DEC-38: a disabled account keeps its memberships and RSVPs, hidden and
+// uncounted; re-enabling brings them back as plain member, never leader.
+func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	pat := newTestUser(t, app, "pat", "password1234", models.RoleMember)
+	co := newTestUser(t, app, "co", "password1234", models.RoleMember)
+	viewer := newTestUser(t, app, "viewer", "password1234", models.RoleMember)
+	led := newTestGroup(t, app, pat, "Led", models.GroupActive) // pat leads alone
+	coled := newTestGroup(t, app, co, "Coled", models.GroupActive)
+	addMember(t, app, pat, coled, models.MembershipLeader)
+	joined := newTestGroup(t, app, co, "Joined", models.GroupActive)
+	addMember(t, app, pat, joined, models.MembershipMember)
+	for _, g := range []*models.Group{led, coled, joined} {
+		addMember(t, app, viewer, g, models.MembershipMember)
+	}
+	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
+	_, occ := seedEvent(t, app, joined, co.ID, start)
+	app.DB.Create(&models.Registration{UserID: pat.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
+	app.DB.Create(&models.Registration{UserID: viewer.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
 
-func uintToStringTest(u uint) string {
-	if u == 0 {
-		return "0"
+	admin := loginAs(t, app, "admin", "password1234")
+	other := loginAs(t, app, "viewer", "password1234")
+	type detail struct {
+		Group    groupSummaryJSON `json:"group"`
+		Members  []memberJSON     `json:"members"`
+		Upcoming []struct {
+			Registrations map[string]int64 `json:"registrations"`
+		} `json:"upcomingEvents"`
 	}
-	var b [32]byte
-	i := len(b)
-	for u > 0 {
-		i--
-		b[i] = byte('0' + u%10)
-		u /= 10
+	look := func(g *models.Group) (d detail) {
+		t.Helper()
+		decodeJSON(t, other.do("GET", "/api/v1/groups/"+itoa(g.ID), nil, false), &d)
+		return d
 	}
-	return string(b[i:])
+	listed := func(d detail) (role string) {
+		for _, m := range d.Members {
+			if m.ID == pat.ID {
+				return m.Role
+			}
+		}
+		return ""
+	}
+	before := look(joined)
+	if listed(before) != "member" || before.Group.MemberCount != 3 || before.Upcoming[0].Registrations["going"] != 2 {
+		t.Fatalf("before: %+v", before)
+	}
+
+	w := admin.do("PUT", "/api/v1/admin/users/"+itoa(pat.ID),
+		map[string]any{"status": "disabled", "successors": map[string]uint{itoa(led.ID): viewer.ID}}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", w.Code, w.Body.String())
+	}
+	// Hidden from rosters, member counts and RSVP counts; rows kept.
+	size := map[*models.Group]int64{led: 2, coled: 3, joined: 3} // with pat
+	for _, g := range []*models.Group{led, coled, joined} {
+		d := look(g)
+		if listed(d) != "" || d.Group.MemberCount != size[g]-1 {
+			t.Fatalf("%s while disabled: listed %q, count %d", g.Name, listed(d), d.Group.MemberCount)
+		}
+		if membershipStatus(app, pat, g) != "active" || relIn(app.DB, pat.ID, g.ID).Leader {
+			t.Fatalf("%s: membership should be kept as plain member", g.Name)
+		}
+	}
+	if d := look(joined); d.Upcoming[0].Registrations["going"] != 1 {
+		t.Fatalf("disabled registration counted: %+v", d.Upcoming)
+	}
+	if leaderCount(app.DB, coled.ID) != 1 || !relIn(app.DB, viewer.ID, led.ID).Leader {
+		t.Fatal("leadership should have moved")
+	}
+
+	// Re-enabled: back as plain member everywhere, RSVP counted, audited.
+	if w := admin.do("PUT", "/api/v1/admin/users/"+itoa(pat.ID), map[string]string{"status": "active"}, true); w.Code != http.StatusOK {
+		t.Fatalf("enable: %d %s", w.Code, w.Body.String())
+	}
+	for _, g := range []*models.Group{led, coled, joined} {
+		if d := look(g); listed(d) != "member" || d.Group.MemberCount != size[g] {
+			t.Fatalf("%s after enable: listed %q, count %d", g.Name, listed(d), d.Group.MemberCount)
+		}
+	}
+	if d := look(joined); d.Upcoming[0].Registrations["going"] != 2 {
+		t.Fatalf("registration not restored: %+v", d.Upcoming)
+	}
+	if rows, metas := auditRows(t, app, audit.MemberRestored); len(rows) != 3 || metas[0].UserID != pat.ID {
+		t.Fatalf("restored rows: %+v", rows)
+	}
+	if rows, _ := auditRows(t, app, audit.UserEnabled); len(rows) != 1 {
+		t.Fatalf("user.enabled rows: %d", len(rows))
+	}
 }

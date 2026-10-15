@@ -1,25 +1,13 @@
 package main
 
 import (
+	"fold/internal/audit"
+	"fold/models"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
-
-	"fold/internal/audit"
-	"fold/models"
 )
-
-// DEC-39: an optional group member limit.
-
-func setLimit(t *testing.T, c *apiClient, g *models.Group, limit any) {
-	t.Helper()
-	if w := c.do("PUT", "/api/v1/groups/"+itoa(g.ID), map[string]any{"memberLimit": limit}, true); w.Code != http.StatusOK {
-		t.Fatalf("set limit %v: %d %s", limit, w.Code, w.Body.String())
-	}
-}
-
-func activeCount(app *App, g *models.Group) int64 { return memberCount(app.DB, g.ID) }
 
 func TestGroupMemberLimitJoinOverrideAndLowering(t *testing.T) {
 	app := testApp(t)
@@ -235,11 +223,4 @@ func TestConcurrentJoinsAndRestoreRespectLimit(t *testing.T) {
 	if !patBack && membershipStatus(app, pat, g) != "none" {
 		t.Fatalf("pat: %s", membershipStatus(app, pat, g))
 	}
-}
-
-func boolInt(b bool) int {
-	if b {
-		return 1
-	}
-	return 0
 }

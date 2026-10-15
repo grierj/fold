@@ -1,55 +1,179 @@
 package main
 
 import (
-	"bytes"
-	"image"
-	"image/png"
-	"mime/multipart"
+	"fold/internal/audit"
+	"fold/models"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
-
-	"fold/models"
+	"time"
 )
 
-// tinyPNG returns a valid 1x1 PNG for upload tests.
-func tinyPNG(t *testing.T) []byte {
-	t.Helper()
-	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		t.Fatalf("encode png: %v", err)
+func TestFocalPoints(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "grier", "password1234", "member")
+	leader := newTestUser(t, app, "leader", "password1234", "member")
+	c := loginAs(t, app, "grier", "password1234")
+
+	w := c.do("PUT", "/api/v1/me", map[string]interface{}{
+		"avatarFocal": map[string]float64{"x": 30, "y": 70},
+	}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT /me focal: %d %s", w.Code, w.Body.String())
 	}
-	return buf.Bytes()
+	var me struct {
+		User userJSON `json:"user"`
+	}
+	decodeJSON(t, w, &me)
+	if me.User.AvatarFocalX != 30 || me.User.AvatarFocalY != 70 {
+		t.Fatalf("focal not saved: %+v", me.User)
+	}
+
+	// Clamping.
+	w = c.do("PUT", "/api/v1/me", map[string]interface{}{
+		"avatarFocal": map[string]float64{"x": 150, "y": -20},
+	}, true)
+	decodeJSON(t, w, &me)
+	if me.User.AvatarFocalX != 100 || me.User.AvatarFocalY != 0 {
+		t.Fatalf("focal not clamped: %+v", me.User)
+	}
+
+	// Group cover focal (leader). Management checks the leader membership,
+	// which the API creates alongside LeaderID.
+	g := models.Group{Name: "G", LeaderID: leader.ID, Status: models.GroupActive}
+	app.DB.Create(&g)
+	app.DB.Create(&models.Membership{
+		UserID: leader.ID, GroupID: g.ID,
+		Role: models.MembershipLeader, Status: "active", JoinedAt: time.Now().UTC(),
+	})
+	lc := loginAs(t, app, "leader", "password1234")
+	w = lc.do("PUT", "/api/v1/groups/"+itoa2(g.ID), map[string]interface{}{
+		"coverFocal": map[string]float64{"x": 25, "y": 25},
+	}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT group focal: %d %s", w.Code, w.Body.String())
+	}
+	var gr struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, w, &gr)
+	if gr.Group.CoverFocalX != 25 || gr.Group.CoverFocalY != 25 {
+		t.Fatalf("cover focal not saved: %+v", gr.Group)
+	}
 }
 
-func (c *apiClient) doMultipart(method, path, field, filename string, data []byte) *httptest.ResponseRecorder {
-	var b bytes.Buffer
-	w := multipart.NewWriter(&b)
-	fw, err := w.CreateFormFile(field, filename)
-	if err != nil {
-		c.t.Fatalf("create form file: %v", err)
+func TestCoverFocalUpdateKeepsUpload(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	g := models.Group{Name: "Band", LeaderID: leader.ID, Status: models.GroupActive}
+	if err := app.DB.Create(&g).Error; err != nil {
+		t.Fatalf("create group: %v", err)
 	}
-	if _, err := fw.Write(data); err != nil {
-		c.t.Fatalf("write form file: %v", err)
+	if err := app.DB.Create(&models.Membership{
+		UserID: leader.ID, GroupID: g.ID,
+		Role: models.MembershipLeader, Status: "active", JoinedAt: time.Now().UTC(),
+	}).Error; err != nil {
+		t.Fatal(err)
 	}
-	if err := w.Close(); err != nil {
-		c.t.Fatalf("close writer: %v", err)
+	c := loginAPI(t, app, "leader", "password1234")
+	gid := itoa(g.ID)
+	w := c.doMultipart("POST", "/api/v1/groups/"+gid+"/cover", "cover", "cover.png", tinyPNG(t))
+	if w.Code != http.StatusOK {
+		t.Fatalf("upload: %d %s", w.Code, w.Body.String())
 	}
-	req := httptest.NewRequest(method, path, &b)
-	req.Header.Set("Content-Type", w.FormDataContentType())
-	for _, ck := range c.jar {
-		req.AddCookie(ck)
+	var uploaded struct {
+		ImageURL string `json:"imageUrl"`
 	}
-	req.Header.Set("X-CSRF-Token", c.token)
-	rec := httptest.NewRecorder()
-	c.router.ServeHTTP(rec, req)
-	for _, ck := range rec.Result().Cookies() {
-		c.jar[ck.Name] = ck
+	decodeJSON(t, w, &uploaded)
+
+	w = c.do("PUT", "/api/v1/groups/"+gid, map[string]any{
+		"coverFocal": map[string]float64{"x": 10, "y": 20},
+	}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("focal: %d %s", w.Code, w.Body.String())
 	}
-	return rec
+	var got models.Group
+	if err := app.DB.First(&got, g.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.ImageURL != uploaded.ImageURL || !strings.HasPrefix(got.ImageURL, "/uploads/") {
+		t.Fatalf("cover URL changed: %q", got.ImageURL)
+	}
+	if got.CoverFocalX != 10 || got.CoverFocalY != 20 {
+		t.Fatalf("focal: %v %v", got.CoverFocalX, got.CoverFocalY)
+	}
+}
+
+// M1.2 acceptance: changing the sign-in email sends a verification link to
+// the new address and a notice to the old one; the change applies only after
+// verification and ends every other session.
+func TestVerifiedEmailChange(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	ac := loginAPI(t, app, "alice", "password1234")
+	other := loginAPI(t, app, "alice", "password1234") // a second session
+
+	w := ac.do("PUT", "/api/v1/me", map[string]string{"email": "alice.new@example.com"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("request change: %d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		VerificationSent bool `json:"verificationSent"`
+	}
+	decodeJSON(t, w, &body)
+	if !body.VerificationSent {
+		t.Fatalf("no verificationSent: %s", w.Body.String())
+	}
+	// The address hasn't changed yet.
+	var u models.User
+	if err := app.DB.Where("email = ?", "alice@example.com").First(&u).Error; err != nil {
+		t.Fatalf("email changed before verification: %v", err)
+	}
+
+	// Verification link to the new address, notice to the old one.
+	verifyMail := latestEmail(t, app, "alice.new@example.com")
+	if !strings.Contains(verifyMail.Subject, "Verify") {
+		t.Fatalf("verify subject: %q", verifyMail.Subject)
+	}
+	noticeMail := latestEmail(t, app, "alice@example.com")
+	if !strings.Contains(noticeMail.Subject, "changing") {
+		t.Fatalf("notice subject: %q", noticeMail.Subject)
+	}
+	token := tokenInEmail(t, verifyMail)
+
+	// Verify: the change applies.
+	w = ac.do("POST", "/api/v1/me/email/verify", map[string]string{"token": token}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("verify: %d %s", w.Code, w.Body.String())
+	}
+	if err := app.DB.Where("email = ?", "alice.new@example.com").First(&u).Error; err != nil {
+		t.Fatalf("email not changed: %v", err)
+	}
+	if auditCount(t, app, audit.EmailChangeRequested) != 1 ||
+		auditCount(t, app, audit.EmailChanged) != 1 {
+		t.Fatalf("email change not audited")
+	}
+
+	// Every other session ended...
+	w = other.do("GET", "/api/v1/auth/me", nil, false)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("other session alive: %d", w.Code)
+	}
+	// ...but this one still works.
+	w = ac.do("GET", "/api/v1/auth/me", nil, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("own session ended: %d", w.Code)
+	}
+	// Single use.
+	w = ac.do("POST", "/api/v1/me/email/verify", map[string]string{"token": token}, true)
+	if w.Code == http.StatusOK {
+		t.Fatalf("verification token reused")
+	}
+
+	// Login works with the new address.
+	loginAPI(t, app, "alice.new", "password1234")
 }
 
 func TestUpdateMe(t *testing.T) {
