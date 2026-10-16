@@ -239,11 +239,13 @@ CLI (C11): `fold` (same as `fold serve`), `fold healthcheck`,
   volumes work together.
 - Production is one VPS with this Compose stack. DigitalOcean steps and
   the idempotent hardener live in `docs/DEPLOY-DIGITALOCEAN.md` and
-  `deploy/digitalocean/provision.sh`. The church owns the droplet, DNS,
-  and email account. SMS is optional (Telnyx when they want it). The
-  script never calls `doctl` and never creates droplets, firewalls,
-  snapshots, backup plans, or object-storage buckets. Postgres is the Compose
-  `db` service. Run `provision.sh --dry-run` before a real run.
+  `deploy/digitalocean/provision.sh`. `smoke.sh` rechecks health, TLS, and
+  that Postgres and the app are not published. `upgrade.sh` pins an image
+  tag or commit, dumps first, and can restore that dump. The church owns
+  the droplet, DNS, and email account. SMS is optional (Telnyx when they
+  want it). The script never calls `doctl` and never creates droplets,
+  firewalls, snapshots, backup plans, or object-storage buckets. Postgres
+  is the Compose `db` service. Run `provision.sh --dry-run` before a real run.
 
 ## SMS (Phase 2, not yet)
 

@@ -42,10 +42,10 @@ lint: lint-sh
 	go vet ./...
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
-# Shell scripts under deploy/digitalocean (provision.sh, backup.sh).
+# Shell scripts under deploy/digitalocean. -x follows source= directives.
 lint-sh:
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required (apt-get install shellcheck)"; exit 1; }
-	shellcheck deploy/digitalocean/provision.sh deploy/digitalocean/backup.sh deploy/digitalocean/dry-run-test.sh deploy/digitalocean/dry-run-inside.sh
+	shellcheck -x deploy/digitalocean/*.sh
 
 # provision.sh --dry-run inside a fresh Ubuntu container. Needs Docker.
 provision-dry-run:

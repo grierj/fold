@@ -33,6 +33,8 @@ needles=(
   'ghcr.io/grierj/fold:0.0.0-dry-run'
   'backup.sh'
   'values not shown'
+  'smoke.sh'
+  '5432'
 )
 for needle in "${needles[@]}"; do
   grep -qF -- "$needle" <<<"$out" || {
@@ -121,4 +123,19 @@ grep -qF -- 'offsite not configured' <<<"$local_out"
 [[ ! -d /var/backups/fold ]]
 [[ ! -d /opt/fold ]]
 
+set +e
+run_provision --dry-run \
+  --domain groups.example.org \
+  --ssh-pubkey-file "$pub" \
+  --image ghcr.io/grierj/fold:latest >/tmp/fold-latest.out 2>&1
+status=$?
+set -e
+[[ "$status" -ne 0 ]]
+grep -q 'latest' /tmp/fold-latest.out
+
+dns_out="$(bash deploy/digitalocean/email-dns.sh --dry-run --domain groups.example.org 2>&1)"
+grep -q 'dig +short' <<<"$dns_out"
+grep -q 'POSTMARK_ACCOUNT_TOKEN' <<<"$dns_out"
+
 echo "dry-run ok"
+bash deploy/digitalocean/idempotency-inside.sh
