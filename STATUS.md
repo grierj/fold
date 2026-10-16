@@ -22,7 +22,7 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | M1.9 Households and household people | unclaimed | | |
 | M1.10 Teen accounts, consent, badges | unclaimed | | |
 | M1.11 Contact privacy and direct-contact requests | unclaimed | | |
-| M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | in review | Grok | `m1.12-toolchain` |
+| M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
 | M1.13 Per-date event visibility (DEC-46) | unclaimed | | |
 | Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | done (merged, #43) | Codex | `simplicity` |
 
@@ -40,4 +40,5 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | DigitalOcean droplet guide, provisioner and backups ("recommended", not "supported") | done (merged) | Cursor agent | #53 |
 | Tests sit next to their code; layout guard | done (merged) | Codex | #54 |
 | M1.5 brief (`docs/plan/M1.5-BRIEF.md`) | committed to master | Grier | `75485a1` |
-| UI makeover PR 1: event times in the viewer's zone (DEC-57), profile time zone for emails (DEC-58) | in review | Codex | `local-time-everywhere` |
+| UI makeover PR 1: event times in the viewer's zone (DEC-57), profile time zone for emails (DEC-58) | done (merged) | Codex | #58 |
+| UI makeover PR 3: Fold Violet tokens and self-hosted Inter (DEC-60), setup and outbox on the built CSS, axe and screenshot checks, color guard | in review | Grok, Illuminator | `ui-tokens` |

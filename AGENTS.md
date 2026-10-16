@@ -85,6 +85,19 @@ Postgres (`login_throttles`, see `api_auth.go`).
   markup in server templates, no `eval`, and no CDN or third-party scripts,
   styles, or fonts. React `style={{...}}` props are fine (they go through
   the CSSOM). Bundle everything through Vite.
+- Styling (DEC-60): colors, radius, type, spacing and shadows come from the
+  tokens in `web/src/index.css` (`@theme`, spec in Illuminator's TOKENS.md).
+  Use roles, not scale steps: `bg-primary`, `bg-surface`, `bg-page`,
+  `text-text-muted`, `border-border-strong`, `text-danger`,
+  `bg-warning-subtle`. Tailwind's own palette is off, so `bg-red-600`
+  builds nothing, and the color guard fails on it and on any hex outside
+  `@theme`. Shared controls are classes there too: `.btn-primary`,
+  `.btn-secondary`, `.btn-danger`, `.btn-danger-outline`, `.btn-ghost`,
+  `.input`, `.label`, `.chip` (selected via `aria-pressed`). The setup and
+  dev-outbox templates link the same built CSS; there is no `static/`.
+- Every page passes axe with no serious or critical issues
+  (`web/e2e/a11y.spec.ts`; setup in `seed.setup.ts`). Label every field
+  with `htmlFor`/`id`.
 - Membership rules live in `internal/policy`: removal (`CanRemoveMember`),
   handoff (`CanBeSuccessor`), role changes. A removed membership keeps its
   row with `status=removed` (DEC-35).
@@ -269,5 +282,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | State-changing routes outside CSRF are listed exactly | `TestCSRFExemptRoutesAreExact` |
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore` (`api_test.go`), `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |
 | Public forms never show a rate limit or reveal an account (DEC-52); only sign-in and a leader's invitation limit answer 429 | `TestOnlyLoginAndInvitesAnswer429` (`guards_test.go`); `TestGuestExistingEmailHintIsRateLimited`, `TestPasswordResetSkipsGuests` |
+| Colors come from theme tokens: no hex outside `@theme`, no Tailwind palette or scale-step classes (DEC-60) | `TestColorsComeFromThemeTokens` (`guards_test.go`); a line that must keep a hex says why with `color-ok:` |
+| Main pages have no serious or critical axe issues at 390 and 1280 px | `web/e2e/a11y.spec.ts`, setup page in `web/e2e/seed.setup.ts` (run by `make e2e`) |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (`guards_test.go`, run by `make test` in CI); its error names the file to move to |
 | Seat counts never overrun under concurrent registration | `TestConcurrentGoingRespectsCapacity` (`api_registrations_test.go`): 50 real requests race for 10 seats; exactly 10 going and 40 waitlisted |
