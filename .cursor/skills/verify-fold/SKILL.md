@@ -17,7 +17,7 @@ From the repo root:
 .cursor/skills/verify-fold/verify-fold up
 ```
 
-The command starts the dev Postgres container if it is not already up (`deploy/docker-compose.dev.yml`, database `fold` on `127.0.0.1:5432`). With no Docker, point it at a running Postgres instead: `VERIFY_PG_URL=postgres://<user>:<pass>@127.0.0.1:5432/postgres?sslmode=disable` (any database that role can `CREATE DATABASE` from). Export the same `VERIFY_PG_URL` for every later `verify-fold` command in the run, including `down`. It then creates a new database named `fold_verify_<run>`, builds `web/` and a `CGO_ENABLED=0` binary, and starts `fold serve` in `APP_ENV=prod` with `COOKIE_SECURE=false` so the session cookie works on plain `http://127.0.0.1`. Uploads go to that run's work directory, not `/data`.
+It needs the Node major in `.nvmrc` on PATH (the web build runs first; the build keeps `web/dist/README.txt`, so `git status` stays clean). The command starts the dev Postgres container if it is not already up (`deploy/docker-compose.dev.yml`, database `fold` on `127.0.0.1:5432`). With no Docker, point it at a running Postgres instead: `VERIFY_PG_URL=postgres://<user>:<pass>@127.0.0.1:5432/postgres?sslmode=disable` (any database that role can `CREATE DATABASE` from). Export the same `VERIFY_PG_URL` for every later `verify-fold` command in the run, including `down`. It then creates a new database named `fold_verify_<run>`, builds `web/` and a `CGO_ENABLED=0` binary, and starts `fold serve` in `APP_ENV=prod` with `COOKIE_SECURE=false` so the session cookie works on plain `http://127.0.0.1`. Uploads go to that run's work directory, not `/data`.
 
 Ready means `GET /healthz` returns 200 with an empty body. The server log line is `Starting server on :<port>`. `up` prints:
 
