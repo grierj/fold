@@ -37,7 +37,7 @@ jobs:
       - run: make test
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: web/package-lock.json
       - working-directory: web
@@ -73,7 +73,7 @@ jobs:
           go-version-file: go.mod
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: web/package-lock.json
       - working-directory: web
@@ -101,8 +101,8 @@ jobs:
           path: web/test-results/
           retention-days: 7
 
-  # DigitalOcean provisioner: shellcheck plus a dry-run that must not
-  # change the container it runs in. No DigitalOcean API calls.
+  # DigitalOcean provisioner: shellcheck, a dry-run, and a second real run
+  # inside Ubuntu 24.04 (systemd and Docker stubbed). No DigitalOcean API calls.
   provision:
     runs-on: ubuntu-latest
     steps:

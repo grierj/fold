@@ -104,9 +104,11 @@ script does not create them.
 
 ## 3. Cloud Firewall
 
-A Cloud Firewall is the edge. Docker publishes ports 80 and 443 by
-editing iptables itself, so host `ufw` does not see those packets.
-`ufw` still limits anything that binds on the host. Use both.
+A Cloud Firewall is the edge. Docker publishes ports by editing iptables
+itself, so host `ufw` does not see those packets. `ufw` still limits
+anything that binds on the host. Use both. The compose file does not
+publish Postgres or the app. `smoke.sh` fails the deploy if 5432 or 8080
+is published on a public address or accepts a connection there.
 
 Inbound: TCP 22, 80, and 443. Outbound: the usual all-traffic default,
 so the droplet can reach Ubuntu mirrors, Let's Encrypt, the email
@@ -174,11 +176,12 @@ The script will:
 5. Enable a fail2ban sshd jail (5 retries, 1 hour ban).
 6. Turn on unattended security upgrades. The machine does not reboot itself. After a kernel update, `/var/run/reboot-required` appears; reboot in a quiet window.
 7. Install Docker Engine and the Compose plugin from Docker's Ubuntu repository when `docker compose version` is not already working.
-8. Copy the stack to `/opt/fold`, write `/opt/fold/.env` mode 600 with a new `SESSION_SECRET` and `DB_PASSWORD`, and start Compose.
+8. Copy the stack to `/opt/fold`, write `/opt/fold/.env` mode 600 with a new `SESSION_SECRET` and `DB_PASSWORD`, and refuse to continue if that file is not mode 600 or is committed in git.
 9. Install `/opt/fold/backup.sh` and a cron job at 02:30 in the droplet's timezone.
-10. Curl `https://$DOMAIN/healthz` every five minutes and log failures with `logger -t fold-health`.
+10. After Compose is up, run `smoke.sh`: wait until the db and app containers are healthy, request `https://$DOMAIN/healthz`, check the TLS certificate, and fail if 5432 or 8080 is reachable. The same script runs from cron every five minutes (`logger -t fold-health` on failure).
+11. Read `sshd -T` and fail if root login or password login is still on. Fail if `ufw` is not active.
 
-A second run does not rotate `.env` secrets, does not duplicate SSH keys, and does not replace `/swapfile` or `backup.env`. Pass the same `--domain`. To change the hostname, edit `.env` yourself; the script stops if the flag and the file disagree.
+A second run does not rotate `.env` secrets, does not duplicate SSH keys, and does not replace `/swapfile` or `backup.env`. Pass the same `--domain`. To change the hostname, edit `.env` yourself; the script stops if the flag and the file disagree. `:latest` is refused.
 
 Set the church's time zone so the 02:30 backup is local. `--swap-mb 1024` adds a swap file on a 1 GiB droplet. `--smtp-url` and `--email-from` are written only when `.env` is first created; editing `.env` avoids leaving the SMTP password in shell history.
 
@@ -186,16 +189,40 @@ From the second terminal:
 
 ```bash
 ssh deploy@groups.example.org
-sudo docker compose --project-directory /opt/fold ps
-curl -fsS https://groups.example.org/healthz
+sudo /opt/fold/smoke.sh
 ```
 
 The first browser visit to `https://groups.example.org/` is the setup wizard (site name and the first admin). `GET /healthz` answers only after Postgres is up.
 
-Then edit `/opt/fold/.env` and add the church's mail settings:
+Then set the church's mail. Any SMTP host works. Postmark is the
+recommendation. `email-dns.sh` does nothing unless the tokens are set,
+and it never creates a Postmark account or a Cloudflare zone:
 
 ```bash
-FOLD_SMTP_URL=smtp://user:pass@smtp.example.org:587
+sudo --preserve-env=POSTMARK_ACCOUNT_TOKEN,CLOUDFLARE_API_TOKEN,CLOUDFLARE_ZONE_ID,FOLD_MAIL_DOMAIN \
+  /opt/fold/email-dns.sh --domain groups.example.org
+```
+
+`POSTMARK_ACCOUNT_TOKEN` is the account token. The script creates the
+sender domain if it is not there yet. With `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ZONE_ID` it writes the SPF TXT, the DKIM TXT, and the
+return-path CNAME, DNS-only. A second run does not add a second copy.
+If an SPF record already exists and does not include `spf.mtasv.net`,
+the script stops and leaves it for you to edit. Without the Cloudflare
+variables it prints the records instead. It then runs `dig`. The same
+commands work from any machine:
+
+```bash
+dig +short TXT groups.example.org
+dig +short TXT <selector>._domainkey.groups.example.org
+dig +short CNAME pm-bounces.groups.example.org
+```
+
+Put the SMTP URL in `/opt/fold/.env` (Postmark's host is
+`smtp.postmarkapp.com`, port 587) and reload:
+
+```bash
+FOLD_SMTP_URL=smtp://SERVER_TOKEN:SERVER_TOKEN@smtp.postmarkapp.com:587
 FOLD_EMAIL_FROM=Fold <noreply@groups.example.org>
 ```
 
@@ -293,29 +320,67 @@ Practice that against `backup.sh --restore-test` before you need the
 real one. A Droplet Backup restore is a control-panel action on the
 whole disk; do it when the virtual machine itself is the thing that broke.
 
-## 6. Upgrades
+## 6. Upgrades and rollback
 
-1. Read the release notes. `README.md` records operator steps (for example the `SESSION_SECRET` length). `docs/UPGRADING.md` starts when the first church release exists.
-2. `sudo /opt/fold/backup.sh` and, before a risky upgrade, a snapshot (the paid command above).
-3. On a build-based install: `git -C /root/fold pull`, then re-run `provision.sh` with the same flags. `.env` is left in place, and Compose rebuilds.
-4. On a pulled image: re-run with the new `--image ghcr.io/grierj/fold:x.y.z`. The script rewrites `/opt/fold/docker-compose.yml` from the repo file and runs `docker compose pull && docker compose up -d`.
-5. `curl -fsS https://groups.example.org/healthz` and `sudo docker compose --project-directory /opt/fold ps`.
+Pin every upgrade to an image tag or a git commit. `:latest` is refused.
+Read the release notes first. `README.md` records operator steps (for
+example the `SESSION_SECRET` length).
 
-Migrations run when the app starts. A failed migration exits non-zero and
-the container stays unhealthy. The rollback is the dump from step 2 plus
-the previous image tag or git revision.
+On a pulled image:
+
+```bash
+sudo /root/fold/deploy/digitalocean/upgrade.sh \
+  --image ghcr.io/grierj/fold:x.y.z \
+  --source-dir /root/fold
+```
+
+On a build-based install, name the commit:
+
+```bash
+sudo /root/fold/deploy/digitalocean/upgrade.sh \
+  --commit abcdef1234567 \
+  --source-dir /root/fold
+```
+
+The script runs `backup.sh`, writes the current tag or commit and the new
+dump path to `/opt/fold/release.prev` (mode 600), then runs `provision.sh`,
+which runs `smoke.sh`. `.env` is left in place.
+
+Roll back to that previous tag or commit and restore the dump it recorded:
+
+```bash
+sudo /root/fold/deploy/digitalocean/upgrade.sh --rollback
+```
+
+Rollback stops the app, runs `pg_restore` of the recorded dump into the
+`fold` database, starts the previous image or commit, and runs `smoke.sh`
+again. Take a Droplet snapshot before a risky upgrade (the paid command
+in section 5). Migrations run when the app starts. A failed migration
+exits non-zero and `smoke.sh` fails; roll back with the command above.
 
 ## 7. Monitoring
 
 - The metrics agent (`--enable-monitoring`) graphs CPU, memory, and disk in the control panel. Add alert policies there for sustained CPU, memory above about 85%, and disk above about 80%. Alerts are free; the script does not create them.
-- `/etc/cron.d/fold-health` requests `https://$DOMAIN/healthz` every five minutes. Failures go to the system log (`journalctl -t fold-health`).
+- `/etc/cron.d/fold-health` runs `/opt/fold/smoke.sh` every five minutes. Failures go to the system log (`journalctl -t fold-health`).
 - `sudo docker compose --project-directory /opt/fold ps` and `logs app --tail 200` are the first place to look when the site is down.
 - fail2ban's sshd jail is in `fail2ban-client status sshd`. Fold's own login throttling is separate and lives in Postgres.
 
-Certificate problems are almost always DNS (the name does not point here yet), port 80 blocked, or a Cloudflare proxy in front of Caddy. `sudo docker compose --project-directory /opt/fold logs caddy --tail 100` shows the ACME error. The shipped Caddyfile does not set a contact email, so Let's Encrypt will not mail you when a certificate is close to expiry. The health check and the Caddy log are how you notice.
+Certificate problems are almost always DNS (the name does not point here yet), port 80 blocked, or a Cloudflare proxy in front of Caddy. `smoke.sh` fails when the certificate is missing, expired, for the wrong name, or issued by Cloudflare. `sudo docker compose --project-directory /opt/fold logs caddy --tail 100` shows the ACME error. The shipped Caddyfile does not set a contact email, so Let's Encrypt will not mail you when a certificate is close to expiry. The smoke check and the Caddy log are how you notice.
+
+## Hetzner
+
+Same stack, for a church that wants a European host. A CX23 is the small
+size in the plan (about $6.49/mo after the June 2026 price change). US
+locations cost more; use a DigitalOcean 2 GB droplet there instead.
+
+In the Hetzner Cloud console, create a server with Ubuntu 24.04 or 26.04
+and the church's SSH key. Add a firewall that allows inbound TCP 22, 80,
+and 443, and attach it to the server. Point the DNS A and AAAA records at
+the server. From section 4 on, the commands are the same `provision.sh`.
+The script does not call the Hetzner API and does not create servers.
 
 ## Decisions
 
 - **Images.** Keep the Compose build on the droplet (`--allow-onbox-build` on the 2 GB size). `--image` is for a later published tag. No separate build setup.
-- **Ubuntu.** The create command uses `ubuntu-26-04-x64`. The script also runs on 24.04 (`ubuntu-24-04-x64`).
+- **Ubuntu.** The create command uses `ubuntu-26-04-x64`. The script also runs on 24.04 (`ubuntu-24-04-x64`). Hetzner uses the same script on those Ubuntu images.
 - **Services.** One recommendation each, and another provider still works. Postmark for email (any SMTP host works). Telnyx for SMS when a church wants texting (Fold runs without it). Backblaze B2 for offsite dumps (any S3-compatible bucket, including DigitalOcean Spaces, works).

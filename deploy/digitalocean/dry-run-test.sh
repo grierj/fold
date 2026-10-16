@@ -11,9 +11,21 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 # Comments may say the scripts never call doctl. A command would not be a comment.
+tracked="$(git -C "$root" ls-files -- .env backup.env)"
+if [[ -n "$tracked" ]]; then
+  echo "dry-run-test.sh: secret env file is tracked: $tracked" >&2
+  exit 1
+fi
+
+# The test harness names those commands so it can search for them.
+# The scripts that run on a server must not.
 hits="$(grep -nE 'doctl|droplet create|spaces create' \
   "$root/deploy/digitalocean/provision.sh" \
-  "$root/deploy/digitalocean/backup.sh" || true)"
+  "$root/deploy/digitalocean/backup.sh" \
+  "$root/deploy/digitalocean/smoke.sh" \
+  "$root/deploy/digitalocean/email-dns.sh" \
+  "$root/deploy/digitalocean/upgrade.sh" \
+  "$root/deploy/digitalocean/checks.sh" || true)"
 if [[ -n "$hits" ]] && grep -vE ':[0-9]+:[[:space:]]*#' <<<"$hits"; then
   echo "dry-run-test.sh: a script contains a DigitalOcean create command" >&2
   exit 1

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, signIn, signOut } from "./helpers";
+import { apiAs, signIn } from "./helpers";
 
 // M1.5: capacity and waitlist. A leader sets capacity 1 with the waitlist
 // on. One member goes, a second sees position 1, the first cancels, and
@@ -34,20 +34,17 @@ test("the waitlist arc: capacity 1, position 1, cancel, promoted", async ({ page
   await expect(page.getByRole("button", { name: "Going" })).toHaveClass(/bg-primary/);
 
   // Lee sees position 1 on the waitlist.
-  await signOut(page);
   await signIn(page, "lee");
   await page.goto(url);
   await page.getByRole("button", { name: "Going" }).click();
   await expect(page.getByText(/position 1/)).toBeVisible();
 
   // Sam cancels; Lee is promoted.
-  await signOut(page);
   await signIn(page, "sam");
   await page.goto(url);
   await page.getByRole("button", { name: "Can't go" }).click();
   await expect(page.getByRole("button", { name: "Can't go" })).toHaveClass(/bg-primary/);
 
-  await signOut(page);
   await signIn(page, "lee");
   await page.goto(url);
   await expect(page.getByRole("button", { name: "Going" })).toHaveClass(/bg-primary/);

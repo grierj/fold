@@ -3,8 +3,13 @@ import { expect, type APIRequestContext, type Page } from "@playwright/test";
 export const PASSWORD = "password1234";
 export const email = (name: string) => `${name}@example.com`;
 
-// Sign in through the real login form.
+// Sign in through the real login form, always from a signed-out browser.
+// /login redirects a signed-in visitor, so switching users without this
+// broke specs twice (hosts.spec.ts in 2722a5d, waitlist.spec.ts in 0a10b04).
+// Clearing cookies here makes signIn safe to call at any point; a spec
+// only needs signOut when it tests logging out.
 export async function signIn(page: Page, name: string) {
+  await page.context().clearCookies();
   await page.goto("/login");
   await page.getByLabel("Email").fill(email(name));
   await page.getByLabel("Password").fill(PASSWORD);

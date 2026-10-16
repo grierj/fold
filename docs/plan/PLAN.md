@@ -1371,7 +1371,7 @@ All of these work with one S3-compatible adapter, so switching is a config chang
 
 ### 12.5 Hosting
 
-Fold runs on one VPS with Docker Compose. That is the only recommended deployment for now (DEC-26). The step-by-step guide is [`docs/DEPLOY-DIGITALOCEAN.md`](../DEPLOY-DIGITALOCEAN.md) (one droplet; Ubuntu 24.04 and 26.04 tested), with `deploy/digitalocean/provision.sh` and `backup.sh` (#53).
+Fold runs on one VPS with Docker Compose. That is the only recommended deployment for now (DEC-26). The step-by-step guide is [`docs/DEPLOY-DIGITALOCEAN.md`](../DEPLOY-DIGITALOCEAN.md) (one droplet; Ubuntu 24.04 and 26.04 tested), with `deploy/digitalocean/provision.sh`, `smoke.sh`, `upgrade.sh`, and `backup.sh` (#53).
 
 | Option | Price (cited) | API setup | Notes |
 |---|---|---|---|
