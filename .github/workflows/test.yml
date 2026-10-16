@@ -78,6 +78,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - working-directory: web
         run: npm ci && npm test
+      # Token contrast (ENFORCEMENT.md B7): text 4.5:1, control edges 3:1.
+      - working-directory: web
+        run: npm run contrast
       - working-directory: web
         run: npx playwright install --with-deps chromium
       - run: make e2e
