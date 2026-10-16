@@ -42,4 +42,5 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | M1.5 brief (`docs/plan/M1.5-BRIEF.md`) | committed to master | Grier | `75485a1` |
 | UI makeover PR 1: event times in the viewer's zone (DEC-57), profile time zone for emails (DEC-58) | done (merged) | Codex | #58 |
 | UI makeover PR 3: Fold Violet tokens and self-hosted Inter (DEC-60), setup and outbox on the built CSS, axe and screenshot checks, color guard | done (merged) | Grok, Illuminator | #60 |
-| UI makeover PR 4: friendly errors from API codes (DEC-61), error wording map, error-text guard | in review | Grok | `friendly-errors` |
+| UI makeover PR 4: friendly errors from API codes (DEC-61), error wording map, error-text guard | done (merged) | Grok | #61 |
+| /correct pass: top recurring agent mistakes fixed at the highest layer (dist placeholder, e2e user switch, Node version, Python, "supported"); AGENTS.md trimmed to judgment calls | in review | Grok | `correct-pitfalls` |

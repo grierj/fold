@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -440,5 +441,184 @@ func TestErrorTextGuardCatchesRawMessages(t *testing.T) {
 	}
 	if v := errorMessageViolations("web/src/pages/Admin.tsx", `{request.message && <p>{request.message}</p>}`); len(v) != 0 {
 		t.Errorf("an account request's own message was flagged: %v", v)
+	}
+}
+
+// --- Python (AGENTS "No Python"; b6c132e removed python3 from verify-fold) ---
+
+var pythonRe = regexp.MustCompile(`(?m)(^|[\s;|&(` + "`" + `$])python[23]?(\s|$)`)
+
+func pythonViolations(path, src string) []string {
+	if strings.HasSuffix(path, ".py") {
+		return []string{path + ": Python file; Fold tooling is shell or Go only. Rewrite it as a shell script or a Go program"}
+	}
+	var out []string
+	for i, line := range strings.Split(src, "\n") {
+		if pythonRe.MatchString(line) {
+			out = append(out, path+":"+strconv.Itoa(i+1)+": runs Python; use shell (awk, sed, a free port via the Go binary) or Go instead")
+		}
+	}
+	return out
+}
+
+// scriptFiles are the tracked files that run commands.
+func scriptFiles(t *testing.T) []string {
+	var files []string
+	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (p == "web/node_modules" || p == ".git" || p == "web/dist" || p == "data") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			return nil
+		}
+		base := filepath.Base(p)
+		ext := filepath.Ext(p)
+		if ext == ".sh" || ext == ".py" || ext == ".yml" || ext == ".yaml" || ext == ".mjs" || base == "Makefile" || base == "Dockerfile" ||
+			(strings.HasPrefix(p, ".cursor/skills/") && ext != ".md") {
+			files = append(files, p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func TestNoPython(t *testing.T) {
+	for _, p := range scriptFiles(t) {
+		src, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range pythonViolations(p, string(src)) {
+			t.Error(v)
+		}
+	}
+}
+
+func TestPythonGuardCatchesVerifyFoldPython(t *testing.T) {
+	// Lines from .cursor/skills/verify-fold/verify-fold before b6c132e.
+	old := "  python3 - \"$1\" \"$2\" <<'PY'\n  port=\"$(python3 -c 'import socket')\"\n# No Python: shell and Go only.\n"
+	if got := pythonViolations("verify-fold", old); len(got) != 2 {
+		t.Fatalf("want 2 violations, got %v", got)
+	}
+	if got := pythonViolations("tool.py", ""); len(got) != 1 {
+		t.Fatalf(".py file not caught: %v", got)
+	}
+}
+
+// --- "Recommended", not "supported" (Grier; 98f1a9a reworded three) ---
+
+var supportedRe = regexp.MustCompile(`(?i)\b(supported|unsupported|supports)\b`)
+
+func supportedViolations(path, src string) []string {
+	var out []string
+	for i, line := range strings.Split(src, "\n") {
+		if strings.Contains(line, `"supported"`) || strings.Contains(line, "wording-ok:") {
+			continue
+		}
+		if supportedRe.MatchString(line) {
+			out = append(out, path+":"+strconv.Itoa(i+1)+`: say "recommended" (or "tested", "works with") instead of "supported"; Fold makes no support promise`)
+		}
+	}
+	return out
+}
+
+func TestDocsSayRecommendedNotSupported(t *testing.T) {
+	err := filepath.WalkDir(".", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && (p == "web/node_modules" || p == ".git" || p == "docs/plan" || p == "data") {
+			return filepath.SkipDir
+		}
+		if d.IsDir() || filepath.Ext(p) != ".md" {
+			return nil
+		}
+		src, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		for _, v := range supportedViolations(p, string(src)) {
+			t.Error(v)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSupportedGuardCatches98f1a9a(t *testing.T) {
+	old := "A single DigitalOcean droplet is the supported production install.\n`ubuntu-24-04-x64` remains a supported choice.\n"
+	if got := supportedViolations("docs/DEPLOY-DIGITALOCEAN.md", old); len(got) != 2 {
+		t.Fatalf("want 2, got %v", got)
+	}
+}
+
+// --- One Node version (.nvmrc): a21cc93 and 8c676ac each hand-edited CI,
+// the Dockerfile and docs, and PR #18 offered a non-LTS Node ---
+
+var dockerNodeRe = regexp.MustCompile(`(?m)^FROM node:(\d+)`)
+var docNodeRe = regexp.MustCompile(`Node (\d+)( LTS)?\b`)
+
+func nodeVersionViolations(nvmrc string, files map[string]string) []string {
+	want := strings.TrimSpace(nvmrc)
+	var out []string
+	for p, src := range files {
+		switch {
+		case p == "Dockerfile":
+			m := dockerNodeRe.FindStringSubmatch(src)
+			if m == nil || m[1] != want {
+				out = append(out, p+": FROM node:"+want+"-alpine (the major in .nvmrc)")
+			}
+		case strings.HasSuffix(p, ".yml"):
+			if strings.Contains(src, "node-version:") {
+				out = append(out, p+": use node-version-file: .nvmrc, not node-version")
+			}
+		default:
+			for _, m := range docNodeRe.FindAllStringSubmatch(src, -1) {
+				if m[2] != "" && m[1] != want {
+					out = append(out, p+": says Node "+m[1]+" LTS; .nvmrc says "+want)
+				}
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestNodeVersionComesFromNvmrc(t *testing.T) {
+	nvmrc, err := os.ReadFile(".nvmrc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{}
+	for _, p := range []string{"Dockerfile", ".github/workflows/test.yml", "README.md", "AGENTS.md"} {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[p] = string(b)
+	}
+	for _, v := range nodeVersionViolations(string(nvmrc), files) {
+		t.Error(v)
+	}
+}
+
+func TestNodeGuardCatchesA21cc93Drift(t *testing.T) {
+	// 8c676ac^: CI pinned node-version "22"; a half-done bump leaves the
+	// Dockerfile or docs behind.
+	got := nodeVersionViolations("24\n", map[string]string{
+		"Dockerfile":                 "FROM node:22-alpine AS webbuild\n",
+		".github/workflows/test.yml": "          node-version: \"22\"\n",
+		"README.md":                  "Recommended: Go 1.26+, Node 22 LTS, and Docker\n",
+	})
+	if len(got) != 3 {
+		t.Fatalf("want 3, got %v", got)
 	}
 }

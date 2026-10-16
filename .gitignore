@@ -40,3 +40,6 @@ web/node_modules/
 web/test-results/
 web/screens/
 web/playwright-report/
+
+# TypeScript incremental build info (6cad41a removed a committed one).
+*.tsbuildinfo

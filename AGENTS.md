@@ -23,9 +23,8 @@ via `go:embed`). No separate frontend hosting. Ever.
 - Schema: versioned **goose** SQL files in `migrations/`, embedded in the
   binary and run on start under an advisory lock. They are the source of
   truth; GORM models must match them (C1)
-- **React + Vite + Tailwind** SPA in `web/` (Node 24 LTS recommended); `web/dist/` is embedded into
+- **React + Vite + Tailwind** SPA in `web/` (Node major in `.nvmrc`); `web/dist/` is embedded into
   the binary. Release pipeline runs `npm run build` before `go build`
-- **No Python.** Not for tooling, not for scripts. Shell or Go.
 
 ## Architecture
 
@@ -85,66 +84,39 @@ Postgres (`login_throttles`, see `api_auth.go`).
   markup in server templates, no `eval`, and no CDN or third-party scripts,
   styles, or fonts. React `style={{...}}` props are fine (they go through
   the CSSOM). Bundle everything through Vite.
-- Styling (DEC-60): colors, radius, type, spacing and shadows come from the
-  tokens in `web/src/index.css` (`@theme`, spec in Illuminator's TOKENS.md).
-  Use roles, not scale steps: `bg-primary`, `bg-surface`, `bg-page`,
-  `text-text-muted`, `border-border-strong`, `text-danger`,
-  `bg-warning-subtle`. Tailwind's own palette is off, so `bg-red-600`
-  builds nothing, and the color guard fails on it and on any hex outside
-  `@theme`. Shared controls are classes there too: `.btn-primary`,
-  `.btn-secondary`, `.btn-danger`, `.btn-danger-outline`, `.btn-ghost`,
-  `.input`, `.label`, `.chip` (selected via `aria-pressed`). The setup and
-  dev-outbox templates link the same built CSS; there is no `static/`.
-- Errors (DEC-61): every API error carries a stable `code` next to its
-  English `error`. `jsonError` derives it from the message (`errorCodes` in
-  `api_errors.go`) or the status; use `jsonErrorCode` for a message built at
-  run time. A 5xx never sends its detail (it is logged). Pages show
-  `errorText(e, "We couldn't …")` or `<ErrorNotice>` from
-  `web/src/lib/errors.ts`, which holds all error wording, and never read an
-  error's `.message`. A new code needs a line in `ERROR_COPY`: what happened
-  and what to do next. DEC-52 still decides what is never an error at all.
-- Every page passes axe with no serious or critical issues
-  (`web/e2e/a11y.spec.ts`; setup in `seed.setup.ts`). Label every field
-  with `htmlFor`/`id`.
+- Styling (DEC-60): use the role tokens and shared control classes in
+  `web/src/index.css` (`bg-primary`, `text-text-muted`, `.btn-primary`,
+  `.input`, `.chip`). Pick the role by meaning, not by the color you want.
+- Errors (DEC-61): a new error a person can act on gets a code in
+  `api_errors.go` and a line in `ERROR_COPY` saying what happened and what
+  to do next. DEC-52 decides what is never an error at all.
 - Membership rules live in `internal/policy`: removal (`CanRemoveMember`),
   handoff (`CanBeSuccessor`), role changes. A removed membership keeps its
   row with `status=removed` (DEC-35).
   Adding anyone to a group goes through `changeRole`, which locks the
   group row and checks `policy.GroupHasRoom` (member limit, DEC-39).
 - Migrations: every schema change is a **new** goose file in `migrations/`
-  (`NNNNN_name.sql`); never edit an old one. Add the model change in the
-  same PR and list new models in `models.All()`. `AutoMigrate` never runs
-  against a real database; the drift test (`migrations/migrations_test.go`)
-  runs it on a throwaway database and fails on any CREATE or ALTER.
+  (`NNNNN_name.sql`); never edit an old one. The model change goes in the
+  same PR and `models.All()`.
 - Tests: `make test` (`go test ./...` against `DATABASE_URL`; starts the
   dev database if unset). Handler tests use `httptest` and the package's
   Postgres database from `internal/testdb` (see `testhelpers_test.go` for the
   cookie-jar + CSRF-dance pattern — reuse it).
-- Test layout: tests live with what they test, never with the milestone
-  that added them. Go: `X_test.go` next to `X.go`, same package (handler
-  tests for `api_events.go` go in `api_events_test.go`). Helpers shared
-  across test files go in `testhelpers_test.go`. Web: `Foo.test.tsx` next
-  to `Foo.tsx`. Playwright: `web/e2e/<feature>.spec.ts`. Put a new test in
-  the right file when you write it, not in a later cleanup. Only
-  `testLayoutAllowed` in `guards_test.go` (helpers, repo guards, the
-  migration drift check) may skip the same-named source file.
 - Frontend: `cd web && npm test` runs Vitest component tests
   (`src/**/*.test.tsx`, jsdom + Testing Library). `make e2e` runs Playwright
   (Chromium only) in `web/e2e` against the real binary on a fresh
   `<db>_e2e` Postgres database; `seed.setup.ts` creates the data the specs
   share, so specs run one at a time. Assert on roles and visible text, and
-  accept `confirm()` dialogs with `page.on("dialog")`. First run:
+  accept `confirm()` dialogs with `page.on("dialog")`. `signIn` starts from
+  a signed-out browser, so switch users by calling it again. First run:
   `cd web && npx playwright install chromium`.
-- `make lint` (`go vet` + `gofmt`) must be clean before any PR.
 - Permissions: every check is a pure function in `internal/policy` (section 6
   of the plan) with table tests. Handlers load facts and call it; never
   inline role checks or read `Group.LeaderID` (display only). Leadership is
   `Membership.Role = leader`; a group can have several leaders.
 - Audit: record sensitive actions with `audit.Write` (`internal/audit`) in
   the same transaction as the change. Admin notices derive from those rows.
-- State-changing routes all go through CSRF except `/hooks/*` and
-  `POST /u/unsubscribe/:token` (`csrfExemptRoutes`; a test keeps that list
-  exact). Only `FOLD_TRUSTED_PROXIES` may set `X-Forwarded-For`.
+- Only `FOLD_TRUSTED_PROXIES` may set `X-Forwarded-For`.
 
 - UI reference is **Meetup** (primary), with ChurchTrac as the secondary
   reference for church-admin screens Meetup lacks. Familiar beats original. Copy its patterns
@@ -292,6 +264,14 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Public forms never show a rate limit or reveal an account (DEC-52); only sign-in and a leader's invitation limit answer 429 | `TestOnlyLoginAndInvitesAnswer429` (`guards_test.go`); `TestGuestExistingEmailHintIsRateLimited`, `TestPasswordResetSkipsGuests` |
 | Colors come from theme tokens: no hex outside `@theme`, no Tailwind palette or scale-step classes (DEC-60) | `TestColorsComeFromThemeTokens` (`guards_test.go`); a line that must keep a hex says why with `color-ok:` |
 | Pages never show the server's error text; every API error code has wording | `TestPagesNeverShowServerErrorText`, `TestWebErrorCopyCoversEveryCode`, `TestErrorCodesKeysAreUsed` (`guards_test.go`, `api_errors_test.go`); `web/e2e/friendly-errors.spec.ts` |
-| Main pages have no serious or critical axe issues at 390 and 1280 px | `web/e2e/a11y.spec.ts`, setup page in `web/e2e/seed.setup.ts` (run by `make e2e`) |
+| Main pages have no serious or critical axe issues at 390 and 1280 px; every field is labelled | `web/e2e/a11y.spec.ts`, setup page in `web/e2e/seed.setup.ts` (run by `make e2e`) |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (`guards_test.go`, run by `make test` in CI); its error names the file to move to |
+| Every state-changing route goes through CSRF, except the exact list in `csrfExemptRoutes` | `TestCSRFExemptRoutesAreExact` |
+| Schema changes are new goose files; GORM models match them | `migrations/migrations_test.go` drift check |
+| `go vet` and `gofmt` are clean | `make lint` in CI |
+| No Python: tooling is shell or Go | `TestNoPython` (`guards_test.go`; b6c132e) |
+| Docs say "recommended", never "supported" | `TestDocsSayRecommendedNotSupported` (`guards_test.go`; 98f1a9a); a line that must quote the word ends with `wording-ok:` |
+| One Node version: `.nvmrc` | CI reads it (`node-version-file`); `TestNodeVersionComesFromNvmrc` checks the Dockerfile and docs (a21cc93, 8c676ac) |
+| A build never deletes the committed `web/dist/README.txt` | Structure: the `keep-dist-readme` plugin in `web/vite.config.ts` writes it back (c8ce79d, 08137aa) |
+| e2e specs switch users safely | Structure: `signIn` in `web/e2e/helpers.ts` clears cookies first (2722a5d, 0a10b04) |
 | Seat counts never overrun under concurrent registration | `TestConcurrentGoingRespectsCapacity` (`api_registrations_test.go`): 50 real requests race for 10 seats; exactly 10 going and 40 waitlisted |
