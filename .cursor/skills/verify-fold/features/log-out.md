@@ -10,7 +10,8 @@ Log out ends the session. The directory drops to what a visitor can see, and Bac
 
 ## How to get to it (user POV)
 
-- Choose `Log out` in the header while signed in.
+- Choose `Log out` in the header while signed in (640px and wider).
+- On a phone (under 640px), open the `Me` tab and choose `Log out` on the profile page; the bottom tab bar disappears.
 
 ## Driving it with verify-fold
 

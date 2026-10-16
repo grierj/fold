@@ -286,6 +286,6 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | e2e specs switch users safely | Structure: `signIn` in `web/e2e/helpers.ts` clears cookies first (2722a5d, 0a10b04) |
 | Seat counts never overrun under concurrent registration | `TestConcurrentGoingRespectsCapacity` (`api_registrations_test.go`): 50 real requests race for 10 seats; exactly 10 going and 40 waitlisted |
 | Token contrast: text 4.5:1, control edges 3:1 | `npm run contrast` (`web/scripts/token-contrast.mjs`, in CI; fails 3 pairs on 6cdcf06) |
-| No sideways scroll; clipped selects, targets under 24px and under 44px (at 390) only go down | `web/e2e/layout.spec.ts` with `web/e2e/ui-baseline.json` |
+| No sideways scroll, no clipped select, no target under 24px (hard gates since PR 5); kinds of control under 44px at 390 only go down | `web/e2e/layout.spec.ts` with `web/e2e/ui-baseline.json` |
 | No new raw controls, `!` overrides, misused danger color, literal `style=` or date formatting outside `lib/when.ts` | `TestUIRatchets` (`guards_test.go`, counts in `ui-ratchet.json`; lower them when a page gets better), self-tested by `TestUIRatchetsCatchPastMistakes` |
 | Selected chips are stronger than unselected; fields are labelled and their errors are announced | `Chip` and `Field` in `web/src/components/ui`, `Chip.test.tsx`, `Field.test.tsx` |
