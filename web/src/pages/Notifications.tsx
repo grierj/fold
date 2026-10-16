@@ -28,7 +28,7 @@ export function NotificationsPage() {
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold mr-auto">Notifications</h1>
           {filter !== "archived" && (
-            <button className="text-sm text-primary font-semibold hover:underline" title="Items waiting on you stay until they're handled" onClick={feed.readAll}>
+            <button className="inline-flex items-center min-h-11 text-sm text-primary font-semibold hover:underline" title="Items waiting on you stay until they're handled" onClick={feed.readAll}>
               Mark all as read
             </button>
           )}

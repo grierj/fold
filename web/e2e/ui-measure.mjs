@@ -2,7 +2,7 @@
 // .cursor/skills/verify-ui/drive-ui.mjs (ENFORCEMENT.md C2, C3). Pass it to
 // page.evaluate. Returns horizontal overflow, selects whose chosen label is
 // wider than the room inside them (the PR #51 clipped time zone), targets
-// under 24x24 (WCAG 2.5.8; a <label for> counts, inline links in running
+// under 24x24 (WCAG 2.5.8; a <label for> or a wrapping <label> counts, inline links in running
 // text are exempt) and targets under 44px tall (the design goal).
 export const measure = () => {
   const vis = (e) => {
@@ -27,7 +27,7 @@ export const measure = () => {
     .filter((e) => vis(e) && !inline(e) && !e.closest("[aria-hidden=true]"))
     .map((e) => {
       const r = e.getBoundingClientRect();
-      const lab = e.id && document.querySelector(`label[for="${e.id}"]`);
+      const lab = (e.id && document.querySelector(`label[for="${e.id}"]`)) || e.closest("label");
       const lr = lab ? lab.getBoundingClientRect() : null;
       const h = Math.max(r.height, lr ? lr.height : 0), w = Math.max(r.width, lr ? lr.width : 0);
       return { el: e.tagName.toLowerCase() + (e.type ? `[${e.type}]` : ""), name: name(e), w: Math.round(w), h: Math.round(h) };

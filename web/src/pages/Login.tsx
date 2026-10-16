@@ -75,7 +75,7 @@ export function Login() {
           {busy ? "Logging in…" : "Log in"}
         </button>
         <p className="text-sm text-center">
-          <Link to="/forgot-password" className="text-primary font-semibold">
+          <Link to="/forgot-password" className="inline-flex items-center min-h-11 text-primary font-semibold">
             Forgot your password?
           </Link>
         </p>

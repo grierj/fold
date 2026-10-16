@@ -6,6 +6,7 @@ import type { AccountRequest, GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
+import { Button } from "../components/ui/Button";
 import { errorText } from "../lib/errors";
 
 type AdminTab = "approvals" | "groups" | "users" | "invite";
@@ -808,36 +809,32 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   )}
                 </td>
                 <td className="px-4 py-3 text-right whitespace-nowrap">
-                  <button
-                    onClick={() => { setEditingId(u.id); setResetId(null); setCreating(false); }}
-                    className="text-sm text-primary hover:underline mr-3"
-                  >
+                  <Button variant="ghost" size="sm" onClick={() => { setEditingId(u.id); setResetId(null); setCreating(false); }}>
                     Edit
-                  </button>
-                  <button
-                    onClick={() => { setResetId(u.id); setEditingId(null); setCreating(false); }}
-                    className="text-sm text-text-muted hover:underline mr-3"
-                  >
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => { setResetId(u.id); setEditingId(null); setCreating(false); }}>
                     Password
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={() =>
                       u.status === "disabled"
                         ? setStatus(u, "active")
                         : setLeaving({ id: u.id, action: "disable" })
                     }
                     disabled={busy}
-                    className="text-sm text-text-muted hover:underline mr-3"
                   >
                     {u.status === "disabled" ? "Enable" : "Disable"}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="danger-outline"
+                    size="sm"
                     onClick={() => { setLeaving({ id: u.id, action: "delete" }); setEditingId(null); setResetId(null); }}
                     disabled={busy}
-                    className="text-sm text-danger hover:underline"
                   >
                     Delete
-                  </button>
+                  </Button>
                 </td>
               </tr>
             ))}
@@ -1118,7 +1115,7 @@ export function AdminPage() {
       <ChurchTimezone />
       <SelfSignupSetting />
       <p className="mb-6">
-        <Link to="/events/new" className="text-primary font-semibold">
+        <Link to="/events/new" className="inline-flex items-center min-h-11 text-primary font-semibold">
           Schedule a church-wide event
         </Link>
       </p>

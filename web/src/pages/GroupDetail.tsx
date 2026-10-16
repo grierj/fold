@@ -232,16 +232,16 @@ function EventRow({
       </div>
       {canManage && (
         <div className="shrink-0 flex flex-col items-end gap-2">
-          <button type="button" onClick={() => setEditor(editor === "date" ? null : "date")} className="text-sm text-primary font-medium">
+          <button type="button" onClick={() => setEditor(editor === "date" ? null : "date")} className="inline-flex items-center min-h-11 text-sm text-primary font-medium">
             Edit this date
           </button>
-          <button type="button" onClick={() => setEditor(editor === "series" ? null : "series")} className="text-sm text-primary font-medium">
+          <button type="button" onClick={() => setEditor(editor === "series" ? null : "series")} className="inline-flex items-center min-h-11 text-sm text-primary font-medium">
             {instance.recurrenceRule ? "Edit series" : "Edit event"}
           </button>
           <button
             onClick={cancel}
             disabled={cancelling}
-            className="text-sm text-danger hover:text-danger-hover font-medium"
+            className="inline-flex items-center min-h-11 text-sm text-danger hover:text-danger-hover font-medium"
           >
             {cancelling ? "Cancelling…" : "Cancel"}
           </button>
