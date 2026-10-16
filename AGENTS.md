@@ -95,6 +95,14 @@ Postgres (`login_throttles`, see `api_auth.go`).
   `.btn-secondary`, `.btn-danger`, `.btn-danger-outline`, `.btn-ghost`,
   `.input`, `.label`, `.chip` (selected via `aria-pressed`). The setup and
   dev-outbox templates link the same built CSS; there is no `static/`.
+- UI controls (ENFORCEMENT.md): new controls use `components/ui` (`Button`,
+  `Chip`, `Field` with `Input`/`Textarea`/`Select`, `EmptyState`); the
+  ratchets below stop new raw ones. Judgment the checks can't make:
+  one primary action per view; `danger-outline` beside a main action and
+  solid `danger` only when destruction is the point of the dialog; empty
+  states say what would appear and offer the next step, never in red;
+  status is never color alone; copy is plain, warm, second person. Prove a
+  UI change with `.cursor/skills/verify-ui` and the 390px screenshots.
 - Errors (DEC-61): every API error carries a stable `code` next to its
   English `error`. `jsonError` derives it from the message (`errorCodes` in
   `api_errors.go`) or the status; use `jsonErrorCode` for a message built at
@@ -295,3 +303,8 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Main pages have no serious or critical axe issues at 390 and 1280 px | `web/e2e/a11y.spec.ts`, setup page in `web/e2e/seed.setup.ts` (run by `make e2e`) |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (`guards_test.go`, run by `make test` in CI); its error names the file to move to |
 | Seat counts never overrun under concurrent registration | `TestConcurrentGoingRespectsCapacity` (`api_registrations_test.go`): 50 real requests race for 10 seats; exactly 10 going and 40 waitlisted |
+| Token contrast: text 4.5:1, control edges 3:1 | `npm run contrast` (`web/scripts/token-contrast.mjs`, in CI; fails 3 pairs on 6cdcf06) |
+| No sideways scroll; clipped selects, targets under 24px and under 44px (at 390) only go down | `web/e2e/layout.spec.ts` with `web/e2e/ui-baseline.json` |
+| Every main page passes axe, including event, scheduling, Join and My groups | `web/e2e/a11y.spec.ts` over `web/e2e/ui-pages.ts` |
+| No new raw controls, `!` overrides, misused danger color, literal `style=` or date formatting outside `lib/when.ts` | `TestUIRatchets` (`guards_test.go`, counts in `ui-ratchet.json`; lower them when a page gets better), self-tested by `TestUIRatchetsCatchPastMistakes` |
+| Selected chips are stronger than unselected; fields are labelled and their errors are announced | `Chip` and `Field` in `web/src/components/ui`, `Chip.test.tsx`, `Field.test.tsx` |
