@@ -52,7 +52,7 @@ type Vars struct {
 	Person     string // who it was done to
 	Group      string // the group's name, only if the recipient can see it
 	Event      string // the event's title (or a safe fallback)
-	When       string // the date and time, already in the event's zone
+	When       string // the date and time, already in the recipient's zone (DEC-58)
 	Place      string // only if the recipient can see it
 	Change     string // a kind-specific variant
 	Visibility string // new visibility, in words

@@ -63,8 +63,9 @@ DELETE /api/v1/me/avatar    → 200 {}  (auth)
 POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public)
 ```
 
-Profile update body: any of `{name, displayName, phone, email, avatarFocal: {x, y}}`.
-Limits: names ≤ 100 chars, phone ≤ 30 chars, focal clamped to 0-100. The
+Profile update body: any of `{name, displayName, phone, email, timezone, avatarFocal: {x, y}}`.
+Limits: names ≤ 100 chars, phone ≤ 30 chars, focal clamped to 0-100,
+`timezone` an IANA name (DEC-58; "" and "Local" are refused). The
 email is the login: sending a different `email` starts a verified change
 (M1.2, 10.1) — a verification link goes to the new address and a notice to
 the old one, and the response carries `verificationSent: true`. The change
@@ -79,7 +80,7 @@ that account ends. An admin password reset ends all of that account's
 sessions, including the one that requested it.
 
 `user`: `{id, name, displayName, email, phone, avatarUrl,
-avatarFocalX, avatarFocalY, role, status, hasPassword, accountType,
+avatarFocalX, avatarFocalY, role, status, hasPassword, accountType, timezone,
 birthDate?}`. `status` is
 `active`, `invited` (no password yet), `pending_consent` (a teen waiting
 for consent, M1.10), `guest` (a verified guest registrant with no
@@ -137,8 +138,8 @@ does every route under `/groups/:id`: anyone else gets 404, never 403.
 Pending and archived groups stay limited to their leaders and admins.
 
 `groupSummary`: `{id, name, description, tags[], imageUrl, coverFocalX,
-coverFocalY, location, leaderName, memberCount, nextEventAt, nextEventLocal,
-nextEventTzid, status, leaderId, visibility, deletionRequested, memberLimit}`.
+coverFocalY, location, leaderName, memberCount, nextEventAt (UTC; the SPA shows it in the browser's zone, DEC-57),
+status, leaderId, visibility, deletionRequested, memberLimit}`.
 `memberLimit` is null
 for no limit (DEC-39); `memberCount` counts active members of listed accounts. `leaderId` and `leaderName` are the
 displayed primary contact only (one of the leaders); they grant nothing.
@@ -489,7 +490,7 @@ Guest registration (M1.4, C5) is the signed-out door for public events:
 
 ```
 POST /api/v1/events/:id/guest-registrations        → 200 {message} | 400 | 404  (public)
-  body: {name, email, date, over18, createAccount?, website?}
+  body: {name, email, date, over18, createAccount?, timezone?, website?}  (timezone: the browser's IANA zone for the guest's emails, DEC-58)
 POST /api/v1/guest-registrations/confirm           {token} → 200 {registration, manageToken} | 400 | 409  (public)
 GET  /api/v1/guest-registrations/manage/:token     → 200 {registration} | 404  (public, token is the credential)
 POST /api/v1/guest-registrations/manage/:token/cancel → 200 {registration} | 404  (public)

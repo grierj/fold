@@ -120,9 +120,12 @@ type User struct {
 	// SessionVersion is bumped when the password, email, role or status
 	// changes, so older cookies stop working (10.1).
 	SessionVersion int `gorm:"not null;default:0"`
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	DeletedAt      gorm.DeletedAt `gorm:"index"`
+	// Timezone is the IANA zone for this person's emails and notices
+	// (DEC-58). "" means the church's zone; see recipientZone.
+	Timezone  string `gorm:"not null;default:''"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	DeletedAt gorm.DeletedAt `gorm:"index"`
 }
 
 // PublicName returns the name shown in the UI. It never falls back to the
@@ -355,9 +358,11 @@ type GuestSignup struct {
 	TokenHash     string    `gorm:"not null;uniqueIndex:idx_guest_signups_token_hash"`
 	ExpiresAt     time.Time `gorm:"not null"`
 	ConfirmedAt   *time.Time
-	IP            string    `gorm:"not null;default:''"`
-	CreatedAt     time.Time `gorm:"not null;default:now()"`
-	UpdatedAt     time.Time `gorm:"not null;default:now()"`
+	IP            string `gorm:"not null;default:''"`
+	// Timezone is the guest form browser's zone, for the guest's emails.
+	Timezone  string    `gorm:"not null;default:''"`
+	CreatedAt time.Time `gorm:"not null;default:now()"`
+	UpdatedAt time.Time `gorm:"not null;default:now()"`
 }
 
 // Setting is a simple key/value store for site configuration

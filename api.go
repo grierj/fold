@@ -46,6 +46,9 @@ type userJSON struct {
 	HasPassword  bool    `json:"hasPassword"`
 	AccountType  string  `json:"accountType"`
 	BirthDate    string  `json:"birthDate,omitempty"`
+	// Timezone is the person's own zone for emails (DEC-58); "" means
+	// the church's, until the browser fills it in.
+	Timezone string `json:"timezone"`
 }
 
 func (a *App) toUserJSON(u *models.User) userJSON {
@@ -64,6 +67,7 @@ func (a *App) toUserJSON(u *models.User) userJSON {
 		AvatarFocalX: u.AvatarFocalX, AvatarFocalY: u.AvatarFocalY,
 		Role: u.Role, Status: u.Status, HasPassword: u.PasswordHash != nil,
 		AccountType: accountType, BirthDate: formatBirthDate(u.BirthDate),
+		Timezone: u.Timezone,
 	}
 }
 
@@ -79,8 +83,6 @@ type groupSummaryJSON struct {
 	LeaderName        string     `json:"leaderName"`
 	MemberCount       int64      `json:"memberCount"`
 	NextEventAt       *time.Time `json:"nextEventAt"`
-	NextEventLocal    string     `json:"nextEventLocal"`
-	NextEventTzid     string     `json:"nextEventTzid"`
 	Status            string     `json:"status"`
 	LeaderID          uint       `json:"leaderId"`
 	Visibility        string     `json:"visibility"` // public | private | invite_only

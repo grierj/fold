@@ -48,16 +48,15 @@ var (
 // signed-out visitor: the event as they may see it, and the status of
 // their registration. It carries no email and no attendee names.
 type guestRegistrationJSON struct {
-	EventID      uint   `json:"eventId"`
-	OccurrenceID uint   `json:"occurrenceId"`
-	Date         string `json:"date"`
-	Title        string `json:"title"`
-	HostedBy     string `json:"hostedBy,omitempty"`
-	GroupName    string `json:"groupName,omitempty"`
-	Status       string `json:"status"`
-	StartsLocal  string `json:"startsLocal"`
-	TZID         string `json:"tzid"`
-	Location     string `json:"location"`
+	EventID      uint      `json:"eventId"`
+	OccurrenceID uint      `json:"occurrenceId"`
+	Date         string    `json:"date"`
+	Title        string    `json:"title"`
+	HostedBy     string    `json:"hostedBy,omitempty"`
+	GroupName    string    `json:"groupName,omitempty"`
+	Status       string    `json:"status"`
+	StartsAt     time.Time `json:"startsAt"`
+	Location     string    `json:"location"`
 	// WaitlistPosition is the 1-based waitlist position, set only when
 	// the registration is waitlisted (M1.5).
 	WaitlistPosition *int `json:"waitlistPosition,omitempty"`
@@ -75,8 +74,8 @@ func (a *App) guestDisplay(reg *models.Registration, occ *models.EventOccurrence
 	inst := occurrenceToJSON(ev, occ, loc)
 	out := guestRegistrationJSON{
 		EventID: ev.ID, OccurrenceID: occ.ID, Date: occ.OriginalDate,
-		Title: inst.Title, Status: reg.Status, StartsLocal: inst.StartsLocal,
-		TZID: inst.TZID, Location: inst.Location,
+		Title: inst.Title, Status: reg.Status, StartsAt: inst.StartsAt,
+		Location: inst.Location,
 	}
 	if shown := a.groupShownTo(nil, grp, policy.Rel{}); ev.GroupID != nil && shown != nil {
 		out.GroupName = shown.Name
@@ -121,6 +120,8 @@ type guestRegistrationInput struct {
 	Over18        bool   `json:"over18"`
 	CreateAccount bool   `json:"createAccount"`
 	Website       string `json:"website"` // honeypot: people never fill this in
+	// Timezone is the browser's zone, for this guest's emails (DEC-58).
+	Timezone string `json:"timezone"`
 }
 
 // apiCreateGuestRegistration is the public guest form. Every outcome
@@ -206,6 +207,9 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		CreateAccount: body.CreateAccount, TokenHash: hash,
 		ExpiresAt: time.Now().UTC().Add(tokenTTL), IP: c.ClientIP(),
 	}
+	if _, err := events.LoadZone(body.Timezone); err == nil {
+		signup.Timezone = strings.TrimSpace(body.Timezone)
+	}
 	if err := a.DB.Create(&signup).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your registration")
 		return
@@ -248,6 +252,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 	}
 	var display guestRegistrationJSON
 	var manageRaw, guestEmail string
+	guestZone := time.UTC
 	var askedAccount bool
 	var emailed []uint
 	var waitlistPos *int
@@ -327,11 +332,18 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 					return err
 				}
 			}
+			if signup.Timezone != "" && user.Timezone != signup.Timezone {
+				user.Timezone = signup.Timezone
+				if err := tx.Model(&user).Update("timezone", signup.Timezone).Error; err != nil {
+					return err
+				}
+			}
 		} else {
 			user = models.User{
 				Email: signup.Email, Name: signup.Name,
 				Role: models.RoleMember, Status: models.UserGuest,
 				AccountType: models.AccountAdult,
+				Timezone:    signup.Timezone,
 			}
 			if err := tx.Create(&user).Error; err != nil {
 				return err
@@ -387,6 +399,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		display = a.guestDisplay(&reg, occ, &ev, grp)
 		display.WaitlistPosition = waitlistPos
 		guestEmail = signup.Email
+		guestZone = recipientZone(tx, user.ID)
 		return nil
 	})
 	switch {
@@ -411,7 +424,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		return
 	}
 	a.deliverNotificationEmails(emailed)
-	if err := a.sendGuestConfirmationEmail(guestEmail, manageRaw, display, askedAccount); err != nil {
+	if err := a.sendGuestConfirmationEmail(guestEmail, manageRaw, display, guestZone, askedAccount); err != nil {
 		log.Printf("guest confirmation email to %s: %v", guestEmail, err)
 	}
 	c.JSON(http.StatusOK, gin.H{"registration": display, "manageToken": manageRaw})
@@ -587,18 +600,19 @@ func (a *App) sendGuestVerificationEmail(signup *models.GuestSignup, raw string,
 		Subject: fmt.Sprintf("Confirm your registration for %s", d.Title),
 		Text: fmt.Sprintf(`Hi %s,
 
-Someone used this email address to register as a guest for %s%s at %s, on %s (%s).
+Someone used this email address to register as a guest for %s%s at %s, on %s.
 
 Confirm your registration here (the link works once and expires in 24 hours):
 %s
 
 If that wasn't you, ignore this email and nothing will be registered.`,
-			signup.Name, d.Title, guestWithLine(d), a.siteName(), d.StartsLocal, d.TZID, link),
+			signup.Name, d.Title, guestWithLine(d), a.siteName(), formatWhen(d.StartsAt, zoneOrChurch(a.DB, signup.Timezone)), link),
 	})
 }
 
 func (a *App) sendGuestConfirmationEmail(to, manageRaw string,
-	d guestRegistrationJSON, askedAccount bool) error {
+	d guestRegistrationJSON, loc *time.Location, askedAccount bool) error {
+	when := formatWhen(d.StartsAt, loc)
 	link := a.emailBaseURL() + "/guest/manage/" + manageRaw
 	extra := ""
 	if askedAccount {
@@ -609,12 +623,12 @@ func (a *App) sendGuestConfirmationEmail(to, manageRaw string,
 		where = "\nWhere: " + d.Location
 	}
 	headline := fmt.Sprintf("You're registered for %s", d.Title)
-	intro := fmt.Sprintf(`You're registered for %s%s at %s, on %s (%s).%s%s`,
-		d.Title, guestWithLine(d), a.siteName(), d.StartsLocal, d.TZID, where, extra)
+	intro := fmt.Sprintf(`You're registered for %s%s at %s, on %s.%s%s`,
+		d.Title, guestWithLine(d), a.siteName(), when, where, extra)
 	if d.Status == models.RegWaitlisted {
 		headline = fmt.Sprintf("You're on the waitlist for %s", d.Title)
-		intro = fmt.Sprintf(`You're on the waitlist for %s%s at %s, on %s (%s).%s%s`,
-			d.Title, guestWithLine(d), a.siteName(), d.StartsLocal, d.TZID, where, extra)
+		intro = fmt.Sprintf(`You're on the waitlist for %s%s at %s, on %s.%s%s`,
+			d.Title, guestWithLine(d), a.siteName(), when, where, extra)
 		if d.WaitlistPosition != nil {
 			intro += fmt.Sprintf("\n\nYou're number %d in line. We'll email you if a spot opens.", *d.WaitlistPosition)
 		}

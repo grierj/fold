@@ -104,3 +104,14 @@ func TestHorizonCoversEighteenMonths(t *testing.T) {
 		t.Fatalf("last occurrence %s, horizon %s", last, end)
 	}
 }
+
+func TestLoadZone(t *testing.T) {
+	if loc, err := LoadZone(" America/Boise "); err != nil || loc.String() != "America/Boise" {
+		t.Fatalf("Boise: %v %v", loc, err)
+	}
+	for _, bad := range []string{"", "Local", "Nowhere/Town"} {
+		if _, err := LoadZone(bad); err == nil {
+			t.Fatalf("%q: no error", bad)
+		}
+	}
+}

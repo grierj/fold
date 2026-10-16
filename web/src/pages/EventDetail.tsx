@@ -8,7 +8,7 @@ import { AttendeeNames, EventIntro } from "../components/EventIntro";
 import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
-import { formatWallClock, zoneSuffix } from "../lib/wall";
+import { formatTime, heldIn, zoneNote } from "../lib/when";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, RegistrationResponse } from "../types";
 
 function count(r: Record<string, number>, key: string): number {
@@ -183,7 +183,8 @@ function DateRow({
 }) {
   const [editingDate, setEditingDate] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  const time = formatWallClock(instance.startsLocal) + zoneSuffix(instance.startsAt, instance.tzid);
+  const time = formatTime(instance.startsAt);
+  const held = heldIn(instance.startsAt, instance.tzid);
 
   async function cancel() {
     if (!confirm(`Cancel this date on ${instance.date}?`)) return;
@@ -199,13 +200,14 @@ function DateRow({
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 flex gap-4">
-      <DateBadge local={instance.startsLocal} />
+      <DateBadge at={instance.startsAt} />
       <div className="grow min-w-0">
         <div className="font-bold">{instance.title || "Church event"}</div>
         <div className="text-sm text-gray-600">
           {time}
           {instance.location ? ` · ${instance.location}` : ""}
         </div>
+        {held && <div className="text-sm text-gray-500">{held}</div>}
         {instance.overridden && (
           <div className="text-sm text-gray-500">This date was edited on its own, so series changes leave it alone.</div>
         )}
@@ -439,7 +441,7 @@ function DateEditor({
   return (
     <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
       <p className="text-sm text-gray-600">
-        This date only. Later series changes leave it alone. The series date stays {instance.date}.
+        This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
       </p>
       {error && <div className="text-sm text-red-600">{error}</div>}
       <div className="grid sm:grid-cols-3 gap-3">

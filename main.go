@@ -437,7 +437,7 @@ func (a *App) handleSetup(c *gin.Context) {
 		fail("All fields are required.")
 		return
 	}
-	if _, err := time.LoadLocation(timezone); err != nil {
+	if _, err := events.LoadZone(timezone); err != nil {
 		fail("Time zone must be an IANA name, for example America/Denver.")
 		return
 	}

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { ApiError, Guests } from "../api";
-import { formatNextEvent } from "../lib/wall";
+import { formatWhen } from "../lib/when";
 import type { GuestRegistration } from "../types";
 
 // Redeem a guest registration verification link (M1.4). Opening the
@@ -50,13 +50,13 @@ export function GuestConfirm() {
                   You&apos;re on the waitlist for <strong>{reg.title}</strong>
                   {reg.waitlistPosition != null ? ` — position ${reg.waitlistPosition}` : ""}
                   {reg.groupName ? ` with ${reg.groupName}` : reg.hostedBy ? ` hosted by ${reg.hostedBy}` : ""},{" "}
-                  {formatNextEvent(reg.startsLocal, reg.tzid, null)}. We&apos;ll email you if a spot opens.
+                  {formatWhen(reg.startsAt)}. We&apos;ll email you if a spot opens.
                 </>
               ) : (
                 <>
                   You&apos;re registered for <strong>{reg.title}</strong>
                   {reg.groupName ? ` with ${reg.groupName}` : reg.hostedBy ? ` hosted by ${reg.hostedBy}` : ""},{" "}
-                  {formatNextEvent(reg.startsLocal, reg.tzid, null)}.
+                  {formatWhen(reg.startsAt)}.
                 </>
               )}
             </p>

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { ApiError, Guests } from "../api";
 import type { EventOccurrence } from "../types";
+import { browserTimeZone } from "../lib/when";
 
 // The guest door on one public event date (M1.4, 5.10): a signed-out
 // adult registers with a name and an email. The server emails a
@@ -28,6 +29,7 @@ export function GuestRegistrationForm({ instance }: { instance: EventOccurrence 
       const res = await Guests.register(instance.eventId, {
         name, email, date: instance.date, over18,
         createAccount: createAccount || undefined,
+        timezone: browserTimeZone(),
         website: website || undefined,
       });
       setDone(res.message);

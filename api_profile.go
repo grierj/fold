@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"fold/internal/audit"
+	"fold/internal/events"
 	"fold/internal/mail"
 	"fold/models"
 	"fold/storage"
@@ -48,6 +49,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		DisplayName *string `json:"displayName"`
 		Email       *string `json:"email"`
 		Phone       *string `json:"phone"`
+		Timezone    *string `json:"timezone"`
 		AvatarFocal *struct {
 			X float64 `json:"x"`
 			Y float64 `json:"y"`
@@ -88,6 +90,14 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 			return
 		}
 		updates["phone"] = phone
+	}
+	if body.Timezone != nil {
+		tz := strings.TrimSpace(*body.Timezone)
+		if _, err := events.LoadZone(tz); err != nil {
+			jsonError(c, http.StatusBadRequest, "timezone must be an IANA name, for example America/Denver")
+			return
+		}
+		updates["timezone"] = tz
 	}
 	if body.AvatarFocal != nil {
 		updates["avatar_focal_x"] = clampFocal(body.AvatarFocal.X)

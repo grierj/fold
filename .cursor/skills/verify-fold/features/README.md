@@ -45,7 +45,7 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Sign in](./sign-in.md) covers first-run setup, a rejected password, a successful login, and the session surviving reload.
 - [Directory](./directory.md) covers opening a public group, search, tag chips, and what a signed-out visitor can see.
 - [Start a group](./start-a-group.md) covers the admin's live group and a member's group that waits for approval.
-- [Schedule an event](./schedule-event.md) covers a leader scheduling a group event and seeing it on the group page.
+- [Schedule an event](./schedule-event.md) covers a leader scheduling a group event, seeing it on the group page in the viewer's zone, and the event page's "Held in" line.
 - [Log out](./log-out.md) covers the header control clearing the session, including after Back.
 - [Event visibility](./event-visibility.md) covers one event narrower or wider than its group and the review when a group becomes more private.
 - [Notifications](./notifications.md) covers the bell's count, approving a waiting group inline, archive with Undo that survives signing out, and the phone-width page.

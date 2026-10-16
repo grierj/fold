@@ -870,11 +870,10 @@ func TestRosterFlagsAdmins(t *testing.T) {
 	}
 }
 
-// Guard for the "Sun 1:00 AM UTC" bug: every group summary that carries a
-// next event must also carry its zone and wall clock, on the list API as
-// well as the detail API, and an event created without a zone takes the
-// church's zone, never UTC.
-func TestGroupListCarriesNextEventZone(t *testing.T) {
+// Guard for the "Sun 1:00 AM UTC" bug: the list and detail APIs carry the
+// next event's UTC instant, and an event created without a zone takes the
+// church's zone, never UTC. The browser converts the instant (DEC-57).
+func TestGroupListCarriesNextEventAt(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	admin := loginAPI(t, app, "admin", "password1234")
@@ -907,8 +906,8 @@ func TestGroupListCarriesNextEventZone(t *testing.T) {
 		if g.NextEventAt == nil {
 			t.Fatalf("%s: no next event", where)
 		}
-		if g.NextEventTzid != "America/Denver" || g.NextEventLocal != local {
-			t.Fatalf("%s: tzid=%q local=%q, want America/Denver %s", where, g.NextEventTzid, g.NextEventLocal, local)
+		if want := time.Date(d.Year(), d.Month(), d.Day(), 19, 0, 0, 0, den); !g.NextEventAt.Equal(want) {
+			t.Fatalf("%s: next event at %s, want %s (7 PM Denver)", where, g.NextEventAt, want)
 		}
 	}
 	w = admin.do("GET", "/api/v1/groups", nil, false)

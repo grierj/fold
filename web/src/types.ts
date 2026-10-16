@@ -14,6 +14,8 @@ export interface User {
   hasPassword: boolean;
   accountType: "adult" | "teen";
   birthDate?: string;
+  // "" until the browser fills it in; then the person's zone for emails (DEC-58).
+  timezone: string;
 }
 
 export interface GroupSummary {
@@ -28,8 +30,6 @@ export interface GroupSummary {
   leaderName: string;
   memberCount: number;
   nextEventAt: string | null;
-  nextEventLocal: string;
-  nextEventTzid: string;
   status: string;
   leaderId: number;
   visibility: Visibility;
@@ -104,8 +104,7 @@ export interface GuestRegistration {
   hostedBy?: string;
   groupName?: string;
   status: string;
-  startsLocal: string;
-  tzid: string;
+  startsAt: string;
   location: string;
   waitlistPosition?: number;
 }

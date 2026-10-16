@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/events"
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
@@ -382,7 +383,7 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 		if o.LocationOverride != nil {
 			place = *o.LocationOverride
 		}
-		vars := notify.Vars{Event: ev.Title, When: localWhen(o.StartsAt, ev.TZID), Place: place}
+		vars := notify.Vars{Event: ev.Title, When: formatWhen(o.StartsAt, recipientZone(tx, r.UserID)), Place: place}
 		link := fmt.Sprintf("/events/%d", ev.ID)
 		if g != nil {
 			vars.Event = firstNonEmpty(ev.Title, g.Name) // group-ok: g is set only when canSeeGroupIn is true
@@ -438,11 +439,34 @@ func firstNonEmpty(a, b string) string {
 	return b
 }
 
-func localWhen(t time.Time, tzid string) string {
-	loc := time.UTC
-	if l, err := time.LoadLocation(tzid); err == nil {
-		loc = l
+// recipientZone is the zone a person reads emailed and notified times in
+// (DEC-58): their own, else the church's, else UTC.
+func recipientZone(tx *gorm.DB, userID uint) *time.Location {
+	var zones []string
+	tx.Model(&models.User{}).Where("id = ?", userID).Pluck("timezone", &zones)
+	if len(zones) == 1 {
+		return zoneOrChurch(tx, zones[0])
 	}
+	return zoneOrChurch(tx, "")
+}
+
+// zoneOrChurch is tz when it names a zone, else the church's, else UTC.
+func zoneOrChurch(tx *gorm.DB, tz string) *time.Location {
+	if loc, err := events.LoadZone(tz); err == nil {
+		return loc
+	}
+	var s models.Setting
+	if tx.Where("key = ?", settingTimezone).First(&s).Error == nil {
+		if loc, err := events.LoadZone(s.Value); err == nil {
+			return loc
+		}
+	}
+	return time.UTC
+}
+
+// formatWhen is how emails and notices write an event time, in the
+// reader's zone with its abbreviation: "Sat, Oct 17 · 8:00 PM MDT".
+func formatWhen(t time.Time, loc *time.Location) string {
 	return t.In(loc).Format("Mon, Jan 2 · 3:04 PM MST")
 }
 

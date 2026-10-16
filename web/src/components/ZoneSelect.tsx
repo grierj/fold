@@ -1,6 +1,6 @@
 import { zoneSelectOptions } from "../lib/eventForm";
 import { useChurchZone } from "../lib/useEventZone";
-import { browserTimeZone } from "../lib/wall";
+import { browserTimeZone } from "../lib/when";
 
 // The one time zone picker for every event create and edit form. A real
 // <select>, not an <input list>: a datalist only shows options that match

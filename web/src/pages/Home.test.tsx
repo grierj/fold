@@ -8,7 +8,7 @@ import { Home } from "./Home";
 function group(id: number, name: string, tags: string[]): GroupSummary {
   return {
     id, name, description: "", tags, imageUrl: "", coverFocalX: 50, coverFocalY: 50,
-    location: "", leaderName: "Grier", memberCount: 1, nextEventAt: null, nextEventLocal: "", nextEventTzid: "", status: "active",
+    location: "", leaderName: "Grier", memberCount: 1, nextEventAt: null, status: "active",
     leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null,
   };
 }

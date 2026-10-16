@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -33,7 +32,7 @@ func (a *App) churchTimezone() string {
 	if err := a.DB.Where("key = ?", settingTimezone).First(&s).Error; err != nil {
 		return "UTC"
 	}
-	if _, err := time.LoadLocation(strings.TrimSpace(s.Value)); err != nil {
+	if _, err := events.LoadZone(s.Value); err != nil {
 		return "UTC"
 	}
 	return s.Value
@@ -52,7 +51,7 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 		return
 	}
 	tz := strings.TrimSpace(body.Timezone)
-	if _, err := time.LoadLocation(tz); err != nil || tz == "" {
+	if _, err := events.LoadZone(tz); err != nil {
 		jsonError(c, http.StatusBadRequest, "timezone must be an IANA name, for example America/Denver")
 		return
 	}
@@ -394,15 +393,11 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 		leaderName = leader.PublicName()
 	}
 	var next *time.Time
-	nextLocal, nextTZ := "", ""
-	// Explicit column names: GORM would map a bare TZID field to
-	// "t_z_i_d", silently leaving the zone empty (the "1:00 AM UTC" bug).
 	var row struct {
 		StartsAt time.Time `gorm:"column:starts_at"`
-		TZID     string    `gorm:"column:tzid"`
 	}
 	err := a.DB.Table("event_occurrences").
-		Select("event_occurrences.starts_at, events.tzid").
+		Select("event_occurrences.starts_at").
 		Joins("JOIN events ON events.id = event_occurrences.event_id AND events.deleted_at IS NULL").
 		Where("events.group_id = ? AND event_occurrences.status = ? AND event_occurrences.starts_at >= ?",
 			g.ID, models.OccurrenceScheduled, time.Now().UTC()).
@@ -410,24 +405,14 @@ func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
 	if err == nil && !row.StartsAt.IsZero() {
 		t := row.StartsAt.UTC()
 		next = &t
-		// time.LoadLocation("") is UTC, so an empty zone must not reach it.
-		if row.TZID != "" {
-			if loc, lerr := time.LoadLocation(row.TZID); lerr == nil {
-				nextTZ = row.TZID
-				nextLocal = events.FormatWall(t, loc)
-			}
-		}
-		if nextTZ == "" {
-			log.Printf("groupSummary: group %d next event has no usable time zone %q", g.ID, row.TZID)
-		}
 	}
 	return groupSummaryJSON{
 		ID: g.ID, Name: g.Name, Description: g.Description, // group-ok: groupSummary is served only after CanSeeGroup
 		Tags: splitTags(g.Tags), ImageURL: g.ImageURL,
 		CoverFocalX: g.CoverFocalX, CoverFocalY: g.CoverFocalY,
 		Location: g.Location, LeaderName: leaderName, MemberCount: members, // group-ok: as above
-		NextEventAt: next, NextEventLocal: nextLocal, NextEventTzid: nextTZ,
-		Status: g.Status, LeaderID: g.LeaderID, Visibility: g.Visibility,
+		NextEventAt: next,
+		Status:      g.Status, LeaderID: g.LeaderID, Visibility: g.Visibility,
 		DeletionRequested: g.DeletionRequested, MemberLimit: g.MemberLimit,
 	}
 }

@@ -271,11 +271,74 @@ func TestMemberGroupNotifiesAdmins(t *testing.T) {
 	}
 }
 
-func TestLocalWhenNamesTheZone(t *testing.T) {
-	at := time.Date(2035, 10, 20, 1, 0, 0, 0, time.UTC)
-	got := localWhen(at, "America/Denver")
-	if !strings.Contains(got, "Fri, Oct 19") || !strings.Contains(got, "7:00 PM") || !strings.Contains(got, "MDT") {
-		t.Fatalf("localWhen: %q", got)
+// recipientZone reads the person's own zone, falls back to the church's,
+// and then to UTC (DEC-58).
+func TestRecipientZone(t *testing.T) {
+	app := testApp(t)
+	own := newTestUser(t, app, "own", "password1234", models.RoleMember)
+	unset := newTestUser(t, app, "unset", "password1234", models.RoleMember)
+	app.DB.Model(own).Update("timezone", "America/New_York")
+	if got := recipientZone(app.DB, unset.ID).String(); got != "UTC" {
+		t.Fatalf("no church zone: %s, want UTC", got)
+	}
+	app.DB.Create(&models.Setting{Key: settingTimezone, Value: "America/Los_Angeles"})
+	for _, tc := range []struct {
+		id   uint
+		want string
+	}{{own.ID, "America/New_York"}, {unset.ID, "America/Los_Angeles"}, {999999, "America/Los_Angeles"}} {
+		if got := recipientZone(app.DB, tc.id).String(); got != tc.want {
+			t.Fatalf("user %d: %s, want %s", tc.id, got, tc.want)
+		}
+	}
+}
+
+// A cancellation for a 10:30 PM Los Angeles event reads in each
+// recipient's own zone, in the email and in the bell, including the next
+// date for New York. A person with no zone of their own gets the church's.
+func TestCancellationTimesUseRecipientZone(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ZoneNotify")
+	app.DB.Where(models.Setting{Key: settingTimezone}).Assign(models.Setting{Value: "America/Chicago"}).
+		FirstOrCreate(&models.Setting{})
+	w := admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"title": "Late", "startsLocal": "2035-07-14T22:30", "durationMinutes": 60, "tzid": "America/Los_Angeles",
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	people := []struct{ name, zone, want string }{
+		{"boise", "America/Boise", "Sat, Jul 14 · 11:30 PM MDT"},
+		{"nyc", "America/New_York", "Sun, Jul 15 · 1:30 AM EDT"},
+		{"church", "", "Sun, Jul 15 · 12:30 AM CDT"},
+	}
+	clients := map[string]*apiClient{}
+	for _, p := range people {
+		u, c := mkUser(t, app, &g, p.name)
+		app.DB.Model(u).Update("timezone", p.zone)
+		if code, body := registerAs(c, created.Event.ID, "2035-07-14", "going", nil); code != http.StatusOK {
+			t.Fatalf("%s going: %d %s", p.name, code, body)
+		}
+		clients[p.name] = c
+	}
+	if w := admin.do("POST", fmt.Sprintf("/api/v1/events/%d/cancel", created.Event.ID),
+		map[string]any{"date": "2035-07-14"}, true); w.Code != http.StatusOK {
+		t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+	}
+	for _, p := range people {
+		m, err := devOutbox(t, app).LatestTo(testEmail(p.name))
+		if err != nil || !strings.Contains(m.Body, p.want) {
+			t.Fatalf("%s email: want %q in %q (%v)", p.name, p.want, m.Body, err)
+		}
+		n := findKind(feed(t, clients[p.name], ""), "event.cancelled")
+		if n == nil || !strings.Contains(n.Body, p.want) {
+			t.Fatalf("%s bell: want %q in %+v", p.name, p.want, n)
+		}
 	}
 }
 

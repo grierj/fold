@@ -4,7 +4,7 @@ import { Events, Groups } from "../api";
 import type { EventOccurrence, GroupSummary } from "../types";
 import { DateBadge } from "../components/DateBadge";
 import { GroupCard } from "../components/GroupCard";
-import { formatWallClock, zoneSuffix } from "../lib/wall";
+import { formatTime } from "../lib/when";
 
 function tagsFromParams(params: URLSearchParams): string[] {
   const seen = new Set<string>();
@@ -206,12 +206,11 @@ export function Home() {
                 to={`/events/${ev.eventId}`}
                 className="bg-white rounded-xl border border-gray-200 p-4 flex gap-4 hover:border-gray-300"
               >
-                <DateBadge local={ev.startsLocal} />
+                <DateBadge at={ev.startsAt} />
                 <div className="min-w-0">
                   <div className="font-bold text-lg">{ev.title || "Church event"}</div>
                   <div className="text-sm text-gray-600">
-                    {formatWallClock(ev.startsLocal)}
-                    {zoneSuffix(ev.startsAt, ev.tzid)}
+                    {formatTime(ev.startsAt)}
                     {ev.location ? ` · ${ev.location}` : ""}
                   </div>
                   {ev.description && <div className="text-sm text-gray-600 line-clamp-2">{ev.description}</div>}
