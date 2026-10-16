@@ -81,6 +81,16 @@ jobs:
       - working-directory: web
         run: npx playwright install --with-deps chromium
       - run: make e2e
+      # Screenshots of the main pages at 390, 768 and 1280 px, kept with the
+      # run so a styling PR's reviewer can compare them with master's.
+      - name: Screenshots
+        working-directory: web
+        run: SCREENS_DIR="$PWD/screens" npx playwright test seed screens
+      - uses: actions/upload-artifact@v7
+        with:
+          name: screenshots
+          path: web/screens/
+          retention-days: 14
       - if: failure()
         uses: actions/upload-artifact@v7
         with:

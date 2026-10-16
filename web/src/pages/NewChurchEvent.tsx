@@ -70,12 +70,12 @@ export function NewChurchEvent() {
   }
 
   if (loading) {
-    return <div className="max-w-2xl mx-auto px-4 py-12 text-gray-500">Loading…</div>;
+    return <div className="max-w-2xl mx-auto px-4 py-12 text-text-muted">Loading…</div>;
   }
   if (!user) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
-        <Link to="/login" state={{ from: "/events/new" }} className="text-brand font-semibold">
+        <Link to="/login" state={{ from: "/events/new" }} className="text-primary font-semibold">
           Log in
         </Link>{" "}
         to schedule a church-wide event.
@@ -84,7 +84,7 @@ export function NewChurchEvent() {
   }
   if (!isAdmin) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12 text-center text-gray-600">
+      <div className="max-w-2xl mx-auto px-4 py-12 text-center text-text-muted">
         Only an admin can schedule a church-wide event.
       </div>
     );
@@ -92,10 +92,10 @@ export function NewChurchEvent() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-extrabold mb-2">Schedule a church-wide event</h1>
-      <p className="text-gray-600 mb-6">You are a host. Add another host if someone else should run it.</p>
-      <form onSubmit={submit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-        {error && <div className="text-red-600 text-sm">{error}</div>}
+      <h1 className="text-3xl font-bold mb-2">Schedule a church-wide event</h1>
+      <p className="text-text-muted mb-6">You are a host. Add another host if someone else should run it.</p>
+      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+        {error && <div className="text-danger text-sm">{error}</div>}
         <div>
           <label className="label" htmlFor="church-event-title">
             Title
@@ -198,7 +198,7 @@ export function NewChurchEvent() {
             placeholder="They must already have an account"
           />
         </div>
-        <div className="border-t border-gray-100 pt-4">
+        <div className="border-t border-border pt-4">
           <label className="flex items-center gap-2 font-semibold cursor-pointer">
             <input
               type="checkbox"
@@ -207,7 +207,7 @@ export function NewChurchEvent() {
                 setRecurring(e.target.checked);
                 if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
               }}
-              className="w-4 h-4 accent-brand"
+              className="w-4 h-4 accent-primary"
             />
             Repeat weekly
           </label>
@@ -220,8 +220,8 @@ export function NewChurchEvent() {
                   onClick={() => toggleDay(w.value)}
                   className={
                     days.includes(w.value)
-                      ? "px-3 py-1.5 rounded-full text-sm font-semibold bg-brand text-white"
-                      : "px-3 py-1.5 rounded-full text-sm font-semibold bg-gray-100 text-gray-600 hover:bg-gray-200"
+                      ? "px-3 py-1.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground"
+                      : "px-3 py-1.5 rounded-full text-sm font-semibold bg-sunken text-text-muted hover:bg-border"
                   }
                 >
                   {w.label}

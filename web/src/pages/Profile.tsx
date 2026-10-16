@@ -30,12 +30,12 @@ export function ProfilePage() {
   const [emailError, setEmailError] = useState<string | null>(null);
 
   if (loading) {
-    return <div className="max-w-2xl mx-auto px-4 py-12 text-gray-500">Loading…</div>;
+    return <div className="max-w-2xl mx-auto px-4 py-12 text-text-muted">Loading…</div>;
   }
   if (!user) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
-        <Link to="/login" state={{ from: "/profile" }} className="text-brand font-semibold">
+        <Link to="/login" state={{ from: "/profile" }} className="text-primary font-semibold">
           Log in
         </Link>{" "}
         to view your profile.
@@ -165,9 +165,9 @@ export function ProfilePage() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-extrabold mb-6">Your profile</h1>
+      <h1 className="text-3xl font-bold mb-6">Your profile</h1>
 
-      <div className="bg-white rounded-xl border border-gray-200 p-6 mb-6">
+      <div className="bg-surface rounded-lg border border-border p-6 mb-6">
         <ImageUpload
           key={user.avatarUrl || "none"}
           label="Profile picture"
@@ -178,17 +178,17 @@ export function ProfilePage() {
           onFile={savePictureFile}
           onFocal={saveFocal}
         />
-        <p className="text-xs text-gray-500 mt-3">
+        <p className="text-xs text-text-muted mt-3">
           A new picture is saved as soon as you choose it.
         </p>
-        {pictureStatus && <div className="text-green-700 text-sm mt-3">{pictureStatus}</div>}
-        {pictureError && <div className="text-red-600 text-sm mt-3">{pictureError}</div>}
+        {pictureStatus && <div className="text-success text-sm mt-3">{pictureStatus}</div>}
+        {pictureError && <div className="text-danger text-sm mt-3">{pictureError}</div>}
         {user.avatarUrl && (
           <button
             type="button"
             onClick={removeAvatar}
             disabled={pictureBusy}
-            className="btn-secondary py-1.5! px-3! text-sm text-red-600! mt-3"
+            className="btn-secondary py-1.5! px-3! text-sm text-danger! mt-3"
           >
             Remove picture
           </button>
@@ -196,13 +196,13 @@ export function ProfilePage() {
       </div>
 
       <form onSubmit={save} className="space-y-6">
-        {error && <div className="text-red-600 text-sm">{error}</div>}
-        {saved && <div className="text-green-700 text-sm">Profile saved.</div>}
+        {error && <div className="text-danger text-sm">{error}</div>}
+        {saved && <div className="text-success text-sm">Profile saved.</div>}
 
-        <div className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
+        <div className="bg-surface rounded-lg border border-border p-6 space-y-4">
           <div>
-            <label className="label">Display name</label>
-            <input
+            <label className="label" htmlFor="profile-display-name">Display name</label>
+            <input id="profile-display-name"
               className="input"
               value={dn}
               onChange={(e) => setDisplayName(e.target.value)}
@@ -211,8 +211,8 @@ export function ProfilePage() {
             />
           </div>
           <div>
-            <label className="label">Full name</label>
-            <input
+            <label className="label" htmlFor="profile-full-name">Full name</label>
+            <input id="profile-full-name"
               className="input"
               value={fullName}
               onChange={(e) => setName(e.target.value)}
@@ -220,15 +220,15 @@ export function ProfilePage() {
             />
           </div>
           <div>
-            <label className="label">Email (you sign in with it)</label>
-            <input type="email" className="input bg-gray-50" value={user.email} readOnly />
-            <p className="text-xs text-gray-500 mt-1">
+            <label className="label" htmlFor="profile-email">Email (you sign in with it)</label>
+            <input id="profile-email" type="email" className="input bg-page" value={user.email} readOnly />
+            <p className="text-xs text-text-muted mt-1">
               Change it below; the new address gets a verification link first.
             </p>
           </div>
           <div>
-            <label className="label">Phone</label>
-            <input
+            <label className="label" htmlFor="profile-phone">Phone</label>
+            <input id="profile-phone"
               type="tel"
               className="input"
               value={ph}
@@ -241,7 +241,7 @@ export function ProfilePage() {
               Time zone for emails
             </label>
             <ZoneSelect id="profile-tz" value={tz} onChange={setZone} describedBy="profile-tz-hint" />
-            <p id="profile-tz-hint" className="text-xs text-gray-500 mt-1">
+            <p id="profile-tz-hint" className="text-xs text-text-muted mt-1">
               Emails show event times in this zone. On screen, times always follow this device's clock.
             </p>
           </div>
@@ -251,10 +251,10 @@ export function ProfilePage() {
         </div>
       </form>
 
-      <form onSubmit={changeEmail} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4 mt-6">
+      <form onSubmit={changeEmail} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
         <h2 className="text-xl font-bold">Change sign-in email</h2>
-        {emailError && <div className="text-red-600 text-sm">{emailError}</div>}
-        {emailStatus && <div className="text-green-700 text-sm">{emailStatus}</div>}
+        {emailError && <div className="text-danger text-sm">{emailError}</div>}
+        {emailStatus && <div className="text-success text-sm">{emailStatus}</div>}
         <div>
           <label className="label" htmlFor="new-email">
             New email
@@ -268,7 +268,7 @@ export function ProfilePage() {
             autoComplete="email"
             required
           />
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-text-muted mt-1">
             A verification link goes to the new address, and a notice to {user.email}. The
             change applies after you verify, and your other sessions are signed out.
           </p>
@@ -278,10 +278,10 @@ export function ProfilePage() {
         </button>
       </form>
 
-      <form onSubmit={changePassword} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4 mt-6">
+      <form onSubmit={changePassword} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
         <h2 className="text-xl font-bold">Change password</h2>
-        {passwordError && <div className="text-red-600 text-sm">{passwordError}</div>}
-        {passwordSaved && <div className="text-green-700 text-sm">Password changed.</div>}
+        {passwordError && <div className="text-danger text-sm">{passwordError}</div>}
+        {passwordSaved && <div className="text-success text-sm">Password changed.</div>}
         <div>
           <label className="label" htmlFor="current-password">Current password</label>
           <input
@@ -305,7 +305,7 @@ export function ProfilePage() {
             autoComplete="new-password"
             required
           />
-          <p className="text-xs text-gray-500 mt-1">Must be at least 10 characters.</p>
+          <p className="text-xs text-text-muted mt-1">Must be at least 10 characters.</p>
         </div>
         <div>
           <label className="label" htmlFor="confirm-password">Confirm new password</label>
@@ -327,7 +327,7 @@ export function ProfilePage() {
       {user.accountType !== "teen" && (
         <div className="mt-6">
           <h2 className="text-xl font-bold mb-3">Invite a friend</h2>
-          <p className="text-sm text-gray-600 mb-3">
+          <p className="text-sm text-text-muted mb-3">
             Ask for an account for a friend. An admin reviews it first, and your friend
             only hears from us once it&rsquo;s approved — leaders and admins can also send
             a direct invitation from the Admin page.

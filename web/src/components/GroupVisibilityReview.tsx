@@ -41,7 +41,7 @@ export function GroupVisibilityReview({
     <section
       role="dialog"
       aria-labelledby="vis-review-title"
-      className="bg-white rounded-xl border border-amber-300 p-6 space-y-4 mb-4"
+      className="bg-surface rounded-lg border border-warning-border p-6 space-y-4 mb-4"
     >
       <h2 id="vis-review-title" className="text-lg font-bold">
         {subject === "group" ? `Making the group ${next} changes some events` : `Making this event ${next}`}
@@ -55,9 +55,9 @@ export function GroupVisibilityReview({
           >
             {impact.tightened.map((e) => (
               <li key={e.id}>
-                {label(e.title)} <span className="text-gray-500">(now {WORD[e.visibility]})</span>
+                {label(e.title)} <span className="text-text-muted">(now {WORD[e.visibility]})</span>
                 {e.registrants > 0 && (
-                  <span className="text-red-700"> · {people(e.registrants)} registered will be cancelled and notified</span>
+                  <span className="text-danger"> · {people(e.registrants)} registered will be cancelled and notified</span>
                 )}
               </li>
             ))}
@@ -73,7 +73,7 @@ export function GroupVisibilityReview({
               return (
                 <li key={e.id} className="text-sm" data-testid={`opened-${e.id}`}>
                   <div className="font-medium">
-                    {label(e.title)} <span className="text-gray-500 font-normal">(now {WORD[e.visibility]})</span>
+                    {label(e.title)} <span className="text-text-muted font-normal">(now {WORD[e.visibility]})</span>
                   </div>
                   <label className="flex items-center gap-2 mt-1">
                     <input
@@ -92,7 +92,7 @@ export function GroupVisibilityReview({
                       onChange={() => setDecisions((d) => ({ ...d, [key]: "tighten" }))}
                     />
                     Make it {next}
-                    {e.registrants > 0 && <span className="text-red-700"> · cancels {people(e.registrants)} and notifies them</span>}
+                    {e.registrants > 0 && <span className="text-danger"> · cancels {people(e.registrants)} and notifies them</span>}
                   </label>
                 </li>
               );

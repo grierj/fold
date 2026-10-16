@@ -1,27 +1,26 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Dev outbox — Fold</title>
-    <link rel="stylesheet" href="/static/style.css">
+    {{with stylesheet}}<link rel="stylesheet" href="{{.}}">{{end}}
 </head>
-<body>
-    <header>
-        <h1>Dev outbox</h1>
-    </header>
-    <main class="setup">
-        <p>Every email the <code>devoutbox</code> sender stored, newest first.
+<body class="min-h-screen bg-page text-text">
+    <main class="mx-auto max-w-3xl px-gutter py-section sm:px-gutter-lg">
+        <h1 class="text-2xl sm:text-3xl font-bold">Dev outbox</h1>
+        <p class="mt-2 text-text-muted">Every email the <code>devoutbox</code> sender stored, newest first.
         This page exists only when <code>APP_ENV=dev</code>.</p>
         {{if .Messages}}
         {{range .Messages}}
-        <section class="outbox-mail">
-            <h2>{{.Subject}}</h2>
-            <p class="hint">To: {{.To}} &middot; {{.CreatedAt}}</p>
-            <pre>{{.Body}}</pre>
+        <section class="mt-stack rounded-lg border border-border bg-surface p-card shadow-sm sm:p-card-lg">
+            <h2 class="text-lg font-semibold">{{.Subject}}</h2>
+            <p class="text-sm text-text-muted">To: {{.To}} &middot; {{.CreatedAt}}</p>
+            <pre class="mt-3 whitespace-pre-wrap break-words font-sans text-sm">{{.Body}}</pre>
         </section>
         {{end}}
         {{else}}
-        <p>No emails sent yet.</p>
+        <p class="mt-4">No emails sent yet.</p>
         {{end}}
     </main>
 </body>

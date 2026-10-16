@@ -76,7 +76,8 @@ describe("Home tag filters", () => {
     await userEvent.click(bar.getByRole("button", { name: "choir" }));
     const choir = bar.getByRole("button", { name: "choir" });
     expect(choir).toHaveAttribute("aria-pressed", "true");
-    expect(within(choir).getByText("✓")).toBeInTheDocument();
+    // The check mark is drawn by .chip[aria-pressed="true"] in index.css.
+    expect(within(choir).queryByText("+")).not.toBeInTheDocument();
     expect(within(bar.getByRole("button", { name: "youth" })).getByText("+")).toBeInTheDocument();
     expect(summary()).toHaveTextContent(/^Showing groups tagged choir\. Clear$/);
     expect(summary()).toHaveAttribute("aria-live", "polite");

@@ -36,10 +36,10 @@ export function GuestConfirm() {
   const waitlisted = reg?.status === "waitlisted";
   return (
     <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-extrabold mb-6">Confirm your registration</h1>
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
+      <h1 className="text-3xl font-bold mb-6">Confirm your registration</h1>
+      <div className="bg-surface rounded-lg border border-border p-6">
         {full ? (
-          <p className="text-sm text-gray-700">
+          <p className="text-sm text-text-muted">
             This event is full. The link has been used up, so it won&apos;t work again.
           </p>
         ) : reg && result ? (
@@ -60,26 +60,26 @@ export function GuestConfirm() {
                 </>
               )}
             </p>
-            {reg.location && <p className="text-sm text-gray-600 mt-2">{reg.location}</p>}
-            <p className="text-sm text-gray-600 mt-2">
+            {reg.location && <p className="text-sm text-text-muted mt-2">{reg.location}</p>}
+            <p className="text-sm text-text-muted mt-2">
               We also emailed you this confirmation with a link to manage it if your plans change.
             </p>
             <p className="mt-4 flex gap-4">
-              <Link to={`/guest/manage/${result.manageToken}`} className="text-brand font-semibold text-sm">
+              <Link to={`/guest/manage/${result.manageToken}`} className="text-primary font-semibold text-sm">
                 Manage or cancel
               </Link>
-              <Link to={`/events/${reg.eventId}`} className="text-brand font-semibold text-sm">
+              <Link to={`/events/${reg.eventId}`} className="text-primary font-semibold text-sm">
                 View the event
               </Link>
             </p>
           </>
         ) : (
           <>
-            <p className="text-sm text-gray-700">
+            <p className="text-sm text-text-muted">
               This confirms the guest registration that was sent to your email. The link works
               once and expires in 24 hours.
             </p>
-            {error && <p className="text-red-600 text-sm mt-3">{error}</p>}
+            {error && <p className="text-danger text-sm mt-3">{error}</p>}
             <button
               type="button"
               onClick={() => void confirm()}
@@ -88,7 +88,7 @@ export function GuestConfirm() {
             >
               {busy ? "Confirming…" : "Confirm my registration"}
             </button>
-            {!token && <p className="text-sm text-gray-500 mt-3">This page needs the link from your email.</p>}
+            {!token && <p className="text-sm text-text-muted mt-3">This page needs the link from your email.</p>}
           </>
         )}
       </div>

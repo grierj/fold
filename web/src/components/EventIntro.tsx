@@ -13,13 +13,13 @@ export function EventIntro({
   groupId?: number;
 }) {
   if (hostedBy) {
-    return <p className="text-gray-600">Hosted by {hostedBy}</p>;
+    return <p className="text-text-muted">Hosted by {hostedBy}</p>;
   }
   if (groupId && groupName) {
     return (
-      <p className="text-gray-600">
+      <p className="text-text-muted">
         Part of{" "}
-        <Link to={`/groups/${groupId}`} className="text-brand font-semibold">
+        <Link to={`/groups/${groupId}`} className="text-primary font-semibold">
           {groupName}
         </Link>
       </p>
@@ -36,7 +36,7 @@ export function AttendeeNames({ instance }: { instance: EventOccurrence }) {
   if (!instance.attendeesVisible) return null;
   const coming = (instance.attendees ?? []).filter((a) => a.status === "going" || a.status === "maybe");
   if (coming.length === 0) {
-    return <div className="text-sm text-gray-500 mt-1">No one yet</div>;
+    return <div className="text-sm text-text-muted mt-1">No one yet</div>;
   }
-  return <div className="text-sm text-gray-600 mt-1">{coming.map((a) => a.name).join(", ")}</div>;
+  return <div className="text-sm text-text-muted mt-1">{coming.map((a) => a.name).join(", ")}</div>;
 }

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -187,11 +188,12 @@ func (a *App) setupRouter() *gin.Engine {
 		_ = r.SetTrustedProxies(nil)
 	}
 
+	css := builtStylesheet(distFS)
 	r.SetFuncMap(template.FuncMap{
-		"split": strings.Split,
+		"split":      strings.Split,
+		"stylesheet": func() string { return css },
 	})
 	r.LoadHTMLGlob("templates/*.html")
-	r.Static("/static", "./static")
 
 	// User-uploaded assets (avatars, group covers). Served with
 	// X-Content-Type-Options: nosniff; uploads are validated as images
@@ -231,6 +233,25 @@ func (a *App) setupRouter() *gin.Engine {
 
 //go:embed web/dist
 var distFS embed.FS
+
+// stylesheetRe finds the CSS bundle Vite links from index.html.
+var stylesheetRe = regexp.MustCompile(`<link rel="stylesheet"[^>]*href="(/assets/[^"]+\.css)"`)
+
+// builtStylesheet returns the path of the SPA's CSS bundle, which the
+// server-rendered pages (setup, dev outbox) share so they use the same
+// tokens and font. It is empty when web/dist is not built; those pages
+// then render unstyled.
+func builtStylesheet(fsys fs.FS) string {
+	b, err := fs.ReadFile(fsys, "web/dist/index.html")
+	if err != nil {
+		return ""
+	}
+	m := stylesheetRe.FindSubmatch(b)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
+}
 
 // serveSPA serves the embedded frontend bundle, falling back to index.html
 // for client-side routes. API paths get a JSON 404 instead.
@@ -374,7 +395,7 @@ func (a *App) siteName() string {
 func (a *App) setupRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		p := c.Request.URL.Path
-		if p == "/setup" || p == "/healthz" || strings.HasPrefix(p, "/static/") {
+		if p == "/setup" || p == "/healthz" || strings.HasPrefix(p, "/assets/") {
 			c.Next()
 			return
 		}

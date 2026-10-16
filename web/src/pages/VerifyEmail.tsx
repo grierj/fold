@@ -29,14 +29,14 @@ export function VerifyEmail() {
 
   return (
     <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-extrabold mb-6">Verify your email</h1>
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        {state === "working" && <p className="text-sm text-gray-500">Verifying…</p>}
+      <h1 className="text-3xl font-bold mb-6">Verify your email</h1>
+      <div className="bg-surface rounded-lg border border-border p-6">
+        {state === "working" && <p className="text-sm text-text-muted">Verifying…</p>}
         {state === "done" && (
           <>
             <p className="text-sm">Your sign-in email is updated. Your other sessions were signed out.</p>
             <p className="mt-4">
-              <Link to="/profile" className="text-brand font-semibold text-sm">
+              <Link to="/profile" className="text-primary font-semibold text-sm">
                 View your profile
               </Link>
             </p>
@@ -45,9 +45,9 @@ export function VerifyEmail() {
         {state === "error" && (
           <>
             <p className="text-sm">That link is invalid or has expired.</p>
-            <p className="mt-4 text-sm text-gray-600">
+            <p className="mt-4 text-sm text-text-muted">
               Change your email again from your{" "}
-              <Link to="/profile" className="text-brand font-semibold">
+              <Link to="/profile" className="text-primary font-semibold">
                 profile
               </Link>{" "}
               to get a fresh link.

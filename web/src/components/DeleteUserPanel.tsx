@@ -52,20 +52,20 @@ export function DeleteUserPanel({
 
   const name = target.displayName || target.name;
   return (
-    <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-4 text-sm space-y-3">
-      <p className="font-semibold text-red-800">
+    <div className="mt-3 rounded-md border border-danger-border bg-danger-subtle p-4 text-sm space-y-3">
+      <p className="font-semibold text-danger-on-subtle">
         {action === "delete" ? "Delete" : "Disable"} {name}? They will be signed out and can't sign in.
       </p>
       {action === "disable" && (
-        <p className="text-gray-700">
+        <p className="text-text-muted">
           Their groups and registrations are kept but hidden until you enable them again; they come back as a member, not a
           leader.
         </p>
       )}
-      {groups === null && !error && <p className="text-gray-600">Checking their groups…</p>}
+      {groups === null && !error && <p className="text-text-muted">Checking their groups…</p>}
       {groups && groups.length > 0 && (
         <div className="space-y-2">
-          <p className="text-gray-700">They are the only leader of these groups. Choose who leads each one next:</p>
+          <p className="text-text-muted">They are the only leader of these groups. Choose who leads each one next:</p>
           {groups.map((g) => (
             <label key={g.id} className="flex flex-wrap items-center gap-2">
               <span className="font-medium min-w-40">{g.name}</span>
@@ -85,9 +85,9 @@ export function DeleteUserPanel({
           ))}
         </div>
       )}
-      {error && <div className="text-red-600">{error}</div>}
+      {error && <div className="text-danger">{error}</div>}
       <div className="flex gap-3">
-        <button onClick={remove} disabled={busy || groups === null} className="btn-primary bg-red-600!">
+        <button onClick={remove} disabled={busy || groups === null} className="btn-danger">
           {busy ? "Working…" : action === "delete" ? "Delete account" : "Disable account"}
         </button>
         <button onClick={() => onDone(false)} className="btn-secondary">

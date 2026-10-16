@@ -43,9 +43,9 @@ export function Login() {
 
   return (
     <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-extrabold mb-6">Log in to Fold</h1>
-      <form onSubmit={submit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-        {error && <div className="text-red-600 text-sm">{error}</div>}
+      <h1 className="text-3xl font-bold mb-6">Log in to Fold</h1>
+      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+        {error && <div className="text-danger text-sm">{error}</div>}
         <div>
           <label className="label" htmlFor="email">
             Email
@@ -78,14 +78,14 @@ export function Login() {
           {busy ? "Logging in…" : "Log in"}
         </button>
         <p className="text-sm text-center">
-          <Link to="/forgot-password" className="text-brand font-semibold">
+          <Link to="/forgot-password" className="text-primary font-semibold">
             Forgot your password?
           </Link>
         </p>
       </form>
-      <p className="text-sm text-gray-500 mt-4 text-center">
+      <p className="text-sm text-text-muted mt-4 text-center">
         New here?{" "}
-        <Link to="/join" className="text-brand font-semibold">
+        <Link to="/join" className="text-primary font-semibold">
           Request an account
         </Link>{" "}
         — an admin reviews every request.

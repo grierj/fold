@@ -24,15 +24,15 @@ export function Join() {
 
   return (
     <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-extrabold mb-2">Join {site || "Fold"}</h1>
-      <p className="text-gray-600 mb-6 text-sm">
+      <h1 className="text-3xl font-bold mb-2">Join {site || "Fold"}</h1>
+      <p className="text-text-muted mb-6 text-sm">
         Ask for an account below. An admin reviews every request, and we email you the
         decision — approved requests get a link to set a password. Already have an
         account?{" "}
-        <Link to="/login" className="text-brand font-semibold">Log in</Link>.
+        <Link to="/login" className="text-primary font-semibold">Log in</Link>.
       </p>
       {loaded && mode === "off" ? (
-        <div className="bg-white rounded-xl border border-gray-200 p-6 text-sm text-gray-700">
+        <div className="bg-surface rounded-lg border border-border p-6 text-sm text-text-muted">
           Self-signup is turned off for this church. Ask your church office for an
           account, or log in if you already have one.
         </div>

@@ -18,10 +18,6 @@ function tagsFromParams(params: URLSearchParams): string[] {
   return out;
 }
 
-const chipBase =
-  "inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-semibold border transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2";
-const chipOn = `${chipBase} bg-brand border-brand text-white`;
-const chipOff = `${chipBase} bg-white border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50`;
 
 // Separator before the i-th of n tags: "a or b", "a, b, or c".
 function orSeparator(i: number, n: number): string {
@@ -129,12 +125,12 @@ export function Home() {
   return (
     <div>
       {/* Hero */}
-      <section className="bg-white border-b border-gray-200">
+      <section className="bg-surface border-b border-border">
         <div className="max-w-6xl mx-auto px-4 py-12 sm:py-16">
-          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">
+          <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">
             Find your people. Grow in faith together.
           </h1>
-          <p className="mt-3 text-lg text-gray-600 max-w-2xl">
+          <p className="mt-3 text-lg text-text-muted max-w-2xl">
             Small groups, ministries, and activities — all in one place. Join a group and show
             up.
           </p>
@@ -143,12 +139,12 @@ export function Home() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search groups…"
-              className="input py-3! text-lg shadow-xs"
+              className="input py-3! text-lg shadow-sm"
             />
           </div>
           {chips.length > 0 && (
             <div className="mt-4 flex flex-wrap gap-2">
-              <button onClick={clearTags} className={selectedTags.length === 0 ? chipOn : chipOff}>
+              <button onClick={clearTags} aria-pressed={selectedTags.length === 0} className="chip">
                 All
               </button>
               {chips.map((t) => {
@@ -158,14 +154,12 @@ export function Home() {
                     key={t}
                     onClick={() => toggleTag(t)}
                     aria-pressed={on}
-                    className={on ? chipOn : chipOff}
+                    className="chip"
                   >
-                    {/* Checkmark on selected tags; once any tag is on, the
-                        others show "+" to say they add more groups. */}
-                    {on ? (
-                      <span aria-hidden="true">✓</span>
-                    ) : selectedTags.length > 0 ? (
-                      <span aria-hidden="true" className="text-gray-400">
+                    {/* .chip draws the checkmark on selected tags; once any
+                        tag is on, the others show "+" to say they add more groups. */}
+                    {!on && selectedTags.length > 0 ? (
+                      <span aria-hidden="true" className="text-text-subtle">
                         +
                       </span>
                     ) : null}
@@ -176,18 +170,18 @@ export function Home() {
             </div>
           )}
           {selectedTags.length > 0 && (
-            <p className="mt-3 text-sm text-gray-600" aria-live="polite">
+            <p className="mt-3 text-sm text-text-muted" aria-live="polite">
               Showing groups tagged{" "}
               {selectedTags.map((t, i) => (
                 <span key={t}>
                   {orSeparator(i, selectedTags.length)}
-                  <strong className="font-semibold text-gray-900">{t}</strong>
+                  <strong className="font-semibold text-text">{t}</strong>
                 </span>
               ))}
               .{" "}
               <button
                 onClick={clearTags}
-                className="font-semibold text-brand hover:underline rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+                className="font-semibold text-primary hover:underline rounded-sm"
               >
                 Clear
               </button>
@@ -204,17 +198,17 @@ export function Home() {
               <Link
                 key={`${ev.eventId}-${ev.date}`}
                 to={`/events/${ev.eventId}`}
-                className="bg-white rounded-xl border border-gray-200 p-4 flex gap-4 hover:border-gray-300"
+                className="bg-surface rounded-lg border border-border p-4 flex gap-4 hover:border-border-strong"
               >
                 <DateBadge at={ev.startsAt} />
                 <div className="min-w-0">
                   <div className="font-bold text-lg">{ev.title || "Church event"}</div>
-                  <div className="text-sm text-gray-600">
+                  <div className="text-sm text-text-muted">
                     {formatTime(ev.startsAt)}
                     {ev.location ? ` · ${ev.location}` : ""}
                   </div>
-                  {ev.description && <div className="text-sm text-gray-600 line-clamp-2">{ev.description}</div>}
-                  {ev.hostedBy && <div className="text-sm text-gray-500">Hosted by {ev.hostedBy}</div>}
+                  {ev.description && <div className="text-sm text-text-muted line-clamp-2">{ev.description}</div>}
+                  {ev.hostedBy && <div className="text-sm text-text-muted">Hosted by {ev.hostedBy}</div>}
                 </div>
               </Link>
             ))}
@@ -225,16 +219,16 @@ export function Home() {
       {/* Group grid */}
       <section className="max-w-6xl mx-auto px-4 py-8">
         <h2 className="text-2xl font-bold mb-4">Church Groups</h2>
-        {loading && <div className="text-gray-500">Loading groups…</div>}
-        {error && <div className="text-red-600">{error}</div>}
+        {loading && <div className="text-text-muted">Loading groups…</div>}
+        {error && <div className="text-danger">{error}</div>}
         {!loading && !error && groups.length === 0 && (
-          <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
+          <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
             {selectedTags.length > 0 && debounced.trim() ? (
               <>
                 No groups match “{debounced.trim()}” with these tags. Try another search, or{" "}
                 <button
                   onClick={clearTags}
-                  className="font-semibold text-brand hover:underline rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+                  className="font-semibold text-primary hover:underline rounded-sm"
                 >
                   Clear the tags
                 </button>

@@ -1,28 +1,30 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Setup — Fold</title>
-    <link rel="stylesheet" href="/static/style.css">
+    {{with stylesheet}}<link rel="stylesheet" href="{{.}}">{{end}}
 </head>
-<body>
-    <header>
-        <h1>Welcome — let's set things up</h1>
-    </header>
-    <main class="setup">
-        <p>This only appears once. Create your church's site and its first
+<body class="min-h-screen bg-page text-text">
+    <main class="mx-auto max-w-lg px-gutter py-section sm:px-gutter-lg">
+        <p class="mb-6 text-2xl font-bold text-primary">Fold</p>
+        <h1 class="text-2xl sm:text-3xl font-bold">Welcome — let's set things up</h1>
+        <p class="mt-2 text-text-muted">This only appears once. Create your church's site and its first
         administrator account.</p>
         {{if .Error}}
-        <p class="error">{{.Error}}</p>
+        <p class="mt-4 rounded-lg border border-danger-border bg-danger-subtle p-4 text-danger-on-subtle" role="alert">{{.Error}}</p>
         {{end}}
-        <form method="POST" action="/setup" class="setup-form">
+        <form method="POST" action="/setup" class="mt-6 space-y-4 rounded-lg border border-border bg-surface p-card shadow-sm sm:p-card-lg">
             {{ .csrfField }}
-            <div class="field">
-                <label>Church / site name: <input type="text" name="site_name" value="{{.EnteredSiteName}}" required></label>
+            <div>
+                <label class="label" for="site_name">Church / site name</label>
+                <input class="input" id="site_name" type="text" name="site_name" value="{{.EnteredSiteName}}" required>
             </div>
-            <div class="field">
-                <label>Church time zone: <input type="text" name="timezone" value="{{.EnteredTimezone}}" list="timezones" aria-describedby="tz-hint" required></label>
-                <p class="hint" id="tz-hint">IANA name, for example America/Denver. A 7:00 PM event stays at 7:00 PM when daylight saving changes.</p>
+            <div>
+                <label class="label" for="timezone">Church time zone</label>
+                <input class="input" id="timezone" type="text" name="timezone" value="{{.EnteredTimezone}}" list="timezones" aria-describedby="tz-hint" required>
+                <p class="mt-1 text-sm text-text-muted" id="tz-hint">IANA name, for example America/Denver. A 7:00 PM event stays at 7:00 PM when daylight saving changes.</p>
                 <datalist id="timezones">
                     <option value="America/New_York"></option>
                     <option value="America/Chicago"></option>
@@ -35,20 +37,24 @@
                     <option value="Europe/London"></option>
                 </datalist>
             </div>
-            <div class="field">
-                <label>Your name: <input type="text" name="name" value="{{.EnteredName}}" autocomplete="name" required></label>
+            <div>
+                <label class="label" for="name">Your name</label>
+                <input class="input" id="name" type="text" name="name" value="{{.EnteredName}}" autocomplete="name" required>
             </div>
-            <div class="field">
-                <label>Your email (you sign in with it): <input type="email" name="email" value="{{.EnteredEmail}}" autocomplete="email" required></label>
+            <div>
+                <label class="label" for="email">Your email (you sign in with it)</label>
+                <input class="input" id="email" type="email" name="email" value="{{.EnteredEmail}}" autocomplete="email" required>
             </div>
-            <div class="field">
-                <label>Password: <input type="password" name="password" autocomplete="new-password" aria-describedby="password-hint" required></label>
-                <p class="hint" id="password-hint">Password must be at least 10 characters.</p>
+            <div>
+                <label class="label" for="password">Password</label>
+                <input class="input" id="password" type="password" name="password" autocomplete="new-password" aria-describedby="password-hint" required>
+                <p class="mt-1 text-sm text-text-muted" id="password-hint">Password must be at least 10 characters.</p>
             </div>
-            <div class="field">
-                <label>Confirm password: <input type="password" name="password_confirm" required></label>
+            <div>
+                <label class="label" for="password_confirm">Confirm password</label>
+                <input class="input" id="password_confirm" type="password" name="password_confirm" autocomplete="new-password" required>
             </div>
-            <button type="submit">Create site</button>
+            <button class="btn-primary w-full" type="submit">Create site</button>
         </form>
     </main>
 </body>

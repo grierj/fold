@@ -49,11 +49,11 @@ export function SetPassword() {
   if (!token) {
     return (
       <div className="max-w-md mx-auto px-4 py-12">
-        <h1 className="text-3xl font-extrabold mb-6">Set your password</h1>
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h1 className="text-3xl font-bold mb-6">Set your password</h1>
+        <div className="bg-surface rounded-lg border border-border p-6">
           <p className="text-sm">This link is missing its token.</p>
           <p className="mt-4">
-            <Link to="/login" className="text-brand font-semibold text-sm">Back to log in</Link>
+            <Link to="/login" className="text-primary font-semibold text-sm">Back to log in</Link>
           </p>
         </div>
       </div>
@@ -63,8 +63,8 @@ export function SetPassword() {
   if (waiting) {
     return (
       <div className="max-w-md mx-auto px-4 py-12">
-        <h1 className="text-3xl font-extrabold mb-6">You&rsquo;re almost in</h1>
-        <div className="bg-white rounded-xl border border-gray-200 p-6 text-sm text-gray-700">
+        <h1 className="text-3xl font-bold mb-6">You&rsquo;re almost in</h1>
+        <div className="bg-surface rounded-lg border border-border p-6 text-sm text-text-muted">
           Your password is set. Because you&rsquo;re 13 to 17, your account still needs a
           parent or guardian&rsquo;s consent before you can sign in — your church will be
           in touch when it&rsquo;s ready.
@@ -75,13 +75,13 @@ export function SetPassword() {
 
   return (
     <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-extrabold mb-6">Set your password</h1>
-      <form onSubmit={submit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-        {error && <div className="text-red-600 text-sm">{error}</div>}
+      <h1 className="text-3xl font-bold mb-6">Set your password</h1>
+      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+        {error && <div className="text-danger text-sm">{error}</div>}
         <div>
           <label className="label" htmlFor="sp-password">Password</label>
           <input id="sp-password" type="password" className="input" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
-          <p className="text-xs text-gray-500 mt-1">Must be at least 10 characters.</p>
+          <p className="text-xs text-text-muted mt-1">Must be at least 10 characters.</p>
         </div>
         <div>
           <label className="label" htmlFor="sp-confirm">Confirm password</label>
