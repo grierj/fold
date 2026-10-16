@@ -1,6 +1,8 @@
 services:
   db:
     image: postgres:16-alpine
+    # No host ports. Publishing 5432 would bypass ufw (Docker writes iptables).
+    # smoke.sh rejects a public bind. The app reaches Postgres on this network.
     restart: unless-stopped
     environment:
       POSTGRES_USER: church
@@ -16,6 +18,8 @@ services:
 
   app:
     build: .
+    # No host ports. Caddy is the only published service (80 and 443).
+    # 8080 on 0.0.0.0 would bypass ufw. Loopback is the only bind smoke allows.
     restart: unless-stopped
     environment:
       APP_ENV: prod

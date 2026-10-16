@@ -19,8 +19,9 @@ church site and its admin account.
 
 A single DigitalOcean droplet is the recommended production install.
 `docs/DEPLOY-DIGITALOCEAN.md` and `deploy/digitalocean/provision.sh`
-harden Ubuntu and start this Compose stack. The script never creates
-droplets or other DigitalOcean resources.
+harden Ubuntu and start this Compose stack. `smoke.sh` checks health,
+TLS, and that Postgres is not reachable from the internet. The script
+never creates droplets or other DigitalOcean resources.
 
 Postgres data is the `pgdata` volume. Avatars and cover photos are the
 `uploads` volume, mounted at `/data` in the app container. Rebuilding the

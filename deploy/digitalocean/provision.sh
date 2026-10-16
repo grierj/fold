@@ -29,6 +29,8 @@ SMTP_URL=""
 EMAIL_FROM=""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=deploy/digitalocean/checks.sh
+source "$SCRIPT_DIR/checks.sh"
 keys=()
 
 die() {
@@ -88,8 +90,9 @@ is safe. --dry-run prints the plan and does not change the machine.
 
 Required for a deploy (unless --skip-deploy):
   --domain NAME              Public hostname. DNS A/AAAA must point here.
-  --image REF                Pull this image instead of building.
+  --image REF                Pull this pinned tag instead of building.
                              Example: ghcr.io/grierj/fold:0.5.0
+                             :latest is refused.
   --allow-onbox-build        Build on this machine (docker compose up --build).
                              Off by default. A 1 GB droplet will run out of memory.
 
@@ -254,11 +257,7 @@ validate() {
   fi
   if [[ -n "$IMAGE" ]]; then
     [[ "$IMAGE" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]] || die "--image has characters this script will not put in a compose file"
-    case "$IMAGE" in
-      *:latest|*/latest)
-        echo "provision.sh: warning: $IMAGE is not a pinned release tag" >&2
-        ;;
-    esac
+    assert_pinned_image "$IMAGE" || exit 1
   fi
   if [[ -n "$TIMEZONE" ]]; then
     [[ "$TIMEZONE" =~ ^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$ ]] || die "--timezone is not an IANA zone name"
@@ -384,13 +383,13 @@ load_pubkey() {
 apt_base() {
   if (( DRY_RUN )); then
     echo "dry-run: apt-get update"
-    echo "dry-run: DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl openssl tzdata ufw fail2ban unattended-upgrades"
+    echo "dry-run: DEBIAN_FRONTEND=noninteractive apt-get install -y ca-certificates curl dnsutils jq openssl tzdata ufw fail2ban unattended-upgrades"
     echo "dry-run: apt-get install -y age   # when the package exists; offsite backups need it"
     return 0
   fi
   export DEBIAN_FRONTEND=noninteractive
   apt-get update
-  apt-get install -y ca-certificates curl openssl tzdata ufw fail2ban unattended-upgrades
+  apt-get install -y ca-certificates curl dnsutils jq openssl tzdata ufw fail2ban unattended-upgrades
   if apt-cache show age >/dev/null 2>&1; then
     apt-get install -y age
   else
@@ -405,7 +404,14 @@ ensure_user() {
     step useradd --create-home --shell /bin/bash --groups sudo "$ADMIN_USER"
   fi
   # Locked password: login is the SSH key. sudo is NOPASSWD because of that.
-  step passwd -l "$ADMIN_USER"
+  # passwd -S prints "user L ..." once the password is locked. A second
+  # passwd -l rewrites the shadow date, so skip it when already locked.
+  local locked
+  locked="$(passwd -S "$ADMIN_USER" 2>/dev/null || true)"
+  case "$locked" in
+    *" L "*) echo "password for $ADMIN_USER already locked" ;;
+    *) step passwd -l "$ADMIN_USER" ;;
+  esac
 }
 
 install_authorized_keys() {
@@ -467,6 +473,7 @@ EOF
   if (( DRY_RUN )); then
     echo "dry-run: sshd -t"
     echo "dry-run: systemctl reload ssh"
+    echo "dry-run: sshd -T must show permitrootlogin no and passwordauthentication no"
     return 0
   fi
   if ! sshd -t; then
@@ -474,6 +481,7 @@ EOF
     die "sshd -t failed; removed $path so a later restart cannot lock SSH out"
   fi
   systemctl reload ssh || systemctl reload sshd
+  assert_ssh_locked || exit 1
 }
 
 configure_ufw() {
@@ -597,7 +605,11 @@ EOF
     return 0
   fi
   if getent group docker >/dev/null && id "$ADMIN_USER" >/dev/null 2>&1; then
-    usermod -aG docker "$ADMIN_USER"
+    if id -nG "$ADMIN_USER" | tr ' ' '\n' | grep -qx docker; then
+      echo "user $ADMIN_USER already in group docker"
+    else
+      usermod -aG docker "$ADMIN_USER"
+    fi
   fi
 }
 
@@ -687,48 +699,35 @@ install_runtime_files() {
     copy_tree "$SOURCE_DIR" "$DEPLOY_DIR"
   fi
   if (( DRY_RUN )); then
-    echo "dry-run: install $SCRIPT_DIR/backup.sh to $DEPLOY_DIR/backup.sh mode 755"
+    echo "dry-run: install backup.sh smoke.sh email-dns.sh upgrade.sh checks.sh into $DEPLOY_DIR"
     echo "dry-run: install $SCRIPT_DIR/backup.env.example to $DEPLOY_DIR/backup.env.example mode 644"
     return 0
   fi
   install -m 755 "$SCRIPT_DIR/backup.sh" "$DEPLOY_DIR/backup.sh"
+  install -m 755 "$SCRIPT_DIR/smoke.sh" "$DEPLOY_DIR/smoke.sh"
+  install -m 755 "$SCRIPT_DIR/email-dns.sh" "$DEPLOY_DIR/email-dns.sh"
+  install -m 755 "$SCRIPT_DIR/upgrade.sh" "$DEPLOY_DIR/upgrade.sh"
+  install -m 644 "$SCRIPT_DIR/checks.sh" "$DEPLOY_DIR/checks.sh"
   install -m 644 "$SCRIPT_DIR/backup.env.example" "$DEPLOY_DIR/backup.env.example"
   if [[ -f "$DEPLOY_DIR/backup.env" ]]; then
     chmod 600 "$DEPLOY_DIR/backup.env"
+    assert_env_mode "$DEPLOY_DIR/backup.env" || exit 1
   fi
-}
-
-env_file_domain() {
-  local file="$1"
-  local line key val
-  [[ -f "$file" ]] || return 0
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    case "$line" in
-      ''|'#'*) continue ;;
-    esac
-    key="${line%%=*}"
-    val="${line#*=}"
-    if [[ "$val" == \"*\" && "$val" == *\" ]]; then
-      val="${val:1:${#val}-2}"
-    fi
-    if [[ "$key" == "DOMAIN" ]]; then
-      printf '%s' "$val"
-      return 0
-    fi
-  done <"$file"
 }
 
 write_env() {
   local env_file="$DEPLOY_DIR/.env"
   if [[ -f "$env_file" ]]; then
     local existing
-    existing="$(env_file_domain "$env_file")"
+    existing="$(env_value "$env_file" DOMAIN || true)"
     if [[ -n "$existing" && "$existing" != "$DOMAIN" ]]; then
       die "$env_file DOMAIN is $existing; this run passed --domain $DOMAIN. Edit .env yourself if the name should change. Secrets were left untouched."
     fi
     echo "$env_file already exists; leaving secrets unchanged"
     if (( ! DRY_RUN )); then
       chmod 600 "$env_file"
+      assert_env_mode "$env_file" || exit 1
+      assert_env_untracked "$SOURCE_DIR" "$DEPLOY_DIR" || exit 1
     else
       echo "dry-run: chmod 600 $env_file"
     fi
@@ -763,25 +762,18 @@ write_env() {
     fi
   } >"$env_file"
   chmod 600 "$env_file"
+  assert_env_mode "$env_file" || exit 1
+  assert_env_untracked "$SOURCE_DIR" "$DEPLOY_DIR" || exit 1
   if [[ -n "$SMTP_URL" ]]; then
     echo "provision.sh: SMTP settings were written to $env_file. They may also be in your shell history." >&2
   fi
 }
 
-install_healthcheck() {
-  local path="$DEPLOY_DIR/healthcheck.sh"
-  write_file "$path" 755 "curl https://$DOMAIN/healthz; log on failure" <<EOF
-#!/bin/bash
-# Managed by deploy/digitalocean/provision.sh
-set -euo pipefail
-if ! curl -fsS --max-time 15 "https://${DOMAIN}/healthz" >/dev/null; then
-  logger -t fold-health "https://${DOMAIN}/healthz failed"
-fi
-EOF
-  write_file /etc/cron.d/fold-health 644 "healthz every 5 minutes" <<EOF
+install_smoke_cron() {
+  write_file /etc/cron.d/fold-health 644 "smoke.sh every 5 minutes" <<EOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-*/5 * * * * root ${path}
+*/5 * * * * root ${DEPLOY_DIR}/smoke.sh --deploy-dir ${DEPLOY_DIR} --timeout 60 || logger -t fold-health "smoke failed for https://${DOMAIN}/"
 EOF
 }
 
@@ -815,28 +807,30 @@ deploy_stack() {
   fi
 }
 
-wait_healthy() {
+verify_before_up() {
   if (( DRY_RUN )); then
-    echo "dry-run: wait until the app container is healthy"
-    echo "dry-run: remind the operator to open https://$DOMAIN/ after DNS points here"
+    echo "dry-run: check compose does not publish db/app, and FOLD_TRUSTED_PROXIES matches the subnet"
     return 0
   fi
-  local i cid status
-  i=0
-  while [[ "$i" -lt 36 ]]; do
-    i=$((i + 1))
-    cid="$(docker compose --project-directory "$DEPLOY_DIR" ps -q app || true)"
-    if [[ -n "$cid" ]]; then
-      status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$cid")"
-      if [[ "$status" == "healthy" ]]; then
-        echo "app container is healthy"
-        return 0
-      fi
-    fi
-    sleep 5
-  done
-  echo "provision.sh: app container did not become healthy. Logs: docker compose --project-directory $DEPLOY_DIR logs app --tail 200" >&2
-  return 1
+  assert_compose_private "$DEPLOY_DIR/docker-compose.yml" || exit 1
+  assert_trusted_proxy "$DEPLOY_DIR/docker-compose.yml" "$DEPLOY_DIR/.env" || exit 1
+}
+
+run_email_dns() {
+  if (( DRY_RUN )); then
+    echo "dry-run: $DEPLOY_DIR/email-dns.sh --domain $DOMAIN (no API calls; skipped when POSTMARK_ACCOUNT_TOKEN is unset)"
+    return 0
+  fi
+  "$DEPLOY_DIR/email-dns.sh" --domain "$DOMAIN" --deploy-dir "$DEPLOY_DIR"
+}
+
+run_smoke() {
+  if (( DRY_RUN )); then
+    echo "dry-run: $DEPLOY_DIR/smoke.sh --deploy-dir $DEPLOY_DIR --domain $DOMAIN"
+    echo "dry-run: smoke waits until db and app are healthy, curls https://$DOMAIN/healthz, checks the TLS certificate, and fails if 5432 or 8080 is reachable"
+    return 0
+  fi
+  "$DEPLOY_DIR/smoke.sh" --deploy-dir "$DEPLOY_DIR" --domain "$DOMAIN" --source-dir "$SOURCE_DIR"
 }
 
 summarize() {
@@ -859,7 +853,9 @@ EOF
   next:       confirm a second terminal can 'ssh ${ADMIN_USER}@${DOMAIN}' before closing root
               point DNS at this host if you have not, then open https://${DOMAIN}/
               the first visit is the setup wizard
-              put SMTP in ${DEPLOY_DIR}/.env before inviting people (SMS stays unset)
+              smoke.sh already requested https://${DOMAIN}/healthz
+              put SMTP in ${DEPLOY_DIR}/.env before inviting people, or re-run with
+              POSTMARK_ACCOUNT_TOKEN set so email-dns.sh can create the domain (SMS stays unset)
               copy ${DEPLOY_DIR}/backup.env.example to backup.env to ship dumps off the box
 EOF
   fi
@@ -891,10 +887,12 @@ main() {
     install_docker
     install_runtime_files
     write_env
-    install_healthcheck
+    verify_before_up
+    install_smoke_cron
     install_backup_cron
+    run_email_dns
     deploy_stack
-    wait_healthy
+    run_smoke
   fi
   summarize
 }
