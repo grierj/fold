@@ -24,7 +24,7 @@ export function NotificationsPage() {
   const showWaiting = isAdmin || feed.waitingTotal > 0 || filter === "waiting";
   return (
     <div className="max-w-2xl mx-auto px-0 sm:px-4 py-4">
-      <div className="sticky top-16 z-[5] bg-white border-b border-gray-200 px-4 py-3">
+      <div className="sticky top-16 z-5 bg-white border-b border-gray-200 px-4 py-3">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold mr-auto">Notifications</h1>
           {filter !== "archived" && (

@@ -22,7 +22,7 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | M1.9 Households and household people | unclaimed | | |
 | M1.10 Teen accounts, consent, badges | unclaimed | | |
 | M1.11 Contact privacy and direct-contact requests | unclaimed | | |
-| M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | unclaimed | | |
+| M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | in review | Grok | `m1.12-toolchain` |
 | M1.13 Per-date event visibility (DEC-46) | unclaimed | | |
 | Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | done (merged, #43) | Codex | `simplicity` |
 

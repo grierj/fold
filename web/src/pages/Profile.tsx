@@ -174,7 +174,7 @@ export function ProfilePage() {
           initialUrl={user.avatarUrl || undefined}
           initialFocal={{ x: user.avatarFocalX, y: user.avatarFocalY }}
           maxDim={512}
-          aspectClass="aspect-square !max-w-[12rem]"
+          aspectClass="aspect-square max-w-48!"
           onFile={savePictureFile}
           onFocal={saveFocal}
         />
@@ -188,7 +188,7 @@ export function ProfilePage() {
             type="button"
             onClick={removeAvatar}
             disabled={pictureBusy}
-            className="btn-secondary !py-1.5 !px-3 text-sm !text-red-600 mt-3"
+            className="btn-secondary py-1.5! px-3! text-sm text-red-600! mt-3"
           >
             Remove picture
           </button>

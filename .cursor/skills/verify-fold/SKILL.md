@@ -94,6 +94,8 @@ Standards:
 
 Save later feature artifacts under the same proof directory, in a subdirectory named for the feature. Record the feature id and the entry point in a `result.txt` next to the files.
 
+For a change meant to leave the screens alone (a dependency or toolchain upgrade), compare whole-page screenshots instead. On master and then on the branch, run `npm run build` and `SCREENS_DIR=/tmp/shots/<name> npx playwright test seed screens` in `web/`, which shoots 12 pages at 390, 768 and 1280 px through the e2e server. Then `node e2e/compare-screens.mjs /tmp/shots/master /tmp/shots/branch` lists each file as identical or gives the share of pixels that differ. Explain every difference in the PR. This uses the e2e server, so don't run it beside another `make e2e`.
+
 ## Cleanup
 
 ```bash

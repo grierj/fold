@@ -209,7 +209,7 @@ export function SeriesEditor({
                 setRecurring(e.target.checked);
                 if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
               }}
-              className="w-4 h-4 accent-[#f64060]"
+              className="w-4 h-4 accent-brand"
             />
             Repeat weekly
           </label>
@@ -270,7 +270,7 @@ export function SeriesEditor({
               type="checkbox"
               checked={waitlistEnabled}
               onChange={(e) => setWaitlistEnabled(e.target.checked)}
-              className="w-4 h-4 accent-[#f64060]"
+              className="w-4 h-4 accent-brand"
             />
             Waitlist when full
           </label>

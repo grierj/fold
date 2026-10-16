@@ -16,7 +16,7 @@ export function ImageUpload({
   initialUrl?: string;
   initialFocal: { x: number; y: number };
   maxDim: number;
-  aspectClass: string; // e.g. "aspect-square" or "aspect-[16/9]"
+  aspectClass: string; // e.g. "aspect-square" or "aspect-video"
   onFile: (file: File | null) => void;
   onFocal: (f: { x: number; y: number }) => void;
 }) {
@@ -89,7 +89,7 @@ export function ImageUpload({
         )}
         {preview && (
           <div
-            className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow pointer-events-none"
+            className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow-sm pointer-events-none"
             style={{ left: `${focal.x}%`, top: `${focal.y}%` }}
           />
         )}
@@ -102,7 +102,7 @@ export function ImageUpload({
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
-          className="btn-secondary !py-1.5 !px-3 text-sm"
+          className="btn-secondary py-1.5! px-3! text-sm"
         >
           {busy ? "Processing…" : preview ? "Choose different image" : "Choose image"}
         </button>
@@ -110,7 +110,7 @@ export function ImageUpload({
           <button
             type="button"
             onClick={clear}
-            className="btn-secondary !py-1.5 !px-3 text-sm"
+            className="btn-secondary py-1.5! px-3! text-sm"
           >
             Clear
           </button>

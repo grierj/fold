@@ -23,7 +23,7 @@ via `go:embed`). No separate frontend hosting. Ever.
 - Schema: versioned **goose** SQL files in `migrations/`, embedded in the
   binary and run on start under an advisory lock. They are the source of
   truth; GORM models must match them (C1)
-- **React + Vite + Tailwind** SPA in `web/` (Node 22 LTS); `web/dist/` is embedded into
+- **React + Vite + Tailwind** SPA in `web/` (Node 24 LTS recommended); `web/dist/` is embedded into
   the binary. Release pipeline runs `npm run build` before `go build`
 - **No Python.** Not for tooling, not for scripts. Shell or Go.
 

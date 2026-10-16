@@ -68,7 +68,7 @@ export function NotificationRow({
             feed.open(n);
             onNavigate?.();
           }}
-          className="block focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand rounded"
+          className="block focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-brand rounded-sm"
         >
           {unread && <span className="sr-only">Unread. </span>}
           {n.waiting && <span className="sr-only">Waiting on you. </span>}
@@ -94,7 +94,7 @@ export function NotificationRow({
             {n.actions.map((a) => (
               <button
                 key={a.key}
-                className="btn-primary !py-1.5 !px-3 text-sm"
+                className="btn-primary py-1.5! px-3! text-sm"
                 aria-busy={feed.busy[n.id] || undefined}
                 disabled={feed.busy[n.id] || feed.offline}
                 title={feed.offline ? "Reconnect to do this" : undefined}
@@ -103,7 +103,7 @@ export function NotificationRow({
                 {feed.busy[n.id] ? "Approving…" : a.label}
               </button>
             ))}
-            <Link to={n.link} onClick={onNavigate} className="btn-secondary !py-1.5 !px-3 text-sm">
+            <Link to={n.link} onClick={onNavigate} className="btn-secondary py-1.5! px-3! text-sm">
               Review
             </Link>
           </div>
@@ -183,7 +183,7 @@ function Skeleton() {
   return (
     <ul aria-busy="true" className="px-4 py-3 space-y-3">
       {[0, 1, 2].map((i) => (
-        <li key={i} className="h-10 bg-gray-100 rounded motion-safe:animate-pulse" />
+        <li key={i} className="h-10 bg-gray-100 rounded-sm motion-safe:animate-pulse" />
       ))}
     </ul>
   );
@@ -218,7 +218,7 @@ export function FeedBody({
     return (
       <div className="px-4 py-6 text-center text-sm">
         <p className="text-gray-700">Couldn't load notifications.</p>
-        <button className="btn-secondary mt-2 !py-1.5 !px-3 text-sm" onClick={feed.reload}>
+        <button className="btn-secondary mt-2 py-1.5! px-3! text-sm" onClick={feed.reload}>
           Try again
         </button>
       </div>
@@ -368,7 +368,7 @@ export function NotificationBell() {
       <button
         ref={bellRef}
         onClick={() => (isMobile() ? navigate("/notifications") : setOpen((o) => !o))}
-        className="relative text-gray-700 hover:text-brand p-2.5 -m-2.5 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+        className="relative text-gray-700 hover:text-brand p-2.5 -m-2.5 rounded-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
         aria-label={badgeLabel(badge)}
         aria-expanded={open}
         aria-controls="notif-panel"
@@ -378,7 +378,7 @@ export function NotificationBell() {
         {count > 0 && (
           <span
             aria-hidden="true"
-            className="absolute top-0.5 right-0.5 min-w-[1.25rem] h-5 px-1 rounded-full bg-brand-dark text-white text-xs font-bold flex items-center justify-center ring-2 ring-white"
+            className="absolute top-0.5 right-0.5 min-w-5 h-5 px-1 rounded-full bg-brand-dark text-white text-xs font-bold flex items-center justify-center ring-2 ring-white"
           >
             {badgeText(badge)}
           </span>
@@ -394,7 +394,7 @@ export function NotificationBell() {
           className="absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-gray-200 shadow-lg z-20 overflow-hidden flex flex-col max-h-[70vh]"
         >
           <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
-            <h2 id="notif-panel-heading" ref={headingRef} tabIndex={-1} className="font-bold text-sm mr-auto outline-none">
+            <h2 id="notif-panel-heading" ref={headingRef} tabIndex={-1} className="font-bold text-sm mr-auto outline-hidden">
               Notifications
             </h2>
             <button

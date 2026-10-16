@@ -1,11 +1,12 @@
 import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 
 // Build artifacts land in web/dist, which the Go binary embeds via go:embed.
 // Assets use absolute paths: the binary serves the SPA at /, and relative
 // paths broke deep links such as /groups/1 (assets resolved under /groups/).
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   base: "/",
   build: {
     outDir: "dist",
@@ -31,7 +32,7 @@ export default defineConfig({
   // without --localstorage-file, and being already on globalThis it
   // blocks jsdom's real Storage when vitest populates the environment,
   // so every bare localStorage in a test is undefined. The flag removes
-  // Node's accessor and jsdom wins, on Node 22 (CI) and newer alike.
+  // Node's accessor and jsdom wins, on Node 24 (CI) and newer alike.
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],
