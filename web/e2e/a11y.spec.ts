@@ -1,6 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { apiAs, signIn, signOut } from "./helpers";
+import { signIn, signOut } from "./helpers";
+import { open, uiPages, type UIPage } from "./ui-pages";
 
 // axe on the main pages at phone and desktop widths (UI makeover PR 3).
 // Serious and critical issues fail; minor and moderate ones are listed in
@@ -23,37 +24,23 @@ async function scan(page: Page, name: string) {
 }
 
 test("main pages have no serious or critical axe issues", async ({ page, request }) => {
-  test.setTimeout(120_000);
-  const admin = await apiAs(request, "grier");
-  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
-  const room = groups.find((g) => g.name === "Room 201 class")!;
-
-  await page.goto("/");
-  await expect(page.getByText("Room 201 class").first()).toBeVisible();
-  await scan(page, "home signed out");
-  await page.goto("/login");
-  await scan(page, "login");
-
-  await signIn(page, "grier");
-  await page.goto("/");
-  await expect(page.getByText("Room 201 class").first()).toBeVisible();
-  await scan(page, "home");
-  await page.goto(`/groups/${room.id}`);
-  await expect(page.getByRole("heading", { name: "Room 201 class" })).toBeVisible();
-  await scan(page, "group");
-  await page.goto("/groups/new");
-  await expect(page.getByLabel("Group name")).toBeVisible();
-  await scan(page, "new group");
-  await page.goto("/profile");
-  await expect(page.getByLabel("Time zone for emails")).not.toHaveValue("");
-  await scan(page, "profile");
-  await page.goto("/notifications");
-  await page.waitForLoadState("networkidle");
-  await scan(page, "notifications");
-  for (const tab of ["approvals", "groups", "users", "invite"]) {
-    await page.goto(tab === "approvals" ? "/admin" : `/admin?tab=${tab}`);
-    await page.waitForLoadState("networkidle");
-    await scan(page, `admin ${tab}`);
+  test.setTimeout(240_000);
+  // The shared page list (ui-pages.ts, also used by layout.spec.ts) plus the
+  // pages only this check covers.
+  const extra: UIPage[] = [
+    { id: "notifications", who: "grier", path: "/notifications", ready: (p) => p.getByRole("heading", { name: "Notifications" }) },
+    { id: "admin groups", who: "grier", path: "/admin?tab=groups", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
+    { id: "admin invite", who: "grier", path: "/admin?tab=invite", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
+  ];
+  let who: string | null = null;
+  for (const ui of [...(await uiPages(request)), ...extra]) {
+    if (ui.who !== who) {
+      await page.context().clearCookies();
+      if (ui.who) await signIn(page, ui.who);
+      who = ui.who;
+    }
+    await open(page, ui);
+    await scan(page, ui.id);
   }
   await signOut(page);
 });
