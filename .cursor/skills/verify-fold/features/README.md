@@ -50,5 +50,5 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Log out](./log-out.md) covers the header control clearing the session, including after Back.
 - [Event visibility](./event-visibility.md) covers one event narrower or wider than its group and the review when a group becomes more private.
 - [Notifications](./notifications.md) covers the bell's count, approving a waiting group inline, archive with Undo that survives signing out, and the phone-width page.
-- [Event page](./event-page.md) covers the segmented RSVP, attendance counts with the names expand, a series as its next date plus `N more dates`, and the leader's More menus.
+- [Event page](./event-page.md) covers the segmented RSVP, attendance counts with the names expand, a series as its next date plus `N more dates in the next 90 days`, and the leader's More menus.
 - [Guest registration](./guest-registration.md) covers the signed-out guest form on a public event, its age gate, and the unverified-signup boundary in the database.

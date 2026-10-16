@@ -183,7 +183,7 @@ function EventRow({
         <Attendance instance={instance} />
         {moreDates > 0 && (
           <Link to={`/events/${instance.eventId}`} className="inline-flex min-h-11 items-center text-sm font-medium text-primary">
-            {moreDates} more {moreDates === 1 ? "date" : "dates"}
+            {moreDates} more {moreDates === 1 ? "date" : "dates"} in the next 90 days
           </Link>
         )}
         {loggedIn && (
@@ -522,8 +522,10 @@ export function GroupDetail() {
 
   const { group, members, upcomingEvents, canManage, isMember } = detail;
   const events: EventOccurrence[] = upcomingEvents ?? [];
-  // A series lists only its next date, plus "N more dates" linking to the
-  // event page, which lists them all (DEC-63).
+  // A series lists only its next date, plus "N more dates in the next 90
+  // days" linking to the event page. The count is what GET /groups/:id
+  // loaded: dates up to 90 days out (api_groups.go). A longer series has
+  // more, and an open-ended one has no total, so the words name the window.
   const nextDates: EventOccurrence[] = [];
   const datesPerEvent = new Map<number, number>();
   for (const m of events) {

@@ -20,6 +20,13 @@ async function seriesGroup(request: Parameters<typeof apiAs>[0]) {
 
 test("the leader group page at 390 shows one primary action and a keyboard-friendly More menu", async ({ page, request }) => {
   const { room } = await seriesGroup(request);
+  // A 30-week series: the group page loads 90 days, so it must not claim 29.
+  const lee = await apiAs(request, "lee");
+  const d = new Date(Date.now() + 10 * 864e5).toISOString().slice(0, 10);
+  await lee("POST", `/groups/${room.id}/events`, {
+    title: "Long series", startsLocal: `${d}T18:00`, durationMinutes: 60, tzid: "America/Boise",
+    location: "Room 201", recurrenceRule: "FREQ=WEEKLY;COUNT=30",
+  });
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page, "lee");
   await page.goto(`/groups/${room.id}`);
@@ -31,10 +38,12 @@ test("the leader group page at 390 shows one primary action and a keyboard-frien
     await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
   }
 
-  // The series is one card: its next date plus "2 more dates".
+  // The series is one card: its next date plus "2 more dates in the next 90 days".
   const card = page.locator("div.bg-surface").filter({ has: page.getByText("Segmented night", { exact: true }) });
   await expect(card).toHaveCount(1);
-  await expect(card.getByRole("link", { name: "2 more dates" })).toBeVisible();
+  await expect(card.getByRole("link", { name: "2 more dates in the next 90 days" })).toBeVisible();
+  const long = page.locator("div.bg-surface").filter({ has: page.getByText("Long series", { exact: true }) });
+  await expect(long.getByRole("link", { name: /^1[0-2] more dates in the next 90 days$/ })).toBeVisible();
 
   // The menu works from the keyboard and opens fully on screen.
   const more = page.getByRole("button", { name: "More group actions" });
