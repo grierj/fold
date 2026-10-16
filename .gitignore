@@ -38,4 +38,5 @@ web/dist/*
 web/node_modules/
 # Playwright output (make e2e).
 web/test-results/
+web/screens/
 web/playwright-report/

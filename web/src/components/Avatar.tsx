@@ -19,7 +19,7 @@ export function Avatar({
 }) {
   return (
     <div
-      className={`${size} rounded-full overflow-hidden bg-brand-light text-brand-dark flex items-center justify-center font-bold shrink-0 ${textSize}`}
+      className={`${size} rounded-full overflow-hidden bg-primary-subtle text-primary-hover flex items-center justify-center font-bold shrink-0 ${textSize}`}
     >
       {url ? (
         <img

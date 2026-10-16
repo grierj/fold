@@ -48,7 +48,7 @@ export function RsvpButtons({
 
   if (removed) {
     return (
-      <div className="text-sm text-gray-600">
+      <div className="text-sm text-text-muted">
         A leader or host removed your registration for this date. Ask them to add you back.
       </div>
     );
@@ -57,12 +57,12 @@ export function RsvpButtons({
   return (
     <div>
       {waitlisted && instance.myWaitlistPosition != null && (
-        <div className="text-sm font-semibold text-gray-700 mb-2">
+        <div className="text-sm font-semibold text-text-muted mb-2">
           You&apos;re on the waitlist — position {instance.myWaitlistPosition}. We&apos;ll email you if a spot
           opens.
         </div>
       )}
-      {fullNoWaitlist && <div className="text-sm font-semibold text-gray-700 mb-2">This event is full.</div>}
+      {fullNoWaitlist && <div className="text-sm font-semibold text-text-muted mb-2">This event is full.</div>}
       <div className="flex gap-2 flex-wrap items-center">
         {OPTIONS.map((o) => {
           const active = mine === o.value;
@@ -74,8 +74,8 @@ export function RsvpButtons({
               onClick={() => void choose(o.value)}
               className={
                 active
-                  ? "px-4 py-1.5 rounded-full text-sm font-semibold bg-brand text-white"
-                  : "px-4 py-1.5 rounded-full text-sm font-semibold border border-gray-300 hover:border-brand hover:text-brand disabled:opacity-50"
+                  ? "px-4 py-1.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground"
+                  : "px-4 py-1.5 rounded-full text-sm font-semibold border border-border-strong hover:border-primary hover:text-primary disabled:opacity-50"
               }
             >
               {busy === o.value ? "…" : o.label}
@@ -83,7 +83,7 @@ export function RsvpButtons({
           );
         })}
         {instance.guestsAllowed > 0 && (
-          <label className="text-sm text-gray-600 flex items-center gap-1">
+          <label className="text-sm text-text-muted flex items-center gap-1">
             Guests
             <input
               type="number"
@@ -94,11 +94,11 @@ export function RsvpButtons({
               className="input w-16 px-2 py-1 text-sm"
               aria-label={`Extra guests (up to ${instance.guestsAllowed})`}
             />
-            <span className="text-gray-400">(up to {instance.guestsAllowed})</span>
+            <span className="text-text-subtle">(up to {instance.guestsAllowed})</span>
           </label>
         )}
       </div>
-      {error && <div className="text-sm text-red-600 mt-1">{error}</div>}
+      {error && <div className="text-sm text-danger mt-1">{error}</div>}
     </div>
   );
 }

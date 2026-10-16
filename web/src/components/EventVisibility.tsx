@@ -82,8 +82,8 @@ export function EventVisibilityControl({
   }
 
   return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
-      {error && <div className="text-sm text-red-600">{error}</div>}
+    <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
+      {error && <div className="text-sm text-danger">{error}</div>}
       <VisibilityField
         id={`event-visibility-${eventId}`}
         value={value}
@@ -156,12 +156,12 @@ export function VisibilityField({
         </select>
       </div>
       {leaderOpened && !churchWide && (
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-text-muted">
           A leader opened this event wider than the group. If the group becomes more private, you'll be asked whether to keep it open.
         </p>
       )}
       {opening && groupName && (
-        <p className="text-sm text-gray-700 bg-amber-50 border border-amber-200 rounded-lg p-3">{openedEventWarning(groupName)}</p>
+        <p className="text-sm text-text-muted bg-warning-subtle border border-warning-border rounded-md p-3">{openedEventWarning(groupName)}</p>
       )}
       {opening && (
         <div>

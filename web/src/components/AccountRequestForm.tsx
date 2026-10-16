@@ -51,9 +51,9 @@ export function AccountRequestForm({
 
   if (done) {
     return (
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <p className="text-sm text-gray-700">{done}</p>
-        <p className="text-sm text-gray-500 mt-2">
+      <div className="bg-surface rounded-lg border border-border p-6">
+        <p className="text-sm text-text-muted">{done}</p>
+        <p className="text-sm text-text-muted mt-2">
           An admin reviews every request. Nothing else to do for now.
         </p>
       </div>
@@ -61,8 +61,8 @@ export function AccountRequestForm({
   }
 
   return (
-    <form onSubmit={submit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-      {error && <div className="text-red-600 text-sm">{error}</div>}
+    <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+      {error && <div className="text-danger text-sm">{error}</div>}
       <div>
         <label className="label" htmlFor="arq-name">Full name</label>
         <input id="arq-name" className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={100} autoComplete="name" required />
@@ -70,7 +70,7 @@ export function AccountRequestForm({
       <div>
         <label className="label" htmlFor="arq-email">Email</label>
         <input id="arq-email" type="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
-        <p className="text-xs text-gray-500 mt-1">
+        <p className="text-xs text-text-muted mt-1">
           {friend ? "This is the address they will sign in with." : "This is the address you will sign in with."}
         </p>
       </div>
@@ -99,14 +99,14 @@ export function AccountRequestForm({
         <div>
           <label className="label" htmlFor="arq-birth">Birth date</label>
           <input id="arq-birth" type="date" className="input" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required />
-          <p className="text-xs text-gray-500 mt-1">
+          <p className="text-xs text-text-muted mt-1">
             Needed so Fold knows when you turn 18. A teen account also needs a parent or
             guardian&rsquo;s consent before it can sign in.
           </p>
         </div>
       )}
       {ageBand === "under13" && (
-        <div className="rounded-lg bg-amber-50 border border-amber-200 p-4 text-sm text-gray-700">
+        <div className="rounded-md bg-warning-subtle border border-warning-border p-4 text-sm text-text-muted">
           Fold accounts start at 13, so there is nothing to submit here. Ask a parent or
           guardian to add you to their household instead — they can sign you up for events
           there. If you are 13 to 17 and have your own email, pick “13 to 17” above.

@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // --- tests ---
@@ -109,5 +110,45 @@ func TestSecurityHeaders(t *testing.T) {
 				t.Fatalf("%s HSTS with secure=%v: %q", path, secure, hsts)
 			}
 		}
+	}
+}
+
+// The setup and outbox pages link the SPA's CSS bundle from index.html.
+func TestBuiltStylesheetReadsTheViteLink(t *testing.T) {
+	fsys := fstest.MapFS{"web/dist/index.html": {Data: []byte(`<head><script type="module" crossorigin src="/assets/index-a1.js"></script>
+<link rel="stylesheet" crossorigin href="/assets/index-B5rK.css"></head>`)}}
+	if got := builtStylesheet(fsys); got != "/assets/index-B5rK.css" {
+		t.Errorf("got %q", got)
+	}
+	if got := builtStylesheet(fstest.MapFS{}); got != "" {
+		t.Errorf("unbuilt: got %q", got)
+	}
+}
+
+// The setup page names its language and links the built CSS (no
+// /static/style.css any more), and a fresh install can load that CSS.
+func TestSetupPageUsesBuiltStylesheet(t *testing.T) {
+	app := testApp(t)
+	r := app.setupRouter()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", "/setup", nil))
+	body := w.Body.String()
+	if !strings.Contains(body, `<html lang="en">`) {
+		t.Error("setup page has no lang")
+	}
+	if strings.Contains(body, "/static/") {
+		t.Error("setup page still links /static/")
+	}
+	css := builtStylesheet(distFS)
+	if css == "" {
+		t.Skip("web/dist not built")
+	}
+	if !strings.Contains(body, `href="`+css+`"`) {
+		t.Errorf("setup page does not link %s", css)
+	}
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest("GET", css, nil))
+	if w.Code != 200 {
+		t.Errorf("GET %s before setup: %d", css, w.Code)
 	}
 }

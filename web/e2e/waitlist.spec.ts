@@ -31,7 +31,7 @@ test("the waitlist arc: capacity 1, position 1, cancel, promoted", async ({ page
   await signIn(page, "sam");
   await page.goto(url);
   await page.getByRole("button", { name: "Going" }).click();
-  await expect(page.getByRole("button", { name: "Going" })).toHaveClass(/bg-brand/);
+  await expect(page.getByRole("button", { name: "Going" })).toHaveClass(/bg-primary/);
 
   // Lee sees position 1 on the waitlist.
   await signOut(page);
@@ -45,12 +45,12 @@ test("the waitlist arc: capacity 1, position 1, cancel, promoted", async ({ page
   await signIn(page, "sam");
   await page.goto(url);
   await page.getByRole("button", { name: "Can't go" }).click();
-  await expect(page.getByRole("button", { name: "Can't go" })).toHaveClass(/bg-brand/);
+  await expect(page.getByRole("button", { name: "Can't go" })).toHaveClass(/bg-primary/);
 
   await signOut(page);
   await signIn(page, "lee");
   await page.goto(url);
-  await expect(page.getByRole("button", { name: "Going" })).toHaveClass(/bg-brand/);
+  await expect(page.getByRole("button", { name: "Going" })).toHaveClass(/bg-primary/);
   const bell = page.getByRole("button", { name: /^Notifications/ });
   await expect(bell).toHaveAccessibleName(/unread/);
   await bell.click();

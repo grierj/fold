@@ -36,7 +36,7 @@ function CategoryIcon({ category }: { category: Notification["category"] }) {
         ? "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
         : "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z";
   return (
-    <span className="w-9 h-9 rounded-full bg-gray-100 text-gray-500 flex items-center justify-center shrink-0">
+    <span className="w-9 h-9 rounded-full bg-sunken text-text-muted flex items-center justify-center shrink-0">
       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={d} />
       </svg>
@@ -58,8 +58,8 @@ export function NotificationRow({
   const done = resolutionText(n);
   const handled = feed.handled[n.id];
   return (
-    <li className="relative flex gap-3 px-4 py-3 hover:bg-gray-50">
-      {unread && <span className="absolute left-1.5 top-5 w-2 h-2 rounded-full bg-brand" aria-hidden="true" />}
+    <li className="relative flex gap-3 px-4 py-3 hover:bg-sunken">
+      {unread && <span className="absolute left-1.5 top-5 w-2 h-2 rounded-full bg-primary" aria-hidden="true" />}
       <CategoryIcon category={n.category} />
       <div className="min-w-0 flex-1 pr-8">
         <Link
@@ -68,23 +68,23 @@ export function NotificationRow({
             feed.open(n);
             onNavigate?.();
           }}
-          className="block focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-brand rounded-sm"
+          className="block rounded-sm"
         >
           {unread && <span className="sr-only">Unread. </span>}
           {n.waiting && <span className="sr-only">Waiting on you. </span>}
           <span className={`block text-sm line-clamp-2 ${unread ? "font-semibold" : ""}`}>{n.title}</span>
-          {n.body && <span className="block text-xs text-gray-500 line-clamp-2">{n.body}</span>}
+          {n.body && <span className="block text-xs text-text-muted line-clamp-2">{n.body}</span>}
         </Link>
-        <div className="mt-0.5 text-xs text-gray-500 flex gap-2">
+        <div className="mt-0.5 text-xs text-text-muted flex gap-2">
           <time dateTime={n.updatedAt} title={new Date(n.updatedAt).toLocaleString()}>
             {relativeTime(n.updatedAt)}
           </time>
-          {n.waiting && <span className="font-semibold text-gray-700">Waiting on you</span>}
+          {n.waiting && <span className="font-semibold text-text-muted">Waiting on you</span>}
         </div>
         {handled ? (
-          <p className="mt-1 text-sm text-gray-600">{handled}</p>
+          <p className="mt-1 text-sm text-text-muted">{handled}</p>
         ) : done ? (
-          <p className="mt-1 text-sm text-gray-600">
+          <p className="mt-1 text-sm text-text-muted">
             <span className="sr-only">Done. </span>
             {done}
           </p>
@@ -108,11 +108,11 @@ export function NotificationRow({
             </Link>
           </div>
         )}
-        {feed.rowError[n.id] && <p className="mt-1 text-sm text-red-600">{feed.rowError[n.id]}</p>}
+        {feed.rowError[n.id] && <p className="mt-1 text-sm text-danger">{feed.rowError[n.id]}</p>}
       </div>
       {n.archived && (
         <button
-          className="absolute right-1 top-1 h-11 px-3 text-sm text-brand font-semibold hover:underline"
+          className="absolute right-1 top-1 h-11 px-3 text-sm text-primary font-semibold hover:underline"
           aria-label={`Restore: ${n.title}`}
           disabled={feed.offline}
           onClick={() => feed.unarchive(n).catch(() => {})}
@@ -122,7 +122,7 @@ export function NotificationRow({
       )}
       {!n.waiting && !n.archived && (
         <button
-          className="absolute right-1 top-1 w-11 h-11 flex items-center justify-center text-gray-500 hover:text-gray-800 rounded-full"
+          className="absolute right-1 top-1 w-11 h-11 flex items-center justify-center text-text-muted hover:text-text rounded-full"
           aria-label={`Archive: ${n.title}`}
           disabled={feed.offline}
           title={feed.offline ? "Reconnect to do this" : "Archive"}
@@ -147,7 +147,7 @@ export function ArchivedToast({ item, onUndo, onClose }: { item: Notification; o
   return (
     <div
       role="status"
-      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 bg-gray-900 text-white text-sm rounded-lg px-4 py-2 flex gap-3 items-center shadow-lg"
+      className="fixed bottom-4 left-1/2 -translate-x-1/2 z-30 bg-inverse text-inverse-foreground text-sm rounded-md px-4 py-2 flex gap-3 items-center shadow-lg"
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
       onFocus={() => setPaused(true)}
@@ -164,11 +164,11 @@ export function ArchivedToast({ item, onUndo, onClose }: { item: Notification; o
 function StatusLine({ feed }: { feed: Feed }) {
   const at = feed.loadedAt?.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   if (feed.offline) {
-    return <p className="px-4 py-1 text-xs text-gray-500">You're offline. Showing what was loaded{at ? ` at ${at}` : ""}.</p>;
+    return <p className="px-4 py-1 text-xs text-text-muted">You're offline. Showing what was loaded{at ? ` at ${at}` : ""}.</p>;
   }
   if (feed.error && feed.loadedAt) {
     return (
-      <p className="px-4 py-1 text-xs text-gray-500">
+      <p className="px-4 py-1 text-xs text-text-muted">
         Couldn't refresh. Showing notifications from {at} ·{" "}
         <button className="underline" onClick={feed.reload}>
           Try again
@@ -183,7 +183,7 @@ function Skeleton() {
   return (
     <ul aria-busy="true" className="px-4 py-3 space-y-3">
       {[0, 1, 2].map((i) => (
-        <li key={i} className="h-10 bg-gray-100 rounded-sm motion-safe:animate-pulse" />
+        <li key={i} className="h-10 bg-sunken rounded-sm motion-safe:animate-pulse" />
       ))}
     </ul>
   );
@@ -192,11 +192,11 @@ function Skeleton() {
 export function EmptyState({ text }: { text?: string }) {
   return (
     <div className="px-4 py-8 text-center">
-      <svg className="w-10 h-10 mx-auto text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+      <svg className="w-10 h-10 mx-auto text-text-subtle" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4h10l6 6v10H4zM14 4v6h6" />
       </svg>
-      <p className="mt-2 text-sm font-semibold text-gray-700">{text ?? "You're all caught up"}</p>
-      {!text && <p className="text-xs text-gray-500">Updates about your groups, events, and requests show up here.</p>}
+      <p className="mt-2 text-sm font-semibold text-text-muted">{text ?? "You're all caught up"}</p>
+      {!text && <p className="text-xs text-text-muted">Updates about your groups, events, and requests show up here.</p>}
     </div>
   );
 }
@@ -217,7 +217,7 @@ export function FeedBody({
   if (feed.error && !feed.loadedAt) {
     return (
       <div className="px-4 py-6 text-center text-sm">
-        <p className="text-gray-700">Couldn't load notifications.</p>
+        <p className="text-text-muted">Couldn't load notifications.</p>
         <button className="btn-secondary mt-2 py-1.5! px-3! text-sm" onClick={feed.reload}>
           Try again
         </button>
@@ -233,12 +233,12 @@ export function FeedBody({
       <StatusLine feed={feed} />
       {feed.waiting.length > 0 && (
         <section aria-labelledby={`${headingId}-w`}>
-          <h3 id={`${headingId}-w`} className="px-4 pt-3 text-xs font-semibold text-gray-700 uppercase tracking-wide">
+          <h3 id={`${headingId}-w`} className="px-4 pt-3 text-xs font-semibold text-text-muted uppercase tracking-wide">
             Waiting on you
           </h3>
-          <ul className="divide-y divide-gray-100">{feed.waiting.map(row)}</ul>
+          <ul className="divide-y divide-border">{feed.waiting.map(row)}</ul>
           {feed.waitingTotal > feed.waiting.length && (
-            <Link to="/notifications?filter=waiting" onClick={onNavigate} className="block px-4 py-2 text-sm text-brand font-semibold hover:underline">
+            <Link to="/notifications?filter=waiting" onClick={onNavigate} className="block px-4 py-2 text-sm text-primary font-semibold hover:underline">
               and {feed.waitingTotal - feed.waiting.length} more →
             </Link>
           )}
@@ -249,25 +249,25 @@ export function FeedBody({
           <>
             {splitByDay(feed.items).map(([label, rows]) => (
               <section key={label} aria-labelledby={`${headingId}-${label}`}>
-                <h3 id={`${headingId}-${label}`} className="px-4 pt-3 text-xs font-semibold text-gray-700 uppercase tracking-wide">
+                <h3 id={`${headingId}-${label}`} className="px-4 pt-3 text-xs font-semibold text-text-muted uppercase tracking-wide">
                   {label}
                 </h3>
-                <ul className="divide-y divide-gray-100">{rows.map(row)}</ul>
+                <ul className="divide-y divide-border">{rows.map(row)}</ul>
               </section>
             ))}
           </>
         ) : (
           <section aria-labelledby={`${headingId}-r`}>
             {sections && feed.waiting.length > 0 && (
-              <h3 id={`${headingId}-r`} className="px-4 pt-3 text-xs font-semibold text-gray-700 uppercase tracking-wide">
+              <h3 id={`${headingId}-r`} className="px-4 pt-3 text-xs font-semibold text-text-muted uppercase tracking-wide">
                 Recent
               </h3>
             )}
-            <ul className="divide-y divide-gray-100">{feed.items.map(row)}</ul>
+            <ul className="divide-y divide-border">{feed.items.map(row)}</ul>
           </section>
         ))}
       {feed.next && (
-        <button className="block w-full px-4 py-2 text-sm text-brand font-semibold hover:underline" disabled={feed.loadingMore} onClick={feed.showMore}>
+        <button className="block w-full px-4 py-2 text-sm text-primary font-semibold hover:underline" disabled={feed.loadingMore} onClick={feed.showMore}>
           {feed.loadingMore ? "Loading…" : "Show more"}
         </button>
       )}
@@ -368,7 +368,7 @@ export function NotificationBell() {
       <button
         ref={bellRef}
         onClick={() => (isMobile() ? navigate("/notifications") : setOpen((o) => !o))}
-        className="relative text-gray-700 hover:text-brand p-2.5 -m-2.5 rounded-full focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+        className="relative text-text-muted hover:text-primary p-2.5 -m-2.5 rounded-full"
         aria-label={badgeLabel(badge)}
         aria-expanded={open}
         aria-controls="notif-panel"
@@ -378,7 +378,7 @@ export function NotificationBell() {
         {count > 0 && (
           <span
             aria-hidden="true"
-            className="absolute top-0.5 right-0.5 min-w-5 h-5 px-1 rounded-full bg-brand-dark text-white text-xs font-bold flex items-center justify-center ring-2 ring-white"
+            className="absolute top-0.5 right-0.5 min-w-5 h-5 px-1 rounded-full bg-primary-hover text-primary-foreground text-xs font-bold flex items-center justify-center ring-2 ring-white"
           >
             {badgeText(badge)}
           </span>
@@ -391,14 +391,14 @@ export function NotificationBell() {
         <section
           id="notif-panel"
           aria-labelledby="notif-panel-heading"
-          className="absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-white rounded-xl border border-gray-200 shadow-lg z-20 overflow-hidden flex flex-col max-h-[70vh]"
+          className="absolute right-0 mt-2 w-96 max-w-[calc(100vw-2rem)] bg-surface rounded-lg border border-border shadow-lg z-20 overflow-hidden flex flex-col max-h-[70vh]"
         >
-          <div className="px-4 py-3 border-b border-gray-100 flex items-center gap-3">
+          <div className="px-4 py-3 border-b border-border flex items-center gap-3">
             <h2 id="notif-panel-heading" ref={headingRef} tabIndex={-1} className="font-bold text-sm mr-auto outline-hidden">
               Notifications
             </h2>
             <button
-              className="text-sm text-brand font-semibold hover:underline aria-disabled:text-gray-500 aria-disabled:no-underline"
+              className="text-sm text-primary font-semibold hover:underline aria-disabled:text-text-muted aria-disabled:no-underline"
               aria-disabled={!ordinaryUnread}
               title="Items waiting on you stay until they're handled"
               onClick={() => ordinaryUnread && feed.readAll()}
@@ -412,7 +412,7 @@ export function NotificationBell() {
           <Link
             to="/notifications"
             onClick={() => setOpen(false)}
-            className="block px-4 py-2.5 border-t border-gray-100 text-sm text-center text-brand font-semibold hover:underline"
+            className="block px-4 py-2.5 border-t border-border text-sm text-center text-primary font-semibold hover:underline"
           >
             See all notifications
           </Link>

@@ -24,11 +24,11 @@ export function NotificationsPage() {
   const showWaiting = isAdmin || feed.waitingTotal > 0 || filter === "waiting";
   return (
     <div className="max-w-2xl mx-auto px-0 sm:px-4 py-4">
-      <div className="sticky top-16 z-5 bg-white border-b border-gray-200 px-4 py-3">
+      <div className="sticky top-16 z-5 bg-surface border-b border-border px-4 py-3">
         <div className="flex items-center gap-3">
           <h1 className="text-xl font-bold mr-auto">Notifications</h1>
           {filter !== "archived" && (
-            <button className="text-sm text-brand font-semibold hover:underline" title="Items waiting on you stay until they're handled" onClick={feed.readAll}>
+            <button className="text-sm text-primary font-semibold hover:underline" title="Items waiting on you stay until they're handled" onClick={feed.readAll}>
               Mark all as read
             </button>
           )}
@@ -39,16 +39,14 @@ export function NotificationsPage() {
               key={f.key}
               aria-pressed={filter === f.key}
               onClick={() => setParams(f.key === "all" ? {} : { filter: f.key })}
-              className={`px-3 py-1 rounded-full text-sm border ${
-                filter === f.key ? "bg-brand-dark text-white border-brand-dark" : "bg-white text-gray-700 border-gray-300 hover:border-brand"
-              }`}
+              className="chip"
             >
               {f.label}
             </button>
           ))}
         </div>
       </div>
-      <div className="bg-white sm:rounded-b-xl sm:border sm:border-t-0 border-gray-200">
+      <div className="bg-surface sm:rounded-b-lg sm:border sm:border-t-0 border-border">
         <FeedBody feed={feed} onArchived={onArchived} dayHeadings emptyText={FILTERS.find((f) => f.key === filter)?.empty} />
       </div>
       {toast}

@@ -3,10 +3,16 @@ import type { GroupSummary } from "../types";
 import { focalPosition } from "../lib/image";
 import { formatWhen } from "../lib/when";
 
+// The cover shown when a group has none: the old rose and purple fade, an
+// illustration color now (DEC-60). An <img> source cannot read CSS variables,
+// so these stay literal until cover patterns replace them (UI makeover PR 8).
+const COVER_FROM = "#f64060"; // color-ok: placeholder cover image
+const COVER_TO = "#7c3aed"; // color-ok: placeholder cover image
+
 const PLACEHOLDER =
   "data:image/svg+xml," +
   encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f64060"/><stop offset="1" stop-color="#7c3aed"/></linearGradient></defs><rect width="640" height="360" fill="url(#g)"/></svg>`
+    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${COVER_FROM}"/><stop offset="1" stop-color="${COVER_TO}"/></linearGradient></defs><rect width="640" height="360" fill="url(#g)"/></svg>`
   );
 
 export function coverImage(url: string | undefined | null): string {
@@ -28,9 +34,9 @@ export function GroupCard({
   const selectedLower = selectedTags.map((t) => t.toLowerCase());
   const isSelected = (t: string) => selectedLower.includes(t.toLowerCase());
   return (
-    <div className="bg-white rounded-xl shadow-xs hover:shadow-md transition-shadow overflow-hidden border border-gray-100 flex flex-col">
+    <div className="bg-surface rounded-lg shadow-sm hover:shadow-md transition-shadow overflow-hidden border border-border flex flex-col">
       <Link to={`/groups/${group.id}`} className="block">
-        <div className="h-40 w-full overflow-hidden bg-gray-200">
+        <div className="h-40 w-full overflow-hidden bg-sunken">
           <img
             src={coverImage(group.imageUrl)}
             alt=""
@@ -46,18 +52,18 @@ export function GroupCard({
             group.visibility !== "public") && (
             <div className="flex flex-wrap gap-1 mt-1">
               {group.status === "pending" && (
-                <span className="text-xs font-bold uppercase tracking-wide text-yellow-800">
+                <span className="text-xs font-bold uppercase tracking-wide text-warning-on-subtle">
                   Pending approval
                 </span>
               )}
               {group.status === "archived" && (
-                <span className="text-xs font-bold uppercase tracking-wide text-gray-500">Archived</span>
+                <span className="text-xs font-bold uppercase tracking-wide text-text-muted">Archived</span>
               )}
               {group.visibility === "private" && (
-                <span className="text-xs font-bold uppercase tracking-wide text-gray-500">Private</span>
+                <span className="text-xs font-bold uppercase tracking-wide text-text-muted">Private</span>
               )}
               {group.visibility === "invite_only" && (
-                <span className="inline-block text-xs font-bold uppercase tracking-wide bg-gray-900 text-white rounded-full px-2 py-0.5">
+                <span className="inline-block text-xs font-bold uppercase tracking-wide bg-inverse text-inverse-foreground rounded-full px-2 py-0.5">
                   Invite only
                 </span>
               )}
@@ -76,8 +82,8 @@ export function GroupCard({
                 aria-pressed={isSelected(t)}
                 className={
                   isSelected(t)
-                    ? "inline-flex items-center gap-0.5 text-xs font-semibold bg-brand text-white rounded-full px-2 py-0.5 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1"
-                    : "text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-full px-2 py-0.5 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1"
+                    ? "inline-flex min-h-6 items-center gap-0.5 text-xs font-semibold bg-primary text-primary-foreground rounded-full px-2 py-0.5"
+                    : "inline-flex min-h-6 items-center text-xs font-medium bg-sunken text-text-muted hover:bg-border rounded-full px-2 py-0.5"
                 }
               >
                 {isSelected(t) && <span aria-hidden="true">✓</span>}
@@ -86,7 +92,7 @@ export function GroupCard({
             ) : (
               <span
                 key={t}
-                className="text-xs font-medium bg-gray-100 text-gray-600 rounded-full px-2 py-0.5"
+                className="text-xs font-medium bg-sunken text-text-muted rounded-full px-2 py-0.5"
               >
                 {t}
               </span>
@@ -95,13 +101,13 @@ export function GroupCard({
         </div>
       )}
       <Link to={`/groups/${group.id}`} className="block px-4 pb-4 pt-2 mt-auto">
-        <div className="text-sm text-gray-600 space-y-0.5">
+        <div className="text-sm text-text-muted space-y-0.5">
           <div>
-            <span className="font-semibold text-gray-800">{group.memberCount}</span>{" "}
+            <span className="font-semibold text-text">{group.memberCount}</span>{" "}
             {group.memberCount === 1 ? "member" : "members"}
             {group.leaderName ? ` · Organized by ${group.leaderName}` : ""}
           </div>
-          <div className="text-brand-dark font-medium">
+          <div className={group.nextEventAt ? "text-primary-hover font-medium" : "text-text-muted"}>
             {group.nextEventAt ? formatWhen(group.nextEventAt) : "No events scheduled yet"}
           </div>
           {group.location && <div className="truncate">{group.location}</div>}

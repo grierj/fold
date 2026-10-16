@@ -23,12 +23,11 @@ RUN mkdir -p /data/uploads
 
 # Run stage
 FROM gcr.io/distroless/static-debian12:nonroot
-# Pin the working directory: the binary uses relative paths for templates/
-# and static assets, and distroless does not guarantee WORKDIR=/.
+# Pin the working directory: the binary reads templates/ by relative path,
+# and distroless does not guarantee WORKDIR=/.
 WORKDIR /
 COPY --from=build /out/fold /fold
 COPY --from=build /src/templates /templates
-COPY --from=build /src/static /static
 # Carry the data dir (with nonroot ownership) into the image so a fresh
 # named volume starts writable by the app user.
 COPY --from=build --chown=65532:65532 /data /data

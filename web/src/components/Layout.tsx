@@ -9,15 +9,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
+      <header className="bg-surface border-b border-border sticky top-0 z-10">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-6">
-          <Link to="/" className="text-2xl font-extrabold text-brand tracking-tight">
+          <Link to="/" className="text-2xl font-bold text-primary tracking-tight">
             Fold
           </Link>
           <nav className="flex items-center gap-4 ml-auto text-sm font-medium">
             <NavLink
               to="/groups/new"
-              className="hidden sm:inline text-gray-700 hover:text-brand"
+              className="hidden sm:inline text-text-muted hover:text-primary"
             >
               Start a group
             </NavLink>
@@ -26,7 +26,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 <NavLink
                   to="/my-groups"
                   className={({ isActive }) =>
-                    isActive ? "text-brand" : "text-gray-700 hover:text-brand"
+                    isActive ? "text-primary" : "text-text-muted hover:text-primary"
                   }
                 >
                   My groups
@@ -35,7 +35,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <NavLink
                     to="/admin"
                     className={({ isActive }) =>
-                      isActive ? "text-brand" : "text-gray-700 hover:text-brand"
+                      isActive ? "text-primary" : "text-text-muted hover:text-primary"
                     }
                   >
                     Admin
@@ -44,7 +44,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 <NotificationBell />
                 <Link
                   to="/profile"
-                  className="hidden sm:flex items-center gap-2 text-gray-700 hover:text-brand"
+                  className="hidden sm:flex items-center gap-2 text-text-muted hover:text-primary"
                   title="Your profile"
                 >
                   <Avatar
@@ -55,17 +55,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
                     size="w-8 h-8"
                     textSize="text-sm"
                   />
-                  <span className="text-gray-600">
+                  <span className="text-text-muted">
                     {user.displayName || user.name}
                   </span>
                 </Link>
-                <button onClick={logout} className="text-gray-700 hover:text-brand">
+                <button onClick={logout} className="text-text-muted hover:text-primary">
                   Log out
                 </button>
               </>
             ) : (
               <>
-                <NavLink to="/join" className="text-gray-700 hover:text-brand">
+                <NavLink to="/join" className="text-text-muted hover:text-primary">
                   Join
                 </NavLink>
                 <NavLink
@@ -80,8 +80,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </header>
       <main className="flex-1">{children}</main>
-      <footer className="bg-white border-t border-gray-200 mt-12">
-        <div className="max-w-6xl mx-auto px-4 py-6 text-sm text-gray-500">
+      <footer className="bg-surface border-t border-border mt-12">
+        <div className="max-w-6xl mx-auto px-4 py-6 text-sm text-text-muted">
           Fold — gather your church community.
         </div>
       </footer>

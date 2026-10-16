@@ -69,9 +69,9 @@ export function ImageUpload({
 
   return (
     <div>
-      <label className="label">{label}</label>
+      <p className="label">{label}</p>
       <div
-        className={`relative ${aspectClass} w-full max-w-sm overflow-hidden rounded-lg bg-gray-100 border border-gray-200 cursor-crosshair`}
+        className={`relative ${aspectClass} w-full max-w-sm overflow-hidden rounded-md bg-sunken border border-border cursor-crosshair`}
         onClick={setPoint}
         title="Click to set the focal point"
       >
@@ -83,7 +83,7 @@ export function ImageUpload({
             style={{ objectPosition: focalPosition(focal.x, focal.y) }}
           />
         ) : (
-          <div className="w-full h-full flex items-center justify-center text-gray-400 text-sm">
+          <div className="w-full h-full flex items-center justify-center text-text-muted text-sm">
             No image
           </div>
         )}
@@ -94,7 +94,7 @@ export function ImageUpload({
           />
         )}
       </div>
-      <p className="text-xs text-gray-500 mt-1">
+      <p className="text-xs text-text-muted mt-1">
         Click the image to move the focal point — faces stay centered when cropped.
       </p>
       <div className="flex gap-2 mt-2">
@@ -123,7 +123,7 @@ export function ImageUpload({
           onChange={pick}
         />
       </div>
-      {error && <div className="text-red-600 text-sm mt-1">{error}</div>}
+      {error && <div className="text-danger text-sm mt-1">{error}</div>}
     </div>
   );
 }

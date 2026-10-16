@@ -165,7 +165,7 @@ func TestDependabotCoversEveryEcosystem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, step := range []string{"govulncheck@v", "npm audit --omit=dev --audit-level=high"} {
+	for _, step := range []string{"govulncheck@v", "npm audit --omit=dev --audit-level=high", "SCREENS_DIR="} {
 		if !strings.Contains(string(ci), step) {
 			t.Errorf("CI has no %q step", step)
 		}
@@ -278,6 +278,110 @@ func TestOnlyLoginAndInvitesAnswer429(t *testing.T) {
 		}
 		if strings.Contains(string(src), "StatusTooManyRequests") {
 			t.Errorf("%s answers 429; public forms answer as usual and log instead (DEC-52)", f)
+		}
+	}
+}
+
+// Colors come from the theme tokens in web/src/index.css (UI makeover PR 3),
+// so a token change reaches every screen. A hex color anywhere else, or a
+// class from Tailwind's own palette (bg-red-600; it builds nothing now that
+// the theme switches that palette off), fails. A line that must keep a hex
+// says why with "color-ok:".
+var (
+	hexColorRe     = regexp.MustCompile(`#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})\b`)
+	paletteClassRe = regexp.MustCompile(`\b(?:bg|text|border|ring|ring-offset|divide|outline|from|via|to|fill|stroke|accent|caret|decoration|placeholder|shadow)-(?:slate|gray|zinc|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|brand|neutral|pending|accent)(?:-\d{2,3})?\b|\b(?:bg|text|border|ring|divide|outline|from|via|to|fill|stroke|accent|decoration)-(?:primary|danger|success|warning|info)-\d{2,3}\b`)
+	// colorScanDirs hold everything that styles a page.
+	colorScanDirs = []string{"web/src", "templates"}
+	// themeFile is the one place hex values live, inside its @theme block.
+	themeFile = "web/src/index.css"
+)
+
+// colorViolations checks one file. Inside the theme file, hex values are
+// allowed between "@theme {" and its closing "}".
+func colorViolations(path, src string) []string {
+	var bad []string
+	inTheme := false
+	for i, line := range strings.Split(src, "\n") {
+		if path == themeFile {
+			if strings.HasPrefix(line, "@theme") {
+				inTheme = true
+			} else if inTheme && strings.HasPrefix(line, "}") {
+				inTheme = false
+				continue
+			}
+		}
+		if strings.Contains(line, "color-ok:") {
+			continue
+		}
+		where := path + ":" + itoa(uint(i+1)) + ": "
+		if !inTheme {
+			for _, h := range hexColorRe.FindAllString(line, -1) {
+				bad = append(bad, where+h+" is a hard-coded color. Use a theme token (bg-primary, text-danger) or add one to @theme in "+themeFile)
+			}
+		}
+		for _, c := range paletteClassRe.FindAllString(line, -1) {
+			bad = append(bad, where+c+" is a palette color or scale step, which the theme does not build. Use a role from TOKENS.md: primary, page, surface, sunken, border, text, text-muted, danger, success, warning, info (with -hover, -subtle, -on-subtle, -border, -foreground)")
+		}
+	}
+	return bad
+}
+
+func TestColorsComeFromThemeTokens(t *testing.T) {
+	var bad []string
+	for _, dir := range colorScanDirs {
+		err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			switch filepath.Ext(p) {
+			case ".ts", ".tsx", ".css", ".html":
+			default:
+				return nil
+			}
+			if strings.Contains(p, ".test.") {
+				return nil
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			bad = append(bad, colorViolations(filepath.ToSlash(p), string(b))...)
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(bad) > 0 {
+		t.Fatalf("colors outside the theme (AGENTS.md, Styling):\n%s", strings.Join(bad, "\n"))
+	}
+}
+
+// The color check catches what this rule replaced: the old static/style.css
+// red, a Tailwind palette class, and a hex outside @theme in index.css.
+func TestColorGuardCatchesHardCodedColors(t *testing.T) {
+	cases := map[string]string{
+		"templates/setup.html":        `<style>header { background-color: #e51937; }</style>`,
+		"web/src/pages/Admin.tsx":     `<button className="btn-secondary text-red-600!">`,
+		"web/src/components/Card.tsx": `<div className="bg-brand-dark">`,
+		"web/src/index.css":           "@theme {\n  --color-primary: #f64060;\n}\n.btn { color: #fff; }",
+	}
+	for path, src := range cases {
+		if len(colorViolations(path, src)) == 0 {
+			t.Errorf("%s: %q passed the color check", path, src)
+		}
+	}
+	ok := map[string]string{
+		"web/src/index.css":       "@theme {\n  --color-primary: #f64060;\n}",
+		"web/src/pages/Admin.tsx": `<span className="bg-danger-subtle text-text-muted">PR #41</span>`,
+		"web/src/x.ts":            `const c = "#7c3aed"; // color-ok: placeholder cover`,
+	}
+	for path, src := range ok {
+		if v := colorViolations(path, src); len(v) != 0 {
+			t.Errorf("%s flagged: %v", path, v)
 		}
 	}
 }

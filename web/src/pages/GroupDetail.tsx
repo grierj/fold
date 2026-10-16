@@ -64,11 +64,11 @@ function DateEditor({
   }
 
   return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
-      <p className="text-sm text-gray-600">
+    <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
+      <p className="text-sm text-text-muted">
         This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
       </p>
-      {error && <div className="text-sm text-red-600">{error}</div>}
+      {error && <div className="text-sm text-danger">{error}</div>}
       <div className="grid sm:grid-cols-3 gap-3">
         <div>
           <label className="label" htmlFor={`date-${instance.id}`}>
@@ -165,21 +165,21 @@ function EventRow({
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4 flex gap-4">
+    <div className="bg-surface rounded-lg border border-border p-4 flex gap-4">
       <DateBadge at={instance.startsAt} />
       <div className="grow min-w-0">
         <div className="font-bold text-lg">{name}</div>
         {showDescription && instance.description && (
-          <p className="text-sm text-gray-700 whitespace-pre-wrap mt-1">{instance.description}</p>
+          <p className="text-sm text-text-muted whitespace-pre-wrap mt-1">{instance.description}</p>
         )}
-        <div className="text-sm text-gray-600">
+        <div className="text-sm text-text-muted">
           {time}
           {loc ? ` · ${loc}` : ""}
         </div>
         {instance.overridden && (
-          <div className="text-sm text-gray-500">This date was edited on its own, so series changes leave it alone.</div>
+          <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
         )}
-        <div className="text-sm text-gray-500 mt-1">
+        <div className="text-sm text-text-muted mt-1">
           {rsvpTotal(instance.registrations, "going")} going · {rsvpTotal(instance.registrations, "maybe")} maybe ·{" "}
           {rsvpTotal(instance.registrations, "declined")} can't go
         </div>
@@ -231,16 +231,16 @@ function EventRow({
       </div>
       {canManage && (
         <div className="shrink-0 flex flex-col items-end gap-2">
-          <button type="button" onClick={() => setEditor(editor === "date" ? null : "date")} className="text-sm text-brand font-medium">
+          <button type="button" onClick={() => setEditor(editor === "date" ? null : "date")} className="text-sm text-primary font-medium">
             Edit this date
           </button>
-          <button type="button" onClick={() => setEditor(editor === "series" ? null : "series")} className="text-sm text-brand font-medium">
+          <button type="button" onClick={() => setEditor(editor === "series" ? null : "series")} className="text-sm text-primary font-medium">
             {instance.recurrenceRule ? "Edit series" : "Edit event"}
           </button>
           <button
             onClick={cancel}
             disabled={cancelling}
-            className="text-sm text-red-600 hover:text-red-800 font-medium"
+            className="text-sm text-danger hover:text-danger-hover font-medium"
           >
             {cancelling ? "Cancelling…" : "Cancel"}
           </button>
@@ -292,7 +292,7 @@ function GroupForm({
 
   return (
     <form
-      className="bg-white rounded-xl border border-gray-200 p-6 space-y-4"
+      className="bg-surface rounded-lg border border-border p-6 space-y-4"
       onSubmit={async (e) => {
         e.preventDefault();
         setBusy(true);
@@ -319,14 +319,14 @@ function GroupForm({
         }
       }}
     >
-      {error && <div className="text-red-600 text-sm">{error}</div>}
+      {error && <div className="text-danger text-sm">{error}</div>}
       <div>
         <label className="label" htmlFor="group-name">Group name</label>
         <input id="group-name" className="input" value={name} onChange={(e) => setName(e.target.value)} required />
       </div>
       <div>
-        <label className="label">Description</label>
-        <textarea
+        <label className="label" htmlFor="group-description">Description</label>
+        <textarea id="group-description"
           className="input"
           rows={4}
           value={description}
@@ -334,8 +334,8 @@ function GroupForm({
         />
       </div>
       <div>
-        <label className="label">Location</label>
-        <input
+        <label className="label" htmlFor="group-location">Location</label>
+        <input id="group-location"
           className="input"
           value={location}
           onChange={(e) => setLocation(e.target.value)}
@@ -343,8 +343,8 @@ function GroupForm({
         />
       </div>
       <div>
-        <label className="label">Tags (comma separated)</label>
-        <input
+        <label className="label" htmlFor="group-tags">Tags (comma separated)</label>
+        <input id="group-tags"
           className="input"
           value={tags}
           onChange={(e) => setTags(e.target.value)}
@@ -363,7 +363,7 @@ function GroupForm({
           onChange={(e) => setMemberLimit(e.target.value)}
           placeholder="No limit"
         />
-        <p className="text-xs text-gray-500 mt-1">
+        <p className="text-xs text-text-muted mt-1">
           For a room with a fixed capacity. When it's full, people can't join on their own; leaders can still add someone.
         </p>
       </div>
@@ -380,7 +380,7 @@ function GroupForm({
             />
             <span>
               <span className="font-semibold">Public</span>
-              <span className="block text-gray-500">Anyone can see it, including people who are logged out.</span>
+              <span className="block text-text-muted">Anyone can see it, including people who are logged out.</span>
             </span>
           </label>
           <label className="flex items-start gap-2">
@@ -393,7 +393,7 @@ function GroupForm({
             />
             <span>
               <span className="font-semibold">Private</span>
-              <span className="block text-gray-500">Only signed-in people can see it.</span>
+              <span className="block text-text-muted">Only signed-in people can see it.</span>
             </span>
           </label>
           <label className="flex items-start gap-2">
@@ -406,7 +406,7 @@ function GroupForm({
             />
             <span>
               <span className="font-semibold">Invite only</span>
-              <span className="block text-gray-500">
+              <span className="block text-text-muted">
                 Hidden from everyone except its members and church admins. People join only when a leader adds them.
               </span>
             </span>
@@ -505,15 +505,15 @@ export function GroupDetail() {
   }, [load]);
 
   if (loading || authLoading) {
-    return <div className="max-w-6xl mx-auto px-4 py-12 text-gray-500">Loading…</div>;
+    return <div className="max-w-6xl mx-auto px-4 py-12 text-text-muted">Loading…</div>;
   }
   if (notFound || !detail) {
     return (
       <div className="max-w-6xl mx-auto px-4 py-12 text-center">
         <h1 className="text-2xl font-bold mb-2">Group not found</h1>
-        <p className="text-gray-600">
+        <p className="text-text-muted">
           {error ?? "This group doesn't exist or isn't visible to you."}{" "}
-          <Link to="/" className="text-brand font-semibold">
+          <Link to="/" className="text-primary font-semibold">
             Back home
           </Link>
         </p>
@@ -762,7 +762,7 @@ export function GroupDetail() {
   return (
     <div>
       {/* Cover header */}
-      <div className="relative h-56 sm:h-72 overflow-hidden bg-gray-800">
+      <div className="relative h-56 sm:h-72 overflow-hidden bg-inverse">
         <img
           src={coverImage(group.imageUrl)}
           alt=""
@@ -776,23 +776,23 @@ export function GroupDetail() {
               {(group.status === "pending" || group.visibility !== "public") && (
                 <div className="flex flex-wrap gap-2 mb-2">
                   {group.status === "pending" && (
-                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-yellow-100 text-yellow-800 rounded-full px-3 py-1">
+                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-warning-subtle text-warning-on-subtle rounded-full px-3 py-1">
                       Pending approval
                     </span>
                   )}
                   {group.visibility === "private" && (
-                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-white/90 text-gray-800 rounded-full px-3 py-1">
+                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-surface/90 text-text rounded-full px-3 py-1">
                       Private
                     </span>
                   )}
                   {group.visibility === "invite_only" && (
-                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-gray-900 text-white rounded-full px-3 py-1">
+                    <span className="inline-block text-xs font-bold uppercase tracking-wide bg-inverse text-inverse-foreground rounded-full px-3 py-1">
                       Invite only
                     </span>
                   )}
                 </div>
               )}
-              <h1 className="text-3xl sm:text-4xl font-extrabold text-white">{group.name}</h1>
+              <h1 className="text-3xl sm:text-4xl font-bold text-white">{group.name}</h1>
               <div className="text-white/80 text-sm mt-1">
                 {canManage && group.memberLimit
                   ? `${group.memberCount} of ${group.memberLimit} members`
@@ -806,7 +806,7 @@ export function GroupDetail() {
                 <>
                   <Link
                     to={`/groups/${group.id}/events/new`}
-                    className="btn-primary bg-white! text-brand! hover:bg-gray-100!"
+                    className="btn-primary bg-surface! text-primary! hover:bg-sunken!"
                   >
                     Schedule event
                   </Link>
@@ -851,7 +851,7 @@ export function GroupDetail() {
       <div className="max-w-6xl mx-auto px-4 py-6">
         {editing && review && (
           <>
-            {reviewError && <div className="text-red-600 text-sm mb-2">{reviewError}</div>}
+            {reviewError && <div className="text-danger text-sm mb-2">{reviewError}</div>}
             <GroupVisibilityReview
               key={JSON.stringify(review.impact)}
               impact={review.impact}
@@ -884,7 +884,7 @@ export function GroupDetail() {
         ) : (
           <>
             {/* Tabs */}
-            <div className="border-b border-gray-200 mb-6">
+            <div className="border-b border-border mb-6">
               <nav className="flex gap-6">
                 {(["events", "about", "members"] as Tab[]).map((t) => (
                   <button
@@ -892,8 +892,8 @@ export function GroupDetail() {
                     onClick={() => setTab(t)}
                     className={
                       tab === t
-                        ? "pb-3 border-b-2 border-brand text-brand font-semibold capitalize"
-                        : "pb-3 text-gray-600 hover:text-gray-900 font-medium capitalize"
+                        ? "pb-3 border-b-2 border-primary text-primary font-semibold capitalize"
+                        : "pb-3 text-text-muted hover:text-text font-medium capitalize"
                     }
                   >
                     {t === "events" ? "Upcoming events" : t}
@@ -905,7 +905,7 @@ export function GroupDetail() {
             {tab === "events" && (
               <div className="space-y-3">
                 {events.length === 0 && (
-                  <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
+                  <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
                     No upcoming events scheduled.
                   </div>
                 )}
@@ -927,17 +927,17 @@ export function GroupDetail() {
             )}
 
             {tab === "about" && (
-              <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-3xl space-y-4">
+              <div className="bg-surface rounded-lg border border-border p-6 max-w-3xl space-y-4">
                 <div>
                   <h3 className="font-bold mb-1">About this group</h3>
-                  <p className="text-gray-700 whitespace-pre-wrap">
+                  <p className="text-text-muted whitespace-pre-wrap">
                     {group.description || "No description yet."}
                   </p>
                 </div>
                 {group.location && (
                   <div>
                     <h3 className="font-bold mb-1">Location</h3>
-                    <p className="text-gray-700">{group.location}</p>
+                    <p className="text-text-muted">{group.location}</p>
                   </div>
                 )}
                 {group.tags.length > 0 && (
@@ -948,7 +948,7 @@ export function GroupDetail() {
                         <Link
                           key={t}
                           to={`/?tag=${encodeURIComponent(t)}`}
-                          className="text-sm bg-gray-100 text-gray-700 hover:bg-gray-200 rounded-full px-3 py-1"
+                          className="text-sm bg-sunken text-text-muted hover:bg-border rounded-full px-3 py-1"
                         >
                           {t}
                         </Link>
@@ -958,7 +958,7 @@ export function GroupDetail() {
                 )}
                 <div>
                   <h3 className="font-bold mb-1">Next event</h3>
-                  <p className="text-gray-700">
+                  <p className="text-text-muted">
                     {group.nextEventAt ? formatWhen(group.nextEventAt) : "No events scheduled yet"}
                   </p>
                 </div>
@@ -966,19 +966,19 @@ export function GroupDetail() {
             )}
 
             {tab === "members" && (
-              <div className="bg-white rounded-xl border border-gray-200 p-6 max-w-3xl">
+              <div className="bg-surface rounded-lg border border-border p-6 max-w-3xl">
                 {!user ? (
-                  <p className="text-gray-600">
-                    <Link to="/login" className="text-brand font-semibold">
+                  <p className="text-text-muted">
+                    <Link to="/login" className="text-primary font-semibold">
                       Log in
                     </Link>{" "}
                     to see the member roster.
                   </p>
                 ) : (
                   <>
-                    {memberError && <div className="text-red-600 text-sm mb-3">{memberError}</div>}
+                    {memberError && <div className="text-danger text-sm mb-3">{memberError}</div>}
                     {members && members.length > 0 ? (
-                      <ul className="divide-y divide-gray-100">
+                      <ul className="divide-y divide-border">
                         {members.map((m) => (
                           <li key={m.id} className="py-3 flex items-center gap-3">
                             <Avatar
@@ -990,19 +990,19 @@ export function GroupDetail() {
                             <div className="grow min-w-0">
                               <div className="font-semibold">{m.name}
                                 {m.admin && (
-                                  <span className="ml-2 inline-block rounded-full bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-800">
+                                  <span className="ml-2 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
                                     Admin
                                   </span>
                                 )}
                               </div>
-                              <div className="text-sm text-gray-500 capitalize">{m.role}</div>
+                              <div className="text-sm text-text-muted capitalize">{m.role}</div>
                             </div>
                             {canManage && m.role !== "leader" && (
                               <button
                                 type="button"
                                 onClick={() => setRole(m.id, m.name, "leader")}
                                 disabled={memberBusy}
-                                className="text-sm font-medium text-brand hover:underline"
+                                className="text-sm font-medium text-primary hover:underline"
                               >
                                 Make leader
                               </button>
@@ -1012,7 +1012,7 @@ export function GroupDetail() {
                                 type="button"
                                 onClick={() => setRole(m.id, m.name, "member")}
                                 disabled={memberBusy}
-                                className="text-sm font-medium text-gray-600 hover:underline"
+                                className="text-sm font-medium text-text-muted hover:underline"
                               >
                                 Remove as leader
                               </button>
@@ -1022,7 +1022,7 @@ export function GroupDetail() {
                                 type="button"
                                 onClick={() => removeMember(m.id, m.name)}
                                 disabled={memberBusy}
-                                className="text-sm font-medium text-red-600 hover:underline"
+                                className="text-sm font-medium text-danger hover:underline"
                               >
                                 Remove
                               </button>
@@ -1031,7 +1031,7 @@ export function GroupDetail() {
                         ))}
                       </ul>
                     ) : (
-                      <p className="text-gray-600">No members yet.</p>
+                      <p className="text-text-muted">No members yet.</p>
                     )}
                     {canManage && (
                       <>
@@ -1056,7 +1056,7 @@ export function GroupDetail() {
                           {inviteBusy ? "…" : "Invite"}
                         </button>
                         {group.memberLimit != null && group.memberCount >= group.memberLimit && (
-                          <label className="text-xs text-gray-600 flex items-center gap-1.5 w-full">
+                          <label className="text-xs text-text-muted flex items-center gap-1.5 w-full">
                             <input
                               type="checkbox"
                               checked={inviteOverLimit}
@@ -1066,7 +1066,7 @@ export function GroupDetail() {
                           </label>
                         )}
                       </form>
-                      {inviteStatus && <p className="text-green-700 text-sm mt-2">{inviteStatus}</p>}
+                      {inviteStatus && <p className="text-success text-sm mt-2">{inviteStatus}</p>}
                       <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">
                         <div className="grow min-w-48">
                           <label className="label" htmlFor="add-member">Add a member by email</label>
@@ -1091,11 +1091,11 @@ export function GroupDetail() {
                       </>
                     )}
                     {isLeader && (
-                      <div className="mt-6 border-t border-gray-100 pt-4">
+                      <div className="mt-6 border-t border-border pt-4">
                         {group.memberCount <= 1 ? (
                           group.deletionRequested ? (
                             <div className="space-y-2">
-                              <p className="text-sm text-gray-600">
+                              <p className="text-sm text-text-muted">
                                 An admin still has to approve deleting this group.
                               </p>
                               <button
@@ -1112,13 +1112,13 @@ export function GroupDetail() {
                               type="button"
                               onClick={requestDeletion}
                               disabled={memberBusy}
-                              className="btn-secondary text-red-600! border-red-200! hover:border-red-400!"
+                              className="btn-danger-outline"
                             >
                               Request deletion
                             </button>
                           )
                         ) : (
-                          <p className="text-sm text-gray-500">
+                          <p className="text-sm text-text-muted">
                             Hand leadership to someone else. You can ask an admin to delete the group once you are the only member.
                           </p>
                         )}

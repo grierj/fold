@@ -52,31 +52,31 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => voi
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
+    <div className="bg-surface rounded-lg border border-border p-6">
       <div className="flex items-start gap-4 flex-wrap">
         <div className="grow min-w-0">
-          <Link to={`/groups/${group.id}`} className="text-xl font-bold hover:text-brand">
+          <Link to={`/groups/${group.id}`} className="text-xl font-bold hover:text-primary">
             {group.name}
           </Link>
-          <div className="text-sm text-gray-500 mt-0.5">
+          <div className="text-sm text-text-muted mt-0.5">
             Organized by {group.leaderName || "unknown"}
             {group.location ? ` · ${group.location}` : ""}
           </div>
-          <p className="text-gray-700 mt-3 whitespace-pre-wrap">
+          <p className="text-text-muted mt-3 whitespace-pre-wrap">
             {group.description || "No description."}
           </p>
         </div>
       </div>
       <div className="mt-4">
-        <label className="label">Tags</label>
-        <input
+        <label className="label" htmlFor="admin-tags">Tags</label>
+        <input id="admin-tags"
           className="input"
           value={tags}
           onChange={(e) => setTags(e.target.value)}
           placeholder="e.g. young-adults, bible-study"
         />
       </div>
-      {error && <div className="text-red-600 text-sm mt-2">{error}</div>}
+      {error && <div className="text-danger text-sm mt-2">{error}</div>}
       <div className="flex gap-3 mt-4">
         <button onClick={approve} disabled={busy} className="btn-primary">
           {busy ? "…" : "Approve"}
@@ -84,7 +84,7 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => voi
         <button
           onClick={reject}
           disabled={busy}
-          className="btn-secondary text-red-600! border-red-200! hover:border-red-400!"
+          className="btn-danger-outline"
         >
           Reject
         </button>
@@ -125,21 +125,21 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
-      <Link to={`/groups/${group.id}`} className="text-xl font-bold hover:text-brand">
+    <div className="bg-surface rounded-lg border border-border p-6">
+      <Link to={`/groups/${group.id}`} className="text-xl font-bold hover:text-primary">
         {group.name}
       </Link>
-      <div className="text-sm text-gray-500 mt-0.5">
+      <div className="text-sm text-text-muted mt-0.5">
         Organized by {group.leaderName || "unknown"} · {group.memberCount}{" "}
         {group.memberCount === 1 ? "member" : "members"}
       </div>
-      <p className="text-gray-700 mt-3">The leader asked for this group to be deleted.</p>
-      {error && <div className="text-red-600 text-sm mt-2">{error}</div>}
+      <p className="text-text-muted mt-3">The leader asked for this group to be deleted.</p>
+      {error && <div className="text-danger text-sm mt-2">{error}</div>}
       <div className="flex gap-3 mt-4">
         <button
           onClick={approve}
           disabled={busy}
-          className="btn-secondary text-red-600! border-red-200! hover:border-red-400!"
+          className="btn-danger-outline"
         >
           {busy ? "…" : "Delete group"}
         </button>
@@ -181,29 +181,29 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
   if (request.warnings.rateLimited) warnings.push("Many requests from one connection");
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
+    <div className="bg-surface rounded-lg border border-border p-6">
       <div className="flex items-start gap-3 flex-wrap">
         <div className="grow min-w-0">
           <span className="text-xl font-bold">{request.name}</span>
           {request.accountType === "teen" && (
-            <span className="ml-2 inline-block rounded-full bg-sky-100 px-2 py-0.5 text-xs font-semibold text-sky-800">Teen</span>
+            <span className="ml-2 inline-block rounded-full bg-info-subtle px-2 py-0.5 text-xs font-semibold text-info-on-subtle">Teen</span>
           )}
-          <div className="text-sm text-gray-500 mt-0.5">
+          <div className="text-sm text-text-muted mt-0.5">
             {request.email}
             {request.phone ? ` · ${request.phone}` : ""}
             {request.birthDate ? ` · born ${request.birthDate}` : ""}
           </div>
-          <div className="text-sm text-gray-500">
+          <div className="text-sm text-text-muted">
             {request.source === "member_invite"
               ? `Invited by ${request.requestedByName || "a member"}`
               : "Self-signup"}{" "}
             · asked {new Date(request.createdAt).toLocaleDateString()}
           </div>
-          {request.message && <p className="text-gray-700 mt-3 whitespace-pre-wrap">{request.message}</p>}
+          {request.message && <p className="text-text-muted mt-3 whitespace-pre-wrap">{request.message}</p>}
           {warnings.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
               {warnings.map((w) => (
-                <span key={w} className="inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold text-amber-800">{w}</span>
+                <span key={w} className="inline-block rounded-full bg-warning-subtle px-2 py-0.5 text-xs font-semibold text-warning-on-subtle">{w}</span>
               ))}
             </div>
           )}
@@ -213,10 +213,10 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
         <label className="label" htmlFor={`note-${request.id}`}>Note (optional, emailed on rejection)</label>
         <input id={`note-${request.id}`} className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} />
       </div>
-      {error && <div className="text-red-600 text-sm mt-2">{error}</div>}
+      {error && <div className="text-danger text-sm mt-2">{error}</div>}
       <div className="flex gap-3 mt-4">
         <button onClick={() => decide(true)} disabled={busy} className="btn-primary">{busy ? "…" : "Approve"}</button>
-        <button onClick={() => decide(false)} disabled={busy} className="btn-secondary text-red-600! border-red-200! hover:border-red-400!">Reject</button>
+        <button onClick={() => decide(false)} disabled={busy} className="btn-danger-outline">Reject</button>
       </div>
     </div>
   );
@@ -253,10 +253,10 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
 
   return (
     <div>
-      {loading && <div className="text-gray-500">Loading…</div>}
-      {error && <div className="text-red-600">{error}</div>}
+      {loading && <div className="text-text-muted">Loading…</div>}
+      {error && <div className="text-danger">{error}</div>}
       {!loading && !error && groups.length === 0 && deletions.length === 0 && requests.length === 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
+        <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
           Nothing pending. All caught up.
         </div>
       )}
@@ -352,9 +352,9 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
   const candidates = users.filter((u) => !memberIds.has(u.id));
 
   return (
-    <div className="mt-3 border-t border-gray-100 pt-3">
-      {error && <div className="text-red-600 text-sm mb-2">{error}</div>}
-      <ul className="divide-y divide-gray-100">
+    <div className="mt-3 border-t border-border pt-3">
+      {error && <div className="text-danger text-sm mb-2">{error}</div>}
+      <ul className="divide-y divide-border">
         {(members ?? []).map((m) => (
           <li key={m.id} className="py-2 flex items-center gap-3">
             <Avatar
@@ -368,16 +368,16 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
             <div className="grow min-w-0">
               <span className="font-medium">{m.name}</span>{" "}
               {m.admin && (
-                <span className="mr-1 inline-block rounded-full bg-purple-100 px-2 py-0.5 text-xs font-semibold text-purple-800">
+                <span className="mr-1 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
                   Admin
                 </span>
               )}
-              <span className="text-xs text-gray-500 capitalize">· {m.role}</span>
+              <span className="text-xs text-text-muted capitalize">· {m.role}</span>
             </div>
             <button
               onClick={() => remove(m)}
               disabled={busy}
-              className="text-sm text-red-600 hover:underline"
+              className="text-sm text-danger hover:underline"
             >
               Remove
             </button>
@@ -385,12 +385,12 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
         ))}
       </ul>
       {members && members.length === 0 && (
-        <p className="text-sm text-gray-500 py-2">No members yet.</p>
+        <p className="text-sm text-text-muted py-2">No members yet.</p>
       )}
       <div className="flex gap-2 mt-3 flex-wrap items-end">
         <div>
-          <label className="label">Add person</label>
-          <select
+          <label className="label" htmlFor="admin-add-person">Add person</label>
+          <select id="admin-add-person"
             className="input w-48!"
             value={addUserId}
             onChange={(e) => setAddUserId(e.target.value)}
@@ -404,8 +404,8 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
           </select>
         </div>
         <div>
-          <label className="label">Role</label>
-          <select
+          <label className="label" htmlFor="admin-role">Role</label>
+          <select id="admin-role"
             className="input w-32!"
             value={addRole}
             onChange={(e) => setAddRole(e.target.value as "member" | "leader")}
@@ -458,33 +458,33 @@ function GroupsTab({ users }: { users: User[] }) {
     }
   }
 
-  if (loading) return <div className="text-gray-500">Loading…</div>;
-  if (error) return <div className="text-red-600">{error}</div>;
+  if (loading) return <div className="text-text-muted">Loading…</div>;
+  if (error) return <div className="text-danger">{error}</div>;
 
   return (
     <div className="space-y-3">
-      {deleteError && <div className="text-red-600 text-sm">{deleteError}</div>}
+      {deleteError && <div className="text-danger text-sm">{deleteError}</div>}
       {groups.map((g) => (
-        <div key={g.id} className="bg-white rounded-xl border border-gray-200 p-5">
+        <div key={g.id} className="bg-surface rounded-lg border border-border p-5">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="grow min-w-0">
-              <Link to={`/groups/${g.id}`} className="font-bold hover:text-brand">
+              <Link to={`/groups/${g.id}`} className="font-bold hover:text-primary">
                 {g.name}
               </Link>
-              <div className="text-xs text-gray-500 mt-0.5">
+              <div className="text-xs text-text-muted mt-0.5">
                 <span
                   className={`inline-block rounded-full px-2 py-0.5 font-semibold uppercase tracking-wide ${
                     g.status === "active"
-                      ? "bg-green-100 text-green-800"
+                      ? "bg-success-subtle text-success-on-subtle"
                       : g.status === "pending"
-                        ? "bg-yellow-100 text-yellow-800"
-                        : "bg-gray-100 text-gray-600"
+                        ? "bg-warning-subtle text-warning-on-subtle"
+                        : "bg-sunken text-text-muted"
                   }`}
                 >
                   {g.status}
                 </span>
                 {g.visibility === "invite_only" && (
-                  <span className="ml-1.5 inline-block rounded-full px-2 py-0.5 font-semibold uppercase tracking-wide bg-gray-900 text-white">
+                  <span className="ml-1.5 inline-block rounded-full px-2 py-0.5 font-semibold uppercase tracking-wide bg-inverse text-inverse-foreground">
                     Invite only
                   </span>
                 )}{" "}
@@ -503,7 +503,7 @@ function GroupsTab({ users }: { users: User[] }) {
             <button
               onClick={() => deleteGroup(g)}
               disabled={deletingId === g.id}
-              className="btn-secondary py-1.5! px-3! text-sm text-red-600! border-red-200! hover:border-red-400!"
+              className="btn-danger-outline py-1.5! px-3! text-sm"
             >
               {deletingId === g.id ? "…" : "Delete"}
             </button>
@@ -512,7 +512,7 @@ function GroupsTab({ users }: { users: User[] }) {
         </div>
       ))}
       {groups.length === 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
+        <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
           No groups yet.
         </div>
       )}
@@ -581,12 +581,12 @@ function UserForm({
   }
 
   return (
-    <form onSubmit={save} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4 mt-4">
-      {error && <div className="text-red-600 text-sm">{error}</div>}
+    <form onSubmit={save} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-4">
+      {error && <div className="text-danger text-sm">{error}</div>}
       <div className="grid sm:grid-cols-2 gap-4">
         <div>
-          <label className="label">Email (signs in with it)</label>
-          <input
+          <label className="label" htmlFor="admin-email">Email (signs in with it)</label>
+          <input id="admin-email"
             type="email"
             className="input"
             value={form.email}
@@ -596,39 +596,39 @@ function UserForm({
           />
         </div>
         <div>
-          <label className="label">Role</label>
-          <select className="input" value={form.role} onChange={set("role")}>
+          <label className="label" htmlFor="admin-role-2">Role</label>
+          <select id="admin-role-2" className="input" value={form.role} onChange={set("role")}>
             <option value="member">Member</option>
             <option value="admin">Admin</option>
           </select>
         </div>
         {creating && (
           <div className="sm:col-span-2">
-            <label className="label">Password (optional)</label>
-            <input
+            <label className="label" htmlFor="admin-password">Password (optional)</label>
+            <input id="admin-password"
               type="password"
               className="input"
               value={form.password}
               onChange={set("password")}
               autoComplete="new-password"
             />
-            <p className="text-xs text-gray-500 mt-1">
+            <p className="text-xs text-text-muted mt-1">
               At least 10 characters. Leave blank to create an invited account that can't sign in until a password
               is set.
             </p>
           </div>
         )}
         <div>
-          <label className="label">Display name</label>
-          <input className="input" value={form.displayName} onChange={set("displayName")} maxLength={100} />
+          <label className="label" htmlFor="admin-display-name">Display name</label>
+          <input id="admin-display-name" className="input" value={form.displayName} onChange={set("displayName")} maxLength={100} />
         </div>
         <div>
-          <label className="label">Full name</label>
-          <input className="input" value={form.name} onChange={set("name")} maxLength={100} required />
+          <label className="label" htmlFor="admin-full-name">Full name</label>
+          <input id="admin-full-name" className="input" value={form.name} onChange={set("name")} maxLength={100} required />
         </div>
         <div>
-          <label className="label">Phone</label>
-          <input type="tel" className="input" value={form.phone} onChange={set("phone")} maxLength={30} />
+          <label className="label" htmlFor="admin-phone">Phone</label>
+          <input id="admin-phone" type="tel" className="input" value={form.phone} onChange={set("phone")} maxLength={30} />
         </div>
       </div>
       <div className="flex gap-3">
@@ -665,7 +665,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
 
   if (done) {
     return (
-      <div className="text-sm text-green-700 mt-2">
+      <div className="text-sm text-success mt-2">
         Password set for {user.email}.{" "}
         <button onClick={onDone} className="underline">
           Done
@@ -677,23 +677,23 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
   return (
     <form onSubmit={reset} className="flex gap-2 mt-2 flex-wrap items-end">
       <div>
-        <label className="label">New password for {user.email}</label>
-        <input
+        <label className="label" htmlFor="admin-new-password-for">New password for {user.email}</label>
+        <input id="admin-new-password-for"
           type="password"
           className="input w-56!"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
         />
-        <p className="text-xs text-gray-500 mt-1">Must be at least 10 characters.</p>
+        <p className="text-xs text-text-muted mt-1">Must be at least 10 characters.</p>
       </div>
       <button type="submit" disabled={busy} className="btn-secondary py-2!">
         {busy ? "…" : "Set password"}
       </button>
-      <button type="button" onClick={onDone} className="text-sm text-gray-500 hover:underline">
+      <button type="button" onClick={onDone} className="text-sm text-text-muted hover:underline">
         Cancel
       </button>
-      {error && <div className="text-red-600 text-sm w-full">{error}</div>}
+      {error && <div className="text-danger text-sm w-full">{error}</div>}
     </form>
   );
 }
@@ -728,7 +728,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
           New user
         </button>
       </div>
-      {error && <div className="text-red-600 text-sm mb-3">{error}</div>}
+      {error && <div className="text-danger text-sm mb-3">{error}</div>}
       {creating && (
         <UserForm
           creating
@@ -736,17 +736,17 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
           onCancel={() => setCreating(false)}
         />
       )}
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="bg-surface rounded-lg border border-border overflow-hidden">
         <table className="w-full text-sm">
           <thead>
-            <tr className="text-left text-gray-500 border-b border-gray-100">
+            <tr className="text-left text-text-muted border-b border-border">
               <th className="px-4 py-3 font-medium">User</th>
               <th className="px-4 py-3 font-medium hidden md:table-cell">Contact</th>
               <th className="px-4 py-3 font-medium">Role</th>
               <th className="px-4 py-3 font-medium text-right">Actions</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
+          <tbody className="divide-y divide-border">
             {users.map((u) => (
               <tr key={u.id}>
                 <td className="px-4 py-3">
@@ -761,7 +761,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     />
                     <div>
                       <div className="font-medium">{u.displayName || u.name}</div>
-                      <div className="text-xs text-gray-500">{u.email}</div>
+                      <div className="text-xs text-text-muted">{u.email}</div>
                     </div>
                   </div>
                   {editingId === u.id && (
@@ -783,25 +783,25 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     />
                   )}
                 </td>
-                <td className="px-4 py-3 text-gray-600 hidden md:table-cell">
+                <td className="px-4 py-3 text-text-muted hidden md:table-cell">
                   {u.email || "—"}
                   {u.phone ? <div className="text-xs">{u.phone}</div> : null}
                 </td>
                 <td className="px-4 py-3">
                   <span
                     className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
-                      u.role === "admin" ? "bg-purple-100 text-purple-800" : "bg-gray-100 text-gray-600"
+                      u.role === "admin" ? "bg-primary-subtle text-primary-on-subtle" : "bg-sunken text-text-muted"
                     }`}
                   >
                     {u.role}
                   </span>
                   {u.status !== "active" && (
-                    <span className="ml-1 inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-amber-100 text-amber-800">
+                    <span className="ml-1 inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-warning-subtle text-warning-on-subtle">
                       {u.status}
                     </span>
                   )}
                   {u.accountType === "teen" && (
-                    <span className="ml-1 inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-sky-100 text-sky-800">
+                    <span className="ml-1 inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-info-subtle text-info-on-subtle">
                       Teen
                     </span>
                   )}
@@ -809,13 +809,13 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                 <td className="px-4 py-3 text-right whitespace-nowrap">
                   <button
                     onClick={() => { setEditingId(u.id); setResetId(null); setCreating(false); }}
-                    className="text-sm text-brand hover:underline mr-3"
+                    className="text-sm text-primary hover:underline mr-3"
                   >
                     Edit
                   </button>
                   <button
                     onClick={() => { setResetId(u.id); setEditingId(null); setCreating(false); }}
-                    className="text-sm text-gray-600 hover:underline mr-3"
+                    className="text-sm text-text-muted hover:underline mr-3"
                   >
                     Password
                   </button>
@@ -826,14 +826,14 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                         : setLeaving({ id: u.id, action: "disable" })
                     }
                     disabled={busy}
-                    className="text-sm text-gray-600 hover:underline mr-3"
+                    className="text-sm text-text-muted hover:underline mr-3"
                   >
                     {u.status === "disabled" ? "Enable" : "Disable"}
                   </button>
                   <button
                     onClick={() => { setLeaving({ id: u.id, action: "delete" }); setEditingId(null); setResetId(null); }}
                     disabled={busy}
-                    className="text-sm text-red-600 hover:underline"
+                    className="text-sm text-danger hover:underline"
                   >
                     Delete
                   </button>
@@ -905,15 +905,15 @@ function ChurchTimezone() {
           }}
           describedBy="church-tz-hint"
         />
-        <p id="church-tz-hint" className="text-sm text-gray-500 mt-1">
+        <p id="church-tz-hint" className="text-sm text-text-muted mt-1">
           New events start in this time zone; leaders can pick another when they schedule.
         </p>
       </div>
       <button type="submit" className="btn-secondary" disabled={busy || tz.trim() === saved}>
         {busy ? "Saving…" : "Save time zone"}
       </button>
-      {ok && <span className="text-sm text-gray-600">Saved</span>}
-      {error && <span className="text-sm text-red-600">{error}</span>}
+      {ok && <span className="text-sm text-text-muted">Saved</span>}
+      {error && <span className="text-sm text-danger">{error}</span>}
     </form>
   );
 }
@@ -958,10 +958,10 @@ function InviteTab() {
   }
 
   return (
-    <form onSubmit={submit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4 max-w-xl">
-      {error && <div className="text-red-600 text-sm">{error}</div>}
-      {status && <div className="text-green-700 text-sm">{status}</div>}
-      <p className="text-sm text-gray-600">
+    <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4 max-w-xl">
+      {error && <div className="text-danger text-sm">{error}</div>}
+      {status && <div className="text-success text-sm">{status}</div>}
+      <p className="text-sm text-text-muted">
         They'll get an email link, set a password, and join with an active account — no
         approval step.
       </p>
@@ -1063,11 +1063,11 @@ function SelfSignupSetting() {
           <option value="request">On — requests wait for approval</option>
           <option value="off">Off — office creates accounts</option>
         </select>
-        <p className="text-sm text-gray-500 mt-1">People ask for an account on /join. Turning this off never removes existing accounts.</p>
+        <p className="text-sm text-text-muted mt-1">People ask for an account on /join. Turning this off never removes existing accounts.</p>
       </div>
       <button type="submit" className="btn-secondary" disabled={busy || mode === saved}>{busy ? "Saving…" : "Save self-signup"}</button>
-      {ok && <span className="text-sm text-gray-600">Saved</span>}
-      {error && <span className="text-sm text-red-600">{error}</span>}
+      {ok && <span className="text-sm text-text-muted">Saved</span>}
+      {error && <span className="text-sm text-danger">{error}</span>}
     </form>
   );
 }
@@ -1098,7 +1098,7 @@ export function AdminPage() {
 
   if (!authLoading && (!user || !isAdmin)) {
     return (
-      <div className="max-w-4xl mx-auto px-4 py-12 text-center text-gray-600">
+      <div className="max-w-4xl mx-auto px-4 py-12 text-center text-text-muted">
         This page is for church admins only.
       </div>
     );
@@ -1113,28 +1113,28 @@ export function AdminPage() {
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-extrabold mb-6">Admin</h1>
+      <h1 className="text-3xl font-bold mb-6">Admin</h1>
       <ChurchTimezone />
       <SelfSignupSetting />
       <p className="mb-6">
-        <Link to="/events/new" className="text-brand font-semibold">
+        <Link to="/events/new" className="text-primary font-semibold">
           Schedule a church-wide event
         </Link>
       </p>
-      <div className="flex gap-1 border-b border-gray-200 mb-6">
+      <div className="flex gap-1 border-b border-border mb-6">
         {tabs.map((t) => (
           <button
             key={t.id}
             onClick={() => setSearchParams(t.id === "approvals" ? {} : { tab: t.id })}
             className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px ${
               tab === t.id
-                ? "border-brand text-brand"
-                : "border-transparent text-gray-500 hover:text-gray-800"
+                ? "border-primary text-primary"
+                : "border-transparent text-text-muted hover:text-text"
             }`}
           >
             {t.label}
             {t.badge ? (
-              <span className="ml-1.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-brand text-white text-xs">
+              <span className="ml-1.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-xs">
                 {t.badge}
               </span>
             ) : null}
@@ -1144,7 +1144,7 @@ export function AdminPage() {
       {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} />}
       {tab === "groups" && <GroupsTab users={users} />}
       {tab === "users" && (
-        usersLoading ? <div className="text-gray-500">Loading…</div> : <UsersTab users={users} reload={loadUsers} />
+        usersLoading ? <div className="text-text-muted">Loading…</div> : <UsersTab users={users} reload={loadUsers} />
       )}
       {tab === "invite" && <InviteTab />}
     </div>

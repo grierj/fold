@@ -40,8 +40,8 @@ export function MyGroups() {
   if (!authLoading && !user) {
     return (
       <div className="max-w-6xl mx-auto px-4 py-12 text-center">
-        <p className="text-gray-600">
-          <Link to="/login" className="text-brand font-semibold">
+        <p className="text-text-muted">
+          <Link to="/login" className="text-primary font-semibold">
             Log in
           </Link>{" "}
           to see your groups.
@@ -52,13 +52,13 @@ export function MyGroups() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-extrabold mb-6">My groups</h1>
-      {loading && <div className="text-gray-500">Loading…</div>}
-      {error && <div className="text-red-600">{error}</div>}
+      <h1 className="text-3xl font-bold mb-6">My groups</h1>
+      {loading && <div className="text-text-muted">Loading…</div>}
+      {error && <div className="text-danger">{error}</div>}
       {!loading && !error && groups.length === 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 p-8 text-center text-gray-600">
+        <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
           You haven't joined any groups yet.{" "}
-          <Link to="/" className="text-brand font-semibold">
+          <Link to="/" className="text-primary font-semibold">
             Find one to join
           </Link>
           .

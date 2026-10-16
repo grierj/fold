@@ -62,7 +62,7 @@ export function Invite() {
   if (loading) {
     return (
       <div className="max-w-md mx-auto px-4 py-12">
-        <p className="text-sm text-gray-500">Loading invitation…</p>
+        <p className="text-sm text-text-muted">Loading invitation…</p>
       </div>
     );
   }
@@ -70,11 +70,11 @@ export function Invite() {
   if (!token || (!invitation && error)) {
     return (
       <div className="max-w-md mx-auto px-4 py-12">
-        <h1 className="text-3xl font-extrabold mb-6">You're invited</h1>
-        <div className="bg-white rounded-xl border border-gray-200 p-6">
+        <h1 className="text-3xl font-bold mb-6">You're invited</h1>
+        <div className="bg-surface rounded-lg border border-border p-6">
           <p className="text-sm">{error ?? "This link is missing its token."}</p>
           <p className="mt-4">
-            <Link to="/login" className="text-brand font-semibold text-sm">
+            <Link to="/login" className="text-primary font-semibold text-sm">
               Back to log in
             </Link>
           </p>
@@ -85,18 +85,18 @@ export function Invite() {
 
   return (
     <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-extrabold mb-2">You're invited to {site}</h1>
+      <h1 className="text-3xl font-bold mb-2">You're invited to {site}</h1>
       {invitation?.groupName && (
-        <p className="text-gray-600 mb-6">
+        <p className="text-text-muted mb-6">
           to join the group <span className="font-semibold">{invitation.groupName}</span>
         </p>
       )}
       {!invitation?.groupName && <div className="mb-6" />}
-      <form onSubmit={submit} className="bg-white rounded-xl border border-gray-200 p-6 space-y-4">
-        {error && <div className="text-red-600 text-sm">{error}</div>}
+      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+        {error && <div className="text-danger text-sm">{error}</div>}
         <div>
-          <label className="label">Your name</label>
-          <input
+          <label className="label" htmlFor="invite-your-name">Your name</label>
+          <input id="invite-your-name"
             className="input"
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -105,8 +105,8 @@ export function Invite() {
           />
         </div>
         <div>
-          <label className="label">Email (you'll sign in with it)</label>
-          <input type="email" className="input bg-gray-50" value={invitation?.email ?? ""} readOnly />
+          <label className="label" htmlFor="invite-email">Email (you'll sign in with it)</label>
+          <input id="invite-email" type="email" className="input bg-page" value={invitation?.email ?? ""} readOnly />
         </div>
         <div>
           <label className="label" htmlFor="inv-password">
@@ -121,7 +121,7 @@ export function Invite() {
             autoComplete="new-password"
             required
           />
-          <p className="text-xs text-gray-500 mt-1">Must be at least 10 characters.</p>
+          <p className="text-xs text-text-muted mt-1">Must be at least 10 characters.</p>
         </div>
         <button type="submit" disabled={busy} className="btn-primary w-full">
           {busy ? "Creating account…" : "Create my account"}

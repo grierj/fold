@@ -72,15 +72,15 @@ export function EventDetail() {
   }
 
   if (loading || authLoading) {
-    return <div className="max-w-3xl mx-auto px-4 py-12 text-gray-500">Loading…</div>;
+    return <div className="max-w-3xl mx-auto px-4 py-12 text-text-muted">Loading…</div>;
   }
   if (notFound || !page) {
     return (
       <div className="max-w-3xl mx-auto px-4 py-12 text-center">
         <h1 className="text-2xl font-bold mb-2">Event not found</h1>
-        <p className="text-gray-600">
+        <p className="text-text-muted">
           {error ?? "This event doesn't exist or isn't visible to you."}{" "}
-          <Link to="/" className="text-brand font-semibold">
+          <Link to="/" className="text-primary font-semibold">
             Back home
           </Link>
         </p>
@@ -103,11 +103,11 @@ export function EventDetail() {
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-extrabold mb-2">{title}</h1>
+      <h1 className="text-3xl font-bold mb-2">{title}</h1>
       <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} />
-      {event.location && <p className="text-gray-600 mt-1">{event.location}</p>}
-      {event.description && <p className="text-gray-700 whitespace-pre-wrap mt-3">{event.description}</p>}
-      {error && <div className="text-red-600 mt-3">{error}</div>}
+      {event.location && <p className="text-text-muted mt-1">{event.location}</p>}
+      {event.description && <p className="text-text-muted whitespace-pre-wrap mt-3">{event.description}</p>}
+      {error && <div className="text-danger mt-3">{error}</div>}
 
 
       {isAdmin && event.churchWide && (
@@ -117,10 +117,10 @@ export function EventDetail() {
       {canManage && (
         <div className="mt-4">
           <div className="flex flex-wrap items-center gap-4">
-            <button type="button" className="text-sm text-brand font-medium" onClick={() => setEditing((v) => !v)}>
+            <button type="button" className="text-sm text-primary font-medium" onClick={() => setEditing((v) => !v)}>
               {editing ? "Close editor" : event.recurrenceRule ? "Edit series" : "Edit event"}
             </button>
-            <button type="button" className="text-sm text-red-600 hover:text-red-800 font-medium" onClick={() => void deleteEvent()}>
+            <button type="button" className="text-sm text-danger hover:text-danger-hover font-medium" onClick={() => void deleteEvent()}>
               Delete event
             </button>
           </div>
@@ -148,7 +148,7 @@ export function EventDetail() {
       )}
 
       <h2 className="text-xl font-bold mt-8 mb-3">Upcoming dates</h2>
-      {occurrences.length === 0 && <p className="text-gray-600">No upcoming dates.</p>}
+      {occurrences.length === 0 && <p className="text-text-muted">No upcoming dates.</p>}
       <div className="space-y-3">
         {occurrences.map((m) => (
           <DateRow
@@ -199,19 +199,19 @@ function DateRow({
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-4 flex gap-4">
+    <div className="bg-surface rounded-lg border border-border p-4 flex gap-4">
       <DateBadge at={instance.startsAt} />
       <div className="grow min-w-0">
         <div className="font-bold">{instance.title || "Church event"}</div>
-        <div className="text-sm text-gray-600">
+        <div className="text-sm text-text-muted">
           {time}
           {instance.location ? ` · ${instance.location}` : ""}
         </div>
-        {held && <div className="text-sm text-gray-500">{held}</div>}
+        {held && <div className="text-sm text-text-muted">{held}</div>}
         {instance.overridden && (
-          <div className="text-sm text-gray-500">This date was edited on its own, so series changes leave it alone.</div>
+          <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
         )}
-        <div className="text-sm text-gray-500 mt-1">
+        <div className="text-sm text-text-muted mt-1">
           {count(instance.registrations, "going")} going · {count(instance.registrations, "maybe")} maybe ·{" "}
           {count(instance.registrations, "declined")} can&apos;t go
           {instance.capacity !== null && (
@@ -227,15 +227,15 @@ function DateRow({
           ) : instance.visibility === "public" ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-text-muted">
                 Already have an account?{" "}
-                <button type="button" onClick={onNeedLogin} className="text-brand font-semibold">
+                <button type="button" onClick={onNeedLogin} className="text-primary font-semibold">
                   Log in to register
                 </button>
               </p>
             </div>
           ) : (
-            <button type="button" onClick={onNeedLogin} className="text-sm text-brand font-semibold">
+            <button type="button" onClick={onNeedLogin} className="text-sm text-primary font-semibold">
               Log in to register
             </button>
           )}
@@ -257,7 +257,7 @@ function DateRow({
           <button
             type="button"
             onClick={() => setEditingDate((v) => !v)}
-            className="text-sm text-brand font-medium"
+            className="text-sm text-primary font-medium"
           >
             Edit this date
           </button>
@@ -265,7 +265,7 @@ function DateRow({
             type="button"
             onClick={() => void cancel()}
             disabled={cancelling}
-            className="text-sm text-red-600 hover:text-red-800 font-medium"
+            className="text-sm text-danger hover:text-danger-hover font-medium"
           >
             {cancelling ? "Cancelling…" : "Cancel"}
           </button>
@@ -336,14 +336,14 @@ function ManageRoster({ instance, onChanged }: { instance: EventOccurrence; onCh
   if (!instance.attendeesVisible || roster.length === 0) return null;
 
   return (
-    <div className="mt-3 border-t border-gray-100 pt-3">
-      <div className="text-sm font-semibold text-gray-700 mb-1">Manage registrations</div>
-      {error && <div className="text-sm text-red-600 mb-1">{error}</div>}
+    <div className="mt-3 border-t border-border pt-3">
+      <div className="text-sm font-semibold text-text-muted mb-1">Manage registrations</div>
+      {error && <div className="text-sm text-danger mb-1">{error}</div>}
       <ul className="text-sm space-y-1 mb-2">
         {roster.map((a) => (
           <li key={a.userId} className="flex items-center justify-between gap-3">
             <span>
-              {a.name} <span className="text-gray-500">· {a.status}</span>
+              {a.name} <span className="text-text-muted">· {a.status}</span>
             </span>
             <span className="flex gap-2">
               {a.status === "waitlisted" && (
@@ -351,7 +351,7 @@ function ManageRoster({ instance, onChanged }: { instance: EventOccurrence; onCh
                   type="button"
                   disabled={busy !== null}
                   onClick={() => void promote(a.userId)}
-                  className="text-brand font-medium"
+                  className="text-primary font-medium"
                 >
                   {busy === `promote-${a.userId}` ? "…" : "Promote"}
                 </button>
@@ -360,7 +360,7 @@ function ManageRoster({ instance, onChanged }: { instance: EventOccurrence; onCh
                 type="button"
                 disabled={busy !== null}
                 onClick={() => void remove(a.userId, a.name)}
-                className="text-red-600 hover:text-red-800"
+                className="text-danger hover:text-danger-hover"
               >
                 {busy === `remove-${a.userId}` ? "…" : "Remove"}
               </button>
@@ -439,11 +439,11 @@ function DateEditor({
   }
 
   return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
-      <p className="text-sm text-gray-600">
+    <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
+      <p className="text-sm text-text-muted">
         This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
       </p>
-      {error && <div className="text-sm text-red-600">{error}</div>}
+      {error && <div className="text-sm text-danger">{error}</div>}
       <div className="grid sm:grid-cols-3 gap-3">
         <div>
           <label className="label" htmlFor={`cev-date-${instance.id}`}>
@@ -499,7 +499,7 @@ function DateEditor({
           value={capacity}
           onChange={(e) => setCapacity(e.target.value)}
         />
-        <p className="text-xs text-gray-500 mt-1">Empty means this date uses the event&apos;s capacity.</p>
+        <p className="text-xs text-text-muted mt-1">Empty means this date uses the event&apos;s capacity.</p>
       </div>
       <div className="flex gap-2">
         <button type="submit" disabled={busy} className="btn-primary">
@@ -556,17 +556,17 @@ function HostEditor({
   }
 
   return (
-    <div className="mt-4 bg-white rounded-xl border border-gray-200 p-4">
+    <div className="mt-4 bg-surface rounded-lg border border-border p-4">
       <div className="font-semibold mb-2">Hosts</div>
-      {error && <div className="text-sm text-red-600 mb-2">{error}</div>}
+      {error && <div className="text-sm text-danger mb-2">{error}</div>}
       <ul className="text-sm space-y-1 mb-3">
         {hosts.map((h) => (
           <li key={h.userId} className="flex items-center justify-between gap-3">
             <span>
-              {h.name} <span className="text-gray-500">{h.email}</span>
+              {h.name} <span className="text-text-muted">{h.email}</span>
             </span>
             {hosts.length > 1 && (
-              <button type="button" className="text-red-600" disabled={busy} onClick={() => void remove(h.userId)}>
+              <button type="button" className="text-danger" disabled={busy} onClick={() => void remove(h.userId)}>
                 Remove
               </button>
             )}

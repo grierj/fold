@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test as setup } from "@playwright/test";
 import { apiAs, email, PASSWORD } from "./helpers";
 
@@ -8,6 +9,16 @@ import { apiAs, email, PASSWORD } from "./helpers";
 // re-enabling them left both out of the group (DEC-47).
 setup("first-run setup and seed data", async ({ page, request }) => {
   await page.goto("/setup");
+  // The setup page is only reachable now, so its axe scan and screenshots
+  // (when SCREENS_DIR is set, as in screens.spec.ts) happen here.
+  const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze();
+  expect(violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => v.id)).toEqual([]);
+  if (process.env.SCREENS_DIR) {
+    for (const w of [390, 768, 1280]) {
+      await page.setViewportSize({ width: w, height: 900 });
+      await page.screenshot({ path: `${process.env.SCREENS_DIR}/setup-${w}.png`, fullPage: true, animations: "disabled", caret: "hide" });
+    }
+  }
   await page.locator("[name=site_name]").fill("Fold e2e");
   await page.locator("[name=timezone]").fill("America/Boise");
   await page.locator("[name=name]").fill("Grier");

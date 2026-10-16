@@ -13,8 +13,8 @@ function WeekdayPicker({ days, onToggle }: { days: string[]; onToggle: (value: s
           onClick={() => onToggle(w.value)}
           className={
             days.includes(w.value)
-              ? "px-3 py-1.5 rounded-full text-sm font-semibold bg-brand text-white"
-              : "px-3 py-1.5 rounded-full text-sm font-semibold bg-gray-100 text-gray-600 hover:bg-gray-200"
+              ? "px-3 py-1.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground"
+              : "px-3 py-1.5 rounded-full text-sm font-semibold bg-sunken text-text-muted hover:bg-border"
           }
         >
           {w.label}
@@ -130,12 +130,12 @@ export function SeriesEditor({
   }
 
   return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
-      <p className="text-sm text-gray-600">
+    <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
+      <p className="text-sm text-text-muted">
         This changes every future date that has not been edited on its own. Customized dates stay as they are. Dates
         the new schedule drops are cancelled, and people who were going or maybe are told.
       </p>
-      {error && <div className="text-sm text-red-600">{error}</div>}
+      {error && <div className="text-sm text-danger">{error}</div>}
       <div className="grid sm:grid-cols-2 gap-3">
         <div>
           <label className="label" htmlFor={`s-date-${idPrefix}`}>
@@ -209,7 +209,7 @@ export function SeriesEditor({
                 setRecurring(e.target.checked);
                 if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
               }}
-              className="w-4 h-4 accent-brand"
+              className="w-4 h-4 accent-primary"
             />
             Repeat weekly
           </label>
@@ -247,7 +247,7 @@ export function SeriesEditor({
             value={capacity}
             onChange={(e) => setCapacity(e.target.value)}
           />
-          <p className="text-xs text-gray-500 mt-1">Seats per date. Empty means no limit.</p>
+          <p className="text-xs text-text-muted mt-1">Seats per date. Empty means no limit.</p>
         </div>
         <div>
           <label className="label" htmlFor={`s-guests-${idPrefix}`}>
@@ -262,7 +262,7 @@ export function SeriesEditor({
             value={guestsAllowed}
             onChange={(e) => setGuestsAllowed(Math.max(0, Math.min(5, Number(e.target.value))))}
           />
-          <p className="text-xs text-gray-500 mt-1">Extra guests one registration may bring (0–5).</p>
+          <p className="text-xs text-text-muted mt-1">Extra guests one registration may bring (0–5).</p>
         </div>
         <div className="flex items-end pb-1">
           <label className="flex items-center gap-2 text-sm cursor-pointer">
@@ -270,13 +270,13 @@ export function SeriesEditor({
               type="checkbox"
               checked={waitlistEnabled}
               onChange={(e) => setWaitlistEnabled(e.target.checked)}
-              className="w-4 h-4 accent-brand"
+              className="w-4 h-4 accent-primary"
             />
             Waitlist when full
           </label>
         </div>
       </div>
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-text-muted">
         When the waitlist is off, a full date refuses new registrations. When it is on, extra people join the
         waitlist in order and move up automatically as spots open.
       </p>

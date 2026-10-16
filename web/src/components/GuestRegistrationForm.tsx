@@ -42,7 +42,7 @@ export function GuestRegistrationForm({ instance }: { instance: EventOccurrence 
 
   if (!open && !done) {
     return (
-      <button type="button" onClick={() => setOpen(true)} className="text-sm text-brand font-semibold">
+      <button type="button" onClick={() => setOpen(true)} className="text-sm text-primary font-semibold">
         Register as a guest
       </button>
     );
@@ -50,9 +50,9 @@ export function GuestRegistrationForm({ instance }: { instance: EventOccurrence 
 
   if (done) {
     return (
-      <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
-        <p className="text-sm text-gray-700">{done}</p>
-        <p className="text-sm text-gray-500 mt-1">
+      <div className="rounded-md border border-border bg-page p-4">
+        <p className="text-sm text-text-muted">{done}</p>
+        <p className="text-sm text-text-muted mt-1">
           Your registration is confirmed when you open the link in that email.
         </p>
       </div>
@@ -60,18 +60,18 @@ export function GuestRegistrationForm({ instance }: { instance: EventOccurrence 
   }
 
   return (
-    <form onSubmit={submit} className="rounded-lg border border-gray-200 p-4 space-y-3 max-w-md">
+    <form onSubmit={submit} className="rounded-md border border-border p-4 space-y-3 max-w-md">
       <p className="text-sm font-semibold">Register as a guest</p>
-      {error && <div className="text-red-600 text-sm">{error}</div>}
+      {error && <div className="text-danger text-sm">{error}</div>}
       <div>
         <label className="label" htmlFor={`${p}-name`}>Full name</label>
         <input id={`${p}-name`} className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={100} autoComplete="name" required />
-        <p className="text-xs text-gray-500 mt-1">Shown on the attendee list. At most 100 characters.</p>
+        <p className="text-xs text-text-muted mt-1">Shown on the attendee list. At most 100 characters.</p>
       </div>
       <div>
         <label className="label" htmlFor={`${p}-email`}>Email</label>
         <input id={`${p}-email`} type="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
-        <p className="text-xs text-gray-500 mt-1">
+        <p className="text-xs text-text-muted mt-1">
           We email you a link to confirm, and later a link to cancel. Registering again with
           the same email reuses the same guest record.
         </p>
@@ -100,7 +100,7 @@ export function GuestRegistrationForm({ instance }: { instance: EventOccurrence 
         <button type="submit" disabled={busy} className="btn-primary">
           {busy ? "Sending…" : "Email me a confirmation link"}
         </button>
-        <button type="button" onClick={() => setOpen(false)} className="text-sm text-gray-500">
+        <button type="button" onClick={() => setOpen(false)} className="text-sm text-text-muted">
           Never mind
         </button>
       </div>
