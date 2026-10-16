@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, signIn } from "./helpers";
+import { apiAs, signIn, fromMore } from "./helpers";
 
 // DEC-57: every time on screen is in the browser's zone. This browser is
 // New York and the event is 10:30 PM in Boise, which is 12:30 AM the next
@@ -37,7 +37,7 @@ test("event times follow the browser's zone, with one 'held in' line on the even
   await expect(page.getByText(/^Held in Mountain time \(\w{3}, 10:30 PM M[DS]T\)$/)).toBeVisible();
 
   // The per-date editor edits the event's own clock and says which zone.
-  await page.getByRole("button", { name: /Edit this date/ }).click();
+  await fromMore(page, "Edit this date");
   await expect(page.getByText(/Times are in Mountain time\./)).toBeVisible();
   await expect(page.getByLabel("Start time")).toHaveValue("22:30");
 });

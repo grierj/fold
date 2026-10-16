@@ -15,6 +15,7 @@ This directory is the maintained source for verifying Fold's user-facing behavio
 - Start every recipe from the baseline state unless its preconditions say otherwise.
 - Prefer ARIA roles and accessible names. Use the setup form's `name` attributes, which the existing browser tests use.
 - The directory search box has no accessible name. Use the placeholder `Search groups…` (one ellipsis character).
+- Secondary actions live in a `More` menu (DEC-63). Open it with `getByRole("button", { name: /^More for/ })` (a date, a member, an admin user row) or `{ name: "More group actions" }` (the group header), then choose `getByRole("menuitem", { name })`.
 - Treat every command as literal. Keep quoted names and flags unchanged.
 - Run the packaged sign-in proof with `verify-fold drive "$RUN_ID" sign-in`.
 - Run other browser actions with Playwright from `web/node_modules` against `VERIFY_URL`.
@@ -49,4 +50,5 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Log out](./log-out.md) covers the header control clearing the session, including after Back.
 - [Event visibility](./event-visibility.md) covers one event narrower or wider than its group and the review when a group becomes more private.
 - [Notifications](./notifications.md) covers the bell's count, approving a waiting group inline, archive with Undo that survives signing out, and the phone-width page.
+- [Event page](./event-page.md) covers the segmented RSVP, attendance counts with the names expand, a series as its next date plus `N more dates`, and the leader's More menus.
 - [Guest registration](./guest-registration.md) covers the signed-out guest form on a public event, its age gate, and the unverified-signup boundary in the database.

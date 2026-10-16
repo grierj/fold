@@ -9,10 +9,14 @@ test("leader roster labels the admin and offers no Remove for them", async ({ pa
 
   const grier = page.getByRole("listitem").filter({ hasText: "Grier" });
   await expect(grier.getByText("Admin", { exact: true })).toBeVisible();
-  await expect(grier.getByRole("button", { name: "Remove", exact: true })).toHaveCount(0);
-  await expect(grier.getByRole("button", { name: "Remove as leader" })).toHaveCount(0);
+  const grierMore = grier.getByRole("button", { name: /^More for/ });
+  if (await grierMore.count()) await grierMore.click();
+  await expect(grier.getByRole("menuitem", { name: "Remove from group" })).toHaveCount(0);
+  await expect(grier.getByRole("menuitem", { name: "Remove as leader" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
 
   const sam = page.getByRole("listitem").filter({ hasText: "Sam Member" });
   await expect(sam.getByText("Admin", { exact: true })).toHaveCount(0);
-  await expect(sam.getByRole("button", { name: "Remove", exact: true })).toBeVisible();
+  await sam.getByRole("button", { name: /^More for/ }).click();
+  await expect(sam.getByRole("menuitem", { name: "Remove from group" })).toBeVisible();
 });

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, signIn } from "./helpers";
+import { apiAs, signIn, fromMore } from "./helpers";
 
 function futureDate(days: number): string {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -23,7 +23,7 @@ test("making one event invite-only previews and confirms", async ({ page, reques
 
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
-  await page.getByRole("button", { name: "Edit event" }).click();
+  await fromMore(page, "Edit event");
   await page.getByLabel("Who can see this event").selectOption("invite_only");
   await page.getByRole("button", { name: "Save visibility" }).click();
   const review = page.getByRole("dialog");

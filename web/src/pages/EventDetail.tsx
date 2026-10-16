@@ -4,17 +4,15 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
-import { AttendeeNames, EventIntro } from "../components/EventIntro";
+import { EventIntro } from "../components/EventIntro";
+import { Attendance } from "../components/Attendance";
+import { Menu } from "../components/ui/Menu";
 import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { formatTime, heldIn, zoneNote } from "../lib/when";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, RegistrationResponse } from "../types";
 import { errorText } from "../lib/errors";
-
-function count(r: Record<string, number>, key: string): number {
-  return r[key] ?? 0;
-}
 
 export function EventDetail() {
   const { id } = useParams<{ id: string }>();
@@ -26,9 +24,10 @@ export function EventDetail() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
 
-  const load = useCallback(async () => {
+  // quiet refreshes in place (after an RSVP) without the Loading screen.
+  const load = useCallback(async (quiet = false) => {
     if (!id) return;
-    setLoading(true);
+    if (!quiet) setLoading(true);
     setError(null);
     setNotFound(false);
     try {
@@ -45,7 +44,10 @@ export function EventDetail() {
     load();
   }, [load]);
 
+  // Answer right away, then refetch so names, spots and the waitlist match
+  // the server.
   function handleRsvp(eventId: number, date: string, reg: RegistrationResponse) {
+    void load(true);
     setPage((p) => {
       if (!p) return p;
       return {
@@ -121,9 +123,7 @@ export function EventDetail() {
             <button type="button" className="inline-flex items-center min-h-11 text-sm text-primary font-medium" onClick={() => setEditing((v) => !v)}>
               {editing ? "Close editor" : event.recurrenceRule ? "Edit series" : "Edit event"}
             </button>
-            <button type="button" className="inline-flex items-center min-h-11 text-sm text-danger hover:text-danger-hover font-medium" onClick={() => void deleteEvent()}>
-              Delete event
-            </button>
+            <Menu tone="quiet" label="More event actions" items={[{ label: "Delete event", onSelect: () => void deleteEvent(), danger: true }]} />
           </div>
           {editing && (
             <SeriesEditor
@@ -212,16 +212,7 @@ function DateRow({
         {instance.overridden && (
           <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
         )}
-        <div className="text-sm text-text-muted mt-1">
-          {count(instance.registrations, "going")} going · {count(instance.registrations, "maybe")} maybe ·{" "}
-          {count(instance.registrations, "declined")} can&apos;t go
-          {instance.capacity !== null && (
-            <>
-              {" "}· {instance.spotsLeft} of {instance.capacity} spots left
-            </>
-          )}
-        </div>
-        <AttendeeNames instance={instance} />
+        <Attendance instance={instance} />
         <div className="mt-2">
           {loggedIn ? (
             <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
@@ -254,22 +245,15 @@ function DateRow({
         {canManage && <ManageRoster instance={instance} onChanged={onChanged} />}
       </div>
       {canManage && (
-        <div className="shrink-0 flex flex-col items-end gap-2">
-          <button
-            type="button"
-            onClick={() => setEditingDate((v) => !v)}
-            className="inline-flex items-center min-h-11 text-sm text-primary font-medium"
-          >
-            Edit this date
-          </button>
-          <button
-            type="button"
-            onClick={() => void cancel()}
-            disabled={cancelling}
-            className="inline-flex items-center min-h-11 text-sm text-danger hover:text-danger-hover font-medium"
-          >
-            {cancelling ? "Cancelling…" : "Cancel"}
-          </button>
+        <div className="shrink-0">
+          <Menu
+            tone="quiet"
+            label={`More for ${instance.date}`}
+            items={[
+              { label: "Edit this date", onSelect: () => setEditingDate((v) => !v) },
+              { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
+            ]}
+          />
         </div>
       )}
     </div>

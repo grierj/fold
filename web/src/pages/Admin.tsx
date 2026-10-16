@@ -4,6 +4,7 @@ import { Admin, AdminAccountRequests, AdminGroups, AdminUsers, ApiError, Groups,
 import { ZoneSelect } from "../components/ZoneSelect";
 import type { AccountRequest, GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
+import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
 import { Button } from "../components/ui/Button";
@@ -741,9 +742,10 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
           onCancel={() => setCreating(false)}
         />
       )}
-      {/* Below md each user is a stacked card, so every action shows (PR #65
+      {/* Below md each user is a stacked card with Edit and More (PR #65
           review F1); from md up it's a table. */}
-      <div className="bg-surface rounded-lg border border-border overflow-hidden">
+      {/* Not overflow-hidden: a row's More menu must be able to open past the card. */}
+      <div className="bg-surface rounded-lg border border-border overflow-visible">
         <table className="block md:table w-full text-sm">
           <thead className="hidden md:table-header-group">
             <tr className="text-left text-text-muted border-b border-border">
@@ -817,33 +819,28 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   <Button variant="ghost" size="sm" onClick={() => { setEditingId(u.id); setResetId(null); setCreating(false); }}>
                     Edit
                   </Button>
-                  <Button variant="ghost" size="sm" onClick={() => { setResetId(u.id); setEditingId(null); setCreating(false); }}>
-                    Password
-                  </Button>
-                  {u.id !== me?.id && (
-                  <>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      u.status === "disabled"
-                        ? setStatus(u, "active")
-                        : setLeaving({ id: u.id, action: "disable" })
-                    }
-                    disabled={busy}
-                  >
-                    {u.status === "disabled" ? "Enable" : "Disable"}
-                  </Button>
-                  <Button
-                    variant="danger-outline"
-                    size="sm"
-                    onClick={() => { setLeaving({ id: u.id, action: "delete" }); setEditingId(null); setResetId(null); }}
-                    disabled={busy}
-                  >
-                    Delete
-                  </Button>
-                  </>
-                  )}
+                  {/* Edit is the row's one action; the rest live in More (DEC-63).
+                      Your own row has no Disable or Delete: the server refuses both. */}
+                  <Menu
+                    tone="quiet"
+                    label={`More for ${u.displayName || u.name}`}
+                    items={[
+                      { label: "Reset password", onSelect: () => { setResetId(u.id); setEditingId(null); setCreating(false); } },
+                      ...(u.id === me?.id ? [] : [
+                        {
+                          label: u.status === "disabled" ? "Enable" : "Disable",
+                          onSelect: () => (u.status === "disabled" ? void setStatus(u, "active") : setLeaving({ id: u.id, action: "disable" })),
+                          disabled: busy,
+                        },
+                        {
+                          label: "Delete",
+                          onSelect: () => { setLeaving({ id: u.id, action: "delete" }); setEditingId(null); setResetId(null); },
+                          danger: true,
+                          disabled: busy,
+                        },
+                      ]),
+                    ]}
+                  />
                 </td>
               </tr>
             ))}

@@ -5,7 +5,8 @@ import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
 import type { EventOccurrence, GroupDetailResponse, OpenedDecision, RegistrationResponse, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
-import { AttendeeNames } from "../components/EventIntro";
+import { Attendance } from "../components/Attendance";
+import { Menu } from "../components/ui/Menu";
 import { EventVisibilityControl, visibilityRank } from "../components/EventVisibility";
 import { GroupVisibilityReview } from "../components/GroupVisibilityReview";
 import { RsvpButtons } from "../components/RsvpButtons";
@@ -18,10 +19,6 @@ import { formatTime, formatWhen, zoneNote } from "../lib/when";
 import { errorText } from "../lib/errors";
 
 type Tab = "events" | "about" | "members";
-
-function rsvpTotal(r: Record<string, number>, key: string): number {
-  return r[key] ?? 0;
-}
 
 
 function DateEditor({
@@ -131,6 +128,7 @@ function EventRow({
   groupVisibility,
   canManage,
   showDescription,
+  moreDates,
   loggedIn,
   onRsvp,
   onCancelled,
@@ -141,6 +139,8 @@ function EventRow({
   groupVisibility: Visibility;
   canManage: boolean;
   showDescription: boolean;
+  // A series shows its next date only, plus a link to the rest (DEC-63).
+  moreDates: number;
   loggedIn: boolean;
   onRsvp: (eventId: number, date: string, reg: RegistrationResponse) => void;
   onCancelled: (eventId: number, date: string) => void;
@@ -180,11 +180,12 @@ function EventRow({
         {instance.overridden && (
           <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
         )}
-        <div className="text-sm text-text-muted mt-1">
-          {rsvpTotal(instance.registrations, "going")} going · {rsvpTotal(instance.registrations, "maybe")} maybe ·{" "}
-          {rsvpTotal(instance.registrations, "declined")} can't go
-        </div>
-        <AttendeeNames instance={instance} />
+        <Attendance instance={instance} />
+        {moreDates > 0 && (
+          <Link to={`/events/${instance.eventId}`} className="inline-flex min-h-11 items-center text-sm font-medium text-primary">
+            {moreDates} more {moreDates === 1 ? "date" : "dates"}
+          </Link>
+        )}
         {loggedIn && (
           <div className="mt-2">
             <RsvpButtons instance={instance} onChange={(reg) => onRsvp(instance.eventId, instance.date, reg)} />
@@ -231,20 +232,16 @@ function EventRow({
         )}
       </div>
       {canManage && (
-        <div className="shrink-0 flex flex-col items-end gap-2">
-          <button type="button" onClick={() => setEditor(editor === "date" ? null : "date")} className="inline-flex items-center min-h-11 text-sm text-primary font-medium">
-            Edit this date
-          </button>
-          <button type="button" onClick={() => setEditor(editor === "series" ? null : "series")} className="inline-flex items-center min-h-11 text-sm text-primary font-medium">
-            {instance.recurrenceRule ? "Edit series" : "Edit event"}
-          </button>
-          <button
-            onClick={cancel}
-            disabled={cancelling}
-            className="inline-flex items-center min-h-11 text-sm text-danger hover:text-danger-hover font-medium"
-          >
-            {cancelling ? "Cancelling…" : "Cancel"}
-          </button>
+        <div className="shrink-0">
+          <Menu
+            tone="quiet"
+            label={`More for ${name} on ${instance.date}`}
+            items={[
+              { label: "Edit this date", onSelect: () => setEditor(editor === "date" ? null : "date") },
+              { label: instance.recurrenceRule ? "Edit series" : "Edit event", onSelect: () => setEditor(editor === "series" ? null : "series") },
+              { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
+            ]}
+          />
         </div>
       )}
     </div>
@@ -485,9 +482,10 @@ export function GroupDetail() {
   const [memberError, setMemberError] = useState<string | null>(null);
   const coverRef = useRef<HTMLInputElement>(null);
 
-  const load = useCallback(async () => {
+  // quiet refreshes in place (after an RSVP) without the Loading screen.
+  const load = useCallback(async (quiet = false) => {
     if (!id) return;
-    setLoading(true);
+    if (!quiet) setLoading(true);
     setError(null);
     setNotFound(false);
     try {
@@ -524,10 +522,13 @@ export function GroupDetail() {
 
   const { group, members, upcomingEvents, canManage, isMember } = detail;
   const events: EventOccurrence[] = upcomingEvents ?? [];
-  // The series description shows only on its first listed date.
-  const visibilityDate = new Map<number, string>();
+  // A series lists only its next date, plus "N more dates" linking to the
+  // event page, which lists them all (DEC-63).
+  const nextDates: EventOccurrence[] = [];
+  const datesPerEvent = new Map<number, number>();
   for (const m of events) {
-    if (!visibilityDate.has(m.eventId)) visibilityDate.set(m.eventId, m.date);
+    if (!datesPerEvent.has(m.eventId)) nextDates.push(m);
+    datesPerEvent.set(m.eventId, (datesPerEvent.get(m.eventId) ?? 0) + 1);
   }
   // Leadership comes from membership roles (several leaders allowed).
   const leaderCount = (members ?? []).filter((m) => m.role === "leader").length;
@@ -550,7 +551,10 @@ export function GroupDetail() {
     }
   }
 
+  // Answer right away, then refetch so names, spots and the waitlist match
+  // the server.
   function handleRsvp(eventId: number, date: string, reg: RegistrationResponse) {
+    void load(true);
     setDetail((d) => {
       if (!d) return d;
       return {
@@ -763,7 +767,8 @@ export function GroupDetail() {
   return (
     <div>
       {/* Cover header */}
-      <div className="relative h-56 sm:h-72 overflow-hidden bg-inverse">
+      {/* No overflow-hidden: the More menu opens below the cover. */}
+      <div className="relative h-56 sm:h-72 bg-inverse">
         <img
           src={coverImage(group.imageUrl)}
           alt=""
@@ -811,17 +816,15 @@ export function GroupDetail() {
                   >
                     Schedule event
                   </Link>
-                  <button onClick={() => setEditing(true)} className="btn-secondary">
-                    Edit group
-                  </button>
-                  <button
-                    onClick={() => coverRef.current?.click()}
-                    disabled={coverBusy}
-                    className="btn-secondary"
-                    title="Upload a cover photo (JPEG, PNG, GIF, WebP, up to 5MB)"
-                  >
-                    {coverBusy ? "…" : "Cover photo"}
-                  </button>
+                  {/* One primary action (Schedule event); the rest live in More (DEC-63). */}
+                  <Menu
+                    label="More group actions"
+                    items={[
+                      { label: "Edit group", onSelect: () => setEditing(true) },
+                      { label: coverBusy ? "Uploading cover…" : "Change cover photo", onSelect: () => coverRef.current?.click(), disabled: coverBusy },
+                      ...(isMember ? [{ label: joinBusy ? "Leaving…" : "Leave group", onSelect: () => void toggleJoin(), disabled: joinBusy }] : []),
+                    ]}
+                  />
                   <input
                     ref={coverRef}
                     type="file"
@@ -835,7 +838,7 @@ export function GroupDetail() {
                   />
                 </>
               )}
-              {(group.visibility !== "invite_only" || isMember) && (
+              {(group.visibility !== "invite_only" || isMember) && !(canManage && isMember) && (
                 <button
                   onClick={toggleJoin}
                   disabled={joinBusy}
@@ -910,14 +913,15 @@ export function GroupDetail() {
                     No upcoming events scheduled.
                   </div>
                 )}
-                {events.map((m) => (
+                {nextDates.map((m) => (
                   <EventRow
                     key={`${m.eventId}-${m.date}`}
                     instance={m}
                     groupName={group.name}
                     groupVisibility={group.visibility}
                     canManage={canManage}
-                    showDescription={visibilityDate.get(m.eventId) === m.date}
+                    showDescription
+                    moreDates={(datesPerEvent.get(m.eventId) ?? 1) - 1}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}
                     onCancelled={handleCancelled}
@@ -998,35 +1002,22 @@ export function GroupDetail() {
                               </div>
                               <div className="text-sm text-text-muted capitalize">{m.role}</div>
                             </div>
-                            {canManage && m.role !== "leader" && (
-                              <button
-                                type="button"
-                                onClick={() => setRole(m.id, m.name, "leader")}
-                                disabled={memberBusy}
-                                className="text-sm font-medium text-primary hover:underline"
-                              >
-                                Make leader
-                              </button>
-                            )}
-                            {canManage && m.role === "leader" && leaderCount > 1 && (!m.admin || isAdmin) && (
-                              <button
-                                type="button"
-                                onClick={() => setRole(m.id, m.name, "member")}
-                                disabled={memberBusy}
-                                className="text-sm font-medium text-text-muted hover:underline"
-                              >
-                                Remove as leader
-                              </button>
-                            )}
-                            {canManage && m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (!m.admin || isAdmin) && (
-                              <button
-                                type="button"
-                                onClick={() => removeMember(m.id, m.name)}
-                                disabled={memberBusy}
-                                className="text-sm font-medium text-danger hover:underline"
-                              >
-                                Remove
-                              </button>
+                            {canManage && (
+                              <Menu
+                                tone="quiet"
+                                label={`More for ${m.name}`}
+                                items={[
+                                  ...(m.role !== "leader"
+                                    ? [{ label: "Make leader", onSelect: () => void setRole(m.id, m.name, "leader"), disabled: memberBusy }]
+                                    : []),
+                                  ...(m.role === "leader" && leaderCount > 1 && (!m.admin || isAdmin)
+                                    ? [{ label: "Remove as leader", onSelect: () => void setRole(m.id, m.name, "member"), disabled: memberBusy }]
+                                    : []),
+                                  ...(m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (!m.admin || isAdmin)
+                                    ? [{ label: "Remove from group", onSelect: () => void removeMember(m.id, m.name), danger: true, disabled: memberBusy }]
+                                    : []),
+                                ]}
+                              />
                             )}
                           </li>
                         ))}

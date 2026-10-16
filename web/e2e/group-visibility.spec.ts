@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, signIn } from "./helpers";
+import { apiAs, signIn, fromMore } from "./helpers";
 
 function futureDate(days: number): string {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -29,7 +29,7 @@ test("making a group invite-only reviews its events before saving", async ({ pag
 
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
-  await page.getByRole("button", { name: "Edit group" }).click();
+  await fromMore(page, "Edit group", "More group actions");
   await page.getByRole("radio", { name: /^Invite only/ }).check();
   await page.getByRole("button", { name: "Save changes" }).click();
 

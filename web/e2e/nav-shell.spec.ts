@@ -60,9 +60,15 @@ test("an admin on a phone reaches Admin from Me and can't disable or delete them
   await page.getByRole("tab", { name: "Users" }).or(page.getByRole("button", { name: "Users" })).first().click();
   const own = page.getByRole("row").filter({ hasText: "grier@" });
   await expect(own.getByRole("button", { name: "Edit" })).toBeVisible();
-  await expect(own.getByRole("button", { name: "Disable" })).toHaveCount(0);
-  await expect(own.getByRole("button", { name: "Delete" })).toHaveCount(0);
+  await own.getByRole("button", { name: /^More for/ }).click();
+  await expect(own.getByRole("menuitem", { name: "Reset password" })).toBeVisible();
+  await expect(own.getByRole("menuitem", { name: "Disable" })).toHaveCount(0);
+  await expect(own.getByRole("menuitem", { name: "Delete" })).toHaveCount(0);
+  await page.keyboard.press("Escape");
   const other = page.getByRole("row").filter({ hasText: "sam@" }).first();
   await other.scrollIntoViewIfNeeded();
-  for (const name of ["Edit", "Password", "Disable", "Delete"]) await expect(other.getByRole("button", { name })).toBeInViewport({ ratio: 1 });
+  await expect(other.getByRole("button", { name: "Edit" })).toBeInViewport({ ratio: 1 });
+  await other.getByRole("button", { name: /^More for/ }).click();
+  for (const name of ["Reset password", "Disable", "Delete"]) await expect(other.getByRole("menuitem", { name })).toBeInViewport({ ratio: 1 });
+
 });

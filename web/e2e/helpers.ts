@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 
 export const PASSWORD = "password1234";
 export const email = (name: string) => `${name}@example.com`;
@@ -60,4 +60,11 @@ export async function watchCSP(page: Page) {
     if (/Content Security Policy/i.test(m.text())) seen.push(m.text());
   });
   return seen;
+}
+
+// Pick an action from a More menu (components/ui/Menu, DEC-63). The menu
+// renders inside its trigger's parent, so `scope` can be the page or a card.
+export async function fromMore(scope: Page | Locator, item: string | RegExp, menu: string | RegExp = /^More for/) {
+  await scope.getByRole("button", { name: menu }).first().click();
+  await scope.getByRole("menuitem", { name: item }).click();
 }
