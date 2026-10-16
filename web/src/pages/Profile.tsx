@@ -2,13 +2,14 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AccountRequests, Profile as ProfileApi } from "../api";
 import { useAuth } from "../auth";
+import { Button } from "../components/ui/Button";
 import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
 import { ZoneSelect } from "../components/ZoneSelect";
 import { errorText } from "../lib/errors";
 
 export function ProfilePage() {
-  const { user, loading, refresh } = useAuth();
+  const { user, loading, refresh, logout } = useAuth();
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [phone, setPhone] = useState<string | null>(null);
@@ -166,7 +167,13 @@ export function ProfilePage() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-6">Your profile</h1>
+      <div className="mb-6 flex items-center justify-between gap-4">
+        <h1 className="text-3xl font-bold">Your profile</h1>
+        {/* Phones reach Profile from the Me tab; Log out lives here there. */}
+        <Button variant="secondary" layout="sm:hidden" onClick={logout}>
+          Log out
+        </Button>
+      </div>
 
       <div className="bg-surface rounded-lg border border-border p-6 mb-6">
         <ImageUpload
