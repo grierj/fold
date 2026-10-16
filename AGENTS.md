@@ -87,6 +87,14 @@ Postgres (`login_throttles`, see `api_auth.go`).
 - Styling (DEC-60): use the role tokens and shared control classes in
   `web/src/index.css` (`bg-primary`, `text-text-muted`, `.btn-primary`,
   `.input`, `.chip`). Pick the role by meaning, not by the color you want.
+- UI controls (ENFORCEMENT.md): new controls use `components/ui` (`Button`,
+  `Chip`, `Field` with `Input`/`Textarea`/`Select`, `EmptyState`); the
+  ratchets below stop new raw ones. Judgment the checks can't make:
+  one primary action per view; `danger-outline` beside a main action and
+  solid `danger` only when destruction is the point of the dialog; empty
+  states say what would appear and offer the next step, never in red;
+  status is never color alone; copy is plain, warm, second person. Prove a
+  UI change with `.cursor/skills/verify-ui` and the 390px screenshots.
 - Errors (DEC-61): a new error a person can act on gets a code in
   `api_errors.go` and a line in `ERROR_COPY` saying what happened and what
   to do next. DEC-52 decides what is never an error at all.
@@ -266,7 +274,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Public forms never show a rate limit or reveal an account (DEC-52); only sign-in and a leader's invitation limit answer 429 | `TestOnlyLoginAndInvitesAnswer429` (`guards_test.go`); `TestGuestExistingEmailHintIsRateLimited`, `TestPasswordResetSkipsGuests` |
 | Colors come from theme tokens: no hex outside `@theme`, no Tailwind palette or scale-step classes (DEC-60) | `TestColorsComeFromThemeTokens` (`guards_test.go`); a line that must keep a hex says why with `color-ok:` |
 | Pages never show the server's error text; every API error code has wording | `TestPagesNeverShowServerErrorText`, `TestWebErrorCopyCoversEveryCode`, `TestErrorCodesKeysAreUsed` (`guards_test.go`, `api_errors_test.go`); `web/e2e/friendly-errors.spec.ts` |
-| Main pages have no serious or critical axe issues at 390 and 1280 px; every field is labelled | `web/e2e/a11y.spec.ts`, setup page in `web/e2e/seed.setup.ts` (run by `make e2e`) |
+| Main pages (including event, scheduling, Join and My groups) have no serious or critical axe issues at 390 and 1280 px; every field is labelled | `web/e2e/a11y.spec.ts` over `web/e2e/ui-pages.ts`, setup page in `web/e2e/seed.setup.ts` (run by `make e2e`) |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (`guards_test.go`, run by `make test` in CI); its error names the file to move to |
 | Every state-changing route goes through CSRF, except the exact list in `csrfExemptRoutes` | `TestCSRFExemptRoutesAreExact` |
 | Schema changes are new goose files; GORM models match them | `migrations/migrations_test.go` drift check |
@@ -277,3 +285,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | A build never deletes the committed `web/dist/README.txt` | Structure: the `keep-dist-readme` plugin in `web/vite.config.ts` writes it back (c8ce79d, 08137aa) |
 | e2e specs switch users safely | Structure: `signIn` in `web/e2e/helpers.ts` clears cookies first (2722a5d, 0a10b04) |
 | Seat counts never overrun under concurrent registration | `TestConcurrentGoingRespectsCapacity` (`api_registrations_test.go`): 50 real requests race for 10 seats; exactly 10 going and 40 waitlisted |
+| Token contrast: text 4.5:1, control edges 3:1 | `npm run contrast` (`web/scripts/token-contrast.mjs`, in CI; fails 3 pairs on 6cdcf06) |
+| No sideways scroll; clipped selects, targets under 24px and under 44px (at 390) only go down | `web/e2e/layout.spec.ts` with `web/e2e/ui-baseline.json` |
+| No new raw controls, `!` overrides, misused danger color, literal `style=` or date formatting outside `lib/when.ts` | `TestUIRatchets` (`guards_test.go`, counts in `ui-ratchet.json`; lower them when a page gets better), self-tested by `TestUIRatchetsCatchPastMistakes` |
+| Selected chips are stronger than unselected; fields are labelled and their errors are announced | `Chip` and `Field` in `web/src/components/ui`, `Chip.test.tsx`, `Field.test.tsx` |
