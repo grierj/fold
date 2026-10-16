@@ -36,7 +36,7 @@ try {
   await page.getByLabel("Email").fill(email);
   await page.getByLabel("Password").fill("not-the-password");
   await page.getByRole("button", { name: "Log in" }).click();
-  await page.getByText("Invalid email or password.").waitFor();
+  await page.getByText("That email and password don't match. Check them and try again.").waitFor();
   if (!page.url().includes("/login")) {
     throw new Error("a bad password left the login page: " + page.url());
   }

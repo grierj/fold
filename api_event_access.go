@@ -267,7 +267,7 @@ func (a *App) hostCandidate(actor *models.User, email string) (*models.User, int
 	}
 	var u models.User
 	if err := a.DB.Where("email = ?", email).First(&u).Error; err != nil {
-		return nil, http.StatusNotFound, "user not found"
+		return nil, http.StatusNotFound, "no account with that email"
 	}
 	if u.Status != models.UserActive {
 		return nil, http.StatusBadRequest, "that account can't host an event"

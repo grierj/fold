@@ -5,6 +5,7 @@ import { useAuth } from "../auth";
 import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
 import { ZoneSelect } from "../components/ZoneSelect";
+import { errorText } from "../lib/errors";
 
 export function ProfilePage() {
   const { user, loading, refresh } = useAuth();
@@ -60,7 +61,7 @@ export function ProfilePage() {
       await refresh();
       setSaved(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Save failed");
+      setError(errorText(err, "We couldn't save your changes."));
     } finally {
       setSaving(false);
     }
@@ -77,7 +78,7 @@ export function ProfilePage() {
       setPictureStatus("Picture saved.");
     } catch (err) {
       setPictureStatus(null);
-      setPictureError(err instanceof Error ? err.message : "Could not save picture");
+      setPictureError(errorText(err, "We couldn't save your picture."));
     } finally {
       setPictureBusy(false);
     }
@@ -94,7 +95,7 @@ export function ProfilePage() {
       setPictureStatus("Picture saved.");
     } catch (err) {
       setPictureStatus(null);
-      setPictureError(err instanceof Error ? err.message : "Could not save picture");
+      setPictureError(errorText(err, "We couldn't save your picture."));
     } finally {
       setPictureBusy(false);
     }
@@ -115,7 +116,7 @@ export function ProfilePage() {
         setEmailStatus("Email updated.");
       }
     } catch (err) {
-      setEmailError(err instanceof Error ? err.message : "Could not start email change");
+      setEmailError(errorText(err, "We couldn't start the email change."));
     } finally {
       setEmailSaving(false);
     }
@@ -141,7 +142,7 @@ export function ProfilePage() {
       setConfirmPassword("");
       setPasswordSaved(true);
     } catch (err) {
-      setPasswordError(err instanceof Error ? err.message : "Password change failed");
+      setPasswordError(errorText(err, "We couldn't change your password."));
     } finally {
       setPasswordSaving(false);
     }
@@ -157,7 +158,7 @@ export function ProfilePage() {
       await refresh();
       setPictureStatus("Picture removed.");
     } catch (err) {
-      setPictureError(err instanceof Error ? err.message : "Remove failed");
+      setPictureError(errorText(err, "We couldn't remove that."));
     } finally {
       setPictureBusy(false);
     }

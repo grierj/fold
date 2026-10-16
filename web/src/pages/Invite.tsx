@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Invitations as InvitationsApi, ApiError } from "../api";
+import { Invitations as InvitationsApi } from "../api";
 import { useAuth } from "../auth";
+import { errorCode, errorText } from "../lib/errors";
+
+const INVITE_EXPIRED = "This invitation has expired or was already used. Ask the person who invited you for a new one.";
 import type { Invitation } from "../types";
 
 // Accept an invitation (M1.2, 5.10). The person sets a password and gets an
@@ -30,7 +33,13 @@ export function Invite() {
         setSite(res.site);
         setName(res.invitation.name);
       })
-      .catch(() => setError("That invitation link is invalid or has expired."))
+      .catch((e) =>
+        setError(
+          errorCode(e) === "not_found" || errorCode(e) === "link_expired"
+            ? INVITE_EXPIRED
+            : errorText(e, "We couldn't open this invitation.")
+        )
+      )
       .finally(() => setLoading(false));
   }, [token]);
 
@@ -43,17 +52,15 @@ export function Invite() {
       await refresh();
       navigate("/", { replace: true });
     } catch (e) {
-      if (e instanceof ApiError && e.status === 409) {
-        setError(e.message);
-      } else {
-        setError(
-          e instanceof ApiError && e.status === 400
-            ? "That invitation link is invalid or has expired."
-            : e instanceof Error
-              ? e.message
-              : "Something went wrong."
-        );
-      }
+      // "That email already has an account" (email_taken) stays: the
+      // person holding the invitation can act on it by signing in.
+      setError(
+        errorCode(e) === "link_expired"
+          ? INVITE_EXPIRED
+          : errorCode(e) === "email_taken"
+            ? "That email already has an account. Sign in instead."
+            : errorText(e, "We couldn't create your account.")
+      );
     } finally {
       setBusy(false);
     }

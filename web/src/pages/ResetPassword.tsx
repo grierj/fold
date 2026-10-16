@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Auth as AuthApi, ApiError } from "../api";
+import { Auth as AuthApi } from "../api";
 import { useAuth } from "../auth";
+import { errorCode, errorText } from "../lib/errors";
 
 // Set a new password from a reset link (M1.2). The token is single use and
 // expires; confirming signs the person in.
@@ -29,11 +30,9 @@ export function ResetPassword() {
       navigate("/", { replace: true });
     } catch (e) {
       setError(
-        e instanceof ApiError && e.status === 400
-          ? "That link is invalid or has expired. Request a new one below."
-          : e instanceof Error
-            ? e.message
-            : "Something went wrong."
+        errorCode(e) === "link_expired"
+          ? "This link has expired or was already used. Request a new one below."
+          : errorText(e, "We couldn't reset your password.")
       );
     } finally {
       setBusy(false);

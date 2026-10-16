@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Auth as AuthApi, ApiError } from "../api";
+import { Auth as AuthApi } from "../api";
+import { errorText } from "../lib/errors";
 
 // Password reset request (M1.2). The server answers uniformly for known and
 // unknown addresses, so the message is shown as-is.
@@ -18,7 +19,7 @@ export function ForgotPassword() {
       const res = await AuthApi.requestPasswordReset(email);
       setMessage(res.message);
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Something went wrong.");
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }

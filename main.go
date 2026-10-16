@@ -505,7 +505,7 @@ const maxRequestBytes = maxUploadBytes + 1<<20
 func limitBody(n int64) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.Request.ContentLength > n {
-			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request too large"})
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, errorBody(http.StatusRequestEntityTooLarge, "request too large"))
 			return
 		}
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, n)

@@ -77,7 +77,7 @@ Playwright locators in the feature files are the handles to use: role and access
 
 Proof for a run lives in `/tmp/fold-verify-proof/<RUN_ID>/`. `drive sign-in` writes `sign-in/`:
 
-- `bad-password.png` shows the login form still open with `Invalid email or password.`
+- `bad-password.png` shows the login form still open with `That email and password don't match. Check them and try again.`
 - `after-login.png` shows the directory heading and the header name `Verify Admin` after a successful login.
 - `after-reload.png` shows the same session after a reload.
 - `me.json` is the body of `GET /api/v1/auth/me` from that browser session. It is 200 and the user email is `verify-admin@example.com`.
@@ -94,7 +94,7 @@ Standards:
 
 Save later feature artifacts under the same proof directory, in a subdirectory named for the feature. Record the feature id and the entry point in a `result.txt` next to the files.
 
-For a change meant to leave the screens alone (a dependency or toolchain upgrade), compare whole-page screenshots instead. On master and then on the branch, run `npm run build` and `SCREENS_DIR=/tmp/shots/<name> npx playwright test seed screens` in `web/`, which shoots 12 pages at 390, 768 and 1280 px through the e2e server. Then `node e2e/compare-screens.mjs /tmp/shots/master /tmp/shots/branch` lists each file as identical or gives the share of pixels that differ. Explain every difference in the PR; for an intended restyle, put the before and after images side by side for the designer. `npx playwright test seed a11y` runs the axe check on the same pages. This uses the e2e server, so don't run it beside another `make e2e`.
+For a change meant to leave the screens alone (a dependency or toolchain upgrade), compare whole-page screenshots instead. On master and then on the branch, run `npm run build` and `SCREENS_DIR=/tmp/shots/<name> npx playwright test seed screens` in `web/`, which shoots 12 pages at 390, 768 and 1280 px through the e2e server. Then `node e2e/compare-screens.mjs /tmp/shots/master /tmp/shots/branch` lists each file as identical or gives the share of pixels that differ. Explain every difference in the PR; for an intended restyle, put the before and after images side by side for the designer. `npx playwright test seed a11y` runs the axe check on the same pages, and `SCREENS_DIR=... npx playwright test seed friendly-errors` captures the main error states (`error-*.png`). This uses the e2e server, so don't run it beside another `make e2e`.
 
 ## Cleanup
 

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Events } from "../api";
 import { WEEKDAYS, bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
 import { ZoneSelect } from "./ZoneSelect";
+import { errorText } from "../lib/errors";
 
 function WeekdayPicker({ days, onToggle }: { days: string[]; onToggle: (value: string) => void }) {
   return (
@@ -124,7 +125,7 @@ export function SeriesEditor({
       await Events.update(instance.eventId, body);
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update the series");
+      setError(errorText(err, "We couldn't update the series."));
       setBusy(false);
     }
   }

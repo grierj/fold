@@ -10,6 +10,7 @@ import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { formatTime, heldIn, zoneNote } from "../lib/when";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, RegistrationResponse } from "../types";
+import { errorText } from "../lib/errors";
 
 function count(r: Record<string, number>, key: string): number {
   return r[key] ?? 0;
@@ -34,7 +35,7 @@ export function EventDetail() {
       setPage(await Events.get(id));
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) setNotFound(true);
-      else setError(e instanceof Error ? e.message : "Failed to load event");
+      else setError(errorText(e, "We couldn't load this event."));
     } finally {
       setLoading(false);
     }
@@ -97,7 +98,7 @@ export function EventDetail() {
       await Events.delete(event.id);
       navigate("/", { replace: true });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not delete the event");
+      setError(errorText(e, "We couldn't delete the event."));
     }
   }
 
@@ -193,7 +194,7 @@ function DateRow({
       await Events.cancelOccurrence(instance.eventId, instance.date);
       onChanged();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Cancel failed");
+      alert(errorText(e, "We couldn't cancel that date."));
       setCancelling(false);
     }
   }
@@ -292,7 +293,7 @@ function ManageRoster({ instance, onChanged }: { instance: EventOccurrence; onCh
       await Events.removeRegistration(instance.eventId, instance.date, userId);
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not remove the registration");
+      setError(errorText(e, "We couldn't remove that registration."));
     } finally {
       setBusy(null);
     }
@@ -305,7 +306,7 @@ function ManageRoster({ instance, onChanged }: { instance: EventOccurrence; onCh
       await Events.promoteRegistration(instance.eventId, instance.date, userId);
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not promote the registration");
+      setError(errorText(e, "We couldn't move them off the waitlist."));
     } finally {
       setBusy(null);
     }
@@ -324,7 +325,7 @@ function ManageRoster({ instance, onChanged }: { instance: EventOccurrence; onCh
       setEmail("");
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not add the registration");
+      setError(errorText(err, "We couldn't add that registration."));
     } finally {
       setBusy(null);
     }
@@ -433,7 +434,7 @@ function DateEditor({
       await Events.updateOccurrence(instance.eventId, instance.date, body);
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update this date");
+      setError(errorText(err, "We couldn't update this date."));
       setBusy(false);
     }
   }
@@ -536,7 +537,7 @@ function HostEditor({
       setEmail("");
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not add host");
+      setError(errorText(err, "We couldn't add that host."));
     } finally {
       setBusy(false);
     }
@@ -549,7 +550,7 @@ function HostEditor({
       await Events.removeHost(eventId, userId);
       onChanged();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not remove host");
+      setError(errorText(err, "We couldn't remove that host."));
     } finally {
       setBusy(false);
     }

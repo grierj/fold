@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AdminUsers } from "../api";
 import { useAuth } from "../auth";
 import type { SoleLedGroup, User } from "../types";
+import { errorText } from "../lib/errors";
 
 // Confirms deleting or disabling an account. For every group the person
 // leads alone, the admin picks a new leader first: a member of that group or any admin, with
@@ -33,7 +34,7 @@ export function DeleteUserPanel({
         }
         setPicks(initial);
       })
-      .catch((e) => setError(e instanceof Error ? e.message : "Could not load groups"));
+      .catch((e) => setError(errorText(e, "We couldn't load the groups.")));
   }, [target.id, me?.id]);
 
   async function remove() {
@@ -44,7 +45,7 @@ export function DeleteUserPanel({
       else await AdminUsers.update(target.id, { status: "disabled", successors: picks });
       onDone(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "That didn't work");
+      setError(errorText(e, "That didn't work."));
     } finally {
       setBusy(false);
     }

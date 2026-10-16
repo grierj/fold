@@ -7,6 +7,7 @@ import { Events } from "../api";
 import { useAuth } from "../auth";
 import { WEEKDAYS, weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
+import { errorText } from "../lib/errors";
 
 export function NewChurchEvent() {
   const navigate = useNavigate();
@@ -63,7 +64,7 @@ export function NewChurchEvent() {
       });
       navigate(`/events/${event.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to schedule event");
+      setError(errorText(err, "We couldn't schedule the event."));
     } finally {
       setBusy(false);
     }

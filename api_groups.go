@@ -538,7 +538,9 @@ var errGroupFull = errors.New("group full")
 // groupFull answers 409 for errGroupFull. full:true tells the SPA it may
 // offer a leader or admin the explicit over-limit choice.
 func groupFull(c *gin.Context) {
-	c.JSON(http.StatusConflict, gin.H{"error": "This group is full", "full": true})
+	body := errorBody(http.StatusConflict, "This group is full")
+	body["full"] = true
+	c.JSON(http.StatusConflict, body)
 }
 
 // changeRole sets userID's role in g to newRole: "leader" or "member",

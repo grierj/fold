@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Events } from "../api";
 import type { EventOccurrence, RegistrationResponse, RegistrationStatus } from "../types";
+import { errorText } from "../lib/errors";
 
 const OPTIONS: { value: RegistrationStatus; label: string }[] = [
   { value: "going", label: "Going" },
@@ -40,7 +41,7 @@ export function RsvpButtons({
       const { registration } = await Events.register(instance.eventId, status, instance.date, guestCount);
       onChange(registration);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save your registration");
+      setError(errorText(e, "We couldn't save your answer."));
     } finally {
       setBusy(null);
     }

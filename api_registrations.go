@@ -650,7 +650,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		guestCount = *body.GuestCount
 	}
 	if guestCount < 0 || guestCount > ev.GuestsAllowed {
-		jsonError(c, http.StatusBadRequest,
+		jsonErrorCode(c, http.StatusBadRequest, "too_many_guests",
 			fmt.Sprintf("you can bring at most %d guests", ev.GuestsAllowed))
 		return
 	}
@@ -871,7 +871,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		guestCount = *body.GuestCount
 	}
 	if guestCount < 0 || guestCount > ev.GuestsAllowed {
-		jsonError(c, http.StatusBadRequest,
+		jsonErrorCode(c, http.StatusBadRequest, "too_many_guests",
 			fmt.Sprintf("at most %d guests are allowed", ev.GuestsAllowed))
 		return
 	}
@@ -965,7 +965,9 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 	})
 	switch {
 	case errors.Is(err, errEventFull):
-		c.JSON(http.StatusConflict, gin.H{"error": "This event is full", "full": true})
+		body := errorBody(http.StatusConflict, "This event is full")
+		body["full"] = true
+		c.JSON(http.StatusConflict, body)
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not add registration")

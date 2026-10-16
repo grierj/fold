@@ -9,13 +9,18 @@ export function setOnUnauthorized(fn: (() => void) | null) {
   onUnauthorized = fn;
 }
 
+// An error response. `code` is the API's stable error code; show it with
+// errorText (lib/errors.ts), never the message, which is the server's
+// English for logs.
 export class ApiError extends Error {
   status: number;
+  code: string;
   data: Record<string, unknown>;
   constructor(status: number, message: string, data: Record<string, unknown> = {}) {
     super(message);
     this.status = status;
     this.data = data;
+    this.code = typeof data.code === "string" ? data.code : status >= 500 ? "server_error" : "invalid";
   }
 }
 
@@ -53,12 +58,18 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
     body,
     credentials: "include",
   });
+  const text = await res.text();
+  let raw: unknown = {};
+  try {
+    raw = text ? (JSON.parse(text) as unknown) : {};
+  } catch {
+    // A proxy's HTML error page: keep the status, drop the body.
+    raw = {};
+  }
   if (res.status === 401) {
     if (onUnauthorized && !opts.anonymousOK) onUnauthorized();
-    throw new ApiError(401, "unauthorized");
+    throw new ApiError(401, "unauthorized", { code: "signed_out", ...((raw ?? {}) as Record<string, unknown>) });
   }
-  const text = await res.text();
-  const raw = text ? (JSON.parse(text) as unknown) : {};
   const data = raw as T;
   const apiErr = (raw as { error?: string } | null)?.error;
   if (!res.ok) {
@@ -375,11 +386,11 @@ async function apiUpload<T>(path: string, field: string, file: File): Promise<T>
   });
   if (res.status === 401) {
     if (onUnauthorized) onUnauthorized();
-    throw new ApiError(401, "unauthorized");
+    throw new ApiError(401, "unauthorized", { code: "signed_out" });
   }
   const raw = (await res.json().catch(() => ({}))) as { error?: string };
   if (!res.ok) {
-    throw new ApiError(res.status, raw.error ?? `upload failed (${res.status})`);
+    throw new ApiError(res.status, raw.error ?? `upload failed (${res.status})`, raw as Record<string, unknown>);
   }
   return raw as T;
 }

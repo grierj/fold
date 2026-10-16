@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { ApiError, Guests } from "../api";
+import { Guests } from "../api";
 import type { EventOccurrence } from "../types";
 import { browserTimeZone } from "../lib/when";
+import { errorText } from "../lib/errors";
 
 // The guest door on one public event date (M1.4, 5.10): a signed-out
 // adult registers with a name and an email. The server emails a
@@ -34,7 +35,7 @@ export function GuestRegistrationForm({ instance }: { instance: EventOccurrence 
       });
       setDone(res.message);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Something went wrong.");
+      setError(errorText(err));
     } finally {
       setBusy(false);
     }

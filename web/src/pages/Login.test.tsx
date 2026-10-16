@@ -42,6 +42,6 @@ describe("Login", () => {
     await userEvent.type(screen.getByLabelText("Email"), "nobody@example.com");
     await userEvent.type(screen.getByLabelText("Password"), "wrong-password");
     await userEvent.click(screen.getByRole("button", { name: /log in/i }));
-    expect(await screen.findByText("Invalid email or password.")).toBeInTheDocument();
+    expect(await screen.findByText("That email and password don't match. Check them and try again.")).toBeInTheDocument();
   });
 });

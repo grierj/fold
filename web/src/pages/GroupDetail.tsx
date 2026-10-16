@@ -15,6 +15,7 @@ import { ImageUpload } from "../components/ImageUpload";
 import { coverImage } from "../components/GroupCard";
 import { focalPosition, prepareUpload } from "../lib/image";
 import { formatTime, formatWhen, zoneNote } from "../lib/when";
+import { errorText } from "../lib/errors";
 
 type Tab = "events" | "about" | "members";
 
@@ -58,7 +59,7 @@ function DateEditor({
       await Events.updateOccurrence(instance.eventId, instance.date, body);
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update this date");
+      setError(errorText(err, "We couldn't update this date."));
       setBusy(false);
     }
   }
@@ -158,7 +159,7 @@ function EventRow({
       await Events.cancelOccurrence(instance.eventId, instance.date);
       onCancelled(instance.eventId, instance.date);
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Cancel failed");
+      alert(errorText(e, "We couldn't cancel that date."));
     } finally {
       setCancelling(false);
     }
@@ -313,7 +314,7 @@ function GroupForm({
             memberLimit: memberLimit.trim() ? Number(memberLimit) : null,
           });
         } catch (err) {
-          setError(err instanceof Error ? err.message : "Save failed");
+          setError(errorText(err, "We couldn't save your changes."));
         } finally {
           setBusy(false);
         }
@@ -494,7 +495,7 @@ export function GroupDetail() {
       setDetail(d);
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) setNotFound(true);
-      else setError(e instanceof Error ? e.message : "Failed to load group");
+      else setError(errorText(e, "We couldn't load this group."));
     } finally {
       setLoading(false);
     }
@@ -543,7 +544,7 @@ export function GroupDetail() {
       else await Groups.join(id!);
       await load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Failed");
+      alert(errorText(e, "That didn't work."));
     } finally {
       setJoinBusy(false);
     }
@@ -613,7 +614,7 @@ export function GroupDetail() {
         setReview({ data: review.data, impact: await Groups.visibilityImpact(id!, review.data.visibility) });
         setReviewError("The group's events changed. Please review them again.");
       } else {
-        setReviewError(e instanceof Error ? e.message : "Save failed");
+        setReviewError(errorText(e, "We couldn't save your changes."));
       }
     } finally {
       setReviewBusy(false);
@@ -651,7 +652,7 @@ export function GroupDetail() {
       await Groups.setRole(id!, memberId, role);
       await load();
     } catch (e) {
-      setMemberError(e instanceof Error ? e.message : "Could not change the role");
+      setMemberError(errorText(e, "We couldn't change that role."));
     } finally {
       setMemberBusy(false);
     }
@@ -666,7 +667,7 @@ export function GroupDetail() {
       await Groups.removeMember(id!, memberId, note.trim() || undefined);
       await load();
     } catch (e) {
-      setMemberError(e instanceof Error ? e.message : "Could not remove that person");
+      setMemberError(errorText(e, "We couldn't remove that person."));
     } finally {
       setMemberBusy(false);
     }
@@ -690,7 +691,7 @@ export function GroupDetail() {
       setMemberEmail("");
       await load();
     } catch (e) {
-      setMemberError(e instanceof Error ? e.message : "Could not add that person");
+      setMemberError(errorText(e, "We couldn't add that person."));
     } finally {
       setMemberBusy(false);
     }
@@ -713,7 +714,7 @@ export function GroupDetail() {
       setInviteOverLimit(false);
       setInviteStatus(`Invitation sent to ${email}.`);
     } catch (err) {
-      setMemberError(err instanceof Error ? err.message : "Could not send the invitation");
+      setMemberError(errorText(err, "We couldn't send the invitation."));
     } finally {
       setInviteBusy(false);
     }
@@ -727,7 +728,7 @@ export function GroupDetail() {
       await Groups.requestDeletion(id!);
       await load();
     } catch (e) {
-      setMemberError(e instanceof Error ? e.message : "Could not request deletion");
+      setMemberError(errorText(e, "We couldn't send the deletion request."));
     } finally {
       setMemberBusy(false);
     }
@@ -740,7 +741,7 @@ export function GroupDetail() {
       await Groups.cancelDeletion(id!);
       await load();
     } catch (e) {
-      setMemberError(e instanceof Error ? e.message : "Could not cancel the request");
+      setMemberError(errorText(e, "We couldn't cancel the request."));
     } finally {
       setMemberBusy(false);
     }
@@ -753,7 +754,7 @@ export function GroupDetail() {
       await GroupCover.upload(id!, resized);
       await load();
     } catch (e) {
-      alert(e instanceof Error ? e.message : "Cover upload failed");
+      alert(errorText(e, "We couldn't upload the cover photo."));
     } finally {
       setCoverBusy(false);
     }

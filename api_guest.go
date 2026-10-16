@@ -420,7 +420,9 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		return
 	}
 	if fullNoWaitlist {
-		c.JSON(http.StatusConflict, gin.H{"full": true, "message": "This event is full"})
+		body := errorBody(http.StatusConflict, "This event is full")
+		body["full"] = true
+		c.JSON(http.StatusConflict, body)
 		return
 	}
 	a.deliverNotificationEmails(emailed)

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiError, Guests } from "../api";
+import { Guests } from "../api";
 import { formatWhen } from "../lib/when";
 import type { GuestRegistration } from "../types";
+import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
 
 // The guest manage link from the confirmation email (M1.4). The token
 // in the address is the credential, and it stops working once the
@@ -18,7 +19,8 @@ export function GuestManage() {
       const res = await Guests.getManage(token);
       setReg(res.registration);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "That link is invalid or has expired.");
+      // An unknown token is a link that expired or was never valid.
+      setError(errorCode(err) === "not_found" ? ERROR_COPY.link_expired : errorText(err, "We couldn't open your registration."));
     }
   }, [token]);
 
@@ -34,7 +36,7 @@ export function GuestManage() {
       const res = await Guests.cancelManage(token);
       setReg(res.registration);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not cancel your registration.");
+      setError(errorText(err, "We couldn't cancel your registration."));
     } finally {
       setBusy(false);
     }
