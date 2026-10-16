@@ -54,7 +54,7 @@
     "web/src/components/SeriesEditor.tsx": 17,
     "web/src/components/ZoneSelect.tsx": 3,
     "web/src/pages/Admin.tsx": 52,
-    "web/src/pages/EventDetail.tsx": 22,
+    "web/src/pages/EventDetail.tsx": 19,
     "web/src/pages/ForgotPassword.tsx": 3,
     "web/src/pages/GroupDetail.tsx": 37,
     "web/src/pages/GuestConfirm.tsx": 2,

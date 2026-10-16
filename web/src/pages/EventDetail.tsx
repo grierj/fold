@@ -7,6 +7,8 @@ import { DateBadge } from "../components/DateBadge";
 import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
 import { Menu } from "../components/ui/Menu";
+import { Field, Input } from "../components/ui/Field";
+import { Button } from "../components/ui/Button";
 import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
@@ -59,7 +61,9 @@ export function EventDetail() {
           if (before && before !== reg.status) {
             registrations[before] = Math.max(0, (registrations[before] ?? 0) - 1);
           }
-          if (!before || before !== reg.status) {
+          // Only leaders and admins get a "declined" count (DEC-64); don't
+          // invent one for anyone else.
+          if ((!before || before !== reg.status) && (reg.status !== "declined" || "declined" in registrations)) {
             registrations[reg.status] = (registrations[reg.status] ?? 0) + 1;
           }
           return {
@@ -183,6 +187,8 @@ function DateRow({
   onNeedLogin: () => void;
 }) {
   const [editingDate, setEditingDate] = useState(false);
+  // Manage sign-ups opens from the date's More menu (PR #66 review F1).
+  const [managing, setManaging] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const time = formatTime(instance.startsAt);
   const held = heldIn(instance.startsAt, instance.tzid);
@@ -200,7 +206,10 @@ function DateRow({
   }
 
   return (
-    <div className="bg-surface rounded-lg border border-border p-4 flex gap-4">
+    // Badge, details and More on top; the answer and any open panel span the
+    // card below, so the RSVP is full width on phones (PR #66 review N1).
+    <div className="bg-surface rounded-lg border border-border p-4">
+    <div className="flex gap-4">
       <DateBadge at={instance.startsAt} />
       <div className="grow min-w-0">
         <div className="font-bold">{instance.title || "Church event"}</div>
@@ -213,7 +222,23 @@ function DateRow({
           <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
         )}
         <Attendance instance={instance} />
-        <div className="mt-2">
+      </div>
+      {canManage && (
+        <div className="shrink-0">
+          <Menu
+            tone="quiet"
+            label={`More for ${instance.date}`}
+            items={[
+              { label: "Edit this date", onSelect: () => setEditingDate((v) => !v) },
+              { label: "Manage sign-ups", onSelect: () => setManaging((v) => !v) },
+              { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
+            ]}
+          />
+        </div>
+      )}
+    </div>
+    <div className="mt-3">
+        <div>
           {loggedIn ? (
             <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
           ) : instance.visibility === "public" ? (
@@ -242,20 +267,8 @@ function DateRow({
             onClose={() => setEditingDate(false)}
           />
         )}
-        {canManage && <ManageRoster instance={instance} onChanged={onChanged} />}
-      </div>
-      {canManage && (
-        <div className="shrink-0">
-          <Menu
-            tone="quiet"
-            label={`More for ${instance.date}`}
-            items={[
-              { label: "Edit this date", onSelect: () => setEditingDate((v) => !v) },
-              { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
-            ]}
-          />
-        </div>
-      )}
+        {canManage && managing && <ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} />}
+    </div>
     </div>
   );
 }
@@ -263,7 +276,7 @@ function DateRow({
 // ManageRoster gives leaders and hosts the M1.5 pruning controls for one
 // date: remove anyone, promote a waitlisted person by hand, or add someone
 // directly. Adding over capacity asks for confirmation first.
-function ManageRoster({ instance, onChanged }: { instance: EventOccurrence; onChanged: () => void }) {
+function ManageRoster({ instance, onChanged, onClose }: { instance: EventOccurrence; onChanged: () => void; onClose: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -318,11 +331,13 @@ function ManageRoster({ instance, onChanged }: { instance: EventOccurrence; onCh
   const roster = (instance.attendees ?? []).filter((a) =>
     ["going", "maybe", "waitlisted"].includes(a.status)
   );
-  if (!instance.attendeesVisible || roster.length === 0) return null;
-
   return (
-    <div className="mt-3 border-t border-border pt-3">
-      <div className="text-sm font-semibold text-text-muted mb-1">Manage registrations</div>
+    <section aria-label="Manage sign-ups" className="mt-3 border-t border-border pt-3">
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <h3 className="text-sm font-semibold">Manage sign-ups</h3>
+        <Button variant="link" onClick={onClose}>Close</Button>
+      </div>
+      {roster.length === 0 && <p className="text-sm text-text-muted mb-2">No one has signed up yet.</p>}
       {error && <div className="text-sm text-danger mb-1">{error}</div>}
       <ul className="text-sm space-y-1 mb-2">
         {roster.map((a) => (
@@ -353,20 +368,15 @@ function ManageRoster({ instance, onChanged }: { instance: EventOccurrence; onCh
           </li>
         ))}
       </ul>
-      <form onSubmit={add} className="flex gap-2">
-        <input
-          className="input text-sm"
-          type="email"
-          aria-label="Add by email"
-          placeholder="Add someone by email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
-        <button type="submit" className="btn-secondary text-sm" disabled={busy !== null}>
-          {busy === "add" ? "…" : "Add"}
-        </button>
+      <form onSubmit={add} className="space-y-2">
+        <Field label="Add someone" hint="Their email address">
+          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
+        <Button type="submit" variant="secondary" disabled={busy !== null}>
+          {busy === "add" ? "Adding…" : "Add"}
+        </Button>
       </form>
-    </div>
+    </section>
   );
 }
 

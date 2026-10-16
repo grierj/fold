@@ -568,7 +568,9 @@ export function GroupDetail() {
           if (before && before !== reg.status) {
             registrations[before] = Math.max(0, (registrations[before] ?? 0) - 1);
           }
-          if (!before || before !== reg.status) {
+          // Only leaders and admins get a "declined" count (DEC-64); don't
+          // invent one for anyone else.
+          if ((!before || before !== reg.status) && (reg.status !== "declined" || "declined" in registrations)) {
             registrations[reg.status] = (registrations[reg.status] ?? 0) + 1;
           }
           return {

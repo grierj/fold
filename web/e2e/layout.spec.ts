@@ -39,6 +39,23 @@ test("pages fit, selects show their label, targets are big enough", async ({ pag
       expect.soft(m.cutOff.map((c) => `${c.el} "${c.name}"`), `${at}: controls cut off by an overflow box or the screen edge; stack them on phones (see AdminUsers cards) instead of hiding or scrolling them`).toEqual([]);
       expect.soft(m.clipped.map((c) => `#${c.id} "${c.label}" needs ${c.text}px, has ${c.room}px`), `${at}: clipped select; widen the field on phones or shorten the option`).toEqual([]);
       expect.soft(m.under24.map((t) => `${t.el} "${t.name}" ${t.w}x${t.h}`), `${at}: targets under 24x24; use components/ui Button sizes, min-h-11 on text actions, or wrap the radio in its label`).toEqual([]);
+      // The sticky header sits flush at the top once scrolled, and
+      // scroll-padding-top covers it (a focused field never lands under it)
+      // without leaving a big gap (PR #66 review F3).
+      const head = await page.evaluate(() => {
+        const h = document.querySelector("body header") as HTMLElement | null;
+        if (!h) return null;
+        window.scrollTo(0, 200);
+        const r = h.getBoundingClientRect();
+        const pad = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0;
+        window.scrollTo(0, 0);
+        return { top: Math.round(r.top), height: Math.round(r.height), pad: Math.round(pad), scrolls: document.documentElement.scrollHeight > innerHeight };
+      });
+      if (head?.scrolls) {
+        expect.soft(head.top, `${at}: the sticky header is ${head.top}px from the top once scrolled`).toBe(0);
+        expect.soft(head.pad - head.height, `${at}: scroll-padding-top ${head.pad}px vs header ${head.height}px; keep it at the header height plus up to 16px`).toBeGreaterThanOrEqual(0);
+        expect.soft(head.pad - head.height, `${at}: scroll-padding-top ${head.pad}px vs header ${head.height}px; keep it at the header height plus up to 16px`).toBeLessThanOrEqual(16);
+      }
       if (width === 390) {
         under44[ui.id] = kinds(m.under44);
         // The last content clears the fixed tab bar once scrolled to the

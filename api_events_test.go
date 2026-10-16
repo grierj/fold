@@ -728,3 +728,49 @@ func TestCreateEventWithVisibility(t *testing.T) {
 		t.Fatalf("bad visibility: %d", w.Code)
 	}
 }
+
+// DEC-64: who said "can't go" (count and names) is for the group's leaders
+// and admins only. A member and a signed-out guest get no declined data:
+// no "declined" count key and no declined attendee.
+func TestDeclinedOnlyForLeadersAndAdmins(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Open Choir", models.VisibilityPublic)
+	var g models.Group
+	if err := app.DB.First(&g, gid).Error; err != nil {
+		t.Fatal(err)
+	}
+	ev := scheduleGroupEvent(t, admin, gid, "Rehearsal")
+	_, leader := mkUser(t, app, &g, "lead")
+	leadUser := models.User{}
+	app.DB.Where("name = ?", "lead").First(&leadUser)
+	app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", leadUser.ID, gid).Update("role", models.MembershipLeader)
+	_, member := mkUser(t, app, &g, "mem")
+	_, decliner := mkUser(t, app, &g, "nope")
+	_, goer := mkUser(t, app, &g, "yes")
+	guest := newAPIClient(t, app)
+	path := fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID)
+	apiDo(t, decliner, "PUT", path, map[string]any{"status": "declined", "date": "2026-12-01"}, http.StatusOK)
+	apiDo(t, goer, "PUT", path, map[string]any{"status": "going", "date": "2026-12-01"}, http.StatusOK)
+
+	for _, tc := range []struct {
+		who  string
+		c    *apiClient
+		sees bool
+	}{{"leader", leader, true}, {"admin", admin, true}, {"member", member, false}, {"guest", guest, false}} {
+		page, raw := getEvent(t, tc.c, ev.ID, http.StatusOK)
+		o := page.Occurrences[0]
+		n, hasKey := o.Registrations["declined"]
+		named := strings.Contains(raw, `"name":"nope"`)
+		if tc.sees && (!hasKey || n != 1 || !named) {
+			t.Fatalf("%s should see the declined count and name: %s", tc.who, raw)
+		}
+		if !tc.sees && (hasKey || named || strings.Contains(raw, `"declined"`)) {
+			t.Fatalf("%s got declined data: %s", tc.who, raw)
+		}
+		if o.Registrations["going"] != 1 {
+			t.Fatalf("%s going count: %+v", tc.who, o.Registrations)
+		}
+	}
+}

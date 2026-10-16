@@ -187,6 +187,10 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	}
 
 	showNames := map[uint]bool{}
+	// Who said "can't go" (count and names) is only for the people who run
+	// the event: admins, the group's leaders, a church-wide event's hosts
+	// (CanManageEvent, DEC-64). Everyone else gets no declined data at all.
+	showDeclined := map[uint]bool{}
 	p := asPerson(me)
 	for i := range evs {
 		ev := &evs[i]
@@ -196,6 +200,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 			gp = asGroup(g)
 		}
 		showNames[ev.ID] = policy.CanSeeAttendeeNames(p, viewOf(ev, hosted[ev.ID]), gp, rel)
+		showDeclined[ev.ID] = policy.CanManageEvent(p, viewOf(ev, hosted[ev.ID]), rel)
 	}
 	names := a.attendeeNames(kept, showNames)
 
@@ -220,6 +225,9 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		for s, n := range countOf[o.ID] {
 			inst.Registrations[s] = n
 		}
+		if !showDeclined[ev.ID] {
+			delete(inst.Registrations, models.RegDeclined)
+		}
 		used := usedMap[o.ID]
 		inst.SeatsUsed = used
 		if inst.Capacity != nil {
@@ -243,6 +251,15 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		inst.AttendeesVisible = showNames[ev.ID]
 		if showNames[ev.ID] {
 			inst.Attendees = names[o.ID]
+			if !showDeclined[ev.ID] {
+				kept := inst.Attendees[:0:0]
+				for _, at := range inst.Attendees {
+					if at.Status != models.RegDeclined {
+						kept = append(kept, at)
+					}
+				}
+				inst.Attendees = kept
+			}
 		}
 		a.presentGroup(&inst, ev, g, me, rel)
 		out = append(out, inst)
@@ -356,7 +373,7 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 		RecurrenceRule: ev.RRule, RRuleUntil: until, SeriesStartsLocal: ev.StartsLocal,
 		Overridden:  o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil,
 		SeriesTitle: ev.Title, SeriesLocation: ev.Location, SeriesDurationMinutes: ev.DurationMinutes,
-		Registrations:   map[string]int64{"going": 0, "maybe": 0, "declined": 0, "waitlisted": 0},
+		Registrations:   map[string]int64{"going": 0, "maybe": 0, "waitlisted": 0},
 		Capacity:        events.EffectiveCapacity(ev.Capacity, o.CapacityOverride),
 		WaitlistEnabled: ev.WaitlistEnabled,
 		GuestsAllowed:   ev.GuestsAllowed,

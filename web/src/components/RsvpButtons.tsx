@@ -67,11 +67,10 @@ export function RsvpButtons({
       {fullNoWaitlist && <div className="text-sm font-semibold text-text-muted mb-2">This event is full.</div>}
       <div className="flex gap-2 flex-wrap items-center">
         {/* Segmented control (DEC-63): one joined row, the chosen answer filled. */}
-        <div role="group" aria-label="Your answer" className="flex w-full max-w-sm">
-        {OPTIONS.map((o, i) => {
+        <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
+        {OPTIONS.map((o) => {
           const active = mine === o.value;
           const disabled = busy !== null || (o.value === "going" && fullNoWaitlist);
-          const edge = i === 0 ? "rounded-l-lg" : i === OPTIONS.length - 1 ? "rounded-r-lg -ml-px" : "-ml-px";
           return (
             <button
               key={o.value}
@@ -79,11 +78,7 @@ export function RsvpButtons({
               aria-pressed={active}
               disabled={disabled}
               onClick={() => void choose(o.value)}
-              className={`flex-1 min-h-11 px-2 whitespace-nowrap text-sm font-semibold border ${edge} ${
-                active
-                  ? "relative z-10 bg-primary border-primary text-primary-foreground"
-                  : "border-border-strong bg-surface hover:text-primary disabled:opacity-50"
-              }`}
+              className="segment"
             >
               {busy === o.value ? "…" : o.label}
             </button>

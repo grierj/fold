@@ -66,6 +66,16 @@ test("the leader group page at 390 shows one primary action and a keyboard-frien
   await expect(page.getByRole("menu")).toBeInViewport({ ratio: 1 });
   await page.getByRole("menuitem", { name: "Edit this date" }).click();
   await expect(card.getByLabel("Title").first()).toBeVisible();
+
+  // On the event page, sign-ups are managed from the date's More menu, in
+  // their own panel with a labeled full-width field.
+  await card.getByRole("link", { name: /more dates/ }).click();
+  await expect(page.getByRole("region", { name: "Manage sign-ups" })).toHaveCount(0);
+  await page.getByRole("button", { name: /^More for / }).first().click();
+  await page.getByRole("menuitem", { name: "Manage sign-ups" }).click();
+  const panel = page.getByRole("region", { name: "Manage sign-ups" });
+  await expect(panel.getByLabel("Add someone")).toBeVisible();
+  expect((await panel.getByLabel("Add someone").boundingBox())!.width).toBeGreaterThan(250);
 });
 
 test("RSVP is a segmented control, counts come first, and Can't go never lists anyone", async ({ page, request }) => {
@@ -84,6 +94,11 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
 
   await answer.getByRole("button", { name: "Maybe" }).click();
   await expect(answer.getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-pressed", "true");
+  // Not color alone: the chosen segment leads with a check mark.
+  expect(await answer.getByRole("button", { name: "Maybe" }).evaluate((b) => getComputedStyle(b, "::before").content)).toContain("✓");
+  // Full width at 390: the control spans the card's content.
+  const cardBox = (await first.boundingBox())!, groupBox = (await answer.boundingBox())!;
+  expect(groupBox.width).toBeGreaterThan(cardBox.width - 40);
   await expect(first.getByText("0 going · 1 maybe")).toBeVisible();
   const show = first.getByRole("button", { name: "Show who's coming" });
   await expect(show).toHaveAttribute("aria-expanded", "false");

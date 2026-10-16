@@ -3,7 +3,7 @@ import type { ButtonHTMLAttributes } from "react";
 // The one button (ENFORCEMENT.md A). Color comes only from `variant`; there
 // is no className, so a page can't recolor or resize it with overrides.
 // `layout` takes placement classes such as "w-full" or "self-start".
-export type ButtonVariant = "primary" | "secondary" | "danger" | "danger-outline" | "ghost";
+export type ButtonVariant = "primary" | "secondary" | "danger" | "danger-outline" | "ghost" | "link";
 
 type Props = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className" | "style"> & {
   variant: ButtonVariant;
