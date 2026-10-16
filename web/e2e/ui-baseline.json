@@ -1,72 +1,72 @@
 {
   "home-signed-out": {
     "clipped": 0,
-    "under24": 2,
+    "under24": 1,
     "under44": 3
   },
   "login": {
     "clipped": 0,
-    "under24": 3,
+    "under24": 2,
     "under44": 3
   },
   "join": {
     "clipped": 0,
-    "under24": 5,
-    "under44": 5
+    "under24": 2,
+    "under44": 3
   },
   "home": {
     "clipped": 0,
-    "under24": 3,
+    "under24": 2,
     "under44": 4
   },
   "my-groups": {
     "clipped": 0,
-    "under24": 3,
+    "under24": 2,
     "under44": 4
   },
   "group-member": {
     "clipped": 0,
-    "under24": 3,
-    "under44": 18
+    "under24": 2,
+    "under44": 5
   },
   "event": {
     "clipped": 0,
-    "under24": 3,
-    "under44": 15
+    "under24": 2,
+    "under44": 4
   },
   "profile": {
     "clipped": 0,
-    "under24": 6,
-    "under44": 6
+    "under24": 3,
+    "under44": 4
   },
   "group-leader": {
     "clipped": 0,
-    "under24": 15,
-    "under44": 30
+    "under24": 3,
+    "under44": 6
   },
   "schedule-event": {
     "clipped": 1,
-    "under24": 4,
+    "under24": 3,
     "under44": 4
   },
   "admin": {
     "clipped": 0,
-    "under24": 5,
-    "under44": 9
+    "under24": 2,
+    "under44": 4
   },
   "admin-users": {
     "clipped": 0,
-    "under24": 25,
-    "under44": 29
+    "under24": 2,
+    "under44": 4
   },
   "new-group": {
     "clipped": 0,
-    "under24": 7,
-    "under44": 7
+    "under24": 3,
+    "under44": 4
   },
   "church-event": {
     "clipped": 0,
-    "under24": 5,
-    "under44": 5
+    "under24": 3,
+    "under44": 4
   }
 }
