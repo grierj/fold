@@ -119,7 +119,6 @@ test("an admin edits one date, cancels a date, and deletes a church-wide event",
   await expect(page.getByText("No upcoming dates.")).toBeVisible();
 
   // Members without manage rights see none of these controls.
-  await signOut(page);
   await signIn(page, "sam");
   await page.goto(`/events/${edited.id}`);
   await expect(page.getByRole("button", { name: "Edit this date" })).toHaveCount(0);

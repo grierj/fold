@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, email, signIn, signOut } from "./helpers";
+import { apiAs, email, signIn } from "./helpers";
 
 // M1.1c: stored notifications. The badge counts waiting items, inline
 // Approve resolves the task, and archive (with Undo) is stored on the
@@ -58,7 +58,6 @@ test("archive survives signing out, and Undo or the Archived filter restores it"
   await expect(panel.getByRole("link", { name: new RegExp(title) })).toHaveCount(0);
   expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
 
-  await signOut(page);
   await signIn(page, "grier");
   await page.goto("/notifications");
   await expect(page.getByRole("heading", { name: "Notifications", level: 1 })).toBeVisible();
