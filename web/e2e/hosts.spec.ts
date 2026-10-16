@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, email, signIn, signOut } from "./helpers";
+import { apiAs, email, signIn, signOut, fromMore } from "./helpers";
 
 test.use({ locale: "en-US", timezoneId: "America/New_York" });
 
@@ -60,7 +60,7 @@ test("opening an invite-only group's event hides the group and the names", async
 
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
-  await page.getByRole("button", { name: "Edit event" }).click();
+  await fromMore(page, "Edit event");
   await page.getByLabel("Who can see this event").selectOption("public");
   await expect(
     page.getByText("Only leaders will see who signed up, so members of Hidden Care aren't revealed.")
@@ -69,7 +69,7 @@ test("opening an invite-only group's event hides the group and the names", async
   await page.getByRole("button", { name: "Save visibility" }).click();
   expect((await saved).ok()).toBe(true);
   if ((await page.getByLabel("Who can see this event").count()) === 0) {
-    await page.getByRole("button", { name: "Edit event" }).click();
+    await fromMore(page, "Edit event");
   }
   await expect(page.getByLabel("Who can see this event")).toHaveValue("public");
 
@@ -106,7 +106,7 @@ test("an admin edits one date, cancels a date, and deletes a church-wide event",
   const edited = await mk("Date night", 26);
   await signIn(page, "grier");
   await page.goto(`/events/${edited.id}`);
-  await page.getByRole("button", { name: "Edit this date" }).click();
+  await fromMore(page, "Edit this date");
   await page.getByLabel("Location", { exact: true }).fill("Gym");
   await page.getByRole("button", { name: "Save this date" }).click();
   await expect(page.getByText(/Gym/)).toBeVisible();
@@ -115,20 +115,20 @@ test("an admin edits one date, cancels a date, and deletes a church-wide event",
   // Cancelling the only date leaves no upcoming dates.
   const cancelled = await mk("Cancel night", 27);
   await page.goto(`/events/${cancelled.id}`);
-  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await fromMore(page, "Cancel this date");
   await expect(page.getByText("No upcoming dates.")).toBeVisible();
 
   // Members without manage rights see none of these controls.
   await signIn(page, "sam");
   await page.goto(`/events/${edited.id}`);
-  await expect(page.getByRole("button", { name: "Edit this date" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Delete event" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^More for/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "More event actions" })).toHaveCount(0);
   await signOut(page);
 
   // Delete removes the event entirely.
   await signIn(page, "grier");
   await page.goto(`/events/${edited.id}`);
-  await page.getByRole("button", { name: "Delete event" }).click();
+  await fromMore(page, "Delete event", "More event actions");
   await expect(page).toHaveURL(/\/$/);
   await page.goto(`/events/${edited.id}`);
   await expect(page.getByRole("heading", { name: "Event not found" })).toBeVisible();

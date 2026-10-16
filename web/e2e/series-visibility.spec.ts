@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, signIn } from "./helpers";
+import { apiAs, signIn, fromMore } from "./helpers";
 
 function futureDate(days: number): string {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -45,6 +45,6 @@ test("visibility is chosen at creation and edited inside Edit series", async ({ 
     if (o.title === "Sectionals") expect([o.visibility, o.leaderOpened]).toEqual(["private", false]);
   }
 
-  await page.getByRole("button", { name: "Edit series" }).first().click();
+  await fromMore(page, "Edit series");
   await expect(page.getByLabel("Who can see this event")).toHaveCount(1);
 });

@@ -4,13 +4,14 @@
   "join": 0,
   "home": 1,
   "my-groups": 1,
-  "group-member": 2,
-  "event": 1,
+  "group-member": 1,
+  "event": 0,
   "profile": 0,
-  "group-leader": 2,
+  "group-leader": 1,
+  "event-leader": 0,
   "schedule-event": 0,
   "admin": 1,
-  "admin-users": 2,
+  "admin-users": 1,
   "new-group": 0,
   "church-event": 0
 }

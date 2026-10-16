@@ -9,7 +9,8 @@ const OPTIONS: { value: RegistrationStatus; label: string }[] = [
   { value: "declined", label: "Can't go" },
 ];
 
-// Meetup-style registration buttons for one event date. Knows the M1.5
+// Registration for one event date, as a Going / Maybe / Can't go
+// segmented control. Knows the M1.5
 // states: going, waitlisted with position, full with no waitlist, and
 // removed. The guest count input appears when the event allows guests.
 export function RsvpButtons({
@@ -65,24 +66,25 @@ export function RsvpButtons({
       )}
       {fullNoWaitlist && <div className="text-sm font-semibold text-text-muted mb-2">This event is full.</div>}
       <div className="flex gap-2 flex-wrap items-center">
+        {/* Segmented control (DEC-63): one joined row, the chosen answer filled. */}
+        <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
         {OPTIONS.map((o) => {
           const active = mine === o.value;
           const disabled = busy !== null || (o.value === "going" && fullNoWaitlist);
           return (
             <button
               key={o.value}
+              type="button"
+              aria-pressed={active}
               disabled={disabled}
               onClick={() => void choose(o.value)}
-              className={
-                active
-                  ? "px-4 py-1.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground"
-                  : "px-4 py-1.5 rounded-full text-sm font-semibold border border-border-strong hover:border-primary hover:text-primary disabled:opacity-50"
-              }
+              className="segment"
             >
               {busy === o.value ? "…" : o.label}
             </button>
           );
         })}
+        </div>
         {instance.guestsAllowed > 0 && (
           <label className="text-sm text-text-muted flex items-center gap-1">
             Guests

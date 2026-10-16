@@ -10,7 +10,7 @@ import { measure } from "./ui-measure.mjs";
 // control is cut off by an overflow box or the screen edge, no
 // select's chosen label is cut off (PR #51, the event visibility select),
 // and no control is under 24x24 (WCAG 2.5.8; a wrapping or `for` label
-// counts). Controls under 44px tall at 390 are the design goal: their kinds
+// counts), and at 390 the page's last content clears the tab bar. Controls under 44px tall at 390 are the design goal: their kinds
 // per page may only fall (ui-baseline.json; UPDATE_UI_BASELINE=1 rewrites it
 // after a page gets better). Kinds are element and height, so specs that add
 // rows to the shared seed don't move the numbers.
@@ -39,7 +39,41 @@ test("pages fit, selects show their label, targets are big enough", async ({ pag
       expect.soft(m.cutOff.map((c) => `${c.el} "${c.name}"`), `${at}: controls cut off by an overflow box or the screen edge; stack them on phones (see AdminUsers cards) instead of hiding or scrolling them`).toEqual([]);
       expect.soft(m.clipped.map((c) => `#${c.id} "${c.label}" needs ${c.text}px, has ${c.room}px`), `${at}: clipped select; widen the field on phones or shorten the option`).toEqual([]);
       expect.soft(m.under24.map((t) => `${t.el} "${t.name}" ${t.w}x${t.h}`), `${at}: targets under 24x24; use components/ui Button sizes, min-h-11 on text actions, or wrap the radio in its label`).toEqual([]);
-      if (width === 390) under44[ui.id] = kinds(m.under44);
+      // The sticky header sits flush at the top once scrolled, and
+      // scroll-padding-top covers it (a focused field never lands under it)
+      // without leaving a big gap (PR #66 review F3).
+      const head = await page.evaluate(() => {
+        const h = document.querySelector("body header") as HTMLElement | null;
+        if (!h) return null;
+        window.scrollTo(0, 200);
+        const r = h.getBoundingClientRect();
+        const pad = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 0;
+        window.scrollTo(0, 0);
+        return { top: Math.round(r.top), height: Math.round(r.height), pad: Math.round(pad), scrolls: document.documentElement.scrollHeight > innerHeight };
+      });
+      if (head?.scrolls) {
+        expect.soft(head.top, `${at}: the sticky header is ${head.top}px from the top once scrolled`).toBe(0);
+        expect.soft(head.pad - head.height, `${at}: scroll-padding-top ${head.pad}px vs header ${head.height}px; keep it at the header height plus up to 16px`).toBeGreaterThanOrEqual(0);
+        expect.soft(head.pad - head.height, `${at}: scroll-padding-top ${head.pad}px vs header ${head.height}px; keep it at the header height plus up to 16px`).toBeLessThanOrEqual(16);
+      }
+      if (width === 390) {
+        under44[ui.id] = kinds(m.under44);
+        // The last content clears the fixed tab bar once scrolled to the
+        // bottom, on every page (PR #65 review N4).
+        const covered = await page.evaluate(() => {
+          const bar = document.querySelector('nav[aria-label="Tabs"]');
+          if (!bar || bar.getBoundingClientRect().height === 0) return 0;
+          window.scrollTo(0, document.documentElement.scrollHeight);
+          const top = bar.getBoundingClientRect().top;
+          let bottom = 0;
+          for (const e of document.querySelectorAll("main *, footer *")) {
+            const r = e.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0 && getComputedStyle(e).position !== "fixed") bottom = Math.max(bottom, r.bottom);
+          }
+          return Math.round(bottom - top);
+        });
+        expect.soft(covered, `${at}: the last content sits ${covered}px under the tab bar; pad main by the bar's height plus the safe area`).toBeLessThanOrEqual(1); // the bar's 1px top border may overlap
+      }
     }
   }
   if (process.env.UPDATE_UI_BASELINE) {

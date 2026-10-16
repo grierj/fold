@@ -72,6 +72,7 @@ UI_PAGES=schedule-event,admin UI_WIDTHS=390 node .cursor/skills/verify-ui/drive-
    | profile | member | `/profile` |
    | notifications | member | `/notifications` |
    | group-leader | leader | `/groups/<id>` |
+   | event-leader | leader | `/events/<id>` (layout.spec.ts only) |
    | schedule-event | leader | `/groups/<id>/events/new` |
    | admin | admin | `/admin` |
    | admin-users | admin | `/admin?tab=users` |
@@ -80,14 +81,16 @@ UI_PAGES=schedule-event,admin UI_WIDTHS=390 node .cursor/skills/verify-ui/drive-
 
    Each page waits for a visible handle (heading, label or group name) and for network idle, then takes a full-page screenshot and runs the checks.
 
-**Checks.** The first four are hard failures and make the exit code 1.
+**Checks.** The first five are hard failures and make the exit code 1.
 
 | Check | Fails when | Why |
 |---|---|---|
 | Overflow | `documentElement.scrollWidth > innerWidth` | Sideways scroll on phones |
 | Clipped select | The selected option's text is wider than the select's inner width (canvas measure) | The PR #51 "Church time zone: America/Los…" bug |
+| Cut off | A visible control runs past an ancestor that hides or scrolls overflow, or past either edge of the screen | The PR #65 Admin Users actions hidden in an `overflow-hidden` card |
 | Target under 24px | Any visible control (link, button, input, select, textarea, tab) is under 24×24 CSS px, counting its `<label for>`. Inline links inside running text are exempt. | WCAG 2.2 SC 2.5.8 (AA) |
 | axe | Any serious or critical violation (WCAG 2.0–2.2 A/AA tags, which include `target-size`, `label` and `color-contrast`) | Same bar as `web/e2e/a11y.spec.ts` |
+| Tab bar (layout.spec.ts only) | At 390, scrolled to the bottom, the last content sits under the fixed tab bar | PR #65 review N4 |
 | Under 44px (report only) | Controls under 44px tall at 390 are listed per page in `results.json` | The design target (TOKENS.md). Not yet a gate; compare the count to master. |
 
 **Token contrast.** `npm run contrast` (`web/scripts/token-contrast.mjs`) resolves the `@theme` roles in `web/src/index.css` and fails (exit 1) when any text pair is under 4.5:1. It also fails when a non-text edge is under 3:1: `border-strong`, `primary-border`, `focus`, and every `border-<role>` used in a `.btn-*` or `.chip` rule.

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, signIn } from "./helpers";
+import { apiAs, signIn, fromMore } from "./helpers";
 
 // Grier's bug (Oct 14): with a value already chosen, the zone list showed
 // only that value, hiding "Your time zone". The browser zone here is not in
@@ -35,7 +35,7 @@ test("series edit form lists the browser zone first", async ({ page, request }) 
   })) as { event: { id: number } };
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
-  await page.getByRole("button", { name: "Edit series" }).first().click();
+  await fromMore(page, "Edit series");
   const id = await page.getByLabel("Time zone").getAttribute("id");
   await expectBrowserZoneFirst(page, id!);
   await page.goto(`/groups/${group.id}/events/new`);

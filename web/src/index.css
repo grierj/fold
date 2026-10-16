@@ -194,4 +194,12 @@
   .chip[aria-pressed="true"] { @apply border-primary-border bg-primary-subtle text-primary-on-subtle font-semibold; }
   /* Selected chips lead with a check mark (empty alt text: not read aloud). */
   .chip[aria-pressed="true"]::before { content: "✓" / ""; }
+  /* A plain violet text action ("Show who's coming"), 44px tall like the
+     other text links. */
+  .btn-link      { @apply inline-flex items-center min-h-11 text-sm font-medium text-primary hover:underline; }
+  /* One segment of a joined control (RSVP, DEC-63). The chosen one is
+     filled and, like chips, leads with a check so color isn't the only cue. */
+  .segment { @apply inline-flex flex-1 items-center justify-center gap-1 min-h-11 px-2 whitespace-nowrap text-sm font-semibold border border-border-strong bg-surface text-text -ml-px first:ml-0 first:rounded-l-lg last:rounded-r-lg hover:text-primary disabled:opacity-50; }
+  .segment[aria-pressed="true"] { @apply relative z-10 border-primary bg-primary text-primary-foreground hover:text-primary-foreground; }
+  .segment[aria-pressed="true"]::before { content: "✓" / ""; }
 }

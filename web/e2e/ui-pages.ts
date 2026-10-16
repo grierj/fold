@@ -30,6 +30,7 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
     { id: "event", who: "sam", path: `/events/${event!.id}`, ready: heading("UI check night") },
     { id: "profile", who: "sam", path: "/profile", ready: (p) => p.getByLabel("Time zone for emails") },
     { id: "group-leader", who: "lee", path: `/groups/${room.id}`, ready: heading("Room 201 class") },
+    { id: "event-leader", who: "lee", path: `/events/${event!.id}`, ready: heading("UI check night") },
     { id: "schedule-event", who: "lee", path: `/groups/${room.id}/events/new`, ready: (p) => p.getByLabel("Time zone").first() },
     { id: "admin", who: "grier", path: "/admin", ready: heading("Admin") },
     { id: "admin-users", who: "grier", path: "/admin?tab=users", ready: (p) => p.getByRole("button", { name: "New user" }) },
