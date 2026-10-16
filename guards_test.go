@@ -465,6 +465,32 @@ var uiRules = []uiRule{
 		fix:  "use <Button variant=…>, <Chip selected=…> or <Field label=…><Input/></Field> from components/ui (ENFORCEMENT.md A)",
 		re:   regexp.MustCompile(`<(button|input|select|textarea)\b|className=["{][^"}]*\b(btn-[a-z-]+|chip)\b`),
 	},
+	{
+		name: "importantOverrides",
+		fix:  "pick a Button or Chip size instead of overriding the component class with `!`",
+		re:   regexp.MustCompile(`\b[a-z][\w:.-]*!(\s|"|$)`),
+	},
+	{
+		name: "danger",
+		fix:  "red means an error or a destructive action; neutral states use text-text-muted or <EmptyState>. A real danger use ends with `// danger-ok: <reason>`",
+		re:   regexp.MustCompile(`\b(text|bg|border)-danger`),
+		skip: func(path, line string) bool {
+			return strings.HasSuffix(path, "ErrorNotice.tsx") || strings.Contains(line, "danger-ok:")
+		},
+	},
+	{
+		name: "styleLiterals",
+		fix:  "use a token class; style={…} is for computed positions only (objectPosition, left, top, width from a variable)",
+		re:   regexp.MustCompile(`style=\{\{[^}]*\b(color|background|font\w*|margin\w*|padding\w*|border\w*)\s*:`),
+	},
+	{
+		name: "dateFormatting",
+		fix:  "format dates and times with lib/when.ts so they show in the viewer's zone",
+		re:   regexp.MustCompile(`\.toLocale(Date|Time)?String\(|Intl\.DateTimeFormat`),
+		skip: func(path, _ string) bool {
+			return strings.HasSuffix(path, "lib/when.ts") || strings.HasSuffix(path, "lib/wall.ts") || strings.HasSuffix(path, "ZoneSelect.tsx")
+		},
+	},
 }
 
 func uiRuleCounts(path, src string) map[string]int {
@@ -564,13 +590,20 @@ func TestUIRatchetsCatchPastMistakes(t *testing.T) {
 	cases := []struct{ rule, path, line string }{
 		// PR3-REVIEW M1: GroupCard's hand-rolled tag drifted from .chip.
 		{"rawControls", "web/src/components/GroupCard.tsx", `<button className="rounded-full px-2 py-0.5" onClick={pick}>`},
+		// Admin.tsx in PR #60.
+		{"importantOverrides", "web/src/pages/Admin.tsx", `<button className="btn-danger-outline py-1.5! px-3! text-sm">`},
+		// GroupCard.tsx at 0e6b7a7, in today's tokens.
+		{"danger", "web/src/components/GroupCard.tsx", `<p className="text-danger">No events scheduled yet</p>`},
+		{"styleLiterals", "web/src/pages/Home.tsx", `<div style={{ color: "#333", objectPosition: x }}>`},
+		// Notifications.tsx:79 before this change.
+		{"dateFormatting", "web/src/pages/Notifications.tsx", `{new Date(n.createdAt).toLocaleString()}`},
 	}
 	for _, c := range cases {
 		if got := uiRatchetViolations(map[string]map[string]int{}, map[string]string{c.path: c.line}); len(got) == 0 || !strings.Contains(strings.Join(got, "\n"), c.rule) {
 			t.Errorf("%s not caught on %q: %v", c.rule, c.line, got)
 		}
 	}
-	ok := `<Chip selected={on}>tag</Chip>`
+	ok := `<Chip selected={on}>tag</Chip> <img style={{ objectPosition: pos }} /> <p className="text-danger">{error} {/* danger-ok: form error */}</p>`
 	if got := uiRatchetViolations(map[string]map[string]int{}, map[string]string{"web/src/pages/X.tsx": ok}); len(got) != 0 {
 		t.Errorf("false positives: %v", got)
 	}
