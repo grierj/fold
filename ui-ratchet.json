@@ -1,0 +1,33 @@
+{
+  "rawControls": {
+    "web/src/components/AccountRequestForm.tsx": 11,
+    "web/src/components/DeleteUserPanel.tsx": 5,
+    "web/src/components/ErrorNotice.tsx": 2,
+    "web/src/components/EventVisibility.tsx": 4,
+    "web/src/components/GroupCard.tsx": 1,
+    "web/src/components/GroupVisibilityReview.tsx": 6,
+    "web/src/components/GuestRegistrationForm.tsx": 9,
+    "web/src/components/ImageUpload.tsx": 5,
+    "web/src/components/Layout.tsx": 2,
+    "web/src/components/Notifications.tsx": 12,
+    "web/src/components/RsvpButtons.tsx": 2,
+    "web/src/components/SeriesEditor.tsx": 17,
+    "web/src/components/ZoneSelect.tsx": 3,
+    "web/src/pages/Admin.tsx": 56,
+    "web/src/pages/EventDetail.tsx": 25,
+    "web/src/pages/ForgotPassword.tsx": 3,
+    "web/src/pages/GroupDetail.tsx": 47,
+    "web/src/pages/GuestConfirm.tsx": 2,
+    "web/src/pages/GuestManage.tsx": 2,
+    "web/src/pages/Home.tsx": 7,
+    "web/src/pages/Invite.tsx": 5,
+    "web/src/pages/Login.tsx": 4,
+    "web/src/pages/NewChurchEvent.tsx": 12,
+    "web/src/pages/NewEvent.tsx": 11,
+    "web/src/pages/NewGroup.tsx": 2,
+    "web/src/pages/Notifications.tsx": 3,
+    "web/src/pages/Profile.tsx": 16,
+    "web/src/pages/ResetPassword.tsx": 4,
+    "web/src/pages/SetPassword.tsx": 4
+  }
+}

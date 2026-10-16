@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -440,5 +442,136 @@ func TestErrorTextGuardCatchesRawMessages(t *testing.T) {
 	}
 	if v := errorMessageViolations("web/src/pages/Admin.tsx", `{request.message && <p>{request.message}</p>}`); len(v) != 0 {
 		t.Errorf("an account request's own message was flagged: %v", v)
+	}
+}
+
+// --- UI ratchets (ENFORCEMENT.md B2-B6) ---
+//
+// Each rule counts its pattern per file in web/src (tests and
+// components/ui excluded). ui-ratchet.json holds today's counts: a file may
+// not go above its count, and when a file gets better its count must come
+// down in the same change, so the ratchet only turns one way.
+// UPDATE_UI_RATCHET=1 go test -run TestUIRatchets rewrites the file.
+
+type uiRule struct {
+	name, fix string
+	re        *regexp.Regexp
+	skip      func(path, line string) bool
+}
+
+var uiRules = []uiRule{
+	{
+		name: "rawControls",
+		fix:  "use <Button variant=…>, <Chip selected=…> or <Field label=…><Input/></Field> from components/ui (ENFORCEMENT.md A)",
+		re:   regexp.MustCompile(`<(button|input|select|textarea)\b|className=["{][^"}]*\b(btn-[a-z-]+|chip)\b`),
+	},
+}
+
+func uiRuleCounts(path, src string) map[string]int {
+	out := map[string]int{}
+	for _, r := range uiRules {
+		for _, line := range strings.Split(src, "\n") {
+			if r.skip != nil && r.skip(path, line) {
+				continue
+			}
+			out[r.name] += len(r.re.FindAllString(line, -1))
+		}
+	}
+	return out
+}
+
+func uiSourceFiles(t *testing.T) map[string]string {
+	files := map[string]string{}
+	err := filepath.WalkDir("web/src", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			if p == "web/src/components/ui" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !(strings.HasSuffix(p, ".tsx") || strings.HasSuffix(p, ".ts")) || strings.Contains(p, ".test.") || strings.HasPrefix(p, "web/src/test/") {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(p)] = string(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func uiRatchetViolations(ratchet map[string]map[string]int, files map[string]string) []string {
+	var out []string
+	for p, src := range files {
+		got := uiRuleCounts(p, src)
+		for _, r := range uiRules {
+			want := ratchet[r.name][p]
+			switch {
+			case got[r.name] > want:
+				out = append(out, fmt.Sprintf("%s: %s went from %d to %d; %s", p, r.name, want, got[r.name], r.fix))
+			case got[r.name] < want:
+				out = append(out, fmt.Sprintf("%s: %s fell from %d to %d. Good: lower it in ui-ratchet.json (UPDATE_UI_RATCHET=1 go test -run TestUIRatchets)", p, r.name, want, got[r.name]))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestUIRatchets(t *testing.T) {
+	files := uiSourceFiles(t)
+	if os.Getenv("UPDATE_UI_RATCHET") != "" {
+		ratchet := map[string]map[string]int{}
+		for _, r := range uiRules {
+			ratchet[r.name] = map[string]int{}
+		}
+		for p, src := range files {
+			for name, n := range uiRuleCounts(p, src) {
+				if n > 0 {
+					ratchet[name][p] = n
+				}
+			}
+		}
+		b, _ := json.MarshalIndent(ratchet, "", "  ")
+		if err := os.WriteFile("ui-ratchet.json", append(b, '\n'), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	b, err := os.ReadFile("ui-ratchet.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ratchet map[string]map[string]int
+	if err := json.Unmarshal(b, &ratchet); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range uiRatchetViolations(ratchet, files) {
+		t.Error(v)
+	}
+}
+
+// Each rule fails on the real past mistake it is for.
+func TestUIRatchetsCatchPastMistakes(t *testing.T) {
+	cases := []struct{ rule, path, line string }{
+		// PR3-REVIEW M1: GroupCard's hand-rolled tag drifted from .chip.
+		{"rawControls", "web/src/components/GroupCard.tsx", `<button className="rounded-full px-2 py-0.5" onClick={pick}>`},
+	}
+	for _, c := range cases {
+		if got := uiRatchetViolations(map[string]map[string]int{}, map[string]string{c.path: c.line}); len(got) == 0 || !strings.Contains(strings.Join(got, "\n"), c.rule) {
+			t.Errorf("%s not caught on %q: %v", c.rule, c.line, got)
+		}
+	}
+	ok := `<Chip selected={on}>tag</Chip>`
+	if got := uiRatchetViolations(map[string]map[string]int{}, map[string]string{"web/src/pages/X.tsx": ok}); len(got) != 0 {
+		t.Errorf("false positives: %v", got)
 	}
 }
