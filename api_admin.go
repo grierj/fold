@@ -310,13 +310,34 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				if err != nil {
 					return err
 				}
-				if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled,
-					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+				// Flip the status before the seat work: the rest of this
+				// transaction (seat counts, the waitlist) must see the
+				// account as disabled, since disabled accounts use no
+				// seats (DEC-38). The handoff above must see it active:
+				// leaderCount counts listed users.
+				if err := tx.Model(u).Updates(updates).Error; err != nil {
 					return err
 				}
+				// Disabling keeps registration rows but frees every seat
+				// the account held on future dates, promoting into them.
+				ids, err = a.promoteOnDisable(tx, u.ID)
+				emailed = append(emailed, ids...)
+				if err != nil {
+					return err
+				}
+				return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled,
+					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
 			}
 			if s, ok := updates["status"].(string); ok && u.Status == models.UserDisabled && s != models.UserDisabled {
 				ids, err := restoreMemberships(c, tx, u.ID)
+				emailed = append(emailed, ids...)
+				if err != nil {
+					return err
+				}
+				// Registrations come back as they were when they fit;
+				// a row that would overfill is dropped and the person
+				// is told to ask a leader or host (DEC-38, DEC-47, M1.5).
+				ids, err = restoreRegistrations(c, tx, u.ID)
 				emailed = append(emailed, ids...)
 				if err != nil {
 					return err

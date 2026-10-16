@@ -41,11 +41,14 @@ const ()
 // Registration statuses (renamed from RSVP, M1.1a). Cancelled arrives
 // with the guest manage link (M1.4): the person withdrew a registration
 // they had made, which is not the same answer as declining an event.
+// Waitlisted and removed arrive with capacity and pruning (M1.5, 5.4).
 const (
-	RegGoing     = "going"
-	RegMaybe     = "maybe"
-	RegDeclined  = "declined"
-	RegCancelled = "cancelled"
+	RegGoing      = "going"
+	RegMaybe      = "maybe"
+	RegDeclined   = "declined"
+	RegCancelled  = "cancelled"
+	RegWaitlisted = "waitlisted"
+	RegRemoved    = "removed"
 )
 
 // Where a registration came from (5.3). Guest form registrations are the
@@ -215,7 +218,17 @@ type Event struct {
 	// wider than its group (DEC-17, DEC-28). When the group becomes more
 	// private, these are not tightened automatically; the leader decides
 	// (DEC-48). Always false on church-wide events.
-	LeaderOpened    bool    `gorm:"not null;default:false"`
+	LeaderOpened bool `gorm:"not null;default:false"`
+	// Capacity caps seats on each occurrence (5.4, M1.5); nil means
+	// unlimited. One going registration uses 1 + guest_count seats.
+	Capacity *int
+	// WaitlistEnabled holds overflow sign-ups on a waitlist when a
+	// capacity is set. Off means a full event refuses new going
+	// registrations with 409.
+	WaitlistEnabled bool `gorm:"not null;default:false"`
+	// GuestsAllowed caps the extra unnamed guests one registration may
+	// bring (0-5, enforced by a CHECK).
+	GuestsAllowed   int     `gorm:"not null;default:0"`
 	StartsLocal     string  `gorm:"not null"` // YYYY-MM-DDTHH:MM, no offset
 	DurationMinutes int     `gorm:"not null"`
 	TZID            string  `gorm:"column:tzid;not null"`
@@ -260,6 +273,9 @@ type EventOccurrence struct {
 	LocationOverride *string
 	StartsAtOverride *time.Time
 	DurationOverride *int
+	// CapacityOverride replaces the event's capacity for this date (M1.5);
+	// nil means the date uses the event's capacity.
+	CapacityOverride *int
 	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
@@ -300,11 +316,24 @@ type Registration struct {
 	Occurrence      EventOccurrence `gorm:"foreignKey:OccurrenceID"`
 	UserID          uint            `gorm:"not null;uniqueIndex:idx_registration"`
 	User            User            `gorm:"foreignKey:UserID"`
-	Status          string          `gorm:"not null"`             // going | maybe | declined | cancelled
+	Status          string          `gorm:"not null"`             // going | maybe | declined | cancelled | waitlisted | removed
 	Source          string          `gorm:"not null;default:web"` // web | admin | guest_form
 	ManageTokenHash string          `gorm:"not null;default:''"`
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// GuestCount is the extra unnamed guests on this registration (0 to
+	// the event's guests_allowed). Seats used = 1 + guest_count.
+	GuestCount int `gorm:"not null;default:0"`
+	// WaitlistedAt is when the current wait began; kept as history after
+	// a promotion. PromotedAt is when the row last became going from the
+	// waitlist.
+	WaitlistedAt *time.Time
+	PromotedAt   *time.Time
+	// RemovedBy is the leader or host who pruned this registration
+	// (DEC-20, DEC-30). No GORM association: a second belongs-to User
+	// would add a foreign key GORM and the migration disagree on.
+	RemovedBy   *uint
+	RemovalNote string `gorm:"not null;default:''"`
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 // GuestSignup is one unverified guest registration intent (M1.4): a

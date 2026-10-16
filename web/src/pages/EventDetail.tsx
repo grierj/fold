@@ -9,7 +9,7 @@ import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { formatWallClock, zoneSuffix } from "../lib/wall";
-import type { EventDetailResponse, EventHostRow, EventOccurrence, RegistrationStatus } from "../types";
+import type { EventDetailResponse, EventHostRow, EventOccurrence, RegistrationResponse } from "../types";
 
 function count(r: Record<string, number>, key: string): number {
   return r[key] ?? 0;
@@ -44,17 +44,28 @@ export function EventDetail() {
     load();
   }, [load]);
 
-  function handleRsvp(eventId: number, date: string, status: RegistrationStatus) {
+  function handleRsvp(eventId: number, date: string, reg: RegistrationResponse) {
     setPage((p) => {
       if (!p) return p;
       return {
         ...p,
         occurrences: p.occurrences.map((m) => {
-          if (m.eventId !== eventId || m.date !== date || m.myRegistration === status) return m;
+          if (m.eventId !== eventId || m.date !== date) return m;
           const registrations = { ...m.registrations };
-          if (m.myRegistration) registrations[m.myRegistration] = Math.max(0, (registrations[m.myRegistration] ?? 0) - 1);
-          registrations[status] = (registrations[status] ?? 0) + 1;
-          return { ...m, myRegistration: status, registrations };
+          const before = m.myRegistration;
+          if (before && before !== reg.status) {
+            registrations[before] = Math.max(0, (registrations[before] ?? 0) - 1);
+          }
+          if (!before || before !== reg.status) {
+            registrations[reg.status] = (registrations[reg.status] ?? 0) + 1;
+          }
+          return {
+            ...m,
+            myRegistration: reg.status,
+            myGuestCount: reg.guestCount,
+            myWaitlistPosition: reg.waitlistPosition ?? undefined,
+            registrations,
+          };
         }),
       };
     });
@@ -166,7 +177,7 @@ function DateRow({
   instance: EventOccurrence;
   loggedIn: boolean;
   canManage: boolean;
-  onRsvp: (eventId: number, date: string, status: RegistrationStatus) => void;
+  onRsvp: (eventId: number, date: string, reg: RegistrationResponse) => void;
   onChanged: () => void;
   onNeedLogin: () => void;
 }) {
@@ -200,7 +211,12 @@ function DateRow({
         )}
         <div className="text-sm text-gray-500 mt-1">
           {count(instance.registrations, "going")} going · {count(instance.registrations, "maybe")} maybe ·{" "}
-          {count(instance.registrations, "declined")} can't go
+          {count(instance.registrations, "declined")} can&apos;t go
+          {instance.capacity !== null && (
+            <>
+              {" "}· {instance.spotsLeft} of {instance.capacity} spots left
+            </>
+          )}
         </div>
         <AttendeeNames instance={instance} />
         <div className="mt-2">
@@ -232,6 +248,7 @@ function DateRow({
             onClose={() => setEditingDate(false)}
           />
         )}
+        {canManage && <ManageRoster instance={instance} onChanged={onChanged} />}
       </div>
       {canManage && (
         <div className="shrink-0 flex flex-col items-end gap-2">
@@ -256,6 +273,116 @@ function DateRow({
   );
 }
 
+// ManageRoster gives leaders and hosts the M1.5 pruning controls for one
+// date: remove anyone, promote a waitlisted person by hand, or add someone
+// directly. Adding over capacity asks for confirmation first.
+function ManageRoster({ instance, onChanged }: { instance: EventOccurrence; onChanged: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  async function remove(userId: number, name: string) {
+    if (!confirm(`Remove ${name}'s registration for this date? They won't be able to re-register on their own.`))
+      return;
+    setBusy(`remove-${userId}`);
+    setError(null);
+    try {
+      await Events.removeRegistration(instance.eventId, instance.date, userId);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not remove the registration");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function promote(userId: number) {
+    setBusy(`promote-${userId}`);
+    setError(null);
+    try {
+      await Events.promoteRegistration(instance.eventId, instance.date, userId);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not promote the registration");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = email.trim();
+    if (!trimmed) return;
+    const full = instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0;
+    if (full && !confirm("This date is full. Add them over capacity?")) return;
+    setBusy("add");
+    setError(null);
+    try {
+      await Events.addRegistration(instance.eventId, instance.date, trimmed, full || undefined);
+      setEmail("");
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add the registration");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const roster = (instance.attendees ?? []).filter((a) =>
+    ["going", "maybe", "waitlisted"].includes(a.status)
+  );
+  if (!instance.attendeesVisible || roster.length === 0) return null;
+
+  return (
+    <div className="mt-3 border-t border-gray-100 pt-3">
+      <div className="text-sm font-semibold text-gray-700 mb-1">Manage registrations</div>
+      {error && <div className="text-sm text-red-600 mb-1">{error}</div>}
+      <ul className="text-sm space-y-1 mb-2">
+        {roster.map((a) => (
+          <li key={a.userId} className="flex items-center justify-between gap-3">
+            <span>
+              {a.name} <span className="text-gray-500">· {a.status}</span>
+            </span>
+            <span className="flex gap-2">
+              {a.status === "waitlisted" && (
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => void promote(a.userId)}
+                  className="text-brand font-medium"
+                >
+                  {busy === `promote-${a.userId}` ? "…" : "Promote"}
+                </button>
+              )}
+              <button
+                type="button"
+                disabled={busy !== null}
+                onClick={() => void remove(a.userId, a.name)}
+                className="text-red-600 hover:text-red-800"
+              >
+                {busy === `remove-${a.userId}` ? "…" : "Remove"}
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+      <form onSubmit={add} className="flex gap-2">
+        <input
+          className="input text-sm"
+          type="email"
+          aria-label="Add by email"
+          placeholder="Add someone by email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <button type="submit" className="btn-secondary text-sm" disabled={busy !== null}>
+          {busy === "add" ? "…" : "Add"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
 // DateEditor changes one occurrence only (time, duration, title,
 // location). It mirrors the group page's editor: later series changes
 // leave an edited date alone.
@@ -273,17 +400,27 @@ function DateEditor({
   const [duration, setDuration] = useState(instance.durationMinutes);
   const [title, setTitle] = useState(instance.title);
   const [location, setLocation] = useState(instance.location);
+  const [capacity, setCapacity] = useState(instance.capacity === null ? "" : String(instance.capacity));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
-    const body: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string } = {};
+    const body: {
+      startsLocal?: string;
+      durationMinutes?: number;
+      location?: string;
+      title?: string;
+      capacityOverride?: number | null;
+    } = {};
     const startsLocal = `${date}T${time}`;
     if (startsLocal !== instance.startsLocal) body.startsLocal = startsLocal;
     if (duration !== instance.durationMinutes) body.durationMinutes = duration;
     if (title !== instance.title) body.title = title;
     if (location !== instance.location) body.location = location;
+    const capTrimmed = capacity.trim();
+    const capCurrent = instance.capacity === null ? "" : String(instance.capacity);
+    if (capTrimmed !== capCurrent) body.capacityOverride = capTrimmed === "" ? null : Number(capTrimmed);
     if (Object.keys(body).length === 0) {
       onClose();
       return;
@@ -346,6 +483,21 @@ function DateEditor({
           </label>
           <input id={`cev-loc-${instance.id}`} className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
         </div>
+      </div>
+      <div>
+        <label className="label" htmlFor={`cev-cap-${instance.id}`}>
+          Capacity for this date
+        </label>
+        <input
+          id={`cev-cap-${instance.id}`}
+          type="number"
+          min={1}
+          className="input"
+          placeholder="Same as the event"
+          value={capacity}
+          onChange={(e) => setCapacity(e.target.value)}
+        />
+        <p className="text-xs text-gray-500 mt-1">Empty means this date uses the event&apos;s capacity.</p>
       </div>
       <div className="flex gap-2">
         <button type="submit" disabled={busy} className="btn-primary">

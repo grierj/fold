@@ -255,3 +255,70 @@ func TestNotificationsBackfill(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestMigration15DownMapsStatuses seeds the M1.5 registration statuses,
+// then runs down to 14 and back up to 15. Before the status-mapping fix,
+// the down migration failed: it re-added the old status CHECK while
+// waitlisted/removed rows still existed.
+func TestMigration15DownMapsStatuses(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 15); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO users (id, email, name, role, status) VALUES (1, 'w@example.com', 'Wait', 'member', 'active'),
+			(2, 'r@example.com', 'Removed', 'member', 'active'), (3, 'g@example.com', 'Going', 'member', 'active'),
+			(4, 'n@example.com', 'New', 'member', 'active')`,
+		`INSERT INTO groups (id, name, leader_id, status, deletion_requested) VALUES (1, 'G', 1, 'active', false)`,
+		`INSERT INTO events (id, group_id, title, starts_local, duration_minutes, tzid, rrule, location, description, visibility, created_by)
+			VALUES (1, 1, 'E', '2026-10-20 10:00', 60, 'America/Denver', '', 'Hall', '', 'public', 1)`,
+		`INSERT INTO event_occurrences (id, event_id, original_date, starts_at, ends_at, status)
+			VALUES (1, 1, '2026-10-20', '2026-10-20 16:00+00', '2026-10-20 17:00+00', 'scheduled')`,
+		`INSERT INTO registrations (occurrence_id, user_id, status, waitlisted_at)
+			VALUES (1, 1, 'waitlisted', now()), (1, 2, 'removed', NULL), (1, 3, 'going', NULL)`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := p.DownTo(ctx, 14); err != nil {
+		t.Fatalf("down to 14 with waitlisted/removed rows: %v", err)
+	}
+	rows, err := db.Query(`SELECT user_id, status FROM registrations ORDER BY user_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for rows.Next() {
+		var uid int
+		var status string
+		if err := rows.Scan(&uid, &status); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%d %s", uid, status))
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"1 cancelled", "2 cancelled", "3 going"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("statuses after down:\n%v\nwant\n%v", got, want)
+	}
+	// The old CHECK is back: new statuses are rejected again.
+	if _, err := db.Exec(`INSERT INTO registrations (occurrence_id, user_id, status) VALUES (1, 4, 'waitlisted')`); err == nil {
+		t.Fatal("old CHECK accepted a waitlisted row")
+	}
+	// And back up to 15 restores the new vocabulary.
+	if _, err := p.UpTo(ctx, 15); err != nil {
+		t.Fatalf("up to 15 again: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO registrations (occurrence_id, user_id, status) VALUES (1, 4, 'waitlisted')`); err != nil {
+		t.Fatalf("new CHECK rejected a waitlisted row after re-up: %v", err)
+	}
+}

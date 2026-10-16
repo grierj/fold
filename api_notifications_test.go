@@ -278,3 +278,177 @@ func TestLocalWhenNamesTheZone(t *testing.T) {
 		t.Fatalf("localWhen: %q", got)
 	}
 }
+
+// Cancelling an occurrence writes one unbatched bell item and one email
+// per going or waitlisted person. A maybe person gets neither.
+func TestOccurrenceCancellationNotifiesGoingAndWaitlisted(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "CancelNotify")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	mk := func(name string) (*models.User, *apiClient) {
+		u := newTestUser(t, app, name, "password1234", models.RoleMember)
+		addMember(t, app, u, &g, models.MembershipMember)
+		return u, loginAPI(t, app, name, "password1234")
+	}
+	_, cGoing := mk("n1")
+	_, cWait := mk("n2")
+	_, cMaybe := mk("n3")
+	if code, _ := registerAs(cGoing, eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatal("n1 going")
+	}
+	if code, _ := registerAs(cWait, eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatal("n2 going->waitlisted")
+	}
+	if code, _ := registerAs(cMaybe, eventID, date, "maybe", nil); code != http.StatusOK {
+		t.Fatal("n3 maybe")
+	}
+
+	w := admin.do("POST", fmt.Sprintf("/api/v1/events/%d/cancel", eventID),
+		map[string]any{"date": date}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("cancel: %d %s", w.Code, w.Body.String())
+	}
+	for _, tc := range []struct {
+		c    *apiClient
+		name string
+		want int
+	}{
+		{cGoing, "going", 1}, {cWait, "waitlisted", 1}, {cMaybe, "maybe", 0},
+	} {
+		got := findKind(feed(t, tc.c, ""), "event.cancelled")
+		if tc.want == 0 && got != nil {
+			t.Fatalf("%s person got a cancellation notice", tc.name)
+		}
+		if tc.want == 1 && got == nil {
+			t.Fatalf("no cancellation notice for %s person", tc.name)
+		}
+	}
+	// One email per notified person in the devoutbox.
+	sent := 0
+	for _, to := range []string{testEmail("n1"), testEmail("n2"), testEmail("n3")} {
+		if _, err := devOutbox(t, app).LatestTo(to); err == nil {
+			sent++
+		}
+	}
+	if sent != 2 {
+		t.Fatalf("cancellation emails sent = %d, want 2", sent)
+	}
+}
+
+// A time change and a place change each write one event.changed item per
+// going or waitlisted person.
+func TestOccurrenceTimeAndPlaceChangesNotify(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ChangedNotify")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(10), true)
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	_, cGoing := mkUser(t, app, &g, "c1")
+	_, cWait := mkUser(t, app, &g, "c2")
+	if code, _ := registerAs(cGoing, eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatal("c1 going")
+	}
+	// Fill the event so c2 waitlists: capacity 10, add 9 more goings.
+	for i := 0; i < 9; i++ {
+		_, cc := mkUser(t, app, &g, fmt.Sprintf("filler%d", i))
+		if code, _ := registerAs(cc, eventID, date, "going", nil); code != http.StatusOK {
+			t.Fatalf("filler %d: %d", i, code)
+		}
+	}
+	if code, _ := registerAs(cWait, eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatal("c2 going->waitlisted")
+	}
+
+	// Time change on the date.
+	w := admin.do("PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", eventID, date),
+		map[string]any{"startsLocal": date + "T21:00"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("time change: %d %s", w.Code, w.Body.String())
+	}
+	// Place change on the date.
+	w = admin.do("PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", eventID, date),
+		map[string]any{"location": "New Hall"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("place change: %d %s", w.Code, w.Body.String())
+	}
+	for _, tc := range []struct {
+		c    *apiClient
+		name string
+	}{{cGoing, "going"}, {cWait, "waitlisted"}} {
+		var changed int
+		for _, n := range feed(t, tc.c, "") {
+			if n.Kind == "event.changed" {
+				changed++
+			}
+		}
+		if changed != 2 {
+			t.Fatalf("%s person: %d event.changed items, want 2 (time + place)", tc.name, changed)
+		}
+	}
+}
+
+// A series edit that moves a date fans out event.changed (time) for that
+// date only; frozen dates are left alone.
+func TestSeriesEditMovesNotifyChanged(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "SeriesChanged")
+	start := time.Now().UTC().AddDate(0, 0, 30).Truncate(24 * time.Hour).Add(18 * time.Hour)
+	w := admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"title": "Weekly", "startsLocal": start.Format("2006-01-02T15:04"),
+		"durationMinutes": 60, "tzid": "UTC",
+		"recurrenceRule": "FREQ=WEEKLY;BYDAY=" + weekdayCode(start.Format("2006-01-02")),
+		"capacity":       10, "waitlistEnabled": true,
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	eventID := created.Event.ID
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	_, c1 := mkUser(t, app, &g, "s1")
+	d1 := start.Format("2006-01-02")
+	d2 := start.AddDate(0, 0, 7).Format("2006-01-02")
+	if code, _ := registerAs(c1, eventID, d1, "going", nil); code != http.StatusOK {
+		t.Fatal("s1 going d1")
+	}
+	if code, _ := registerAs(c1, eventID, d2, "going", nil); code != http.StatusOK {
+		t.Fatal("s1 going d2")
+	}
+	// Move the series start time: both future dates move.
+	w = admin.do("PUT", fmt.Sprintf("/api/v1/events/%d", eventID),
+		map[string]any{"startsLocal": start.Add(time.Hour).Format("2006-01-02T15:04")}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("series move: %d %s", w.Code, w.Body.String())
+	}
+	var changed int
+	for _, n := range feed(t, c1, "") {
+		if n.Kind == "event.changed" {
+			changed++
+		}
+	}
+	if changed != 2 {
+		t.Fatalf("event.changed items = %d, want 2 (one per moved date)", changed)
+	}
+}
+
+func mkUser(t *testing.T, app *App, g *models.Group, name string) (*models.User, *apiClient) {
+	t.Helper()
+	u := newTestUser(t, app, name, "password1234", models.RoleMember)
+	addMember(t, app, u, g, models.MembershipMember)
+	return u, loginAPI(t, app, name, "password1234")
+}
+
+func weekdayCode(date string) string {
+	// date is YYYY-MM-DD; return the iCal weekday code.
+	d, _ := time.Parse("2006-01-02", date)
+	return []string{"SU", "MO", "TU", "WE", "TH", "FR", "SA"}[d.Weekday()]
+}

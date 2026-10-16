@@ -321,3 +321,116 @@ func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
 		t.Fatalf("user.enabled rows: %d", len(rows))
 	}
 }
+
+// Disabling a going account frees its seats at once: the next waitlisted
+// party is promoted in the disable transaction.
+func TestDisablePromotesWaitlistedParty(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "DisablePromo")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	u1 := newTestUser(t, app, "d1", "password1234", models.RoleMember)
+	u2 := newTestUser(t, app, "d2", "password1234", models.RoleMember)
+	addMember(t, app, u1, &g, models.MembershipMember)
+	addMember(t, app, u2, &g, models.MembershipMember)
+	c1 := loginAPI(t, app, "d1", "password1234")
+	c2 := loginAPI(t, app, "d2", "password1234")
+	if code, _ := registerAs(c1, eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatal("d1 going")
+	}
+	if code, _ := registerAs(c2, eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatal("d2 going->waitlisted")
+	}
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+
+	w := admin.do("PUT", "/api/v1/admin/users/"+itoa(u1.ID), map[string]any{"status": "disabled"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", w.Code, w.Body.String())
+	}
+	// The disabled account's row is kept but uses no seat; d2 is promoted.
+	var r1 models.Registration
+	app.DB.Where("user_id = ? AND occurrence_id = ?", u1.ID, occ.ID).First(&r1)
+	if r1.Status != models.RegGoing {
+		t.Fatalf("disabled row status = %q, want kept as going", r1.Status)
+	}
+	used, err := seatsUsed(app.DB, occ.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if used != 1 {
+		t.Fatalf("seats used after disable = %d, want 1 (only d2)", used)
+	}
+	var r2 models.Registration
+	app.DB.Where("user_id = ? AND occurrence_id = ?", u2.ID, occ.ID).First(&r2)
+	if r2.Status != models.RegGoing || r2.PromotedAt == nil {
+		t.Fatalf("d2 after disable: status=%q promoted_at=%v", r2.Status, r2.PromotedAt)
+	}
+}
+
+// Re-enabling into room restores the going row; re-enabling into a full
+// occurrence deletes it, writes registration.not_restored, and sends the
+// ask-a-leader notice.
+func TestReenableRestoresOrDropsRegistration(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Reenable")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	u1 := newTestUser(t, app, "e1", "password1234", models.RoleMember)
+	u2 := newTestUser(t, app, "e2", "password1234", models.RoleMember)
+	addMember(t, app, u1, &g, models.MembershipMember)
+	addMember(t, app, u2, &g, models.MembershipMember)
+	c1 := loginAPI(t, app, "e1", "password1234")
+	c2 := loginAPI(t, app, "e2", "password1234")
+	if code, _ := registerAs(c1, eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatal("e1 going")
+	}
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+
+	// Disable e1 (no waitlist, so nothing promotes), then re-enable into
+	// room: the row is restored.
+	w := admin.do("PUT", "/api/v1/admin/users/"+itoa(u1.ID), map[string]any{"status": "disabled"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", w.Code, w.Body.String())
+	}
+	w = admin.do("PUT", "/api/v1/admin/users/"+itoa(u1.ID), map[string]any{"status": "active"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("re-enable: %d %s", w.Code, w.Body.String())
+	}
+	if got := regStatus(t, app, u1.ID, occ.ID); got != models.RegGoing {
+		t.Fatalf("restored status = %q, want going", got)
+	}
+
+	// Now e2 takes the seat, e1 is disabled again, and re-enabled into a
+	// full occurrence: the row is dropped with a notice.
+	if code, _ := registerAs(c2, eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatalf("e2 going: %d", code)
+	}
+	w = admin.do("PUT", "/api/v1/admin/users/"+itoa(u1.ID), map[string]any{"status": "disabled"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("disable again: %d %s", w.Code, w.Body.String())
+	}
+	// e2's seat is taken; fill it so e1 can't come back.
+	w = admin.do("PUT", "/api/v1/admin/users/"+itoa(u1.ID), map[string]any{"status": "active"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("re-enable into full: %d %s", w.Code, w.Body.String())
+	}
+	var n int64
+	app.DB.Model(&models.Registration{}).Where("user_id = ? AND occurrence_id = ?", u1.ID, occ.ID).Count(&n)
+	if n != 0 {
+		t.Fatalf("e1 row still exists after drop")
+	}
+	if c := auditCount(t, app, audit.RegistrationNotRestored); c != 1 {
+		t.Fatalf("registration.not_restored rows = %d, want 1", c)
+	}
+	// Disabling bumped the session, so log back in to read the bell.
+	c1b := loginAPI(t, app, "e1", "password1234")
+	if got := findKind(feed(t, c1b, ""), "registration.not_restored"); got == nil {
+		t.Fatalf("no not_restored notice for e1")
+	}
+}

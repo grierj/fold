@@ -222,6 +222,18 @@ func userIn(tx *gorm.DB, id uint) *models.User {
 	return &u
 }
 
+// viewerIn loads a recipient as a viewer for a visibility check inside
+// tx. A guest-status account (M1.4) is never a signed-in viewer: it is
+// treated as nil, matching guestDisplay, so a private group's name,
+// place, or link never reaches a guest by email.
+func viewerIn(tx *gorm.DB, id uint) *models.User {
+	u := userIn(tx, id)
+	if u != nil && u.Status == models.UserGuest {
+		return nil
+	}
+	return u
+}
+
 // canSeeGroupIn is canSeeGroup against tx, so it sees the transaction's
 // own changes (a membership just removed, a visibility just changed).
 func canSeeGroupIn(tx *gorm.DB, u *models.User, g *models.Group) bool {
@@ -334,9 +346,10 @@ func notifyNotRestored(tx *gorm.DB, actor uint, g *models.Group, userID uint) ([
 	})
 }
 
-// notifyOccurrencesCancelled tells everyone going or maybe on these dates.
-// A registrant who can't see the group gets no group name, place, or link
-// (PR #41). Each item archives itself when the date would have ended.
+// notifyOccurrencesCancelled tells everyone going or waitlisted on
+// these dates (M1.5: maybe no longer gets one). A registrant who can't
+// see the group gets no group name, place, or link (PR #41). Each item
+// archives itself when the date would have ended.
 func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint, error) {
 	if len(occIDs) == 0 {
 		return nil, nil
@@ -346,7 +359,8 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 		OccID  uint
 	}
 	if err := tx.Table("registrations").Select("user_id, occurrence_id AS occ_id").
-		Where("occurrence_id IN ? AND status IN ?", occIDs, []string{models.RegGoing, models.RegMaybe}).
+		Where("occurrence_id IN ? AND status IN ?", occIDs,
+			[]string{models.RegGoing, models.RegWaitlisted}).
 		Order("occurrence_id, user_id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
@@ -360,15 +374,21 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 		var g *models.Group
 		if ev.GroupID != nil {
 			var row models.Group
-			if tx.First(&row, *ev.GroupID).Error == nil && canSeeGroupIn(tx, userIn(tx, r.UserID), &row) {
+			if tx.First(&row, *ev.GroupID).Error == nil && canSeeGroupIn(tx, viewerIn(tx, r.UserID), &row) {
 				g = &row
 			}
 		}
-		vars := notify.Vars{Event: ev.Title, When: localWhen(o.StartsAt, ev.TZID), Place: ev.Location}
+		place := ev.Location
+		if o.LocationOverride != nil {
+			place = *o.LocationOverride
+		}
+		vars := notify.Vars{Event: ev.Title, When: localWhen(o.StartsAt, ev.TZID), Place: place}
 		link := fmt.Sprintf("/events/%d", ev.ID)
 		if g != nil {
-			vars.Event = firstNonEmpty(ev.Title, g.Name)        // group-ok: g is set only when canSeeGroupIn is true
-			vars.Place = firstNonEmpty(ev.Location, g.Location) // group-ok: g is set only when canSeeGroupIn is true
+			vars.Event = firstNonEmpty(ev.Title, g.Name) // group-ok: g is set only when canSeeGroupIn is true
+			if o.LocationOverride == nil {
+				vars.Place = firstNonEmpty(ev.Location, g.Location) // group-ok: g is set only when canSeeGroupIn is true
+			}
 			link = fmt.Sprintf("/groups/%d", g.ID)
 		}
 		end := o.EndsAt
@@ -505,7 +525,8 @@ func (a *App) deliverNotificationEmail(ctx context.Context, id uint) {
 		return
 	}
 	var u models.User
-	if err := a.DB.Where("id = ?", n.UserID).First(&u).Error; err != nil || u.Status != models.UserActive {
+	if err := a.DB.Where("id = ?", n.UserID).First(&u).Error; err != nil ||
+		(u.Status != models.UserActive && u.Status != models.UserGuest) {
 		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "recipient not active")
 		return
 	}

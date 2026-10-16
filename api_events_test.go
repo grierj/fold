@@ -146,8 +146,8 @@ func TestBoiseWeeklyKeepsLocalTime(t *testing.T) {
 }
 
 // A series edit moves future dates and keeps their registrations, cancels
-// dates the new rule drops (and tells going/maybe), and leaves per-date
-// overrides alone. A date already underway stays put.
+// dates the new rule drops (and tells going/waitlisted, not maybe), and
+// leaves per-date overrides alone. A date already underway stays put.
 func TestSeriesEditKeepsRegistrationsAndOverrides(t *testing.T) {
 	app := testApp(t)
 	admin, gid := openGroup(t, app, "Prayer")
@@ -190,6 +190,7 @@ func TestSeriesEditKeepsRegistrationsAndOverrides(t *testing.T) {
 	}
 	register(sam, d1, "going")
 	register(pat, d3, "maybe")
+	register(sam, d3, "going")
 
 	// One date moves to 9:00 pm. Another only changes its room.
 	w = admin.do("PUT", "/api/v1/events/"+eid+"/occurrences/"+d2, map[string]any{
@@ -277,8 +278,10 @@ func TestSeriesEditKeepsRegistrationsAndOverrides(t *testing.T) {
 			t.Fatalf("notice found=%v want=%v in %+v", found, want, ns)
 		}
 	}
-	assertNotice(pat, true)
-	assertNotice(sam, false)
+	// M1.5: cancellation tells going and waitlisted, not maybe. Pat was
+	// maybe on the dropped date; Sam was going on it and on a kept date.
+	assertNotice(pat, false)
+	assertNotice(sam, true)
 }
 
 func TestPastOccurrenceStaysOnSeriesEdit(t *testing.T) {

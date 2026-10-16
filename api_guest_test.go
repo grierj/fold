@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/notify"
 	"fold/models"
 	"net/http"
 	"strings"
@@ -339,6 +340,146 @@ func TestGuestVisibilityAndTightening(t *testing.T) {
 	}
 }
 
+// Tightening an event must cancel waitlisted rows too: a waitlisted
+// guest who loses access must not be promoted into the event later.
+func TestTighteningCancelsWaitlistedGuest(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID),
+		map[string]any{"capacity": 1, "waitlistEnabled": true}, http.StatusOK)
+
+	// A group member takes the one seat.
+	mem := newTestUser(t, app, "mem", "password1234", models.RoleMember)
+	addMemberEmail(t, admin, gid, mem.Email)
+	memC := loginAPI(t, app, "mem", "password1234")
+	register(t, memC, ev.ID)
+
+	// A guest lands on the waitlist.
+	anon := anonClient(t, app, "10.4.4.9")
+	reg, _ := guestConfirm(t, app, anon, ev.ID, "Willa Guest", "willa@example.com", false)
+	if reg.Status != models.RegWaitlisted {
+		t.Fatalf("guest status = %q, want waitlisted", reg.Status)
+	}
+	u := guestUser(t, app, "willa@example.com")
+	if regCount(app, &u, ev.ID) != 1 {
+		t.Fatal("expected one waitlisted guest registration")
+	}
+
+	// Tightening to invite-only cancels the waitlisted guest row and
+	// tells them; the member's seat is untouched.
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID),
+		map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, http.StatusOK)
+	if regCount(app, &u, ev.ID) != 0 || regCount(app, mem, ev.ID) != 1 {
+		t.Fatalf("after tightening: guest %d, member %d", regCount(app, &u, ev.ID), regCount(app, mem, ev.ID))
+	}
+	var n int64
+	app.DB.Model(&models.Notification{}).Where("user_id = ? AND kind = ?", u.ID, notify.RegistrationCancelled).Count(&n)
+	if n != 1 {
+		t.Fatalf("guest cancellation notices: %d, want 1", n)
+	}
+}
+
+// A promoted guest must never get the group's name, place, or link:
+// the guest is a nil viewer in the notice builders, like guestDisplay.
+func TestPromotedGuestEmailHidesPrivateGroup(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Hidden Care", models.VisibilityPrivate)
+	if err := app.DB.Model(&models.Group{}).Where("id = ?", gid).Update("location", "12 Elm St").Error; err != nil {
+		t.Fatal(err)
+	}
+	ev := scheduleGroupEvent(t, admin, gid, "Open House")
+	// Empty event location: with the bug, the group fallback place leaks.
+	if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Update("location", "").Error; err != nil {
+		t.Fatal(err)
+	}
+	// Open the event so guests can register, then cap it at one seat.
+	setVisibility(t, admin, ev.ID, models.VisibilityPublic, "", http.StatusOK)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID),
+		map[string]any{"capacity": 1, "waitlistEnabled": true}, http.StatusOK)
+
+	mem := newTestUser(t, app, "mem", "password1234", models.RoleMember)
+	addMemberEmail(t, admin, gid, mem.Email)
+	memC := loginAPI(t, app, "mem", "password1234")
+	register(t, memC, ev.ID)
+
+	anon := anonClient(t, app, "10.4.4.10")
+	reg, _ := guestConfirm(t, app, anon, ev.ID, "Gail Guest", "gail@example.com", false)
+	if reg.Status != models.RegWaitlisted {
+		t.Fatalf("guest status = %q, want waitlisted", reg.Status)
+	}
+
+	// The member declines; the guest is promoted and emailed.
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", ev.ID).First(&occ)
+	if code, _ := registerAs(memC, ev.ID, occ.OriginalDate, "declined", nil); code != http.StatusOK {
+		t.Fatalf("member decline: %d", code)
+	}
+	u := guestUser(t, app, "gail@example.com")
+	if got := regStatus(t, app, u.ID, occ.ID); got != models.RegGoing {
+		t.Fatalf("guest status after promotion = %q, want going", got)
+	}
+	m := latestEmail(t, app, "gail@example.com")
+	if strings.Contains(m.Subject, "Hidden Care") || strings.Contains(m.Body, "Hidden Care") ||
+		strings.Contains(m.Body, "12 Elm St") || strings.Contains(m.Body, "/groups/") {
+		t.Fatalf("promotion email leaked the group: %q %q", m.Subject, m.Body)
+	}
+	var n models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", u.ID, notify.RegistrationPromoted).Order("id DESC").First(&n).Error; err != nil {
+		t.Fatalf("promotion notice: %v", err)
+	}
+	if n.Link != fmt.Sprintf("/events/%d", ev.ID) {
+		t.Fatalf("promotion link = %q, want /events/%d", n.Link, ev.ID)
+	}
+}
+
+// A pruned guest can't re-enter through the public form; the leader add
+// action is the way back in.
+func TestGuestRemoveThenReconfirm(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+
+	anon := anonClient(t, app, "10.4.4.11")
+	reg, _ := guestConfirm(t, app, anon, ev.ID, "Rita Guest", "rita@example.com", false)
+	if reg.Status != models.RegGoing {
+		t.Fatalf("guest status = %q, want going", reg.Status)
+	}
+	u := guestUser(t, app, "rita@example.com")
+
+	// A leader prunes the guest.
+	apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", ev.ID),
+		map[string]any{"userId": u.ID, "date": guestDate, "note": "no room"}, http.StatusOK)
+	if got := regStatus(t, app, u.ID, reg.OccurrenceID); got != models.RegRemoved {
+		t.Fatalf("after remove: %q, want removed", got)
+	}
+
+	// Re-submitting the public form and confirming is refused.
+	guestSubmit(t, anon, ev.ID, guestBody("Rita Guest", "rita@example.com", true), http.StatusOK)
+	m := latestEmail(t, app, "rita@example.com")
+	token := tokenInEmail(t, m)
+	w := anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": token}, true)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("reconfirm after removal: %d %s", w.Code, w.Body.String())
+	}
+	if got := regStatus(t, app, u.ID, reg.OccurrenceID); got != models.RegRemoved {
+		t.Fatalf("after reconfirm: %q, want removed", got)
+	}
+
+	// The leader add action seats them again.
+	apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/add", ev.ID),
+		map[string]any{"userId": u.ID, "date": guestDate}, http.StatusOK)
+	if got := regStatus(t, app, u.ID, reg.OccurrenceID); got != models.RegGoing {
+		t.Fatalf("after leader add: %q, want going", got)
+	}
+}
+
 // M1.4 acceptance: a guest who later gets an account keeps their
 // registrations (same email, citext), through both the guest_upgrade
 // door and a plain self-signup.
@@ -428,5 +569,155 @@ func TestGuestInvitationUpgradeAndNoMembership(t *testing.T) {
 	}
 	if regCount(app, &after, ev.ID) != 1 {
 		t.Fatal("invitation upgrade lost the guest registration")
+	}
+}
+
+// A guest redeem on a full event waitlists when the waitlist is on, with
+// the position in the response and the confirmation email.
+func TestGuestRedeemOnFullEventWaitlists(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID),
+		map[string]any{"capacity": 1, "waitlistEnabled": true}, http.StatusOK)
+
+	// A member takes the one seat.
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	var g models.Group
+	app.DB.First(&g, gid)
+	addMember(t, app, member, &g, models.MembershipMember)
+	mc := loginAPI(t, app, "member", "password1234")
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", ev.ID).First(&occ)
+	if code, _ := registerAs(mc, ev.ID, occ.OriginalDate, "going", nil); code != http.StatusOK {
+		t.Fatalf("member going: %d", code)
+	}
+
+	anon := anonClient(t, app, "10.4.0.1")
+	guestSubmit(t, anon, ev.ID, guestBody("Gail Guest", "gail@example.com", true), http.StatusOK)
+	token := tokenInEmail(t, latestEmail(t, app, "gail@example.com"))
+	w := anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": token}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirm: %d %s", w.Code, w.Body.String())
+	}
+	var res struct {
+		Registration guestRegistrationJSON `json:"registration"`
+		ManageToken  string                `json:"manageToken"`
+	}
+	decodeJSON(t, w, &res)
+	if res.Registration.Status != models.RegWaitlisted {
+		t.Fatalf("guest status = %q, want waitlisted", res.Registration.Status)
+	}
+	if res.Registration.WaitlistPosition == nil || *res.Registration.WaitlistPosition != 1 {
+		t.Fatalf("waitlist position = %v, want 1", res.Registration.WaitlistPosition)
+	}
+	// The manage page shows the position too.
+	w = anon.do("GET", "/api/v1/guest-registrations/manage/"+res.ManageToken, nil, false)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"waitlistPosition":1`) {
+		t.Fatalf("manage page: %d %s", w.Code, w.Body.String())
+	}
+	// The confirmation email names the waitlist and the position.
+	m := latestEmail(t, app, "gail@example.com")
+	if !strings.Contains(m.Subject, "waitlist") || !strings.Contains(m.Body, "number 1 in line") {
+		t.Fatalf("waitlist confirmation email: %q %q", m.Subject, m.Body)
+	}
+}
+
+// A guest redeem on a full event with the waitlist off creates no user
+// and no registration, and the link dies.
+func TestGuestRedeemOnFullEventWithoutWaitlistCreatesNothing(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID),
+		map[string]any{"capacity": 1, "waitlistEnabled": false}, http.StatusOK)
+
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	var g models.Group
+	app.DB.First(&g, gid)
+	addMember(t, app, member, &g, models.MembershipMember)
+	mc := loginAPI(t, app, "member", "password1234")
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", ev.ID).First(&occ)
+	if code, _ := registerAs(mc, ev.ID, occ.OriginalDate, "going", nil); code != http.StatusOK {
+		t.Fatalf("member going: %d", code)
+	}
+
+	anon := anonClient(t, app, "10.4.0.2")
+	guestSubmit(t, anon, ev.ID, guestBody("Gus Guest", "gus@example.com", true), http.StatusOK)
+	token := tokenInEmail(t, latestEmail(t, app, "gus@example.com"))
+	w := anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": token}, true)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("confirm on full no-waitlist event: %d %s, want 409", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"full":true`) {
+		t.Fatalf("409 body: %s", w.Body.String())
+	}
+	var users int64
+	app.DB.Model(&models.User{}).Where("email = ?", "gus@example.com").Count(&users)
+	var regs int64
+	app.DB.Model(&models.Registration{}).Where("occurrence_id = ?", occ.ID).Count(&regs)
+	if users != 0 || regs != 1 {
+		t.Fatalf("after 409: %d users, %d registrations (want 0 and 1)", users, regs)
+	}
+	// The link is dead: a second redeem fails.
+	w = anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": token}, true)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("reuse of dead link: %d, want 400", w.Code)
+	}
+}
+
+// A promoted guest gets the promotion email at the guest address in the
+// devoutbox, with a working manage link.
+func TestPromotedGuestGetsEmail(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID),
+		map[string]any{"capacity": 1, "waitlistEnabled": true}, http.StatusOK)
+
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	var g models.Group
+	app.DB.First(&g, gid)
+	addMember(t, app, member, &g, models.MembershipMember)
+	mc := loginAPI(t, app, "member", "password1234")
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", ev.ID).First(&occ)
+	if code, _ := registerAs(mc, ev.ID, occ.OriginalDate, "going", nil); code != http.StatusOK {
+		t.Fatalf("member going: %d", code)
+	}
+	anon := anonClient(t, app, "10.4.0.3")
+	guestSubmit(t, anon, ev.ID, guestBody("Gail Guest", "gail@example.com", true), http.StatusOK)
+	token := tokenInEmail(t, latestEmail(t, app, "gail@example.com"))
+	w := anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]string{"token": token}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("guest confirm: %d %s", w.Code, w.Body.String())
+	}
+
+	// The member cancels; the guest is promoted and emailed.
+	if code, _ := registerAs(mc, ev.ID, occ.OriginalDate, "declined", nil); code != http.StatusOK {
+		t.Fatalf("member cancel: %d", code)
+	}
+	m := latestEmail(t, app, "gail@example.com")
+	if !strings.Contains(m.Subject, "You're in") {
+		t.Fatalf("promotion email subject: %q", m.Subject)
+	}
+	manageToken := manageTokenInEmail(t, m)
+	// Fetching the manage page changes nothing; the token still works.
+	w = anon.do("GET", "/api/v1/guest-registrations/manage/"+manageToken, nil, false)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"going"`) {
+		t.Fatalf("manage page after promotion: %d %s", w.Code, w.Body.String())
+	}
+	// Confirming the cancel sets cancelled and the old token then fails.
+	apiDo(t, anon, "POST", "/api/v1/guest-registrations/manage/"+manageToken+"/cancel", nil, http.StatusOK)
+	gu := guestUser(t, app, "gail@example.com")
+	if r := guestRegistrationRow(t, app, gu.ID); r.Status != models.RegCancelled {
+		t.Fatalf("after manage cancel: %q", r.Status)
 	}
 }

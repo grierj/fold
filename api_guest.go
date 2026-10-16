@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fold/internal/audit"
+	"fold/internal/events"
 	foldmail "fold/internal/mail"
 	"fold/internal/policy"
 	"fold/models"
@@ -57,6 +58,9 @@ type guestRegistrationJSON struct {
 	StartsLocal  string `json:"startsLocal"`
 	TZID         string `json:"tzid"`
 	Location     string `json:"location"`
+	// WaitlistPosition is the 1-based waitlist position, set only when
+	// the registration is waitlisted (M1.5).
+	WaitlistPosition *int `json:"waitlistPosition,omitempty"`
 }
 
 // guestDisplay builds the signed-out view of one registration. Group
@@ -230,6 +234,10 @@ func (a *App) guestVerifyLimited(email string, now time.Time) bool {
 // apiConfirmGuestRegistration redeems a verification link. The SPA
 // posts the token, so a mail scanner fetching the link confirms
 // nothing. Everything the redemption creates lands in one transaction.
+// The redemption runs the locked seat path (M1.5): a guest who fits
+// becomes going; on a full event with the waitlist on they become
+// waitlisted; with the waitlist off no user and no registration are
+// created and the link is marked confirmed so it dies.
 func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 	var body struct {
 		Token string `json:"token"`
@@ -242,17 +250,22 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 	var manageRaw, guestEmail string
 	var askedAccount bool
 	var emailed []uint
+	var waitlistPos *int
+	var fullNoWaitlist bool
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var signup models.GuestSignup
 		if err := tx.Where("token_hash = ? AND confirmed_at IS NULL AND expires_at > now()",
 			hashToken(body.Token)).First(&signup).Error; err != nil {
 			return errTokenInvalid
 		}
-		var occ models.EventOccurrence
-		if err := tx.Preload("Event").First(&occ, signup.OccurrenceID).Error; err != nil {
+		occ, err := lockOccurrence(tx, signup.OccurrenceID)
+		if err != nil {
 			return errGuestEventGone
 		}
-		ev := occ.Event
+		var ev models.Event
+		if err := tx.First(&ev, occ.EventID).Error; err != nil {
+			return errGuestEventGone
+		}
 		var grp *models.Group
 		gp := policy.Group{}
 		if ev.GroupID != nil {
@@ -277,6 +290,24 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			// so saying so reveals nothing to a stranger.
 			return errGuestHasAccount
 		}
+		// Seat check under the lock, before anything is created.
+		cap := events.EffectiveCapacity(ev.Capacity, occ.CapacityOverride)
+		used, err := seatsUsed(tx, occ.ID)
+		if err != nil {
+			return err
+		}
+		if cap != nil && used+1 > *cap && !ev.WaitlistEnabled {
+			// No seat and no waitlist: the link dies here (the update
+			// commits), nothing is created, and the page says the
+			// event is full.
+			if err := tx.Model(&models.GuestSignup{}).Where("id = ?", signup.ID).
+				Update("confirmed_at", time.Now().UTC()).Error; err != nil {
+				return err
+			}
+			fullNoWaitlist = true
+			return nil
+		}
+		full := cap != nil && used+1 > *cap
 		// Claim the link atomically: a second redeem of the same token
 		// loses here instead of registering twice.
 		now := time.Now().UTC()
@@ -311,18 +342,39 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			return err
 		}
 		manageRaw = raw
+		status := models.RegGoing
+		var wlAt *time.Time
+		if full {
+			status = models.RegWaitlisted
+			wlAt = &now
+		}
 		reg := models.Registration{UserID: user.ID, OccurrenceID: occ.ID}
+		var prior models.Registration
+		if tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).
+			First(&prior).RowsAffected == 1 && prior.Status == models.RegRemoved {
+			// A pruned guest can't re-enter through the public form;
+			// a leader or host adds them back (mirrors registerLocked).
+			return errRemovedBlocked
+		}
 		err = tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).
-			Attrs(models.Registration{Status: models.RegGoing, Source: models.RegSourceGuestForm}).
+			Attrs(models.Registration{Status: status, Source: models.RegSourceGuestForm}).
 			FirstOrCreate(&reg).Error
 		if err != nil {
 			return err
 		}
-		reg.Status = models.RegGoing
+		reg.Status = status
 		reg.Source = models.RegSourceGuestForm
 		reg.ManageTokenHash = hash
+		reg.WaitlistedAt = wlAt
 		if err := tx.Save(&reg).Error; err != nil {
 			return err
+		}
+		if full {
+			pos, err := waitlistPosition(tx, occ.ID, reg.ID)
+			if err != nil {
+				return err
+			}
+			waitlistPos = &pos
 		}
 		askedAccount = signup.CreateAccount
 		if signup.CreateAccount {
@@ -332,7 +384,8 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			}
 			emailed = ids
 		}
-		display = a.guestDisplay(&reg, &occ, &ev, grp)
+		display = a.guestDisplay(&reg, occ, &ev, grp)
+		display.WaitlistPosition = waitlistPos
 		guestEmail = signup.Email
 		return nil
 	})
@@ -346,8 +399,15 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 	case errors.Is(err, errGuestHasAccount):
 		jsonError(c, http.StatusConflict, "that email already has an account; sign in to register")
 		return
+	case errors.Is(err, errRemovedBlocked):
+		jsonError(c, http.StatusConflict, errRemovedBlocked.Error())
+		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not confirm your registration")
+		return
+	}
+	if fullNoWaitlist {
+		c.JSON(http.StatusConflict, gin.H{"full": true, "message": "This event is full"})
 		return
 	}
 	a.deliverNotificationEmails(emailed)
@@ -386,17 +446,19 @@ func createGuestUpgradeRequest(tx *gorm.DB, signup *models.GuestSignup) ([]uint,
 	return notifyAccountRequested(tx, &req, models.RequestFlags{})
 }
 
-// liveGuestManage finds the registration a manage token controls. The
-// token is the credential. It stops working once the date has passed:
-// there is nothing left to manage, and a bearer link should not
-// outlive its purpose.
-func liveGuestManage(db *gorm.DB, raw string) (*models.Registration, *models.EventOccurrence, *models.Event, *models.Group, error) {
+// liveTokenManage finds the registration a manage token controls. The
+// token is the credential: it serves guests (M1.4) and promoted members
+// (M1.5) through the one manage page and cancel endpoint. It stops
+// working once the date has ended: there is nothing left to manage, and
+// a bearer link should not outlive its purpose (DEC-55).
+func liveTokenManage(db *gorm.DB, raw string) (*models.Registration, *models.EventOccurrence, *models.Event, *models.Group, error) {
 	if raw == "" {
 		return nil, nil, nil, nil, errTokenInvalid
 	}
 	var reg models.Registration
 	if err := db.Preload("Occurrence.Event").
-		Where("manage_token_hash = ? AND source = ?", hashToken(raw), models.RegSourceGuestForm).
+		Where("manage_token_hash = ? AND manage_token_hash <> ?", hashToken(raw), "").
+		Where("status <> ?", models.RegRemoved).
 		First(&reg).Error; err != nil {
 		return nil, nil, nil, nil, errTokenInvalid
 	}
@@ -415,40 +477,78 @@ func liveGuestManage(db *gorm.DB, raw string) (*models.Registration, *models.Eve
 	return &reg, &occ, &ev, grp, nil
 }
 
+// liveGuestManage is the guest-registration entry point to the shared
+// token manage path.
+func liveGuestManage(db *gorm.DB, raw string) (*models.Registration, *models.EventOccurrence, *models.Event, *models.Group, error) {
+	return liveTokenManage(db, raw)
+}
+
 func (a *App) apiGetGuestRegistration(c *gin.Context) {
-	reg, occ, ev, grp, err := liveGuestManage(a.DB, c.Param("token"))
+	reg, occ, ev, grp, err := liveTokenManage(a.DB, c.Param("token"))
 	if err != nil {
 		jsonError(c, http.StatusNotFound, "registration not found")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"registration": a.guestDisplay(reg, occ, ev, grp)})
+	display := a.guestDisplay(reg, occ, ev, grp)
+	if reg.Status == models.RegWaitlisted {
+		if pos, perr := waitlistPosition(a.DB, occ.ID, reg.ID); perr == nil {
+			display.WaitlistPosition = &pos
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"registration": display})
 }
 
 func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 	var display guestRegistrationJSON
+	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		reg, occ, ev, grp, err := liveGuestManage(tx, c.Param("token"))
+		reg, occ, ev, grp, err := liveTokenManage(tx, c.Param("token"))
 		if err != nil {
 			return err
 		}
-		if reg.Status == models.RegGoing || reg.Status == models.RegMaybe {
-			res := tx.Model(&models.Registration{}).
-				Where("id = ? AND status IN ?", reg.ID,
-					[]string{models.RegGoing, models.RegMaybe}).
-				Update("status", models.RegCancelled)
-			if res.Error != nil {
-				return res.Error
+		before := reg.Status
+		cancellable := before == models.RegGoing || before == models.RegMaybe ||
+			before == models.RegWaitlisted
+		if !cancellable {
+			display = a.guestDisplay(reg, occ, ev, grp)
+			return nil
+		}
+		// The occurrence stays locked through the cancel and the
+		// promotion check that follows, so the freed seat cannot be
+		// taken twice (DEC-38).
+		locked, err := lockOccurrence(tx, occ.ID)
+		if err != nil {
+			return err
+		}
+		res := tx.Model(&models.Registration{}).
+			Where("id = ? AND status IN ?", reg.ID,
+				[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).
+			Updates(map[string]any{"status": models.RegCancelled, "waitlisted_at": nil, "promoted_at": nil})
+			// The manage token stays live: cancel is idempotent (a second
+			// POST with the same link is a 200 no-op), and the token can
+			// then only ever show or re-cancel this dead registration.
+			// It still dies at the date end, and any new manage email
+			// rotates it. Removal (not cancel) is what kills the link.
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errTokenInvalid
+		}
+		reg.Status = models.RegCancelled
+		if err := audit.Write(tx, audit.Entry{Action: audit.RegistrationCancelled,
+			TargetType: "event", TargetID: ev.ID,
+			Meta: map[string]any{"userId": reg.UserID, "occurrenceId": occ.ID,
+				"reason": "manage_link"},
+			IP: c.ClientIP()}); err != nil {
+			return err
+		}
+		if before == models.RegGoing {
+			ids, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), nil)
+			if err != nil {
+				return err
 			}
-			if res.RowsAffected == 1 {
-				reg.Status = models.RegCancelled
-				if err := audit.Write(tx, audit.Entry{Action: audit.RegistrationCancelled,
-					TargetType: "event", TargetID: ev.ID,
-					Meta: map[string]any{"userId": reg.UserID, "occurrenceId": occ.ID,
-						"reason": "guest_manage_link"},
-					IP: c.ClientIP()}); err != nil {
-					return err
-				}
-			}
+			emailed = ids
 		}
 		display = a.guestDisplay(reg, occ, ev, grp)
 		return nil
@@ -457,6 +557,7 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "registration not found")
 		return
 	}
+	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{"registration": display})
 }
 
@@ -507,13 +608,23 @@ func (a *App) sendGuestConfirmationEmail(to, manageRaw string,
 	if d.Location != "" {
 		where = "\nWhere: " + d.Location
 	}
+	headline := fmt.Sprintf("You're registered for %s", d.Title)
+	intro := fmt.Sprintf(`You're registered for %s%s at %s, on %s (%s).%s%s`,
+		d.Title, guestWithLine(d), a.siteName(), d.StartsLocal, d.TZID, where, extra)
+	if d.Status == models.RegWaitlisted {
+		headline = fmt.Sprintf("You're on the waitlist for %s", d.Title)
+		intro = fmt.Sprintf(`You're on the waitlist for %s%s at %s, on %s (%s).%s%s`,
+			d.Title, guestWithLine(d), a.siteName(), d.StartsLocal, d.TZID, where, extra)
+		if d.WaitlistPosition != nil {
+			intro += fmt.Sprintf("\n\nYou're number %d in line. We'll email you if a spot opens.", *d.WaitlistPosition)
+		}
+	}
 	return a.Mailer.Send(context.Background(), foldmail.Message{
 		To:      to,
-		Subject: fmt.Sprintf("You're registered for %s", d.Title),
-		Text: fmt.Sprintf(`You're registered for %s%s at %s, on %s (%s).%s%s
+		Subject: headline,
+		Text: intro + fmt.Sprintf(`
 
 Can't come after all? Cancel your registration here:
-%s`,
-			d.Title, guestWithLine(d), a.siteName(), d.StartsLocal, d.TZID, where, extra, link),
+%s`, link),
 	})
 }
