@@ -105,7 +105,7 @@ Everything goes to `$VERIFY_EVIDENCE/ui/` (that is, `/tmp/fold-verify-proof/<RUN
 - When a change alters a control's state (selected chip, pressed button), capture both states. Add the step to the page's feature file rather than trusting one screenshot.
 
 **What passing means:**
-- No new hard failures. Master still fails the 24px check (header links 20px tall, 13px radios, small table buttons) and has one clipped select (`#event-visibility` on Schedule an event at 390): 46 hard failures on Oct 16, 2026. Until PRs 5–7 clear them, run master and the branch and require the branch's failure lines to be a subset of master's. `web/e2e/layout.spec.ts` enforces the same counts in CI through `web/e2e/ui-baseline.json`.
+- `drive-ui.mjs` exits 0: no hard failures on any page or width. Since PR 5 (nav shell) master has none, and `web/e2e/layout.spec.ts` gates the same three checks in CI.
 - `npm run contrast` exits 0.
 - The under-44px count at 390 is not higher than master's.
 - A reviewer has looked at the 390 screenshots of every page the change touched.

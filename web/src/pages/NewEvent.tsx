@@ -136,7 +136,7 @@ export function NewEvent() {
       <p className="text-text-muted mb-6">
         for <span className="font-semibold">{groupName}</span>
       </p>
-      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
         {error && <div className="text-danger text-sm">{error}</div>}
         <div>
           <label className="label" htmlFor="event-title">

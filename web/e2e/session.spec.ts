@@ -10,7 +10,7 @@ test("logout clears the session's data, including through back", async ({ page }
   await page.getByRole("heading", { name: "Invite-only circle" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Invite-only circle" })).toBeVisible();
   // Back to the listing, where Grier was when the stale screen stayed up.
-  await page.getByRole("link", { name: "Fold", exact: true }).click();
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Home" }).click();
   await expect(page.getByRole("heading", { name: "Members-only circle" })).toBeVisible();
   await page.evaluate(() => sessionStorage.setItem("probe", "x"));
   const session = async () => (await page.context().cookies()).find((c) => c.name === "fold-session")?.value;

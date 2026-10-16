@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { BellIcon } from "./icons";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   badgeLabel, badgeText, relativeTime, resolutionText, useBadge, useFeed, type Feed,
 } from "../lib/notifications";
@@ -13,19 +14,6 @@ const MOBILE = "(max-width: 639px)";
 
 function isMobile(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia(MOBILE).matches;
-}
-
-function BellIcon() {
-  return (
-    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth={2}
-        d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"
-      />
-    </svg>
-  );
 }
 
 function CategoryIcon({ category }: { category: Notification["category"] }) {
@@ -368,7 +356,7 @@ export function NotificationBell() {
       <button
         ref={bellRef}
         onClick={() => (isMobile() ? navigate("/notifications") : setOpen((o) => !o))}
-        className="relative text-text-muted hover:text-primary p-2.5 -m-2.5 rounded-full"
+        className="relative flex items-center justify-center min-h-11 min-w-11 text-text-muted hover:text-primary rounded-full"
         aria-label={badgeLabel(badge)}
         aria-expanded={open}
         aria-controls="notif-panel"
@@ -398,7 +386,7 @@ export function NotificationBell() {
               Notifications
             </h2>
             <button
-              className="text-sm text-primary font-semibold hover:underline aria-disabled:text-text-muted aria-disabled:no-underline"
+              className="inline-flex items-center min-h-11 text-sm text-primary font-semibold hover:underline aria-disabled:text-text-muted aria-disabled:no-underline"
               aria-disabled={!ordinaryUnread}
               title="Items waiting on you stay until they're handled"
               onClick={() => ordinaryUnread && feed.readAll()}
@@ -420,5 +408,26 @@ export function NotificationBell() {
       )}
       {toast}
     </div>
+  );
+}
+
+// NotificationTab: the phone tab bar's Notifications tab (UI makeover PR 5),
+// with the same badge as the bell.
+export function NotificationTab({ className }: { className: (a: { isActive: boolean }) => string }) {
+  const { pathname, search } = useLocation();
+  const badge = useBadge(pathname + search);
+  const count = badge.unread + badge.waiting;
+  return (
+    <NavLink to="/notifications" className={className} aria-label={badgeLabel(badge)}>
+      <span className="relative">
+        <BellIcon />
+        {count > 0 && (
+          <span aria-hidden="true" className="absolute -top-1.5 -right-2.5 min-w-5 h-5 px-1 rounded-full bg-primary-hover text-primary-foreground text-xs font-bold flex items-center justify-center ring-2 ring-white">
+            {badgeText(badge)}
+          </span>
+        )}
+      </span>
+      <span aria-hidden="true">Notifications</span>
+    </NavLink>
   );
 }

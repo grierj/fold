@@ -32,7 +32,7 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
     { id: "group-leader", who: "lee", path: `/groups/${room.id}`, ready: heading("Room 201 class") },
     { id: "schedule-event", who: "lee", path: `/groups/${room.id}/events/new`, ready: (p) => p.getByLabel("Time zone").first() },
     { id: "admin", who: "grier", path: "/admin", ready: heading("Admin") },
-    { id: "admin-users", who: "grier", path: "/admin?tab=users", ready: heading("Admin") },
+    { id: "admin-users", who: "grier", path: "/admin?tab=users", ready: (p) => p.getByRole("button", { name: "New user" }) },
     { id: "new-group", who: "grier", path: "/groups/new", ready: (p) => p.getByLabel("Group name") },
     { id: "church-event", who: "grier", path: "/events/new", ready: (p) => p.getByLabel("Time zone").first() },
   ];

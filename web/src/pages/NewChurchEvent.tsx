@@ -95,7 +95,7 @@ export function NewChurchEvent() {
     <div className="max-w-2xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-2">Schedule a church-wide event</h1>
       <p className="text-text-muted mb-6">You are a host. Add another host if someone else should run it.</p>
-      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
         {error && <div className="text-danger text-sm">{error}</div>}
         <div>
           <label className="label" htmlFor="church-event-title">

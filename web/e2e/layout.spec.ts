@@ -5,25 +5,24 @@ import { open, uiPages } from "./ui-pages";
 // @ts-expect-error plain JS module shared with .cursor/skills/verify-ui
 import { measure } from "./ui-measure.mjs";
 
-// Layout and target size (ENFORCEMENT.md C2, C3) at 390, 768 and 1280:
-// no page scrolls sideways. Three counts per page may only fall, never rise
-// (ui-baseline.json; UPDATE_UI_BASELINE=1 rewrites it after a page gets
-// better): selects whose chosen label is cut off (PR #51), controls under
-// 24x24 at any width (WCAG 2.5.8), and controls under 44px tall at 390 (the
-// design goal). Targets count once per kind (element and height), so other
-// specs adding rows to the shared seed don't move the numbers. Master still
-// has some of each; PRs 5-7 bring them to 0.
-const kinds = (ts: { el: string; h: number }[]) => new Set(ts.map((t) => `${t.el}@${t.h}`)).size;
+// Layout and target size (ENFORCEMENT.md C2, C3) at 390, 768 and 1280.
+// Hard gates (PR 5 cleared the last ones): no page scrolls sideways, no
+// control is cut off by an overflow box or the screen edge, no
+// select's chosen label is cut off (PR #51, the event visibility select),
+// and no control is under 24x24 (WCAG 2.5.8; a wrapping or `for` label
+// counts). Controls under 44px tall at 390 are the design goal: their kinds
+// per page may only fall (ui-baseline.json; UPDATE_UI_BASELINE=1 rewrites it
+// after a page gets better). Kinds are element and height, so specs that add
+// rows to the shared seed don't move the numbers.
 const baselineFile = new URL("./ui-baseline.json", import.meta.url);
-type Counts = { clipped: number; under24: number; under44: number };
 type T = { el: string; name: string; w: number; h: number };
-type M = { overflow: number; clipped: { id: string; label: string; text: number; room: number }[]; under24: T[]; under44: T[] };
+type M = { overflow: number; cutOff: { el: string; name: string }[]; clipped: { id: string; label: string; text: number; room: number }[]; under24: T[]; under44: T[] };
+const kinds = (ts: T[]) => new Set(ts.map((t) => `${t.el}@${t.h}`)).size;
 
 test("pages fit, selects show their label, targets are big enough", async ({ page, request }) => {
   test.setTimeout(240_000);
-  const baseline: Record<string, Counts> = JSON.parse(readFileSync(baselineFile, "utf8"));
-  const counts: Record<string, Counts> = {};
-  const found: Record<string, string[]> = {};
+  const baseline: Record<string, number> = JSON.parse(readFileSync(baselineFile, "utf8"));
+  const under44: Record<string, number> = {};
   let who: string | null = null;
   for (const ui of await uiPages(request)) {
     if (ui.who !== who) {
@@ -37,25 +36,17 @@ test("pages fit, selects show their label, targets are big enough", async ({ pag
       const m = (await page.evaluate(measure)) as M;
       const at = `${ui.id} at ${width}px`;
       expect.soft(m.overflow, `${at}: page scrolls sideways`).toBeLessThanOrEqual(0);
-      const c = (counts[ui.id] ??= { clipped: 0, under24: 0, under44: 0 });
-      c.clipped = Math.max(c.clipped, m.clipped.length);
-      c.under24 = Math.max(c.under24, kinds(m.under24));
-      if (width === 390) c.under44 = kinds(m.under44);
-      (found[ui.id] ??= []).push(
-        ...m.clipped.map((x) => `${width}px clipped select #${x.id} "${x.label}" needs ${x.text}px, has ${x.room}px`),
-        ...m.under24.map((t) => `${width}px under 24x24: ${t.el} "${t.name}" ${t.w}x${t.h}`),
-      );
+      expect.soft(m.cutOff.map((c) => `${c.el} "${c.name}"`), `${at}: controls cut off by an overflow box or the screen edge; stack them on phones (see AdminUsers cards) instead of hiding or scrolling them`).toEqual([]);
+      expect.soft(m.clipped.map((c) => `#${c.id} "${c.label}" needs ${c.text}px, has ${c.room}px`), `${at}: clipped select; widen the field on phones or shorten the option`).toEqual([]);
+      expect.soft(m.under24.map((t) => `${t.el} "${t.name}" ${t.w}x${t.h}`), `${at}: targets under 24x24; use components/ui Button sizes, min-h-11 on text actions, or wrap the radio in its label`).toEqual([]);
+      if (width === 390) under44[ui.id] = kinds(m.under44);
     }
   }
   if (process.env.UPDATE_UI_BASELINE) {
-    writeFileSync(baselineFile, JSON.stringify(counts, null, 2) + "\n");
+    writeFileSync(baselineFile, JSON.stringify(under44, null, 2) + "\n");
     return;
   }
-  for (const [id, n] of Object.entries(counts)) {
-    const b = baseline[id] ?? { clipped: 0, under24: 0, under44: 0 };
-    const detail = [...new Set(found[id])].join("\n  ");
-    expect.soft(n.clipped, `${id}: more clipped selects than ui-baseline.json (${b.clipped}); widen the field or shorten the option\n  ${detail}`).toBeLessThanOrEqual(b.clipped);
-    expect.soft(n.under24, `${id}: more kinds of target under 24x24 than ui-baseline.json (${b.under24}); use the shared Button/Chip sizes (ENFORCEMENT.md A)\n  ${detail}`).toBeLessThanOrEqual(b.under24);
-    expect.soft(n.under44, `${id} at 390px: more kinds of control under 44px tall than ui-baseline.json (${b.under44}); use the shared Button/Field sizes`).toBeLessThanOrEqual(b.under44);
+  for (const [id, n] of Object.entries(under44)) {
+    expect.soft(n, `${id} at 390px: more kinds of control under 44px tall than ui-baseline.json (${baseline[id] ?? 0}); use the shared Button/Field sizes`).toBeLessThanOrEqual(baseline[id] ?? 0);
   }
 });

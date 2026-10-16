@@ -154,6 +154,12 @@
   input, select, textarea { font-size: max(1rem, 16px); }   /* iOS zoom floor */
   :focus-visible { outline: 2px solid var(--color-focus); outline-offset: 2px; }
   .tabular { font-variant-numeric: tabular-nums; }          /* dates, times, counts */
+  /* A focused field scrolls clear of the sticky header and, on phones, the
+     bottom tab bar (UI makeover PR 5). */
+  html { scroll-padding-top: 5rem; }
+  @media (width < 40rem) {
+    html { scroll-padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
+  }
 }
 
 /* Inter is self-hosted (src/fonts, SIL OFL 1.1 in src/fonts/OFL.txt).
@@ -163,6 +169,11 @@
   input[type="radio"],
   input[type="checkbox"] {
     accent-color: var(--color-primary);
+  }
+  /* A radio or checkbox inside its label gets a 44px tap row (PR 5). */
+  label:has(> input[type="radio"]),
+  label:has(> input[type="checkbox"]) {
+    min-height: 2.75rem;
   }
   button:not(:disabled),
   [role="button"]:not(:disabled) {

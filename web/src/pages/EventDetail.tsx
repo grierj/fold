@@ -118,10 +118,10 @@ export function EventDetail() {
       {canManage && (
         <div className="mt-4">
           <div className="flex flex-wrap items-center gap-4">
-            <button type="button" className="text-sm text-primary font-medium" onClick={() => setEditing((v) => !v)}>
+            <button type="button" className="inline-flex items-center min-h-11 text-sm text-primary font-medium" onClick={() => setEditing((v) => !v)}>
               {editing ? "Close editor" : event.recurrenceRule ? "Edit series" : "Edit event"}
             </button>
-            <button type="button" className="text-sm text-danger hover:text-danger-hover font-medium" onClick={() => void deleteEvent()}>
+            <button type="button" className="inline-flex items-center min-h-11 text-sm text-danger hover:text-danger-hover font-medium" onClick={() => void deleteEvent()}>
               Delete event
             </button>
           </div>
@@ -258,7 +258,7 @@ function DateRow({
           <button
             type="button"
             onClick={() => setEditingDate((v) => !v)}
-            className="text-sm text-primary font-medium"
+            className="inline-flex items-center min-h-11 text-sm text-primary font-medium"
           >
             Edit this date
           </button>
@@ -266,7 +266,7 @@ function DateRow({
             type="button"
             onClick={() => void cancel()}
             disabled={cancelling}
-            className="text-sm text-danger hover:text-danger-hover font-medium"
+            className="inline-flex items-center min-h-11 text-sm text-danger hover:text-danger-hover font-medium"
           >
             {cancelling ? "Cancelling…" : "Cancel"}
           </button>
