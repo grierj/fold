@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../auth";
+import { ERROR_COPY, errorText } from "../lib/errors";
 import { ApiError } from "../api";
 
 export function Login() {
@@ -29,13 +30,9 @@ export function Login() {
       await login(email, password);
       navigate(from, { replace: true });
     } catch (e) {
-      setError(
-        e instanceof ApiError && e.status === 401
-          ? "Invalid email or password."
-          : e instanceof Error
-            ? e.message
-            : "Login failed."
-      );
+      // A 401 here is a wrong email or password (the API says
+      // bad_credentials); a 429 is the sign-in lockout, which stays visible.
+      setError(e instanceof ApiError && e.status === 401 ? ERROR_COPY.bad_credentials : errorText(e, "We couldn't sign you in."));
     } finally {
       setBusy(false);
     }

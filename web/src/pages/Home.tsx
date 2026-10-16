@@ -5,6 +5,8 @@ import type { EventOccurrence, GroupSummary } from "../types";
 import { DateBadge } from "../components/DateBadge";
 import { GroupCard } from "../components/GroupCard";
 import { formatTime } from "../lib/when";
+import { errorText } from "../lib/errors";
+import { ErrorNotice } from "../components/ErrorNotice";
 
 function tagsFromParams(params: URLSearchParams): string[] {
   const seen = new Set<string>();
@@ -76,7 +78,7 @@ export function Home() {
         setGroups(groups);
       })
       .catch((e) => {
-        if (alive) setError(e instanceof Error ? e.message : "Failed to load groups");
+        if (alive) setError(errorText(e, "We couldn't load the groups."));
       })
       .finally(() => {
         if (alive) setLoading(false);
@@ -220,7 +222,7 @@ export function Home() {
       <section className="max-w-6xl mx-auto px-4 py-8">
         <h2 className="text-2xl font-bold mb-4">Church Groups</h2>
         {loading && <div className="text-text-muted">Loading groups…</div>}
-        {error && <div className="text-danger">{error}</div>}
+        {error && <ErrorNotice message={error} onRetry={() => window.location.reload()} />}
         {!loading && !error && groups.length === 0 && (
           <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
             {selectedTags.length > 0 && debounced.trim() ? (

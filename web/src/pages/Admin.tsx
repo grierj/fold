@@ -6,6 +6,7 @@ import type { AccountRequest, GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
+import { errorText } from "../lib/errors";
 
 type AdminTab = "approvals" | "groups" | "users" | "invite";
 
@@ -31,7 +32,7 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => voi
       );
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Approve failed");
+      setError(errorText(e, "We couldn't approve that."));
     } finally {
       setBusy(false);
     }
@@ -45,7 +46,7 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => voi
       await Admin.reject(group.id);
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Reject failed");
+      setError(errorText(e, "We couldn't reject that."));
     } finally {
       setBusy(false);
     }
@@ -105,7 +106,7 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
       await Admin.deleteGroup(group.id);
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Delete failed");
+      setError(errorText(e, "We couldn't delete that."));
     } finally {
       setBusy(false);
     }
@@ -118,7 +119,7 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
       await Admin.rejectDeletion(group.id);
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not keep the group");
+      setError(errorText(e, "We couldn't keep the group."));
     } finally {
       setBusy(false);
     }
@@ -168,7 +169,7 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
       }
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "That didn't work");
+      setError(errorText(e, "That didn't work."));
     } finally {
       setBusy(false);
     }
@@ -241,7 +242,7 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
       setRequests(accounts.requests);
       onCount(pending.groups.length + requested.groups.length + accounts.requests.length);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load approval queue");
+      setError(errorText(e, "We couldn't load the approval queue."));
     } finally {
       setLoading(false);
     }
@@ -304,7 +305,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
       const { members } = await Groups.members(group.id);
       setMembers(members);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load members");
+      setError(errorText(e, "We couldn't load the members."));
     }
   }, [group.id]);
 
@@ -328,7 +329,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
       setAddUserId("");
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Add failed");
+      setError(errorText(e, "We couldn't add that person."));
     } finally {
       setBusy(false);
     }
@@ -342,7 +343,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
       await AdminGroups.removeMember(group.id, m.id);
       await load();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Remove failed");
+      setError(errorText(e, "We couldn't remove that."));
     } finally {
       setBusy(false);
     }
@@ -436,7 +437,7 @@ function GroupsTab({ users }: { users: User[] }) {
         const { groups } = await AdminGroups.list();
         setGroups(groups);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load groups");
+        setError(errorText(e, "We couldn't load the groups."));
       } finally {
         setLoading(false);
       }
@@ -452,7 +453,7 @@ function GroupsTab({ users }: { users: User[] }) {
       setGroups((prev) => prev.filter((x) => x.id !== g.id));
       setOpenMembers((v) => (v === g.id ? null : v));
     } catch (e) {
-      setDeleteError(e instanceof Error ? e.message : "Delete failed");
+      setDeleteError(errorText(e, "We couldn't delete that."));
     } finally {
       setDeletingId(null);
     }
@@ -574,7 +575,7 @@ function UserForm({
       }
       onSaved();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Save failed");
+      setError(errorText(err, "We couldn't save your changes."));
     } finally {
       setBusy(false);
     }
@@ -657,7 +658,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
       await AdminUsers.resetPassword(user.id, password);
       setDone(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Reset failed");
+      setError(errorText(err, "We couldn't reset the password."));
     } finally {
       setBusy(false);
     }
@@ -713,7 +714,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
       await AdminUsers.update(u.id, { status });
       reload();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Update failed");
+      setError(errorText(e, "We couldn't update that."));
     } finally {
       setBusy(false);
     }
@@ -883,7 +884,7 @@ function ChurchTimezone() {
       setSaved(r.timezone);
       setOk(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save the time zone");
+      setError(errorText(err, "We couldn't save the time zone."));
     } finally {
       setBusy(false);
     }
@@ -951,7 +952,7 @@ function InviteTab() {
       setName("");
       setGroupId("");
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not send the invitation.");
+      setError(errorText(e, "We couldn't send the invitation."));
     } finally {
       setBusy(false);
     }
@@ -1049,7 +1050,7 @@ function SelfSignupSetting() {
       setSaved(r.selfSignup);
       setOk(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save the setting");
+      setError(errorText(err, "We couldn't save that setting."));
     } finally {
       setBusy(false);
     }

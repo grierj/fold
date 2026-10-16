@@ -4,6 +4,8 @@ import { Groups } from "../api";
 import type { GroupSummary } from "../types";
 import { GroupCard } from "../components/GroupCard";
 import { useAuth } from "../auth";
+import { errorText } from "../lib/errors";
+import { ErrorNotice } from "../components/ErrorNotice";
 
 // The server exposes GET /api/v1/me/groups for this.
 export function MyGroups() {
@@ -27,7 +29,7 @@ export function MyGroups() {
           setGroups(groups);
         }
       } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : "Failed to load your groups");
+        if (alive) setError(errorText(e, "We couldn't load your groups."));
       } finally {
         if (alive) setLoading(false);
       }
@@ -54,7 +56,7 @@ export function MyGroups() {
     <div className="max-w-6xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">My groups</h1>
       {loading && <div className="text-text-muted">Loading…</div>}
-      {error && <div className="text-danger">{error}</div>}
+      {error && <ErrorNotice message={error} onRetry={() => window.location.reload()} />}
       {!loading && !error && groups.length === 0 && (
         <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
           You haven't joined any groups yet.{" "}

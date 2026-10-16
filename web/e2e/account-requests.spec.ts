@@ -110,5 +110,5 @@ test("set-password page explains bad and missing links", async ({ page }) => {
   await page.getByLabel("Password", { exact: true }).fill("longenoughpassword");
   await page.getByLabel("Confirm password").fill("longenoughpassword");
   await page.getByRole("button", { name: "Set password" }).click();
-  await expect(page.getByText(/invalid or has expired/i)).toBeVisible();
+  await expect(page.getByText(/expired or was already used/i)).toBeVisible();
 });

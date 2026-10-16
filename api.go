@@ -215,10 +215,6 @@ type eventJSON struct {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func jsonError(c *gin.Context, code int, msg string) {
-	c.JSON(code, gin.H{"error": msg})
-}
-
 // sessionVersion reads the password generation stored at login.
 // A cookie issued before this field existed has no value and counts as 0.
 func sessionVersion(s *sessions.Session) int {

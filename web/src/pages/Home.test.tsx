@@ -23,7 +23,8 @@ const all = [
 // Same rules as the API: search narrows, and any selected tag matches (OR,
 // case-insensitive).
 const { list } = vi.hoisted(() => ({ list: vi.fn() }));
-vi.mock("../api", () => ({
+vi.mock("../api", async (importActual) => ({
+  ApiError: (await importActual<typeof import("../api")>()).ApiError,
   Groups: { list },
   Events: { listOpen: () => Promise.resolve({ events: [] }) },
 }));
@@ -124,5 +125,19 @@ describe("Home tag filters", () => {
     expect(
       await screen.findByText("No groups found. Try a different search or start a new group.")
     ).toBeInTheDocument();
+  });
+});
+
+// AUDIT: the home page once showed the server's raw "boom".
+describe("Home load failure", () => {
+  it("says what happened in plain words, never the server's text", async () => {
+    const { ApiError } = await vi.importActual<typeof import("../api")>("../api");
+    list.mockReset();
+    list.mockRejectedValue(new ApiError(500, "boom", { error: "server error", code: "server_error" }));
+    renderHome();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("We couldn't load the groups. Please try again in a minute.");
+    expect(alert).not.toHaveTextContent("boom");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 });

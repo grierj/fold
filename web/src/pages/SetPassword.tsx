@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { AccountRequests, ApiError } from "../api";
+import { AccountRequests } from "../api";
 import { useAuth } from "../auth";
+import { errorCode, errorText } from "../lib/errors";
 
 // Set a first password from an approved account request (M1.3). Adults
 // sign in at once; teens stay waiting for consent (M1.10) and see that
@@ -35,11 +36,9 @@ export function SetPassword() {
       navigate("/", { replace: true });
     } catch (err) {
       setError(
-        err instanceof ApiError && err.status === 400
-          ? "That link is invalid or has expired. Ask your church office for a new one."
-          : err instanceof Error
-            ? err.message
-            : "Something went wrong."
+        errorCode(err) === "link_expired"
+          ? "This link has expired or was already used. Ask your church office for a new one."
+          : errorText(err, "We couldn't set your password.")
       );
     } finally {
       setBusy(false);

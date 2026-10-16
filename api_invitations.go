@@ -125,7 +125,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 				TargetType: "user", TargetID: me.ID,
 				Meta: map[string]any{"email": email, "limit": leaderInviteDailyLimit},
 				IP:   c.ClientIP()})
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": "invitation limit reached (20 per day)"})
+			jsonError(c, http.StatusTooManyRequests, "invitation limit reached (20 per day)")
 			return
 		}
 	}

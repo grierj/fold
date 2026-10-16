@@ -7,6 +7,7 @@ import { Groups } from "../api";
 import { useAuth } from "../auth";
 import { WEEKDAYS, weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
+import { errorText } from "../lib/errors";
 
 export function NewEvent() {
   const { id } = useParams<{ id: string }>();
@@ -94,7 +95,7 @@ export function NewEvent() {
       });
       navigate(`/groups/${id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to schedule event");
+      setError(errorText(err, "We couldn't schedule the event."));
     } finally {
       setBusy(false);
     }

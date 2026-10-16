@@ -95,6 +95,14 @@ Postgres (`login_throttles`, see `api_auth.go`).
   `.btn-secondary`, `.btn-danger`, `.btn-danger-outline`, `.btn-ghost`,
   `.input`, `.label`, `.chip` (selected via `aria-pressed`). The setup and
   dev-outbox templates link the same built CSS; there is no `static/`.
+- Errors (DEC-61): every API error carries a stable `code` next to its
+  English `error`. `jsonError` derives it from the message (`errorCodes` in
+  `api_errors.go`) or the status; use `jsonErrorCode` for a message built at
+  run time. A 5xx never sends its detail (it is logged). Pages show
+  `errorText(e, "We couldn't …")` or `<ErrorNotice>` from
+  `web/src/lib/errors.ts`, which holds all error wording, and never read an
+  error's `.message`. A new code needs a line in `ERROR_COPY`: what happened
+  and what to do next. DEC-52 still decides what is never an error at all.
 - Every page passes axe with no serious or critical issues
   (`web/e2e/a11y.spec.ts`; setup in `seed.setup.ts`). Label every field
   with `htmlFor`/`id`.
@@ -283,6 +291,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Logout leaves nothing on screen or in cache | `no-store` on API and shell; `TestAPIResponsesAreNoStore` (`api_test.go`), `TestLogoutEndsSession`, `web/e2e/session.spec.ts` |
 | Public forms never show a rate limit or reveal an account (DEC-52); only sign-in and a leader's invitation limit answer 429 | `TestOnlyLoginAndInvitesAnswer429` (`guards_test.go`); `TestGuestExistingEmailHintIsRateLimited`, `TestPasswordResetSkipsGuests` |
 | Colors come from theme tokens: no hex outside `@theme`, no Tailwind palette or scale-step classes (DEC-60) | `TestColorsComeFromThemeTokens` (`guards_test.go`); a line that must keep a hex says why with `color-ok:` |
+| Pages never show the server's error text; every API error code has wording | `TestPagesNeverShowServerErrorText`, `TestWebErrorCopyCoversEveryCode`, `TestErrorCodesKeysAreUsed` (`guards_test.go`, `api_errors_test.go`); `web/e2e/friendly-errors.spec.ts` |
 | Main pages have no serious or critical axe issues at 390 and 1280 px | `web/e2e/a11y.spec.ts`, setup page in `web/e2e/seed.setup.ts` (run by `make e2e`) |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (`guards_test.go`, run by `make test` in CI); its error names the file to move to |
 | Seat counts never overrun under concurrent registration | `TestConcurrentGoingRespectsCapacity` (`api_registrations_test.go`): 50 real requests race for 10 seats; exactly 10 going and 40 waitlisted |

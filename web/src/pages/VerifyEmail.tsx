@@ -44,7 +44,7 @@ export function VerifyEmail() {
         )}
         {state === "error" && (
           <>
-            <p className="text-sm">That link is invalid or has expired.</p>
+            <p className="text-sm">This link has expired or was already used. Start the email change again from your profile.</p>
             <p className="mt-4 text-sm text-text-muted">
               Change your email again from your{" "}
               <Link to="/profile" className="text-primary font-semibold">

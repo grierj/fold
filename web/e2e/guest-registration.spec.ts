@@ -45,12 +45,12 @@ test("confirm and manage pages explain a bad link", async ({ page }) => {
   await page.goto("/guest/confirm?token=bogus");
   await expect(page.getByRole("heading", { name: "Confirm your registration" })).toBeVisible();
   await page.getByRole("button", { name: "Confirm my registration" }).click();
-  await expect(page.getByText(/invalid or has expired/i)).toBeVisible();
+  await expect(page.getByText(/expired or was already used/i)).toBeVisible();
 
   await page.goto("/guest/confirm");
   await expect(page.getByText("This page needs the link from your email.")).toBeVisible();
 
   await page.goto("/guest/manage/bogus");
   await expect(page.getByRole("heading", { name: "Your guest registration" })).toBeVisible();
-  await expect(page.getByText(/registration not found/i)).toBeVisible();
+  await expect(page.getByText(/expired or was already used/i)).toBeVisible();
 });

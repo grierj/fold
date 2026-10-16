@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { ApiError, Guests } from "../api";
 import { formatWhen } from "../lib/when";
 import type { GuestRegistration } from "../types";
+import { errorText } from "../lib/errors";
 
 // Redeem a guest registration verification link (M1.4). Opening the
 // page confirms nothing: the button posts the token, so a mail
@@ -25,7 +26,7 @@ export function GuestConfirm() {
       if (err instanceof ApiError && err.data["full"] === true) {
         setFull(true);
       } else {
-        setError(err instanceof ApiError ? err.message : "That link is invalid or has expired.");
+        setError(errorText(err, "We couldn't confirm your registration."));
       }
     } finally {
       setBusy(false);

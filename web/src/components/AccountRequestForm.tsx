@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { ApiError, type AccountRequestInput } from "../api";
+import { type AccountRequestInput } from "../api";
 import type { AgeBand } from "../types";
+import { errorText } from "../lib/errors";
 
 // The account-request form shared by self-signup (/join) and a member's
 // invite-a-friend (M1.3, 5.10). It carries the age gate (DEC-8): under
@@ -43,7 +44,7 @@ export function AccountRequestForm({
       });
       setDone(res.message);
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Something went wrong.");
+      setError(errorText(err));
     } finally {
       setBusy(false);
     }

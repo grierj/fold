@@ -190,7 +190,9 @@ func needSuccessors(c *gin.Context, err error) bool {
 	if !errors.As(err, &need) {
 		return false
 	}
-	c.JSON(http.StatusBadRequest, gin.H{"error": need.Error(), "groups": need.groups})
+	body := errorBody(http.StatusBadRequest, need.Error())
+	body["groups"] = need.groups
+	c.JSON(http.StatusBadRequest, body)
 	return true
 }
 

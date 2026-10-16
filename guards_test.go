@@ -263,7 +263,8 @@ func TestTestLayoutGuardCatchesMilestoneFiles(t *testing.T) {
 // form; it answers as usual and logs. Only sign-in (an actionable,
 // familiar lockout) and a signed-in leader's invitation limit answer 429.
 func TestOnlyLoginAndInvitesAnswer429(t *testing.T) {
-	allowed := map[string]bool{"api_auth.go": true, "api_invitations.go": true}
+	// api_errors.go only names the code for a 429; it sends none itself.
+	allowed := map[string]bool{"api_auth.go": true, "api_invitations.go": true, "api_errors.go": true}
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -383,5 +384,61 @@ func TestColorGuardCatchesHardCodedColors(t *testing.T) {
 		if v := colorViolations(path, src); len(v) != 0 {
 			t.Errorf("%s flagged: %v", path, v)
 		}
+	}
+}
+
+// Pages show errors through errorText (web/src/lib/errors.ts), which words
+// the API's code; the server's English never reaches the screen (DEC-61,
+// UI makeover PR 4). Reading .message on a caught error anywhere else
+// fails. errors.ts itself and tests are exempt.
+var errorMessageRe = regexp.MustCompile(`\b(e|err|error|ex|caught|reason)\.message\b`)
+
+func errorMessageViolations(path, src string) []string {
+	var bad []string
+	for i, line := range strings.Split(src, "\n") {
+		if errorMessageRe.MatchString(line) {
+			bad = append(bad, path+":"+itoa(uint(i+1))+": "+strings.TrimSpace(line))
+		}
+	}
+	return bad
+}
+
+func TestPagesNeverShowServerErrorText(t *testing.T) {
+	var bad []string
+	err := filepath.WalkDir("web/src", func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !(strings.HasSuffix(p, ".ts") || strings.HasSuffix(p, ".tsx")) || strings.Contains(p, ".test.") || filepath.ToSlash(p) == "web/src/lib/errors.ts" {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		bad = append(bad, errorMessageViolations(filepath.ToSlash(p), string(b))...)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bad) > 0 {
+		t.Fatalf("show errors with errorText(e, \"We couldn't ...\") from web/src/lib/errors.ts, not the server's text:\n%s", strings.Join(bad, "\n"))
+	}
+}
+
+// The guard catches the pattern this PR replaced (the home page's "boom").
+func TestErrorTextGuardCatchesRawMessages(t *testing.T) {
+	for _, src := range []string{
+		`setError(e instanceof Error ? e.message : "Failed to load groups");`,
+		`setError(err.message);`,
+		`alert(error.message)`,
+	} {
+		if len(errorMessageViolations("web/src/pages/Home.tsx", src)) == 0 {
+			t.Errorf("%q passed the error-text check", src)
+		}
+	}
+	if v := errorMessageViolations("web/src/pages/Admin.tsx", `{request.message && <p>{request.message}</p>}`); len(v) != 0 {
+		t.Errorf("an account request's own message was flagged: %v", v)
 	}
 }

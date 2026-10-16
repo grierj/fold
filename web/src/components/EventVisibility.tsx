@@ -3,6 +3,7 @@ import { ApiError, Events } from "../api";
 import type { Visibility, VisibilityImpact } from "../types";
 import { GroupVisibilityReview } from "./GroupVisibilityReview";
 import { openedEventWarning } from "./EventIntro";
+import { errorText } from "../lib/errors";
 
 const CHOICES: { value: Visibility; label: string }[] = [
   { value: "public", label: "Public — anyone" },
@@ -55,7 +56,7 @@ export function EventVisibilityControl({
           return;
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not check this event");
+        setError(errorText(err, "We couldn't check this event."));
         return;
       }
     }
@@ -75,7 +76,7 @@ export function EventVisibilityControl({
         setError("Registrations changed. Please review again.");
         return;
       }
-      setError(err instanceof Error ? err.message : "Could not update visibility");
+      setError(errorText(err, "We couldn't change who can see this."));
     } finally {
       setBusy(false);
     }
