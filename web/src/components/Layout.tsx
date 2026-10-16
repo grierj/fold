@@ -3,7 +3,7 @@ import { Link, NavLink } from "react-router-dom";
 import { Site } from "../api";
 import { useAuth } from "../auth";
 import { Avatar } from "./Avatar";
-import { AdminIcon, GroupsIcon, HomeIcon, MeIcon, PlusIcon } from "./icons";
+import { GroupsIcon, HomeIcon, MeIcon, PlusIcon } from "./icons";
 import { NotificationBell, NotificationTab } from "./Notifications";
 
 // The app shell (UI makeover PR 5): a header with the church's name, a top
@@ -49,15 +49,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <NavLink to="/groups/new" className={topLink}>Start a group</NavLink>
                   {isAdmin && <NavLink to="/admin" className={topLink}>Admin</NavLink>}
                 </div>
-                {/* On phones, Start a group and Admin are header icons; the rest are tabs. */}
-                <NavLink to="/groups/new" className={(a) => `sm:hidden ${iconLink(a)}`} aria-label="Start a group">
+                {/* On phones, New group is a labeled header link, Admin is a row on
+                    the Me page, and the rest are tabs (PR #65 review F2). */}
+                <NavLink to="/groups/new" className={(a) => `sm:hidden gap-1 px-2 text-sm font-medium ${iconLink(a)}`}>
                   <PlusIcon />
+                  New group
                 </NavLink>
-                {isAdmin && (
-                  <NavLink to="/admin" className={(a) => `sm:hidden ${iconLink(a)}`} aria-label="Admin">
-                    <AdminIcon />
-                  </NavLink>
-                )}
                 <div className="hidden sm:flex items-center gap-2">
                   <NotificationBell />
                   <Link to="/profile" className="flex items-center gap-2 min-h-11 px-1 text-text-muted hover:text-primary" title="Your profile">
@@ -88,7 +85,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <main className={`flex-1 ${signedIn ? "pb-[calc(3.5rem+env(safe-area-inset-bottom))] sm:pb-0" : ""}`}>{children}</main>
       <footer className={`bg-surface border-t border-border mt-12 ${signedIn ? "mb-[calc(3.5rem+env(safe-area-inset-bottom))] sm:mb-0" : ""}`}>
         <div className="max-w-6xl mx-auto px-4 py-6 text-sm text-text-muted">
-          {site && site !== "Fold" ? `${site} · powered by Fold` : "Fold — gather your church community."}
+          {site && site !== "Fold" ? "Powered by Fold" : "Fold — gather your church community."}
         </div>
       </footer>
       {signedIn && (

@@ -47,3 +47,22 @@ test("desktop keeps a top bar and no tab bar", async ({ page }) => {
   await expect(main.getByRole("link", { name: "Start a group" })).toBeVisible();
   await signOut(page);
 });
+
+// PR #65 review F2/F3: phone header words, Admin on the Me page, and no
+// Disable or Delete on your own row (the server refuses both anyway).
+test("an admin on a phone reaches Admin from Me and can't disable or delete themselves", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await signIn(page, "grier");
+  await expect(page.getByRole("banner").getByRole("link", { name: "New group" })).toBeVisible();
+  await expect(page.getByRole("banner").getByRole("link", { name: "Admin" })).toBeHidden();
+  await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: "Me", exact: true }).click();
+  await page.getByRole("main").getByRole("link", { name: "Admin" }).click();
+  await page.getByRole("tab", { name: "Users" }).or(page.getByRole("button", { name: "Users" })).first().click();
+  const own = page.getByRole("row").filter({ hasText: "grier@" });
+  await expect(own.getByRole("button", { name: "Edit" })).toBeVisible();
+  await expect(own.getByRole("button", { name: "Disable" })).toHaveCount(0);
+  await expect(own.getByRole("button", { name: "Delete" })).toHaveCount(0);
+  const other = page.getByRole("row").filter({ hasText: "sam@" }).first();
+  await other.scrollIntoViewIfNeeded();
+  for (const name of ["Edit", "Password", "Disable", "Delete"]) await expect(other.getByRole("button", { name })).toBeInViewport({ ratio: 1 });
+});

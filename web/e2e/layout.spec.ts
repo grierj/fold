@@ -7,6 +7,7 @@ import { measure } from "./ui-measure.mjs";
 
 // Layout and target size (ENFORCEMENT.md C2, C3) at 390, 768 and 1280.
 // Hard gates (PR 5 cleared the last ones): no page scrolls sideways, no
+// control is cut off by an overflow box or the screen edge, no
 // select's chosen label is cut off (PR #51, the event visibility select),
 // and no control is under 24x24 (WCAG 2.5.8; a wrapping or `for` label
 // counts). Controls under 44px tall at 390 are the design goal: their kinds
@@ -15,7 +16,7 @@ import { measure } from "./ui-measure.mjs";
 // rows to the shared seed don't move the numbers.
 const baselineFile = new URL("./ui-baseline.json", import.meta.url);
 type T = { el: string; name: string; w: number; h: number };
-type M = { overflow: number; clipped: { id: string; label: string; text: number; room: number }[]; under24: T[]; under44: T[] };
+type M = { overflow: number; cutOff: { el: string; name: string }[]; clipped: { id: string; label: string; text: number; room: number }[]; under24: T[]; under44: T[] };
 const kinds = (ts: T[]) => new Set(ts.map((t) => `${t.el}@${t.h}`)).size;
 
 test("pages fit, selects show their label, targets are big enough", async ({ page, request }) => {
@@ -35,6 +36,7 @@ test("pages fit, selects show their label, targets are big enough", async ({ pag
       const m = (await page.evaluate(measure)) as M;
       const at = `${ui.id} at ${width}px`;
       expect.soft(m.overflow, `${at}: page scrolls sideways`).toBeLessThanOrEqual(0);
+      expect.soft(m.cutOff.map((c) => `${c.el} "${c.name}"`), `${at}: controls cut off by an overflow box or the screen edge; stack them on phones (see AdminUsers cards) instead of hiding or scrolling them`).toEqual([]);
       expect.soft(m.clipped.map((c) => `#${c.id} "${c.label}" needs ${c.text}px, has ${c.room}px`), `${at}: clipped select; widen the field on phones or shorten the option`).toEqual([]);
       expect.soft(m.under24.map((t) => `${t.el} "${t.name}" ${t.w}x${t.h}`), `${at}: targets under 24x24; use components/ui Button sizes, min-h-11 on text actions, or wrap the radio in its label`).toEqual([]);
       if (width === 390) under44[ui.id] = kinds(m.under44);

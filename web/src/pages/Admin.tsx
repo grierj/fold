@@ -701,6 +701,9 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
 }
 
 function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
+  // Your own row has no Disable or Delete: the server refuses both
+  // ("you cannot disable/delete your own account"), so don't offer them.
+  const { user: me } = useAuth();
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [resetId, setResetId] = useState<number | null>(null);
@@ -738,20 +741,22 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
           onCancel={() => setCreating(false)}
         />
       )}
+      {/* Below md each user is a stacked card, so every action shows (PR #65
+          review F1); from md up it's a table. */}
       <div className="bg-surface rounded-lg border border-border overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
+        <table className="block md:table w-full text-sm">
+          <thead className="hidden md:table-header-group">
             <tr className="text-left text-text-muted border-b border-border">
               <th className="px-4 py-3 font-medium">User</th>
-              <th className="px-4 py-3 font-medium hidden md:table-cell">Contact</th>
+              <th className="px-4 py-3 font-medium hidden lg:table-cell">Contact</th>
               <th className="px-4 py-3 font-medium">Role</th>
               <th className="px-4 py-3 font-medium text-right">Actions</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-border">
+          <tbody className="block md:table-row-group divide-y divide-border">
             {users.map((u) => (
-              <tr key={u.id}>
-                <td className="px-4 py-3">
+              <tr key={u.id} className="block md:table-row">
+                <td className="block md:table-cell px-4 pt-3 md:py-3">
                   <div className="flex items-center gap-2">
                     <Avatar
                       url={u.avatarUrl || undefined}
@@ -785,11 +790,11 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     />
                   )}
                 </td>
-                <td className="px-4 py-3 text-text-muted hidden md:table-cell">
+                <td className="px-4 py-3 text-text-muted hidden lg:table-cell">
                   {u.email || "—"}
                   {u.phone ? <div className="text-xs">{u.phone}</div> : null}
                 </td>
-                <td className="px-4 py-3">
+                <td className="block md:table-cell px-4 pt-2 md:py-3">
                   <span
                     className={`inline-block rounded-full px-2 py-0.5 text-xs font-semibold ${
                       u.role === "admin" ? "bg-primary-subtle text-primary-on-subtle" : "bg-sunken text-text-muted"
@@ -808,13 +813,15 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     </span>
                   )}
                 </td>
-                <td className="px-4 py-3 text-right whitespace-nowrap">
+                <td className="flex flex-wrap gap-2 px-4 pt-2 pb-3 md:table-cell md:py-3 md:text-right md:whitespace-nowrap">
                   <Button variant="ghost" size="sm" onClick={() => { setEditingId(u.id); setResetId(null); setCreating(false); }}>
                     Edit
                   </Button>
                   <Button variant="ghost" size="sm" onClick={() => { setResetId(u.id); setEditingId(null); setCreating(false); }}>
                     Password
                   </Button>
+                  {u.id !== me?.id && (
+                  <>
                   <Button
                     variant="ghost"
                     size="sm"
@@ -835,6 +842,8 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   >
                     Delete
                   </Button>
+                  </>
+                  )}
                 </td>
               </tr>
             ))}

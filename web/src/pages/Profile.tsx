@@ -3,13 +3,14 @@ import { Link } from "react-router-dom";
 import { AccountRequests, Profile as ProfileApi } from "../api";
 import { useAuth } from "../auth";
 import { Button } from "../components/ui/Button";
+import { AdminIcon } from "../components/icons";
 import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
 import { ZoneSelect } from "../components/ZoneSelect";
 import { errorText } from "../lib/errors";
 
 export function ProfilePage() {
-  const { user, loading, refresh, logout } = useAuth();
+  const { user, loading, refresh, logout, isAdmin } = useAuth();
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [phone, setPhone] = useState<string | null>(null);
@@ -167,13 +168,17 @@ export function ProfilePage() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-8">
-      <div className="mb-6 flex items-center justify-between gap-4">
-        <h1 className="text-3xl font-bold">Your profile</h1>
-        {/* Phones reach Profile from the Me tab; Log out lives here there. */}
-        <Button variant="secondary" layout="sm:hidden" onClick={logout}>
-          Log out
-        </Button>
-      </div>
+      <h1 className="text-3xl font-bold mb-6">Your profile</h1>
+      {isAdmin && (
+        // Phones have no Admin link in the header; it's a row here (PR #65 review F2).
+        <Link
+          to="/admin"
+          className="sm:hidden mb-6 flex min-h-11 items-center gap-3 rounded-lg border border-border bg-surface px-4 font-medium"
+        >
+          <AdminIcon />
+          Admin
+        </Link>
+      )}
 
       <div className="bg-surface rounded-lg border border-border p-6 mb-6">
         <ImageUpload
@@ -347,6 +352,12 @@ export function ProfilePage() {
           />
         </div>
       )}
+
+      {/* Phones reach Profile from the Me tab, so Log out lives here, at the
+          bottom, away from the header (PR #65 review N1). */}
+      <Button variant="secondary" layout="sm:hidden mt-8 w-full" onClick={logout}>
+        Log out
+      </Button>
     </div>
   );
 }

@@ -802,7 +802,7 @@ export function GroupDetail() {
                 {group.location ? ` · ${group.location}` : ""}
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               {canManage && (
                 <>
                   <Link
