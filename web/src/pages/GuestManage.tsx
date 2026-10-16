@@ -42,7 +42,7 @@ export function GuestManage() {
 
   return (
     <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-extrabold mb-6">Your registration</h1>
+      <h1 className="text-3xl font-extrabold mb-6">Your guest registration</h1>
       <div className="bg-white rounded-xl border border-gray-200 p-6">
         {!reg && !error && <p className="text-sm text-gray-500">Loading…</p>}
         {error && <p className="text-sm text-red-600">{error}</p>}
