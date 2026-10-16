@@ -32,7 +32,7 @@ export default defineConfig({
   // without --localstorage-file, and being already on globalThis it
   // blocks jsdom's real Storage when vitest populates the environment,
   // so every bare localStorage in a test is undefined. The flag removes
-  // Node's accessor and jsdom wins, on Node 22 (CI) and newer alike.
+  // Node's accessor and jsdom wins, on Node 24 (CI) and newer alike.
   test: {
     environment: "jsdom",
     include: ["src/**/*.test.{ts,tsx}"],

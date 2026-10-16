@@ -62,7 +62,7 @@ optional encrypted offsite copy. See `docs/DEPLOY-DIGITALOCEAN.md`.
 
 ## Local development
 
-Requires Go 1.26+, Node 22+, and Docker (for the dev Postgres 16 database).
+Recommended: Go 1.26+, Node 24 LTS, and Docker (for the dev Postgres 16 database).
 
 ```bash
 make dev    # starts Postgres (deploy/docker-compose.dev.yml), the API on :8080,

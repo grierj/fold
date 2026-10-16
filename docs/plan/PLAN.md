@@ -1867,13 +1867,18 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   4. **Node 24 LTS.** Node 22 leaves maintenance on Apr 30, 2027, so this lands before then. Move the CI `node-version`, the Dockerfile `node:24-alpine` build stage, README, and AGENTS.md together, and regenerate the lockfile. Watch for packages whose `engines` exclude Node 24. Dependabot skips non-LTS Node images, so it won't propose this.
 - Already done, not part of this milestone: **TypeScript 7** (#32) and **Vitest 5** (#33) were merged on Oct 11, 2026. Both needed no code or config changes. TypeScript 7's `tsc --noEmit` type-checks the app as before.
 - Acceptance (for each step):
-  - [ ] `npm ci && npm run build` passes, and the embedded SPA serves from the Go binary (deep links still load)
-  - [ ] `npm test` and `make e2e` pass, three runs in a row for e2e, with zero CSP violations (the existing CSP spec)
-  - [ ] `npm audit --omit=dev` is clean
-  - [ ] No visual regressions: before-and-after screenshots of the home page, group detail, new group, admin tabs, login, and profile at desktop and 390 px widths are compared and attached to the PR; any intended change is called out
-  - [ ] Tailwind 4: no `tailwind.config.js` left over unless the PR says why; the `brand` palette and the `.btn-*`/`.input` classes look the same
-  - [ ] Node 24: CI, the Docker build, and local checks all run on Node 24, and nothing still says Node 22
+  - [x] `npm ci && npm run build` passes, and the embedded SPA serves from the Go binary (deep links still load)
+  - [x] `npm test` and `make e2e` pass, three runs in a row for e2e, with zero CSP violations (the existing CSP spec)
+  - [x] `npm audit --omit=dev` is clean
+  - [x] No visual regressions: before-and-after screenshots of the home page, group detail, new group, admin tabs, login, and profile at desktop and 390 px widths are compared and attached to the PR; any intended change is called out
+  - [x] Tailwind 4: no `tailwind.config.js` left over unless the PR says why; the `brand` palette and the `.btn-*`/`.input` classes look the same
+  - [x] Node 24: CI, the Docker build, and local checks all run on Node 24, and nothing still says Node 22
 - Tests: the existing Vitest and Playwright suites; add a Playwright screenshot comparison for the key pages if the manual comparison proves error-prone.
+- Done (Oct 15, 2026, branch `m1.12-toolchain`): one PR with one commit per step, each checked before the next, at Grier's request. Notes:
+  - Screenshots are automated: `web/e2e/screens.spec.ts` (runs only with `SCREENS_DIR` set) shoots 12 pages at 390, 768 and 1280 px, and `web/e2e/compare-screens.mjs` diffs two runs. Every step compared identical to master.
+  - Tailwind 4 uses `@tailwindcss/vite`, so `postcss.config.js`, `tailwind.config.js` and `autoprefixer` are gone.
+  - To keep the screens unchanged, `index.css` pins Tailwind 3's hex palette for the color families Fold uses, gives form controls their background back, keeps the v3 placeholder gray and keeps the pointer cursor on buttons. The UI makeover's token PR (DEC-59) replaces the pinned palette.
+  - Kept from Tailwind 4: `hover:` applies only on devices that can hover (no sticky hover on phones). The browser floor is Safari 16.4, Chrome 111 and Firefox 128.
 
 **M1.13 Per-date event visibility (DEC-46)**
 - Depends on: M1.1b and M1.6. Best done after M1.7 too, so the feeds honor it from the start (if it lands first, M1.7 must apply the per-date value).
