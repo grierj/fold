@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { Auth as AuthApi, ensureCsrf } from "./api";
+import { Auth as AuthApi, Profile, ensureCsrf } from "./api";
+import { browserTimeZone } from "./lib/when";
 import type { User } from "./types";
 
 // clearClientData removes everything the SPA keeps in browser storage.
@@ -30,6 +31,18 @@ const AuthContext = createContext<AuthState>({
   isAdmin: false,
 });
 
+// withZone fills in a person's time zone from this browser the first time
+// it's empty (DEC-58), so their emails read in their own time. After that
+// only the profile page changes it. A failure keeps the church's zone.
+async function withZone(user: User): Promise<User> {
+  if (user.timezone) return user;
+  try {
+    return (await Profile.update({ timezone: browserTimeZone() })).user;
+  } catch {
+    return user;
+  }
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,7 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       await ensureCsrf();
       const { user } = await AuthApi.me();
-      setUser(user);
+      setUser(user ? await withZone(user) : user);
     } catch {
       setUser(null);
     } finally {
@@ -52,7 +65,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     const { user } = await AuthApi.login(email, password);
-    setUser(user);
+    setUser(await withZone(user));
   }, []);
 
   // Logout ends the server session, then drops every client-side copy of

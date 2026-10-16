@@ -14,7 +14,7 @@ import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
 import { coverImage } from "../components/GroupCard";
 import { focalPosition, prepareUpload } from "../lib/image";
-import { formatNextEvent, formatWallClock, zoneSuffix } from "../lib/wall";
+import { formatTime, formatWhen, zoneNote } from "../lib/when";
 
 type Tab = "events" | "about" | "members";
 
@@ -66,7 +66,7 @@ function DateEditor({
   return (
     <form onSubmit={save} className="mt-3 space-y-3 border-t border-gray-100 pt-3">
       <p className="text-sm text-gray-600">
-        This date only. Later series changes leave it alone. The series date stays {instance.date}.
+        This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
       </p>
       {error && <div className="text-sm text-red-600">{error}</div>}
       <div className="grid sm:grid-cols-3 gap-3">
@@ -147,7 +147,7 @@ function EventRow({
 }) {
   const [cancelling, setCancelling] = useState(false);
   const [editor, setEditor] = useState<null | "date" | "series">(null);
-  const time = formatWallClock(instance.startsLocal) + zoneSuffix(instance.startsAt, instance.tzid);
+  const time = formatTime(instance.startsAt);
   const loc = instance.location || "";
   const name = instance.title || groupName;
 
@@ -166,7 +166,7 @@ function EventRow({
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-4 flex gap-4">
-      <DateBadge local={instance.startsLocal} />
+      <DateBadge at={instance.startsAt} />
       <div className="grow min-w-0">
         <div className="font-bold text-lg">{name}</div>
         {showDescription && instance.description && (
@@ -959,7 +959,7 @@ export function GroupDetail() {
                 <div>
                   <h3 className="font-bold mb-1">Next event</h3>
                   <p className="text-gray-700">
-                    {formatNextEvent(group.nextEventLocal, group.nextEventTzid, group.nextEventAt)}
+                    {group.nextEventAt ? formatWhen(group.nextEventAt) : "No events scheduled yet"}
                   </p>
                 </div>
               </div>

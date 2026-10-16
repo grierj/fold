@@ -5,7 +5,8 @@ test.use({ locale: "en-US", timezoneId: "America/New_York" });
 
 // This browser is America/New_York and the church is America/Boise. The
 // form starts at the church zone (DEC-50); the browser's zone is the first
-// suggestion. Saving keeps 7:00 pm in Boise and labels the zone.
+// suggestion. Saving keeps 7:00 pm in Boise; the list shows it as 9:00 pm,
+// this browser's time, with no zone label (DEC-57).
 test("a new series defaults to the church time zone", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/");
@@ -27,5 +28,6 @@ test("a new series defaults to the church time zone", async ({ page }) => {
 
   await expect(page).toHaveURL(/\/groups\/\d+$/);
   await expect(page.getByText("Wednesday class")).toBeVisible();
-  await expect(page.getByText(/7:00 PM (MDT|MST)/)).toBeVisible();
+  await expect(page.getByText(/^9:00 PM/).first()).toBeVisible();
+  await expect(page.getByText(/MDT|MST/)).toHaveCount(0);
 });

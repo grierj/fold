@@ -399,3 +399,33 @@ func TestGroupCoverLinkIgnored(t *testing.T) {
 		t.Fatalf("avatar url endpoint still exists: %d", w.Code)
 	}
 }
+
+// The profile time zone (DEC-58) starts empty (the church's), takes any
+// IANA name, and refuses names time.LoadLocation would quietly accept.
+func TestUpdateMeTimezone(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "grier", "password1234", "member")
+	c := loginAPI(t, app, "grier", "password1234")
+	var me struct {
+		User struct {
+			Timezone string `json:"timezone"`
+		} `json:"user"`
+	}
+	decodeJSON(t, c.do("GET", "/api/v1/auth/me", nil, false), &me)
+	if me.User.Timezone != "" {
+		t.Fatalf("new user zone: %q, want empty", me.User.Timezone)
+	}
+	for _, bad := range []string{"", "Local", "Mars/Olympus", strings.Repeat("A", 65)} {
+		if w := c.do("PUT", "/api/v1/me", map[string]string{"timezone": bad}, true); w.Code != http.StatusBadRequest {
+			t.Fatalf("zone %q: got %d, want 400", bad, w.Code)
+		}
+	}
+	w := c.do("PUT", "/api/v1/me", map[string]string{"timezone": " America/Boise "}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("set zone: %d %s", w.Code, w.Body.String())
+	}
+	decodeJSON(t, w, &me)
+	if me.User.Timezone != "America/Boise" {
+		t.Fatalf("saved zone: %q", me.User.Timezone)
+	}
+}

@@ -515,9 +515,9 @@ Rules for adapters:
 
 - One church time zone (setting). Events can override `tzid`, which is rarely needed.
 - Occurrence expansion uses `rrule-go` with `DTSTART;TZID=<tz>:<local time>`. Each occurrence stores `starts_at` and `ends_at` in UTC.
-- The UI shows times in the church time zone and labels them when the browser's zone differs.
+- The UI shows every event time in the viewer's browser zone, converted from the UTC instant, with no zone label (DEC-57). The event page adds one quiet line when the event's clock differs: "Held in Pacific time (6:00 PM PDT)". Forms that edit an event's clock edit it in the event's own zone and name that zone. One formatter, `web/src/lib/when.ts`, does all of this.
 - ICS output uses `TZID` parameters with IANA names plus a `VTIMEZONE` block.
-- Each person may set a profile time zone (`User.timezone`). Fold uses it for that person's SMS send window (DEC-25). Guests and people without one use the church time zone.
+- Each person has a profile time zone (`User.timezone`, DEC-58). The SPA fills it in from the browser the first time it is empty, and the profile page changes it. Fold uses it for that person's emails, server-written notification text, and SMS send window (DEC-25). A guest's zone comes from the guest form's browser. Anyone without one gets the church time zone.
 
 ### 5.10 Accounts, ages, and households (DEC-4, DEC-8, DEC-18 to DEC-20, DEC-23)
 
@@ -2293,6 +2293,9 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-54 | **Registrations have a separate `cancelled` status** (Grier, Oct 15, 2026, approving the M1.4 build choice), distinct from `declined`; counts and name lists exclude it. | 5.3, 5.4, M1.4, M1.5 |
 | DEC-55 | **Guest manage (cancel) links expire once the event date has ended** (Grier, Oct 15, 2026, approving the M1.4 build choice). A bearer link shouldn't outlive its purpose. | 5.10, M1.4 |
 | DEC-56 | **Guests register as `going` only until M1.5** (Grier, Oct 15, 2026, approving the M1.4 build choice). Capacity, waitlists, plus-ones and maybe/declined for guests arrive with M1.5 and later. | 5.4, M1.4, M1.5 |
+| DEC-57 | **Event times show in the viewer's own zone** (Grier, Oct 15, 2026). Lists and cards convert to the browser's zone with no label, so nobody does the math. When the event's clock differs, the event page adds one quiet line, "Held in Pacific time (6:00 PM PDT)". Edit forms keep the event's own zone and always name it. | 5.9, UI makeover PR 1 |
+| DEC-58 | **Each person has a profile time zone for emails** (Grier, Oct 15, 2026). It defaults to the church's zone and is set automatically from the browser the first time; the profile page changes it. Emails and server-written notification text use the recipient's zone. Guests get the guest form's browser zone. | 5.9, 5.12, M1.2, UI makeover PR 1 |
+| DEC-59 | **UI makeover order and components** (Grier, Oct 15, 2026). Local time first, then M1.12 (Tailwind 4 tokens), then the makeover phases from Illuminator's audit, then M1.6 calendar. A headless library (Radix) for menus, dialogs, sheets and segmented controls arrives in the makeover, not before. | M1.6, M1.12, `fold-ui-audit` |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 

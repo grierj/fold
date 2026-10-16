@@ -15,7 +15,7 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | M1.2 Email basics, password reset, invitations | done (merged, #47; follow-up #48) | Winston | `m1.2-email` |
 | M1.3 Self-signup, account requests, age gate | done (merged, #49) | Muse | `m1.3-self-signup-account-requests` |
 | M1.4 Guest registration | done (merged, #55) | Muse | `m1.4-guest-registration` |
-| M1.5 Capacity, waitlist, pruning | in review | Winston | `m1.5-capacity-waitlist-pruning` |
+| M1.5 Capacity, waitlist, pruning | done (merged, #57) | Winston | `m1.5-capacity-waitlist-pruning` |
 | M1.6 Calendar views | unclaimed | | |
 | M1.7 ICS feeds | unclaimed | | |
 | M1.8 Video, remote, childcare | unclaimed | | |
@@ -40,3 +40,4 @@ Claim a milestone here (in its own PR or commit) before starting it.
 | DigitalOcean droplet guide, provisioner and backups ("recommended", not "supported") | done (merged) | Cursor agent | #53 |
 | Tests sit next to their code; layout guard | done (merged) | Codex | #54 |
 | M1.5 brief (`docs/plan/M1.5-BRIEF.md`) | committed to master | Grier | `75485a1` |
+| UI makeover PR 1: event times in the viewer's zone (DEC-57), profile time zone for emails (DEC-58) | in review | Codex | `local-time-everywhere` |

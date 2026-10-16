@@ -1,12 +1,9 @@
-import { wallDate } from "../lib/wall";
+import { badgeParts } from "../lib/when";
 
-// Meetup-style date badge. `local` is the event's wall clock
-// (YYYY-MM-DDTHH:MM), so the day does not jump when that clock is the next
-// UTC date.
-export function DateBadge({ local, size = "md" }: { local: string; size?: "sm" | "md" }) {
-  const d = wallDate(local);
-  const month = d.toLocaleDateString(undefined, { month: "short" });
-  const day = d.getDate();
+// Meetup-style date badge for a UTC instant, dated in the viewer's zone so
+// it agrees with the time printed beside it.
+export function DateBadge({ at, size = "md" }: { at: string; size?: "sm" | "md" }) {
+  const { month, day } = badgeParts(at);
   const box =
     size === "sm"
       ? "w-12 h-12 text-lg"

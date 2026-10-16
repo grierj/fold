@@ -168,7 +168,7 @@ func TestUsersTableIsEmailFirst(t *testing.T) {
 	app.DB.Raw(`SELECT column_name FROM information_schema.columns
 		WHERE table_name = 'users' ORDER BY column_name`).Scan(&cols)
 	want := "account_type avatar_focal_x avatar_focal_y avatar_key birth_date created_at deleted_at display_name email id " +
-		"name password_hash phone role session_version status updated_at"
+		"name password_hash phone role session_version status timezone updated_at"
 	if got := strings.Join(cols, " "); got != want {
 		t.Fatalf("users columns:\n got %s\nwant %s", got, want)
 	}

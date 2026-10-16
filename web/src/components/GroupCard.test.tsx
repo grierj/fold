@@ -8,7 +8,7 @@ import type { GroupSummary } from "../types";
 const group: GroupSummary = {
   id: 7, name: "Tuesday Bible Study", description: "", tags: ["bible-study", "adults"],
   imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Room 201",
-  leaderName: "Grier", memberCount: 4, nextEventAt: null, nextEventLocal: "", nextEventTzid: "", status: "active",
+  leaderName: "Grier", memberCount: 4, nextEventAt: null, status: "active",
   leaderId: 1, visibility: "invite_only", deletionRequested: false, memberLimit: null,
 };
 
@@ -30,15 +30,13 @@ describe("GroupCard", () => {
     expect(screen.getByText(/No events scheduled yet/)).toBeInTheDocument();
   });
 
-  it("shows the event's wall-clock date, not the UTC date", () => {
+  it("dates the next event in the viewer's zone (Boise in tests), not by its UTC date", () => {
     render(
       <MemoryRouter>
         <GroupCard
           group={{
             ...group,
             nextEventAt: "2035-06-16T01:00:00Z",
-            nextEventLocal: "2035-06-15T19:00",
-            nextEventTzid: "America/Boise",
           }}
         />
       </MemoryRouter>

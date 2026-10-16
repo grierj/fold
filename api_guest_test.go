@@ -721,3 +721,41 @@ func TestPromotedGuestGetsEmail(t *testing.T) {
 		t.Fatalf("after manage cancel: %q", r.Status)
 	}
 }
+
+// A guest's emails use the guest form browser's zone (DEC-58), and the
+// guest's account keeps it for later notices. A form with no zone falls
+// back to the church's (UTC here). The event is 7 PM UTC on Dec 1.
+func TestGuestEmailsUseTheFormZone(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Zone Club", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Supper")
+	anon := anonClient(t, app, "10.4.0.9")
+
+	body := guestBody("Bo Guest", "bo@example.com", true)
+	body["timezone"] = "America/Boise"
+	guestSubmit(t, anon, ev.ID, body, http.StatusOK)
+	verify := latestEmail(t, app, "bo@example.com")
+	if !strings.Contains(verify.Body, "Tue, Dec 1 · 12:00 PM MST") {
+		t.Fatalf("verification email: %q", verify.Body)
+	}
+	w := anon.do("POST", "/api/v1/guest-registrations/confirm",
+		map[string]string{"token": tokenInEmail(t, verify)}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirm: %d %s", w.Code, w.Body.String())
+	}
+	if m := latestEmail(t, app, "bo@example.com"); !strings.Contains(m.Body, "Tue, Dec 1 · 12:00 PM MST") {
+		t.Fatalf("confirmation email: %q", m.Body)
+	}
+	if u := guestUser(t, app, "bo@example.com"); u.Timezone != "America/Boise" {
+		t.Fatalf("guest zone: %q", u.Timezone)
+	}
+
+	body = guestBody("Nell Guest", "nell@example.com", true)
+	body["timezone"] = "Local"
+	guestSubmit(t, anon, ev.ID, body, http.StatusOK)
+	if m := latestEmail(t, app, "nell@example.com"); !strings.Contains(m.Body, "Tue, Dec 1 · 7:00 PM UTC") {
+		t.Fatalf("no-zone verification email: %q", m.Body)
+	}
+}

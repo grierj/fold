@@ -218,7 +218,7 @@ func eventNoticeVars(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, u
 	if o.LocationOverride != nil {
 		place = *o.LocationOverride
 	}
-	vars := notify.Vars{Event: ev.Title, When: localWhen(o.StartsAt, ev.TZID), Place: place}
+	vars := notify.Vars{Event: ev.Title, When: formatWhen(o.StartsAt, recipientZone(tx, userID)), Place: place}
 	link := fmt.Sprintf("/events/%d", ev.ID)
 	if g != nil {
 		vars.Event = firstNonEmpty(ev.Title, g.Name) // group-ok: g is set only when canSeeGroupIn is true

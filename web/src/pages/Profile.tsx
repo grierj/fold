@@ -4,12 +4,14 @@ import { AccountRequests, Profile as ProfileApi } from "../api";
 import { useAuth } from "../auth";
 import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
+import { ZoneSelect } from "../components/ZoneSelect";
 
 export function ProfilePage() {
   const { user, loading, refresh } = useAuth();
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [phone, setPhone] = useState<string | null>(null);
+  const [zone, setZone] = useState<string | null>(null);
   const [pictureBusy, setPictureBusy] = useState(false);
   const [pictureStatus, setPictureStatus] = useState<string | null>(null);
   const [pictureError, setPictureError] = useState<string | null>(null);
@@ -44,6 +46,7 @@ export function ProfilePage() {
   const dn = displayName ?? user.displayName;
   const fullName = name ?? user.name;
   const ph = phone ?? user.phone;
+  const tz = zone ?? user.timezone;
   const focalX = user.avatarFocalX;
   const focalY = user.avatarFocalY;
 
@@ -53,7 +56,7 @@ export function ProfilePage() {
     setError(null);
     setSaved(false);
     try {
-      await ProfileApi.update({ displayName: dn, name: fullName, phone: ph });
+      await ProfileApi.update({ displayName: dn, name: fullName, phone: ph, ...(tz ? { timezone: tz } : {}) });
       await refresh();
       setSaved(true);
     } catch (err) {
@@ -232,6 +235,15 @@ export function ProfilePage() {
               onChange={(e) => setPhone(e.target.value)}
               maxLength={30}
             />
+          </div>
+          <div>
+            <label className="label" htmlFor="profile-tz">
+              Time zone for emails
+            </label>
+            <ZoneSelect id="profile-tz" value={tz} onChange={setZone} describedBy="profile-tz-hint" />
+            <p id="profile-tz-hint" className="text-xs text-gray-500 mt-1">
+              Emails show event times in this zone. On screen, times always follow this device's clock.
+            </p>
           </div>
           <button type="submit" disabled={saving} className="btn-primary">
             {saving ? "Saving…" : "Save profile"}

@@ -43,16 +43,29 @@ type When struct {
 // ParseWall reads a wall-clock time in an IANA zone. The string must not
 // carry an offset: the zone, not the offset, is what stays put across DST.
 func ParseWall(value, tzid string) (time.Time, *time.Location, error) {
-	tzid = strings.TrimSpace(tzid)
-	loc, err := time.LoadLocation(tzid)
-	if err != nil || tzid == "" {
-		return time.Time{}, nil, fmt.Errorf("unknown time zone %q", tzid)
+	loc, err := LoadZone(tzid)
+	if err != nil {
+		return time.Time{}, nil, err
 	}
 	t, err := time.ParseInLocation(WallLayout, strings.TrimSpace(value), loc)
 	if err != nil {
 		return time.Time{}, nil, fmt.Errorf("startsLocal must be YYYY-MM-DDTHH:MM")
 	}
 	return t, loc, nil
+}
+
+// LoadZone parses an IANA zone name. It refuses "" and "Local", which
+// time.LoadLocation accepts as UTC and the server's own zone.
+func LoadZone(tzid string) (*time.Location, error) {
+	tzid = strings.TrimSpace(tzid)
+	if tzid == "" || tzid == "Local" || len(tzid) > 64 {
+		return nil, fmt.Errorf("unknown time zone %q", tzid)
+	}
+	loc, err := time.LoadLocation(tzid)
+	if err != nil {
+		return nil, fmt.Errorf("unknown time zone %q", tzid)
+	}
+	return loc, nil
 }
 
 // FormatWall renders t in loc with no offset.

@@ -2,7 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../api", () => ({ Site: { get: () => Promise.resolve({ name: "c", timezone: "America/Los_Angeles", selfSignup: "off" }) } }));
-vi.mock("../lib/wall", () => ({ browserTimeZone: () => "America/Boise" }));
+vi.mock("../lib/when", () => ({ browserTimeZone: () => "America/Boise" }));
 
 import { ZoneSelect } from "./ZoneSelect";
 

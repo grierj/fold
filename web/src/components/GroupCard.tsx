@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import type { GroupSummary } from "../types";
 import { focalPosition } from "../lib/image";
-import { formatNextEvent } from "../lib/wall";
+import { formatWhen } from "../lib/when";
 
 const PLACEHOLDER =
   "data:image/svg+xml," +
@@ -102,7 +102,7 @@ export function GroupCard({
             {group.leaderName ? ` · Organized by ${group.leaderName}` : ""}
           </div>
           <div className="text-brand-dark font-medium">
-            {formatNextEvent(group.nextEventLocal, group.nextEventTzid, group.nextEventAt)}
+            {group.nextEventAt ? formatWhen(group.nextEventAt) : "No events scheduled yet"}
           </div>
           {group.location && <div className="truncate">{group.location}</div>}
         </div>

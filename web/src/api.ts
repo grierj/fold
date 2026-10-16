@@ -308,6 +308,8 @@ export interface GuestRegistrationInput {
   date: string;
   over18: boolean;
   createAccount?: boolean;
+  // The browser's zone, for the guest's emails (DEC-58).
+  timezone?: string;
   // Honeypot. People never fill this in.
   website?: string;
 }
@@ -387,6 +389,7 @@ export interface ProfileUpdate {
   displayName?: string;
   email?: string;
   phone?: string;
+  timezone?: string;
   avatarFocal?: { x: number; y: number };
 }
 

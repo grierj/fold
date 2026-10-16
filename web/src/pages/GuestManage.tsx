@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, Guests } from "../api";
-import { formatNextEvent } from "../lib/wall";
+import { formatWhen } from "../lib/when";
 import type { GuestRegistration } from "../types";
 
 // The guest manage link from the confirmation email (M1.4). The token
@@ -52,7 +52,7 @@ export function GuestManage() {
               <strong>{reg.title}</strong>
               {reg.groupName ? ` with ${reg.groupName}` : reg.hostedBy ? ` hosted by ${reg.hostedBy}` : ""}
             </p>
-            <p className="text-sm text-gray-600 mt-1">{formatNextEvent(reg.startsLocal, reg.tzid, null)}</p>
+            <p className="text-sm text-gray-600 mt-1">{formatWhen(reg.startsAt)}</p>
             {reg.location && <p className="text-sm text-gray-600">{reg.location}</p>}
             {reg.status === "cancelled" ? (
               <>
