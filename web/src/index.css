@@ -53,7 +53,7 @@
   --color-primary-foreground: var(--color-white);      /* text and icons on primary */
   --color-primary-subtle: var(--color-violet-100);     /* selected chip, active nav pill, tint bg */
   --color-primary-on-subtle: var(--color-violet-700);  /* text on primary-subtle */
-  --color-primary-border: var(--color-violet-300);     /* selected chip outline (non-text) */
+  --color-primary-border: var(--color-violet-600);     /* selected chip outline (non-text) */
 
   --color-page: var(--color-stone-50);                 /* body background */
   --color-surface: var(--color-white);                 /* cards, sheets, inputs */
@@ -159,6 +159,11 @@
 /* Inter is self-hosted (src/fonts, SIL OFL 1.1 in src/fonts/OFL.txt).
    Forms keep the pointer cursor on buttons, as before. */
 @layer base {
+  /* Radios and checkboxes take the primary color. */
+  input[type="radio"],
+  input[type="checkbox"] {
+    accent-color: var(--color-primary);
+  }
   button:not(:disabled),
   [role="button"]:not(:disabled) {
     cursor: pointer;
@@ -170,10 +175,12 @@
   .btn-secondary { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md border border-border-strong bg-surface px-5 font-semibold text-text transition-colors hover:bg-sunken; }
   .btn-danger    { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-danger px-5 font-semibold text-danger-foreground transition-colors hover:bg-danger-hover disabled:bg-sunken disabled:text-text-muted disabled:cursor-not-allowed; }
   /* A destructive action that sits beside the main one (Reject, Remove). */
-  .btn-danger-outline { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md border border-danger-border bg-surface px-5 font-semibold text-danger transition-colors hover:border-danger hover:bg-danger-subtle; }
+  .btn-danger-outline { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md border border-danger bg-surface px-5 font-semibold text-danger transition-colors hover:bg-danger-subtle; }
   .btn-ghost     { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md px-3 font-semibold text-primary hover:bg-primary-subtle; }
   .input         { @apply w-full min-h-11 rounded-md border border-border-strong bg-surface px-4 py-2.5 text-base text-text; }
   .label         { @apply mb-1 block text-sm font-medium text-text; }
   .chip          { @apply inline-flex items-center gap-1.5 min-h-11 sm:min-h-9 rounded-full border border-border-strong bg-surface px-3 text-sm font-medium text-text; }
-  .chip[aria-pressed="true"] { @apply border-primary-border bg-primary-subtle text-primary-on-subtle; }
+  .chip[aria-pressed="true"] { @apply border-primary-border bg-primary-subtle text-primary-on-subtle font-semibold; }
+  /* Selected chips lead with a check mark (empty alt text: not read aloud). */
+  .chip[aria-pressed="true"]::before { content: "✓" / ""; }
 }

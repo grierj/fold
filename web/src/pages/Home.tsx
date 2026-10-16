@@ -156,11 +156,9 @@ export function Home() {
                     aria-pressed={on}
                     className="chip"
                   >
-                    {/* Checkmark on selected tags; once any tag is on, the
-                        others show "+" to say they add more groups. */}
-                    {on ? (
-                      <span aria-hidden="true">✓</span>
-                    ) : selectedTags.length > 0 ? (
+                    {/* .chip draws the checkmark on selected tags; once any
+                        tag is on, the others show "+" to say they add more groups. */}
+                    {!on && selectedTags.length > 0 ? (
                       <span aria-hidden="true" className="text-text-subtle">
                         +
                       </span>

@@ -82,8 +82,8 @@ export function GroupCard({
                 aria-pressed={isSelected(t)}
                 className={
                   isSelected(t)
-                    ? "inline-flex min-h-6 items-center gap-0.5 text-xs font-semibold bg-primary text-primary-foreground rounded-full px-2 py-0.5"
-                    : "inline-flex min-h-6 items-center text-xs font-medium bg-sunken text-text-muted hover:bg-border rounded-full px-2 py-0.5"
+                    ? "inline-flex min-h-6 min-w-6 justify-center items-center gap-0.5 text-xs font-semibold bg-primary text-primary-foreground rounded-full px-2 py-0.5"
+                    : "inline-flex min-h-6 min-w-6 justify-center items-center text-xs font-medium bg-sunken text-text-muted hover:bg-border rounded-full px-2 py-0.5"
                 }
               >
                 {isSelected(t) && <span aria-hidden="true">✓</span>}
