@@ -1,0 +1,72 @@
+{
+  "home-signed-out": {
+    "clipped": 0,
+    "under24": 2,
+    "under44": 3
+  },
+  "login": {
+    "clipped": 0,
+    "under24": 3,
+    "under44": 3
+  },
+  "join": {
+    "clipped": 0,
+    "under24": 5,
+    "under44": 5
+  },
+  "home": {
+    "clipped": 0,
+    "under24": 3,
+    "under44": 4
+  },
+  "my-groups": {
+    "clipped": 0,
+    "under24": 3,
+    "under44": 4
+  },
+  "group-member": {
+    "clipped": 0,
+    "under24": 3,
+    "under44": 18
+  },
+  "event": {
+    "clipped": 0,
+    "under24": 3,
+    "under44": 15
+  },
+  "profile": {
+    "clipped": 0,
+    "under24": 6,
+    "under44": 6
+  },
+  "group-leader": {
+    "clipped": 0,
+    "under24": 15,
+    "under44": 30
+  },
+  "schedule-event": {
+    "clipped": 1,
+    "under24": 4,
+    "under44": 4
+  },
+  "admin": {
+    "clipped": 0,
+    "under24": 5,
+    "under44": 9
+  },
+  "admin-users": {
+    "clipped": 0,
+    "under24": 25,
+    "under44": 29
+  },
+  "new-group": {
+    "clipped": 0,
+    "under24": 7,
+    "under44": 7
+  },
+  "church-event": {
+    "clipped": 0,
+    "under24": 5,
+    "under44": 5
+  }
+}
