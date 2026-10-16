@@ -419,7 +419,7 @@ function GroupForm({
           initialUrl={initial.imageUrl || undefined}
           initialFocal={{ x: initial.coverFocalX, y: initial.coverFocalY }}
           maxDim={1600}
-          aspectClass="aspect-[16/9]"
+          aspectClass="aspect-video"
           onFile={setCoverFile}
           onFocal={setCoverFocal}
         />
@@ -769,7 +769,7 @@ export function GroupDetail() {
           className="w-full h-full object-cover"
           style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
         />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
+        <div className="absolute inset-0 bg-linear-to-t from-black/60 to-transparent" />
         <div className="absolute bottom-0 left-0 right-0">
           <div className="max-w-6xl mx-auto px-4 pb-5 flex items-end gap-4 flex-wrap">
             <div className="grow min-w-0">
@@ -806,7 +806,7 @@ export function GroupDetail() {
                 <>
                   <Link
                     to={`/groups/${group.id}/events/new`}
-                    className="btn-primary !bg-white !text-brand hover:!bg-gray-100"
+                    className="btn-primary bg-white! text-brand! hover:bg-gray-100!"
                   >
                     Schedule event
                   </Link>
@@ -1036,7 +1036,7 @@ export function GroupDetail() {
                     {canManage && (
                       <>
                       <form onSubmit={inviteMember} className="mt-4 flex gap-2 flex-wrap items-end">
-                        <div className="grow min-w-[12rem]">
+                        <div className="grow min-w-48">
                           <label className="label" htmlFor="invite-member">Invite someone to Fold</label>
                           <input
                             id="invite-member"
@@ -1068,7 +1068,7 @@ export function GroupDetail() {
                       </form>
                       {inviteStatus && <p className="text-green-700 text-sm mt-2">{inviteStatus}</p>}
                       <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">
-                        <div className="grow min-w-[12rem]">
+                        <div className="grow min-w-48">
                           <label className="label" htmlFor="add-member">Add a member by email</label>
                           <input
                             id="add-member"
@@ -1112,7 +1112,7 @@ export function GroupDetail() {
                               type="button"
                               onClick={requestDeletion}
                               disabled={memberBusy}
-                              className="btn-secondary !text-red-600 !border-red-200 hover:!border-red-400"
+                              className="btn-secondary text-red-600! border-red-200! hover:border-red-400!"
                             >
                               Request deletion
                             </button>

@@ -70,7 +70,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 </NavLink>
                 <NavLink
                   to="/login"
-                  className="btn-primary !py-1.5 !px-4 text-sm"
+                  className="btn-primary py-1.5! px-4! text-sm"
                 >
                   Log in
                 </NavLink>

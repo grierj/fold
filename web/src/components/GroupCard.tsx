@@ -28,7 +28,7 @@ export function GroupCard({
   const selectedLower = selectedTags.map((t) => t.toLowerCase());
   const isSelected = (t: string) => selectedLower.includes(t.toLowerCase());
   return (
-    <div className="bg-white rounded-xl shadow-sm hover:shadow-md transition-shadow overflow-hidden border border-gray-100 flex flex-col">
+    <div className="bg-white rounded-xl shadow-xs hover:shadow-md transition-shadow overflow-hidden border border-gray-100 flex flex-col">
       <Link to={`/groups/${group.id}`} className="block">
         <div className="h-40 w-full overflow-hidden bg-gray-200">
           <img
@@ -76,8 +76,8 @@ export function GroupCard({
                 aria-pressed={isSelected(t)}
                 className={
                   isSelected(t)
-                    ? "inline-flex items-center gap-0.5 text-xs font-semibold bg-brand text-white rounded-full px-2 py-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1"
-                    : "text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-full px-2 py-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1"
+                    ? "inline-flex items-center gap-0.5 text-xs font-semibold bg-brand text-white rounded-full px-2 py-0.5 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1"
+                    : "text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 rounded-full px-2 py-0.5 focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-1"
                 }
               >
                 {isSelected(t) && <span aria-hidden="true">✓</span>}

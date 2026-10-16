@@ -77,7 +77,7 @@ export function Login() {
         <button type="submit" disabled={busy} className="btn-primary w-full">
           {busy ? "Logging in…" : "Log in"}
         </button>
-        <p className="text-sm text-center mt-2">
+        <p className="text-sm text-center">
           <Link to="/forgot-password" className="text-brand font-semibold">
             Forgot your password?
           </Link>

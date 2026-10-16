@@ -207,7 +207,7 @@ export function NewChurchEvent() {
                 setRecurring(e.target.checked);
                 if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
               }}
-              className="w-4 h-4 accent-[#f64060]"
+              className="w-4 h-4 accent-brand"
             />
             Repeat weekly
           </label>

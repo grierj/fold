@@ -19,7 +19,7 @@ function tagsFromParams(params: URLSearchParams): string[] {
 }
 
 const chipBase =
-  "inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-semibold border transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2";
+  "inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-semibold border transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2";
 const chipOn = `${chipBase} bg-brand border-brand text-white`;
 const chipOff = `${chipBase} bg-white border-gray-300 text-gray-700 hover:border-gray-400 hover:bg-gray-50`;
 
@@ -143,7 +143,7 @@ export function Home() {
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search groups…"
-              className="input !py-3 text-lg shadow-sm"
+              className="input py-3! text-lg shadow-xs"
             />
           </div>
           {chips.length > 0 && (
@@ -187,7 +187,7 @@ export function Home() {
               .{" "}
               <button
                 onClick={clearTags}
-                className="font-semibold text-brand hover:underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+                className="font-semibold text-brand hover:underline rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
               >
                 Clear
               </button>
@@ -234,7 +234,7 @@ export function Home() {
                 No groups match “{debounced.trim()}” with these tags. Try another search, or{" "}
                 <button
                   onClick={clearTags}
-                  className="font-semibold text-brand hover:underline rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
+                  className="font-semibold text-brand hover:underline rounded-sm focus:outline-hidden focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2"
                 >
                   Clear the tags
                 </button>

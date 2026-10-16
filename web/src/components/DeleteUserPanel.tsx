@@ -68,9 +68,9 @@ export function DeleteUserPanel({
           <p className="text-gray-700">They are the only leader of these groups. Choose who leads each one next:</p>
           {groups.map((g) => (
             <label key={g.id} className="flex flex-wrap items-center gap-2">
-              <span className="font-medium min-w-[10rem]">{g.name}</span>
+              <span className="font-medium min-w-40">{g.name}</span>
               <select
-                className="input !w-64"
+                className="input w-64!"
                 value={picks[String(g.id)] ?? ""}
                 onChange={(e) => setPicks((p) => ({ ...p, [String(g.id)]: Number(e.target.value) }))}
               >
@@ -87,7 +87,7 @@ export function DeleteUserPanel({
       )}
       {error && <div className="text-red-600">{error}</div>}
       <div className="flex gap-3">
-        <button onClick={remove} disabled={busy || groups === null} className="btn-primary !bg-red-600">
+        <button onClick={remove} disabled={busy || groups === null} className="btn-primary bg-red-600!">
           {busy ? "Working…" : action === "delete" ? "Delete account" : "Disable account"}
         </button>
         <button onClick={() => onDone(false)} className="btn-secondary">

@@ -248,7 +248,7 @@ export function NewEvent() {
               type="checkbox"
               checked={recurring}
               onChange={(e) => onRecurring(e.target.checked)}
-              className="w-4 h-4 accent-[#f64060]"
+              className="w-4 h-4 accent-brand"
             />
             Repeat weekly
           </label>

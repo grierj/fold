@@ -84,7 +84,7 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => voi
         <button
           onClick={reject}
           disabled={busy}
-          className="btn-secondary !text-red-600 !border-red-200 hover:!border-red-400"
+          className="btn-secondary text-red-600! border-red-200! hover:border-red-400!"
         >
           Reject
         </button>
@@ -139,7 +139,7 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
         <button
           onClick={approve}
           disabled={busy}
-          className="btn-secondary !text-red-600 !border-red-200 hover:!border-red-400"
+          className="btn-secondary text-red-600! border-red-200! hover:border-red-400!"
         >
           {busy ? "…" : "Delete group"}
         </button>
@@ -216,7 +216,7 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
       {error && <div className="text-red-600 text-sm mt-2">{error}</div>}
       <div className="flex gap-3 mt-4">
         <button onClick={() => decide(true)} disabled={busy} className="btn-primary">{busy ? "…" : "Approve"}</button>
-        <button onClick={() => decide(false)} disabled={busy} className="btn-secondary !text-red-600 !border-red-200 hover:!border-red-400">Reject</button>
+        <button onClick={() => decide(false)} disabled={busy} className="btn-secondary text-red-600! border-red-200! hover:border-red-400!">Reject</button>
       </div>
     </div>
   );
@@ -391,7 +391,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
         <div>
           <label className="label">Add person</label>
           <select
-            className="input !w-48"
+            className="input w-48!"
             value={addUserId}
             onChange={(e) => setAddUserId(e.target.value)}
           >
@@ -406,7 +406,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
         <div>
           <label className="label">Role</label>
           <select
-            className="input !w-32"
+            className="input w-32!"
             value={addRole}
             onChange={(e) => setAddRole(e.target.value as "member" | "leader")}
           >
@@ -493,17 +493,17 @@ function GroupsTab({ users }: { users: User[] }) {
             </div>
             <button
               onClick={() => setOpenMembers((v) => (v === g.id ? null : g.id))}
-              className="btn-secondary !py-1.5 !px-3 text-sm"
+              className="btn-secondary py-1.5! px-3! text-sm"
             >
               {openMembers === g.id ? "Hide members" : "Manage members"}
             </button>
-            <Link to={`/groups/${g.id}`} className="btn-secondary !py-1.5 !px-3 text-sm">
+            <Link to={`/groups/${g.id}`} className="btn-secondary py-1.5! px-3! text-sm">
               Open & edit
             </Link>
             <button
               onClick={() => deleteGroup(g)}
               disabled={deletingId === g.id}
-              className="btn-secondary !py-1.5 !px-3 text-sm !text-red-600 !border-red-200 hover:!border-red-400"
+              className="btn-secondary py-1.5! px-3! text-sm text-red-600! border-red-200! hover:border-red-400!"
             >
               {deletingId === g.id ? "…" : "Delete"}
             </button>
@@ -680,14 +680,14 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
         <label className="label">New password for {user.email}</label>
         <input
           type="password"
-          className="input !w-56"
+          className="input w-56!"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           required
         />
         <p className="text-xs text-gray-500 mt-1">Must be at least 10 characters.</p>
       </div>
-      <button type="submit" disabled={busy} className="btn-secondary !py-2">
+      <button type="submit" disabled={busy} className="btn-secondary py-2!">
         {busy ? "…" : "Set password"}
       </button>
       <button type="button" onClick={onDone} className="text-sm text-gray-500 hover:underline">
@@ -1059,7 +1059,7 @@ function SelfSignupSetting() {
     <form onSubmit={save} className="mb-6 flex flex-wrap items-end gap-3">
       <div>
         <label className="label" htmlFor="self-signup">Self-signup</label>
-        <select id="self-signup" className="input w-full sm:!w-[26rem]" value={mode} onChange={(e) => { setMode(e.target.value as "request" | "off"); setOk(false); }}>
+        <select id="self-signup" className="input w-full sm:w-104!" value={mode} onChange={(e) => { setMode(e.target.value as "request" | "off"); setOk(false); }}>
           <option value="request">On — requests wait for approval</option>
           <option value="off">Off — office creates accounts</option>
         </select>
@@ -1134,7 +1134,7 @@ export function AdminPage() {
           >
             {t.label}
             {t.badge ? (
-              <span className="ml-1.5 inline-flex items-center justify-center min-w-[1.25rem] h-5 px-1 rounded-full bg-brand text-white text-xs">
+              <span className="ml-1.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-brand text-white text-xs">
                 {t.badge}
               </span>
             ) : null}
