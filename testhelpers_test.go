@@ -625,12 +625,24 @@ func latestEmail(t *testing.T, app *App, to string) mail.OutboxMessage {
 }
 
 var tokenRe = regexp.MustCompile(`token=([A-Za-z0-9_-]+)`)
+var manageTokenRe = regexp.MustCompile(`/guest/manage/([A-Za-z0-9_-]+)`)
 
 func tokenInEmail(t *testing.T, m mail.OutboxMessage) string {
 	t.Helper()
 	mt := tokenRe.FindStringSubmatch(m.Body)
 	if len(mt) != 2 {
 		t.Fatalf("no token in email to %s: %q", m.To, m.Body)
+	}
+	return mt[1]
+}
+
+// manageTokenInEmail pulls the manage token from a /guest/manage/<token>
+// link in an email body.
+func manageTokenInEmail(t *testing.T, m mail.OutboxMessage) string {
+	t.Helper()
+	mt := manageTokenRe.FindStringSubmatch(m.Body)
+	if len(mt) != 2 {
+		t.Fatalf("no manage token in email to %s: %q", m.To, m.Body)
 	}
 	return mt[1]
 }
