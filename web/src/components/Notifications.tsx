@@ -2,6 +2,8 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { BellIcon } from "./icons";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "./ui/Button";
+import { EmptyState } from "./ui/EmptyState";
+import { Illustration } from "./ui/Illustration";
 import {
   badgeLabel, badgeText, relativeTime, resolutionText, useBadge, useFeed, type Feed,
 } from "../lib/notifications";
@@ -177,15 +179,14 @@ function Skeleton() {
   );
 }
 
-export function EmptyState({ text }: { text?: string }) {
+export function FeedEmpty({ text }: { text?: string }) {
   return (
-    <div className="px-4 py-8 text-center">
-      <svg className="w-10 h-10 mx-auto text-text-subtle" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4h10l6 6v10H4zM14 4v6h6" />
-      </svg>
-      <p className="mt-2 text-sm font-semibold text-text-muted">{text ?? "You're all caught up"}</p>
-      {!text && <p className="text-xs text-text-muted">Updates about your groups, events, and requests show up here.</p>}
-    </div>
+    <EmptyState
+      framed={false}
+      illustration={<Illustration name="all-caught-up" size="sm" />}
+      title={text ?? "You're all caught up"}
+      body={!text ? "Updates about your groups, events, and requests show up here." : undefined}
+    />
   );
 }
 
@@ -212,7 +213,7 @@ export function FeedBody({
       </div>
     );
   }
-  if (feed.waiting.length + feed.items.length === 0) return <EmptyState text={emptyText} />;
+  if (feed.waiting.length + feed.items.length === 0) return <FeedEmpty text={emptyText} />;
   const row = (n: Notification) => (
     <NotificationRow key={n.id} n={n} feed={feed} onArchived={onArchived} onNavigate={onNavigate} />
   );

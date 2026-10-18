@@ -5,6 +5,7 @@ import { useAuth } from "../auth";
 import { Avatar } from "./Avatar";
 import { GroupsIcon, HomeIcon, MeIcon, PlusIcon } from "./icons";
 import { NotificationBell, NotificationTab } from "./Notifications";
+import { FoldMark } from "./FoldMark";
 
 // The app shell (UI makeover PR 5): a header with the church's name, a top
 // nav from the sm breakpoint up, and a bottom tab bar on phones (Home, My
@@ -20,9 +21,12 @@ const tab = ({ isActive }: { isActive: boolean }) =>
   `flex flex-1 flex-col items-center justify-center gap-0.5 min-h-14 text-xs font-medium ${isActive ? "text-primary" : "text-text-muted"}`;
 
 function useSiteName() {
-  const [name, setName] = useState("");
+  const [name, setName] = useState<string | undefined>(undefined);
   useEffect(() => {
-    Site.get().then((s) => setName(s.name), () => {});
+    Site.get().then(
+      (s) => setName(s.name),
+      () => setName("")
+    );
   }, []);
   return name;
 }
@@ -36,9 +40,27 @@ export function Layout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen flex flex-col">
       <header className="bg-surface border-b border-border sticky top-0 z-10 pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-4">
-          <Link to="/" className="flex min-h-11 min-w-0 flex-col justify-center leading-tight">
-            <span className="truncate text-xl font-bold text-primary tracking-tight">{site || "Fold"}</span>
-            {site && site !== "Fold" && <span className="text-xs text-text-subtle">powered by Fold</span>}
+          <Link
+            to="/"
+            aria-label={site === undefined ? "Home" : undefined}
+            className="flex min-h-11 min-w-0 flex-col justify-center leading-tight"
+          >
+            {site === undefined ? (
+              <span aria-hidden="true" className="bg-sunken rounded-md h-6 w-32" />
+            ) : site && site !== "Fold" ? (
+              <>
+                <span className="text-xl font-bold text-primary tracking-tight truncate">{site}</span>
+                <span className="inline-flex items-center gap-1 text-xs text-text-subtle whitespace-nowrap">
+                  <FoldMark className="w-3 h-3" />
+                  powered by Fold
+                </span>
+              </>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 text-xl font-bold text-primary">
+                <FoldMark className="w-6 h-6" />
+                Fold
+              </span>
+            )}
           </Link>
           <nav aria-label="Main" className="flex items-center gap-2 ml-auto text-sm font-medium">
             {loading ? null : user ? (
