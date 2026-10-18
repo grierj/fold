@@ -3,7 +3,7 @@
     "web/src/components/DeleteUserPanel.tsx": 3,
     "web/src/components/GroupVisibilityReview.tsx": 2,
     "web/src/components/Notifications.tsx": 1,
-    "web/src/pages/Admin.tsx": 3,
+    "web/src/pages/Admin.tsx": 2,
     "web/src/pages/EventDetail.tsx": 4
   },
   "dateFormatting": {

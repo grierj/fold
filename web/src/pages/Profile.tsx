@@ -9,6 +9,7 @@ import { AccountRequestForm } from "../components/AccountRequestForm";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { errorText } from "../lib/errors";
 import { Field, FormError, Input, showFieldErrors } from "../components/ui/Field";
+import { Skeleton } from "../components/ui/Skeleton";
 
 export function ProfilePage() {
   const { user, loading, refresh, logout, isAdmin } = useAuth();
@@ -35,7 +36,11 @@ export function ProfilePage() {
   const [emailError, setEmailError] = useState<string | null>(null);
 
   if (loading) {
-    return <div className="max-w-2xl mx-auto px-4 py-12 text-text-muted">Loading…</div>;
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-12">
+        <Skeleton kind="page" />
+      </div>
+    );
   }
   if (!user) {
     return (

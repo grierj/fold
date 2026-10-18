@@ -4,6 +4,8 @@ import type { AgeBand } from "../types";
 import { errorText } from "../lib/errors";
 import { Choices, Field, FormError, Honeypot, Input, Radio, Textarea } from "./ui/Field";
 import { Button } from "./ui/Button";
+import { EmptyState } from "./ui/EmptyState";
+import { Illustration } from "./ui/Illustration";
 
 // The account-request form shared by self-signup (/join) and a member's
 // invite-a-friend (M1.3, 5.10). It carries the age gate (DEC-8): under
@@ -54,12 +56,11 @@ export function AccountRequestForm({
 
   if (done) {
     return (
-      <div className="bg-surface rounded-lg border border-border p-6">
-        <p className="text-sm text-text-muted">{done}</p>
-        <p className="text-sm text-text-muted mt-2">
-          An admin reviews every request. Nothing else to do for now.
-        </p>
-      </div>
+      <EmptyState
+        illustration={<Illustration name="request-sent" />}
+        title="Request sent"
+        body={<>{done} An admin reviews every request. Nothing else to do for now.</>}
+      />
     );
   }
 

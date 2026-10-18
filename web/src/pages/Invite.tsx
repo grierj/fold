@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Invitations as InvitationsApi } from "../api";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
 import { Field, FormError, Input } from "../components/ui/Field";
-import { Button } from "../components/ui/Button";
+import { Button, ButtonLink } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Illustration } from "../components/ui/Illustration";
+import { Skeleton } from "../components/ui/Skeleton";
 
 const INVITE_EXPIRED = "This invitation has expired or was already used. Ask the person who invited you for a new one.";
 import type { Invitation } from "../types";
@@ -71,7 +74,7 @@ export function Invite() {
   if (loading) {
     return (
       <div className="max-w-md mx-auto px-4 py-12">
-        <p className="text-sm text-text-muted">Loading invitation…</p>
+        <Skeleton kind="page" label="Loading invitation…" />
       </div>
     );
   }
@@ -80,14 +83,16 @@ export function Invite() {
     return (
       <div className="max-w-md mx-auto px-4 py-12">
         <h1 className="text-3xl font-bold mb-6">You're invited</h1>
-        <div className="bg-surface rounded-lg border border-border p-6">
-          <p className="text-sm">{error ?? "This link is missing its token."}</p>
-          <p className="mt-4">
-            <Link to="/login" className="text-primary font-semibold text-sm">
+        <EmptyState
+          illustration={<Illustration name="link-expired" />}
+          title="This link can't be used"
+          body={error ?? "This link is missing its token."}
+          action={
+            <ButtonLink to="/login" variant="secondary" layout="w-full sm:w-auto">
               Back to log in
-            </Link>
-          </p>
-        </div>
+            </ButtonLink>
+          }
+        />
       </div>
     );
   }

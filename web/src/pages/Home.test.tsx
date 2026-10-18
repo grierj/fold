@@ -122,9 +122,8 @@ describe("Home tag filters", () => {
       tags.length ? Promise.resolve({ groups: [] }) : listLikeTheAPI(search, tags)
     );
     renderHome("/?tag=choir");
-    expect(
-      await screen.findByText("No groups found. Try a different search or start a new group.")
-    ).toBeInTheDocument();
+    expect(await screen.findByText("No groups match these tags")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear the tags" })).toBeInTheDocument();
   });
 });
 

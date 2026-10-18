@@ -6,6 +6,10 @@ import { GroupCard } from "../components/GroupCard";
 import { useAuth } from "../auth";
 import { errorText } from "../lib/errors";
 import { ErrorNotice } from "../components/ErrorNotice";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Illustration } from "../components/ui/Illustration";
+import { Skeleton } from "../components/ui/Skeleton";
+import { ButtonLink } from "../components/ui/Button";
 
 // The server exposes GET /api/v1/me/groups for this.
 export function MyGroups() {
@@ -14,6 +18,7 @@ export function MyGroups() {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     if (authLoading) return;
@@ -22,6 +27,8 @@ export function MyGroups() {
       return;
     }
     let alive = true;
+    setLoading(true);
+    setError(null);
     (async () => {
       try {
         const { groups } = await Groups.mine();
@@ -37,7 +44,7 @@ export function MyGroups() {
     return () => {
       alive = false;
     };
-  }, [user, authLoading]);
+  }, [user, authLoading, retry]);
 
   if (!authLoading && !user) {
     return (
@@ -55,26 +62,40 @@ export function MyGroups() {
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">My groups</h1>
-      {loading && <div className="text-text-muted">Loading…</div>}
-      {error && <ErrorNotice message={error} onRetry={() => window.location.reload()} />}
-      {!loading && !error && groups.length === 0 && (
-        <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
-          You haven't joined any groups yet.{" "}
-          <Link to="/" className="text-primary font-semibold">
-            Find one to join
-          </Link>
-          .
+      {loading && (
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          <Skeleton kind="cards" count={3} />
         </div>
       )}
-      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        {groups.map((g) => (
-          <GroupCard
-            key={g.id}
-            group={g}
-            onTagClick={(tag) => navigate(`/?tag=${encodeURIComponent(tag)}`)}
-          />
-        ))}
-      </div>
+      {!loading && error && <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />}
+      {!loading && !error && groups.length === 0 && (
+        <EmptyState
+          illustration={<Illustration name="empty-groups" />}
+          title="You're not in any groups yet"
+          body="Groups you join show up here, with their next event."
+          action={
+            <>
+              <ButtonLink to="/" variant="primary" layout="w-full sm:w-auto">
+                Browse groups
+              </ButtonLink>
+              <ButtonLink to="/groups/new" variant="secondary" layout="w-full sm:w-auto">
+                Start a group
+              </ButtonLink>
+            </>
+          }
+        />
+      )}
+      {!loading && groups.length > 0 && (
+        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {groups.map((g) => (
+            <GroupCard
+              key={g.id}
+              group={g}
+              onTagClick={(tag) => navigate(`/?tag=${encodeURIComponent(tag)}`)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
