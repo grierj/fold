@@ -95,7 +95,7 @@ export interface ZonePick {
   label: string; // "Los Angeles (Pacific)"
   tag: "" | "Yours" | "Church" | "Yours & church";
   offset: string; // "UTC-7"
-  search: string; // what typing matches: label, id, region name, offset
+  search: string; // what typing matches: label, region name, offset (not the id)
 }
 
 // Options for the time zone picker (DEC-65): the browser zone and the
@@ -116,7 +116,7 @@ export function zonePickerOptions(
   const make = (z: string): ZonePick => {
     const label = zoneLabel(z, locale);
     const offset = offsetOf(z);
-    const search = [label, z.replace(/_/g, " "), zoneGenericName(z, locale), offset].join(" ").toLowerCase();
+    const search = [label, zoneGenericName(z, locale), offset].join(" ").toLowerCase();
     return { value: z, label, tag: tag(z), offset, search };
   };
   const lead: ZonePick[] = [];
@@ -147,14 +147,23 @@ function offsetQuery(q: string): string | null {
   return h === 0 && !min ? "utc" : `utc${m[1]}${h}${min}`;
 }
 
-// Typing filters the picker: every word must appear in the label, the IANA
-// id or the region name ("pacific", "mountain"), or the query is a UTC
-// offset ("-7", "UTC+5:30"). The list keeps its order.
+// Typing filters the picker (PR7-REVIEW F1): every word must appear in the
+// label or the region name ("pacific", "mountain"), or the query is a UTC
+// offset ("-7", "UTC+5:30"). The IANA id ("Pacific/Auckland") only counts
+// when the query has a "/", so "pac" means Pacific time, not every
+// Pacific/ island. Matches rank Yours and Church first, then the US zones,
+// then labels that start with the query, then the rest, each in list order.
 export function filterZones(options: ZonePick[], query: string): ZonePick[] {
   const q = query.trim().toLowerCase();
   if (!q) return options;
   const off = offsetQuery(q);
   if (off) return options.filter((o) => o.offset.toLowerCase() === off);
   const words = q.split(/\s+/);
-  return options.filter((o) => words.every((w) => o.search.includes(w)));
+  const byId = q.includes("/");
+  const hits = options.filter((o) => {
+    const hay = byId ? `${o.search} ${o.value.replace(/_/g, " ").toLowerCase()}` : o.search;
+    return words.every((w) => hay.includes(w));
+  });
+  const rank = (o: ZonePick) => (o.tag ? 0 : US_ZONES.includes(o.value) ? 1 : o.label.toLowerCase().startsWith(q) ? 2 : 3);
+  return hits.map((o, i) => ({ o, i, r: rank(o) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.o);
 }

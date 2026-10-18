@@ -97,7 +97,7 @@ export function ImageUpload({
         )}
       </div>
       <p className="text-xs text-text-muted mt-1">
-        Click the image to move the focal point — faces stay centered when cropped.
+        Tap or click the image to move the focal point — faces stay centered when cropped.
       </p>
       <div className="flex gap-2 mt-2">
         <Button variant="secondary" onClick={() => inputRef.current?.click()} disabled={busy}>

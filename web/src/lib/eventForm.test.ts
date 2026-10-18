@@ -74,9 +74,24 @@ describe("filterZones", () => {
     expect(values("mountain").slice(0, 2)).toEqual(["America/Boise", "America/Denver"]);
     expect(values("mountain")).toContain("America/Phoenix");
   });
-  it("matches the city and the IANA id", () => {
+  it("matches the city, and the IANA id only when the query has a slash", () => {
     expect(values("los ang")).toEqual(["America/Los_Angeles"]);
     expect(values("indiana")).toContain("America/Indiana/Knox");
+    expect(values("pac")).not.toContain("Pacific/Auckland");
+    expect(values("pac")).not.toContain("Pacific/Apia");
+    expect(values("pacific/")).toContain("Pacific/Auckland");
+  });
+  it("ranks Yours and Church, then US zones, then label prefixes, then the rest", () => {
+    // Yours is Knox (Central), Church is Boise (Mountain).
+    expect(values("central")[0]).toBe("America/Indiana/Knox");
+    expect(values("central")[1]).toBe("America/Chicago");
+    expect(values("mountain")[0]).toBe("America/Boise");
+    const b = values("bo");
+    expect(b[0]).toBe("America/Boise");
+    const prefix = b.slice(1).findIndex((z) => !zoneLabel(z, "en-US").toLowerCase().startsWith("bo"));
+    const afterPrefix = b.slice(1 + prefix);
+    expect(prefix).toBeGreaterThan(0);
+    expect(afterPrefix.every((z) => !zoneLabel(z, "en-US").toLowerCase().startsWith("bo"))).toBe(true);
   });
   it("matches a UTC offset", () => {
     expect(values("-7")).toEqual(expect.arrayContaining(["America/Boise", "America/Denver", "America/Phoenix"]));

@@ -112,11 +112,11 @@ export function ZonePicker({
               onMouseMove={() => setActive(i)}
               onClick={() => pick(o)}
             >
-              <span className="min-w-0">{o.label}</span>
-              <span className="shrink-0 text-sm text-text-muted">
-                {o.tag && <span className="font-semibold text-text">{o.tag} · </span>}
-                {o.offset}
+              <span className="min-w-0">
+                {o.label}
+                {o.tag && <span className="zone-tag">{o.tag}</span>}
               </span>
+              <span className="shrink-0 text-sm text-text-muted">{o.offset}</span>
             </li>
           ))}
         </ul>
