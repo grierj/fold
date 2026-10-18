@@ -28,6 +28,7 @@ test("main pages have no serious or critical axe issues", async ({ page, request
   // The shared page list (ui-pages.ts, also used by layout.spec.ts) plus the
   // pages only this check covers.
   const extra: UIPage[] = [
+    { id: "forgot-password", who: null, path: "/forgot-password", ready: (p) => p.getByRole("heading", { name: "Reset your password" }) },
     { id: "notifications", who: "grier", path: "/notifications", ready: (p) => p.getByRole("heading", { name: "Notifications" }) },
     { id: "admin groups", who: "grier", path: "/admin?tab=groups", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
     { id: "admin invite", who: "grier", path: "/admin?tab=invite", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
@@ -42,5 +43,16 @@ test("main pages have no serious or critical axe issues", async ({ page, request
     await open(page, ui);
     await scan(page, ui.id);
   }
+  await signOut(page);
+});
+
+test("the time zone picker has no serious or critical axe issues when open and filtered", async ({ page }) => {
+  await signIn(page, "grier");
+  await page.goto("/events/new");
+  const box = page.getByRole("combobox", { name: "Time zone" });
+  await box.click();
+  await box.fill("pac");
+  await expect(page.getByRole("listbox")).toBeVisible();
+  await scan(page, "zone picker open");
   await signOut(page);
 });

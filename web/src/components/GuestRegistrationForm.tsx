@@ -3,6 +3,9 @@ import { Guests } from "../api";
 import type { EventOccurrence } from "../types";
 import { browserTimeZone } from "../lib/when";
 import { errorText } from "../lib/errors";
+import { Checkbox, Field, FormError, Honeypot, Input } from "./ui/Field";
+import { FormActions } from "./ui/FormActions";
+import { Button } from "./ui/Button";
 
 // The guest door on one public event date (M1.4, 5.10): a signed-out
 // adult registers with a name and an email. The server emails a
@@ -63,48 +66,36 @@ export function GuestRegistrationForm({ instance }: { instance: EventOccurrence 
   return (
     <form onSubmit={submit} className="rounded-md border border-border p-4 space-y-3 max-w-md">
       <p className="text-sm font-semibold">Register as a guest</p>
-      {error && <div className="text-danger text-sm">{error}</div>}
+      {error && <FormError>{error}</FormError>}
+      <Field id={`${p}-name`} label="Full name" hint="Shown on the attendee list. At most 100 characters.">
+        <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} autoComplete="name" required />
+      </Field>
+      <Field id={`${p}-email`} label="Email" hint="We email you a link to confirm, and later a link to cancel. Registering again with the same email reuses the same guest record.">
+        <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
+      </Field>
       <div>
-        <label className="label" htmlFor={`${p}-name`}>Full name</label>
-        <input id={`${p}-name`} className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={100} autoComplete="name" required />
-        <p className="text-xs text-text-muted mt-1">Shown on the attendee list. At most 100 characters.</p>
+        <Checkbox
+          label="I am 18 or older"
+          description="Guests registering on their own must be 18 or older; a parent or guardian can register a younger person from their own account."
+          checked={over18}
+          onChange={(e) => setOver18(e.target.checked)}
+        />
+        <Checkbox
+          label="Also ask for a Fold account"
+          description="An admin reviews the request, and this registration stays yours if it is approved."
+          checked={createAccount}
+          onChange={(e) => setCreateAccount(e.target.checked)}
+        />
       </div>
-      <div>
-        <label className="label" htmlFor={`${p}-email`}>Email</label>
-        <input id={`${p}-email`} type="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
-        <p className="text-xs text-text-muted mt-1">
-          We email you a link to confirm, and later a link to cancel. Registering again with
-          the same email reuses the same guest record.
-        </p>
-      </div>
-      <label className="flex items-start gap-2 text-sm">
-        <input type="checkbox" className="mt-0.5" checked={over18} onChange={(e) => setOver18(e.target.checked)} />
-        <span>
-          I am 18 or older. Guests registering on their own must be 18 or older; a parent or
-          guardian can register a younger person from their own account.
-        </span>
-      </label>
-      <label className="flex items-start gap-2 text-sm">
-        <input type="checkbox" className="mt-0.5" checked={createAccount} onChange={(e) => setCreateAccount(e.target.checked)} />
-        <span>
-          Also ask for a Fold account. An admin reviews the request, and this registration
-          stays yours if it is approved.
-        </span>
-      </label>
-      <div className="hidden" aria-hidden="true">
-        <label>
-          Website
-          <input name="website" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
-        </label>
-      </div>
-      <div className="flex items-center gap-4">
-        <button type="submit" disabled={busy} className="btn-primary">
+      <Honeypot value={website} onChange={setWebsite} />
+      <FormActions>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Sending…" : "Email me a confirmation link"}
-        </button>
-        <button type="button" onClick={() => setOpen(false)} className="text-sm text-text-muted">
+        </Button>
+        <Button variant="secondary" layout="w-full sm:w-auto" onClick={() => setOpen(false)}>
           Never mind
-        </button>
-      </div>
+        </Button>
+      </FormActions>
     </form>
   );
 }

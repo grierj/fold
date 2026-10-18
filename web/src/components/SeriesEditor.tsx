@@ -1,29 +1,13 @@
 import { useState } from "react";
 import { Events } from "../api";
-import { WEEKDAYS, bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
-import { ZoneSelect } from "./ZoneSelect";
+import { bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
 import { errorText } from "../lib/errors";
+import { Checkbox, Field, FormError, Input, Textarea } from "./ui/Field";
+import { FormActions } from "./ui/FormActions";
+import { ZonePicker } from "./ui/ZonePicker";
+import { WeekdayPicker } from "./WeekdayPicker";
+import { Button } from "./ui/Button";
 
-function WeekdayPicker({ days, onToggle }: { days: string[]; onToggle: (value: string) => void }) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {WEEKDAYS.map((w) => (
-        <button
-          type="button"
-          key={w.value}
-          onClick={() => onToggle(w.value)}
-          className={
-            days.includes(w.value)
-              ? "px-3 py-1.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground"
-              : "px-3 py-1.5 rounded-full text-sm font-semibold bg-sunken text-text-muted hover:bg-border"
-          }
-        >
-          {w.label}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 export interface SeriesFields {
   eventId: number;
@@ -45,13 +29,13 @@ export interface SeriesFields {
 export function SeriesEditor({
   series: instance,
   idPrefix,
-  locationLabel = "Location",
+  locationHint,
   onSaved,
   onClose,
 }: {
   series: SeriesFields;
   idPrefix: string;
-  locationLabel?: string;
+  locationHint?: string;
   onSaved: () => void;
   onClose?: () => void;
 }) {
@@ -136,161 +120,105 @@ export function SeriesEditor({
         This changes every future date that has not been edited on its own. Customized dates stay as they are. Dates
         the new schedule drops are cancelled, and people who were going or maybe are told.
       </p>
-      {error && <div className="text-sm text-danger">{error}</div>}
+      {error && <FormError>{error}</FormError>}
       <div className="grid sm:grid-cols-2 gap-3">
-        <div>
-          <label className="label" htmlFor={`s-date-${idPrefix}`}>
-            First date
-          </label>
-          <input id={`s-date-${idPrefix}`} type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} required />
-        </div>
-        <div>
-          <label className="label" htmlFor={`s-time-${idPrefix}`}>
-            Start time
-          </label>
-          <input id={`s-time-${idPrefix}`} type="time" className="input" value={time} onChange={(e) => setTime(e.target.value)} required />
-        </div>
+        <Field id={`s-date-${idPrefix}`} label="First date">
+          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+        </Field>
+        <Field id={`s-time-${idPrefix}`} label="Start time">
+          <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
+        </Field>
       </div>
-      <div className="grid sm:grid-cols-[11rem_minmax(0,1fr)] gap-3">
-        <div>
-          <label className="label" htmlFor={`s-dur-${idPrefix}`}>
-            Duration (minutes)
-          </label>
-          <input
-            id={`s-dur-${idPrefix}`}
+      <div>
+        <Field id={`s-dur-${idPrefix}`} label="Duration (minutes)">
+          <Input
             type="number"
             min={1}
             max={10080}
-            className="input"
             value={duration}
             onChange={(e) => setDuration(Number(e.target.value))}
           />
-        </div>
-        <div>
-          <label className="label" htmlFor={`s-tz-${idPrefix}`}>
-            Time zone
-          </label>
-          <ZoneSelect id={`s-tz-${idPrefix}`} value={tzid} onChange={setTzid} />
-        </div>
+        </Field>
       </div>
+      <Field id={`s-tz-${idPrefix}`} label="Time zone">
+        <ZonePicker value={tzid} onChange={setTzid} />
+      </Field>
       <div className="grid sm:grid-cols-2 gap-3">
-        <div>
-          <label className="label" htmlFor={`s-title-${idPrefix}`}>
-            Title
-          </label>
-          <input id={`s-title-${idPrefix}`} className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
-        </div>
-        <div>
-          <label className="label" htmlFor={`s-loc-${idPrefix}`}>
-            {locationLabel}
-          </label>
-          <input id={`s-loc-${idPrefix}`} className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
-        </div>
+        <Field id={`s-title-${idPrefix}`} label="Title">
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+        </Field>
+        <Field id={`s-loc-${idPrefix}`} label="Location" optional hint={locationHint}>
+          <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+        </Field>
       </div>
-      <div>
-        <label className="label" htmlFor={`s-desc-${idPrefix}`}>
-          Description
-        </label>
-        <textarea
-          id={`s-desc-${idPrefix}`}
-          className="input"
+      <Field id={`s-desc-${idPrefix}`} label="Description" optional>
+        <Textarea
           rows={3}
           maxLength={5000}
           value={description}
           onChange={(e) => setDescription(e.target.value)}
         />
-      </div>
+      </Field>
       {simple ? (
         <div>
-          <label className="flex items-center gap-2 font-semibold cursor-pointer">
-            <input
-              type="checkbox"
-              checked={recurring}
-              onChange={(e) => {
-                setRecurring(e.target.checked);
-                if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
-              }}
-              className="w-4 h-4 accent-primary"
-            />
-            Repeat weekly
-          </label>
+          <Checkbox
+            label="Repeat weekly"
+            checked={recurring}
+            onChange={(e) => {
+              setRecurring(e.target.checked);
+              if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
+            }}
+          />
           {recurring && (
-            <div className="mt-3">
+            <div className="mt-2">
               <WeekdayPicker days={days} onToggle={toggleDay} />
             </div>
           )}
         </div>
       ) : (
-        <div>
-          <label className="label" htmlFor={`s-rule-${idPrefix}`}>
-            Recurrence rule
-          </label>
-          <input id={`s-rule-${idPrefix}`} className="input" value={rule} onChange={(e) => setRule(e.target.value)} />
-        </div>
+        <Field id={`s-rule-${idPrefix}`} label="Recurrence rule">
+          <Input value={rule} onChange={(e) => setRule(e.target.value)} />
+        </Field>
       )}
-      <div>
-        <label className="label" htmlFor={`s-until-${idPrefix}`}>
-          Repeat until (optional)
-        </label>
-        <input id={`s-until-${idPrefix}`} type="date" className="input" value={until} onChange={(e) => setUntil(e.target.value)} />
-      </div>
-      <div className="grid sm:grid-cols-3 gap-3">
-        <div>
-          <label className="label" htmlFor={`s-cap-${idPrefix}`}>
-            Capacity
-          </label>
-          <input
-            id={`s-cap-${idPrefix}`}
+      <Field id={`s-until-${idPrefix}`} label="Repeat until" optional>
+        <Input type="date" value={until} onChange={(e) => setUntil(e.target.value)} />
+      </Field>
+      <div className="grid sm:grid-cols-2 gap-3">
+        <Field id={`s-cap-${idPrefix}`} label="Capacity" optional hint="Seats per date. Leave it blank for no limit.">
+          <Input
             type="number"
             min={1}
-            className="input"
             placeholder="No limit"
             value={capacity}
             onChange={(e) => setCapacity(e.target.value)}
           />
-          <p className="text-xs text-text-muted mt-1">Seats per date. Empty means no limit.</p>
-        </div>
-        <div>
-          <label className="label" htmlFor={`s-guests-${idPrefix}`}>
-            Guests allowed
-          </label>
-          <input
-            id={`s-guests-${idPrefix}`}
+        </Field>
+        <Field id={`s-guests-${idPrefix}`} label="Guests allowed" hint="Extra guests one registration may bring (0–5).">
+          <Input
             type="number"
             min={0}
             max={5}
-            className="input"
             value={guestsAllowed}
             onChange={(e) => setGuestsAllowed(Math.max(0, Math.min(5, Number(e.target.value))))}
           />
-          <p className="text-xs text-text-muted mt-1">Extra guests one registration may bring (0–5).</p>
-        </div>
-        <div className="flex items-end pb-1">
-          <label className="flex items-center gap-2 text-sm cursor-pointer">
-            <input
-              type="checkbox"
-              checked={waitlistEnabled}
-              onChange={(e) => setWaitlistEnabled(e.target.checked)}
-              className="w-4 h-4 accent-primary"
-            />
-            Waitlist when full
-          </label>
-        </div>
+        </Field>
       </div>
-      <p className="text-xs text-text-muted">
-        When the waitlist is off, a full date refuses new registrations. When it is on, extra people join the
-        waitlist in order and move up automatically as spots open.
-      </p>
-      <div className="flex gap-2">
-        <button type="submit" disabled={busy} className="btn-primary">
+      <Checkbox
+        label="Waitlist when full"
+        description="When the waitlist is off, a full date refuses new registrations. When it is on, extra people join the waitlist in order and move up automatically as spots open."
+        checked={waitlistEnabled}
+        onChange={(e) => setWaitlistEnabled(e.target.checked)}
+      />
+      <FormActions>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save series"}
-        </button>
+        </Button>
         {onClose && (
-          <button type="button" onClick={onClose} className="btn-secondary">
+          <Button variant="secondary" layout="w-full sm:w-auto" onClick={onClose}>
             Close
-          </button>
+          </Button>
         )}
-      </div>
+      </FormActions>
     </form>
   );
 }

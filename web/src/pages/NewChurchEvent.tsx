@@ -1,13 +1,17 @@
 import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
-import { ZoneSelect } from "../components/ZoneSelect";
+import { ZonePicker } from "../components/ui/ZonePicker";
+import { WeekdayPicker } from "../components/WeekdayPicker";
+import { FormActions } from "../components/ui/FormActions";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Events } from "../api";
 import { useAuth } from "../auth";
-import { WEEKDAYS, weekdayCode } from "../lib/eventForm";
+import { weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
 import { errorText } from "../lib/errors";
+import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
+import { Button } from "../components/ui/Button";
 
 export function NewChurchEvent() {
   const navigate = useNavigate();
@@ -92,40 +96,26 @@ export function NewChurchEvent() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-8">
+    <div className="max-w-xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-2">Schedule a church-wide event</h1>
       <p className="text-text-muted mb-6">You are a host. Add another host if someone else should run it.</p>
       <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
-        {error && <div className="text-danger text-sm">{error}</div>}
-        <div>
-          <label className="label" htmlFor="church-event-title">
-            Title
-          </label>
-          <input id="church-event-title" className="input" value={title} onChange={(e) => setTitle(e.target.value)} required />
-        </div>
-        <div>
-          <label className="label" htmlFor="church-event-description">
-            Description
-          </label>
-          <textarea
-            id="church-event-description"
-            className="input"
+        {error && <FormError>{error}</FormError>}
+        <Field id="church-event-title" label="Title">
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
+        </Field>
+        <Field id="church-event-description" label="Description" optional hint="What should people know before they come?">
+          <Textarea
             rows={4}
             maxLength={5000}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="What should people know before they come?"
           />
-        </div>
+        </Field>
         <div className="grid sm:grid-cols-2 gap-4">
-          <div>
-            <label className="label" htmlFor="church-event-date">
-              Date
-            </label>
-            <input
-              id="church-event-date"
+          <Field id="church-event-date" label="Date">
+            <Input
               type="date"
-              className="input"
               value={date}
               onChange={(e) => {
                 const v = e.target.value;
@@ -134,50 +124,37 @@ export function NewChurchEvent() {
               }}
               required
             />
-          </div>
-          <div>
-            <label className="label" htmlFor="church-event-time">
-              Start time
-            </label>
-            <input
-              id="church-event-time"
+          </Field>
+          <Field id="church-event-time" label="Start time">
+            <Input
               type="time"
-              className="input"
               value={startTime}
               onChange={(e) => setStartTime(e.target.value)}
               required
             />
-          </div>
+          </Field>
         </div>
-        <div className="grid sm:grid-cols-[11rem_minmax(0,1fr)] gap-4">
-          <div>
-            <label className="label" htmlFor="church-event-duration">
-              Duration (minutes)
-            </label>
-            <input
-              id="church-event-duration"
-              type="number"
-              min={1}
-              max={10080}
-              step={1}
-              className="input"
-              value={durationMin}
-              onChange={(e) => setDurationMin(Number(e.target.value))}
-            />
-          </div>
-          <div>
-            <label className="label" htmlFor="church-event-tz">
-              Time zone
-            </label>
-            <ZoneSelect id="church-event-tz" value={tzid} onChange={setTzid} />
-          </div>
-        </div>
-        <div>
-          <label className="label" htmlFor="church-event-location">
-            Location
-          </label>
-          <input id="church-event-location" className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
-        </div>
+        <Field id="church-event-duration" label="Duration (minutes)">
+          <Input
+            type="number"
+            min={1}
+            max={10080}
+            step={1}
+            value={durationMin}
+            onChange={(e) => setDurationMin(Number(e.target.value))}
+            layout="sm:w-44"
+          />
+        </Field>
+        <Field
+          id="church-event-tz"
+          label="Time zone"
+          hint="The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving."
+        >
+          <ZonePicker value={tzid} onChange={setTzid} />
+        </Field>
+        <Field id="church-event-location" label="Location" optional>
+          <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+        </Field>
         <VisibilityField
           id="church-event-visibility"
           churchWide
@@ -186,59 +163,32 @@ export function NewChurchEvent() {
           reason=""
           onReason={() => {}}
         />
-        <div>
-          <label className="label" htmlFor="church-event-host">
-            Another host's email (optional)
-          </label>
-          <input
-            id="church-event-host"
-            type="email"
-            className="input"
-            value={hostEmail}
-            onChange={(e) => setHostEmail(e.target.value)}
-            placeholder="They must already have an account"
-          />
-        </div>
+        <Field id="church-event-host" label="Another host's email" optional hint="They must already have an account.">
+          <Input type="email" value={hostEmail} onChange={(e) => setHostEmail(e.target.value)} />
+        </Field>
         <div className="border-t border-border pt-4">
-          <label className="flex items-center gap-2 font-semibold cursor-pointer">
-            <input
-              type="checkbox"
-              checked={recurring}
-              onChange={(e) => {
-                setRecurring(e.target.checked);
-                if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
-              }}
-              className="w-4 h-4 accent-primary"
-            />
-            Repeat weekly
-          </label>
+          <Checkbox
+            label="Repeat weekly"
+            checked={recurring}
+            onChange={(e) => {
+              setRecurring(e.target.checked);
+              if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
+            }}
+          />
           {recurring && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {WEEKDAYS.map((w) => (
-                <button
-                  type="button"
-                  key={w.value}
-                  onClick={() => toggleDay(w.value)}
-                  className={
-                    days.includes(w.value)
-                      ? "px-3 py-1.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground"
-                      : "px-3 py-1.5 rounded-full text-sm font-semibold bg-sunken text-text-muted hover:bg-border"
-                  }
-                >
-                  {w.label}
-                </button>
-              ))}
+            <div className="mt-2">
+              <WeekdayPicker days={days} onToggle={toggleDay} />
             </div>
           )}
         </div>
-        <div className="flex gap-3">
-          <button type="submit" disabled={busy} className="btn-primary">
+        <FormActions>
+          <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
             {busy ? "Scheduling…" : "Schedule event"}
-          </button>
-          <Link to="/" className="btn-secondary">
+          </Button>
+          <Link to="/" className="btn-secondary w-full sm:w-auto">
             Cancel
           </Link>
-        </div>
+        </FormActions>
       </form>
     </div>
   );

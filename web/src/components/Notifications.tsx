@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { BellIcon } from "./icons";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { Button } from "./ui/Button";
 import {
   badgeLabel, badgeText, relativeTime, resolutionText, useBadge, useFeed, type Feed,
 } from "../lib/notifications";
@@ -80,16 +81,15 @@ export function NotificationRow({
         {n.waiting && n.actions.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-3">
             {n.actions.map((a) => (
-              <button
+              <Button variant="primary"
                 key={a.key}
-                className="btn-primary py-1.5! px-3! text-sm"
                 aria-busy={feed.busy[n.id] || undefined}
                 disabled={feed.busy[n.id] || feed.offline}
                 title={feed.offline ? "Reconnect to do this" : undefined}
                 onClick={() => feed.approve(n)}
               >
                 {feed.busy[n.id] ? "Approving…" : a.label}
-              </button>
+              </Button>
             ))}
             <Link to={n.link} onClick={onNavigate} className="btn-secondary py-1.5! px-3! text-sm">
               Review
@@ -206,9 +206,9 @@ export function FeedBody({
     return (
       <div className="px-4 py-6 text-center text-sm">
         <p className="text-text-muted">Couldn't load notifications.</p>
-        <button className="btn-secondary mt-2 py-1.5! px-3! text-sm" onClick={feed.reload}>
+        <Button variant="secondary" layout="mt-2" onClick={feed.reload}>
           Try again
-        </button>
+        </Button>
       </div>
     );
   }

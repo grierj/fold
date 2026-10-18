@@ -85,3 +85,17 @@ function heldInZone(iso: string, tzid: string, zone: string): string | null {
 export function zoneNote(tzid: string): string {
   return `Times are in ${zoneName(tzid)}.`;
 }
+
+// A zone's UTC offset right now, as "UTC-7", "UTC+5:30" or "UTC". Used to
+// show and search time zones by offset.
+export function zoneOffset(tz: string, at: Date = new Date()): string {
+  try {
+    const part = new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "shortOffset" })
+      .formatToParts(at)
+      .find((p) => p.type === "timeZoneName");
+    const v = part?.value ?? "";
+    return v.replace(/^GMT/, "UTC");
+  } catch {
+    return "";
+  }
+}

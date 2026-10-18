@@ -7,8 +7,9 @@ import { DateBadge } from "../components/DateBadge";
 import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
 import { Menu } from "../components/ui/Menu";
-import { Field, Input } from "../components/ui/Field";
+import { Field, FormError, Input } from "../components/ui/Field";
 import { Button } from "../components/ui/Button";
+import { FormActions } from "../components/ui/FormActions";
 import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
@@ -338,7 +339,7 @@ function ManageRoster({ instance, onChanged, onClose }: { instance: EventOccurre
         <Button variant="link" onClick={onClose}>Close</Button>
       </div>
       {roster.length === 0 && <p className="text-sm text-text-muted mb-2">No one has signed up yet.</p>}
-      {error && <div className="text-sm text-danger mb-1">{error}</div>}
+      {error && <FormError layout="mb-1">{error}</FormError>}
       <ul className="text-sm space-y-1 mb-2">
         {roster.map((a) => (
           <li key={a.userId} className="flex items-center justify-between gap-3">
@@ -438,72 +439,49 @@ function DateEditor({
       <p className="text-sm text-text-muted">
         This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
       </p>
-      {error && <div className="text-sm text-danger">{error}</div>}
+      {error && <FormError>{error}</FormError>}
       <div className="grid sm:grid-cols-3 gap-3">
-        <div>
-          <label className="label" htmlFor={`cev-date-${instance.id}`}>
-            Date
-          </label>
-          <input id={`cev-date-${instance.id}`} type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} required />
-        </div>
-        <div>
-          <label className="label" htmlFor={`cev-time-${instance.id}`}>
-            Start time
-          </label>
-          <input id={`cev-time-${instance.id}`} type="time" className="input" value={time} onChange={(e) => setTime(e.target.value)} required />
-        </div>
-        <div>
-          <label className="label" htmlFor={`cev-dur-${instance.id}`}>
-            Minutes
-          </label>
-          <input
-            id={`cev-dur-${instance.id}`}
+        <Field id={`cev-date-${instance.id}`} label="Date">
+          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+        </Field>
+        <Field id={`cev-time-${instance.id}`} label="Start time">
+          <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
+        </Field>
+        <Field id={`cev-dur-${instance.id}`} label="Minutes">
+          <Input
             type="number"
             min={1}
             max={10080}
-            className="input"
             value={duration}
             onChange={(e) => setDuration(Number(e.target.value))}
           />
-        </div>
+        </Field>
       </div>
       <div className="grid sm:grid-cols-2 gap-3">
-        <div>
-          <label className="label" htmlFor={`cev-title-${instance.id}`}>
-            Title
-          </label>
-          <input id={`cev-title-${instance.id}`} className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
-        </div>
-        <div>
-          <label className="label" htmlFor={`cev-loc-${instance.id}`}>
-            Location
-          </label>
-          <input id={`cev-loc-${instance.id}`} className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
-        </div>
+        <Field id={`cev-title-${instance.id}`} label="Title">
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+        </Field>
+        <Field id={`cev-loc-${instance.id}`} label="Location" optional>
+          <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+        </Field>
       </div>
-      <div>
-        <label className="label" htmlFor={`cev-cap-${instance.id}`}>
-          Capacity for this date
-        </label>
-        <input
-          id={`cev-cap-${instance.id}`}
+      <Field id={`cev-cap-${instance.id}`} label="Capacity for this date" optional hint="Leave it blank to use the event’s capacity.">
+        <Input
           type="number"
           min={1}
-          className="input"
           placeholder="Same as the event"
           value={capacity}
           onChange={(e) => setCapacity(e.target.value)}
         />
-        <p className="text-xs text-text-muted mt-1">Empty means this date uses the event&apos;s capacity.</p>
-      </div>
-      <div className="flex gap-2">
-        <button type="submit" disabled={busy} className="btn-primary">
+      </Field>
+      <FormActions>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save this date"}
-        </button>
-        <button type="button" onClick={onClose} className="btn-secondary">
+        </Button>
+        <Button variant="secondary" layout="w-full sm:w-auto" onClick={onClose}>
           Close
-        </button>
-      </div>
+        </Button>
+      </FormActions>
     </form>
   );
 }
@@ -553,7 +531,7 @@ function HostEditor({
   return (
     <div className="mt-4 bg-surface rounded-lg border border-border p-4">
       <div className="font-semibold mb-2">Hosts</div>
-      {error && <div className="text-sm text-danger mb-2">{error}</div>}
+      {error && <FormError layout="mb-2">{error}</FormError>}
       <ul className="text-sm space-y-1 mb-3">
         {hosts.map((h) => (
           <li key={h.userId} className="flex items-center justify-between gap-3">
@@ -568,18 +546,15 @@ function HostEditor({
           </li>
         ))}
       </ul>
-      <form onSubmit={add} className="flex gap-2">
-        <input
-          className="input"
-          type="email"
-          aria-label="Host email"
-          placeholder="Add a host by email"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
-        <button type="submit" className="btn-secondary" disabled={busy}>
-          Add
-        </button>
+      <form onSubmit={add} className="flex flex-col gap-3 sm:flex-row sm:items-end">
+        <div className="min-w-0 flex-1">
+          <Field label="Host email" hint="They must already have an account.">
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+          </Field>
+        </div>
+        <Button variant="secondary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
+          Add host
+        </Button>
       </form>
     </div>
   );

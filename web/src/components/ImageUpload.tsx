@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { focalPosition, prepareUpload } from "../lib/image";
+import { Button } from "./ui/Button";
+import { FormError, HiddenFileInput } from "./ui/Field";
 
 // ImageUpload: pick a file (resized in the browser), preview it, and click
 // to set the focal point used for object-position when cropped.
@@ -98,32 +100,17 @@ export function ImageUpload({
         Click the image to move the focal point — faces stay centered when cropped.
       </p>
       <div className="flex gap-2 mt-2">
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          disabled={busy}
-          className="btn-secondary py-1.5! px-3! text-sm"
-        >
+        <Button variant="secondary" onClick={() => inputRef.current?.click()} disabled={busy}>
           {busy ? "Processing…" : preview ? "Choose different image" : "Choose image"}
-        </button>
+        </Button>
         {preview && (
-          <button
-            type="button"
-            onClick={clear}
-            className="btn-secondary py-1.5! px-3! text-sm"
-          >
+          <Button variant="secondary" onClick={clear}>
             Clear
-          </button>
+          </Button>
         )}
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/jpeg,image/png,image/gif,image/webp"
-          className="hidden"
-          onChange={pick}
-        />
+        <HiddenFileInput ref={inputRef} accept="image/jpeg,image/png,image/gif,image/webp" onChange={pick} />
       </div>
-      {error && <div className="text-danger text-sm mt-1">{error}</div>}
+      {error && <FormError layout="mt-1">{error}</FormError>}
     </div>
   );
 }

@@ -1,13 +1,17 @@
 import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
-import { ZoneSelect } from "../components/ZoneSelect";
+import { ZonePicker } from "../components/ui/ZonePicker";
+import { WeekdayPicker } from "../components/WeekdayPicker";
+import { FormActions } from "../components/ui/FormActions";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Groups } from "../api";
 import { useAuth } from "../auth";
-import { WEEKDAYS, weekdayCode } from "../lib/eventForm";
+import { weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
 import { errorText } from "../lib/errors";
+import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
+import { Button } from "../components/ui/Button";
 
 export function NewEvent() {
   const { id } = useParams<{ id: string }>();
@@ -131,48 +135,32 @@ export function NewEvent() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-8">
+    <div className="max-w-xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-2">Schedule an event</h1>
       <p className="text-text-muted mb-6">
         for <span className="font-semibold">{groupName}</span>
       </p>
       <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
-        {error && <div className="text-danger text-sm">{error}</div>}
-        <div>
-          <label className="label" htmlFor="event-title">
-            Title (optional)
-          </label>
-          <input
-            id="event-title"
-            className="input"
+        {error && <FormError>{error}</FormError>}
+        <Field id="event-title" label="Title" optional hint="Leave it blank to use the group's name.">
+          <Input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder={groupName || "Event name"}
           />
-        </div>
-        <div>
-          <label className="label" htmlFor="event-description">
-            Description
-          </label>
-          <textarea
-            id="event-description"
-            className="input"
+        </Field>
+        <Field id="event-description" label="Description" optional hint="What should people know before they come?">
+          <Textarea
             rows={4}
             maxLength={5000}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="What should people know before they come?"
           />
-        </div>
+        </Field>
         <div className="grid sm:grid-cols-2 gap-4">
-          <div>
-            <label className="label" htmlFor="event-date">
-              Date
-            </label>
-            <input
-              id="event-date"
+          <Field id="event-date" label="Date">
+            <Input
               type="date"
-              className="input"
               value={date}
               onChange={(e) => {
                 const v = e.target.value;
@@ -181,59 +169,43 @@ export function NewEvent() {
               }}
               required
             />
-          </div>
-          <div>
-            <label className="label" htmlFor="event-time">
-              Start time
-            </label>
-            <input
-              id="event-time"
+          </Field>
+          <Field id="event-time" label="Start time">
+            <Input
               type="time"
-              className="input"
               value={startTime}
               onChange={(e) => setStartTime(e.target.value)}
               required
             />
-          </div>
+          </Field>
         </div>
-        <div className="grid sm:grid-cols-[11rem_minmax(0,1fr)] gap-4">
-          <div>
-            <label className="label" htmlFor="event-duration">
-              Duration (minutes)
-            </label>
-            <input
-              id="event-duration"
+        <div>
+          <Field id="event-duration" label="Duration (minutes)">
+            <Input
               type="number"
               min={1}
               max={10080}
               step={1}
-              className="input"
               value={durationMin}
               onChange={(e) => setDurationMin(Number(e.target.value))}
+              layout="sm:w-44"
             />
-          </div>
-          <div>
-            <label className="label" htmlFor="event-tz">
-              Time zone
-            </label>
-            <ZoneSelect id="event-tz" value={tzid} onChange={setTzid} describedBy="tz-hint" />
-            <p id="tz-hint" className="text-sm text-text-muted mt-1">
-              The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving.
-            </p>
-          </div>
+          </Field>
         </div>
-        <div>
-          <label className="label" htmlFor="event-location">
-            Location (blank = group's location)
-          </label>
-          <input
-            id="event-location"
-            className="input"
+        <Field
+          id="event-tz"
+          label="Time zone"
+          hint="The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving."
+        >
+          <ZonePicker value={tzid} onChange={setTzid} />
+        </Field>
+        <Field id="event-location" label="Location" optional hint="Leave it blank to use the group's location.">
+          <Input
             value={location}
             onChange={(e) => setLocation(e.target.value)}
             placeholder="e.g. Room 201, Main Campus"
           />
-        </div>
+        </Field>
         <VisibilityField
           id="event-visibility"
           value={visibility}
@@ -244,42 +216,21 @@ export function NewEvent() {
           onReason={setVisReason}
         />
         <div className="border-t border-border pt-4">
-          <label className="flex items-center gap-2 font-semibold cursor-pointer">
-            <input
-              type="checkbox"
-              checked={recurring}
-              onChange={(e) => onRecurring(e.target.checked)}
-              className="w-4 h-4 accent-primary"
-            />
-            Repeat weekly
-          </label>
+          <Checkbox label="Repeat weekly" checked={recurring} onChange={(e) => onRecurring(e.target.checked)} />
           {recurring && (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {WEEKDAYS.map((w) => (
-                <button
-                  type="button"
-                  key={w.value}
-                  onClick={() => toggleDay(w.value)}
-                  className={
-                    days.includes(w.value)
-                      ? "px-3 py-1.5 rounded-full text-sm font-semibold bg-primary text-primary-foreground"
-                      : "px-3 py-1.5 rounded-full text-sm font-semibold bg-sunken text-text-muted hover:bg-border"
-                  }
-                >
-                  {w.label}
-                </button>
-              ))}
+            <div className="mt-2">
+              <WeekdayPicker days={days} onToggle={toggleDay} />
             </div>
           )}
         </div>
-        <div className="flex gap-3">
-          <button type="submit" disabled={busy} className="btn-primary">
+        <FormActions>
+          <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
             {busy ? "Scheduling…" : "Schedule event"}
-          </button>
-          <Link to={`/groups/${id}`} className="btn-secondary">
+          </Button>
+          <Link to={`/groups/${id}`} className="btn-secondary w-full sm:w-auto">
             Cancel
           </Link>
-        </div>
+        </FormActions>
       </form>
     </div>
   );

@@ -109,7 +109,7 @@ describe("Home tag filters", () => {
   it("explains an empty search-plus-tags result and offers to clear the tags", async () => {
     renderHome("/?tag=choir&tag=band");
     await chips();
-    await userEvent.type(screen.getByPlaceholderText("Search groups…"), "prayer");
+    await userEvent.type(screen.getByLabelText("Search groups"), "prayer");
     expect(
       await screen.findByText(/No groups match “prayer” with these tags/, undefined, { timeout: 2000 })
     ).toHaveTextContent("No groups match “prayer” with these tags. Try another search, or Clear the tags.");

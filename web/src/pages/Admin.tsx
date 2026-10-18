@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
-import { ZoneSelect } from "../components/ZoneSelect";
+import { ZonePicker } from "../components/ui/ZonePicker";
+import { FormActions } from "../components/ui/FormActions";
 import type { AccountRequest, GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
@@ -9,6 +10,7 @@ import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
 import { Button } from "../components/ui/Button";
 import { errorText } from "../lib/errors";
+import { Choices, Field, FormError, Input, Radio, Select } from "../components/ui/Field";
 
 type AdminTab = "approvals" | "groups" | "users" | "invite";
 
@@ -71,26 +73,18 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => voi
         </div>
       </div>
       <div className="mt-4">
-        <label className="label" htmlFor="admin-tags">Tags</label>
-        <input id="admin-tags"
-          className="input"
-          value={tags}
-          onChange={(e) => setTags(e.target.value)}
-          placeholder="e.g. young-adults, bible-study"
-        />
+        <Field id="admin-tags" label="Tags" optional hint="Separate tags with commas, for example young-adults, bible-study.">
+          <Input value={tags} onChange={(e) => setTags(e.target.value)} />
+        </Field>
       </div>
-      {error && <div className="text-danger text-sm mt-2">{error}</div>}
+      {error && <FormError layout="mt-2">{error}</FormError>}
       <div className="flex gap-3 mt-4">
-        <button onClick={approve} disabled={busy} className="btn-primary">
+        <Button variant="primary" onClick={approve} disabled={busy}>
           {busy ? "…" : "Approve"}
-        </button>
-        <button
-          onClick={reject}
-          disabled={busy}
-          className="btn-danger-outline"
-        >
+        </Button>
+        <Button variant="danger-outline" onClick={reject} disabled={busy}>
           Reject
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -137,18 +131,14 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
         {group.memberCount === 1 ? "member" : "members"}
       </div>
       <p className="text-text-muted mt-3">The leader asked for this group to be deleted.</p>
-      {error && <div className="text-danger text-sm mt-2">{error}</div>}
+      {error && <FormError layout="mt-2">{error}</FormError>}
       <div className="flex gap-3 mt-4">
-        <button
-          onClick={approve}
-          disabled={busy}
-          className="btn-danger-outline"
-        >
+        <Button variant="danger-outline" onClick={approve} disabled={busy}>
           {busy ? "…" : "Delete group"}
-        </button>
-        <button onClick={keep} disabled={busy} className="btn-primary">
+        </Button>
+        <Button variant="primary" onClick={keep} disabled={busy}>
           Keep group
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -213,13 +203,14 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
         </div>
       </div>
       <div className="mt-4">
-        <label className="label" htmlFor={`note-${request.id}`}>Note (optional, emailed on rejection)</label>
-        <input id={`note-${request.id}`} className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} />
+        <Field id={`note-${request.id}`} label="Note" optional hint="Emailed to them if you reject the request.">
+          <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} />
+        </Field>
       </div>
-      {error && <div className="text-danger text-sm mt-2">{error}</div>}
+      {error && <FormError layout="mt-2">{error}</FormError>}
       <div className="flex gap-3 mt-4">
-        <button onClick={() => decide(true)} disabled={busy} className="btn-primary">{busy ? "…" : "Approve"}</button>
-        <button onClick={() => decide(false)} disabled={busy} className="btn-danger-outline">Reject</button>
+        <Button variant="primary" onClick={() => decide(true)} disabled={busy}>{busy ? "…" : "Approve"}</Button>
+        <Button variant="danger-outline" onClick={() => decide(false)} disabled={busy}>Reject</Button>
       </div>
     </div>
   );
@@ -356,7 +347,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
 
   return (
     <div className="mt-3 border-t border-border pt-3">
-      {error && <div className="text-danger text-sm mb-2">{error}</div>}
+      {error && <FormError layout="mb-2">{error}</FormError>}
       <ul className="divide-y divide-border">
         {(members ?? []).map((m) => (
           <li key={m.id} className="py-2 flex items-center gap-3">
@@ -390,36 +381,24 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
       {members && members.length === 0 && (
         <p className="text-sm text-text-muted py-2">No members yet.</p>
       )}
-      <div className="flex gap-2 mt-3 flex-wrap items-end">
-        <div>
-          <label className="label" htmlFor="admin-add-person">Add person</label>
-          <select id="admin-add-person"
-            className="input w-48!"
-            value={addUserId}
-            onChange={(e) => setAddUserId(e.target.value)}
-          >
+      <div className="mt-3 max-w-xl space-y-4">
+        <Field id="admin-add-person" label="Add person">
+          <Select value={addUserId} onChange={(e) => setAddUserId(e.target.value)}>
             <option value="">Select…</option>
             {candidates.map((u) => (
               <option key={u.id} value={u.id}>
                 {u.displayName || u.name} ({u.email})
               </option>
             ))}
-          </select>
-        </div>
-        <div>
-          <label className="label" htmlFor="admin-role">Role</label>
-          <select id="admin-role"
-            className="input w-32!"
-            value={addRole}
-            onChange={(e) => setAddRole(e.target.value as "member" | "leader")}
-          >
-            <option value="member">Member</option>
-            <option value="leader">Leader</option>
-          </select>
-        </div>
-        <button onClick={add} disabled={busy || !addUserId} className="btn-secondary">
+          </Select>
+        </Field>
+        <Choices legend="Role">
+          <Radio name={`admin-role-${group.id}`} label="Member" checked={addRole === "member"} onChange={() => setAddRole("member")} />
+          <Radio name={`admin-role-${group.id}`} label="Leader" checked={addRole === "leader"} onChange={() => setAddRole("leader")} />
+        </Choices>
+        <Button variant="secondary" onClick={add} disabled={busy || !addUserId}>
           {busy ? "…" : "Add"}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -466,7 +445,7 @@ function GroupsTab({ users }: { users: User[] }) {
 
   return (
     <div className="space-y-3">
-      {deleteError && <div className="text-danger text-sm">{deleteError}</div>}
+      {deleteError && <FormError>{deleteError}</FormError>}
       {groups.map((g) => (
         <div key={g.id} className="bg-surface rounded-lg border border-border p-5">
           <div className="flex items-center gap-3 flex-wrap">
@@ -494,22 +473,15 @@ function GroupsTab({ users }: { users: User[] }) {
                 · {g.memberCount} members · {g.leaderName || "no leader"}
               </div>
             </div>
-            <button
-              onClick={() => setOpenMembers((v) => (v === g.id ? null : g.id))}
-              className="btn-secondary py-1.5! px-3! text-sm"
-            >
+            <Button variant="secondary" onClick={() => setOpenMembers((v) => (v === g.id ? null : g.id))}>
               {openMembers === g.id ? "Hide members" : "Manage members"}
-            </button>
+            </Button>
             <Link to={`/groups/${g.id}`} className="btn-secondary py-1.5! px-3! text-sm">
               Open & edit
             </Link>
-            <button
-              onClick={() => deleteGroup(g)}
-              disabled={deletingId === g.id}
-              className="btn-danger-outline py-1.5! px-3! text-sm"
-            >
+            <Button variant="danger-outline" onClick={() => deleteGroup(g)} disabled={deletingId === g.id}>
               {deletingId === g.id ? "…" : "Delete"}
-            </button>
+            </Button>
           </div>
           {openMembers === g.id && <MemberManager group={g} users={users} />}
         </div>
@@ -585,63 +557,51 @@ function UserForm({
 
   return (
     <form onSubmit={save} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-4">
-      {error && <div className="text-danger text-sm">{error}</div>}
+      {error && <FormError>{error}</FormError>}
       <div className="grid sm:grid-cols-2 gap-4">
-        <div>
-          <label className="label" htmlFor="admin-email">Email (signs in with it)</label>
-          <input id="admin-email"
+        <Field id="admin-email" label="Email (signs in with it)">
+          <Input
             type="email"
-            className="input"
             value={form.email}
             onChange={set("email")}
             maxLength={254}
             required
           />
-        </div>
-        <div>
-          <label className="label" htmlFor="admin-role-2">Role</label>
-          <select id="admin-role-2" className="input" value={form.role} onChange={set("role")}>
-            <option value="member">Member</option>
-            <option value="admin">Admin</option>
-          </select>
-        </div>
+        </Field>
+        <Choices legend="Role">
+          <Radio name="admin-user-role" label="Member" value="member" checked={form.role === "member"} onChange={set("role")} />
+          <Radio name="admin-user-role" label="Admin" value="admin" checked={form.role === "admin"} onChange={set("role")} />
+        </Choices>
         {creating && (
           <div className="sm:col-span-2">
-            <label className="label" htmlFor="admin-password">Password (optional)</label>
-            <input id="admin-password"
-              type="password"
-              className="input"
-              value={form.password}
-              onChange={set("password")}
-              autoComplete="new-password"
-            />
-            <p className="text-xs text-text-muted mt-1">
-              At least 10 characters. Leave blank to create an invited account that can't sign in until a password
-              is set.
-            </p>
+            <Field id="admin-password" label="Password" optional hint="At least 10 characters. Leave blank to create an invited account that can't sign in until a password is set.">
+              <Input
+                type="password"
+                value={form.password}
+                onChange={set("password")}
+                autoComplete="new-password"
+              />
+            </Field>
           </div>
         )}
-        <div>
-          <label className="label" htmlFor="admin-display-name">Display name</label>
-          <input id="admin-display-name" className="input" value={form.displayName} onChange={set("displayName")} maxLength={100} />
-        </div>
-        <div>
-          <label className="label" htmlFor="admin-full-name">Full name</label>
-          <input id="admin-full-name" className="input" value={form.name} onChange={set("name")} maxLength={100} required />
-        </div>
-        <div>
-          <label className="label" htmlFor="admin-phone">Phone</label>
-          <input id="admin-phone" type="tel" className="input" value={form.phone} onChange={set("phone")} maxLength={30} />
-        </div>
+        <Field id="admin-display-name" label="Display name" optional>
+          <Input value={form.displayName} onChange={set("displayName")} maxLength={100} />
+        </Field>
+        <Field id="admin-full-name" label="Full name">
+          <Input value={form.name} onChange={set("name")} maxLength={100} required />
+        </Field>
+        <Field id="admin-phone" label="Phone" optional>
+          <Input type="tel" value={form.phone} onChange={set("phone")} maxLength={30} />
+        </Field>
       </div>
-      <div className="flex gap-3">
-        <button type="submit" disabled={busy} className="btn-primary">
-          {busy ? "Saving…" : creating ? "Create user" : "Save changes"}
-        </button>
-        <button type="button" onClick={onCancel} className="btn-secondary">
+      <FormActions>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
+          {busy ? "Saving…" : creating ? "Create user" : "Save user"}
+        </Button>
+        <Button variant="secondary" layout="w-full sm:w-auto" onClick={onCancel}>
           Cancel
-        </button>
-      </div>
+        </Button>
+      </FormActions>
     </form>
   );
 }
@@ -670,33 +630,27 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
     return (
       <div className="text-sm text-success mt-2">
         Password set for {user.email}.{" "}
-        <button onClick={onDone} className="underline">
+        <Button variant="link" onClick={onDone}>
           Done
-        </button>
+        </Button>
       </div>
     );
   }
 
   return (
-    <form onSubmit={reset} className="flex gap-2 mt-2 flex-wrap items-end">
-      <div>
-        <label className="label" htmlFor="admin-new-password-for">New password for {user.email}</label>
-        <input id="admin-new-password-for"
-          type="password"
-          className="input w-56!"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
-        <p className="text-xs text-text-muted mt-1">Must be at least 10 characters.</p>
-      </div>
-      <button type="submit" disabled={busy} className="btn-secondary py-2!">
-        {busy ? "…" : "Set password"}
-      </button>
-      <button type="button" onClick={onDone} className="text-sm text-text-muted hover:underline">
-        Cancel
-      </button>
-      {error && <div className="text-danger text-sm w-full">{error}</div>}
+    <form onSubmit={reset} className="mt-2 max-w-xl space-y-4">
+      {error && <FormError>{error}</FormError>}
+      <Field id="admin-new-password-for" label={`New password for ${user.email}`} hint="Must be at least 10 characters.">
+        <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
+      </Field>
+      <FormActions>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
+          {busy ? "Saving…" : "Set password"}
+        </Button>
+        <Button variant="secondary" layout="w-full sm:w-auto" onClick={onDone}>
+          Cancel
+        </Button>
+      </FormActions>
     </form>
   );
 }
@@ -730,11 +684,11 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   return (
     <div>
       <div className="flex justify-end mb-4">
-        <button onClick={() => { setCreating(true); setEditingId(null); }} className="btn-primary">
+        <Button variant="primary" onClick={() => { setCreating(true); setEditingId(null); }}>
           New user
-        </button>
+        </Button>
       </div>
-      {error && <div className="text-danger text-sm mb-3">{error}</div>}
+      {error && <FormError layout="mb-3">{error}</FormError>}
       {creating && (
         <UserForm
           creating
@@ -894,30 +848,24 @@ function ChurchTimezone() {
   }
 
   return (
-    <form onSubmit={save} className="mb-6 flex flex-wrap items-end gap-3">
-      <div className="w-full sm:w-auto sm:flex-1 sm:max-w-md">
-        <label className="label" htmlFor="church-tz">
-          Church time zone
-        </label>
-        <ZoneSelect
-          id="church-tz"
+    <form onSubmit={save} className="mb-6 max-w-xl space-y-4">
+      <Field id="church-tz" label="Church time zone" hint="New events start in this time zone; leaders can pick another when they schedule.">
+        <ZonePicker
           forChurchSetting
           value={tz}
           onChange={(v) => {
             setTz(v);
             setOk(false);
           }}
-          describedBy="church-tz-hint"
         />
-        <p id="church-tz-hint" className="text-sm text-text-muted mt-1">
-          New events start in this time zone; leaders can pick another when they schedule.
-        </p>
-      </div>
-      <button type="submit" className="btn-secondary" disabled={busy || tz.trim() === saved}>
-        {busy ? "Saving…" : "Save time zone"}
-      </button>
-      {ok && <span className="text-sm text-text-muted">Saved</span>}
-      {error && <span className="text-sm text-danger">{error}</span>}
+      </Field>
+      <FormActions>
+        <Button variant="secondary" layout="w-full sm:w-auto" type="submit" disabled={busy || tz.trim() === saved}>
+          {busy ? "Saving…" : "Save time zone"}
+        </Button>
+        {ok && <span className="text-sm text-text-muted">Saved</span>}
+      </FormActions>
+      {error && <FormError>{error}</FormError>}
     </form>
   );
 }
@@ -963,44 +911,29 @@ function InviteTab() {
 
   return (
     <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4 max-w-xl">
-      {error && <div className="text-danger text-sm">{error}</div>}
+      {error && <FormError>{error}</FormError>}
       {status && <div className="text-success text-sm">{status}</div>}
       <p className="text-sm text-text-muted">
         They'll get an email link, set a password, and join with an active account — no
         approval step.
       </p>
-      <div>
-        <label className="label" htmlFor="inv-email">
-          Email
-        </label>
-        <input
-          id="inv-email"
+      <Field id="inv-email" label="Email">
+        <Input
           type="email"
-          className="input"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           required
         />
-      </div>
-      <div>
-        <label className="label" htmlFor="inv-name">
-          Name (optional)
-        </label>
-        <input
-          id="inv-name"
-          className="input"
+      </Field>
+      <Field id="inv-name" label="Name" optional>
+        <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
           maxLength={100}
         />
-      </div>
-      <div>
-        <label className="label" htmlFor="inv-group">
-          Group (optional)
-        </label>
-        <select
-          id="inv-group"
-          className="input"
+      </Field>
+      <Field id="inv-group" label="Group" optional>
+        <Select
           value={groupId}
           onChange={(e) => setGroupId(e.target.value)}
         >
@@ -1010,11 +943,11 @@ function InviteTab() {
               {g.name}
             </option>
           ))}
-        </select>
-      </div>
-      <button type="submit" disabled={busy} className="btn-primary">
+        </Select>
+      </Field>
+      <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
         {busy ? "Sending…" : "Send invitation"}
-      </button>
+      </Button>
     </form>
   );
 }
@@ -1060,18 +993,28 @@ function SelfSignupSetting() {
   }
 
   return (
-    <form onSubmit={save} className="mb-6 flex flex-wrap items-end gap-3">
-      <div>
-        <label className="label" htmlFor="self-signup">Self-signup</label>
-        <select id="self-signup" className="input w-full sm:w-104!" value={mode} onChange={(e) => { setMode(e.target.value as "request" | "off"); setOk(false); }}>
-          <option value="request">On — requests wait for approval</option>
-          <option value="off">Off — office creates accounts</option>
-        </select>
-        <p className="text-sm text-text-muted mt-1">People ask for an account on /join. Turning this off never removes existing accounts.</p>
-      </div>
-      <button type="submit" className="btn-secondary" disabled={busy || mode === saved}>{busy ? "Saving…" : "Save self-signup"}</button>
-      {ok && <span className="text-sm text-text-muted">Saved</span>}
-      {error && <span className="text-sm text-danger">{error}</span>}
+    <form onSubmit={save} className="mb-6 max-w-xl space-y-4">
+      <Choices legend="Self-signup" hint="People ask for an account on /join. Turning this off never removes existing accounts.">
+        <Radio
+          name="self-signup"
+          label="On"
+          description="Requests wait for an admin's approval."
+          checked={mode === "request"}
+          onChange={() => { setMode("request"); setOk(false); }}
+        />
+        <Radio
+          name="self-signup"
+          label="Off"
+          description="The church office creates accounts."
+          checked={mode === "off"}
+          onChange={() => { setMode("off"); setOk(false); }}
+        />
+      </Choices>
+      <FormActions>
+        <Button variant="secondary" layout="w-full sm:w-auto" type="submit" disabled={busy || mode === saved}>{busy ? "Saving…" : "Save self-signup"}</Button>
+        {ok && <span className="text-sm text-text-muted">Saved</span>}
+      </FormActions>
+      {error && <FormError>{error}</FormError>}
     </form>
   );
 }

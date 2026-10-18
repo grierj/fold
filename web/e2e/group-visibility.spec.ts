@@ -31,7 +31,7 @@ test("making a group invite-only reviews its events before saving", async ({ pag
   await page.goto(`/groups/${group.id}`);
   await fromMore(page, "Edit group", "More group actions");
   await page.getByRole("radio", { name: /^Invite only/ }).check();
-  await page.getByRole("button", { name: "Save changes" }).click();
+  await page.getByRole("button", { name: "Save group" }).click();
 
   const review = page.getByRole("dialog");
   await expect(review.getByText("Making the group invite-only changes some events")).toBeVisible();

@@ -16,14 +16,15 @@ test("visibility is chosen at creation and edited inside Edit series", async ({ 
   })) as { group: { id: number } };
 
   await signIn(page, "grier");
-  const schedule = async (title: string, days: number, vis?: string) => {
+  const schedule = async (title: string, days: number, choice?: string) => {
     await page.goto(`/groups/${group.id}/events/new`);
-    await expect(page.getByLabel("Who can see this event")).toHaveValue("private");
+    const vis = (v: string) => page.getByRole("group", { name: "Who can see this event" }).locator(`input[value="${v}"]`);
+    await expect(vis("private")).toBeChecked();
     await page.getByLabel("Title (optional)").fill(title);
     await page.getByLabel("Date").fill(futureDate(days));
     await page.getByLabel("Start time").fill("19:00");
-    if (vis) {
-      await page.getByLabel("Who can see this event").selectOption(vis);
+    if (choice) {
+      await vis(choice).check();
       await expect(page.getByText("Only leaders will see who signed up")).toBeVisible();
       await page.getByLabel("Reason (optional)").fill("Open rehearsal");
     }
@@ -35,7 +36,7 @@ test("visibility is chosen at creation and edited inside Edit series", async ({ 
   };
   await schedule("Rehearsal", 3, "public");
   await schedule("Sectionals", 4);
-  await expect(page.getByLabel("Who can see this event")).toHaveCount(0);
+  await expect(page.getByRole("group", { name: "Who can see this event" })).toHaveCount(0);
 
   const evs = (await admin("GET", `/groups/${group.id}`)) as {
     upcomingEvents: { title: string; visibility: string; leaderOpened: boolean }[];
@@ -46,5 +47,5 @@ test("visibility is chosen at creation and edited inside Edit series", async ({ 
   }
 
   await fromMore(page, "Edit series");
-  await expect(page.getByLabel("Who can see this event")).toHaveCount(1);
+  await expect(page.getByRole("group", { name: "Who can see this event" })).toHaveCount(1);
 });

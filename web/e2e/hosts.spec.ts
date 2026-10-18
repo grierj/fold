@@ -10,10 +10,10 @@ function futureDate(days: number): string {
 test("an admin schedules a church-wide event in the church time zone", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/events/new");
-  await expect(page.getByLabel("Time zone")).toHaveValue("America/Boise");
+  await expect(page.getByLabel("Time zone")).toHaveAttribute("title", /America\/Boise$/);
 
   await page.getByLabel("Title").fill("Church potluck");
-  await page.getByLabel("Description").fill("Bring a side dish.");
+  await page.getByLabel("Description (optional)").fill("Bring a side dish.");
   await page.getByLabel("Date").fill(futureDate(18));
   await page.getByLabel("Start time").fill("18:00");
   await page.getByRole("button", { name: "Schedule event" }).click();
@@ -61,17 +61,17 @@ test("opening an invite-only group's event hides the group and the names", async
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
   await fromMore(page, "Edit event");
-  await page.getByLabel("Who can see this event").selectOption("public");
+  await page.getByRole("radio", { name: /^Public/ }).check();
   await expect(
     page.getByText("Only leaders will see who signed up, so members of Hidden Care aren't revealed.")
   ).toBeVisible();
   const saved = page.waitForResponse((r) => r.url().includes("/visibility") && r.request().method() === "PUT");
   await page.getByRole("button", { name: "Save visibility" }).click();
   expect((await saved).ok()).toBe(true);
-  if ((await page.getByLabel("Who can see this event").count()) === 0) {
+  if ((await page.getByRole("group", { name: "Who can see this event" }).count()) === 0) {
     await fromMore(page, "Edit event");
   }
-  await expect(page.getByLabel("Who can see this event")).toHaveValue("public");
+  await expect(page.getByRole("radio", { name: /^Public/ })).toBeChecked();
 
   await signOut(page);
 
@@ -107,7 +107,7 @@ test("an admin edits one date, cancels a date, and deletes a church-wide event",
   await signIn(page, "grier");
   await page.goto(`/events/${edited.id}`);
   await fromMore(page, "Edit this date");
-  await page.getByLabel("Location", { exact: true }).fill("Gym");
+  await page.getByLabel(/^Location/).fill("Gym");
   await page.getByRole("button", { name: "Save this date" }).click();
   await expect(page.getByText(/Gym/)).toBeVisible();
   await expect(page.getByText(/edited on its own/)).toBeVisible();
