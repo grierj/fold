@@ -3,6 +3,8 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Auth as AuthApi } from "../api";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
+import { Field, FormError, Input, showFieldErrors } from "../components/ui/Field";
+import { Button } from "../components/ui/Button";
 
 // Set a new password from a reset link (M1.2). The token is single use and
 // expires; confirming signs the person in.
@@ -14,14 +16,16 @@ export function ResetPassword() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [mismatch, setMismatch] = useState(false);
   const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (password !== confirm) {
-      setError("The passwords don't match.");
+      showFieldErrors(e.currentTarget as HTMLFormElement, () => setMismatch(true));
       return;
     }
+    setMismatch(false);
     setBusy(true);
     setError(null);
     try {
@@ -59,39 +63,28 @@ export function ResetPassword() {
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-6">Choose a new password</h1>
       <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
-        {error && <div className="text-danger text-sm">{error}</div>}
-        <div>
-          <label className="label" htmlFor="rp-password">
-            New password
-          </label>
-          <input
-            id="rp-password"
+        {error && <FormError>{error}</FormError>}
+        <Field id="rp-password" label="New password" hint="Must be at least 10 characters.">
+          <Input
             type="password"
-            className="input"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
             required
           />
-          <p className="text-xs text-text-muted mt-1">Must be at least 10 characters.</p>
-        </div>
-        <div>
-          <label className="label" htmlFor="rp-confirm">
-            Confirm new password
-          </label>
-          <input
-            id="rp-confirm"
+        </Field>
+        <Field id="rp-confirm" label="Confirm new password" error={mismatch && "The passwords don't match."}>
+          <Input
             type="password"
-            className="input"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             autoComplete="new-password"
             required
           />
-        </div>
-        <button type="submit" disabled={busy} className="btn-primary w-full">
+        </Field>
+        <Button variant="primary" layout="w-full" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Set new password"}
-        </button>
+        </Button>
       </form>
     </div>
   );

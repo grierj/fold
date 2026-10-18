@@ -29,13 +29,13 @@ describe("SeriesEditor", () => {
         onSaved={() => {}}
       />
     );
-    const capacity = screen.getByLabelText("Capacity") as HTMLInputElement;
+    const capacity = screen.getByLabelText(/^Capacity/) as HTMLInputElement;
     expect(capacity.value).toBe("20");
     expect(screen.getByText(/Seats per date/)).toBeInTheDocument();
     const guests = screen.getByLabelText("Guests allowed") as HTMLInputElement;
     expect(guests.value).toBe("2");
     expect(screen.getByText(/0–5/)).toBeInTheDocument();
-    expect(screen.getByLabelText("Waitlist when full")).toBeChecked();
+    expect(screen.getByLabelText(/^Waitlist when full/)).toBeChecked();
     expect(screen.getByText(/refuses new registrations/)).toBeInTheDocument();
   });
 
@@ -59,7 +59,7 @@ describe("SeriesEditor", () => {
         onSaved={() => {}}
       />
     );
-    const capacity = screen.getByLabelText("Capacity") as HTMLInputElement;
+    const capacity = screen.getByLabelText(/^Capacity/) as HTMLInputElement;
     expect(capacity.value).toBe("");
     expect(capacity).toHaveAttribute("placeholder", "No limit");
   });

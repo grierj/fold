@@ -3,6 +3,8 @@ import { useLocation, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../auth";
 import { ERROR_COPY, errorText } from "../lib/errors";
 import { ApiError } from "../api";
+import { Field, FormError, Input } from "../components/ui/Field";
+import { Button } from "../components/ui/Button";
 
 export function Login() {
   const { login, user } = useAuth();
@@ -42,38 +44,28 @@ export function Login() {
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-6">Log in to Fold</h1>
       <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
-        {error && <div className="text-danger text-sm">{error}</div>}
-        <div>
-          <label className="label" htmlFor="email">
-            Email
-          </label>
-          <input
-            id="email"
+        {error && <FormError>{error}</FormError>}
+        <Field id="email" label="Email">
+          <Input
             type="email"
-            className="input"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="email"
             required
           />
-        </div>
-        <div>
-          <label className="label" htmlFor="password">
-            Password
-          </label>
-          <input
-            id="password"
+        </Field>
+        <Field id="password" label="Password">
+          <Input
             type="password"
-            className="input"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="current-password"
             required
           />
-        </div>
-        <button type="submit" disabled={busy} className="btn-primary w-full">
+        </Field>
+        <Button variant="primary" layout="w-full" type="submit" disabled={busy}>
           {busy ? "Logging in…" : "Log in"}
-        </button>
+        </Button>
         <p className="text-sm text-center">
           <Link to="/forgot-password" className="inline-flex items-center min-h-11 text-primary font-semibold">
             Forgot your password?

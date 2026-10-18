@@ -1,5 +1,7 @@
 import { useState } from "react";
 import type { OpenedDecision, Visibility, VisibilityImpact } from "../types";
+import { Button } from "./ui/Button";
+import { Choices, Radio } from "./ui/Field";
 
 const WORD: Record<Visibility, string> = {
   public: "public",
@@ -71,29 +73,29 @@ export function GroupVisibilityReview({
             {impact.leaderOpened.map((e) => {
               const key = String(e.id);
               return (
-                <li key={e.id} className="text-sm" data-testid={`opened-${e.id}`}>
-                  <div className="font-medium">
-                    {label(e.title)} <span className="text-text-muted font-normal">(now {WORD[e.visibility]})</span>
-                  </div>
-                  <label className="flex items-center gap-2 mt-1">
-                    <input
-                      type="radio"
+                <li key={e.id} data-testid={`opened-${e.id}`}>
+                  <Choices
+                    legend={
+                      <>
+                        {label(e.title)} <span className="text-text-muted font-normal">(now {WORD[e.visibility]})</span>
+                      </>
+                    }
+                  >
+                    <Radio
                       name={`opened-${key}`}
+                      label={`Keep it ${WORD[e.visibility]}`}
+                      description="Logged, and other leaders and admins are told."
                       checked={decisions[key] === "keep"}
                       onChange={() => setDecisions((d) => ({ ...d, [key]: "keep" }))}
                     />
-                    Keep it {WORD[e.visibility]} (logged, and other leaders and admins are told)
-                  </label>
-                  <label className="flex items-center gap-2">
-                    <input
-                      type="radio"
+                    <Radio
                       name={`opened-${key}`}
+                      label={`Make it ${next}`}
+                      description={e.registrants > 0 && <span className="text-danger">Cancels {people(e.registrants)} and notifies them.</span>}
                       checked={decisions[key] === "tighten"}
                       onChange={() => setDecisions((d) => ({ ...d, [key]: "tighten" }))}
                     />
-                    Make it {next}
-                    {e.registrants > 0 && <span className="text-danger"> · cancels {people(e.registrants)} and notifies them</span>}
-                  </label>
+                  </Choices>
                 </li>
               );
             })}
@@ -101,12 +103,12 @@ export function GroupVisibilityReview({
         </fieldset>
       )}
       <div className="flex gap-2">
-        <button type="button" className="btn-primary" disabled={busy || !ready} onClick={() => onConfirm(decisions)}>
+        <Button variant="primary" disabled={busy || !ready} onClick={() => onConfirm(decisions)}>
           {busy ? "Saving…" : `Make ${who} ${next}`}
-        </button>
-        <button type="button" className="btn-secondary" disabled={busy} onClick={onCancel}>
+        </Button>
+        <Button variant="secondary" disabled={busy} onClick={onCancel}>
           Cancel
-        </button>
+        </Button>
       </div>
     </section>
   );

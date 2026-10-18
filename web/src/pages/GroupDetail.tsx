@@ -17,6 +17,9 @@ import { coverImage } from "../components/GroupCard";
 import { focalPosition, prepareUpload } from "../lib/image";
 import { formatTime, formatWhen, zoneNote } from "../lib/when";
 import { errorText } from "../lib/errors";
+import { Checkbox, Choices, Field, FormError, HiddenFileInput, Input, Radio, Textarea } from "../components/ui/Field";
+import { FormActions } from "../components/ui/FormActions";
+import { Button } from "../components/ui/Button";
 
 type Tab = "events" | "about" | "members";
 
@@ -66,56 +69,39 @@ function DateEditor({
       <p className="text-sm text-text-muted">
         This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
       </p>
-      {error && <div className="text-sm text-danger">{error}</div>}
+      {error && <FormError>{error}</FormError>}
       <div className="grid sm:grid-cols-3 gap-3">
-        <div>
-          <label className="label" htmlFor={`date-${instance.id}`}>
-            Date
-          </label>
-          <input id={`date-${instance.id}`} type="date" className="input" value={date} onChange={(e) => setDate(e.target.value)} required />
-        </div>
-        <div>
-          <label className="label" htmlFor={`time-${instance.id}`}>
-            Start time
-          </label>
-          <input id={`time-${instance.id}`} type="time" className="input" value={time} onChange={(e) => setTime(e.target.value)} required />
-        </div>
-        <div>
-          <label className="label" htmlFor={`dur-${instance.id}`}>
-            Minutes
-          </label>
-          <input
-            id={`dur-${instance.id}`}
+        <Field id={`date-${instance.id}`} label="Date">
+          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
+        </Field>
+        <Field id={`time-${instance.id}`} label="Start time">
+          <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
+        </Field>
+        <Field id={`dur-${instance.id}`} label="Minutes">
+          <Input
             type="number"
             min={1}
             max={10080}
-            className="input"
             value={duration}
             onChange={(e) => setDuration(Number(e.target.value))}
           />
-        </div>
+        </Field>
       </div>
       <div className="grid sm:grid-cols-2 gap-3">
-        <div>
-          <label className="label" htmlFor={`title-${instance.id}`}>
-            Title
-          </label>
-          <input id={`title-${instance.id}`} className="input" value={title} onChange={(e) => setTitle(e.target.value)} />
-        </div>
-        <div>
-          <label className="label" htmlFor={`loc-${instance.id}`}>
-            Location
-          </label>
-          <input id={`loc-${instance.id}`} className="input" value={location} onChange={(e) => setLocation(e.target.value)} />
-        </div>
+        <Field id={`title-${instance.id}`} label="Title">
+          <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+        </Field>
+        <Field id={`loc-${instance.id}`} label="Location">
+          <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+        </Field>
       </div>
       <div className="flex gap-2">
-        <button type="submit" disabled={busy} className="btn-primary">
+        <Button variant="primary" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save this date"}
-        </button>
-        <button type="button" onClick={onClose} className="btn-secondary">
+        </Button>
+        <Button variant="secondary" onClick={onClose}>
           Close
-        </button>
+        </Button>
       </div>
     </form>
   );
@@ -215,7 +201,7 @@ function EventRow({
                 guestsAllowed: instance.guestsAllowed,
               }}
               idPrefix={`${instance.id}`}
-              locationLabel="Location (blank = group's location)"
+              locationHint="Leave it blank to use the group's location."
               onSaved={onChanged}
               onClose={() => setEditor(null)}
             />
@@ -290,7 +276,7 @@ function GroupForm({
 
   return (
     <form
-      className="bg-surface rounded-lg border border-border p-6 space-y-4"
+      className="bg-surface rounded-lg border border-border p-6 space-y-6"
       onSubmit={async (e) => {
         e.preventDefault();
         setBusy(true);
@@ -317,101 +303,52 @@ function GroupForm({
         }
       }}
     >
-      {error && <div className="text-danger text-sm">{error}</div>}
-      <div>
-        <label className="label" htmlFor="group-name">Group name</label>
-        <input id="group-name" className="input" value={name} onChange={(e) => setName(e.target.value)} required />
-      </div>
-      <div>
-        <label className="label" htmlFor="group-description">Description</label>
-        <textarea id="group-description"
-          className="input"
-          rows={4}
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-        />
-      </div>
-      <div>
-        <label className="label" htmlFor="group-location">Location</label>
-        <input id="group-location"
-          className="input"
-          value={location}
-          onChange={(e) => setLocation(e.target.value)}
-          placeholder="e.g. Room 201, Main Campus"
-        />
-      </div>
-      <div>
-        <label className="label" htmlFor="group-tags">Tags (comma separated)</label>
-        <input id="group-tags"
-          className="input"
-          value={tags}
-          onChange={(e) => setTags(e.target.value)}
-          placeholder="e.g. young-adults, bible-study"
-        />
-      </div>
-      <div>
-        <label className="label" htmlFor="member-limit">Member limit (optional)</label>
-        <input
-          id="member-limit"
-          className="input"
-          type="number"
-          min={1}
-          step={1}
-          value={memberLimit}
-          onChange={(e) => setMemberLimit(e.target.value)}
-          placeholder="No limit"
-        />
-        <p className="text-xs text-text-muted mt-1">
-          For a room with a fixed capacity. When it's full, people can't join on their own; leaders can still add someone.
-        </p>
-      </div>
-      <fieldset>
-        <legend className="label">Who can see this group</legend>
-        <div className="space-y-2 text-sm">
-          <label className="flex items-start gap-2">
-            <input
-              type="radio"
-              name="visibility"
-              className="mt-1"
-              checked={visibility === "public"}
-              onChange={() => setVisibility("public")}
-            />
-            <span>
-              <span className="font-semibold">Public</span>
-              <span className="block text-text-muted">Anyone can see it, including people who are logged out.</span>
-            </span>
-          </label>
-          <label className="flex items-start gap-2">
-            <input
-              type="radio"
-              name="visibility"
-              className="mt-1"
-              checked={visibility === "private"}
-              onChange={() => setVisibility("private")}
-            />
-            <span>
-              <span className="font-semibold">Private</span>
-              <span className="block text-text-muted">Only signed-in people can see it.</span>
-            </span>
-          </label>
-          <label className="flex items-start gap-2">
-            <input
-              type="radio"
-              name="visibility"
-              className="mt-1"
-              checked={visibility === "invite_only"}
-              onChange={() => setVisibility("invite_only")}
-            />
-            <span>
-              <span className="font-semibold">Invite only</span>
-              <span className="block text-text-muted">
-                Hidden from everyone except its members and church admins. People join only when a leader adds them.
-              </span>
-            </span>
-          </label>
-        </div>
-      </fieldset>
-      <div>
+      {error && <FormError>{error}</FormError>}
+      <section className="space-y-4">
+        <h2 className="text-base font-semibold">About the group</h2>
+        <Field id="group-name" label="Group name">
+          <Input value={name} onChange={(e) => setName(e.target.value)} required />
+        </Field>
+        <Field id="group-description" label="Description" optional>
+          <Textarea rows={4} value={description} onChange={(e) => setDescription(e.target.value)} />
+        </Field>
+        <Field id="group-location" label="Location" optional hint="Where it usually meets, for example Room 201, Main Campus.">
+          <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+        </Field>
+        <Field id="group-tags" label="Tags" optional hint="Separate tags with commas, for example young-adults, bible-study.">
+          <Input value={tags} onChange={(e) => setTags(e.target.value)} />
+        </Field>
+      </section>
+      <section className="space-y-4">
+        <h2 className="text-base font-semibold">Who can join</h2>
+        <Field id="member-limit" label="Member limit" optional hint="For a room with a fixed capacity. When it's full, people can't join on their own; leaders can still add someone. Leave it blank for no limit.">
+          <Input type="number" min={1} step={1} value={memberLimit} onChange={(e) => setMemberLimit(e.target.value)} layout="sm:w-44" />
+        </Field>
+        <Choices legend="Who can see this group">
+          <Radio
+            name="visibility"
+            label="Public"
+            description="Anyone can see it, including people who are logged out."
+            checked={visibility === "public"}
+            onChange={() => setVisibility("public")}
+          />
+          <Radio
+            name="visibility"
+            label="Private"
+            description="Only signed-in people can see it."
+            checked={visibility === "private"}
+            onChange={() => setVisibility("private")}
+          />
+          <Radio
+            name="visibility"
+            label="Invite only"
+            description="Hidden from everyone except its members and church admins. People join only when a leader adds them."
+            checked={visibility === "invite_only"}
+            onChange={() => setVisibility("invite_only")}
+          />
+        </Choices>
+      </section>
+      <section>
         <ImageUpload
           label="Cover image"
           initialUrl={initial.imageUrl || undefined}
@@ -422,20 +359,19 @@ function GroupForm({
           onFocal={setCoverFocal}
         />
         {initial.imageUrl && !coverFile && (
-          <label className="flex items-center gap-2 text-sm mt-2">
-            <input type="checkbox" checked={removeCover} onChange={(e) => setRemoveCover(e.target.checked)} />
-            Remove the current cover
-          </label>
+          <div className="mt-2">
+            <Checkbox label="Remove the current cover" checked={removeCover} onChange={(e) => setRemoveCover(e.target.checked)} />
+          </div>
         )}
-      </div>
-      <div className="flex gap-3">
-        <button type="submit" disabled={busy} className="btn-primary">
+      </section>
+      <FormActions>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Saving…" : saveLabel}
-        </button>
-        <button type="button" onClick={onCancel} className="btn-secondary">
+        </Button>
+        <Button variant="secondary" layout="w-full sm:w-auto" onClick={onCancel}>
           Cancel
-        </button>
-      </div>
+        </Button>
+      </FormActions>
     </form>
   );
 }
@@ -829,11 +765,9 @@ export function GroupDetail() {
                       ...(isMember ? [{ label: joinBusy ? "Leaving…" : "Leave group", onSelect: () => void toggleJoin(), disabled: joinBusy }] : []),
                     ]}
                   />
-                  <input
+                  <HiddenFileInput
                     ref={coverRef}
-                    type="file"
                     accept="image/jpeg,image/png,image/gif,image/webp"
-                    className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
                       if (f) uploadCover(f);
@@ -859,7 +793,7 @@ export function GroupDetail() {
       <div className="max-w-6xl mx-auto px-4 py-6">
         {editing && review && (
           <>
-            {reviewError && <div className="text-danger text-sm mb-2">{reviewError}</div>}
+            {reviewError && <FormError layout="mb-2">{reviewError}</FormError>}
             <GroupVisibilityReview
               key={JSON.stringify(review.impact)}
               impact={review.impact}
@@ -885,7 +819,7 @@ export function GroupDetail() {
               visibility: group.visibility,
               memberLimit: group.memberLimit,
             }}
-            saveLabel="Save changes"
+            saveLabel="Save group"
             onSaved={saveEdit}
             onCancel={() => setEditing(false)}
           />
@@ -985,7 +919,7 @@ export function GroupDetail() {
                   </p>
                 ) : (
                   <>
-                    {memberError && <div className="text-danger text-sm mb-3">{memberError}</div>}
+                    {memberError && <FormError layout="mb-3">{memberError}</FormError>}
                     {members && members.length > 0 ? (
                       <ul className="divide-y divide-border">
                         {members.map((m) => (
@@ -1033,56 +967,46 @@ export function GroupDetail() {
                       <>
                       <form onSubmit={inviteMember} className="mt-4 flex gap-2 flex-wrap items-end">
                         <div className="grow min-w-48">
-                          <label className="label" htmlFor="invite-member">Invite someone to Fold</label>
-                          <input
-                            id="invite-member"
-                            className="input"
-                            value={inviteEmail}
-                            onChange={(e) => setInviteEmail(e.target.value)}
-                            type="email"
-                            placeholder="name@example.com"
-                            autoComplete="off"
-                          />
+                          <Field id="invite-member" label="Invite someone to Fold">
+                            <Input
+                              value={inviteEmail}
+                              onChange={(e) => setInviteEmail(e.target.value)}
+                              type="email"
+                              placeholder="name@example.com"
+                              autoComplete="off"
+                            />
+                          </Field>
                         </div>
-                        <button
-                          type="submit"
-                          disabled={inviteBusy || !inviteEmail.trim()}
-                          className="btn-secondary"
-                        >
-                          {inviteBusy ? "…" : "Invite"}
-                        </button>
+                        <Button variant="secondary" type="submit" disabled={inviteBusy || !inviteEmail.trim()}>
+                          {inviteBusy ? "Sending…" : "Send invite"}
+                        </Button>
                         {group.memberLimit != null && group.memberCount >= group.memberLimit && (
-                          <label className="text-xs text-text-muted flex items-center gap-1.5 w-full">
-                            <input
-                              type="checkbox"
+                          <div className="w-full">
+                            <Checkbox
+                              label="Invite over the limit anyway"
+                              description="This group is full. Going over the limit is logged."
                               checked={inviteOverLimit}
                               onChange={(e) => setInviteOverLimit(e.target.checked)}
                             />
-                            This group is full — invite over the limit anyway (audited)
-                          </label>
+                          </div>
                         )}
                       </form>
                       {inviteStatus && <p className="text-success text-sm mt-2">{inviteStatus}</p>}
                       <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">
                         <div className="grow min-w-48">
-                          <label className="label" htmlFor="add-member">Add a member by email</label>
-                          <input
-                            id="add-member"
-                            className="input"
-                            value={memberEmail}
-                            onChange={(e) => setMemberEmail(e.target.value)}
-                            type="email"
-                            placeholder="name@example.com"
-                            autoComplete="off"
-                          />
+                          <Field id="add-member" label="Add a member by email">
+                            <Input
+                              value={memberEmail}
+                              onChange={(e) => setMemberEmail(e.target.value)}
+                              type="email"
+                              placeholder="name@example.com"
+                              autoComplete="off"
+                            />
+                          </Field>
                         </div>
-                        <button
-                          type="submit"
-                          disabled={memberBusy || !memberEmail.trim()}
-                          className="btn-secondary"
-                        >
-                          {memberBusy ? "…" : "Add"}
-                        </button>
+                        <Button variant="secondary" type="submit" disabled={memberBusy || !memberEmail.trim()}>
+                          {memberBusy ? "Adding…" : "Add member"}
+                        </Button>
                       </form>
                       </>
                     )}
@@ -1094,24 +1018,14 @@ export function GroupDetail() {
                               <p className="text-sm text-text-muted">
                                 An admin still has to approve deleting this group.
                               </p>
-                              <button
-                                type="button"
-                                onClick={cancelDeletion}
-                                disabled={memberBusy}
-                                className="btn-secondary"
-                              >
+                              <Button variant="secondary" onClick={cancelDeletion} disabled={memberBusy}>
                                 Cancel deletion request
-                              </button>
+                              </Button>
                             </div>
                           ) : (
-                            <button
-                              type="button"
-                              onClick={requestDeletion}
-                              disabled={memberBusy}
-                              className="btn-danger-outline"
-                            >
+                            <Button variant="danger-outline" onClick={requestDeletion} disabled={memberBusy}>
                               Request deletion
-                            </button>
+                            </Button>
                           )
                         ) : (
                           <p className="text-sm text-text-muted">

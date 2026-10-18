@@ -1,27 +1,59 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { apiAs, signIn, fromMore } from "./helpers";
 
 // Grier's bug (Oct 14): with a value already chosen, the zone list showed
 // only that value, hiding "Your time zone". The browser zone here is not in
-// the common list, and every create and edit form must offer it first.
+// the common list, and every create and edit form must offer it first. The
+// picker is one searchable combobox everywhere but setup (DEC-65).
 test.use({ locale: "en-US", timezoneId: "America/Indiana/Knox" });
 
 function futureDate(days: number): string {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-async function expectBrowserZoneFirst(page: import("@playwright/test").Page, selectId: string) {
-  const sel = page.locator(`select#${selectId}`);
-  await expect(sel).toHaveValue("America/Boise");
-  await expect(sel.locator("option").first()).toHaveText("Yours · Knox, Indiana (Central)");
-  await expect(sel.locator("option").nth(1)).toHaveText("Church · Boise (Mountain)");
-  await expect(sel.locator('option[value="America/Boise"]')).toHaveCount(1);
+async function expectBrowserZoneFirst(page: Page, id: string, church = true) {
+  const box = page.locator(`#${id}`);
+  await expect(box).toHaveAttribute("role", "combobox");
+  await expect(box).toHaveValue("Boise (Mountain)");
+  await box.click();
+  const options = page.getByRole("listbox").getByRole("option");
+  await expect(options.first()).toContainText("Knox, Indiana (Central)");
+  await expect(options.first()).toContainText("Yours");
+  if (church) {
+    await expect(options.nth(1)).toContainText("Boise (Mountain)");
+    await expect(options.nth(1)).toContainText("Church");
+  } else {
+    await expect(page.getByRole("option", { name: /Church/ })).toHaveCount(0);
+  }
+  await expect(page.getByRole("option", { name: /^Boise \(Mountain\)/ })).toHaveCount(1);
+  await box.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
 }
 
 test("church-wide create form lists the browser zone first", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/events/new");
   await expectBrowserZoneFirst(page, "church-event-tz");
+});
+
+test("typing filters by region and the keyboard picks a zone", async ({ page }) => {
+  await signIn(page, "grier");
+  await page.goto("/events/new");
+  const box = page.getByRole("combobox", { name: "Time zone" });
+  await box.click();
+  await box.fill("pac");
+  await expect(page.getByRole("option").first()).toContainText("Los Angeles (Pacific)");
+  await box.press("ArrowDown");
+  await box.press("ArrowUp");
+  await box.press("Enter");
+  await expect(box).toHaveValue("Los Angeles (Pacific)");
+  await expect(box).toHaveAttribute("title", /America\/Los_Angeles$/);
+  // An offset finds zones too.
+  await box.click();
+  await box.fill("utc+5:30");
+  await expect(page.getByRole("option").first()).toContainText("UTC+5:30");
+  await box.press("Escape");
+  await expect(box).toHaveValue("Los Angeles (Pacific)");
 });
 
 test("series edit form lists the browser zone first", async ({ page, request }) => {
@@ -52,9 +84,5 @@ test("series edit form lists the browser zone first", async ({ page, request }) 
 test("admin church time zone setting lists the browser zone first", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/admin");
-  const sel = page.locator("select#church-tz");
-  await expect(sel).toHaveValue("America/Boise");
-  await expect(sel.locator("option").first()).toHaveText("Yours · Knox, Indiana (Central)");
-  await expect(sel.locator('option[value="America/Boise"]')).toHaveCount(1);
-  await expect(sel.locator("option", { hasText: /church/i })).toHaveCount(0);
+  await expectBrowserZoneFirst(page, "church-tz", false);
 });

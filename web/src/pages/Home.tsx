@@ -7,6 +7,7 @@ import { GroupCard } from "../components/GroupCard";
 import { formatTime } from "../lib/when";
 import { errorText } from "../lib/errors";
 import { ErrorNotice } from "../components/ErrorNotice";
+import { SearchBox } from "../components/ui/SearchBox";
 
 function tagsFromParams(params: URLSearchParams): string[] {
   const seen = new Set<string>();
@@ -137,12 +138,7 @@ export function Home() {
             up.
           </p>
           <div className="mt-6 max-w-xl">
-            <input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search groups…"
-              className="input py-3! text-lg shadow-sm"
-            />
+            <SearchBox id="group-search" label="Search groups" value={search} onChange={setSearch} />
           </div>
           {chips.length > 0 && (
             <div className="mt-4 flex flex-wrap gap-2">

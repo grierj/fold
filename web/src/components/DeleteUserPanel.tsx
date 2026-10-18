@@ -3,6 +3,8 @@ import { AdminUsers } from "../api";
 import { useAuth } from "../auth";
 import type { SoleLedGroup, User } from "../types";
 import { errorText } from "../lib/errors";
+import { Button } from "./ui/Button";
+import { Field, FormError, Select } from "./ui/Field";
 
 // Confirms deleting or disabling an account. For every group the person
 // leads alone, the admin picks a new leader first: a member of that group or any admin, with
@@ -68,12 +70,11 @@ export function DeleteUserPanel({
         <div className="space-y-2">
           <p className="text-text-muted">They are the only leader of these groups. Choose who leads each one next:</p>
           {groups.map((g) => (
-            <label key={g.id} className="flex flex-wrap items-center gap-2">
-              <span className="font-medium min-w-40">{g.name}</span>
-              <select
-                className="input w-64!"
+            <Field key={g.id} label={`Next leader of ${g.name}`}>
+              <Select
                 value={picks[String(g.id)] ?? ""}
                 onChange={(e) => setPicks((p) => ({ ...p, [String(g.id)]: Number(e.target.value) }))}
+                layout="sm:max-w-xs"
               >
                 {g.candidates.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -81,19 +82,19 @@ export function DeleteUserPanel({
                     {c.admin && c.id !== me?.id ? " · admin" : ""}
                   </option>
                 ))}
-              </select>
-            </label>
+              </Select>
+            </Field>
           ))}
         </div>
       )}
-      {error && <div className="text-danger">{error}</div>}
+      {error && <FormError>{error}</FormError>}
       <div className="flex gap-3">
-        <button onClick={remove} disabled={busy || groups === null} className="btn-danger">
+        <Button variant="danger" onClick={remove} disabled={busy || groups === null}>
           {busy ? "Working…" : action === "delete" ? "Delete account" : "Disable account"}
-        </button>
-        <button onClick={() => onDone(false)} className="btn-secondary">
+        </Button>
+        <Button variant="secondary" onClick={() => onDone(false)}>
           Cancel
-        </button>
+        </Button>
       </div>
     </div>
   );

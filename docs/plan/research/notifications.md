@@ -1,6 +1,6 @@
 # Notifications for Fold: Knock vs. self-built, and UX/UI guidelines
 
-Status: research draft, 2026-10-10. Written by Quill (research) for Codex, who turns it into a plan item. Grier decides on any vendor.
+Status: research draft, 2026-10-10. Written by Quill (research) for Wright, who turns it into a plan item. Grier decides on any vendor.
 Scope: read-only desk research. No accounts were created and no vendor was contacted. Claims not confirmed from a primary source are marked **[unverified]**. Estimates are marked **[estimate]**.
 
 Repo copy: added to `docs/plan/research/` on Oct 10, 2026 and copied verbatim, so its plan references point to draft v4 and may have moved. The decided design is `PLAN.md` 5.12 (DEC-42, DEC-43). Grier decided to build in Fold with no vendor; Knock is a UX reference only. Grier answered the 6.14 questions on Oct 10, 2026 (`PLAN.md` DEC-44).
@@ -228,7 +228,7 @@ About 1–2 weeks for one developer familiar with the codebase: migration, `inte
 4. **Small to build:** Fold's volume is low, the hard parts (delivery adapters, job runner, consent) are already planned, and Knock's own guidance says digests are best computed from your own data anyway.
 5. **Keep a seam, not a vendor:** `notify.Send` is the single entry point. If a church ever needs push notifications, add an `ntfy` or web-push channel adapter behind it. No Knock or Novu adapter is planned unless a church asks (same "second adapter when needed" rule as 5.6).
 
-Phasing suggestion for Codex:
+Phasing suggestion for Wright:
 - **M1.1b**: `notifications` table plus API plus the new bell, panel, and `/notifications` page. Stored rows replace derived notices. `archived_at` replaces localStorage. Task resolution for group approvals and deletions.
 - **M1.2**: email delivery of selected kinds with the 15-minute "if not seen" delay, through the minimal sender.
 - **M2.x**: event reminder rows (idempotent job) and waitlist notices.
@@ -257,7 +257,7 @@ Phasing suggestion for Codex:
 
 ## 6. Notification UX/UI guidelines — **DRAFT, reviewed by Illuminator (designer), 2026-10-10**
 
-> DRAFT, designer pass done. Quill wrote the starting point from research; Illuminator (Fold's UI designer) reviewed and edited it. Meetup is the primary reference and ChurchTrac the secondary one (PLAN 1.7, item 7). Every change is marked **Illuminator:** inline and listed in 6.0. Technical questions are in 6.13 ("For Codex"), not decided here. The product questions in 6.14 ("For Big Boss/Grier") were **resolved by Grier on Oct 10, 2026**, who accepted every recommendation and confirmed that Fold builds notifications in-house (Knock is a UI/UX reference only). The research sections (0–5, 7, 8) are unchanged except for cross-references.
+> DRAFT, designer pass done. Quill wrote the starting point from research; Illuminator (Fold's UI designer) reviewed and edited it. Meetup is the primary reference and ChurchTrac the secondary one (PLAN 1.7, item 7). Every change is marked **Illuminator:** inline and listed in 6.0. Technical questions are in 6.13 ("For Wright"), not decided here. The product questions in 6.14 ("For Big Boss/Grier") were **resolved by Grier on Oct 10, 2026**, who accepted every recommendation and confirmed that Fold builds notifications in-house (Knock is a UI/UX reference only). The research sections (0–5, 7, 8) are unchanged except for cross-references.
 
 ### 6.0 Illuminator changelog (designer review, 2026-10-10)
 
@@ -318,7 +318,7 @@ Phasing suggestion for Codex:
 ### 6.3a Illuminator: what a notification may say (teens, consent, public internet)
 - **Names and in-app links only.** No email addresses, phone numbers, birth dates, care notes, or message bodies from or about a teen, and no hidden adult's contact details (DEC-31, matching 3.3 "Minors and consent").
 - **Rows about a teen or child** show the existing "Teen" or "Child" badge next to the name wherever leaders, hosts, or admins see them (PLAN 5.x badging), and never carry inline actions (6.6).
-- **Emails about sensitive kinds** (contact requests, guardian links, teen consent, anything about a minor) say only that something is waiting and link into Fold: "You have a contact request in Fold. Sign in to review it." Email gets forwarded and read on shared screens; the page enforces policy when it opens. (Rendering is Codex's call, 6.13.)
+- **Emails about sensitive kinds** (contact requests, guardian links, teen consent, anything about a minor) say only that something is waiting and link into Fold: "You have a contact request in Fold. Sign in to review it." Email gets forwarded and read on shared screens; the page enforces policy when it opens. (Rendering is Wright's call, 6.13.)
 - **A teen's own feed** follows the same rules. When `guardian_copies` is on, their settings page says so plainly: "Your church sends your guardian a copy of church emails sent to you."
 - Rows render as **plain text**. The only links are internal paths (6.11).
 
@@ -447,7 +447,7 @@ Everything else gets a navigation button ("Review", "View event", "Reply") that 
   - The member app's profile icon holds notification settings. https://www.churchtrac.com/support/connect/sign-in
   - I found **no member-facing in-app notification feed** in ChurchTrac's docs, so it offers no bell or panel pattern to copy. Its useful lesson is the admin side: routing "who gets told" to a chosen person.
 
-### 6.13 Illuminator: For Codex (technical questions; not decided here)
+### 6.13 Illuminator: For Wright (technical questions; not decided here)
 1. **Badge semantics.** 6.1 counts unread plus unresolved items waiting on you, so the badge no longer needs `seen_at`. Decide whether to keep `seen_at` and `POST /notifications/seen` only for the "email if not seen after 15 min" escalation (3.3), or switch escalation to `read_at`. `GET /notifications/badge` should return both numbers (`unread`, `waiting`) for the accessible name.
 2. **`read-all` must skip unresolved waiting items** (or the count must ignore `read_at` for them). Pick one so the server and UI agree.
 3. **Reminders out of the bell** (6.5a, confirmed by Grier, 6.14.2): this changes the M2.x plan for reminder rows. Event-change and waitlist items need `expires_at` = occurrence end, with **auto-archive** rather than deletion, so they stay under Archived until retention.
@@ -474,7 +474,7 @@ Grier accepted every recommendation and confirmed that Fold builds notifications
 
 ---
 
-## 7. Open questions for Grier, Codex, and the designer
+## 7. Open questions for Grier, Wright, and the designer
 
 1. Badge semantics: unseen count plus a needs-action dot (recommended), or a count of unread? *(Illuminator: answered in 6.1, one plain count; confirmed by Grier, Oct 10, 2026, 6.14.1.)*
 2. Should upcoming-event reminders appear in the bell at all, or only in email and SMS plus the calendar? They're the noisiest kind today. *(Illuminator: answered in 6.5a, not in the bell; confirmed by Grier, Oct 10, 2026, 6.14.2.)*

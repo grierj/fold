@@ -13,11 +13,14 @@ test("a new series defaults to the church time zone", async ({ page }) => {
   await page.getByRole("heading", { name: "Room 201 class" }).click();
   await page.getByRole("link", { name: "Schedule event" }).click();
   await expect(page).toHaveURL(/\/groups\/\d+\/events\/new/);
-  await expect(page.getByLabel("Time zone")).toHaveValue("America/Boise");
-  const first = page.locator("#event-tz option").first();
-  await expect(first).toHaveAttribute("value", "America/New_York");
-  await expect(first).toHaveText("Yours · New York (Eastern)");
-  await expect(page.locator('#event-tz option[value="America/Boise"]')).toHaveCount(1);
+  const tz = page.getByRole("combobox", { name: "Time zone" });
+  await expect(tz).toHaveValue("Boise (Mountain)");
+  await tz.click();
+  const first = page.getByRole("option").first();
+  await expect(first).toContainText("New York (Eastern)");
+  await expect(first).toContainText("Yours");
+  await expect(page.getByRole("option", { name: /^Boise \(Mountain\)/ })).toHaveCount(1);
+  await tz.press("Escape");
 
   const when = new Date(Date.now() + 20 * 24 * 60 * 60 * 1000);
   const ymd = when.toISOString().slice(0, 10);

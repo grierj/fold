@@ -4,11 +4,13 @@ import type { Visibility, VisibilityImpact } from "../types";
 import { GroupVisibilityReview } from "./GroupVisibilityReview";
 import { openedEventWarning } from "./EventIntro";
 import { errorText } from "../lib/errors";
+import { Choices, Field, FormError, Input, Radio } from "./ui/Field";
+import { Button } from "./ui/Button";
 
-const CHOICES: { value: Visibility; label: string }[] = [
-  { value: "public", label: "Public — anyone" },
-  { value: "private", label: "Private — signed-in people" },
-  { value: "invite_only", label: "Invite only — group members" },
+const CHOICES: { value: Visibility; label: string; description: string }[] = [
+  { value: "public", label: "Public", description: "Anyone can see it." },
+  { value: "private", label: "Private", description: "Only signed-in people can see it." },
+  { value: "invite_only", label: "Invite only", description: "Only the group's members can see it." },
 ];
 
 export function visibilityRank(v: string): number {
@@ -84,7 +86,7 @@ export function EventVisibilityControl({
 
   return (
     <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
-      {error && <div className="text-sm text-danger">{error}</div>}
+      {error && <FormError>{error}</FormError>}
       <VisibilityField
         id={`event-visibility-${eventId}`}
         value={value}
@@ -106,9 +108,9 @@ export function EventVisibilityControl({
           onCancel={() => setReview(null)}
         />
       )}
-      <button type="submit" className="btn-secondary" disabled={busy}>
+      <Button variant="secondary" type="submit" disabled={busy}>
         {busy ? "Saving…" : "Save visibility"}
-      </button>
+      </Button>
     </form>
   );
 }
@@ -143,19 +145,19 @@ export function VisibilityField({
   const choices = churchWide ? CHOICES.filter((c) => c.value !== "invite_only") : CHOICES;
   return (
     <div className="space-y-3">
-      <div>
-        <label className="label" htmlFor={id}>
-          Who can see this event
-        </label>
-        <select id={id} className="input" value={value} onChange={(e) => onChange(e.target.value as Visibility)}>
-          {choices.map((c) => (
-            <option key={c.value} value={c.value}>
-              {c.label}
-              {!churchWide && c.value === groupVisibility ? " (same as the group)" : ""}
-            </option>
-          ))}
-        </select>
-      </div>
+      <Choices legend="Who can see this event">
+        {choices.map((c) => (
+          <Radio
+            key={c.value}
+            name={id}
+            value={c.value}
+            label={`${c.label}${!churchWide && c.value === groupVisibility ? " (same as the group)" : ""}`}
+            description={c.description}
+            checked={value === c.value}
+            onChange={() => onChange(c.value)}
+          />
+        ))}
+      </Choices>
       {leaderOpened && !churchWide && (
         <p className="text-xs text-text-muted">
           A leader opened this event wider than the group. If the group becomes more private, you'll be asked whether to keep it open.
@@ -165,12 +167,9 @@ export function VisibilityField({
         <p className="text-sm text-text-muted bg-warning-subtle border border-warning-border rounded-md p-3">{openedEventWarning(groupName)}</p>
       )}
       {opening && (
-        <div>
-          <label className="label" htmlFor={`${id}-reason`}>
-            Reason (optional)
-          </label>
-          <input id={`${id}-reason`} className="input" value={reason} onChange={(e) => onReason(e.target.value)} maxLength={500} />
-        </div>
+        <Field id={`${id}-reason`} label="Reason" optional>
+          <Input value={reason} onChange={(e) => onReason(e.target.value)} maxLength={500} />
+        </Field>
       )}
     </div>
   );

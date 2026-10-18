@@ -6,8 +6,9 @@ import { Button } from "../components/ui/Button";
 import { AdminIcon } from "../components/icons";
 import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
-import { ZoneSelect } from "../components/ZoneSelect";
+import { ZonePicker } from "../components/ui/ZonePicker";
 import { errorText } from "../lib/errors";
+import { Field, FormError, Input, showFieldErrors } from "../components/ui/Field";
 
 export function ProfilePage() {
   const { user, loading, refresh, logout, isAdmin } = useAuth();
@@ -27,6 +28,7 @@ export function ProfilePage() {
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordSaved, setPasswordSaved] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordFieldError, setPasswordFieldError] = useState<{ field: "new" | "confirm"; message: string } | null>(null);
   const [newEmail, setNewEmail] = useState("");
   const [emailSaving, setEmailSaving] = useState(false);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
@@ -128,14 +130,16 @@ export function ProfilePage() {
     e.preventDefault();
     setPasswordError(null);
     setPasswordSaved(false);
+    const form = e.currentTarget as HTMLFormElement;
     if (newPassword.length < 10) {
-      setPasswordError("Password must be at least 10 characters.");
+      showFieldErrors(form, () => setPasswordFieldError({ field: "new", message: "Password must be at least 10 characters." }));
       return;
     }
     if (newPassword !== confirmPassword) {
-      setPasswordError("Passwords do not match.");
+      showFieldErrors(form, () => setPasswordFieldError({ field: "confirm", message: "Passwords do not match." }));
       return;
     }
+    setPasswordFieldError(null);
     setPasswordSaving(true);
     try {
       await ProfileApi.changePassword(currentPassword, newPassword);
@@ -167,7 +171,7 @@ export function ProfilePage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-8">
+    <div className="max-w-xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">Your profile</h1>
       {isAdmin && (
         // Phones have no Admin link in the header; it's a row here (PR #65 review F2).
@@ -195,146 +199,114 @@ export function ProfilePage() {
           A new picture is saved as soon as you choose it.
         </p>
         {pictureStatus && <div className="text-success text-sm mt-3">{pictureStatus}</div>}
-        {pictureError && <div className="text-danger text-sm mt-3">{pictureError}</div>}
+        {pictureError && <FormError layout="mt-3">{pictureError}</FormError>}
         {user.avatarUrl && (
-          <button
-            type="button"
-            onClick={removeAvatar}
-            disabled={pictureBusy}
-            className="btn-secondary py-1.5! px-3! text-sm text-danger! mt-3"
-          >
+          <Button variant="danger-outline" layout="mt-3" onClick={removeAvatar} disabled={pictureBusy}>
             Remove picture
-          </button>
+          </Button>
         )}
       </div>
 
       <form onSubmit={save} className="space-y-6">
-        {error && <div className="text-danger text-sm">{error}</div>}
+        {error && <FormError>{error}</FormError>}
         {saved && <div className="text-success text-sm">Profile saved.</div>}
 
         <div className="bg-surface rounded-lg border border-border p-6 space-y-4">
-          <div>
-            <label className="label" htmlFor="profile-display-name">Display name</label>
-            <input id="profile-display-name"
-              className="input"
+          <Field id="profile-display-name" label="Display name" optional hint="How your name appears to others.">
+            <Input
               value={dn}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="How your name appears to others"
               maxLength={100}
             />
-          </div>
-          <div>
-            <label className="label" htmlFor="profile-full-name">Full name</label>
-            <input id="profile-full-name"
-              className="input"
+          </Field>
+          <Field id="profile-full-name" label="Full name">
+            <Input
               value={fullName}
               onChange={(e) => setName(e.target.value)}
               maxLength={100}
             />
-          </div>
-          <div>
-            <label className="label" htmlFor="profile-email">Email (you sign in with it)</label>
-            <input id="profile-email" type="email" className="input bg-page" value={user.email} readOnly />
-            <p className="text-xs text-text-muted mt-1">
-              Change it below; the new address gets a verification link first.
-            </p>
-          </div>
-          <div>
-            <label className="label" htmlFor="profile-phone">Phone</label>
-            <input id="profile-phone"
+          </Field>
+          <Field id="profile-email" label="Email (you sign in with it)" hint="Change it below; the new address gets a verification link first.">
+            <Input type="email" value={user.email} readOnly />
+          </Field>
+          <Field id="profile-phone" label="Phone" optional>
+            <Input
               type="tel"
-              className="input"
               value={ph}
               onChange={(e) => setPhone(e.target.value)}
               maxLength={30}
             />
-          </div>
-          <div>
-            <label className="label" htmlFor="profile-tz">
-              Time zone for emails
-            </label>
-            <ZoneSelect id="profile-tz" value={tz} onChange={setZone} describedBy="profile-tz-hint" />
-            <p id="profile-tz-hint" className="text-xs text-text-muted mt-1">
-              Emails show event times in this zone. On screen, times always follow this device's clock.
-            </p>
-          </div>
-          <button type="submit" disabled={saving} className="btn-primary">
+          </Field>
+          <Field
+            id="profile-tz"
+            label="Time zone for emails"
+            hint="Emails show event times in this zone. On screen, times always follow this device's clock."
+          >
+            <ZonePicker value={tz} onChange={setZone} />
+          </Field>
+          <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={saving}>
             {saving ? "Saving…" : "Save profile"}
-          </button>
+          </Button>
         </div>
       </form>
 
       <form onSubmit={changeEmail} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
         <h2 className="text-xl font-bold">Change sign-in email</h2>
-        {emailError && <div className="text-danger text-sm">{emailError}</div>}
+        {emailError && <FormError>{emailError}</FormError>}
         {emailStatus && <div className="text-success text-sm">{emailStatus}</div>}
-        <div>
-          <label className="label" htmlFor="new-email">
-            New email
-          </label>
-          <input
-            id="new-email"
+        <Field id="new-email" label="New email" hint={<>A verification link goes to the new address, and a notice to {user.email}. The change applies after you verify, and your other sessions are signed out.</>}>
+          <Input
             type="email"
-            className="input"
             value={newEmail}
             onChange={(e) => setNewEmail(e.target.value)}
             autoComplete="email"
             required
           />
-          <p className="text-xs text-text-muted mt-1">
-            A verification link goes to the new address, and a notice to {user.email}. The
-            change applies after you verify, and your other sessions are signed out.
-          </p>
-        </div>
-        <button type="submit" disabled={emailSaving} className="btn-primary">
+        </Field>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={emailSaving}>
           {emailSaving ? "Sending…" : "Send verification link"}
-        </button>
+        </Button>
       </form>
 
       <form onSubmit={changePassword} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
         <h2 className="text-xl font-bold">Change password</h2>
-        {passwordError && <div className="text-danger text-sm">{passwordError}</div>}
+        {passwordError && <FormError>{passwordError}</FormError>}
         {passwordSaved && <div className="text-success text-sm">Password changed.</div>}
-        <div>
-          <label className="label" htmlFor="current-password">Current password</label>
-          <input
-            id="current-password"
+        <Field id="current-password" label="Current password">
+          <Input
             type="password"
-            className="input"
             value={currentPassword}
             onChange={(e) => setCurrentPassword(e.target.value)}
             autoComplete="current-password"
             required
           />
-        </div>
-        <div>
-          <label className="label" htmlFor="new-password">New password</label>
-          <input
-            id="new-password"
+        </Field>
+        <Field
+          id="new-password"
+          label="New password"
+          hint="Must be at least 10 characters."
+          error={passwordFieldError?.field === "new" && passwordFieldError.message}
+        >
+          <Input
             type="password"
-            className="input"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             autoComplete="new-password"
             required
           />
-          <p className="text-xs text-text-muted mt-1">Must be at least 10 characters.</p>
-        </div>
-        <div>
-          <label className="label" htmlFor="confirm-password">Confirm new password</label>
-          <input
-            id="confirm-password"
+        </Field>
+        <Field id="confirm-password" label="Confirm new password" error={passwordFieldError?.field === "confirm" && passwordFieldError.message}>
+          <Input
             type="password"
-            className="input"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             autoComplete="new-password"
             required
           />
-        </div>
-        <button type="submit" disabled={passwordSaving} className="btn-primary">
+        </Field>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={passwordSaving}>
           {passwordSaving ? "Saving…" : "Change password"}
-        </button>
+        </Button>
       </form>
 
       {user.accountType !== "teen" && (

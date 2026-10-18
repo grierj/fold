@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Auth as AuthApi } from "../api";
 import { errorText } from "../lib/errors";
+import { Field, FormError, Input } from "../components/ui/Field";
+import { Button } from "../components/ui/Button";
 
 // Password reset request (M1.2). The server answers uniformly for known and
 // unknown addresses, so the message is shown as-is.
@@ -39,27 +41,22 @@ export function ForgotPassword() {
         </div>
       ) : (
         <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
-          {error && <div className="text-danger text-sm">{error}</div>}
+          {error && <FormError>{error}</FormError>}
           <p className="text-sm text-text-muted">
             Enter the email you sign in with and we'll send you a reset link.
           </p>
-          <div>
-            <label className="label" htmlFor="fp-email">
-              Email
-            </label>
-            <input
-              id="fp-email"
+          <Field id="fp-email" label="Email">
+            <Input
               type="email"
-              className="input"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               autoComplete="email"
               required
             />
-          </div>
-          <button type="submit" disabled={busy} className="btn-primary w-full">
+          </Field>
+          <Button variant="primary" layout="w-full" type="submit" disabled={busy}>
             {busy ? "Sending…" : "Send reset link"}
-          </button>
+          </Button>
         </form>
       )}
     </div>

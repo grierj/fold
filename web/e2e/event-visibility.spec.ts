@@ -24,7 +24,7 @@ test("making one event invite-only previews and confirms", async ({ page, reques
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
   await fromMore(page, "Edit event");
-  await page.getByLabel("Who can see this event").selectOption("invite_only");
+  await page.getByRole("radio", { name: /^Invite only/ }).check();
   await page.getByRole("button", { name: "Save visibility" }).click();
   const review = page.getByRole("dialog");
   await expect(review.getByText("Making this event invite-only")).toBeVisible();

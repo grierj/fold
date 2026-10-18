@@ -241,7 +241,8 @@ rule (a preview, a confirmation, an audit row, a notice), give its siblings
 the same rule with the same API shape and UI component, or write down why
 not. Example: group and single-event tightening share `visibility-impact`,
 `cancelLosers`, and `GroupVisibilityReview`. In the UI, one shared component
-per kind of control: `ZoneSelect` (every time zone field), `VisibilityField`
+per kind of control: `components/ui/Field` and its rows (every form field,
+DEC-65), `ZonePicker` (every time zone field but setup), `VisibilityField`
 / `EventVisibilityControl` (every event visibility choice), and
 `SeriesEditor` (Edit series / Edit event on the group and event pages).
 

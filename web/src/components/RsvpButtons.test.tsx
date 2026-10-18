@@ -82,6 +82,6 @@ describe("RsvpButtons", () => {
       <RsvpButtons instance={occurrence({ guestsAllowed: 2, myRegistration: "going" })} onChange={() => {}} />
     );
     expect(screen.getByLabelText(/Extra guests/)).toBeInTheDocument();
-    expect(screen.getByText(/up to 2/)).toBeInTheDocument();
+    expect(screen.getByText(/Up to 2/)).toBeInTheDocument();
   });
 });

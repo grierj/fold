@@ -4,6 +4,8 @@ import { ApiError, Guests } from "../api";
 import { formatWhen } from "../lib/when";
 import type { GuestRegistration } from "../types";
 import { errorText } from "../lib/errors";
+import { Button } from "../components/ui/Button";
+import { FormError } from "../components/ui/Field";
 
 // Redeem a guest registration verification link (M1.4). Opening the
 // page confirms nothing: the button posts the token, so a mail
@@ -80,15 +82,10 @@ export function GuestConfirm() {
               This confirms the guest registration that was sent to your email. The link works
               once and expires in 24 hours.
             </p>
-            {error && <p className="text-danger text-sm mt-3">{error}</p>}
-            <button
-              type="button"
-              onClick={() => void confirm()}
-              disabled={busy || !token}
-              className="btn-primary w-full mt-4"
-            >
+            {error && <FormError layout="mt-3">{error}</FormError>}
+            <Button variant="primary" layout="w-full mt-4" onClick={() => void confirm()} disabled={busy || !token}>
               {busy ? "Confirming…" : "Confirm my registration"}
-            </button>
+            </Button>
             {!token && <p className="text-sm text-text-muted mt-3">This page needs the link from your email.</p>}
           </>
         )}
