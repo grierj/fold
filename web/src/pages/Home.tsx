@@ -8,6 +8,11 @@ import { formatTime } from "../lib/when";
 import { errorText } from "../lib/errors";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { SearchBox } from "../components/ui/SearchBox";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Illustration } from "../components/ui/Illustration";
+import { Skeleton } from "../components/ui/Skeleton";
+import { ButtonLink } from "../components/ui/Button";
+import { useAuth } from "../auth";
 
 function tagsFromParams(params: URLSearchParams): string[] {
   const seen = new Set<string>();
@@ -30,6 +35,8 @@ function orSeparator(i: number, n: number): string {
 }
 
 export function Home() {
+  const { user } = useAuth();
+  const [retry, setRetry] = useState(0);
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedTags = tagsFromParams(searchParams);
   const tagKey = selectedTags.join("\u0000");
@@ -87,7 +94,7 @@ export function Home() {
     return () => {
       alive = false;
     };
-  }, [debounced, tagKey]);
+  }, [debounced, tagKey, retry]);
 
   useEffect(() => {
     let alive = true;
@@ -124,6 +131,11 @@ export function Home() {
     if (!byLower.has(t.toLowerCase())) byLower.set(t.toLowerCase(), t);
   }
   const chips = [...byLower.values()].sort((a, b) => a.localeCompare(b));
+  const clearTagsButton = (
+    <button onClick={clearTags} className="font-semibold text-primary hover:underline rounded-sm">
+      Clear the tags
+    </button>
+  );
 
   return (
     <div>
@@ -217,36 +229,69 @@ export function Home() {
       {/* Group grid */}
       <section className="max-w-6xl mx-auto px-4 py-8">
         <h2 className="text-2xl font-bold mb-4">Church Groups</h2>
-        {loading && <div className="text-text-muted">Loading groups…</div>}
-        {error && <ErrorNotice message={error} onRetry={() => window.location.reload()} />}
-        {!loading && !error && groups.length === 0 && (
-          <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
-            {selectedTags.length > 0 && debounced.trim() ? (
-              <>
-                No groups match “{debounced.trim()}” with these tags. Try another search, or{" "}
-                <button
-                  onClick={clearTags}
-                  className="font-semibold text-primary hover:underline rounded-sm"
-                >
-                  Clear the tags
-                </button>
-                .
-              </>
-            ) : (
-              <>No groups found. Try a different search or start a new group.</>
-            )}
+        {/* The skeleton is for the first load only: while a new search or tag
+            loads, the last results stay put instead of blinking out. */}
+        {loading && groups.length === 0 && (
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            <Skeleton kind="cards" count={3} label="Loading groups…" />
           </div>
         )}
-        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {groups.map((g) => (
-            <GroupCard
-              key={g.id}
-              group={g}
-              selectedTags={selectedTags}
-              onTagClick={toggleTag}
+        {!loading && error && <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />}
+        {!loading && !error && groups.length === 0 && (
+          selectedTags.length > 0 && debounced.trim() ? (
+            <EmptyState
+              title={`No groups match “${debounced.trim()}”`}
+              body={
+                <>
+                  None of them have these tags. Try another search, or {clearTagsButton}.
+                </>
+              }
             />
-          ))}
-        </div>
+          ) : debounced.trim() ? (
+            <EmptyState
+              title={`No groups match “${debounced.trim()}”`}
+              body="Try a shorter word, or check the spelling."
+            />
+          ) : selectedTags.length > 0 ? (
+            <EmptyState
+              title="No groups match these tags"
+              body={
+                <>
+                  Try another tag, or {clearTagsButton}.
+                </>
+              }
+            />
+          ) : (
+            <EmptyState
+              illustration={<Illustration name="first-group" />}
+              title="No groups yet"
+              body="Groups will show up here once someone starts one."
+              action={
+                user ? (
+                  <ButtonLink to="/groups/new" variant="primary" layout="w-full sm:w-auto">
+                    Start a group
+                  </ButtonLink>
+                ) : (
+                  <ButtonLink to="/login" variant="secondary" layout="w-full sm:w-auto">
+                    Log in
+                  </ButtonLink>
+                )
+              }
+            />
+          )
+        )}
+        {!error && groups.length > 0 && (
+          <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+            {groups.map((g) => (
+              <GroupCard
+                key={g.id}
+                group={g}
+                selectedTags={selectedTags}
+                onTagClick={toggleTag}
+              />
+            ))}
+          </div>
+        )}
       </section>
     </div>
   );

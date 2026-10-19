@@ -6,6 +6,8 @@ import type { GuestRegistration } from "../types";
 import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
 import { Button } from "../components/ui/Button";
 import { FormError } from "../components/ui/Field";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Illustration } from "../components/ui/Illustration";
 
 // The guest manage link from the confirmation email (M1.4). The token
 // in the address is the credential, and it stops working once the
@@ -44,12 +46,25 @@ export function GuestManage() {
     }
   }
 
+  if (!reg && error) {
+    return (
+      <div className="max-w-md mx-auto px-4 py-12">
+        <h1 className="text-3xl font-bold mb-6">Your guest registration</h1>
+        <EmptyState
+          illustration={<Illustration name="link-expired" />}
+          title="This link can't be used"
+          body={error}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-6">Your guest registration</h1>
       <div className="bg-surface rounded-lg border border-border p-6">
         {!reg && !error && <p className="text-sm text-text-muted">Loading…</p>}
-        {error && <FormError>{error}</FormError>}
+        {reg && error && <FormError>{error}</FormError>}
         {reg && (
           <>
             <p className="text-sm">

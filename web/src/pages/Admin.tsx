@@ -11,6 +11,10 @@ import { DeleteUserPanel } from "../components/DeleteUserPanel";
 import { Button } from "../components/ui/Button";
 import { errorText } from "../lib/errors";
 import { Choices, Field, FormError, Input, Radio, Select } from "../components/ui/Field";
+import { ErrorNotice } from "../components/ErrorNotice";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Illustration } from "../components/ui/Illustration";
+import { Skeleton } from "../components/ui/Skeleton";
 
 type AdminTab = "approvals" | "groups" | "users" | "invite";
 
@@ -247,12 +251,14 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
 
   return (
     <div>
-      {loading && <div className="text-text-muted">Loading…</div>}
-      {error && <div className="text-danger">{error}</div>}
+      {loading && <Skeleton kind="lines" />}
+      {!loading && error && <ErrorNotice message={error} onRetry={load} />}
       {!loading && !error && groups.length === 0 && deletions.length === 0 && requests.length === 0 && (
-        <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
-          Nothing pending. All caught up.
-        </div>
+        <EmptyState
+          illustration={<Illustration name="all-caught-up" />}
+          title="All caught up"
+          body="New group and account requests show up here for you to review."
+        />
       )}
       {requests.length > 0 && (
         <div className="space-y-4 mb-8">
@@ -411,9 +417,12 @@ function GroupsTab({ users }: { users: User[] }) {
   const [openMembers, setOpenMembers] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     (async () => {
+      setLoading(true);
+      setError(null);
       try {
         const { groups } = await AdminGroups.list();
         setGroups(groups);
@@ -423,7 +432,7 @@ function GroupsTab({ users }: { users: User[] }) {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [retry]);
 
   async function deleteGroup(g: GroupSummary) {
     if (!confirm(`Delete “${g.name}”? This removes the group, its members, and its events.`)) return;
@@ -440,8 +449,8 @@ function GroupsTab({ users }: { users: User[] }) {
     }
   }
 
-  if (loading) return <div className="text-text-muted">Loading…</div>;
-  if (error) return <div className="text-danger">{error}</div>;
+  if (loading) return <Skeleton kind="lines" />;
+  if (error) return <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />;
 
   return (
     <div className="space-y-3">
@@ -1091,7 +1100,7 @@ export function AdminPage() {
       {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} />}
       {tab === "groups" && <GroupsTab users={users} />}
       {tab === "users" && (
-        usersLoading ? <div className="text-text-muted">Loading…</div> : <UsersTab users={users} reload={loadUsers} />
+        usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}
       {tab === "invite" && <InviteTab />}
     </div>

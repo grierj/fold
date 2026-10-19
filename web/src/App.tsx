@@ -20,6 +20,7 @@ import { Join } from "./pages/Join";
 import { SetPassword } from "./pages/SetPassword";
 import { GuestConfirm } from "./pages/GuestConfirm";
 import { GuestManage } from "./pages/GuestManage";
+import { NotFound } from "./pages/NotFound";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 
@@ -65,14 +66,7 @@ export default function App() {
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/admin" element={<AdminPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
-        <Route
-          path="*"
-          element={
-            <div className="max-w-6xl mx-auto px-4 py-12 text-center text-text-muted">
-              Page not found.
-            </div>
-          }
-        />
+        <Route path="*" element={<NotFound />} />
       </Routes>
       )}
     </Layout>

@@ -1,0 +1,43 @@
+import emptyGroups from "../../assets/illustrations/empty-groups.svg";
+import allCaughtUp from "../../assets/illustrations/all-caught-up.svg";
+import notFound from "../../assets/illustrations/not-found.svg";
+import cantLoad from "../../assets/illustrations/cant-load.svg";
+import requestSent from "../../assets/illustrations/request-sent.svg";
+import linkExpired from "../../assets/illustrations/link-expired.svg";
+import noEvents from "../../assets/illustrations/no-events.svg";
+import firstGroup from "../../assets/illustrations/first-group.svg";
+
+export type IllustrationName =
+  | "empty-groups"
+  | "all-caught-up"
+  | "not-found"
+  | "cant-load"
+  | "request-sent"
+  | "link-expired"
+  | "no-events"
+  | "first-group";
+
+const SOURCES: Record<IllustrationName, string> = {
+  "empty-groups": emptyGroups,
+  "all-caught-up": allCaughtUp,
+  "not-found": notFound,
+  "cant-load": cantLoad,
+  "request-sent": requestSent,
+  "link-expired": linkExpired,
+  "no-events": noEvents,
+  "first-group": firstGroup,
+};
+
+export function Illustration({ name, size = "md" }: { name: IllustrationName; size?: "sm" | "md" }) {
+  return (
+    <img
+      src={SOURCES[name]}
+      alt=""
+      aria-hidden="true"
+      width={240}
+      height={180}
+      decoding="async"
+      className={size === "sm" ? "w-16 h-auto" : "w-30 sm:w-40 h-auto"}
+    />
+  );
+}

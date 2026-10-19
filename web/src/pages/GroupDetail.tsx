@@ -13,13 +13,19 @@ import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
-import { coverImage } from "../components/GroupCard";
+import { coverSrc } from "../lib/covers";
+import { CalendarIcon } from "../components/icons";
+import { ErrorNotice } from "../components/ErrorNotice";
+import { Missing } from "./NotFound";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Illustration } from "../components/ui/Illustration";
+import { Skeleton } from "../components/ui/Skeleton";
 import { focalPosition, prepareUpload } from "../lib/image";
 import { formatTime, formatWhen, zoneNote } from "../lib/when";
 import { errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, HiddenFileInput, Input, Radio, Textarea } from "../components/ui/Field";
 import { FormActions } from "../components/ui/FormActions";
-import { Button } from "../components/ui/Button";
+import { Button, ButtonLink } from "../components/ui/Button";
 
 type Tab = "events" | "about" | "members";
 
@@ -440,18 +446,27 @@ export function GroupDetail() {
   }, [load]);
 
   if (loading || authLoading) {
-    return <div className="max-w-6xl mx-auto px-4 py-12 text-text-muted">Loading…</div>;
-  }
-  if (notFound || !detail) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-12 text-center">
-        <h1 className="text-2xl font-bold mb-2">Group not found</h1>
-        <p className="text-text-muted">
-          {error ?? "This group doesn't exist or isn't visible to you."}{" "}
-          <Link to="/" className="text-primary font-semibold">
-            Back home
-          </Link>
-        </p>
+      <div className="max-w-6xl mx-auto px-4 py-8">
+        <Skeleton kind="cover" />
+        <div className="mt-6">
+          <Skeleton kind="lines" />
+        </div>
+      </div>
+    );
+  }
+  if (notFound) {
+    return (
+      <Missing
+        title="Group not found"
+        body="It may have been removed, or it may be private. If someone invited you, ask them for the link again."
+      />
+    );
+  }
+  if (!detail) {
+    return (
+      <div className="max-w-xl mx-auto px-4 py-12 sm:py-16">
+        <ErrorNotice message={error ?? "We couldn't load this group."} onRetry={() => void load()} />
       </div>
     );
   }
@@ -710,7 +725,7 @@ export function GroupDetail() {
       {/* No overflow-hidden: the More menu opens below the cover. */}
       <div className="relative h-56 sm:h-72 bg-inverse">
         <img
-          src={coverImage(group.imageUrl)}
+          src={coverSrc(group)}
           alt=""
           className="w-full h-full object-cover"
           style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
@@ -847,9 +862,22 @@ export function GroupDetail() {
             {tab === "events" && (
               <div className="space-y-3">
                 {events.length === 0 && (
-                  <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
-                    No upcoming events scheduled.
-                  </div>
+                  <EmptyState
+                    illustration={<Illustration name="no-events" />}
+                    title="No upcoming events"
+                    body={
+                      canManage
+                        ? "Schedule one so members can RSVP."
+                        : "When a leader schedules something, it will show up here."
+                    }
+                    action={
+                      canManage ? (
+                        <ButtonLink to={`/groups/${group.id}/events/new`} variant="secondary" layout="w-full sm:w-auto">
+                          Schedule event
+                        </ButtonLink>
+                      ) : undefined
+                    }
+                  />
                 )}
                 {nextDates.map((m) => (
                   <EventRow
@@ -902,7 +930,14 @@ export function GroupDetail() {
                 <div>
                   <h3 className="font-bold mb-1">Next event</h3>
                   <p className="text-text-muted">
-                    {group.nextEventAt ? formatWhen(group.nextEventAt) : "No events scheduled yet"}
+                    {group.nextEventAt ? (
+                      formatWhen(group.nextEventAt)
+                    ) : (
+                      <span className="inline-flex items-center gap-1">
+                        <CalendarIcon className="h-4 w-4" />
+                        No upcoming events
+                      </span>
+                    )}
                   </p>
                 </div>
               </div>

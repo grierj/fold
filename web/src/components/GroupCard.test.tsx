@@ -27,7 +27,7 @@ describe("GroupCard", () => {
     expect(screen.getByRole("link", { name: /Tuesday Bible Study/ })).toHaveAttribute("href", "/groups/7");
     expect(screen.getByText("Invite only")).toBeInTheDocument();
     expect(screen.queryByText("Pending approval")).not.toBeInTheDocument();
-    expect(screen.getByText(/No events scheduled yet/)).toBeInTheDocument();
+    expect(screen.getByText(/No upcoming events/)).toBeInTheDocument();
   });
 
   it("dates the next event in the viewer's zone (Boise in tests), not by its UTC date", () => {

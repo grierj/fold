@@ -2,22 +2,8 @@ import { Link } from "react-router-dom";
 import type { GroupSummary } from "../types";
 import { focalPosition } from "../lib/image";
 import { formatWhen } from "../lib/when";
-
-// The cover shown when a group has none: the old rose and purple fade, an
-// illustration color now (DEC-60). An <img> source cannot read CSS variables,
-// so these stay literal until cover patterns replace them (UI makeover PR 8).
-const COVER_FROM = "#f64060"; // color-ok: placeholder cover image
-const COVER_TO = "#7c3aed"; // color-ok: placeholder cover image
-
-const PLACEHOLDER =
-  "data:image/svg+xml," +
-  encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${COVER_FROM}"/><stop offset="1" stop-color="${COVER_TO}"/></linearGradient></defs><rect width="640" height="360" fill="url(#g)"/></svg>`
-  );
-
-export function coverImage(url: string | undefined | null): string {
-  return url && url.trim() ? url : PLACEHOLDER;
-}
+import { coverSrc } from "../lib/covers";
+import { CalendarIcon } from "./icons";
 
 // Meetup-style group card: cover image, name, member count, next event, location.
 // Tags sit outside the link so they can toggle the directory filter.
@@ -38,7 +24,7 @@ export function GroupCard({
       <Link to={`/groups/${group.id}`} className="block">
         <div className="h-40 w-full overflow-hidden bg-sunken">
           <img
-            src={coverImage(group.imageUrl)}
+            src={coverSrc(group)}
             alt=""
             className="w-full h-full object-cover"
             style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
@@ -108,7 +94,14 @@ export function GroupCard({
             {group.leaderName ? ` · Organized by ${group.leaderName}` : ""}
           </div>
           <div className={group.nextEventAt ? "text-primary-hover font-medium" : "text-text-muted"}>
-            {group.nextEventAt ? formatWhen(group.nextEventAt) : "No events scheduled yet"}
+            {group.nextEventAt ? (
+              formatWhen(group.nextEventAt)
+            ) : (
+              <span className="inline-flex items-center gap-1">
+                <CalendarIcon className="h-4 w-4" />
+                No upcoming events
+              </span>
+            )}
           </div>
           {group.location && <div className="truncate">{group.location}</div>}
         </div>

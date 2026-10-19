@@ -1,6 +1,6 @@
 import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
@@ -16,6 +16,10 @@ import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { formatTime, heldIn, zoneNote } from "../lib/when";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, RegistrationResponse } from "../types";
 import { errorText } from "../lib/errors";
+import { ErrorNotice } from "../components/ErrorNotice";
+import { Missing } from "./NotFound";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Skeleton } from "../components/ui/Skeleton";
 
 export function EventDetail() {
   const { id } = useParams<{ id: string }>();
@@ -80,18 +84,19 @@ export function EventDetail() {
   }
 
   if (loading || authLoading) {
-    return <div className="max-w-3xl mx-auto px-4 py-12 text-text-muted">Loading…</div>;
-  }
-  if (notFound || !page) {
     return (
-      <div className="max-w-3xl mx-auto px-4 py-12 text-center">
-        <h1 className="text-2xl font-bold mb-2">Event not found</h1>
-        <p className="text-text-muted">
-          {error ?? "This event doesn't exist or isn't visible to you."}{" "}
-          <Link to="/" className="text-primary font-semibold">
-            Back home
-          </Link>
-        </p>
+      <div className="max-w-3xl mx-auto px-4 py-8">
+        <Skeleton kind="page" />
+      </div>
+    );
+  }
+  if (notFound) {
+    return <Missing title="Event not found" body="It may have been cancelled or removed, or it may be private." />;
+  }
+  if (!page) {
+    return (
+      <div className="max-w-xl mx-auto px-4 py-12 sm:py-16">
+        <ErrorNotice message={error ?? "We couldn't load this event."} onRetry={() => void load()} />
       </div>
     );
   }
@@ -154,7 +159,9 @@ export function EventDetail() {
       )}
 
       <h2 className="text-xl font-bold mt-8 mb-3">Upcoming dates</h2>
-      {occurrences.length === 0 && <p className="text-text-muted">No upcoming dates.</p>}
+      {occurrences.length === 0 && (
+        <EmptyState title="No upcoming dates." body="This event has no more dates on the calendar." />
+      )}
       <div className="space-y-3">
         {occurrences.map((m) => (
           <DateRow

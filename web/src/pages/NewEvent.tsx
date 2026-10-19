@@ -12,6 +12,7 @@ import { useEventZone } from "../lib/useEventZone";
 import { errorText } from "../lib/errors";
 import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
 import { Button } from "../components/ui/Button";
+import { Skeleton } from "../components/ui/Skeleton";
 
 export function NewEvent() {
   const { id } = useParams<{ id: string }>();
@@ -106,7 +107,11 @@ export function NewEvent() {
   }
 
   if (loading || authLoading) {
-    return <div className="max-w-2xl mx-auto px-4 py-12 text-text-muted">Loading…</div>;
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-12">
+        <Skeleton kind="page" />
+      </div>
+    );
   }
 
   if (!user) {
