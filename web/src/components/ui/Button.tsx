@@ -13,9 +13,11 @@ type Props = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className" | "style"
   layout?: string;
 };
 
+const buttonClass = (variant: ButtonVariant, size: "md" | "sm", layout?: string) =>
+  [`btn-${variant}`, size === "sm" ? "min-h-9 px-3 text-sm" : "", layout ?? ""].filter(Boolean).join(" ");
+
 export function Button({ variant, size = "md", layout, type = "button", ...rest }: Props) {
-  const cls = [`btn-${variant}`, size === "sm" ? "min-h-9 px-3 text-sm" : "", layout ?? ""].filter(Boolean).join(" ");
-  return <button type={type} className={cls} {...rest} />;
+  return <button type={type} className={buttonClass(variant, size, layout)} {...rest} />;
 }
 
 export function ButtonLink({
@@ -31,9 +33,8 @@ export function ButtonLink({
   layout?: string;
   children: ReactNode;
 }) {
-  const cls = [`btn-${variant}`, size === "sm" ? "min-h-9 px-3 text-sm" : "", layout ?? ""].filter(Boolean).join(" ");
   return (
-    <Link to={to} className={cls}>
+    <Link to={to} className={buttonClass(variant, size, layout)}>
       {children}
     </Link>
   );

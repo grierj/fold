@@ -229,7 +229,9 @@ export function Home() {
       {/* Group grid */}
       <section className="max-w-6xl mx-auto px-4 py-8">
         <h2 className="text-2xl font-bold mb-4">Church Groups</h2>
-        {loading && (
+        {/* The skeleton is for the first load only: while a new search or tag
+            loads, the last results stay put instead of blinking out. */}
+        {loading && groups.length === 0 && (
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             <Skeleton kind="cards" count={3} label="Loading groups…" />
           </div>
@@ -278,7 +280,7 @@ export function Home() {
             />
           )
         )}
-        {!loading && groups.length > 0 && (
+        {!error && groups.length > 0 && (
           <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {groups.map((g) => (
               <GroupCard
