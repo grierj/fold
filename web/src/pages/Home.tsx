@@ -243,7 +243,7 @@ export function Home() {
               title={`No groups match “${debounced.trim()}”`}
               body={
                 <>
-                  No groups match “{debounced.trim()}” with these tags. Try another search, or {clearTagsButton}.
+                  None of them have these tags. Try another search, or {clearTagsButton}.
                 </>
               }
             />

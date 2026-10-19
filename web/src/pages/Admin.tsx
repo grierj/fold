@@ -417,9 +417,12 @@ function GroupsTab({ users }: { users: User[] }) {
   const [openMembers, setOpenMembers] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
     (async () => {
+      setLoading(true);
+      setError(null);
       try {
         const { groups } = await AdminGroups.list();
         setGroups(groups);
@@ -429,7 +432,7 @@ function GroupsTab({ users }: { users: User[] }) {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [retry]);
 
   async function deleteGroup(g: GroupSummary) {
     if (!confirm(`Delete “${g.name}”? This removes the group, its members, and its events.`)) return;
@@ -447,7 +450,7 @@ function GroupsTab({ users }: { users: User[] }) {
   }
 
   if (loading) return <Skeleton kind="lines" />;
-  if (error) return <div className="text-danger">{error}</div>;
+  if (error) return <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />;
 
   return (
     <div className="space-y-3">

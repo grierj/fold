@@ -111,8 +111,9 @@ describe("Home tag filters", () => {
     await chips();
     await userEvent.type(screen.getByLabelText("Search groups"), "prayer");
     expect(
-      await screen.findByText(/No groups match “prayer” with these tags/, undefined, { timeout: 2000 })
-    ).toHaveTextContent("No groups match “prayer” with these tags. Try another search, or Clear the tags.");
+      await screen.findByText(/None of them have these tags/, undefined, { timeout: 2000 })
+    ).toHaveTextContent("None of them have these tags. Try another search, or Clear the tags.");
+    expect(screen.getByText("No groups match “prayer”")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Clear the tags" }));
     expect(await screen.findByRole("heading", { name: "Prayer Team" })).toBeInTheDocument();
   });
