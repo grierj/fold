@@ -73,7 +73,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 </div>
                 {/* On phones, New group is a labeled header link, Admin is a row on
                     the Me page, and the rest are tabs (PR #65 review F2). */}
-                <NavLink to="/groups/new" className={(a) => `sm:hidden gap-1 px-2 text-sm font-medium ${iconLink(a)}`}>
+                <NavLink to="/groups/new" className={(a) => `sm:hidden shrink-0 whitespace-nowrap gap-1 px-2 text-sm font-medium ${iconLink(a)}`}>
                   <PlusIcon />
                   New group
                 </NavLink>
