@@ -19,7 +19,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.4 Guest registration | done (merged, #55) | Muse | `m1.4-guest-registration` |
 | M1.5 Capacity, waitlist, pruning | done (merged, #57) | Winston | `m1.5-capacity-waitlist-pruning` |
 | M1.6 Calendar views | done (merged, #73) | Wright | `calendar` |
-| M1.7 ICS feeds | in review | Muse | `m1.7-ics-feeds` |
+| M1.7 ICS feeds | done (landed on master, no PR) | Muse | `m1.7-ics-feeds` |
 | M1.8 Video, remote, childcare | unclaimed | | |
 | M1.9 Households and household people | unclaimed | | |
 | M1.10 Teen accounts, consent, badges | unclaimed | | |
