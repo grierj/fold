@@ -1,6 +1,6 @@
 import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
 
-const PASSWORD = "password1234";
+export const PASSWORD = "password1234";
 export const email = (name: string) => `${name}@example.com`;
 
 // Sign in through the real login form, always from a signed-out browser.
