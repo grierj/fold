@@ -199,6 +199,16 @@ CLI (C11): `fold` (same as `fold serve`), `fold healthcheck`,
 `fold migrate [up|status|down-one]` (needs only `DATABASE_URL`), and
 `fold version` (needs nothing). `--json` gives machine-readable output.
 
+### Merging pull requests
+
+Grier's rule (Oct 20, 2026). An agent may merge a fold PR, as a normal merge commit, when all of these hold:
+
+1. Every CI check is green (`test`, `web`, `provision`; branch protection requires them).
+2. The relevant reviewer approved: Illuminator for UI, Whittler for performance, Warden for security.
+3. No Grier decision on it is still open.
+
+PRs that change security or visibility policy, repo settings, or production and deploy wait for Grier, unless he already decided that change. After a merge, merge master into the other open branches (never rebase) and report the merge SHA.
+
 ## Deployment
 
 - `docker compose up --build -d` → app + Postgres 16 + Caddy (auto HTTPS).
@@ -292,5 +302,4 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Selected chips are stronger than unselected; fields are labelled and their errors are announced | `Chip` and `Field` in `web/src/components/ui`, `Chip.test.tsx`, `Field.test.tsx` |
 | A photo-less group's cover comes from `coverSrc` (its own image, else one of six patterns by id, DEC-66); empty states are the neutral `EmptyState`, never red | `web/src/lib/covers.test.ts`, `web/src/components/ui/EmptyState.test.tsx`; the danger ratchet in `TestUIRatchets` |
 | Work reaches master only through a pull request with the `test`, `web` and `provision` checks green; branch pushes use an exact refspec (`HEAD:refs/heads/<branch>`) | GitHub branch protection on `master` (Oct 20, 2026): PR required, those three status checks required, admins included, no force-push or deletion. It replaced the opt-in pre-push hook from #74 |
-| Work reaches master only through a pull request; branch pushes use an exact refspec (`HEAD:refs/heads/<branch>`) | `.githooks/pre-push` refuses `refs/heads/master` (activate once per clone with `git config core.hooksPath .githooks`); `TestPrePushHookBlocksMaster` (`guards_test.go`) runs it on the M1.7 push line |
 | Secrets in URLs (calendar feed tokens, guest manage links, `?token=` email links) never reach the access log | `accessLog` and `redactLogPath` (`access_log.go`) drop query strings and redact token segments; `TestAccessLogKeepsSecretsOut` (`access_log_test.go`) |
