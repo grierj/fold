@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fold/internal/audit"
+	foldmail "fold/internal/mail"
 	"fold/models"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -462,5 +465,136 @@ func TestPasswordResetSkipsGuests(t *testing.T) {
 	app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", "guest@example.com").Count(&mails)
 	if tokens != 0 || mails != 0 {
 		t.Fatalf("guest got a reset: tokens %d, emails %d", tokens, mails)
+	}
+}
+
+// #90: a burst of parallel wrong passwords can't get past the lockout. The
+// attempt is counted before bcrypt, so at most the limit are checked.
+func TestLoginLockoutHoldsUnderParallelRequests(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "alice", "password1234", models.RoleMember)
+
+	const burst = 3 * emailFailureLimit
+	codes := make(chan int, burst)
+	var wg sync.WaitGroup
+	for i := 0; i < burst; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			code, _ := tryLogin(t, app, "198.51.100."+itoa2(uint(i+1)), "alice@example.com", "wrong")
+			codes <- code
+		}(i)
+	}
+	wg.Wait()
+	close(codes)
+	checked := 0
+	for code := range codes {
+		switch code {
+		case http.StatusUnauthorized:
+			checked++
+		case http.StatusTooManyRequests:
+		default:
+			t.Fatalf("unexpected status %d", code)
+		}
+	}
+	if checked > emailFailureLimit {
+		t.Fatalf("%d passwords checked in a burst of %d, limit %d", checked, burst, emailFailureLimit)
+	}
+	if code, _ := tryLogin(t, app, "203.0.113.9", "alice@example.com", "password1234"); code != http.StatusTooManyRequests {
+		t.Fatalf("after burst: got %d, want 429", code)
+	}
+}
+
+// A successful sign-in doesn't use up the IP's failure budget.
+func TestLoginSuccessDoesNotCountAgainstIP(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	for i := 0; i < ipFailureLimit+5; i++ {
+		if code, _ := tryLogin(t, app, "192.0.2.10", "alice@example.com", "password1234"); code != http.StatusOK {
+			t.Fatalf("sign-in %d: got %d", i+1, code)
+		}
+	}
+}
+
+// slowMailer stands in for a slow SMTP server.
+type slowMailer struct {
+	delay time.Duration
+	sent  chan string
+}
+
+func (m *slowMailer) Send(_ context.Context, msg foldmail.Message) error {
+	time.Sleep(m.delay)
+	m.sent <- msg.To
+	return nil
+}
+
+// #93: a known address doesn't wait on the email send, so response time
+// doesn't reveal which addresses have accounts.
+func TestPasswordResetDoesNotWaitOnEmail(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	mailer := &slowMailer{delay: 2 * time.Second, sent: make(chan string, 1)}
+	app.Mailer = mailer
+	app.background = nil // the real, asynchronous path
+
+	anon := newAPIClient(t, app)
+	anon.fetchCSRF()
+	start := time.Now()
+	w := anon.do("POST", "/api/v1/auth/password-reset", map[string]string{"email": "alice@example.com"}, true)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), resetRequestMessage) {
+		t.Fatalf("reset: %d %s", w.Code, w.Body.String())
+	}
+	if d := time.Since(start); d >= mailer.delay {
+		t.Fatalf("response waited on the email: %v", d)
+	}
+	select {
+	case to := <-mailer.sent:
+		if to != "alice@example.com" {
+			t.Fatalf("sent to %q", to)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("reset email never sent")
+	}
+}
+
+// A panic in background work is recovered, not fatal to the server.
+func TestRunInBackgroundRecoversPanics(t *testing.T) {
+	app := &App{}
+	done := make(chan struct{})
+	app.runInBackground(func() {
+		defer close(done)
+		panic("boom")
+	})
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background task never ran")
+	}
+}
+
+// deadlineMailer records whether the send carried a deadline.
+type deadlineMailer struct{ deadline chan time.Duration }
+
+func (m *deadlineMailer) Send(ctx context.Context, _ foldmail.Message) error {
+	d, ok := ctx.Deadline()
+	if !ok {
+		m.deadline <- 0
+		return nil
+	}
+	m.deadline <- time.Until(d)
+	return nil
+}
+
+// The background reset send is bounded by resetMailTimeout.
+func TestPasswordResetSendHasTimeout(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	mailer := &deadlineMailer{deadline: make(chan time.Duration, 1)}
+	app.Mailer = mailer
+	anon := newAPIClient(t, app)
+	anon.fetchCSRF()
+	apiDo(t, anon, "POST", "/api/v1/auth/password-reset", map[string]string{"email": "alice@example.com"}, http.StatusOK)
+	if d := <-mailer.deadline; d <= 0 || d > resetMailTimeout {
+		t.Fatalf("send deadline %v, want within %v", d, resetMailTimeout)
 	}
 }
