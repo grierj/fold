@@ -1783,10 +1783,10 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Depends on: M1.1b
 - Scope: 8.2 feeds and tokens.
 - Acceptance:
-  - [ ] Feeds validate (parsed by golang-ical in tests; golden files)
-  - [ ] Recurring events appear as one VEVENT with RRULE, EXDATE, and RECURRENCE-ID
-  - [ ] A revoked or regenerated token returns 404
-  - [ ] Leaving an invite-only group removes its events from the personal feed on the next fetch
+  - [x] Feeds validate (parsed by golang-ical in tests; golden files)
+  - [x] Recurring events appear as one VEVENT with RRULE, EXDATE, and RECURRENCE-ID
+  - [x] A revoked or regenerated token returns 404
+  - [x] Leaving an invite-only group removes its events from the personal feed on the next fetch
   - [ ] Video links follow `video_reveal`
 - Tests: golden files; permission tests; ETag test.
 

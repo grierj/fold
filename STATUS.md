@@ -18,8 +18,8 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.3 Self-signup, account requests, age gate | done (merged, #49) | Muse | `m1.3-self-signup-account-requests` |
 | M1.4 Guest registration | done (merged, #55) | Muse | `m1.4-guest-registration` |
 | M1.5 Capacity, waitlist, pruning | done (merged, #57) | Winston | `m1.5-capacity-waitlist-pruning` |
-| M1.6 Calendar views | unclaimed | | |
-| M1.7 ICS feeds | in progress | Muse | `m1.7-ics-feeds` |
+| M1.6 Calendar views | done (merged, #73) | Wright | `calendar` |
+| M1.7 ICS feeds | in review | Muse | `m1.7-ics-feeds` |
 | M1.8 Video, remote, childcare | unclaimed | | |
 | M1.9 Households and household people | unclaimed | | |
 | M1.10 Teen accounts, consent, badges | unclaimed | | |
@@ -51,4 +51,4 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | UI makeover PR 6: event, series, leader and admin pages (DEC-63): shared More menu, segmented RSVP, attendance counts with a names expand, series as next date + N more in the next 90 days; can't-go count and names for leaders and admins only (DEC-64); layout gate now also checks the last content clears the tab bar | merged (#66) | Grok | `event-pages` |
 | UI makeover PR 7: forms (DEC-65): one Field pattern (label, hint above the control, error below, only optional fields marked), Radio/Checkbox rows at 44px in fieldsets, searchable time zone combobox everywhere but setup, focus moves to the first invalid field, verb-plus-noun buttons full width on phones; guard keeps raw form controls in components/ui; layout gate on 44px radio and checkbox rows | in review | Grok | `forms` |
 | UI makeover PR 8: empty, error and loading states, covers, brand (DEC-66): every empty list says what would show up and offers the next step, missing pages offer a way home, failed loads offer Try again, slow loads show skeletons, photo-less groups get one of six patterned covers by id, the tab gets the Fold icon; placeholder illustrations and covers wait on Gilder | merged (#72) | Muse | `empty-states` |
-| UI makeover PR 9: calendar (M1.6, DEC-67): `/calendar` with Agenda, Week and Month views of every date the viewer may see, a "Just mine" chip and a group filter, times in the viewer's zone, a Calendar tab (5 tabs), and a read-only `GET /api/v1/calendar` with slim rows and no attendance | in review | Wright | `calendar` |
+| UI makeover PR 9: calendar (M1.6, DEC-67): `/calendar` with Agenda, Week and Month views of every date the viewer may see, a "Just mine" chip and a group filter, times in the viewer's zone, a Calendar tab (5 tabs), and a read-only `GET /api/v1/calendar` with slim rows and no attendance | merged (#73) | Wright | `calendar` |
