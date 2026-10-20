@@ -139,7 +139,9 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		Singles:     []events.FeedSingle{},
 	}
 
-	q := a.DB
+	// Only events with a date in the window can add anything (#75).
+	q := a.DB.Where("id IN (SELECT event_id FROM event_occurrences WHERE starts_at >= ? AND starts_at < ?)",
+		windowStart, windowEnd)
 	if opts.onlyGroupID != nil {
 		q = q.Where("group_id = ?", *opts.onlyGroupID)
 	}
@@ -401,7 +403,7 @@ func (a *App) apiUpdateMyCalendarFeed(c *gin.Context) {
 
 func (a *App) apiDeleteMyCalendarFeed(c *gin.Context) {
 	me := apiUser(c)
-	if err := a.revokeCalendarToken(c, me.ID, me.ID); err != nil {
+	if _, err := a.revokeCalendarToken(c, me.ID, me.ID); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not turn off the calendar link")
 		return
 	}
@@ -409,19 +411,26 @@ func (a *App) apiDeleteMyCalendarFeed(c *gin.Context) {
 }
 
 func (a *App) apiAdminRevokeCalendarFeed(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	if err := a.revokeCalendarToken(c, apiUser(c).ID, uint(id)); err != nil {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		jsonError(c, http.StatusNotFound, "user not found")
+		return
+	}
+	had, err := a.revokeCalendarToken(c, apiUser(c).ID, uint(id))
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not revoke the calendar link")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(nil)})
+	// hadLink lets the admin page say whether a link was actually turned off.
+	c.JSON(http.StatusOK, gin.H{"calendarFeed": calendarFeedOf(nil), "hadLink": had})
 }
 
 // revokeCalendarToken deletes userID's link when one exists. Revoking a
 // link that is already off succeeds the same way, so the admin action
 // can be unconditional.
-func (a *App) revokeCalendarToken(c *gin.Context, actorID, userID uint) error {
-	return a.DB.Transaction(func(tx *gorm.DB) error {
+func (a *App) revokeCalendarToken(c *gin.Context, actorID, userID uint) (bool, error) {
+	had := false
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		res := tx.Where("user_id = ?", userID).Delete(&models.CalendarToken{})
 		if res.Error != nil {
 			return res.Error
@@ -429,9 +438,11 @@ func (a *App) revokeCalendarToken(c *gin.Context, actorID, userID uint) error {
 		if res.RowsAffected == 0 {
 			return nil
 		}
+		had = true
 		return audit.Write(tx, audit.Entry{
 			Actor: &actorID, Action: audit.CalendarTokenRevoked,
 			TargetType: "user", TargetID: userID, IP: c.ClientIP(),
 		})
 	})
+	return had, err
 }
