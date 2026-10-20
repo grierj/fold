@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"fold/internal/events"
-	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -75,56 +74,19 @@ func (a *App) apiCalendar(c *gin.Context) {
 		onlyGroup = &grp.ID
 	}
 
-	q := a.DB
+	// Only events with a date in the window can add anything (#75).
+	q := a.DB.Where("id IN (SELECT event_id FROM event_occurrences WHERE starts_at >= ? AND starts_at < ?)",
+		windowStart.UTC(), windowEnd.UTC())
 	if onlyGroup != nil {
 		q = q.Where("group_id = ?", *onlyGroup)
 	}
-	var evs []models.Event
-	if err := q.Find(&evs).Error; err != nil {
+	vs, err := a.visibleEvents(me, q)
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
 		return
 	}
 	out := []calendarOccurrenceJSON{}
-	if len(evs) == 0 {
-		c.JSON(http.StatusOK, gin.H{"occurrences": out, "truncated": false})
-		return
-	}
-
-	byID := make(map[uint]*models.Event, len(evs))
-	gset := map[uint]struct{}{}
-	ids := make([]uint, 0, len(evs))
-	for i := range evs {
-		byID[evs[i].ID] = &evs[i]
-		ids = append(ids, evs[i].ID)
-		if evs[i].GroupID != nil {
-			gset[*evs[i].GroupID] = struct{}{}
-		}
-	}
-	groups := a.groupsByID(gset)
-	rels := a.relsFor(me, gset)
-	hosted := a.hostedEventIDs(me, ids)
-
-	// Every event the viewer may see (the openEventIDs loop without its
-	// "group not visible" condition: the calendar shows a visible group's
-	// events too).
-	p := asPerson(me)
-	visibleIDs := make([]uint, 0, len(evs))
-	for i := range evs {
-		ev := &evs[i]
-		grp, rel := groupAndRel(ev, groups, rels)
-		if ev.GroupID != nil && grp == nil {
-			continue
-		}
-		gp := policy.Group{}
-		if grp != nil {
-			gp = asGroup(grp)
-		}
-		if policy.CanSeeEvent(p, viewOf(ev, hosted[ev.ID]), gp, rel) {
-			visibleIDs = append(visibleIDs, ev.ID)
-		} else {
-			delete(byID, ev.ID)
-		}
-	}
+	byID, groups, rels, hosted, visibleIDs := vs.ByID, vs.Groups, vs.Rels, vs.Hosted, vs.IDs
 	if len(visibleIDs) == 0 {
 		c.JSON(http.StatusOK, gin.H{"occurrences": out, "truncated": false})
 		return

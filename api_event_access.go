@@ -200,37 +200,20 @@ func (a *App) loadVisibleEvent(c *gin.Context) (*models.Event, eventFacts, bool)
 // they can see whose group they cannot. Admins already see every group, so
 // an opened group event stays on that group's page for them.
 func (a *App) openEventIDs(u *models.User) []uint {
-	var evs []models.Event
-	if err := a.DB.Find(&evs).Error; err != nil || len(evs) == 0 {
+	now := time.Now().UTC()
+	from, to, _ := upcomingWindow(now)
+	// Only events with a date in the listed window can add anything (#75).
+	vs, err := a.visibleEvents(u, a.DB.Where(
+		"id IN (SELECT event_id FROM event_occurrences WHERE original_date >= ? AND original_date <= ?)", from, to))
+	if err != nil {
 		return nil
 	}
-	gset := map[uint]struct{}{}
-	ids := make([]uint, 0, len(evs))
-	for i := range evs {
-		ids = append(ids, evs[i].ID)
-		if evs[i].GroupID != nil {
-			gset[*evs[i].GroupID] = struct{}{}
-		}
-	}
-	groups := a.groupsByID(gset)
-	rels := a.relsFor(u, gset)
-	hosted := a.hostedEventIDs(u, ids)
 	p := asPerson(u)
 	var out []uint
-	for i := range evs {
-		ev := &evs[i]
-		g, rel := groupAndRel(ev, groups, rels)
-		if ev.GroupID != nil && g == nil {
-			continue
-		}
-		gp := policy.Group{}
-		if g != nil {
-			gp = asGroup(g)
-		}
-		if !policy.CanSeeEvent(p, viewOf(ev, hosted[ev.ID]), gp, rel) {
-			continue
-		}
-		if ev.GroupID == nil || !policy.CanSeeGroup(p, gp, rel) {
+	for i := range vs.Events {
+		ev := &vs.Events[i]
+		g, rel := groupAndRel(ev, vs.Groups, vs.Rels)
+		if ev.GroupID == nil || !policy.CanSeeGroup(p, asGroup(g), rel) {
 			out = append(out, ev.ID)
 		}
 	}
@@ -555,3 +538,59 @@ var (
 type errSent string
 
 func (e errSent) Error() string { return string(e) }
+
+// visibleSet is the events one viewer may see out of a query, with the
+// lookups callers need afterwards. Events keeps the query's order.
+type visibleSet struct {
+	Events []models.Event
+	IDs    []uint
+	ByID   map[uint]*models.Event
+	Groups map[uint]*models.Group
+	Rels   map[uint]policy.Rel
+	Hosted map[uint]bool
+}
+
+// visibleEvents is the one list filter for event visibility (#75): it loads
+// the events q selects and keeps those policy.CanSeeEvent allows for the
+// viewer (nil is a signed-out visitor). An event whose group row is gone
+// (soft-deleted) is never visible, not even to an admin. Pass a query
+// already narrowed to a window where possible; TestOneEventVisibilityFilter
+// keeps a second copy of this loop out of the code.
+func (a *App) visibleEvents(viewer *models.User, q *gorm.DB) (visibleSet, error) {
+	vs := visibleSet{ByID: map[uint]*models.Event{}, Groups: map[uint]*models.Group{}, Rels: map[uint]policy.Rel{}, Hosted: map[uint]bool{}}
+	var evs []models.Event
+	if err := q.Find(&evs).Error; err != nil || len(evs) == 0 {
+		return vs, err
+	}
+	gset := map[uint]struct{}{}
+	ids := make([]uint, 0, len(evs))
+	for i := range evs {
+		ids = append(ids, evs[i].ID)
+		if evs[i].GroupID != nil {
+			gset[*evs[i].GroupID] = struct{}{}
+		}
+	}
+	vs.Groups = a.groupsByID(gset)
+	vs.Rels = a.relsFor(viewer, gset)
+	vs.Hosted = a.hostedEventIDs(viewer, ids)
+	p := asPerson(viewer)
+	for i := range evs {
+		ev := evs[i]
+		grp, rel := groupAndRel(&ev, vs.Groups, vs.Rels)
+		if ev.GroupID != nil && grp == nil {
+			continue
+		}
+		gp := policy.Group{}
+		if grp != nil {
+			gp = asGroup(grp)
+		}
+		if policy.CanSeeEvent(p, viewOf(&ev, vs.Hosted[ev.ID]), gp, rel) {
+			vs.Events = append(vs.Events, ev)
+		}
+	}
+	for i := range vs.Events {
+		vs.ByID[vs.Events[i].ID] = &vs.Events[i]
+		vs.IDs = append(vs.IDs, vs.Events[i].ID)
+	}
+	return vs, nil
+}
