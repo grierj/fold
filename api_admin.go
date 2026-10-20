@@ -296,7 +296,8 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		// A teen becomes active only through account consent (#94, DEC-8,
 		// PLAN TeenConsent), never by an admin edit: not from
 		// pending_consent, and not by re-enabling a disabled teen, which
-		// goes back to waiting for consent.
+		// goes back to waiting for consent (DEC-69: once TeenConsent exists
+		// in M1.10, restore active when the latest account consent is granted).
 		if status == models.UserActive && u.Status == models.UserPendingConsent {
 			jsonError(c, http.StatusBadRequest, "a teen account waiting for consent becomes active only when consent is granted")
 			return
