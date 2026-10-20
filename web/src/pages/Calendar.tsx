@@ -123,7 +123,7 @@ export function CalendarPage() {
             </Button>
           </div>
         )}
-        <div className="flex items-end gap-3 sm:ml-auto">
+        <div className="flex flex-wrap items-end gap-3 sm:ml-auto">
           {user && (
             <Chip selected={mine} onClick={() => go({ mine: mine ? null : "1" })}>
               Just mine
@@ -134,7 +134,7 @@ export function CalendarPage() {
               Show deleted events
             </Chip>
           )}
-          <div className="min-w-0 flex-1 sm:w-56 sm:flex-none">
+          <div className="min-w-48 flex-1 sm:w-56 sm:flex-none">
             <Field label="Group">
               <Select
                 value={group}
