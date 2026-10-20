@@ -556,3 +556,45 @@ func TestPasswordResetDoesNotWaitOnEmail(t *testing.T) {
 		t.Fatal("reset email never sent")
 	}
 }
+
+// A panic in background work is recovered, not fatal to the server.
+func TestRunInBackgroundRecoversPanics(t *testing.T) {
+	app := &App{}
+	done := make(chan struct{})
+	app.runInBackground(func() {
+		defer close(done)
+		panic("boom")
+	})
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background task never ran")
+	}
+}
+
+// deadlineMailer records whether the send carried a deadline.
+type deadlineMailer struct{ deadline chan time.Duration }
+
+func (m *deadlineMailer) Send(ctx context.Context, _ foldmail.Message) error {
+	d, ok := ctx.Deadline()
+	if !ok {
+		m.deadline <- 0
+		return nil
+	}
+	m.deadline <- time.Until(d)
+	return nil
+}
+
+// The background reset send is bounded by resetMailTimeout.
+func TestPasswordResetSendHasTimeout(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	mailer := &deadlineMailer{deadline: make(chan time.Duration, 1)}
+	app.Mailer = mailer
+	anon := newAPIClient(t, app)
+	anon.fetchCSRF()
+	apiDo(t, anon, "POST", "/api/v1/auth/password-reset", map[string]string{"email": "alice@example.com"}, http.StatusOK)
+	if d := <-mailer.deadline; d <= 0 || d > resetMailTimeout {
+		t.Fatalf("send deadline %v, want within %v", d, resetMailTimeout)
+	}
+}

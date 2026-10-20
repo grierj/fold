@@ -359,7 +359,9 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 		return
 	}
 	a.runInBackground(func() {
-		if err := a.sendPasswordResetEmail(email, raw); err != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), resetMailTimeout)
+		defer cancel()
+		if err := a.sendPasswordResetEmail(ctx, email, raw); err != nil {
 			// The token is stored; the send failure is logged, not leaked.
 			log.Printf("password reset email to %s: %v", email, err)
 		}
@@ -367,19 +369,32 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 }
 
-// runInBackground runs f without making the response wait for it.
+// resetMailTimeout bounds a background reset send, so a hung SMTP server
+// can't pile up goroutines.
+const resetMailTimeout = 30 * time.Second
+
+// runInBackground runs f without making the response wait for it. A panic
+// in f is logged and recovered, so it can't take the server down.
 func (a *App) runInBackground(f func()) {
+	safe := func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("background task panicked: %v", r)
+			}
+		}()
+		f()
+	}
 	if a.background != nil {
-		a.background(f)
+		a.background(safe)
 		return
 	}
-	go f()
+	go safe()
 }
 
 // sendPasswordResetEmail sends the single-use reset link (C6: plain text).
-func (a *App) sendPasswordResetEmail(to, raw string) error {
+func (a *App) sendPasswordResetEmail(ctx context.Context, to, raw string) error {
 	link := a.emailBaseURL() + "/reset-password?token=" + raw
-	return a.Mailer.Send(context.Background(), foldmail.Message{
+	return a.Mailer.Send(ctx, foldmail.Message{
 		To:      to,
 		Subject: "Reset your Fold password",
 		Text: fmt.Sprintf(`Someone asked to reset the password for this email address at %s.
