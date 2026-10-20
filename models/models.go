@@ -396,6 +396,27 @@ type LoginThrottle struct {
 	LockedUntil *time.Time
 }
 
+// Calendar feed scopes (8.2): "mine" is Option A (my groups, events I
+// host, and the dates I'm going or waitlisted for); "all" is Option B
+// (everything I can see).
+const (
+	CalendarFeedMine = "mine"
+	CalendarFeedAll  = "all"
+)
+
+// CalendarToken is one person's secret calendar-feed link (M1.7, 8.2):
+// one row per user, only the SHA-256 of the raw token stored. The raw
+// token is shown once when the row is created or regenerated.
+type CalendarToken struct {
+	ID        uint      `gorm:"primaryKey"`
+	UserID    uint      `gorm:"not null;uniqueIndex:idx_calendar_tokens_user_id"`
+	User      User      `gorm:"foreignKey:UserID"`
+	TokenHash string    `gorm:"not null;uniqueIndex:idx_calendar_tokens_token_hash"`
+	Scope     string    `gorm:"not null;default:mine"` // mine | all
+	CreatedAt time.Time `gorm:"not null;default:now()"`
+	UpdatedAt time.Time `gorm:"not null;default:now()"`
+}
+
 // Account token kinds (10.1): single-use hashed tokens, valid 24 hours.
 const (
 	TokenPasswordReset = "password_reset"
@@ -530,7 +551,7 @@ func All() []any {
 		&User{}, &Group{}, &Event{}, &EventHost{}, &EventOccurrence{},
 		&Membership{}, &Registration{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
-		&AccountRequest{}, &GuestSignup{},
+		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 	}
 }
 
