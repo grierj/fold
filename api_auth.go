@@ -38,12 +38,15 @@ func (a *App) apiLogin(c *gin.Context) {
 	email := normalizeEmail(body.Email)
 	keys := []string{"email:" + email, "ip:" + c.ClientIP()}
 	ctx := c.Request.Context()
-	locked, err := a.loginLocked(ctx, keys)
+	// The attempt is counted before the password check, atomically per key,
+	// so a burst of parallel requests can't all pass the check before any
+	// failure is recorded (#90).
+	allowed, err := a.reserveLoginAttempt(ctx, keys)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not sign in")
 		return
 	}
-	if locked {
+	if !allowed {
 		jsonError(c, http.StatusTooManyRequests, "too many sign-in attempts; try again in 15 minutes")
 		return
 	}
@@ -59,13 +62,15 @@ func (a *App) apiLogin(c *gin.Context) {
 		user = &found
 	}
 	if !user.CheckPassword(body.Password) || !user.CanSignIn() {
-		if err := a.noteLoginFailure(ctx, keys); err != nil {
+		if err := a.lockLoginKeysAtLimit(ctx, keys); err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not sign in")
 			return
 		}
 		jsonError(c, http.StatusUnauthorized, "invalid email or password")
 		return
 	}
+	// A success isn't a failure: give the IP back its attempt.
+	a.DB.Exec(`UPDATE login_throttles SET failures = GREATEST(failures - 1, 0) WHERE key = ?`, keys[1])
 	// Success clears the email's counter. The IP counter stays, so one
 	// working account can't be used to reset it.
 	a.DB.Where("key = ?", keys[0]).Delete(&models.LoginThrottle{})
@@ -111,41 +116,65 @@ func failureLimit(key string) int {
 	return emailFailureLimit
 }
 
-func (a *App) loginLocked(ctx context.Context, keys []string) (bool, error) {
-	var n int64
-	err := a.DB.WithContext(ctx).Model(&models.LoginThrottle{}).
-		Where("key IN ? AND locked_until > now()", keys).Count(&n).Error
-	return n > 0, err
-}
-
-// noteLoginFailure counts one failure for each key. A key that reaches its
-// limit within the window is locked for 15 minutes and starts over.
-func (a *App) noteLoginFailure(ctx context.Context, keys []string) error {
+// reserveLoginAttempt counts one attempt for each key before the password
+// is checked, and reports whether every key is still allowed. Each key's
+// row is incremented with one upsert, so parallel requests serialize on it
+// and at most the limit pass. A locked key, or one already past its limit,
+// is refused; a key that goes past its limit is locked for 15 minutes.
+func (a *App) reserveLoginAttempt(ctx context.Context, keys []string) (bool, error) {
 	window := fmt.Sprintf("%d seconds", int(loginWindow.Seconds()))
-	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	allowed := true
+	err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, key := range keys {
-			err := tx.Exec(`
+			var row struct {
+				Failures int
+				Locked   bool
+			}
+			err := tx.Raw(`
 INSERT INTO login_throttles (key, failures, window_start) VALUES (?, 1, now())
 ON CONFLICT (key) DO UPDATE SET
   failures = CASE WHEN login_throttles.window_start < now() - ?::interval
                   THEN 1 ELSE login_throttles.failures + 1 END,
   window_start = CASE WHEN login_throttles.window_start < now() - ?::interval
-                      THEN now() ELSE login_throttles.window_start END`,
-				key, window, window).Error
+                      THEN now() ELSE login_throttles.window_start END
+RETURNING failures, COALESCE(locked_until > now(), false) AS locked`,
+				key, window, window).Scan(&row).Error
 			if err != nil {
 				return err
 			}
-			err = tx.Exec(`UPDATE login_throttles
+			switch {
+			case row.Locked:
+				allowed = false
+			case row.Failures > failureLimit(key):
+				allowed = false
+				if err := tx.Exec(`UPDATE login_throttles
 SET locked_until = now() + ?::interval, failures = 0, window_start = now()
-WHERE key = ? AND failures >= ?`, window, key, failureLimit(key)).Error
-			if err != nil {
-				return err
+WHERE key = ?`, window, key).Error; err != nil {
+					return err
+				}
 			}
 		}
 		// Old rows carry no information; keep the table small.
 		return tx.Exec(`DELETE FROM login_throttles
 WHERE window_start < now() - interval '1 day' AND (locked_until IS NULL OR locked_until < now())`).Error
 	})
+	return allowed, err
+}
+
+// lockLoginKeysAtLimit runs after a failed attempt (already counted by
+// reserveLoginAttempt): a key that has reached its limit within the window
+// is locked for 15 minutes and starts over.
+func (a *App) lockLoginKeysAtLimit(ctx context.Context, keys []string) error {
+	window := fmt.Sprintf("%d seconds", int(loginWindow.Seconds()))
+	for _, key := range keys {
+		err := a.DB.WithContext(ctx).Exec(`UPDATE login_throttles
+SET locked_until = now() + ?::interval, failures = 0, window_start = now()
+WHERE key = ? AND failures >= ?`, window, key, failureLimit(key)).Error
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // setPassword stores a new bcrypt hash, activates an invited account, and
@@ -304,10 +333,11 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	// answer as an unknown address, so guest status isn't revealed (DEC-53).
 	found := a.DB.Where("email = ? AND status = ?", email, models.UserActive).
 		Limit(1).Find(&user).RowsAffected == 1
+	// Both paths pay the same password-check cost, and neither waits on
+	// the email: the send runs in the background, so response time doesn't
+	// reveal whether the account exists (#93).
+	(&models.User{}).CheckPassword("not a real password")
 	if !found || throttled {
-		// Same cost as a real request's password check, and the same
-		// answer: nothing here reveals whether the account exists.
-		(&models.User{}).CheckPassword("not a real password")
 		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 		return
 	}
@@ -322,14 +352,28 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 			TargetType: "user", TargetID: user.ID, IP: c.ClientIP()})
 	})
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not start password reset")
+		// Logged, not leaked: an error status here would tell the caller
+		// the account exists.
+		log.Printf("password reset for user %d: %v", user.ID, err)
+		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 		return
 	}
-	if err := a.sendPasswordResetEmail(email, raw); err != nil {
-		// The token is stored; the send failure is logged, not leaked.
-		log.Printf("password reset email to %s: %v", email, err)
-	}
+	a.runInBackground(func() {
+		if err := a.sendPasswordResetEmail(email, raw); err != nil {
+			// The token is stored; the send failure is logged, not leaked.
+			log.Printf("password reset email to %s: %v", email, err)
+		}
+	})
 	c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
+}
+
+// runInBackground runs f without making the response wait for it.
+func (a *App) runInBackground(f func()) {
+	if a.background != nil {
+		a.background(f)
+		return
+	}
+	go f()
 }
 
 // sendPasswordResetEmail sends the single-use reset link (C6: plain text).
