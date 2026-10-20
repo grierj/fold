@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AccountRequests, CalendarFeeds, Profile as ProfileApi } from "../api";
 import type { CalendarFeed } from "../types";
@@ -11,6 +11,7 @@ import { ZonePicker } from "../components/ui/ZonePicker";
 import { errorText } from "../lib/errors";
 import { Choices, Field, FormError, Input, Radio, showFieldErrors } from "../components/ui/Field";
 import { Skeleton } from "../components/ui/Skeleton";
+import { ErrorNotice } from "../components/ErrorNotice";
 
 export function ProfilePage() {
   const { user, loading, refresh, logout, isAdmin } = useAuth();
@@ -342,37 +343,47 @@ export function ProfilePage() {
   );
 }
 
-function CalendarFeedCard() {
+export function CalendarFeedCard() {
   const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [hasToken, setHasToken] = useState(false);
   const [scope, setScope] = useState<CalendarFeed["scope"]>("mine");
   const [link, setLink] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState("");
   const linkRef = useRef<HTMLInputElement>(null);
+  const alive = useRef(true);
 
-  useEffect(() => {
-    let alive = true;
+  const load = useCallback(() => {
+    setLoaded(false);
+    setLoadError(null);
     CalendarFeeds.get()
       .then((r) => {
-        if (!alive) return;
+        if (!alive.current) return;
         setHasToken(r.calendarFeed.hasToken);
         setScope(r.calendarFeed.scope);
+        setLoaded(true);
       })
-      .catch(() => {})
-      .finally(() => {
-        if (alive) setLoaded(true);
+      .catch((err) => {
+        // A failed load must never look like "no link yet": Create would
+        // then quietly replace a link that works (M17-REVIEW M1).
+        if (alive.current) setLoadError(errorText(err, "We couldn't load your calendar link."));
       });
-    return () => {
-      alive = false;
-    };
   }, []);
+
+  useEffect(() => {
+    alive.current = true;
+    load();
+    return () => {
+      alive.current = false;
+    };
+  }, [load]);
 
   async function create() {
     setBusy(true);
     setError(null);
-    setStatus(null);
+    setStatus("");
     try {
       const r = await CalendarFeeds.create(scope);
       setHasToken(true);
@@ -394,7 +405,7 @@ function CalendarFeedCard() {
     if (!confirm("Turn off your calendar link? Calendar apps using it will stop updating.")) return;
     setBusy(true);
     setError(null);
-    setStatus(null);
+    setStatus("");
     try {
       await CalendarFeeds.revoke();
       setHasToken(false);
@@ -408,15 +419,20 @@ function CalendarFeedCard() {
   }
 
   async function chooseScope(next: CalendarFeed["scope"]) {
+    const prev = scope;
     setScope(next);
     if (!hasToken) return;
+    setBusy(true);
     setError(null);
-    setStatus(null);
+    setStatus("");
     try {
       await CalendarFeeds.setScope(next);
       setStatus("Feed choice saved.");
     } catch (err) {
+      setScope(prev);
       setError(errorText(err, "We couldn't save that choice."));
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -433,70 +449,80 @@ function CalendarFeedCard() {
       }
     }
     linkRef.current?.select();
-    setStatus("Select the link above and copy it.");
+    setStatus("The link is selected. Copy it from the box above.");
   }
 
   return (
     <div className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
       <h2 className="text-xl font-bold">Calendar feed</h2>
-      {error && <FormError>{error}</FormError>}
-      {status && <div className="text-success text-sm">{status}</div>}
       <p className="text-sm text-text-muted">
-        Put your Fold events in the calendar app you already use. Paste your link
-        into your calendar app&rsquo;s &ldquo;add by URL&rdquo; or subscription
-        setting, and it keeps itself up to date.
+        Put your Fold events in the calendar app you already use. In your calendar
+        app, choose Add calendar &rarr; From URL (or Subscribe) and paste this link.
+        It keeps itself up to date.
       </p>
-      <Choices legend="Events in the feed">
-        <Radio
-          name="feed-scope"
-          label="My events"
-          description="Your groups' events, events you host, and the dates you're going or waitlisted for."
-          checked={scope === "mine"}
-          onChange={() => void chooseScope("mine")}
-        />
-        <Radio
-          name="feed-scope"
-          label="Everything I can see"
-          description="Every event you could find here in Fold."
-          checked={scope === "all"}
-          onChange={() => void chooseScope("all")}
-        />
-      </Choices>
-      {link ? (
+      {loadError ? (
+        <ErrorNotice message={loadError} onRetry={load} />
+      ) : !loaded ? (
+        <Skeleton kind="lines" count={2} label="Loading your calendar link…" />
+      ) : (
         <>
-          <Field
-            id="calendar-feed-link"
-            label="Your calendar link"
-            hint="This link is shown once. Anyone with it can see these events, so keep it to yourself. Making a new link stops the old one."
-          >
-            <Input ref={linkRef} value={link} readOnly />
-          </Field>
-          <Button variant="secondary" layout="w-full sm:w-auto" onClick={() => void copyLink()}>
-            Copy link
-          </Button>
+          {error && <FormError>{error}</FormError>}
+          <Choices legend="Events in the feed">
+            <Radio
+              name="feed-scope"
+              label="My events"
+              description="Your groups' events, events you host, and the dates you're going or waitlisted for."
+              checked={scope === "mine"}
+              disabled={busy}
+              onChange={() => void chooseScope("mine")}
+            />
+            <Radio
+              name="feed-scope"
+              label="Everything I can see"
+              description="Every event you could find here in Fold."
+              checked={scope === "all"}
+              disabled={busy}
+              onChange={() => void chooseScope("all")}
+            />
+          </Choices>
+          {link ? (
+            <Field
+              id="calendar-feed-link"
+              label="Your calendar link"
+              hint="This link is shown once. Anyone with it can see these events, so keep it to yourself. Making a new link stops the old one."
+            >
+              <Input ref={linkRef} value={link} readOnly layout="font-mono text-sm" onFocus={(e) => e.currentTarget.select()} />
+            </Field>
+          ) : hasToken ? (
+            <p className="text-sm text-text-muted">
+              Your calendar link is on. We can&rsquo;t show it again, so make a new
+              one if you need to set up another device.
+            </p>
+          ) : (
+            <p className="text-sm text-text-muted">You don&rsquo;t have a calendar link yet.</p>
+          )}
+          {hasToken ? (
+            <div className="flex flex-wrap gap-2">
+              {link && (
+                <Button variant="primary" layout="w-full sm:w-auto" onClick={() => void copyLink()}>
+                  Copy link
+                </Button>
+              )}
+              <Button variant="secondary" layout="w-full sm:w-auto" onClick={() => void remake()} disabled={busy}>
+                {busy ? "Saving…" : "Make a new link"}
+              </Button>
+              <Button variant="danger-outline" layout="w-full sm:w-auto" onClick={() => void turnOff()} disabled={busy}>
+                Turn off calendar link
+              </Button>
+            </div>
+          ) : (
+            <Button variant="primary" layout="w-full sm:w-auto" onClick={() => void create()} disabled={busy}>
+              {busy ? "Saving…" : "Create calendar link"}
+            </Button>
+          )}
         </>
-      ) : hasToken ? (
-        <p className="text-sm text-text-muted">
-          Your calendar link is on. We can&rsquo;t show it again, so make a new
-          one if you need to set up another device.
-        </p>
-      ) : (
-        <p className="text-sm text-text-muted">You don&rsquo;t have a calendar link yet.</p>
       )}
-      {hasToken ? (
-        <div className="flex flex-wrap gap-2">
-          <Button variant="primary" layout="w-full sm:w-auto" onClick={() => void remake()} disabled={busy || !loaded}>
-            {busy ? "Saving…" : "Make a new link"}
-          </Button>
-          <Button variant="danger-outline" layout="w-full sm:w-auto" onClick={() => void turnOff()} disabled={busy || !loaded}>
-            Turn off calendar link
-          </Button>
-        </div>
-      ) : (
-        <Button variant="primary" layout="w-full sm:w-auto" onClick={() => void create()} disabled={busy || !loaded}>
-          {busy ? "Saving…" : "Create calendar link"}
-        </Button>
-      )}
+      <p role="status" className="text-success text-sm empty:hidden">{status}</p>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
 import { ZonePicker } from "../components/ui/ZonePicker";
@@ -673,16 +673,22 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   const [resetId, setResetId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [feedStatus, setFeedStatus] = useState<string | null>(null);
+  const [feedStatus, setFeedStatus] = useState("");
+  const feedStatusRef = useRef<HTMLParagraphElement>(null);
+  // The list is long at 390; bring the result into view (M17-REVIEW M3).
+  useEffect(() => {
+    if (feedStatus) feedStatusRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [feedStatus]);
 
   async function revokeCalendarLink(u: User) {
     if (!confirm(`Revoke ${u.displayName || u.name}'s calendar link? It will stop working right away.`)) return;
     setBusy(true);
     setError(null);
-    setFeedStatus(null);
+    setFeedStatus("");
     try {
-      await AdminUsers.revokeCalendarFeed(u.id);
-      setFeedStatus(`Calendar link revoked for ${u.displayName || u.name}.`);
+      const who = u.displayName || u.name;
+      const r = await AdminUsers.revokeCalendarFeed(u.id);
+      setFeedStatus(r.hadLink ? `Calendar link revoked for ${who}.` : `${who} didn't have a calendar link.`);
     } catch (e) {
       setError(errorText(e, "We couldn't revoke that link."));
     } finally {
@@ -714,7 +720,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
         </Button>
       </div>
       {error && <FormError layout="mb-3">{error}</FormError>}
-      {feedStatus && <div className="text-success text-sm mb-3">{feedStatus}</div>}
+      <p ref={feedStatusRef} role="status" className="text-success text-sm mb-3 empty:hidden">{feedStatus}</p>
       {creating && (
         <UserForm
           creating
