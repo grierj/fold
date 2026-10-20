@@ -434,3 +434,46 @@ func TestReenableRestoresOrDropsRegistration(t *testing.T) {
 		t.Fatalf("no not_restored notice for e1")
 	}
 }
+
+// #94: an admin edit can't make a teen an admin, can't activate a teen
+// waiting for consent (even one with a password), and re-enabling a
+// disabled teen sends it back to waiting for consent.
+func TestAdminEditCannotBypassTeenConsent(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "pw")
+	teen := models.User{Email: "teen94@example.com", Name: "Teen", Role: models.RoleMember,
+		Status: models.UserPendingConsent, AccountType: models.AccountTeen}
+	if err := teen.SetPassword("password1234"); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Create(&teen).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/admin/users/" + itoa2(teen.ID)
+	reload := func() models.User {
+		var u models.User
+		app.DB.First(&u, teen.ID)
+		return u
+	}
+
+	apiDo(t, admin, "PUT", path, map[string]string{"status": models.UserActive}, http.StatusBadRequest)
+	apiDo(t, admin, "PUT", path, map[string]string{"role": models.RoleAdmin}, http.StatusBadRequest)
+	if u := reload(); u.Status != models.UserPendingConsent || u.Role != models.RoleMember {
+		t.Fatalf("teen changed: %s %s", u.Status, u.Role)
+	}
+
+	// Disable, then re-enable: back to pending_consent, not active.
+	apiDo(t, admin, "PUT", path, map[string]string{"status": models.UserDisabled}, http.StatusOK)
+	apiDo(t, admin, "PUT", path, map[string]string{"status": models.UserActive}, http.StatusOK)
+	if u := reload(); u.Status != models.UserPendingConsent {
+		t.Fatalf("re-enabled teen: %s, want pending_consent", u.Status)
+	}
+	if code, _ := tryLogin(t, app, "", teen.Email, "password1234"); code == http.StatusOK {
+		t.Fatal("teen waiting for consent signed in")
+	}
+
+	// An adult member can still be promoted and re-enabled as before.
+	adult := newTestUser(t, app, "adult94", "password1234", models.RoleMember)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(adult.ID), map[string]string{"role": models.RoleAdmin}, http.StatusOK)
+}
