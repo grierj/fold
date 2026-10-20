@@ -1,0 +1,206 @@
+package main
+
+import (
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"fold/internal/events"
+	"fold/internal/policy"
+	"fold/models"
+
+	"github.com/gin-gonic/gin"
+)
+
+// The calendar (M1.6, DEC-67) lists every occurrence the viewer may see
+// over a date range. No existing endpoint does that: /events is the home
+// list of open events only, and /groups/:id/events is one group. The
+// response is a slim row per occurrence — never attendees, counts, seats
+// or declined data — so DEC-64 can't leak in bulk.
+type calendarOccurrenceJSON struct {
+	EventID    uint      `json:"eventId"`
+	Date       string    `json:"date"`
+	StartsAt   time.Time `json:"startsAt"`
+	EndsAt     time.Time `json:"endsAt"`
+	Title      string    `json:"title"`
+	Location   string    `json:"location"`
+	GroupID    *uint     `json:"groupId,omitempty"`
+	GroupName  string    `json:"groupName,omitempty"`
+	ChurchWide bool      `json:"churchWide"`
+	HostedBy   string    `json:"hostedBy,omitempty"`
+	// MyStatus is the viewer's own answer for this date: going, maybe or
+	// waitlisted. Anything else (including "can't go") reads as null.
+	MyStatus *string `json:"myStatus"`
+}
+
+// How many occurrences one calendar response carries. The answer says so
+// when there were more (truncated), so nothing is silently dropped.
+const maxCalendarOccurrences = 500
+
+func (a *App) apiCalendar(c *gin.Context) {
+	me := apiUser(c)
+	from, to, ok := parseDateWindow(c)
+	if !ok {
+		return
+	}
+	// The from/to dates are the viewer's calendar days (DEC-57): the
+	// window on starts_at runs from their local midnight to the next
+	// midnight after `to`, so an event near midnight in its own zone
+	// lands on the viewer's day even at a week or month edge.
+	tzName := strings.TrimSpace(c.Query("tz"))
+	if tzName == "" {
+		tzName = a.churchTimezone()
+	}
+	zone, err := events.LoadZone(tzName)
+	if err != nil {
+		jsonError(c, http.StatusBadRequest, "tz must be an IANA name, for example America/Denver")
+		return
+	}
+	fd, _ := time.Parse("2006-01-02", from)
+	td, _ := time.Parse("2006-01-02", to)
+	windowStart := time.Date(fd.Year(), fd.Month(), fd.Day(), 0, 0, 0, 0, zone)
+	windowEnd := time.Date(td.Year(), td.Month(), td.Day()+1, 0, 0, 0, 0, zone)
+
+	// A group filter names one group the viewer may see, as on
+	// /groups/:id/events; anything else is a 404.
+	var onlyGroup *uint
+	if raw := strings.TrimSpace(c.Query("group")); raw != "" {
+		id, _ := strconv.Atoi(raw)
+		var grp models.Group
+		if err := a.DB.First(&grp, id).Error; err != nil || !a.canSeeGroup(me, &grp) {
+			jsonError(c, http.StatusNotFound, "group not found")
+			return
+		}
+		onlyGroup = &grp.ID
+	}
+
+	q := a.DB
+	if onlyGroup != nil {
+		q = q.Where("group_id = ?", *onlyGroup)
+	}
+	var evs []models.Event
+	if err := q.Find(&evs).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
+		return
+	}
+	out := []calendarOccurrenceJSON{}
+	if len(evs) == 0 {
+		c.JSON(http.StatusOK, gin.H{"occurrences": out, "truncated": false})
+		return
+	}
+
+	byID := make(map[uint]*models.Event, len(evs))
+	gset := map[uint]struct{}{}
+	ids := make([]uint, 0, len(evs))
+	for i := range evs {
+		byID[evs[i].ID] = &evs[i]
+		ids = append(ids, evs[i].ID)
+		if evs[i].GroupID != nil {
+			gset[*evs[i].GroupID] = struct{}{}
+		}
+	}
+	groups := a.groupsByID(gset)
+	rels := a.relsFor(me, gset)
+	hosted := a.hostedEventIDs(me, ids)
+
+	// Every event the viewer may see (the openEventIDs loop without its
+	// "group not visible" condition: the calendar shows a visible group's
+	// events too).
+	p := asPerson(me)
+	visibleIDs := make([]uint, 0, len(evs))
+	for i := range evs {
+		ev := &evs[i]
+		grp, rel := groupAndRel(ev, groups, rels)
+		if ev.GroupID != nil && grp == nil {
+			continue
+		}
+		gp := policy.Group{}
+		if grp != nil {
+			gp = asGroup(grp)
+		}
+		if policy.CanSeeEvent(p, viewOf(ev, hosted[ev.ID]), gp, rel) {
+			visibleIDs = append(visibleIDs, ev.ID)
+		} else {
+			delete(byID, ev.ID)
+		}
+	}
+	if len(visibleIDs) == 0 {
+		c.JSON(http.StatusOK, gin.H{"occurrences": out, "truncated": false})
+		return
+	}
+
+	var occs []models.EventOccurrence
+	a.DB.Where("event_id IN ? AND status = ? AND starts_at >= ? AND starts_at < ?",
+		visibleIDs, models.OccurrenceScheduled, windowStart.UTC(), windowEnd.UTC()).
+		Order("starts_at").Find(&occs)
+
+	// The viewer's own answers, for myStatus and the per-occurrence
+	// "Just mine" rule.
+	mineStatus := map[uint]string{}
+	if me != nil && len(occs) > 0 {
+		occIDs := make([]uint, len(occs))
+		for i := range occs {
+			occIDs[i] = occs[i].ID
+		}
+		var rows []models.Registration
+		a.DB.Where("user_id = ? AND occurrence_id IN ? AND status IN ?", me.ID, occIDs,
+			[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Find(&rows)
+		for _, r := range rows {
+			mineStatus[r.OccurrenceID] = r.Status
+		}
+	}
+
+	// "Just mine" (signed in only; ignored otherwise): my groups' events,
+	// events I host, and the specific dates I answered going, maybe or
+	// waitlisted — not the whole series.
+	justMine := me != nil && c.Query("mine") == "1"
+
+	truncated := false
+	for i := range occs {
+		occ := &occs[i]
+		ev := byID[occ.EventID]
+		if ev == nil {
+			continue
+		}
+		grp, rel := groupAndRel(ev, groups, rels)
+		status, answered := mineStatus[occ.ID]
+		if justMine && !rel.Member && !hosted[ev.ID] && !answered {
+			continue
+		}
+		if len(out) >= maxCalendarOccurrences {
+			truncated = true
+			break
+		}
+		shown := a.groupShownTo(me, grp, rel)
+		groupLoc := ""
+		if shown != nil {
+			groupLoc = shown.Location
+		}
+		full := occurrenceToJSON(ev, occ, groupLoc)
+		row := calendarOccurrenceJSON{
+			EventID:    ev.ID,
+			Date:       occ.OriginalDate,
+			StartsAt:   full.StartsAt,
+			EndsAt:     full.EndsAt,
+			Title:      full.Title,
+			Location:   full.Location,
+			ChurchWide: ev.GroupID == nil,
+		}
+		if shown != nil {
+			gid := shown.ID
+			row.GroupID = &gid
+			row.GroupName = shown.Name
+		} else if ev.GroupID != nil {
+			// An opened event of a group this viewer can't see names
+			// nobody: it is hosted by the church (DEC-17).
+			row.HostedBy = a.siteName()
+		}
+		if answered {
+			s := status
+			row.MyStatus = &s
+		}
+		out = append(out, row)
+	}
+	c.JSON(http.StatusOK, gin.H{"occurrences": out, "truncated": truncated})
+}

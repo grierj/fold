@@ -99,3 +99,52 @@ export function zoneOffset(tz: string, at: Date = new Date()): string {
     return "";
   }
 }
+
+// The viewer's calendar day of an instant, "2026-10-21" (the calendar's
+// bucket key).
+export function dayOf(iso: string, zone = browserTimeZone()): string {
+  return ymd(new Date(iso), zone);
+}
+
+// A calendar day ("2026-10-21") read as a UTC date, so formatting it never
+// shifts it across midnight.
+function asDate(day: string): string {
+  return `${day}T12:00:00Z`;
+}
+
+// "Today", "Tomorrow", or "Wednesday, Oct 21".
+export function formatDayHeading(day: string, zone = browserTimeZone(), now = new Date()): string {
+  const today = ymd(now, zone);
+  if (day === today) return "Today";
+  if (day === nextDay(today)) return "Tomorrow";
+  return fmt(asDate(day), "UTC", { weekday: "long", month: "short", day: "numeric" });
+}
+
+// "Wednesday, October 21", for a day cell's accessible name.
+export function formatDayLong(day: string): string {
+  return fmt(asDate(day), "UTC", { weekday: "long", month: "long", day: "numeric" });
+}
+
+// "Mon 19", a week column heading.
+export function formatWeekday(day: string): string {
+  return `${fmt(asDate(day), "UTC", { weekday: "short" })} ${Number(day.slice(8))}`;
+}
+
+// "Sun" … "Sat", for the month grid's column headings (Sunday first).
+export function weekdayNames(): string[] {
+  return ["2026-10-18", "2026-10-19", "2026-10-20", "2026-10-21", "2026-10-22", "2026-10-23", "2026-10-24"].map((d) =>
+    fmt(asDate(d), "UTC", { weekday: "short" })
+  );
+}
+
+// The period title: "October 2026" for a month, "Oct 18 – 24, 2026" for a
+// week (both ends named when the week crosses a month or year).
+export function formatPeriod(view: "week" | "month", first: string, last: string): string {
+  if (view === "month") return fmt(asDate(first), "UTC", { month: "long", year: "numeric" });
+  const [fy, fm] = [first.slice(0, 4), first.slice(5, 7)];
+  const [ly, lm] = [last.slice(0, 4), last.slice(5, 7)];
+  const md = (d: string) => fmt(asDate(d), "UTC", { month: "short", day: "numeric" });
+  if (fy !== ly) return `${md(first)}, ${fy} – ${md(last)}, ${ly}`;
+  if (fm !== lm) return `${md(first)} – ${md(last)}, ${ly}`;
+  return `${md(first)} – ${Number(last.slice(8))}, ${ly}`;
+}

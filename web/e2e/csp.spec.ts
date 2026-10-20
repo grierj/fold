@@ -6,7 +6,7 @@ test("no CSP violations across the main pages, and the check itself works", asyn
   const violations = await watchCSP(page);
   await page.goto("/setup"); // done already: redirects, still under the CSP
   await signIn(page, "grier");
-  for (const path of ["/", "/groups/new", "/profile", "/admin", "/admin?tab=users", "/groups/1"]) {
+  for (const path of ["/", "/groups/new", "/profile", "/admin", "/admin?tab=users", "/calendar", "/calendar?view=week", "/calendar?view=month", "/groups/1"]) {
     await page.goto(path);
     await page.waitForLoadState("networkidle");
   }
