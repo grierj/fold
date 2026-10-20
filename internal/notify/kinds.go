@@ -11,9 +11,17 @@ const (
 	CatAdmin  = "admin"
 	CatGroups = "groups"
 	CatEvents = "events"
+	// Planned (PLAN 4, notifications.category); no kind uses them yet.
+	CatMessages = "messages"
+	CatSafety   = "safety"
 )
 
-// Kind keys. Add a kind here and in registry; the registry test renders
+// Categories lists every category; the SQL CHECK and the TS union must
+// match it (TestNotificationCategoriesMatch in guards_test.go).
+var Categories = []string{CatAdmin, CatGroups, CatEvents, CatMessages, CatSafety}
+
+// Kind keys. Add a kind here and register it; TestEveryKindConstIsRegistered
+// fails on a key that is never registered, and the registry test renders
 // every kind with teen and hidden-adult fixtures.
 const (
 	GroupPending            = "group.pending"

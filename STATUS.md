@@ -52,3 +52,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | UI makeover PR 7: forms (DEC-65): one Field pattern (label, hint above the control, error below, only optional fields marked), Radio/Checkbox rows at 44px in fieldsets, searchable time zone combobox everywhere but setup, focus moves to the first invalid field, verb-plus-noun buttons full width on phones; guard keeps raw form controls in components/ui; layout gate on 44px radio and checkbox rows | in review | Grok | `forms` |
 | UI makeover PR 8: empty, error and loading states, covers, brand (DEC-66): every empty list says what would show up and offers the next step, missing pages offer a way home, failed loads offer Try again, slow loads show skeletons, photo-less groups get one of six patterned covers by id, the tab gets the Fold icon; placeholder illustrations and covers wait on Gilder | merged (#72) | Muse | `empty-states` |
 | UI makeover PR 9: calendar (M1.6, DEC-67): `/calendar` with Agenda, Week and Month views of every date the viewer may see, a "Just mine" chip and a group filter, times in the viewer's zone, a Calendar tab (5 tabs), and a read-only `GET /api/v1/calendar` with slim rows and no attendance | merged (#73) | Wright | `calendar` |
+
+## Follow-ups (not yet claimed)
+
+- CI hardening (Warden review of #83, Oct 20, 2026): pin every action in `.github/workflows/test.yml` to a full commit SHA (with the version in a comment), and add a least-privilege top-level `permissions:` block (`contents: read`, and nothing more unless a job needs it).

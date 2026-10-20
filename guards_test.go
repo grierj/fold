@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/notify"
 )
 
 // Repo guards from the /correct pass (Oct 2026). Each one fails on a real
@@ -831,6 +833,42 @@ func TestFormControlGuardCatchesPlaceholderLabel(t *testing.T) {
 	ok := map[string]string{"web/src/pages/Home.tsx": `<Field label="Search groups"><Input type="search" /></Field>`}
 	if got := rawFormControlViolations(ok); len(got) != 0 {
 		t.Errorf("false positive: %v", got)
+	}
+}
+
+// --- Notification categories are one list ---
+//
+// notify.Categories, the notifications.category CHECK (migration 00010)
+// and the TS Notification["category"] union must name the same set (#79).
+
+func TestNotificationCategoriesMatch(t *testing.T) {
+	want := append([]string(nil), notify.Categories...)
+	sort.Strings(want)
+	quoted := regexp.MustCompile(`["']([a-z_]+)["']`)
+	pick := func(file string, re *regexp.Regexp) []string {
+		t.Helper()
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := re.FindStringSubmatch(string(src))
+		if m == nil {
+			t.Fatalf("%s: category list not found", file)
+		}
+		var out []string
+		for _, q := range quoted.FindAllStringSubmatch(m[1], -1) {
+			out = append(out, q[1])
+		}
+		sort.Strings(out)
+		return out
+	}
+	sqlCats := pick("migrations/00010_notifications.sql", regexp.MustCompile(`CHECK \(category IN \(([^)]*)\)\)`))
+	tsCats := pick("web/src/types.ts", regexp.MustCompile(`(?s)interface Notification \{.*?category: ([^;]*);`))
+	if !reflect.DeepEqual(sqlCats, want) {
+		t.Errorf("SQL CHECK categories %v, notify.Categories %v", sqlCats, want)
+	}
+	if !reflect.DeepEqual(tsCats, want) {
+		t.Errorf("TS Notification category %v, notify.Categories %v", tsCats, want)
 	}
 }
 

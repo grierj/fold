@@ -74,6 +74,7 @@ export interface Notification {
   resolution?: NotificationResolution;
 }
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface NotificationResolution {
   outcome: "approved" | "rejected" | "deleted" | "kept" | "withdrawn" | string;
   by: string;
@@ -110,6 +111,7 @@ export interface GuestRegistration {
 }
 
 // One attendee entry on an occurrence (M1.5 adds guestCount).
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface Attendee {
   userId: number;
   name: string;
@@ -235,6 +237,7 @@ export interface SoleLedGroup {
 }
 
 // What making a group more private does to its events (DEC-48).
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface VisibilityImpactEvent {
   id: number;
   title: string;
@@ -263,8 +266,10 @@ export interface Invitation {
 }
 
 export type AgeBand = "adult" | "teen" | "under13";
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export type AccountRequestStatus = "pending" | "approved" | "rejected" | "expired" | "withdrawn";
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface RequestWarnings {
   duplicate: boolean;
   honeypot: boolean;
