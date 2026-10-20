@@ -513,7 +513,7 @@ export const AdminUsers = {
       body: { password },
     }),
   revokeCalendarFeed: (id: number) =>
-    api<unknown>(`/admin/users/${id}/calendar-feed`, { method: "DELETE" }),
+    api<{ hadLink: boolean }>(`/admin/users/${id}/calendar-feed`, { method: "DELETE" }),
 };
 
 export const AdminGroups = {
