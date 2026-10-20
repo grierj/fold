@@ -36,6 +36,12 @@ type App struct {
 	Uploads storage.Store // blob store for avatars and group covers
 	Mailer  mail.Sender   // transactional email (C6, M1.2)
 
+	// background runs work the response must not wait for, such as a
+	// password-reset email whose send time would otherwise reveal that the
+	// account exists (#93). nil runs it on a new goroutine; tests set it to
+	// run inline so they can read the outbox straight after the request.
+	background func(func())
+
 	// setupDone is set once any user exists. The wizard cannot be re-entered
 	// without a process restart after that, which is the normal case.
 	setupMu   sync.RWMutex

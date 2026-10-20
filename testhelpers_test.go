@@ -89,6 +89,8 @@ func testApp(t *testing.T) *App {
 		Config:  Config{Env: "dev", Port: "8080"},
 		Uploads: uploads,
 		Mailer:  mail.NewDevOutbox(db, "Fold <noreply@example.com>"),
+		// Inline, so a test can read the outbox right after a request.
+		background: func(f func()) { f() },
 	}
 }
 
