@@ -245,10 +245,11 @@ export const AdminAccountRequests = {
 };
 
 export const Calendar = {
-  list: (q: { from: string; to: string; tz: string; mine?: boolean; group?: string }) => {
+  list: (q: { from: string; to: string; tz: string; mine?: boolean; group?: string; deleted?: boolean }) => {
     const p = new URLSearchParams({ from: q.from, to: q.to, tz: q.tz });
     if (q.mine) p.set("mine", "1");
     if (q.group) p.set("group", q.group);
+    if (q.deleted) p.set("deleted", "1");
     return api<{ occurrences: CalendarOccurrence[]; truncated: boolean }>(`/calendar?${p}`);
   },
 };

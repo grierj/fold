@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -897,5 +900,51 @@ func TestNotificationCategoriesMatch(t *testing.T) {
 	}
 	if !reflect.DeepEqual(tsCats, want) {
 		t.Errorf("TS Notification category %v, notify.Categories %v", tsCats, want)
+	}
+}
+
+// --- One list filter for event visibility ---
+//
+// Lists of events go through visibleEvents (api_event_access.go), which
+// skips events whose group row is gone. A policy.CanSeeEvent call inside
+// a loop anywhere else is a fifth copy of that filter (#75).
+
+func TestOneEventVisibilityFilter(t *testing.T) {
+	files, _ := filepath.Glob("*.go")
+	fset := token.NewFileSet()
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || fn.Name.Name == "visibleEventsWith" {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				var body *ast.BlockStmt
+				switch l := n.(type) {
+				case *ast.RangeStmt:
+					body = l.Body
+				case *ast.ForStmt:
+					body = l.Body
+				default:
+					return true
+				}
+				ast.Inspect(body, func(m ast.Node) bool {
+					if call, ok := m.(*ast.CallExpr); ok {
+						if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CanSeeEvent" {
+							t.Errorf("%s: %s filters a list with policy.CanSeeEvent; use visibleEvents", fset.Position(call.Pos()), fn.Name.Name)
+						}
+					}
+					return true
+				})
+				return false
+			})
+		}
 	}
 }

@@ -51,7 +51,7 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
             Church-wide
           </span>
         ) : (
-          <span className="shrink-0">{occ.groupName ?? `Hosted by ${occ.hostedBy}`}</span>
+          <span className="shrink-0">{occ.groupName ?? `Hosted by ${occ.hostedBy}`}{occ.groupDeleted && " (deleted group)"}</span>
         )}
         {occ.location && <span className="truncate"> · {occ.location}</span>}
       </span>
@@ -67,7 +67,7 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
 export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurrence; pointerOnly?: boolean; stacked?: boolean }) {
   const time = formatTime(occ.startsAt);
   const title = occ.title || occ.groupName || "";
-  const name = [`${time} ${title}`, occ.churchWide ? "Church-wide" : occ.groupName, occ.myStatus && STATUS[occ.myStatus]]
+  const name = [`${time} ${title}`, occ.churchWide ? "Church-wide" : occ.groupName, occ.groupDeleted && "deleted group", occ.myStatus && STATUS[occ.myStatus]]
     .filter(Boolean)
     .join(", ");
   return (

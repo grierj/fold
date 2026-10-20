@@ -240,3 +240,32 @@ func TestCalendarTruncatesAt500(t *testing.T) {
 			maxCalendarOccurrences, len(page.Occurrences), page.Truncated)
 	}
 }
+
+// DEC-68: a deleted group's events are hidden from everyone by default;
+// an admin's "show deleted events" switch (deleted=1) lists them, marked
+// groupDeleted, and the switch does nothing for anyone else.
+func TestCalendarShowDeletedIsAdminOnly(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	newTestUser(t, app, "mem", "password1234", models.RoleMember)
+	mem := loginAPI(t, app, "mem", "password1234")
+	gid := createGroupAs(t, admin, "Old Choir", models.VisibilityPublic)
+	scheduleGroupEvent(t, admin, gid, "Last Rehearsal") // 2026-12-01T19:00 UTC
+	if err := app.DB.Delete(&models.Group{}, gid).Error; err != nil {
+		t.Fatal(err)
+	}
+	q := "from=2026-12-01&to=2026-12-02&tz=UTC"
+	if page, _ := getCalendar(t, admin, q, http.StatusOK); hasTitle(page, "Last Rehearsal") {
+		t.Fatalf("admin sees a deleted group's event by default: %v", calendarTitles(page))
+	}
+	page, _ := getCalendar(t, admin, q+"&deleted=1", http.StatusOK)
+	if len(page.Occurrences) != 1 || !page.Occurrences[0].GroupDeleted {
+		t.Fatalf("admin with deleted=1: %+v", page.Occurrences)
+	}
+	for _, c := range []*apiClient{mem, newAPIClient(t, app)} {
+		if page, body := getCalendar(t, c, q+"&deleted=1", http.StatusOK); hasTitle(page, "Last Rehearsal") || strings.Contains(body, "groupDeleted") {
+			t.Fatalf("non-admin got a deleted group's event: %s", body)
+		}
+	}
+}
