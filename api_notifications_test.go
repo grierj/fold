@@ -1,8 +1,10 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/notify"
 	"fold/models"
 	"net/http"
 	"strings"
@@ -613,5 +615,47 @@ func TestCancelDateNoticeReadsStayBounded(t *testing.T) {
 		!strings.Contains(outsider.Body, "Sat, Jul 14 · 5:30 PM CDT") ||
 		strings.Contains(outsider.Body, "Secret Hall") || strings.Contains(outsider.Title, "Query Group") {
 		t.Fatalf("outsider notice: %+v", outsider)
+	}
+}
+
+// When the recipients can't be read, delivery stops without recording
+// anything: no email, no "suppressed" row, so the notification stays
+// pending for a later pass (Whittler on #87).
+func TestDeliveryRecipientsReadFailureLeavesRowsPending(t *testing.T) {
+	app := testApp(t)
+	u := newTestUser(t, app, "pat", "password1234", models.RoleMember)
+	n := models.Notification{
+		UserID: u.ID, Kind: notify.OccurrenceCancelled, Category: notify.CatEvents,
+		Title: "Cancelled", EmailTitle: "Cancelled", Link: "/events/1",
+	}
+	if err := app.DB.Create(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	const name = "test:fail_users_read"
+	if err := app.DB.Callback().Query().Before("gorm:query").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Table == "users" {
+			_ = tx.AddError(errors.New("users table unavailable"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	app.deliverNotificationEmails([]uint{n.ID})
+	_ = app.DB.Callback().Query().Remove(name)
+
+	var deliveries int64
+	app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ?", n.ID).Count(&deliveries)
+	if deliveries != 0 {
+		t.Fatalf("recipients read failed but %d delivery rows were written", deliveries)
+	}
+	var sent int64
+	app.DB.Model(&models.MailOutbox{}).Count(&sent)
+	if sent != 0 {
+		t.Fatalf("recipients read failed but %d emails went out", sent)
+	}
+	// The row was left pending: the next pass sends it.
+	app.deliverNotificationEmails([]uint{n.ID})
+	app.DB.Model(&models.MailOutbox{}).Count(&sent)
+	if sent != 1 {
+		t.Fatalf("retry after the failure sent %d emails, want 1", sent)
 	}
 }

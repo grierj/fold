@@ -645,6 +645,7 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 	// or pruned after commit; there is nothing to send for it.
 	var rows []models.Notification
 	if err := a.DB.Where("id IN ?", ids).Order("id").Find(&rows).Error; err != nil {
+		log.Printf("notification email: loading %d notifications: %v", len(ids), err)
 		return
 	}
 	userIDs := make([]uint, 0, len(rows))
@@ -657,7 +658,12 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 		return
 	}
 	var users []models.User
-	a.DB.Where("id IN ?", userIDs).Find(&users)
+	if err := a.DB.Where("id IN ?", userIDs).Find(&users).Error; err != nil {
+		// Mark nothing suppressed: without a delivery record the rows stay
+		// pending, so a later delivery pass can still send them.
+		log.Printf("notification email: loading %d recipients: %v", len(userIDs), err)
+		return
+	}
 	byID := make(map[uint]*models.User, len(users))
 	for i := range users {
 		byID[users[i].ID] = &users[i]
