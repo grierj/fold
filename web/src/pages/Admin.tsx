@@ -673,6 +673,22 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   const [resetId, setResetId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [feedStatus, setFeedStatus] = useState<string | null>(null);
+
+  async function revokeCalendarLink(u: User) {
+    if (!confirm(`Revoke ${u.displayName || u.name}'s calendar link? It will stop working right away.`)) return;
+    setBusy(true);
+    setError(null);
+    setFeedStatus(null);
+    try {
+      await AdminUsers.revokeCalendarFeed(u.id);
+      setFeedStatus(`Calendar link revoked for ${u.displayName || u.name}.`);
+    } catch (e) {
+      setError(errorText(e, "We couldn't revoke that link."));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function setStatus(u: User, status: "active" | "disabled") {
     if (status === "disabled" && !confirm(`Disable ${u.displayName || u.name}? They will be signed out and can't sign in.`)) return;
@@ -698,6 +714,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
         </Button>
       </div>
       {error && <FormError layout="mb-3">{error}</FormError>}
+      {feedStatus && <div className="text-success text-sm mb-3">{feedStatus}</div>}
       {creating && (
         <UserForm
           creating
@@ -789,6 +806,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     label={`More for ${u.displayName || u.name}`}
                     items={[
                       { label: "Reset password", onSelect: () => { setResetId(u.id); setEditingId(null); setCreating(false); } },
+                      { label: "Revoke calendar link", onSelect: () => void revokeCalendarLink(u), danger: true, disabled: busy },
                       ...(u.id === me?.id ? [] : [
                         {
                           label: u.status === "disabled" ? "Enable" : "Disable",

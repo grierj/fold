@@ -861,6 +861,13 @@ export function GroupDetail() {
 
             {tab === "events" && (
               <div className="space-y-3">
+                {group.visibility === "public" && group.status === "active" && (
+                  <div className="flex justify-end">
+                    <a href={`/cal/groups/${group.id}.ics`} className="inline-flex items-center min-h-11 text-primary font-semibold">
+                      Calendar feed
+                    </a>
+                  </div>
+                )}
                 {events.length === 0 && (
                   <EmptyState
                     illustration={<Illustration name="no-events" />}

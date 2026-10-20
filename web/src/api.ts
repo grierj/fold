@@ -83,6 +83,7 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
 import type {
   AccountRequest,
   AgeBand,
+  CalendarFeed,
   EventDetailResponse,
   EventHostRow,
   CalendarOccurrence,
@@ -426,6 +427,17 @@ export const Profile = {
   deleteAvatar: () => api<Record<string, never>>("/me/avatar", { method: "DELETE" }),
 };
 
+// The personal calendar feed link (M1.7): only create returns the URL,
+// and only that once.
+export const CalendarFeeds = {
+  get: () => api<{ calendarFeed: CalendarFeed }>("/me/calendar-feed"),
+  create: (scope: CalendarFeed["scope"]) =>
+    api<{ calendarFeed: CalendarFeed }>("/me/calendar-feed", { method: "POST", body: { scope } }),
+  setScope: (scope: CalendarFeed["scope"]) =>
+    api<{ calendarFeed: CalendarFeed }>("/me/calendar-feed", { method: "PUT", body: { scope } }),
+  revoke: () => api<{ calendarFeed: CalendarFeed }>("/me/calendar-feed", { method: "DELETE" }),
+};
+
 export const GroupCover = {
   upload: (id: number | string, file: File) =>
     apiUpload<{ imageUrl: string }>(`/groups/${id}/cover`, "cover", file),
@@ -500,6 +512,8 @@ export const AdminUsers = {
       method: "POST",
       body: { password },
     }),
+  revokeCalendarFeed: (id: number) =>
+    api<unknown>(`/admin/users/${id}/calendar-feed`, { method: "DELETE" }),
 };
 
 export const AdminGroups = {
