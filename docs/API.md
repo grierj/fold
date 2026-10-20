@@ -61,7 +61,19 @@ POST   /api/v1/me/password  → 200 {}  (auth)
 POST   /api/v1/me/avatar    → 200 {avatarUrl}  (auth; multipart, field "avatar")
 DELETE /api/v1/me/avatar    → 200 {}  (auth)
 POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public)
+GET    /api/v1/me/calendar-feed → 200 {calendarFeed: {hasToken, scope}}  (auth)
+POST   /api/v1/me/calendar-feed {scope?} → 200 {calendarFeed: {hasToken, scope, url}}  (auth)
+PUT    /api/v1/me/calendar-feed {scope} → 200 {calendarFeed} | 404  (auth)
+DELETE /api/v1/me/calendar-feed → 200 {calendarFeed}  (auth)
+DELETE /api/v1/admin/users/:id/calendar-feed → 200 {calendarFeed}  (admin)
 ```
+
+Calendar feed (M1.7, plan 8.2): one secret link per person. Only the
+token's SHA-256 is stored, so `url` (with the raw token) comes back only
+from POST; POST also remakes the link, which revokes the old one.
+`scope` is `"mine"` (default: my groups' events, events I host, and the
+dates I'm going or waitlisted for) or `"all"` (everything I can see).
+Revoking a link that is already off still answers 200.
 
 Profile update body: any of `{name, displayName, phone, email, timezone, avatarFocal: {x, y}}`.
 Limits: names ≤ 100 chars, phone ≤ 30 chars, focal clamped to 0-100,
@@ -600,6 +612,20 @@ registered going or maybe is cancelled), and `leadership` (admins: someone else
 made or removed a group leader in the last 14 days, from the audit log). The client tracks dismissed items
 locally. Admin `DELETE /admin/groups/:id` removes a group immediately,
 with or without a deletion request, and whether or not it still has members.
+
+### ICS feeds (outside `/api/v1`)
+
+```
+GET /cal/public.ics        → 200 text/calendar  (public)
+GET /cal/groups/<id>.ics   → 200 text/calendar | 404  (public; active public groups only)
+GET /cal/u/<token>.ics     → 200 text/calendar | 404  (the token is the credential)
+```
+
+Feeds cover 30 days back to 12 months ahead, carry `ETag` and
+`Cache-Control: private, max-age=900` (304 on `If-None-Match`), and
+never carry attendee data. Contents follow the viewer's permissions at
+fetch time; a disabled or deleted owner's token answers the same plain
+404 as an unknown one.
 
 ## Conventions
 
