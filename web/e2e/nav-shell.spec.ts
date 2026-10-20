@@ -76,3 +76,18 @@ test("an admin on a phone reaches Admin from Me and can't disable or delete them
   for (const name of ["Reset password", "Disable", "Delete"]) await expect(other.getByRole("menuitem", { name })).toBeInViewport({ ratio: 1 });
 
 });
+
+test("five tab labels stay on one line at 390, even with a 9+ badge", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 700 });
+  await signIn(page, "sam");
+  await page.route("**/api/v1/notifications/badge", (r) => r.fulfill({ json: { unread: 12, waiting: 0 } }));
+  await page.goto("/calendar");
+  const tabs = page.getByRole("navigation", { name: "Tabs" });
+  await expect(tabs.getByText("9+")).toBeVisible();
+  await expect(tabs.getByRole("link", { name: "Calendar" })).toHaveAttribute("aria-current", "page");
+  for (const label of ["Home", "Calendar", "My groups", "Alerts", "Me"]) {
+    const box = (await tabs.getByText(label, { exact: true }).boundingBox())!;
+    expect(box.height, `${label} wraps`).toBeLessThan(24);
+  }
+  await signOut(page);
+});

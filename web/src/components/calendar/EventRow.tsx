@@ -1,9 +1,12 @@
 import { Link } from "react-router-dom";
 import type { CalendarOccurrence } from "../../types";
 import { formatTime } from "../../lib/when";
-import { CheckIcon } from "../icons";
+import { CheckIcon, ClockIcon } from "../icons";
 
-// My answer, never by color alone: Going has a check and the word.
+const STATUS = { going: "Going", maybe: "Maybe", waitlisted: "Waitlisted" } as const;
+
+// My answer, never by color alone: always the word, and Going and
+// Waitlisted have an icon too.
 export function StatusBadge({ status }: { status: CalendarOccurrence["myStatus"] }) {
   if (status === "going") {
     return (
@@ -15,6 +18,14 @@ export function StatusBadge({ status }: { status: CalendarOccurrence["myStatus"]
   }
   if (status === "maybe") {
     return <span className="rounded-sm bg-sunken px-2 text-xs font-semibold text-text-muted">Maybe</span>;
+  }
+  if (status === "waitlisted") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-sm bg-sunken px-2 text-xs font-semibold text-text-muted">
+        <ClockIcon className="w-3 h-3" />
+        Waitlisted
+      </span>
+    );
   }
   return null;
 }
@@ -49,17 +60,20 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
 }
 
 // A compact link for the week and month grids. Its accessible name says
-// what the chip abbreviates.
-export function EventChip({ occ }: { occ: CalendarOccurrence }) {
+// what the chip abbreviates. In the month grid the chips are a pointer
+// shortcut (tabIndex -1): keyboard users move by day and use the panel.
+export function EventChip({ occ, pointerOnly }: { occ: CalendarOccurrence; pointerOnly?: boolean }) {
   const time = formatTime(occ.startsAt);
   const title = occ.title || occ.groupName || "";
-  const status = occ.myStatus === "going" ? "Going" : occ.myStatus === "maybe" ? "Maybe" : "";
-  const name = [`${time} ${title}`, occ.churchWide ? "Church-wide" : occ.groupName, status].filter(Boolean).join(", ");
+  const name = [`${time} ${title}`, occ.churchWide ? "Church-wide" : occ.groupName, occ.myStatus && STATUS[occ.myStatus]]
+    .filter(Boolean)
+    .join(", ");
   return (
     <Link
       to={`/events/${occ.eventId}`}
       title={name}
       aria-label={name}
+      tabIndex={pointerOnly ? -1 : undefined}
       className="flex min-h-6 items-center gap-1 truncate rounded-sm bg-primary-subtle px-2 py-1 text-xs text-primary-on-subtle hover:underline"
     >
       {occ.myStatus === "going" && <CheckIcon className="w-3 h-3 shrink-0" />}

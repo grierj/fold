@@ -17,7 +17,7 @@ describe("MonthView", () => {
     render(
       <MemoryRouter>
         <MonthView weeks={monthGrid("2026-10-01")} month="2026-10" byDay={new Map([["2026-10-21", occs]])}
-          today="2026-10-19" selected="2026-10-19" onSelect={onSelect} caption="October 2026" />
+          today="2026-10-19" selected="2026-10-19" onSelect={onSelect} onNavigate={() => {}} caption="October 2026" />
       </MemoryRouter>
     );
     expect(screen.getByRole("table", { name: "October 2026" })).toBeInTheDocument();
@@ -26,5 +26,23 @@ describe("MonthView", () => {
     expect(onSelect).toHaveBeenCalledWith("2026-10-21");
     expect(screen.getAllByRole("button", { name: /^Monday, October 19, today, 0 events$/ })[0]).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("Nothing on this day.")).toBeInTheDocument();
+  });
+
+  it("moves by arrow keys with one day in the Tab order, and turns the month off the grid", async () => {
+    const onNavigate = vi.fn();
+    render(
+      <MemoryRouter>
+        <MonthView weeks={monthGrid("2026-10-01")} month="2026-10" byDay={new Map()} today="2026-10-19"
+          selected="2026-10-19" onSelect={() => {}} onNavigate={onNavigate} caption="October 2026" />
+      </MemoryRouter>
+    );
+    const [start] = screen.getAllByRole("button", { name: /^Monday, October 19/ });
+    expect(start).toHaveAttribute("tabindex", "0");
+    expect(screen.getAllByRole("button", { name: /^Tuesday, October 20/ })[0]).toHaveAttribute("tabindex", "-1");
+    start.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    expect(document.activeElement?.getAttribute("data-day")).toBe("2026-10-20");
+    await userEvent.keyboard("{PageDown}");
+    expect(onNavigate).toHaveBeenCalledWith("2026-11-01");
   });
 });

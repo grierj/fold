@@ -37,6 +37,7 @@ export function CalendarPage() {
 
   const [agendaDays, setAgendaDays] = useState(AGENDA_STEP);
   const [occs, setOccs] = useState<CalendarOccurrence[]>([]);
+  const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
@@ -57,7 +58,11 @@ export function CalendarPage() {
     setLoading(true);
     setError(null);
     Calendar.list({ from: range.from, to: range.to, tz: zone, mine, group })
-      .then(({ occurrences }) => alive && setOccs(occurrences))
+      .then(({ occurrences, truncated }) => {
+        if (!alive) return;
+        setOccs(occurrences);
+        setTruncated(truncated);
+      })
       .catch((e) => alive && setError(errorText(e, "We couldn't load the calendar.")))
       .finally(() => alive && setLoading(false));
     return () => {
@@ -116,13 +121,13 @@ export function CalendarPage() {
             </Button>
           </div>
         )}
-        <div className="flex flex-col gap-3 sm:ml-auto sm:flex-row sm:items-end">
+        <div className="flex items-end gap-3 sm:ml-auto">
           {user && (
             <Chip selected={mine} onClick={() => go({ mine: mine ? null : "1" })}>
               Just mine
             </Chip>
           )}
-          <div className="sm:w-56">
+          <div className="min-w-0 flex-1 sm:w-56 sm:flex-none">
             <Field label="Group">
               <Select
                 value={group}
@@ -142,6 +147,10 @@ export function CalendarPage() {
           </Link>{" "}
           to see your groups' events too.
         </p>
+      )}
+
+      {truncated && !error && (
+        <p className="mt-4 text-sm text-text-muted">Showing the first 500 events. Narrow by group to see more.</p>
       )}
 
       <div className="mt-6">
@@ -174,7 +183,19 @@ export function CalendarPage() {
             {view === "week" ? (
               <WeekView days={weekDays} byDay={byDay} today={today} />
             ) : (
-              <MonthView weeks={weeks} month={month} byDay={byDay} today={today} selected={daySelected} onSelect={setSelected} caption={title} />
+              <MonthView
+                weeks={weeks}
+                month={month}
+                byDay={byDay}
+                today={today}
+                selected={daySelected}
+                onSelect={setSelected}
+                onNavigate={(d) => {
+                  setSelected(d);
+                  go({ date: d });
+                }}
+                caption={title}
+              />
             )}
             {loading && occs.length === 0 && <Skeleton kind="lines" label="Loading the calendar…" />}
           </>
