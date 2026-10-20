@@ -343,7 +343,7 @@ export function ProfilePage() {
   );
 }
 
-function CalendarFeedCard() {
+export function CalendarFeedCard() {
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [hasToken, setHasToken] = useState(false);
