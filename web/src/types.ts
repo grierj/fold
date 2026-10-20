@@ -308,6 +308,8 @@ export interface CalendarOccurrence {
   churchWide: boolean;
   hostedBy?: string;
   myStatus: "going" | "maybe" | "waitlisted" | null;
+  // Set only for an admin who turned on "Show deleted events" (DEC-68).
+  groupDeleted?: boolean;
 }
 
 // The profile's calendar feed link (M1.7, 8.2). The server stores only a
