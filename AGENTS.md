@@ -201,13 +201,13 @@ CLI (C11): `fold` (same as `fold serve`), `fold healthcheck`,
 
 ### Merging pull requests
 
-Grier's rule (Oct 20, 2026). An agent may merge a fold PR, as a normal merge commit, when all of these hold:
+Grier's rule (Oct 20, 2026). Wright may merge a fold PR, as a normal merge commit, when all of these hold:
 
 1. Every CI check is green (`test`, `web`, `provision`; branch protection requires them).
 2. A second reviewer bot approved it. Every fold PR needs one (Grier, Oct 20, 2026):
    - UI, UX or design work: Illuminator.
-   - Database-heavy work: Whittler, to keep out complexity that would only get cut later.
-   - Strictly backend or API work with neither: Warden.
+   - Database or performance work: Whittler, to keep out complexity that would only get cut later.
+   - Security, and backend or API work: Warden.
 3. No Grier decision on it is still open.
 
 PRs that change security or visibility policy, repo settings, or production and deploy wait for Grier, unless he already decided that change. After a merge, merge master into the other open branches (never rebase) and report the merge SHA.
