@@ -13,7 +13,6 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/events"
-	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -145,42 +144,11 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 	if opts.onlyGroupID != nil {
 		q = q.Where("group_id = ?", *opts.onlyGroupID)
 	}
-	var evs []models.Event
-	if err := q.Find(&evs).Error; err != nil || len(evs) == 0 {
+	vs, err := a.visibleEvents(viewer, q)
+	if err != nil {
 		return feed
 	}
-	byID := make(map[uint]*models.Event, len(evs))
-	gset := map[uint]struct{}{}
-	ids := make([]uint, 0, len(evs))
-	for i := range evs {
-		byID[evs[i].ID] = &evs[i]
-		ids = append(ids, evs[i].ID)
-		if evs[i].GroupID != nil {
-			gset[*evs[i].GroupID] = struct{}{}
-		}
-	}
-	groups := a.groupsByID(gset)
-	rels := a.relsFor(viewer, gset)
-	hosted := a.hostedEventIDs(viewer, ids)
-
-	p := asPerson(viewer)
-	visibleIDs := make([]uint, 0, len(evs))
-	for i := range evs {
-		ev := &evs[i]
-		grp, rel := groupAndRel(ev, groups, rels)
-		if ev.GroupID != nil && grp == nil {
-			continue
-		}
-		gp := policy.Group{}
-		if grp != nil {
-			gp = asGroup(grp)
-		}
-		if policy.CanSeeEvent(p, viewOf(ev, hosted[ev.ID]), gp, rel) {
-			visibleIDs = append(visibleIDs, ev.ID)
-		} else {
-			delete(byID, ev.ID)
-		}
-	}
+	byID, groups, rels, hosted, visibleIDs := vs.ByID, vs.Groups, vs.Rels, vs.Hosted, vs.IDs
 	if len(visibleIDs) == 0 {
 		return feed
 	}

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEventMorePrivateCancelsShutOutRegistrants(t *testing.T) {
@@ -341,5 +342,35 @@ func TestVisibilityOverrideEmailsAdminsAndLeaders(t *testing.T) {
 	// The actor (lead1) is skipped: root and lead2 only.
 	if n != 2 {
 		t.Fatalf("email delivery rows: %d, want 2", n)
+	}
+}
+
+// visibleEvents is the one list filter (#75): a soft-deleted group's
+// events are never listed, not even for an admin, and a church-wide
+// public event is listed for a signed-out visitor.
+func TestVisibleEventsSkipsDeletedGroups(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	g := models.Group{Name: "Gone", Status: models.GroupActive, Visibility: models.VisibilityPublic, LeaderID: admin.ID}
+	if err := app.DB.Create(&g).Error; err != nil {
+		t.Fatal(err)
+	}
+	ev, _ := seedEvent(t, app, &g, admin.ID, time.Now().Add(48*time.Hour))
+	cw := models.Event{Visibility: models.VisibilityPublic, StartsLocal: "2030-01-01T10:00", DurationMinutes: 60, TZID: "UTC", CreatedBy: admin.ID, Title: "All church"}
+	if err := app.DB.Create(&cw).Error; err != nil {
+		t.Fatal(err)
+	}
+	if vs, _ := app.visibleEvents(admin, app.DB); vs.ByID[ev.ID] == nil || vs.ByID[cw.ID] == nil {
+		t.Fatalf("admin should see both before the delete: %v", vs.IDs)
+	}
+	if err := app.DB.Delete(&g).Error; err != nil {
+		t.Fatal(err)
+	}
+	vs, err := app.visibleEvents(admin, app.DB)
+	if err != nil || vs.ByID[ev.ID] != nil {
+		t.Fatalf("deleted group's event listed for an admin: %v %v", vs.IDs, err)
+	}
+	if anon, _ := app.visibleEvents(nil, app.DB); anon.ByID[cw.ID] == nil {
+		t.Fatalf("public church-wide event missing for a visitor: %v", anon.IDs)
 	}
 }

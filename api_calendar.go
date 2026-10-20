@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"fold/internal/events"
-	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -32,6 +31,9 @@ type calendarOccurrenceJSON struct {
 	// MyStatus is the viewer's own answer for this date: going, maybe or
 	// waitlisted. Anything else (including "can't go") reads as null.
 	MyStatus *string `json:"myStatus"`
+	// GroupDeleted marks a deleted group's event, sent only to an admin
+	// who asked for deleted events (DEC-68).
+	GroupDeleted bool `json:"groupDeleted,omitempty"`
 }
 
 // How many occurrences one calendar response carries. The answer says so
@@ -75,56 +77,20 @@ func (a *App) apiCalendar(c *gin.Context) {
 		onlyGroup = &grp.ID
 	}
 
-	q := a.DB
+	// Only events with a date in the window can add anything (#75).
+	q := a.DB.Where("id IN (SELECT event_id FROM event_occurrences WHERE starts_at >= ? AND starts_at < ?)",
+		windowStart.UTC(), windowEnd.UTC())
 	if onlyGroup != nil {
 		q = q.Where("group_id = ?", *onlyGroup)
 	}
-	var evs []models.Event
-	if err := q.Find(&evs).Error; err != nil {
+	// deleted=1 lists deleted groups' events too, for admins only (DEC-68).
+	vs, err := a.visibleEventsWith(me, q, c.Query("deleted") == "1")
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
 		return
 	}
 	out := []calendarOccurrenceJSON{}
-	if len(evs) == 0 {
-		c.JSON(http.StatusOK, gin.H{"occurrences": out, "truncated": false})
-		return
-	}
-
-	byID := make(map[uint]*models.Event, len(evs))
-	gset := map[uint]struct{}{}
-	ids := make([]uint, 0, len(evs))
-	for i := range evs {
-		byID[evs[i].ID] = &evs[i]
-		ids = append(ids, evs[i].ID)
-		if evs[i].GroupID != nil {
-			gset[*evs[i].GroupID] = struct{}{}
-		}
-	}
-	groups := a.groupsByID(gset)
-	rels := a.relsFor(me, gset)
-	hosted := a.hostedEventIDs(me, ids)
-
-	// Every event the viewer may see (the openEventIDs loop without its
-	// "group not visible" condition: the calendar shows a visible group's
-	// events too).
-	p := asPerson(me)
-	visibleIDs := make([]uint, 0, len(evs))
-	for i := range evs {
-		ev := &evs[i]
-		grp, rel := groupAndRel(ev, groups, rels)
-		if ev.GroupID != nil && grp == nil {
-			continue
-		}
-		gp := policy.Group{}
-		if grp != nil {
-			gp = asGroup(grp)
-		}
-		if policy.CanSeeEvent(p, viewOf(ev, hosted[ev.ID]), gp, rel) {
-			visibleIDs = append(visibleIDs, ev.ID)
-		} else {
-			delete(byID, ev.ID)
-		}
-	}
+	byID, groups, rels, hosted, visibleIDs := vs.ByID, vs.Groups, vs.Rels, vs.Hosted, vs.IDs
 	if len(visibleIDs) == 0 {
 		c.JSON(http.StatusOK, gin.H{"occurrences": out, "truncated": false})
 		return
@@ -191,6 +157,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 			gid := shown.ID
 			row.GroupID = &gid
 			row.GroupName = shown.Name
+			row.GroupDeleted = shown.DeletedAt.Valid
 		} else if ev.GroupID != nil {
 			// An opened event of a group this viewer can't see names
 			// nobody: it is hosted by the church (DEC-17).
