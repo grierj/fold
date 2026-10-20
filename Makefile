@@ -45,7 +45,7 @@ lint: lint-sh
 # Shell scripts under deploy/digitalocean. -x follows source= directives.
 lint-sh:
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required (apt-get install shellcheck)"; exit 1; }
-	shellcheck -x deploy/digitalocean/*.sh .githooks/pre-push
+	shellcheck -x deploy/digitalocean/*.sh
 
 # provision.sh --dry-run inside a fresh Ubuntu container. Needs Docker.
 provision-dry-run:
