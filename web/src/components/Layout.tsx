@@ -3,13 +3,13 @@ import { Link, NavLink } from "react-router-dom";
 import { Site } from "../api";
 import { useAuth } from "../auth";
 import { Avatar } from "./Avatar";
-import { GroupsIcon, HomeIcon, MeIcon, PlusIcon } from "./icons";
+import { CalendarIcon, GroupsIcon, HomeIcon, MeIcon, PlusIcon } from "./icons";
 import { NotificationBell, NotificationTab } from "./Notifications";
 import { FoldMark } from "./FoldMark";
 
 // The app shell (UI makeover PR 5): a header with the church's name, a top
-// nav from the sm breakpoint up, and a bottom tab bar on phones (Home, My
-// groups, Notifications, Me). Every control is at least 44px. The bars sit
+// nav from the sm breakpoint up, and a bottom tab bar on phones (Home,
+// Calendar, My groups, Notifications, Me). Every control is at least 44px. The bars sit
 // inside the safe areas (viewport-fit=cover in index.html), and the page
 // keeps room under the tab bar so it never covers a focused field
 // (scroll-padding in index.css).
@@ -18,7 +18,7 @@ const topLink = ({ isActive }: { isActive: boolean }) =>
 const iconLink = ({ isActive }: { isActive: boolean }) =>
   `inline-flex items-center justify-center min-h-11 min-w-11 rounded-full ${isActive ? "text-primary" : "text-text-muted hover:text-primary"}`;
 const tab = ({ isActive }: { isActive: boolean }) =>
-  `flex flex-1 flex-col items-center justify-center gap-0.5 min-h-14 text-xs font-medium ${isActive ? "text-primary" : "text-text-muted"}`;
+  `flex flex-1 flex-col items-center justify-center gap-0.5 min-h-14 whitespace-nowrap text-xs font-medium ${isActive ? "text-primary" : "text-text-muted"}`;
 
 function useSiteName() {
   const [name, setName] = useState<string | undefined>(undefined);
@@ -67,6 +67,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <>
                 <div className="hidden sm:flex items-center gap-2">
                   <NavLink to="/" end className={topLink}>Home</NavLink>
+                  <NavLink to="/calendar" className={topLink}>Calendar</NavLink>
                   <NavLink to="/my-groups" className={topLink}>My groups</NavLink>
                   <NavLink to="/groups/new" className={topLink}>Start a group</NavLink>
                   {isAdmin && <NavLink to="/admin" className={topLink}>Admin</NavLink>}
@@ -97,6 +98,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               </>
             ) : (
               <>
+                <NavLink to="/calendar" className={topLink}>Calendar</NavLink>
                 <NavLink to="/join" className={topLink}>Join</NavLink>
                 <NavLink to="/login" className="btn-primary text-sm">Log in</NavLink>
               </>
@@ -118,6 +120,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <NavLink to="/" end className={tab}>
             <HomeIcon />
             Home
+          </NavLink>
+          <NavLink to="/calendar" className={tab}>
+            <CalendarIcon />
+            Calendar
           </NavLink>
           <NavLink to="/my-groups" className={tab}>
             <GroupsIcon />

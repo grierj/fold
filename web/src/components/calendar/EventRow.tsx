@@ -1,0 +1,91 @@
+import { Link } from "react-router-dom";
+import type { CalendarOccurrence } from "../../types";
+import { formatTime } from "../../lib/when";
+import { CheckIcon } from "../icons";
+
+// My answer, never by color alone: Going has a check and the word.
+export function StatusBadge({ status }: { status: CalendarOccurrence["myStatus"] }) {
+  if (status === "going") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-sm bg-primary-subtle px-2 text-xs font-semibold text-primary-on-subtle">
+        <CheckIcon className="w-3 h-3" />
+        Going
+      </span>
+    );
+  }
+  if (status === "maybe") {
+    return <span className="rounded-sm bg-sunken px-2 text-xs font-semibold text-text-muted">Maybe</span>;
+  }
+  return null;
+}
+
+// One occurrence as a full-width link (Agenda, Week on phones, day panel).
+// No attendance and no RSVP here: the event page has those.
+export function EventRow({ occ }: { occ: CalendarOccurrence }) {
+  return (
+    <Link
+      to={`/events/${occ.eventId}`}
+      className="block min-h-11 rounded-lg border border-border bg-surface p-4 hover:border-border-strong"
+    >
+      <span className="flex flex-wrap items-center gap-2">
+        <span className="tabular-nums text-sm text-text-muted">
+          {formatTime(occ.startsAt)} – {formatTime(occ.endsAt)}
+        </span>
+        <StatusBadge status={occ.myStatus} />
+      </span>
+      <span className="mt-1 block font-semibold text-text">{occ.title || occ.groupName}</span>
+      <span className="mt-1 flex min-w-0 items-center gap-1 text-sm text-text-muted">
+        {occ.churchWide ? (
+          <span className="shrink-0 rounded-full bg-inverse px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-inverse-foreground">
+            Church-wide
+          </span>
+        ) : (
+          <span className="shrink-0">{occ.groupName ?? `Hosted by ${occ.hostedBy}`}</span>
+        )}
+        {occ.location && <span className="truncate"> · {occ.location}</span>}
+      </span>
+    </Link>
+  );
+}
+
+// A compact link for the week and month grids. Its accessible name says
+// what the chip abbreviates.
+export function EventChip({ occ }: { occ: CalendarOccurrence }) {
+  const time = formatTime(occ.startsAt);
+  const title = occ.title || occ.groupName || "";
+  const status = occ.myStatus === "going" ? "Going" : occ.myStatus === "maybe" ? "Maybe" : "";
+  const name = [`${time} ${title}`, occ.churchWide ? "Church-wide" : occ.groupName, status].filter(Boolean).join(", ");
+  return (
+    <Link
+      to={`/events/${occ.eventId}`}
+      title={name}
+      aria-label={name}
+      className="flex min-h-6 items-center gap-1 truncate rounded-sm bg-primary-subtle px-2 py-1 text-xs text-primary-on-subtle hover:underline"
+    >
+      {occ.myStatus === "going" && <CheckIcon className="w-3 h-3 shrink-0" />}
+      <span className="truncate">
+        <span className="tabular-nums">{time}</span> {title}
+      </span>
+    </Link>
+  );
+}
+
+// A day's heading and its rows; empty says so.
+export function DaySection({ heading, occs, sticky }: { heading: string; occs: CalendarOccurrence[]; sticky?: boolean }) {
+  return (
+    <section>
+      <h3 className={`py-2 font-semibold text-text ${sticky ? "sticky top-16 z-0 bg-page sm:static" : ""}`}>{heading}</h3>
+      {occs.length === 0 ? (
+        <p className="text-sm text-text-muted">Nothing on this day.</p>
+      ) : (
+        <ul className="space-y-2">
+          {occs.map((o) => (
+            <li key={`${o.eventId}-${o.date}`}>
+              <EventRow occ={o} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}

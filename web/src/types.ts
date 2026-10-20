@@ -293,3 +293,19 @@ export interface AccountRequest {
   createdAt: string;
   decidedAt?: string;
 }
+
+// One row of the calendar (GET /calendar, M1.6): no attendee data at all.
+// myStatus is the viewer's own answer for this date.
+export interface CalendarOccurrence {
+  eventId: number;
+  date: string;
+  startsAt: string;
+  endsAt: string;
+  title: string;
+  location: string;
+  groupId?: number;
+  groupName?: string;
+  churchWide: boolean;
+  hostedBy?: string;
+  myStatus: "going" | "maybe" | "waitlisted" | null;
+}

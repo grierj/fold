@@ -85,6 +85,7 @@ import type {
   AgeBand,
   EventDetailResponse,
   EventHostRow,
+  CalendarOccurrence,
   EventOccurrence,
   EventSeries,
   GroupDetailResponse,
@@ -240,6 +241,15 @@ export const AdminAccountRequests = {
     }),
   setSelfSignup: (mode: "request" | "off") =>
     api<{ selfSignup: "request" | "off" }>("/admin/self-signup", { method: "PUT", body: { mode } }),
+};
+
+export const Calendar = {
+  list: (q: { from: string; to: string; tz: string; mine?: boolean; group?: string }) => {
+    const p = new URLSearchParams({ from: q.from, to: q.to, tz: q.tz });
+    if (q.mine) p.set("mine", "1");
+    if (q.group) p.set("group", q.group);
+    return api<{ occurrences: CalendarOccurrence[]; truncated: boolean }>(`/calendar?${p}`);
+  },
 };
 
 export const Events = {
