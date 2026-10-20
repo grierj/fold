@@ -47,4 +47,11 @@ describe("EventChip", () => {
     wrap(<EventChip occ={occ({ myStatus: "going" })} />);
     expect(screen.getByRole("link").getAttribute("aria-label")).toMatch(/Thursday class, Room 201 class, Going$/);
   });
+
+  it("stacks the time over a two-line title in the week view, keeping the full name", () => {
+    wrap(<EventChip occ={occ({ title: "A very long evening of hymns and fellowship" })} stacked />);
+    const link = screen.getByRole("link");
+    expect(screen.getByText("A very long evening of hymns and fellowship")).toHaveClass("line-clamp-2");
+    expect(link.getAttribute("aria-label")).toMatch(/A very long evening of hymns and fellowship, Room 201 class$/);
+  });
 });

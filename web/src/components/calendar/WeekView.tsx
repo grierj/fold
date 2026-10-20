@@ -25,7 +25,7 @@ export function WeekView({ days, byDay, today }: { days: string[]; byDay: Map<st
                 <ul className="space-y-1">
                   {occs.map((o) => (
                     <li key={`${o.eventId}-${o.date}`}>
-                      <EventChip occ={o} />
+                      <EventChip occ={o} stacked />
                     </li>
                   ))}
                 </ul>

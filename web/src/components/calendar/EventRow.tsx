@@ -62,7 +62,9 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
 // A compact link for the week and month grids. Its accessible name says
 // what the chip abbreviates. In the month grid the chips are a pointer
 // shortcut (tabIndex -1): keyboard users move by day and use the panel.
-export function EventChip({ occ, pointerOnly }: { occ: CalendarOccurrence; pointerOnly?: boolean }) {
+// `stacked` (the week view) puts the time on its own line and lets the
+// title run to two lines.
+export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurrence; pointerOnly?: boolean; stacked?: boolean }) {
   const time = formatTime(occ.startsAt);
   const title = occ.title || occ.groupName || "";
   const name = [`${time} ${title}`, occ.churchWide ? "Church-wide" : occ.groupName, occ.myStatus && STATUS[occ.myStatus]]
@@ -74,12 +76,28 @@ export function EventChip({ occ, pointerOnly }: { occ: CalendarOccurrence; point
       title={name}
       aria-label={name}
       tabIndex={pointerOnly ? -1 : undefined}
-      className="flex min-h-6 items-center gap-1 truncate rounded-sm bg-primary-subtle px-2 py-1 text-xs text-primary-on-subtle hover:underline"
+      className={
+        stacked
+          ? "block rounded-sm bg-primary-subtle px-2 py-1.5 text-primary-on-subtle hover:underline"
+          : "flex min-h-6 items-center gap-1 truncate rounded-sm bg-primary-subtle px-2 py-1 text-xs text-primary-on-subtle hover:underline"
+      }
     >
-      {occ.myStatus === "going" && <CheckIcon className="w-3 h-3 shrink-0" />}
-      <span className="truncate">
-        <span className="tabular-nums">{time}</span> {title}
-      </span>
+      {stacked ? (
+        <>
+          <span className="flex items-center gap-1 text-xs text-text-muted tabular-nums">
+            {occ.myStatus === "going" && <CheckIcon className="w-3 h-3 shrink-0" />}
+            {time}
+          </span>
+          <span className="line-clamp-2 text-sm">{title}</span>
+        </>
+      ) : (
+        <>
+          {occ.myStatus === "going" && <CheckIcon className="w-3 h-3 shrink-0" />}
+          <span className="truncate">
+            <span className="tabular-nums">{time}</span> {title}
+          </span>
+        </>
+      )}
     </Link>
   );
 }
