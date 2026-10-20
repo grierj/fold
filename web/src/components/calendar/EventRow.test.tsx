@@ -59,6 +59,6 @@ describe("EventChip", () => {
 describe("EventRow deleted group (DEC-68)", () => {
   it("says the group is deleted when the admin switch listed it", () => {
     wrap(<EventRow occ={occ({ groupDeleted: true })} />);
-    expect(screen.getByText(/\(deleted group\)/)).toBeInTheDocument();
+    expect(screen.getByText("Deleted group")).toHaveClass("bg-sunken", "text-text-muted");
   });
 });
