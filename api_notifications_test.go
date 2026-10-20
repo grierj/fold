@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestNotifications(t *testing.T) {
@@ -514,4 +516,91 @@ func weekdayCode(date string) string {
 	// date is YYYY-MM-DD; return the iCal weekday code.
 	d, _ := time.Parse("2006-01-02", date)
 	return []string{"SU", "MO", "TU", "WE", "TH", "FR", "SA"}[d.Weekday()]
+}
+
+// Cancelling a date with 30 registrants must not re-read the occurrence,
+// event, group, membership and zone per person (issue #76: 276 reads).
+// The notices still say the same thing: a member gets the group's name,
+// place and link in their own zone; an outsider gets none of them.
+func TestCancelDateNoticeReadsStayBounded(t *testing.T) {
+	app := testApp(t)
+	app.DB.Create(&models.Setting{Key: settingTimezone, Value: "America/Chicago"})
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	g := activeGroup(t, app, leader, "Query Group", models.VisibilityInviteOnly, "")
+	if err := app.DB.Model(&g).Update("location", "Secret Hall").Error; err != nil {
+		t.Fatal(err)
+	}
+	g.Location = "Secret Hall"
+	start := time.Date(2035, 7, 14, 22, 30, 0, 0, time.UTC)
+	ev, occ := seedEvent(t, app, &g, leader.ID, start)
+
+	users := make([]models.User, 30)
+	for i := range users {
+		users[i] = models.User{
+			Email: fmt.Sprintf("reg%d@example.com", i), Name: fmt.Sprintf("Reg %d", i),
+			Role: models.RoleMember, Status: models.UserActive,
+		}
+		if i == 0 {
+			users[i].Timezone = "America/New_York"
+		}
+		if err := app.DB.Create(&users[i]).Error; err != nil {
+			t.Fatalf("create registrant %d: %v", i, err)
+		}
+		if i < 29 { // the last registrant is not a member of the invite-only group
+			addMember(t, app, &users[i], &g, models.MembershipMember)
+		}
+		if err := app.DB.Create(&models.Registration{
+			UserID: users[i].ID, OccurrenceID: occ.ID,
+			Status: models.RegGoing, Source: models.RegSourceWeb,
+		}).Error; err != nil {
+			t.Fatalf("register %d: %v", i, err)
+		}
+	}
+
+	counter := countDBReads(t, app.DB)
+	var ids []uint
+	err := app.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.EventOccurrence{}).Where("id = ?", occ.ID).
+			Update("status", models.OccurrenceCancelled).Error; err != nil {
+			return err
+		}
+		var err error
+		ids, err = notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
+		return err
+	})
+	reads := counter.Reads()
+	counter.Stop()
+	if err != nil {
+		t.Fatalf("cancel date: %v", err)
+	}
+	t.Logf("cancel-date reads for 30 registrants: %d", reads)
+	if reads > 20 {
+		t.Fatalf("cancel-date notices used %d reads for 30 registrants, want <= 20", reads)
+	}
+	if len(ids) != 30 {
+		t.Fatalf("notices sent = %d, want 30", len(ids))
+	}
+
+	var notes []models.Notification
+	if err := app.DB.Where("kind = ?", "event.cancelled").Find(&notes).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(notes) != 30 {
+		t.Fatalf("notification rows = %d, want 30", len(notes))
+	}
+	byUser := map[uint]models.Notification{}
+	for _, n := range notes {
+		byUser[n.UserID] = n
+	}
+	member := byUser[users[0].ID]
+	if member.Title != "Cancelled: Query Group" || member.Link != fmt.Sprintf("/groups/%d", g.ID) ||
+		!strings.Contains(member.Body, "Sat, Jul 14 · 6:30 PM EDT") || !strings.Contains(member.Body, "Secret Hall") {
+		t.Fatalf("member notice: %+v", member)
+	}
+	outsider := byUser[users[29].ID]
+	if outsider.Title != "Cancelled: Church event" || outsider.Link != fmt.Sprintf("/events/%d", ev.ID) ||
+		!strings.Contains(outsider.Body, "Sat, Jul 14 · 5:30 PM CDT") ||
+		strings.Contains(outsider.Body, "Secret Hall") || strings.Contains(outsider.Title, "Query Group") {
+		t.Fatalf("outsider notice: %+v", outsider)
+	}
 }
