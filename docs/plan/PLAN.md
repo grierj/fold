@@ -2093,6 +2093,9 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] Step 1 sets the account policy (`request` by default, or `off`), and the first admin confirms they are 18 or older
   - [ ] The safeguarding step sets `guardian_copies` and is audited
 - Tests: API tests for each step; Playwright run-through.
+- Follow-ups carried here (from UI makeover PR 8, Oct 18, 2026):
+  - Code-split the SPA. The main JS chunk is just over 500 kB minified, and Vite warns on every build. Load `/admin` (and this wizard) with `React.lazy` so members never download admin code, then drop the warning.
+  - "powered by Fold" shows twice: under the church name in the header and again in the footer. Settle it with the brand settings here (site name, and later a logo): keep one, most likely the header line.
 
 **M4.3 Legal pages**
 - Depends on: M4.2
