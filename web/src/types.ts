@@ -309,3 +309,12 @@ export interface CalendarOccurrence {
   hostedBy?: string;
   myStatus: "going" | "maybe" | "waitlisted" | null;
 }
+
+// The profile's calendar feed link (M1.7, 8.2). The server stores only a
+// hash, so url is set only in the response that creates or remakes the
+// link; everywhere else hasToken and scope are all there is.
+export interface CalendarFeed {
+  hasToken: boolean;
+  scope: "mine" | "all";
+  url?: string;
+}

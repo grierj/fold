@@ -149,6 +149,20 @@ const (
 	// SelfSignupChanged: an admin turned self-signup between request
 	// and off (DEC-4). Target type is setting; meta has mode.
 	SelfSignupChanged = "setting.self_signup_changed"
+
+	// CalendarTokenRegenerated: a person created their calendar-feed
+	// link or made a new one, which revokes the old link (M1.7, 8.2).
+	// Target is the user; meta has scope.
+	CalendarTokenRegenerated = "calendar_token.regenerated"
+
+	// CalendarTokenRevoked: a calendar-feed link was turned off, by its
+	// owner or by an admin (the actor says which). Target is the user.
+	CalendarTokenRevoked = "calendar_token.revoked"
+
+	// CalendarTokenScopeChanged: the feed switched between "mine" and
+	// "all" (8.2 Options A and B). Target is the user; meta has
+	// oldScope and newScope.
+	CalendarTokenScopeChanged = "calendar_token.scope_changed"
 )
 
 // Entry is one audit record. Actor is nil for system actions.

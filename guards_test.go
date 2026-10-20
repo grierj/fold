@@ -22,7 +22,7 @@ var groupDetailRe = regexp.MustCompile(`\b(g|f\.group|group)\.(Location|Name)\b|
 
 // eventOutputFiles build event and notice output for viewers who may not
 // see the event's group.
-var eventOutputFiles = []string{"api_events.go", "api_event_access.go", "api_notifications.go", "api_group_visibility.go", "api_guest.go", "api_registrations.go", "api_calendar.go"}
+var eventOutputFiles = []string{"api_events.go", "api_event_access.go", "api_notifications.go", "api_group_visibility.go", "api_guest.go", "api_registrations.go", "api_calendar.go", "api_feeds.go"}
 
 func groupDetailViolations(src string) []string {
 	var bad []string
@@ -78,6 +78,7 @@ var tsContracts = []struct {
 	{guestRegistrationJSON{}, "GuestRegistration"},
 	{attendeeJSON{}, "Attendee"},
 	{registrationJSON{}, "RegistrationResponse"},
+	{calendarFeedJSON{}, "CalendarFeed"},
 }
 
 var tsFieldRe = regexp.MustCompile(`^\s+(\w+)\??:`)

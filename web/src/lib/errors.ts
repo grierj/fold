@@ -67,6 +67,7 @@ export const ERROR_COPY = {
   invalid_capacity: "The seat limit needs to be a whole number, or leave it empty for no limit.",
   invalid_guests: "Guests allowed needs to be a number from 0 to 5.",
   invalid_timezone: "Pick a time zone from the list.",
+  invalid_feed_scope: "That feed choice isn't available. Pick My events or Everything I can see.",
 
   // Uploads
   file_too_large: "That picture is too big. Please use one under 5 MB.",

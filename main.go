@@ -225,6 +225,10 @@ func (a *App) setupRouter() *gin.Engine {
 	// JSON API.
 	a.registerAPIRoutes(r)
 
+	// ICS calendar feeds (M1.7). GETs ride the setup and CSRF
+	// middleware like everything else; safe methods need no token.
+	a.registerCalendarFeeds(r)
+
 	// Embedded SPA for everything else.
 	r.NoRoute(a.serveSPA())
 

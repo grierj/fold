@@ -81,6 +81,9 @@ var errorCodes = map[string]string{
 	"guestsAllowed must be a whole number from 0 to 5, or empty for none":                "invalid_guests",
 	"timezone must be an IANA name, for example America/Denver":                          "invalid_timezone",
 
+	// Calendar feeds
+	"scope must be mine or all": "invalid_feed_scope",
+
 	// Uploads
 	"file too large (max 5MB)":                         "file_too_large",
 	"request too large":                                "file_too_large",
