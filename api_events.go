@@ -766,17 +766,25 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		// semantics), so the time fan-out mails exactly the dates that moved.
 		placeChanged := body.Location != nil && strings.TrimSpace(*body.Location) != oldPlace
 		movedSet := map[uint]bool{}
+		movedByID := map[uint]*models.EventOccurrence{}
+		if len(moved) > 0 {
+			var movedRows []models.EventOccurrence
+			tx.Where("id IN ?", moved).Find(&movedRows)
+			for i := range movedRows {
+				movedByID[movedRows[i].ID] = &movedRows[i]
+			}
+		}
 		for _, occID := range moved {
 			movedSet[occID] = true
-			var o models.EventOccurrence
-			if err := tx.First(&o, occID).Error; err != nil {
+			o := movedByID[occID]
+			if o == nil {
 				continue
 			}
 			variant := "time"
 			if placeChanged && o.LocationOverride == nil {
 				variant = "time and place"
 			}
-			ids, err := notifyEventChanged(tx, &locked, &o, variant, me.ID)
+			ids, err := notifyEventChanged(tx, &locked, o, variant, me.ID)
 			emailed = append(emailed, ids...)
 			if err != nil {
 				return err

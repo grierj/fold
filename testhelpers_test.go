@@ -18,11 +18,13 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/sessions"
+	"gorm.io/gorm"
 )
 
 func loginAs(t *testing.T, app *App, name, password string) *apiClient {
@@ -88,6 +90,47 @@ func testApp(t *testing.T) *App {
 		Uploads: uploads,
 		Mailer:  mail.NewDevOutbox(db, "Fold <noreply@example.com>"),
 	}
+}
+
+// queryCounter counts GORM reads (Query and Row callbacks: Find, First,
+// Pluck, Scan, ...) on one database handle. Writes are not counted.
+type queryCounter struct {
+	db      *gorm.DB
+	name    string
+	reads   atomic.Int64
+	stopped atomic.Bool
+}
+
+var queryCounterSeq atomic.Uint64
+
+// countDBReads registers a query counter on db and removes it when the
+// test ends. Call Stop before asserting on rows the counted code wrote,
+// so the assertion queries are not counted.
+func countDBReads(t *testing.T, db *gorm.DB) *queryCounter {
+	t.Helper()
+	qc := &queryCounter{db: db, name: fmt.Sprintf("test:count_db_reads:%d", queryCounterSeq.Add(1))}
+	count := func(*gorm.DB) { qc.reads.Add(1) }
+	if err := db.Callback().Query().Before("gorm:query").Register(qc.name, count); err != nil {
+		t.Fatalf("register query counter: %v", err)
+	}
+	if err := db.Callback().Row().Before("gorm:row").Register(qc.name, count); err != nil {
+		qc.Stop()
+		t.Fatalf("register row counter: %v", err)
+	}
+	t.Cleanup(qc.Stop)
+	return qc
+}
+
+// Reads is how many read callbacks ran since the counter was registered.
+func (qc *queryCounter) Reads() int64 { return qc.reads.Load() }
+
+// Stop removes the counter's callbacks. It is safe to call twice.
+func (qc *queryCounter) Stop() {
+	if qc.stopped.Swap(true) {
+		return
+	}
+	_ = qc.db.Callback().Query().Remove(qc.name)
+	_ = qc.db.Callback().Row().Remove(qc.name)
 }
 
 // testEmail turns a short test name ("alice") into an address.
