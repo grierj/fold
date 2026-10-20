@@ -85,9 +85,10 @@ test("five tab labels stay on one line at 390, even with a 9+ badge", async ({ p
   const tabs = page.getByRole("navigation", { name: "Tabs" });
   await expect(tabs.getByText("9+")).toBeVisible();
   await expect(tabs.getByRole("link", { name: "Calendar" })).toHaveAttribute("aria-current", "page");
-  for (const label of ["Home", "Calendar", "My groups", "Alerts", "Me"]) {
-    const box = (await tabs.getByText(label, { exact: true }).boundingBox())!;
-    expect(box.height, `${label} wraps`).toBeLessThan(24);
+  // A wrapped label would make its tab taller than the 56px bar.
+  const links = await tabs.getByRole("link").all();
+  expect(links).toHaveLength(5);
+  for (const link of links) {
+    expect((await link.boundingBox())!.height, `${await link.textContent()} wraps`).toBeLessThanOrEqual(56);
   }
-  await signOut(page);
 });

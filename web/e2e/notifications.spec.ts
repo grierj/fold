@@ -73,9 +73,9 @@ test("archive survives signing out, and Undo or the Archived filter restores it"
 
 test.describe("on a phone", () => {
   test.use({ viewport: { width: 390, height: 800 } });
-  test("the Notifications tab opens the notifications page", async ({ page }) => {
+  test("the Alerts tab opens the notifications page", async ({ page }) => {
     await signIn(page, "grier");
-    await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: /^Notifications/ }).click();
+    await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: /^Alerts/ }).click();
     await expect(page).toHaveURL(/\/notifications$/);
     await expect(page.getByRole("button", { name: "All", pressed: true })).toBeVisible();
   });
