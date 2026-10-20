@@ -51,7 +51,14 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
             Church-wide
           </span>
         ) : (
-          <span className="shrink-0">{occ.groupName ?? `Hosted by ${occ.hostedBy}`}{occ.groupDeleted && " (deleted group)"}</span>
+          <>
+            <span className="shrink-0">{occ.groupName ?? `Hosted by ${occ.hostedBy}`}</span>
+            {occ.groupDeleted && (
+              <span className="shrink-0 rounded-full bg-sunken px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-text-muted">
+                Deleted group
+              </span>
+            )}
+          </>
         )}
         {occ.location && <span className="truncate"> · {occ.location}</span>}
       </span>

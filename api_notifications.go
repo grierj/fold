@@ -640,22 +640,47 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 		return
 	}
 	ctx := context.Background()
-	for _, id := range ids {
-		a.deliverNotificationEmail(ctx, id)
+	// Two reads for the whole batch, not two per recipient (#76 follow-up):
+	// the rows, then their recipients. A row missing here was rolled back
+	// or pruned after commit; there is nothing to send for it.
+	var rows []models.Notification
+	if err := a.DB.Where("id IN ?", ids).Order("id").Find(&rows).Error; err != nil {
+		log.Printf("notification email: loading %d notifications: %v", len(ids), err)
+		return
+	}
+	userIDs := make([]uint, 0, len(rows))
+	for _, n := range rows {
+		if k, ok := notify.Lookup(n.Kind); ok && k.AllowEmail {
+			userIDs = append(userIDs, n.UserID)
+		}
+	}
+	if len(userIDs) == 0 {
+		return
+	}
+	var users []models.User
+	if err := a.DB.Where("id IN ?", userIDs).Find(&users).Error; err != nil {
+		// Mark nothing suppressed: without a delivery record the rows stay
+		// pending, so a later delivery pass can still send them.
+		log.Printf("notification email: loading %d recipients: %v", len(userIDs), err)
+		return
+	}
+	byID := make(map[uint]*models.User, len(users))
+	for i := range users {
+		byID[users[i].ID] = &users[i]
+	}
+	for i := range rows {
+		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID])
 	}
 }
 
-func (a *App) deliverNotificationEmail(ctx context.Context, id uint) {
-	var n models.Notification
-	if err := a.DB.First(&n, id).Error; err != nil {
-		return // rolled back or pruned after commit; nothing to send
-	}
+// deliverNotificationEmail sends one row to its preloaded recipient (nil
+// when the account is gone).
+func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notification, u *models.User) {
 	k, ok := notify.Lookup(n.Kind)
 	if !ok || !k.AllowEmail {
 		return
 	}
-	var u models.User
-	if err := a.DB.Where("id = ?", n.UserID).First(&u).Error; err != nil ||
+	if u == nil ||
 		(u.Status != models.UserActive && u.Status != models.UserGuest) {
 		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "recipient not active")
 		return
