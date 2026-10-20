@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/notify"
 )
 
 // Repo guards from the /correct pass (Oct 2026). Each one fails on a real
@@ -859,5 +861,41 @@ func TestPrePushHookBlocksMaster(t *testing.T) {
 	}
 	if out, err := runPrePushHook(t, "refs/heads/m1.7-ics-feeds 54a1398 refs/heads/m1.7-ics-feeds 0000000\n"); err != nil {
 		t.Errorf("hook blocked a branch push: %v\n%s", err, out)
+	}
+}
+
+// --- Notification categories are one list ---
+//
+// notify.Categories, the notifications.category CHECK (migration 00010)
+// and the TS Notification["category"] union must name the same set (#79).
+
+func TestNotificationCategoriesMatch(t *testing.T) {
+	want := append([]string(nil), notify.Categories...)
+	sort.Strings(want)
+	quoted := regexp.MustCompile(`["']([a-z_]+)["']`)
+	pick := func(file string, re *regexp.Regexp) []string {
+		t.Helper()
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := re.FindStringSubmatch(string(src))
+		if m == nil {
+			t.Fatalf("%s: category list not found", file)
+		}
+		var out []string
+		for _, q := range quoted.FindAllStringSubmatch(m[1], -1) {
+			out = append(out, q[1])
+		}
+		sort.Strings(out)
+		return out
+	}
+	sqlCats := pick("migrations/00010_notifications.sql", regexp.MustCompile(`CHECK \(category IN \(([^)]*)\)\)`))
+	tsCats := pick("web/src/types.ts", regexp.MustCompile(`(?s)interface Notification \{.*?category: ([^;]*);`))
+	if !reflect.DeepEqual(sqlCats, want) {
+		t.Errorf("SQL CHECK categories %v, notify.Categories %v", sqlCats, want)
+	}
+	if !reflect.DeepEqual(tsCats, want) {
+		t.Errorf("TS Notification category %v, notify.Categories %v", tsCats, want)
 	}
 }
