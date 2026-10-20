@@ -261,6 +261,11 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, "role must be admin or member")
 			return
 		}
+		// A teen is never an admin (#94, DEC-8): admins grant teen consent.
+		if role == models.RoleAdmin && u.AccountType == models.AccountTeen {
+			jsonError(c, http.StatusBadRequest, "a teen account can't be an admin")
+			return
+		}
 		if role != models.RoleAdmin && !policy.CanDemoteOrDelete(asPerson(me), asPerson(u), a.adminCount()) {
 			msg := "cannot demote the last admin"
 			if u.ID == me.ID {
@@ -288,7 +293,18 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, msg)
 			return
 		}
-		if status == models.UserActive && u.PasswordHash == nil {
+		// A teen becomes active only through account consent (#94, DEC-8,
+		// PLAN TeenConsent), never by an admin edit: not from
+		// pending_consent, and not by re-enabling a disabled teen, which
+		// goes back to waiting for consent (DEC-69: once TeenConsent exists
+		// in M1.10, restore active when the latest account consent is granted).
+		if status == models.UserActive && u.Status == models.UserPendingConsent {
+			jsonError(c, http.StatusBadRequest, "a teen account waiting for consent becomes active only when consent is granted")
+			return
+		}
+		if status == models.UserActive && u.AccountType == models.AccountTeen && u.Status == models.UserDisabled {
+			status = models.UserPendingConsent
+		} else if status == models.UserActive && u.PasswordHash == nil {
 			status = models.UserInvited // re-enabled, but still needs a password
 		}
 		if status != u.Status {
