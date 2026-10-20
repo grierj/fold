@@ -41,7 +41,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - working-directory: web
-        run: npm ci && npm run build
+        run: npm ci && npm run build && npm run bundle-size
       # Runtime dependencies only; dev-only findings come through Dependabot.
       - working-directory: web
         run: npm audit --omit=dev --audit-level=high

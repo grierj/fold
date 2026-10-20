@@ -321,7 +321,7 @@ type Registration struct {
 	User            User            `gorm:"foreignKey:UserID"`
 	Status          string          `gorm:"not null"`             // going | maybe | declined | cancelled | waitlisted | removed
 	Source          string          `gorm:"not null;default:web"` // web | admin | guest_form
-	ManageTokenHash string          `gorm:"not null;default:''"`
+	ManageTokenHash string          `gorm:"not null;default:'';uniqueIndex:idx_registrations_manage_token,where:manage_token_hash <> ''"`
 	// GuestCount is the extra unnamed guests on this registration (0 to
 	// the event's guests_allowed). Seats used = 1 + guest_count.
 	GuestCount int `gorm:"not null;default:0"`

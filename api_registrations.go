@@ -200,15 +200,15 @@ func hostIDs(tx *gorm.DB, eventID uint) []uint {
 }
 
 // eventNoticeVars builds the guarded Vars and link for one recipient of
-// an event notice, following the notifyOccurrencesCancelled shape: a
-// registrant who cannot see the group gets no group name, place, or
-// group link (PR #41).
-func eventNoticeVars(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, userID uint) (notify.Vars, string) {
+// an event notice from preloaded facts (issue #76): a registrant who
+// cannot see the group gets no group name, place, or group link
+// (PR #41). It reads nothing; loadNoticeFacts did the reading once for
+// every recipient.
+func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, facts *noticeFacts) (notify.Vars, string) {
 	var g *models.Group
 	if ev.GroupID != nil {
-		var row models.Group
-		if tx.First(&row, *ev.GroupID).Error == nil && canSeeGroupIn(tx, viewerIn(tx, userID), &row) {
-			g = &row
+		if row := facts.groups[*ev.GroupID]; row != nil && facts.canSeeGroup(userID, row) {
+			g = row
 		}
 	}
 	// The place resolves through the date's override, like
@@ -218,16 +218,26 @@ func eventNoticeVars(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, u
 	if o.LocationOverride != nil {
 		place = *o.LocationOverride
 	}
-	vars := notify.Vars{Event: ev.Title, When: formatWhen(o.StartsAt, recipientZone(tx, userID)), Place: place}
+	vars := notify.Vars{Event: ev.Title, When: formatWhen(o.StartsAt, facts.zone(userID)), Place: place}
 	link := fmt.Sprintf("/events/%d", ev.ID)
 	if g != nil {
-		vars.Event = firstNonEmpty(ev.Title, g.Name) // group-ok: g is set only when canSeeGroupIn is true
+		vars.Event = firstNonEmpty(ev.Title, g.Name) // group-ok: g is set only when facts.canSeeGroup is true
 		if o.LocationOverride == nil {
-			vars.Place = firstNonEmpty(ev.Location, g.Location) // group-ok: g is set only when canSeeGroupIn is true
+			vars.Place = firstNonEmpty(ev.Location, g.Location) // group-ok: g is set only when facts.canSeeGroup is true
 		}
 		link = fmt.Sprintf("/groups/%d", g.ID)
 	}
 	return vars, link
+}
+
+// eventNoticeVarsIn is eventNoticeVars for a single recipient: it loads
+// that one person's facts in tx, then builds the same Vars.
+func eventNoticeVarsIn(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, userID uint) (notify.Vars, string) {
+	var groupIDs []uint
+	if ev.GroupID != nil {
+		groupIDs = []uint{*ev.GroupID}
+	}
+	return eventNoticeVars(ev, o, userID, loadNoticeFacts(tx, groupIDs, []uint{userID}))
 }
 
 // notifyRegistrationPromoted tells one person they are in off the
@@ -235,7 +245,7 @@ func eventNoticeVars(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, u
 // "I can't come" cancel; the bell never shows the token.
 func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
 	userID uint, manageRaw string, actor *uint, app *App) ([]uint, error) {
-	vars, link := eventNoticeVars(tx, ev, o, userID)
+	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
 	vars.ManageURL = app.emailBaseURL() + "/guest/manage/" + manageRaw
 	end := o.EndsAt
 	if end.IsZero() {
@@ -262,7 +272,7 @@ func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 	if len(to) == 0 {
 		return nil, nil
 	}
-	vars, link := eventNoticeVars(tx, ev, o, to[0])
+	vars, link := eventNoticeVarsIn(tx, ev, o, to[0])
 	end := o.EndsAt
 	if end.IsZero() {
 		end = o.StartsAt
@@ -292,9 +302,14 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 		Order("user_id").Pluck("user_id", &userIDs).Error; err != nil {
 		return nil, err
 	}
+	var groupIDs []uint
+	if ev.GroupID != nil {
+		groupIDs = []uint{*ev.GroupID}
+	}
+	facts := loadNoticeFacts(tx, groupIDs, userIDs)
 	var ids []uint
 	for _, uid := range userIDs {
-		vars, link := eventNoticeVars(tx, ev, o, uid)
+		vars, link := eventNoticeVars(ev, o, uid, facts)
 		vars.Change = variant
 		end := o.EndsAt
 		if end.IsZero() {
@@ -318,7 +333,7 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 // note reaches only them.
 func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
 	userID uint, note string, actor uint) ([]uint, error) {
-	vars, link := eventNoticeVars(tx, ev, o, userID)
+	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
 	vars.Note = note
 	end := o.EndsAt
 	if end.IsZero() {
@@ -335,7 +350,7 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 // notifyRegistrationNotRestored tells a re-enabled person their
 // registration was dropped from a full occurrence (DEC-47).
 func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, userID uint, actor uint) ([]uint, error) {
-	vars, link := eventNoticeVars(tx, ev, o, userID)
+	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
 	end := o.EndsAt
 	if end.IsZero() {
 		end = o.StartsAt
