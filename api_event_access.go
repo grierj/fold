@@ -557,6 +557,15 @@ type visibleSet struct {
 // already narrowed to a window where possible; TestOneEventVisibilityFilter
 // keeps a second copy of this loop out of the code.
 func (a *App) visibleEvents(viewer *models.User, q *gorm.DB) (visibleSet, error) {
+	return a.visibleEventsWith(viewer, q, false)
+}
+
+// visibleEventsWith is visibleEvents with the admin-only "show deleted
+// events" switch (DEC-68): when withDeleted is set and the viewer is an
+// admin, events of soft-deleted groups are listed too. For anyone else
+// the switch does nothing.
+func (a *App) visibleEventsWith(viewer *models.User, q *gorm.DB, withDeleted bool) (visibleSet, error) {
+	withDeleted = withDeleted && asPerson(viewer) != nil && asPerson(viewer).Admin
 	vs := visibleSet{ByID: map[uint]*models.Event{}, Groups: map[uint]*models.Group{}, Rels: map[uint]policy.Rel{}, Hosted: map[uint]bool{}}
 	var evs []models.Event
 	if err := q.Find(&evs).Error; err != nil || len(evs) == 0 {
@@ -570,7 +579,11 @@ func (a *App) visibleEvents(viewer *models.User, q *gorm.DB) (visibleSet, error)
 			gset[*evs[i].GroupID] = struct{}{}
 		}
 	}
-	vs.Groups = a.groupsByID(gset)
+	if withDeleted {
+		vs.Groups = a.groupsByIDUnscoped(gset)
+	} else {
+		vs.Groups = a.groupsByID(gset)
+	}
 	vs.Rels = a.relsFor(viewer, gset)
 	vs.Hosted = a.hostedEventIDs(viewer, ids)
 	p := asPerson(viewer)
@@ -593,4 +606,23 @@ func (a *App) visibleEvents(viewer *models.User, q *gorm.DB) (visibleSet, error)
 		vs.IDs = append(vs.IDs, vs.Events[i].ID)
 	}
 	return vs, nil
+}
+
+// groupsByIDUnscoped is groupsByID including soft-deleted groups, for the
+// admin "show deleted events" switch only (DEC-68).
+func (a *App) groupsByIDUnscoped(ids map[uint]struct{}) map[uint]*models.Group {
+	out := map[uint]*models.Group{}
+	if len(ids) == 0 {
+		return out
+	}
+	list := make([]uint, 0, len(ids))
+	for id := range ids {
+		list = append(list, id)
+	}
+	var gs []models.Group
+	a.DB.Unscoped().Where("id IN ?", list).Find(&gs)
+	for i := range gs {
+		out[gs[i].ID] = &gs[i]
+	}
+	return out
 }

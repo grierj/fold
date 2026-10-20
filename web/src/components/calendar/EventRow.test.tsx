@@ -55,3 +55,10 @@ describe("EventChip", () => {
     expect(link.getAttribute("aria-label")).toMatch(/A very long evening of hymns and fellowship, Room 201 class$/);
   });
 });
+
+describe("EventRow deleted group (DEC-68)", () => {
+  it("says the group is deleted when the admin switch listed it", () => {
+    wrap(<EventRow occ={occ({ groupDeleted: true })} />);
+    expect(screen.getByText(/\(deleted group\)/)).toBeInTheDocument();
+  });
+});

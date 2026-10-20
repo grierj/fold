@@ -31,6 +31,9 @@ type calendarOccurrenceJSON struct {
 	// MyStatus is the viewer's own answer for this date: going, maybe or
 	// waitlisted. Anything else (including "can't go") reads as null.
 	MyStatus *string `json:"myStatus"`
+	// GroupDeleted marks a deleted group's event, sent only to an admin
+	// who asked for deleted events (DEC-68).
+	GroupDeleted bool `json:"groupDeleted,omitempty"`
 }
 
 // How many occurrences one calendar response carries. The answer says so
@@ -80,7 +83,8 @@ func (a *App) apiCalendar(c *gin.Context) {
 	if onlyGroup != nil {
 		q = q.Where("group_id = ?", *onlyGroup)
 	}
-	vs, err := a.visibleEvents(me, q)
+	// deleted=1 lists deleted groups' events too, for admins only (DEC-68).
+	vs, err := a.visibleEventsWith(me, q, c.Query("deleted") == "1")
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
 		return
@@ -153,6 +157,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 			gid := shown.ID
 			row.GroupID = &gid
 			row.GroupName = shown.Name
+			row.GroupDeleted = shown.DeletedAt.Valid
 		} else if ev.GroupID != nil {
 			// An opened event of a group this viewer can't see names
 			// nobody: it is hosted by the church (DEC-17).

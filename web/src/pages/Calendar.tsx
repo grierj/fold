@@ -26,7 +26,7 @@ const AGENDA_STEP = 30;
 const AGENDA_MAX = 366;
 
 export function CalendarPage() {
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const [params, setParams] = useSearchParams();
   const zone = browserTimeZone();
   const today = dayOf(new Date().toISOString(), zone);
@@ -34,6 +34,8 @@ export function CalendarPage() {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(params.get("date") ?? "") ? params.get("date")! : today;
   const mine = !!user && params.get("mine") === "1";
   const group = params.get("group") ?? "";
+  // Admins only: also list deleted groups' events (DEC-68). Off by default.
+  const deleted = !!isAdmin && params.get("deleted") === "1";
 
   const [agendaDays, setAgendaDays] = useState(AGENDA_STEP);
   const [occs, setOccs] = useState<CalendarOccurrence[]>([]);
@@ -57,7 +59,7 @@ export function CalendarPage() {
     let alive = true;
     setLoading(true);
     setError(null);
-    Calendar.list({ from: range.from, to: range.to, tz: zone, mine, group })
+    Calendar.list({ from: range.from, to: range.to, tz: zone, mine, group, deleted })
       .then(({ occurrences, truncated }) => {
         if (!alive) return;
         setOccs(occurrences);
@@ -68,7 +70,7 @@ export function CalendarPage() {
     return () => {
       alive = false;
     };
-  }, [range.from, range.to, zone, mine, group, retry]);
+  }, [range.from, range.to, zone, mine, group, deleted, retry]);
 
   function link(next: Record<string, string | null>): string {
     const p = new URLSearchParams(params);
@@ -125,6 +127,11 @@ export function CalendarPage() {
           {user && (
             <Chip selected={mine} onClick={() => go({ mine: mine ? null : "1" })}>
               Just mine
+            </Chip>
+          )}
+          {isAdmin && (
+            <Chip selected={deleted} onClick={() => go({ deleted: deleted ? null : "1" })}>
+              Show deleted events
             </Chip>
           )}
           <div className="min-w-0 flex-1 sm:w-56 sm:flex-none">
