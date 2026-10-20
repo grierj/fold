@@ -429,3 +429,32 @@ func TestUpdateMeTimezone(t *testing.T) {
 		t.Fatalf("saved zone: %q", me.User.Timezone)
 	}
 }
+
+// #92: the email-change form can't be used to spam an address. Past the
+// limit the answer is the same (DEC-52) but nothing is sent.
+func TestEmailChangeRateLimited(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	ac := loginAPI(t, app, "alice", "password1234")
+	for i := 0; i < targetHourLimit; i++ {
+		apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"email": "victim@example.com"}, http.StatusOK)
+	}
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"email": "victim@example.com"}, http.StatusOK)
+	var n int64
+	app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", "victim@example.com").Count(&n)
+	if n != targetHourLimit {
+		t.Fatalf("victim got %d emails, want %d", n, targetHourLimit)
+	}
+	// The per-user limit applies across targets too.
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"email": "other@example.com"}, http.StatusOK)
+	// Another member can't add to the same victim either.
+	newTestUser(t, app, "bob", "password1234", models.RoleMember)
+	bc := loginAPI(t, app, "bob", "password1234")
+	apiDo(t, bc, "PUT", "/api/v1/me", map[string]string{"email": "victim@example.com"}, http.StatusOK)
+	for addr, want := range map[string]int64{"victim@example.com": targetHourLimit, "other@example.com": 0} {
+		app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", addr).Count(&n)
+		if n != want {
+			t.Fatalf("%s got %d emails, want %d", addr, n, want)
+		}
+	}
+}
