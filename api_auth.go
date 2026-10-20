@@ -277,6 +277,26 @@ WHERE window_start < now() - interval '1 day' AND (locked_until IS NULL OR locke
 	return failures <= limit, err
 }
 
+// Per-target email limits (PLAN 10.6 defaults, as for guest verification
+// emails): a door that mails an address someone else typed sends it at most
+// 3 per hour and 10 per day, whoever asks and from wherever (#91, #92).
+const (
+	targetHourLimit = 3
+	targetDayLimit  = 10
+)
+
+// targetAllow counts one send to key (a prefix plus an address or user id)
+// in both the hourly and the daily window and reports whether both stay
+// under their limits.
+func (a *App) targetAllow(ctx context.Context, key string) (bool, error) {
+	hourOK, err := a.throttleAllow(ctx, key+":h", targetHourLimit, time.Hour)
+	if err != nil {
+		return false, err
+	}
+	dayOK, err := a.throttleAllow(ctx, key+":d", targetDayLimit, 24*time.Hour)
+	return hourOK && dayOK, err
+}
+
 // apiRequestPasswordReset starts a password reset. It always answers 200
 // with the uniform message. A known address gets a single-use link valid
 // for 24 hours; an unknown one costs a dummy bcrypt comparison so the
