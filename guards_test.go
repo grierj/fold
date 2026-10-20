@@ -917,3 +917,27 @@ func TestOneEventVisibilityFilter(t *testing.T) {
 		}
 	}
 }
+
+// #95: CI actions are pinned to full commit SHAs (a moved tag can't run new
+// code), and the workflow token is read-only.
+func TestWorkflowActionsPinnedAndReadOnly(t *testing.T) {
+	files, err := filepath.Glob(".github/workflows/*.yml")
+	if err != nil || len(files) == 0 {
+		t.Fatalf("workflows: %v %v", files, err)
+	}
+	pinned := regexp.MustCompile(`^\s*(?:-\s*)?uses:\s*[^@\s]+@[0-9a-f]{40}(?:\s+#\s*\S+)?\s*$`)
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !regexp.MustCompile(`(?m)^permissions:\s*\n\s+contents:\s*read\s*$`).Match(src) {
+			t.Errorf("%s: no top-level `permissions: contents: read`", f)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.Contains(line, "uses:") && !strings.Contains(line, "uses: ./") && !pinned.MatchString(line) {
+				t.Errorf("%s:%d: action not pinned to a full SHA: %s", f, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+}

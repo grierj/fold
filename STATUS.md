@@ -55,4 +55,4 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 
 ## Follow-ups (not yet claimed)
 
-- CI hardening (Warden review of #83, Oct 20, 2026): pin every action in `.github/workflows/test.yml` to a full commit SHA (with the version in a comment), and add a least-privilege top-level `permissions:` block (`contents: read`, and nothing more unless a job needs it).
+- CI hardening (Warden review of #83, Oct 20, 2026; issue #95): claimed by Wright, in review. Actions pinned to full SHAs and a top-level `permissions: contents: read`, enforced by `TestWorkflowActionsPinnedAndReadOnly`.
