@@ -17,6 +17,8 @@ func TestRedactLogPath(t *testing.T) {
 		"/cal/groups/4.ics":                                "/cal/groups/4.ics",
 		"/guest/manage/s3cret":                             "/guest/manage/REDACTED",
 		"/api/v1/guest-registrations/manage/s3cret/cancel": "/api/v1/guest-registrations/manage/REDACTED/cancel",
+		"/api/v1/invitations/inv1tetoken":                  "/api/v1/invitations/REDACTED",
+		"/api/v1/invitations/accept":                       "/api/v1/invitations/accept",
 		"/api/v1/events":                                   "/api/v1/events",
 	}
 	for in, want := range cases {
@@ -36,16 +38,17 @@ func TestAccessLogKeepsSecretsOut(t *testing.T) {
 	r := gin.New()
 	r.Use(accessLog())
 	r.GET("/*any", func(c *gin.Context) { c.Status(http.StatusNotFound) })
-	for _, u := range []string{"/cal/u/feedsecret123.ics", "/reset-password?token=resetsecret456"} {
+	for _, u := range []string{"/cal/u/feedsecret123.ics", "/reset-password?token=resetsecret456", "/api/v1/invitations/invitesecret789"} {
 		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, u, nil))
 	}
 	out := buf.String()
-	for _, secret := range []string{"feedsecret123", "resetsecret456"} {
+	for _, secret := range []string{"feedsecret123", "resetsecret456", "invitesecret789"} {
 		if strings.Contains(out, secret) {
 			t.Errorf("access log leaked %q:\n%s", secret, out)
 		}
 	}
-	if !strings.Contains(out, "/cal/u/REDACTED.ics") || !strings.Contains(out, "/reset-password") {
+	if !strings.Contains(out, "/cal/u/REDACTED.ics") || !strings.Contains(out, "/reset-password") ||
+		!strings.Contains(out, "/api/v1/invitations/REDACTED") {
 		t.Errorf("access log lost the route:\n%s", out)
 	}
 }
