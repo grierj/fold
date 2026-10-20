@@ -884,7 +884,7 @@ func TestOneEventVisibilityFilter(t *testing.T) {
 		}
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || fn.Name.Name == "visibleEvents" {
+			if !ok || fn.Body == nil || fn.Name.Name == "visibleEventsWith" {
 				continue
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {
