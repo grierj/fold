@@ -404,7 +404,7 @@ func TestPasswordResetUniformAndSingleUse(t *testing.T) {
 	}
 
 	// An expired token fails.
-	w = anon.do("POST", "/api/v1/auth/password-reset", map[string]string{"email": "alice@example.com"}, true)
+	apiDo(t, anon, "POST", "/api/v1/auth/password-reset", map[string]string{"email": "alice@example.com"}, http.StatusOK)
 	m2 := latestEmail(t, app, "alice@example.com")
 	token2 := tokenInEmail(t, m2)
 	app.DB.Model(&models.AccountToken{}).Where("kind = ?", models.TokenPasswordReset).

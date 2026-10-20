@@ -42,7 +42,7 @@ export function Field({ label, hint, error, optional, id: fixed, children }: Fie
 }
 
 // An error line: danger text with an icon, so it isn't color alone.
-export function FieldError({ id, children }: { id?: string; children: ReactNode }) {
+function FieldError({ id, children }: { id?: string; children: ReactNode }) {
   return (
     <p id={id} className="mt-1 flex items-center gap-1 text-sm text-danger">
       <span aria-hidden="true">⚠</span>

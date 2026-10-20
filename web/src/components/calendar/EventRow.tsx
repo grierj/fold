@@ -7,7 +7,7 @@ const STATUS = { going: "Going", maybe: "Maybe", waitlisted: "Waitlisted" } as c
 
 // My answer, never by color alone: always the word, and Going and
 // Waitlisted have an icon too.
-export function StatusBadge({ status }: { status: CalendarOccurrence["myStatus"] }) {
+function StatusBadge({ status }: { status: CalendarOccurrence["myStatus"] }) {
   if (status === "going") {
     return (
       <span className="inline-flex items-center gap-1 rounded-sm bg-primary-subtle px-2 text-xs font-semibold text-primary-on-subtle">

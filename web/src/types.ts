@@ -74,7 +74,7 @@ export interface Notification {
   resolution?: NotificationResolution;
 }
 
-export interface NotificationResolution {
+interface NotificationResolution {
   outcome: "approved" | "rejected" | "deleted" | "kept" | "withdrawn" | string;
   by: string;
   byMe: boolean;
@@ -110,7 +110,7 @@ export interface GuestRegistration {
 }
 
 // One attendee entry on an occurrence (M1.5 adds guestCount).
-export interface Attendee {
+interface Attendee {
   userId: number;
   name: string;
   status: RegistrationStatus;
@@ -235,7 +235,7 @@ export interface SoleLedGroup {
 }
 
 // What making a group more private does to its events (DEC-48).
-export interface VisibilityImpactEvent {
+interface VisibilityImpactEvent {
   id: number;
   title: string;
   visibility: Visibility;
@@ -263,9 +263,9 @@ export interface Invitation {
 }
 
 export type AgeBand = "adult" | "teen" | "under13";
-export type AccountRequestStatus = "pending" | "approved" | "rejected" | "expired" | "withdrawn";
+type AccountRequestStatus = "pending" | "approved" | "rejected" | "expired" | "withdrawn";
 
-export interface RequestWarnings {
+interface RequestWarnings {
   duplicate: boolean;
   honeypot: boolean;
   rateLimited: boolean;

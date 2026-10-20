@@ -354,8 +354,8 @@ func TestInlineApproveCleanAdultAndRace(t *testing.T) {
 		t.Fatalf("lost race: %d %s", w.Code, w.Body.String())
 	}
 	// Rejection is never inline, even with a notification id.
-	w = anon.do("POST", "/api/v1/account-requests",
-		signupBody("Second", "second@example.com", "adult", ""), true)
+	apiDo(t, anon, "POST", "/api/v1/account-requests",
+		signupBody("Second", "second@example.com", "adult", ""), http.StatusOK)
 	second := pendingRequest(t, app, "second@example.com")
 	secondNote := adminNotification(t, app, pat.ID, second.ID)
 	w = patClient.do("POST", "/api/v1/admin/account-requests/"+itoa(second.ID)+"/reject",
@@ -373,10 +373,10 @@ func TestRejectEmailsAndRequestsExpire(t *testing.T) {
 	adminClient := loginAPI(t, app, "admin", "pw")
 	anon := anonClient(t, app, "10.8.0.1")
 
-	w := anon.do("POST", "/api/v1/account-requests",
-		signupBody("Rejected Rob", "rob@example.com", "adult", ""), true)
+	apiDo(t, anon, "POST", "/api/v1/account-requests",
+		signupBody("Rejected Rob", "rob@example.com", "adult", ""), http.StatusOK)
 	req := pendingRequest(t, app, "rob@example.com")
-	w = adminClient.do("POST", "/api/v1/admin/account-requests/"+itoa(req.ID)+"/reject",
+	w := adminClient.do("POST", "/api/v1/admin/account-requests/"+itoa(req.ID)+"/reject",
 		map[string]any{"note": "We could not verify your connection to the church."}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("reject: %d %s", w.Code, w.Body.String())
@@ -388,8 +388,8 @@ func TestRejectEmailsAndRequestsExpire(t *testing.T) {
 		t.Fatal("rejection not audited")
 	}
 
-	w = anon.do("POST", "/api/v1/account-requests",
-		signupBody("Old Olga", "olga@example.com", "adult", ""), true)
+	apiDo(t, anon, "POST", "/api/v1/account-requests",
+		signupBody("Old Olga", "olga@example.com", "adult", ""), http.StatusOK)
 	old := pendingRequest(t, app, "olga@example.com")
 	past := time.Now().UTC().Add(-time.Hour)
 	if err := app.DB.Model(&models.AccountRequest{}).Where("id = ?", old.ID).
