@@ -862,10 +862,11 @@ export function GroupDetail() {
             {tab === "events" && (
               <div className="space-y-3">
                 {group.visibility === "public" && group.status === "active" && (
-                  <div className="flex justify-end">
-                    <a href={`/cal/groups/${group.id}.ics`} className="inline-flex items-center min-h-11 text-primary font-semibold">
-                      Calendar feed
-                    </a>
+                  <div className="flex flex-wrap items-center gap-x-2">
+                    <ButtonLink variant="link" to={`/cal/groups/${group.id}.ics`} reloadDocument>
+                      Subscribe in your calendar
+                    </ButtonLink>
+                    <span className="text-sm text-text-muted">Adds this group&rsquo;s public events to your calendar app.</span>
                   </div>
                 )}
                 {events.length === 0 && (

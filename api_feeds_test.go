@@ -347,11 +347,16 @@ func TestCalendarTokenLifecycle(t *testing.T) {
 	}
 
 	// Admins revoke anyone's link; doing it twice is fine; members can't.
-	apiDo(t, admin, "DELETE", fmt.Sprintf("/api/v1/admin/users/%d/calendar-feed", samUser.ID), nil, http.StatusOK)
+	if body := apiDo(t, admin, "DELETE", fmt.Sprintf("/api/v1/admin/users/%d/calendar-feed", samUser.ID), nil, http.StatusOK); !strings.Contains(body, `"hadLink":true`) {
+		t.Fatalf("first admin revoke should report hadLink true: %s", body)
+	}
 	if w := fetchFeed(t, anon, newPath); w.Code != http.StatusNotFound {
 		t.Fatalf("link after admin revoke: %d, want 404", w.Code)
 	}
-	apiDo(t, admin, "DELETE", fmt.Sprintf("/api/v1/admin/users/%d/calendar-feed", samUser.ID), nil, http.StatusOK)
+	if body := apiDo(t, admin, "DELETE", fmt.Sprintf("/api/v1/admin/users/%d/calendar-feed", samUser.ID), nil, http.StatusOK); !strings.Contains(body, `"hadLink":false`) {
+		t.Fatalf("second admin revoke should report hadLink false: %s", body)
+	}
+	apiDo(t, admin, "DELETE", "/api/v1/admin/users/nope/calendar-feed", nil, http.StatusNotFound)
 	if w := leeClient.do("DELETE", fmt.Sprintf("/api/v1/admin/users/%d/calendar-feed", samUser.ID), nil, true); w.Code != http.StatusForbidden {
 		t.Fatalf("member at the admin revoke: %d, want 403", w.Code)
 	}
