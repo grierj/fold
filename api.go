@@ -479,6 +479,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/site", a.apiSite)
 	v1.PUT("/admin/timezone", a.apiAuth(), a.apiAdmin(), a.apiSetTimezone)
 	v1.GET("/events", a.optionalUser(), a.apiListOpenEvents)
+	// The calendar (M1.6): every occurrence the viewer may see over a
+	// date range, as slim rows with no attendee data.
+	v1.GET("/calendar", a.optionalUser(), a.apiCalendar)
 	v1.POST("/events", a.apiAuth(), a.apiAdmin(), a.apiCreateChurchEvent)
 	v1.GET("/events/:id", a.optionalUser(), a.apiGetEvent)
 	v1.PUT("/events/:id", a.apiAuth(), a.apiUpdateEvent)
