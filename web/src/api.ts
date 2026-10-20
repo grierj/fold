@@ -41,7 +41,7 @@ interface RequestOptions {
   anonymousOK?: boolean;
 }
 
-export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const method = (opts.method ?? "GET").toUpperCase();
   const headers: Record<string, string> = { Accept: "application/json" };
   let body: string | undefined;
@@ -83,8 +83,10 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
 import type {
   AccountRequest,
   AgeBand,
+  CalendarFeed,
   EventDetailResponse,
   EventHostRow,
+  CalendarOccurrence,
   EventOccurrence,
   EventSeries,
   GroupDetailResponse,
@@ -240,6 +242,16 @@ export const AdminAccountRequests = {
     }),
   setSelfSignup: (mode: "request" | "off") =>
     api<{ selfSignup: "request" | "off" }>("/admin/self-signup", { method: "PUT", body: { mode } }),
+};
+
+export const Calendar = {
+  list: (q: { from: string; to: string; tz: string; mine?: boolean; group?: string; deleted?: boolean }) => {
+    const p = new URLSearchParams({ from: q.from, to: q.to, tz: q.tz });
+    if (q.mine) p.set("mine", "1");
+    if (q.group) p.set("group", q.group);
+    if (q.deleted) p.set("deleted", "1");
+    return api<{ occurrences: CalendarOccurrence[]; truncated: boolean }>(`/calendar?${p}`);
+  },
 };
 
 export const Events = {
@@ -416,6 +428,17 @@ export const Profile = {
   deleteAvatar: () => api<Record<string, never>>("/me/avatar", { method: "DELETE" }),
 };
 
+// The personal calendar feed link (M1.7): only create returns the URL,
+// and only that once.
+export const CalendarFeeds = {
+  get: () => api<{ calendarFeed: CalendarFeed }>("/me/calendar-feed"),
+  create: (scope: CalendarFeed["scope"]) =>
+    api<{ calendarFeed: CalendarFeed }>("/me/calendar-feed", { method: "POST", body: { scope } }),
+  setScope: (scope: CalendarFeed["scope"]) =>
+    api<{ calendarFeed: CalendarFeed }>("/me/calendar-feed", { method: "PUT", body: { scope } }),
+  revoke: () => api<{ calendarFeed: CalendarFeed }>("/me/calendar-feed", { method: "DELETE" }),
+};
+
 export const GroupCover = {
   upload: (id: number | string, file: File) =>
     apiUpload<{ imageUrl: string }>(`/groups/${id}/cover`, "cover", file),
@@ -490,6 +513,8 @@ export const AdminUsers = {
       method: "POST",
       body: { password },
     }),
+  revokeCalendarFeed: (id: number) =>
+    api<{ hadLink: boolean }>(`/admin/users/${id}/calendar-feed`, { method: "DELETE" }),
 };
 
 export const AdminGroups = {

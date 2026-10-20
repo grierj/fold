@@ -1,25 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { shortZoneName, zoneLabel, zoneOptions, zoneSelectOptions } from "./eventForm";
-
-describe("zoneOptions", () => {
-  it("puts the browser zone first, then the church zone, with no repeats", () => {
-    const o = zoneOptions("America/Boise", "America/New_York");
-    expect(o[0]).toEqual({ value: "America/New_York", label: "Your time zone" });
-    expect(o[1]).toEqual({ value: "America/Boise", label: "Church time zone" });
-    const values = o.map((z) => z.value);
-    expect(new Set(values).size).toBe(values.length);
-  });
-
-  it("shows one entry when the browser is in the church zone", () => {
-    const o = zoneOptions("America/Boise", "America/Boise");
-    expect(o[0]).toEqual({ value: "America/Boise", label: "Your time zone (church time zone)" });
-    expect(o.filter((z) => z.value === "America/Boise")).toHaveLength(1);
-  });
-
-  it("works before the church zone loads", () => {
-    expect(zoneOptions(null, "UTC")[0]).toEqual({ value: "UTC", label: "Your time zone" });
-  });
-});
+import { filterZones, shortZoneName, US_ZONES, zoneLabel, zonePickerOptions } from "./eventForm";
+import { zoneOffset } from "./when";
 
 describe("zoneLabel", () => {
   it.each([
@@ -54,36 +35,72 @@ describe("shortZoneName", () => {
   ])("shortens %s to %s", (full, short) => expect(shortZoneName(full)).toBe(short));
 });
 
-describe("zoneSelectOptions", () => {
+describe("zonePickerOptions", () => {
+  const off = (z: string) => zoneOffset(z, new Date("2026-01-15T12:00:00Z"));
   it.each([
-    ["America/Boise", "Yours · Boise (Mountain)"],
-    ["America/Indiana/Knox", "Yours · Knox, Indiana (Central)"],
-  ])("lists browser zone %s first even when the value is the church zone", (browser, label) => {
-    const o = zoneSelectOptions("America/Los_Angeles", browser, "America/Los_Angeles", "en-US");
-    expect(o[0]).toEqual({ value: browser, label });
-    expect(o[1]).toEqual({ value: "America/Los_Angeles", label: "Church · Los Angeles (Pacific)" });
-    expect(o.length).toBeGreaterThan(2);
+    ["America/Boise", "Boise (Mountain)"],
+    ["America/Indiana/Knox", "Knox, Indiana (Central)"],
+  ])("lists browser zone %s first, then the church zone, then the six US zones", (browser, label) => {
+    const o = zonePickerOptions("America/Los_Angeles", browser, "America/Los_Angeles", off, "en-US");
+    expect(o[0]).toMatchObject({ value: browser, label, tag: "Yours" });
+    expect(o[1]).toMatchObject({ value: "America/Los_Angeles", label: "Los Angeles (Pacific)", tag: "Church", offset: "UTC-8" });
+    const lead = o.slice(2, 7).map((z) => z.value);
+    expect(lead).toEqual(US_ZONES.filter((z) => z !== "America/Los_Angeles").slice(0, 5));
     const values = o.map((z) => z.value);
     expect(new Set(values).size).toBe(values.length);
   });
 
   it("tags one entry when the browser is in the church zone", () => {
-    const o = zoneSelectOptions("America/Boise", "America/Boise", "America/Boise", "en-US");
-    expect(o[0]).toEqual({ value: "America/Boise", label: "Yours & church · Boise (Mountain)" });
+    const o = zonePickerOptions("America/Boise", "America/Boise", "America/Boise", off, "en-US");
+    expect(o[0]).toMatchObject({ value: "America/Boise", tag: "Yours & church" });
     expect(o.filter((z) => z.value === "America/Boise")).toHaveLength(1);
   });
 
-  it("keeps IANA ids as values and the same set of options as before", () => {
-    const o = zoneSelectOptions("America/Los_Angeles", "America/Boise", "Etc/GMT+7", "en-US");
-    const plain = zoneOptions("America/Los_Angeles", "America/Boise").map((z) => z.value);
-    expect(o.slice(0, plain.length).map((z) => z.value)).toEqual(plain);
+  it("sorts the rest by label and keeps an unusual current value", () => {
+    const o = zonePickerOptions(null, "America/Boise", "Etc/GMT+7", off, "en-US");
     expect(o.some((z) => z.value === "Etc/GMT+7")).toBe(true);
-    expect(o.every((z) => /^[A-Za-z_+\-0-9/]+$/.test(z.value))).toBe(true);
+    expect(o.some((z) => z.tag === "Church")).toBe(false);
+    const rest = o.slice(1 + US_ZONES.length).map((z) => z.label);
+    expect(rest).toEqual([...rest].sort((a, b) => a.localeCompare(b, "en-US")));
   });
+});
 
-  it("keeps every label short enough for a phone-width field", () => {
-    const o = zoneSelectOptions("America/Los_Angeles", "America/Indiana/Knox", null, "en-US");
-    for (const z of o.slice(0, 12)) expect(z.label.length).toBeLessThanOrEqual(33);
-    expect(zoneSelectOptions("America/Boise", "America/Boise", null, "en-US")[0].label.length).toBeLessThanOrEqual(33);
+describe("filterZones", () => {
+  const off = (z: string) => zoneOffset(z, new Date("2026-01-15T12:00:00Z"));
+  const o = zonePickerOptions("America/Boise", "America/Indiana/Knox", null, off, "en-US");
+  const values = (q: string) => filterZones(o, q).map((z) => z.value);
+  it("matches the region name, keeping the list order", () => {
+    expect(values("pac")[0]).toBe("America/Los_Angeles");
+    expect(values("mountain").slice(0, 2)).toEqual(["America/Boise", "America/Denver"]);
+    expect(values("mountain")).toContain("America/Phoenix");
+  });
+  it("matches the city, and the IANA id only when the query has a slash", () => {
+    expect(values("los ang")).toEqual(["America/Los_Angeles"]);
+    expect(values("indiana")).toContain("America/Indiana/Knox");
+    expect(values("pac")).not.toContain("Pacific/Auckland");
+    expect(values("pac")).not.toContain("Pacific/Apia");
+    expect(values("pacific/")).toContain("Pacific/Auckland");
+  });
+  it("ranks Yours and Church, then US zones, then label prefixes, then the rest", () => {
+    // Yours is Knox (Central), Church is Boise (Mountain).
+    expect(values("central")[0]).toBe("America/Indiana/Knox");
+    expect(values("central")[1]).toBe("America/Chicago");
+    expect(values("mountain")[0]).toBe("America/Boise");
+    const b = values("bo");
+    expect(b[0]).toBe("America/Boise");
+    const prefix = b.slice(1).findIndex((z) => !zoneLabel(z, "en-US").toLowerCase().startsWith("bo"));
+    const afterPrefix = b.slice(1 + prefix);
+    expect(prefix).toBeGreaterThan(0);
+    expect(afterPrefix.every((z) => !zoneLabel(z, "en-US").toLowerCase().startsWith("bo"))).toBe(true);
+  });
+  it("matches a UTC offset", () => {
+    expect(values("-7")).toEqual(expect.arrayContaining(["America/Boise", "America/Denver", "America/Phoenix"]));
+    expect(values("utc-7")).not.toContain("America/Los_Angeles");
+    expect(values("+5:30")).toContain("Asia/Colombo");
+    expect(values("UTC+5:30")).toContain("Asia/Colombo");
+  });
+  it("shows everything for an empty query and nothing for nonsense", () => {
+    expect(filterZones(o, "  ")).toHaveLength(o.length);
+    expect(values("zzzz")).toEqual([]);
   });
 });

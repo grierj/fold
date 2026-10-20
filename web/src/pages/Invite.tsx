@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Invitations as InvitationsApi } from "../api";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
+import { Field, FormError, Input } from "../components/ui/Field";
+import { Button, ButtonLink } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Illustration } from "../components/ui/Illustration";
+import { Skeleton } from "../components/ui/Skeleton";
 
 const INVITE_EXPIRED = "This invitation has expired or was already used. Ask the person who invited you for a new one.";
 import type { Invitation } from "../types";
@@ -69,7 +74,7 @@ export function Invite() {
   if (loading) {
     return (
       <div className="max-w-md mx-auto px-4 py-12">
-        <p className="text-sm text-text-muted">Loading invitation…</p>
+        <Skeleton kind="page" label="Loading invitation…" />
       </div>
     );
   }
@@ -78,14 +83,16 @@ export function Invite() {
     return (
       <div className="max-w-md mx-auto px-4 py-12">
         <h1 className="text-3xl font-bold mb-6">You're invited</h1>
-        <div className="bg-surface rounded-lg border border-border p-6">
-          <p className="text-sm">{error ?? "This link is missing its token."}</p>
-          <p className="mt-4">
-            <Link to="/login" className="text-primary font-semibold text-sm">
+        <EmptyState
+          illustration={<Illustration name="link-expired" />}
+          title="This link can't be used"
+          body={error ?? "This link is missing its token."}
+          action={
+            <ButtonLink to="/login" variant="secondary" layout="w-full sm:w-auto">
               Back to log in
-            </Link>
-          </p>
-        </div>
+            </ButtonLink>
+          }
+        />
       </div>
     );
   }
@@ -100,39 +107,30 @@ export function Invite() {
       )}
       {!invitation?.groupName && <div className="mb-6" />}
       <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
-        {error && <div className="text-danger text-sm">{error}</div>}
-        <div>
-          <label className="label" htmlFor="invite-your-name">Your name</label>
-          <input id="invite-your-name"
-            className="input"
+        {error && <FormError>{error}</FormError>}
+        <Field id="invite-your-name" label="Your name">
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             maxLength={100}
             required
           />
-        </div>
-        <div>
-          <label className="label" htmlFor="invite-email">Email (you'll sign in with it)</label>
-          <input id="invite-email" type="email" className="input bg-page" value={invitation?.email ?? ""} readOnly />
-        </div>
-        <div>
-          <label className="label" htmlFor="inv-password">
-            Choose a password
-          </label>
-          <input
-            id="inv-password"
+        </Field>
+        <Field id="invite-email" label="Email (you'll sign in with it)">
+          <Input type="email" value={invitation?.email ?? ""} readOnly />
+        </Field>
+        <Field id="inv-password" label="Choose a password" hint="Must be at least 10 characters.">
+          <Input
             type="password"
-            className="input"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
             required
           />
-          <p className="text-xs text-text-muted mt-1">Must be at least 10 characters.</p>
-        </div>
-        <button type="submit" disabled={busy} className="btn-primary w-full">
+        </Field>
+        <Button variant="primary" layout="w-full" type="submit" disabled={busy}>
           {busy ? "Creating account…" : "Create my account"}
-        </button>
+        </Button>
       </form>
     </div>
   );

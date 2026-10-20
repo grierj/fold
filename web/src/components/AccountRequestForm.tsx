@@ -2,6 +2,10 @@ import { useState } from "react";
 import { type AccountRequestInput } from "../api";
 import type { AgeBand } from "../types";
 import { errorText } from "../lib/errors";
+import { Choices, Field, FormError, Honeypot, Input, Radio, Textarea } from "./ui/Field";
+import { Button } from "./ui/Button";
+import { EmptyState } from "./ui/EmptyState";
+import { Illustration } from "./ui/Illustration";
 
 // The account-request form shared by self-signup (/join) and a member's
 // invite-a-friend (M1.3, 5.10). It carries the age gate (DEC-8): under
@@ -52,59 +56,35 @@ export function AccountRequestForm({
 
   if (done) {
     return (
-      <div className="bg-surface rounded-lg border border-border p-6">
-        <p className="text-sm text-text-muted">{done}</p>
-        <p className="text-sm text-text-muted mt-2">
-          An admin reviews every request. Nothing else to do for now.
-        </p>
-      </div>
+      <EmptyState
+        illustration={<Illustration name="request-sent" />}
+        title="Request sent"
+        body={<>{done} An admin reviews every request. Nothing else to do for now.</>}
+      />
     );
   }
 
   return (
     <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
-      {error && <div className="text-danger text-sm">{error}</div>}
-      <div>
-        <label className="label" htmlFor="arq-name">Full name</label>
-        <input id="arq-name" className="input" value={name} onChange={(e) => setName(e.target.value)} maxLength={100} autoComplete="name" required />
-      </div>
-      <div>
-        <label className="label" htmlFor="arq-email">Email</label>
-        <input id="arq-email" type="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
-        <p className="text-xs text-text-muted mt-1">
-          {friend ? "This is the address they will sign in with." : "This is the address you will sign in with."}
-        </p>
-      </div>
-      <div>
-        <label className="label" htmlFor="arq-phone">Phone (optional)</label>
-        <input id="arq-phone" type="tel" className="input" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={30} autoComplete="tel" />
-      </div>
-      <fieldset>
-        <legend className="label">{friend ? "Their age" : "Your age"}</legend>
-        <div className="space-y-2 text-sm">
-          <label className="flex items-center gap-2">
-            <input type="radio" name="ageBand" checked={ageBand === "adult"} onChange={() => setAgeBand("adult")} />
-            18 or older
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="radio" name="ageBand" checked={ageBand === "teen"} onChange={() => setAgeBand("teen")} />
-            13 to 17
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="radio" name="ageBand" checked={ageBand === "under13"} onChange={() => setAgeBand("under13")} />
-            Under 13
-          </label>
-        </div>
-      </fieldset>
+      {error && <FormError>{error}</FormError>}
+      <Field id="arq-name" label="Full name">
+        <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} autoComplete="name" required />
+      </Field>
+      <Field id="arq-email" label="Email" hint={<>{friend ? "This is the address they will sign in with." : "This is the address you will sign in with."}</>}>
+        <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
+      </Field>
+      <Field id="arq-phone" label="Phone" optional>
+        <Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={30} autoComplete="tel" />
+      </Field>
+      <Choices legend={friend ? "Their age" : "Your age"}>
+        <Radio name="ageBand" label="18 or older" checked={ageBand === "adult"} onChange={() => setAgeBand("adult")} />
+        <Radio name="ageBand" label="13 to 17" checked={ageBand === "teen"} onChange={() => setAgeBand("teen")} />
+        <Radio name="ageBand" label="Under 13" checked={ageBand === "under13"} onChange={() => setAgeBand("under13")} />
+      </Choices>
       {ageBand === "teen" && (
-        <div>
-          <label className="label" htmlFor="arq-birth">Birth date</label>
-          <input id="arq-birth" type="date" className="input" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required />
-          <p className="text-xs text-text-muted mt-1">
-            Needed so Fold knows when you turn 18. A teen account also needs a parent or
-            guardian&rsquo;s consent before it can sign in.
-          </p>
-        </div>
+        <Field id="arq-birth" label="Birth date" hint="Needed so Fold knows when you turn 18. A teen account also needs a parent or guardian’s consent before it can sign in.">
+          <Input type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required />
+        </Field>
       )}
       {ageBand === "under13" && (
         <div className="rounded-md bg-warning-subtle border border-warning-border p-4 text-sm text-text-muted">
@@ -113,20 +93,14 @@ export function AccountRequestForm({
           there. If you are 13 to 17 and have your own email, pick “13 to 17” above.
         </div>
       )}
-      <div>
-        <label className="label" htmlFor="arq-message">Note for the admins (optional)</label>
-        <textarea id="arq-message" className="input" rows={3} value={message} onChange={(e) => setMessage(e.target.value)} maxLength={1000} />
-      </div>
-      <div className="hidden" aria-hidden="true">
-        <label>
-          Website
-          <input name="website" tabIndex={-1} autoComplete="off" value={website} onChange={(e) => setWebsite(e.target.value)} />
-        </label>
-      </div>
+      <Field id="arq-message" label="Note for the admins" optional>
+        <Textarea rows={3} value={message} onChange={(e) => setMessage(e.target.value)} maxLength={1000} />
+      </Field>
+      <Honeypot value={website} onChange={setWebsite} />
       {ageBand !== "under13" && (
-        <button type="submit" disabled={busy} className="btn-primary w-full">
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Sending…" : submitLabel}
-        </button>
+        </Button>
       )}
     </form>
   );

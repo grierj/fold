@@ -74,6 +74,7 @@ export interface Notification {
   resolution?: NotificationResolution;
 }
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface NotificationResolution {
   outcome: "approved" | "rejected" | "deleted" | "kept" | "withdrawn" | string;
   by: string;
@@ -110,6 +111,7 @@ export interface GuestRegistration {
 }
 
 // One attendee entry on an occurrence (M1.5 adds guestCount).
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface Attendee {
   userId: number;
   name: string;
@@ -235,6 +237,7 @@ export interface SoleLedGroup {
 }
 
 // What making a group more private does to its events (DEC-48).
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface VisibilityImpactEvent {
   id: number;
   title: string;
@@ -263,8 +266,10 @@ export interface Invitation {
 }
 
 export type AgeBand = "adult" | "teen" | "under13";
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export type AccountRequestStatus = "pending" | "approved" | "rejected" | "expired" | "withdrawn";
 
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface RequestWarnings {
   duplicate: boolean;
   honeypot: boolean;
@@ -292,4 +297,31 @@ export interface AccountRequest {
   expiresAt: string;
   createdAt: string;
   decidedAt?: string;
+}
+
+// One row of the calendar (GET /calendar, M1.6): no attendee data at all.
+// myStatus is the viewer's own answer for this date.
+export interface CalendarOccurrence {
+  eventId: number;
+  date: string;
+  startsAt: string;
+  endsAt: string;
+  title: string;
+  location: string;
+  groupId?: number;
+  groupName?: string;
+  churchWide: boolean;
+  hostedBy?: string;
+  myStatus: "going" | "maybe" | "waitlisted" | null;
+  // Set only for an admin who turned on "Show deleted events" (DEC-68).
+  groupDeleted?: boolean;
+}
+
+// The profile's calendar feed link (M1.7, 8.2). The server stores only a
+// hash, so url is set only in the response that creates or remakes the
+// link; everywhere else hasToken and scope are all there is.
+export interface CalendarFeed {
+  hasToken: boolean;
+  scope: "mine" | "all";
+  url?: string;
 }

@@ -87,42 +87,14 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	if len(eventIDs) == 0 {
 		return out
 	}
-	var evs []models.Event
-	if err := a.DB.Where("id IN ?", eventIDs).Find(&evs).Error; err != nil || len(evs) == 0 {
-		return out
-	}
-	byID := make(map[uint]*models.Event, len(evs))
-	gset := map[uint]struct{}{}
-	for i := range evs {
-		byID[evs[i].ID] = &evs[i]
-		if evs[i].GroupID != nil {
-			gset[*evs[i].GroupID] = struct{}{}
-		}
-	}
-	groups := a.groupsByID(gset)
-	rels := a.relsFor(me, gset)
-	hosted := a.hostedEventIDs(me, eventIDs)
-
 	// The one place event dates are listed: drop every event this viewer
 	// can't see, so no caller has to remember to (hardening review).
-	visibleIDs := make([]uint, 0, len(evs))
-	for i := range evs {
-		ev := &evs[i]
-		g, rel := groupAndRel(ev, groups, rels)
-		gp := policy.Group{}
-		if g != nil {
-			gp = asGroup(g)
-		}
-		if policy.CanSeeEvent(asPerson(me), viewOf(ev, hosted[ev.ID]), gp, rel) {
-			visibleIDs = append(visibleIDs, ev.ID)
-		} else {
-			delete(byID, ev.ID)
-		}
-	}
-	if len(visibleIDs) == 0 {
+	vs, err := a.visibleEvents(me, a.DB.Where("id IN ?", eventIDs))
+	if err != nil || len(vs.IDs) == 0 {
 		return out
 	}
-	eventIDs = visibleIDs
+	evs, byID, groups, rels, hosted := vs.Events, vs.ByID, vs.Groups, vs.Rels, vs.Hosted
+	eventIDs = vs.IDs
 
 	q := a.DB.Where("event_id IN ? AND status = ? AND original_date >= ? AND original_date <= ?",
 		eventIDs, models.OccurrenceScheduled, from, to)
@@ -794,17 +766,25 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		// semantics), so the time fan-out mails exactly the dates that moved.
 		placeChanged := body.Location != nil && strings.TrimSpace(*body.Location) != oldPlace
 		movedSet := map[uint]bool{}
+		movedByID := map[uint]*models.EventOccurrence{}
+		if len(moved) > 0 {
+			var movedRows []models.EventOccurrence
+			tx.Where("id IN ?", moved).Find(&movedRows)
+			for i := range movedRows {
+				movedByID[movedRows[i].ID] = &movedRows[i]
+			}
+		}
 		for _, occID := range moved {
 			movedSet[occID] = true
-			var o models.EventOccurrence
-			if err := tx.First(&o, occID).Error; err != nil {
+			o := movedByID[occID]
+			if o == nil {
 				continue
 			}
 			variant := "time"
 			if placeChanged && o.LocationOverride == nil {
 				variant = "time and place"
 			}
-			ids, err := notifyEventChanged(tx, &locked, &o, variant, me.ID)
+			ids, err := notifyEventChanged(tx, &locked, o, variant, me.ID)
 			emailed = append(emailed, ids...)
 			if err != nil {
 				return err

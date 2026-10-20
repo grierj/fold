@@ -10,6 +10,9 @@ test("phones get a tab bar that reaches every main page, and it never covers a f
   await expect(tabs).toBeVisible();
   await expect(page.getByRole("link", { name: "powered by Fold" }).or(page.getByText("powered by Fold")).first()).toBeVisible();
 
+  await expect(tabs.getByRole("link")).toHaveCount(5);
+  await tabs.getByRole("link", { name: "Calendar" }).click();
+  await expect(page).toHaveURL(/\/calendar$/);
   await tabs.getByRole("link", { name: "My groups" }).click();
   await expect(page).toHaveURL(/\/my-groups$/);
   await tabs.getByRole("link", { name: /notification/i }).click();
@@ -45,6 +48,7 @@ test("desktop keeps a top bar and no tab bar", async ({ page }) => {
   const main = page.getByRole("navigation", { name: "Main" });
   await expect(main.getByRole("link", { name: "My groups" })).toBeVisible();
   await expect(main.getByRole("link", { name: "Start a group" })).toBeVisible();
+  await expect(main.getByRole("link", { name: "Calendar" })).toBeVisible();
   await signOut(page);
 });
 
@@ -71,4 +75,20 @@ test("an admin on a phone reaches Admin from Me and can't disable or delete them
   await other.getByRole("button", { name: /^More for/ }).click();
   for (const name of ["Reset password", "Disable", "Delete"]) await expect(other.getByRole("menuitem", { name })).toBeInViewport({ ratio: 1 });
 
+});
+
+test("five tab labels stay on one line at 390, even with a 9+ badge", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 700 });
+  await signIn(page, "sam");
+  await page.route("**/api/v1/notifications/badge", (r) => r.fulfill({ json: { unread: 12, waiting: 0 } }));
+  await page.goto("/calendar");
+  const tabs = page.getByRole("navigation", { name: "Tabs" });
+  await expect(tabs.getByText("9+")).toBeVisible();
+  await expect(tabs.getByRole("link", { name: "Calendar" })).toHaveAttribute("aria-current", "page");
+  // A wrapped label would make its tab taller than the 56px bar.
+  const links = await tabs.getByRole("link").all();
+  expect(links).toHaveLength(5);
+  for (const link of links) {
+    expect((await link.boundingBox())!.height, `${await link.textContent()} wraps`).toBeLessThanOrEqual(56);
+  }
 });

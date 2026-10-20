@@ -92,3 +92,7 @@ func TestCSRFExemptRoutesAreExact(t *testing.T) {
 		t.Fatalf("POST /api/v1/auth/logout without a token = %d, want 403", w.Code)
 	}
 }
+
+// csrfExemptRoutes are the only state-changing routes registered outside
+// csrfMiddleware (setupRouter, main.go). TestCSRFExemptRoutesAreExact keeps it honest.
+var csrfExemptRoutes = []string{"/hooks/*path", "POST /u/unsubscribe/:token"}

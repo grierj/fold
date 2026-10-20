@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"fold/internal/notify"
 )
 
 // Repo guards from the /correct pass (Oct 2026). Each one fails on a real
@@ -22,7 +27,7 @@ var groupDetailRe = regexp.MustCompile(`\b(g|f\.group|group)\.(Location|Name)\b|
 
 // eventOutputFiles build event and notice output for viewers who may not
 // see the event's group.
-var eventOutputFiles = []string{"api_events.go", "api_event_access.go", "api_notifications.go", "api_group_visibility.go", "api_guest.go", "api_registrations.go"}
+var eventOutputFiles = []string{"api_events.go", "api_event_access.go", "api_notifications.go", "api_group_visibility.go", "api_guest.go", "api_registrations.go", "api_calendar.go", "api_feeds.go"}
 
 func groupDetailViolations(src string) []string {
 	var bad []string
@@ -68,6 +73,7 @@ var tsContracts = []struct {
 	{notificationJSON{}, "Notification"},
 	{resolutionJSON{}, "NotificationResolution"},
 	{occurrenceJSON{}, "EventOccurrence"},
+	{calendarOccurrenceJSON{}, "CalendarOccurrence"},
 	{eventJSON{}, "EventSeries"},
 	{hostJSON{}, "EventHostRow"},
 	{impactEventJSON{}, "VisibilityImpactEvent"},
@@ -77,6 +83,7 @@ var tsContracts = []struct {
 	{guestRegistrationJSON{}, "GuestRegistration"},
 	{attendeeJSON{}, "Attendee"},
 	{registrationJSON{}, "RegistrationResponse"},
+	{calendarFeedJSON{}, "CalendarFeed"},
 }
 
 var tsFieldRe = regexp.MustCompile(`^\s+(\w+)\??:`)
@@ -668,7 +675,7 @@ var uiRules = []uiRule{
 		fix:  "format dates and times with lib/when.ts so they show in the viewer's zone",
 		re:   regexp.MustCompile(`\.toLocale(Date|Time)?String\(|Intl\.DateTimeFormat`),
 		skip: func(path, _ string) bool {
-			return strings.HasSuffix(path, "lib/when.ts") || strings.HasSuffix(path, "lib/wall.ts") || strings.HasSuffix(path, "ZoneSelect.tsx")
+			return strings.HasSuffix(path, "lib/when.ts") || strings.HasSuffix(path, "lib/wall.ts")
 		},
 	},
 }
@@ -786,5 +793,127 @@ func TestUIRatchetsCatchPastMistakes(t *testing.T) {
 	ok := `<Chip selected={on}>tag</Chip> <img style={{ objectPosition: pos }} /> <p className="text-danger">{error} {/* danger-ok: form error */}</p>`
 	if got := uiRatchetViolations(map[string]map[string]int{}, map[string]string{"web/src/pages/X.tsx": ok}); len(got) != 0 {
 		t.Errorf("false positives: %v", got)
+	}
+}
+
+// --- Form controls (DEC-65) ---
+//
+// Every <input>, <select> and <textarea> lives in web/src/components/ui
+// (Field, Input, Select, Textarea, ZonePicker, Radio, Checkbox), so every
+// control gets a programmatic label, the hint above it and the error under
+// it. Pages and other components use those instead of raw controls.
+
+var rawFormControl = regexp.MustCompile(`<(input|select|textarea)\b`)
+
+func rawFormControlViolations(files map[string]string) []string {
+	var out []string
+	for p, src := range files {
+		for i, line := range strings.Split(src, "\n") {
+			if rawFormControl.MatchString(line) {
+				out = append(out, fmt.Sprintf("%s:%d: raw form control; use <Field label=…> with <Input>, <Select>, <Textarea>, <ZonePicker>, or <Choices> with <Radio>/<Checkbox> from components/ui (DEC-65)", p, i+1))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestFormControlsComeFromComponentsUI(t *testing.T) {
+	for _, v := range rawFormControlViolations(uiSourceFiles(t)) {
+		t.Error(v)
+	}
+}
+
+func TestFormControlGuardCatchesPlaceholderLabel(t *testing.T) {
+	// Home.tsx before PR 7: a search box labeled only by its placeholder.
+	bad := map[string]string{"web/src/pages/Home.tsx": `            <input value={search} placeholder="Search groups…" className="input" />`}
+	if got := rawFormControlViolations(bad); len(got) != 1 {
+		t.Errorf("raw <input> not caught: %v", got)
+	}
+	ok := map[string]string{"web/src/pages/Home.tsx": `<Field label="Search groups"><Input type="search" /></Field>`}
+	if got := rawFormControlViolations(ok); len(got) != 0 {
+		t.Errorf("false positive: %v", got)
+	}
+}
+
+// --- Notification categories are one list ---
+//
+// notify.Categories, the notifications.category CHECK (migration 00010)
+// and the TS Notification["category"] union must name the same set (#79).
+
+func TestNotificationCategoriesMatch(t *testing.T) {
+	want := append([]string(nil), notify.Categories...)
+	sort.Strings(want)
+	quoted := regexp.MustCompile(`["']([a-z_]+)["']`)
+	pick := func(file string, re *regexp.Regexp) []string {
+		t.Helper()
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := re.FindStringSubmatch(string(src))
+		if m == nil {
+			t.Fatalf("%s: category list not found", file)
+		}
+		var out []string
+		for _, q := range quoted.FindAllStringSubmatch(m[1], -1) {
+			out = append(out, q[1])
+		}
+		sort.Strings(out)
+		return out
+	}
+	sqlCats := pick("migrations/00010_notifications.sql", regexp.MustCompile(`CHECK \(category IN \(([^)]*)\)\)`))
+	tsCats := pick("web/src/types.ts", regexp.MustCompile(`(?s)interface Notification \{.*?category: ([^;]*);`))
+	if !reflect.DeepEqual(sqlCats, want) {
+		t.Errorf("SQL CHECK categories %v, notify.Categories %v", sqlCats, want)
+	}
+	if !reflect.DeepEqual(tsCats, want) {
+		t.Errorf("TS Notification category %v, notify.Categories %v", tsCats, want)
+	}
+}
+
+// --- One list filter for event visibility ---
+//
+// Lists of events go through visibleEvents (api_event_access.go), which
+// skips events whose group row is gone. A policy.CanSeeEvent call inside
+// a loop anywhere else is a fifth copy of that filter (#75).
+
+func TestOneEventVisibilityFilter(t *testing.T) {
+	files, _ := filepath.Glob("*.go")
+	fset := token.NewFileSet()
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, d := range f.Decls {
+			fn, ok := d.(*ast.FuncDecl)
+			if !ok || fn.Body == nil || fn.Name.Name == "visibleEventsWith" {
+				continue
+			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				var body *ast.BlockStmt
+				switch l := n.(type) {
+				case *ast.RangeStmt:
+					body = l.Body
+				case *ast.ForStmt:
+					body = l.Body
+				default:
+					return true
+				}
+				ast.Inspect(body, func(m ast.Node) bool {
+					if call, ok := m.(*ast.CallExpr); ok {
+						if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CanSeeEvent" {
+							t.Errorf("%s: %s filters a list with policy.CanSeeEvent; use visibleEvents", fset.Position(call.Pos()), fn.Name.Name)
+						}
+					}
+					return true
+				})
+				return false
+			})
+		}
 	}
 }

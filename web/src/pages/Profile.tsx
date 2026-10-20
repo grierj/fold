@@ -1,13 +1,17 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { AccountRequests, Profile as ProfileApi } from "../api";
+import { AccountRequests, CalendarFeeds, Profile as ProfileApi } from "../api";
+import type { CalendarFeed } from "../types";
 import { useAuth } from "../auth";
 import { Button } from "../components/ui/Button";
 import { AdminIcon } from "../components/icons";
 import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
-import { ZoneSelect } from "../components/ZoneSelect";
+import { ZonePicker } from "../components/ui/ZonePicker";
 import { errorText } from "../lib/errors";
+import { Choices, Field, FormError, Input, Radio, showFieldErrors } from "../components/ui/Field";
+import { Skeleton } from "../components/ui/Skeleton";
+import { ErrorNotice } from "../components/ErrorNotice";
 
 export function ProfilePage() {
   const { user, loading, refresh, logout, isAdmin } = useAuth();
@@ -27,13 +31,18 @@ export function ProfilePage() {
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordSaved, setPasswordSaved] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
+  const [passwordFieldError, setPasswordFieldError] = useState<{ field: "new" | "confirm"; message: string } | null>(null);
   const [newEmail, setNewEmail] = useState("");
   const [emailSaving, setEmailSaving] = useState(false);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
 
   if (loading) {
-    return <div className="max-w-2xl mx-auto px-4 py-12 text-text-muted">Loading…</div>;
+    return (
+      <div className="max-w-2xl mx-auto px-4 py-12">
+        <Skeleton kind="page" />
+      </div>
+    );
   }
   if (!user) {
     return (
@@ -128,14 +137,16 @@ export function ProfilePage() {
     e.preventDefault();
     setPasswordError(null);
     setPasswordSaved(false);
+    const form = e.currentTarget as HTMLFormElement;
     if (newPassword.length < 10) {
-      setPasswordError("Password must be at least 10 characters.");
+      showFieldErrors(form, () => setPasswordFieldError({ field: "new", message: "Password must be at least 10 characters." }));
       return;
     }
     if (newPassword !== confirmPassword) {
-      setPasswordError("Passwords do not match.");
+      showFieldErrors(form, () => setPasswordFieldError({ field: "confirm", message: "Passwords do not match." }));
       return;
     }
+    setPasswordFieldError(null);
     setPasswordSaving(true);
     try {
       await ProfileApi.changePassword(currentPassword, newPassword);
@@ -167,7 +178,7 @@ export function ProfilePage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-8">
+    <div className="max-w-xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">Your profile</h1>
       {isAdmin && (
         // Phones have no Admin link in the header; it's a row here (PR #65 review F2).
@@ -195,147 +206,117 @@ export function ProfilePage() {
           A new picture is saved as soon as you choose it.
         </p>
         {pictureStatus && <div className="text-success text-sm mt-3">{pictureStatus}</div>}
-        {pictureError && <div className="text-danger text-sm mt-3">{pictureError}</div>}
+        {pictureError && <FormError layout="mt-3">{pictureError}</FormError>}
         {user.avatarUrl && (
-          <button
-            type="button"
-            onClick={removeAvatar}
-            disabled={pictureBusy}
-            className="btn-secondary py-1.5! px-3! text-sm text-danger! mt-3"
-          >
+          <Button variant="danger-outline" layout="mt-3" onClick={removeAvatar} disabled={pictureBusy}>
             Remove picture
-          </button>
+          </Button>
         )}
       </div>
 
       <form onSubmit={save} className="space-y-6">
-        {error && <div className="text-danger text-sm">{error}</div>}
+        {error && <FormError>{error}</FormError>}
         {saved && <div className="text-success text-sm">Profile saved.</div>}
 
         <div className="bg-surface rounded-lg border border-border p-6 space-y-4">
-          <div>
-            <label className="label" htmlFor="profile-display-name">Display name</label>
-            <input id="profile-display-name"
-              className="input"
+          <Field id="profile-display-name" label="Display name" optional hint="How your name appears to others.">
+            <Input
               value={dn}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="How your name appears to others"
               maxLength={100}
             />
-          </div>
-          <div>
-            <label className="label" htmlFor="profile-full-name">Full name</label>
-            <input id="profile-full-name"
-              className="input"
+          </Field>
+          <Field id="profile-full-name" label="Full name">
+            <Input
               value={fullName}
               onChange={(e) => setName(e.target.value)}
               maxLength={100}
             />
-          </div>
-          <div>
-            <label className="label" htmlFor="profile-email">Email (you sign in with it)</label>
-            <input id="profile-email" type="email" className="input bg-page" value={user.email} readOnly />
-            <p className="text-xs text-text-muted mt-1">
-              Change it below; the new address gets a verification link first.
-            </p>
-          </div>
-          <div>
-            <label className="label" htmlFor="profile-phone">Phone</label>
-            <input id="profile-phone"
+          </Field>
+          <Field id="profile-email" label="Email (you sign in with it)" hint="Change it below; the new address gets a verification link first.">
+            <Input type="email" value={user.email} readOnly />
+          </Field>
+          <Field id="profile-phone" label="Phone" optional>
+            <Input
               type="tel"
-              className="input"
               value={ph}
               onChange={(e) => setPhone(e.target.value)}
               maxLength={30}
             />
-          </div>
-          <div>
-            <label className="label" htmlFor="profile-tz">
-              Time zone for emails
-            </label>
-            <ZoneSelect id="profile-tz" value={tz} onChange={setZone} describedBy="profile-tz-hint" />
-            <p id="profile-tz-hint" className="text-xs text-text-muted mt-1">
-              Emails show event times in this zone. On screen, times always follow this device's clock.
-            </p>
-          </div>
-          <button type="submit" disabled={saving} className="btn-primary">
+          </Field>
+          <Field
+            id="profile-tz"
+            label="Time zone for emails"
+            hint="Emails show event times in this zone. On screen, times always follow this device's clock."
+          >
+            <ZonePicker value={tz} onChange={setZone} />
+          </Field>
+          <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={saving}>
             {saving ? "Saving…" : "Save profile"}
-          </button>
+          </Button>
         </div>
       </form>
 
       <form onSubmit={changeEmail} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
         <h2 className="text-xl font-bold">Change sign-in email</h2>
-        {emailError && <div className="text-danger text-sm">{emailError}</div>}
+        {emailError && <FormError>{emailError}</FormError>}
         {emailStatus && <div className="text-success text-sm">{emailStatus}</div>}
-        <div>
-          <label className="label" htmlFor="new-email">
-            New email
-          </label>
-          <input
-            id="new-email"
+        <Field id="new-email" label="New email" hint={<>A verification link goes to the new address, and a notice to {user.email}. The change applies after you verify, and your other sessions are signed out.</>}>
+          <Input
             type="email"
-            className="input"
             value={newEmail}
             onChange={(e) => setNewEmail(e.target.value)}
             autoComplete="email"
             required
           />
-          <p className="text-xs text-text-muted mt-1">
-            A verification link goes to the new address, and a notice to {user.email}. The
-            change applies after you verify, and your other sessions are signed out.
-          </p>
-        </div>
-        <button type="submit" disabled={emailSaving} className="btn-primary">
+        </Field>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={emailSaving}>
           {emailSaving ? "Sending…" : "Send verification link"}
-        </button>
+        </Button>
       </form>
 
       <form onSubmit={changePassword} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
         <h2 className="text-xl font-bold">Change password</h2>
-        {passwordError && <div className="text-danger text-sm">{passwordError}</div>}
+        {passwordError && <FormError>{passwordError}</FormError>}
         {passwordSaved && <div className="text-success text-sm">Password changed.</div>}
-        <div>
-          <label className="label" htmlFor="current-password">Current password</label>
-          <input
-            id="current-password"
+        <Field id="current-password" label="Current password">
+          <Input
             type="password"
-            className="input"
             value={currentPassword}
             onChange={(e) => setCurrentPassword(e.target.value)}
             autoComplete="current-password"
             required
           />
-        </div>
-        <div>
-          <label className="label" htmlFor="new-password">New password</label>
-          <input
-            id="new-password"
+        </Field>
+        <Field
+          id="new-password"
+          label="New password"
+          hint="Must be at least 10 characters."
+          error={passwordFieldError?.field === "new" && passwordFieldError.message}
+        >
+          <Input
             type="password"
-            className="input"
             value={newPassword}
             onChange={(e) => setNewPassword(e.target.value)}
             autoComplete="new-password"
             required
           />
-          <p className="text-xs text-text-muted mt-1">Must be at least 10 characters.</p>
-        </div>
-        <div>
-          <label className="label" htmlFor="confirm-password">Confirm new password</label>
-          <input
-            id="confirm-password"
+        </Field>
+        <Field id="confirm-password" label="Confirm new password" error={passwordFieldError?.field === "confirm" && passwordFieldError.message}>
+          <Input
             type="password"
-            className="input"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             autoComplete="new-password"
             required
           />
-        </div>
-        <button type="submit" disabled={passwordSaving} className="btn-primary">
+        </Field>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={passwordSaving}>
           {passwordSaving ? "Saving…" : "Change password"}
-        </button>
+        </Button>
       </form>
+
+      <CalendarFeedCard />
 
       {user.accountType !== "teen" && (
         <div className="mt-6">
@@ -358,6 +339,190 @@ export function ProfilePage() {
       <Button variant="secondary" layout="sm:hidden mt-8 w-full" onClick={logout}>
         Log out
       </Button>
+    </div>
+  );
+}
+
+export function CalendarFeedCard() {
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [hasToken, setHasToken] = useState(false);
+  const [scope, setScope] = useState<CalendarFeed["scope"]>("mine");
+  const [link, setLink] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState("");
+  const linkRef = useRef<HTMLInputElement>(null);
+  const alive = useRef(true);
+
+  const load = useCallback(() => {
+    setLoaded(false);
+    setLoadError(null);
+    CalendarFeeds.get()
+      .then((r) => {
+        if (!alive.current) return;
+        setHasToken(r.calendarFeed.hasToken);
+        setScope(r.calendarFeed.scope);
+        setLoaded(true);
+      })
+      .catch((err) => {
+        // A failed load must never look like "no link yet": Create would
+        // then quietly replace a link that works (M17-REVIEW M1).
+        if (alive.current) setLoadError(errorText(err, "We couldn't load your calendar link."));
+      });
+  }, []);
+
+  useEffect(() => {
+    alive.current = true;
+    load();
+    return () => {
+      alive.current = false;
+    };
+  }, [load]);
+
+  async function create() {
+    setBusy(true);
+    setError(null);
+    setStatus("");
+    try {
+      const r = await CalendarFeeds.create(scope);
+      setHasToken(true);
+      setScope(r.calendarFeed.scope);
+      setLink(r.calendarFeed.url ?? null);
+    } catch (err) {
+      setError(errorText(err, "We couldn't make your calendar link."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remake() {
+    if (!confirm("Make a new calendar link? Your old link will stop working.")) return;
+    await create();
+  }
+
+  async function turnOff() {
+    if (!confirm("Turn off your calendar link? Calendar apps using it will stop updating.")) return;
+    setBusy(true);
+    setError(null);
+    setStatus("");
+    try {
+      await CalendarFeeds.revoke();
+      setHasToken(false);
+      setLink(null);
+      setStatus("Calendar link turned off.");
+    } catch (err) {
+      setError(errorText(err, "We couldn't turn off your calendar link."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function chooseScope(next: CalendarFeed["scope"]) {
+    const prev = scope;
+    setScope(next);
+    if (!hasToken) return;
+    setBusy(true);
+    setError(null);
+    setStatus("");
+    try {
+      await CalendarFeeds.setScope(next);
+      setStatus("Feed choice saved.");
+    } catch (err) {
+      setScope(prev);
+      setError(errorText(err, "We couldn't save that choice."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyLink() {
+    if (!link) return;
+    setError(null);
+    if (navigator.clipboard) {
+      try {
+        await navigator.clipboard.writeText(link);
+        setStatus("Link copied.");
+        return;
+      } catch {
+        // Fall through to selecting the text by hand.
+      }
+    }
+    linkRef.current?.select();
+    setStatus("The link is selected. Copy it from the box above.");
+  }
+
+  return (
+    <div className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
+      <h2 className="text-xl font-bold">Calendar feed</h2>
+      <p className="text-sm text-text-muted">
+        Put your Fold events in the calendar app you already use. In your calendar
+        app, choose Add calendar &rarr; From URL (or Subscribe) and paste this link.
+        It keeps itself up to date.
+      </p>
+      {loadError ? (
+        <ErrorNotice message={loadError} onRetry={load} />
+      ) : !loaded ? (
+        <Skeleton kind="lines" count={2} label="Loading your calendar link…" />
+      ) : (
+        <>
+          {error && <FormError>{error}</FormError>}
+          <Choices legend="Events in the feed">
+            <Radio
+              name="feed-scope"
+              label="My events"
+              description="Your groups' events, events you host, and the dates you're going or waitlisted for."
+              checked={scope === "mine"}
+              disabled={busy}
+              onChange={() => void chooseScope("mine")}
+            />
+            <Radio
+              name="feed-scope"
+              label="Everything I can see"
+              description="Every event you could find here in Fold."
+              checked={scope === "all"}
+              disabled={busy}
+              onChange={() => void chooseScope("all")}
+            />
+          </Choices>
+          {link ? (
+            <Field
+              id="calendar-feed-link"
+              label="Your calendar link"
+              hint="This link is shown once. Anyone with it can see these events, so keep it to yourself. Making a new link stops the old one."
+            >
+              <Input ref={linkRef} value={link} readOnly layout="font-mono text-sm" onFocus={(e) => e.currentTarget.select()} />
+            </Field>
+          ) : hasToken ? (
+            <p className="text-sm text-text-muted">
+              Your calendar link is on. We can&rsquo;t show it again, so make a new
+              one if you need to set up another device.
+            </p>
+          ) : (
+            <p className="text-sm text-text-muted">You don&rsquo;t have a calendar link yet.</p>
+          )}
+          {hasToken ? (
+            <div className="flex flex-wrap gap-2">
+              {link && (
+                <Button variant="primary" layout="w-full sm:w-auto" onClick={() => void copyLink()}>
+                  Copy link
+                </Button>
+              )}
+              <Button variant="secondary" layout="w-full sm:w-auto" onClick={() => void remake()} disabled={busy}>
+                {busy ? "Saving…" : "Make a new link"}
+              </Button>
+              <Button variant="danger-outline" layout="w-full sm:w-auto" onClick={() => void turnOff()} disabled={busy}>
+                Turn off calendar link
+              </Button>
+            </div>
+          ) : (
+            <Button variant="primary" layout="w-full sm:w-auto" onClick={() => void create()} disabled={busy}>
+              {busy ? "Saving…" : "Create calendar link"}
+            </Button>
+          )}
+        </>
+      )}
+      <p role="status" className="text-success text-sm empty:hidden">{status}</p>
     </div>
   );
 }

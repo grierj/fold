@@ -1,6 +1,6 @@
 # Fold plan: engineering review
 
-Reviewer: Codex (engineer). Date: 2026-10-09. Reviewed `PLAN.md` (1,667 lines) and `SUMMARY.md` against the repo at `e7c0e8f` (pulled fresh; PR #7 is in HEAD). Read-only: nothing in the plan or repo was changed.
+Reviewer: Wright (engineer). Date: 2026-10-09. Reviewed `PLAN.md` (1,667 lines) and `SUMMARY.md` against the repo at `e7c0e8f` (pulled fresh; PR #7 is in HEAD). Read-only: nothing in the plan or repo was changed.
 
 **Verdict: ready after must-fixes.** The architecture and the Oct 9 decisions are sound. The direction (Postgres everywhere, policy package, stored occurrences, adapters) fits the Go/Gin/GORM/React skeleton. But a few plan items contradict the actual code or won't work as written, and the first milestones carry work nothing needs yet. All of the must-fixes are plan edits. None needs a new decision from Grier except where noted.
 

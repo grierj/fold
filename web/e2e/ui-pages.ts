@@ -36,6 +36,11 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
     { id: "admin-users", who: "grier", path: "/admin?tab=users", ready: (p) => p.getByRole("button", { name: "New user" }) },
     { id: "new-group", who: "grier", path: "/groups/new", ready: (p) => p.getByLabel("Group name") },
     { id: "church-event", who: "grier", path: "/events/new", ready: (p) => p.getByLabel("Time zone").first() },
+    { id: "calendar-agenda", who: "sam", path: "/calendar", ready: heading("Calendar") },
+    { id: "calendar-week", who: "sam", path: "/calendar?view=week", ready: (p) => p.getByRole("button", { name: "Next week" }) },
+    { id: "calendar-month", who: "sam", path: "/calendar?view=month", ready: (p) => p.getByRole("table") },
+    { id: "calendar-signed-out", who: null, path: "/calendar", ready: (p) => p.getByText("Showing public events.") },
+    { id: "not-found", who: "sam", path: "/no-such-page", ready: heading("Page not found") },
   ];
 }
 

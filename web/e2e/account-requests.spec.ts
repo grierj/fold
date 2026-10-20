@@ -66,12 +66,10 @@ test("invite a friend speaks about them, then the admin queue decides", async ({
 
   await signIn(page, "grier");
   await page.goto("/admin");
-  // The self-signup select shows its whole On option (not clipped).
-  const mode = page.getByLabel("Self-signup");
+  // Self-signup is two radio rows (DEC-65), On chosen.
+  const mode = page.getByRole("group", { name: "Self-signup" });
   await expect(mode).toBeVisible();
-  await expect(mode.locator("option[value=request]")).toHaveText("On — requests wait for approval");
-  const box = await mode.boundingBox();
-  expect(box && box.width).toBeGreaterThan(380);
+  await expect(mode.getByRole("radio", { name: /^On/ })).toBeChecked();
   await expect(page.getByText("Account requests")).toBeVisible();
   await expect(page.getByText("Friend Fran")).toBeVisible();
   await expect(page.getByText(/Invited by Sam/)).toBeVisible();

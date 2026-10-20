@@ -30,7 +30,7 @@ jobs:
           go-version-file: go.mod
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: make lint
+      - run: make lint-sh lint-go
       # Known vulnerabilities in reachable Go code (DEC-37). Pinned version.
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       # Includes the schema drift check (migrations/migrations_test.go).
@@ -41,7 +41,7 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - working-directory: web
-        run: npm ci && npm run build
+        run: npm ci && npm run build && npm run bundle-size
       # Runtime dependencies only; dev-only findings come through Dependabot.
       - working-directory: web
         run: npm audit --omit=dev --audit-level=high
@@ -78,6 +78,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - working-directory: web
         run: npm ci && npm test
+      # Unused files, exports and dependencies (knip, #79).
+      - run: make lint-web
       # Token contrast (ENFORCEMENT.md B7): text 4.5:1, control edges 3:1.
       - working-directory: web
         run: npm run contrast

@@ -1,7 +1,8 @@
 // In-page UI measurement shared by web/e2e/layout.spec.ts and
 // .cursor/skills/verify-ui/drive-ui.mjs (ENFORCEMENT.md C2, C3). Pass it to
 // page.evaluate. Returns horizontal overflow, selects whose chosen label is
-// wider than the room inside them (the PR #51 clipped time zone), targets
+// (and time zone comboboxes) wider than the room inside them (the PR #51
+// clipped time zone), targets
 // under 24x24 (WCAG 2.5.8; a <label for> or a wrapping <label> counts, inline links in running
 // text are exempt) and targets under 44px tall (the design goal).
 export const measure = () => {
@@ -14,10 +15,12 @@ export const measure = () => {
       .trim().replace(/\s+/g, " ").slice(0, 40);
   const overflow = document.documentElement.scrollWidth - window.innerWidth;
   const ctx = document.createElement("canvas").getContext("2d");
-  const clipped = [...document.querySelectorAll("select")].filter(vis).map((s) => {
+  // The time zone combobox (DEC-65) counts too: at rest it shows the
+  // current choice, which must never be cut off.
+  const clipped = [...document.querySelectorAll("select, input[role=combobox]")].filter(vis).map((s) => {
     const cs = getComputedStyle(s);
     ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-    const label = s.options[s.selectedIndex]?.text ?? "";
+    const label = s.tagName === "SELECT" ? s.options[s.selectedIndex]?.text ?? "" : s.value;
     const room = s.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
     return { id: s.id, label, text: Math.round(ctx.measureText(label).width), room: Math.round(room) };
   }).filter((x) => x.text > x.room);

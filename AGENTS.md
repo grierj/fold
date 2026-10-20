@@ -199,6 +199,19 @@ CLI (C11): `fold` (same as `fold serve`), `fold healthcheck`,
 `fold migrate [up|status|down-one]` (needs only `DATABASE_URL`), and
 `fold version` (needs nothing). `--json` gives machine-readable output.
 
+### Merging pull requests
+
+Grier's rule (Oct 20, 2026). Wright may merge a fold PR, as a normal merge commit, when all of these hold:
+
+1. Every CI check is green (`test`, `web`, `provision`; branch protection requires them).
+2. A second reviewer bot approved it. Every fold PR needs one (Grier, Oct 20, 2026):
+   - UI, UX or design work: Illuminator.
+   - Database or performance work: Whittler, to keep out complexity that would only get cut later.
+   - Security, and backend or API work: Warden.
+3. No Grier decision on it is still open.
+
+PRs that change security or visibility policy, repo settings, or production and deploy wait for Grier, unless he already decided that change. After a merge, merge master into the other open branches (never rebase) and report the merge SHA.
+
 ## Deployment
 
 - `docker compose up --build -d` → app + Postgres 16 + Caddy (auto HTTPS).
@@ -241,7 +254,8 @@ rule (a preview, a confirmation, an audit row, a notice), give its siblings
 the same rule with the same API shape and UI component, or write down why
 not. Example: group and single-event tightening share `visibility-impact`,
 `cancelLosers`, and `GroupVisibilityReview`. In the UI, one shared component
-per kind of control: `ZoneSelect` (every time zone field), `VisibilityField`
+per kind of control: `components/ui/Field` and its rows (every form field,
+DEC-65), `ZonePicker` (every time zone field but setup), `VisibilityField`
 / `EventVisibilityControl` (every event visibility choice), and
 `SeriesEditor` (Edit series / Edit event on the group and event pages).
 
@@ -289,3 +303,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | No sideways scroll, no clipped select, no target under 24px (hard gates since PR 5); kinds of control under 44px at 390 only go down | `web/e2e/layout.spec.ts` with `web/e2e/ui-baseline.json` |
 | No new raw controls, `!` overrides, misused danger color, literal `style=` or date formatting outside `lib/when.ts` | `TestUIRatchets` (`guards_test.go`, counts in `ui-ratchet.json`; lower them when a page gets better), self-tested by `TestUIRatchetsCatchPastMistakes` |
 | Selected chips are stronger than unselected; fields are labelled and their errors are announced | `Chip` and `Field` in `web/src/components/ui`, `Chip.test.tsx`, `Field.test.tsx` |
+| A photo-less group's cover comes from `coverSrc` (its own image, else one of six patterns by id, DEC-66); empty states are the neutral `EmptyState`, never red | `web/src/lib/covers.test.ts`, `web/src/components/ui/EmptyState.test.tsx`; the danger ratchet in `TestUIRatchets` |
+| Work reaches master only through a pull request with the `test`, `web` and `provision` checks green; branch pushes use an exact refspec (`HEAD:refs/heads/<branch>`) | GitHub branch protection on `master` (Oct 20, 2026): PR required, those three status checks required, admins included, no force-push or deletion. It replaced the opt-in pre-push hook from #74 |
+| The entry JS chunk stays under its gzip budget; libraries few pages need are loaded with `import()` | `web/scripts/bundle-size.mjs` (`npm run bundle-size`, run in CI after the build) |
+| Secrets in URLs (calendar feed tokens, guest manage links, `?token=` email links) never reach the access log | `accessLog` and `redactLogPath` (`access_log.go`) drop query strings and redact token segments; `TestAccessLogKeepsSecretsOut` (`access_log_test.go`) |

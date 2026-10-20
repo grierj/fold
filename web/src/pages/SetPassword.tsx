@@ -3,6 +3,8 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AccountRequests } from "../api";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
+import { Field, FormError, Input, showFieldErrors } from "../components/ui/Field";
+import { Button } from "../components/ui/Button";
 
 // Set a first password from an approved account request (M1.3). Adults
 // sign in at once; teens stay waiting for consent (M1.10) and see that
@@ -15,15 +17,17 @@ export function SetPassword() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [mismatch, setMismatch] = useState(false);
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (password !== confirm) {
-      setError("The passwords don't match.");
+      showFieldErrors(e.currentTarget as HTMLFormElement, () => setMismatch(true));
       return;
     }
+    setMismatch(false);
     setBusy(true);
     setError(null);
     try {
@@ -76,19 +80,16 @@ export function SetPassword() {
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-6">Set your password</h1>
       <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
-        {error && <div className="text-danger text-sm">{error}</div>}
-        <div>
-          <label className="label" htmlFor="sp-password">Password</label>
-          <input id="sp-password" type="password" className="input" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
-          <p className="text-xs text-text-muted mt-1">Must be at least 10 characters.</p>
-        </div>
-        <div>
-          <label className="label" htmlFor="sp-confirm">Confirm password</label>
-          <input id="sp-confirm" type="password" className="input" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" required />
-        </div>
-        <button type="submit" disabled={busy} className="btn-primary w-full">
+        {error && <FormError>{error}</FormError>}
+        <Field id="sp-password" label="Password" hint="Must be at least 10 characters.">
+          <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
+        </Field>
+        <Field id="sp-confirm" label="Confirm password" error={mismatch && "The passwords don't match."}>
+          <Input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" required />
+        </Field>
+        <Button variant="primary" layout="w-full" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Set password"}
-        </button>
+        </Button>
       </form>
     </div>
   );

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { BellIcon } from "./icons";
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { Button } from "./ui/Button";
+import { EmptyState } from "./ui/EmptyState";
+import { Illustration } from "./ui/Illustration";
 import {
   badgeLabel, badgeText, relativeTime, resolutionText, useBadge, useFeed, type Feed,
 } from "../lib/notifications";
@@ -34,7 +37,7 @@ function CategoryIcon({ category }: { category: Notification["category"] }) {
 
 // NotificationRow: the whole row links to the item and opens it (marks it
 // read). Buttons and × sit outside the link (6.3).
-export function NotificationRow({
+function NotificationRow({
   n, feed, onArchived, onNavigate,
 }: {
   n: Notification;
@@ -80,16 +83,15 @@ export function NotificationRow({
         {n.waiting && n.actions.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-3">
             {n.actions.map((a) => (
-              <button
+              <Button variant="primary"
                 key={a.key}
-                className="btn-primary py-1.5! px-3! text-sm"
                 aria-busy={feed.busy[n.id] || undefined}
                 disabled={feed.busy[n.id] || feed.offline}
                 title={feed.offline ? "Reconnect to do this" : undefined}
                 onClick={() => feed.approve(n)}
               >
                 {feed.busy[n.id] ? "Approving…" : a.label}
-              </button>
+              </Button>
             ))}
             <Link to={n.link} onClick={onNavigate} className="btn-secondary py-1.5! px-3! text-sm">
               Review
@@ -125,7 +127,7 @@ export function NotificationRow({
 
 // ArchivedToast: "Archived · Undo", 8 s, paused while hovered or focused
 // (WCAG 2.2.1).
-export function ArchivedToast({ item, onUndo, onClose }: { item: Notification; onUndo: () => void; onClose: () => void }) {
+function ArchivedToast({ item, onUndo, onClose }: { item: Notification; onUndo: () => void; onClose: () => void }) {
   const [paused, setPaused] = useState(false);
   useEffect(() => {
     if (paused) return;
@@ -177,15 +179,14 @@ function Skeleton() {
   );
 }
 
-export function EmptyState({ text }: { text?: string }) {
+function FeedEmpty({ text }: { text?: string }) {
   return (
-    <div className="px-4 py-8 text-center">
-      <svg className="w-10 h-10 mx-auto text-text-subtle" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 4h10l6 6v10H4zM14 4v6h6" />
-      </svg>
-      <p className="mt-2 text-sm font-semibold text-text-muted">{text ?? "You're all caught up"}</p>
-      {!text && <p className="text-xs text-text-muted">Updates about your groups, events, and requests show up here.</p>}
-    </div>
+    <EmptyState
+      framed={false}
+      illustration={<Illustration name="all-caught-up" size="sm" />}
+      title={text ?? "You're all caught up"}
+      body={!text ? "Updates about your groups, events, and requests show up here." : undefined}
+    />
   );
 }
 
@@ -206,13 +207,13 @@ export function FeedBody({
     return (
       <div className="px-4 py-6 text-center text-sm">
         <p className="text-text-muted">Couldn't load notifications.</p>
-        <button className="btn-secondary mt-2 py-1.5! px-3! text-sm" onClick={feed.reload}>
+        <Button variant="secondary" layout="mt-2" onClick={feed.reload}>
           Try again
-        </button>
+        </Button>
       </div>
     );
   }
-  if (feed.waiting.length + feed.items.length === 0) return <EmptyState text={emptyText} />;
+  if (feed.waiting.length + feed.items.length === 0) return <FeedEmpty text={emptyText} />;
   const row = (n: Notification) => (
     <NotificationRow key={n.id} n={n} feed={feed} onArchived={onArchived} onNavigate={onNavigate} />
   );
@@ -418,7 +419,7 @@ export function NotificationTab({ className }: { className: (a: { isActive: bool
   const badge = useBadge(pathname + search);
   const count = badge.unread + badge.waiting;
   return (
-    <NavLink to="/notifications" className={className} aria-label={badgeLabel(badge)}>
+    <NavLink to="/notifications" className={className} aria-label={`Alerts: ${badgeLabel(badge)}`}>
       <span className="relative">
         <BellIcon />
         {count > 0 && (
@@ -427,7 +428,8 @@ export function NotificationTab({ className }: { className: (a: { isActive: bool
           </span>
         )}
       </span>
-      <span aria-hidden="true">Notifications</span>
+      {/* "Alerts" so five tabs fit at 390 without wrapping (DEC-67). */}
+      <span aria-hidden="true">Alerts</span>
     </NavLink>
   );
 }

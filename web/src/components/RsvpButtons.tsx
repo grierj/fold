@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Events } from "../api";
 import type { EventOccurrence, RegistrationResponse, RegistrationStatus } from "../types";
 import { errorText } from "../lib/errors";
+import { Field, FormError, Input } from "./ui/Field";
 
 const OPTIONS: { value: RegistrationStatus; label: string }[] = [
   { value: "going", label: "Going" },
@@ -86,22 +87,19 @@ export function RsvpButtons({
         })}
         </div>
         {instance.guestsAllowed > 0 && (
-          <label className="text-sm text-text-muted flex items-center gap-1">
-            Guests
-            <input
+          <Field label="Extra guests" hint={`Up to ${instance.guestsAllowed}.`}>
+            <Input
               type="number"
               min={0}
               max={instance.guestsAllowed}
               value={guests}
               onChange={(e) => setGuests(Math.max(0, Math.min(instance.guestsAllowed, Number(e.target.value))))}
-              className="input w-16 px-2 py-1 text-sm"
-              aria-label={`Extra guests (up to ${instance.guestsAllowed})`}
+              layout="w-28"
             />
-            <span className="text-text-subtle">(up to {instance.guestsAllowed})</span>
-          </label>
+          </Field>
         )}
       </div>
-      {error && <div className="text-sm text-danger mt-1">{error}</div>}
+      {error && <FormError layout="mt-1">{error}</FormError>}
     </div>
   );
 }

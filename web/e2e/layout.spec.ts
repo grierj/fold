@@ -10,7 +10,7 @@ import { measure } from "./ui-measure.mjs";
 // control is cut off by an overflow box or the screen edge, no
 // select's chosen label is cut off (PR #51, the event visibility select),
 // and no control is under 24x24 (WCAG 2.5.8; a wrapping or `for` label
-// counts), and at 390 the page's last content clears the tab bar. Controls under 44px tall at 390 are the design goal: their kinds
+// counts), no radio or checkbox row is under 44px tall (DEC-65), and at 390 the page's last content clears the tab bar. Controls under 44px tall at 390 are the design goal: their kinds
 // per page may only fall (ui-baseline.json; UPDATE_UI_BASELINE=1 rewrites it
 // after a page gets better). Kinds are element and height, so specs that add
 // rows to the shared seed don't move the numbers.
@@ -37,7 +37,10 @@ test("pages fit, selects show their label, targets are big enough", async ({ pag
       const at = `${ui.id} at ${width}px`;
       expect.soft(m.overflow, `${at}: page scrolls sideways`).toBeLessThanOrEqual(0);
       expect.soft(m.cutOff.map((c) => `${c.el} "${c.name}"`), `${at}: controls cut off by an overflow box or the screen edge; stack them on phones (see AdminUsers cards) instead of hiding or scrolling them`).toEqual([]);
-      expect.soft(m.clipped.map((c) => `#${c.id} "${c.label}" needs ${c.text}px, has ${c.room}px`), `${at}: clipped select; widen the field on phones or shorten the option`).toEqual([]);
+      expect.soft(m.clipped.map((c) => `#${c.id} "${c.label}" needs ${c.text}px, has ${c.room}px`), `${at}: clipped select or time zone picker; widen the field on phones or shorten the option`).toEqual([]);
+      // Radio and checkbox rows are hard-gated at 44px tall (DEC-65): the
+      // whole row is the label.
+      expect.soft(m.under44.filter((t) => /^input\[(radio|checkbox)\]$/.test(t.el)).map((t) => `${t.el} "${t.name}" ${t.w}x${t.h}`), `${at}: radio or checkbox rows under 44px; use <Radio>/<Checkbox> from components/ui/Field`).toEqual([]);
       expect.soft(m.under24.map((t) => `${t.el} "${t.name}" ${t.w}x${t.h}`), `${at}: targets under 24x24; use components/ui Button sizes, min-h-11 on text actions, or wrap the radio in its label`).toEqual([]);
       // The sticky header sits flush at the top once scrolled, and
       // scroll-padding-top covers it (a focused field never lands under it)

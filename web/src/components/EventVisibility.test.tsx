@@ -17,7 +17,7 @@ describe("event tightening", () => {
     setVisibility.mockResolvedValue({});
     const onSaved = vi.fn();
     render(<EventVisibilityControl eventId={7} groupName="Garden" groupVisibility="public" visibility="public" onSaved={onSaved} />);
-    await userEvent.selectOptions(screen.getByLabelText("Who can see this event"), "invite_only");
+    await userEvent.click(screen.getByRole("radio", { name: /^Invite only/ }));
     await userEvent.click(screen.getByRole("button", { name: "Save visibility" }));
     expect(await screen.findByText("Making this event invite-only")).toBeInTheDocument();
     expect(screen.getByRole("dialog")).toHaveTextContent("2 people registered will be cancelled and notified");
@@ -31,7 +31,7 @@ describe("event tightening", () => {
     setVisibility.mockResolvedValue({});
     visibilityImpact.mockClear();
     render(<EventVisibilityControl eventId={8} groupName="Garden" groupVisibility="private" visibility="private" onSaved={() => {}} />);
-    await userEvent.selectOptions(screen.getByLabelText("Who can see this event"), "public");
+    await userEvent.click(screen.getByRole("radio", { name: /^Public/ }));
     await userEvent.click(screen.getByRole("button", { name: "Save visibility" }));
     expect(visibilityImpact).not.toHaveBeenCalled();
     expect(setVisibility).toHaveBeenCalledWith(8, { visibility: "public", reason: undefined, confirm: false });

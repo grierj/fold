@@ -322,3 +322,22 @@ func TestMigration15DownMapsStatuses(t *testing.T) {
 		t.Fatalf("new CHECK rejected a waitlisted row after re-up: %v", err)
 	}
 }
+
+// #78: the guest manage-link lookup uses a partial unique index, not a scan.
+func TestManageTokenIndex(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, false))
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var def string
+	if err := db.QueryRow(`SELECT indexdef FROM pg_indexes WHERE indexname = 'idx_registrations_manage_token'`).Scan(&def); err != nil {
+		t.Fatalf("idx_registrations_manage_token missing: %v", err)
+	}
+	if !strings.Contains(def, "UNIQUE") || !strings.Contains(def, "manage_token_hash <> ''") {
+		t.Fatalf("index is not the partial unique one: %s", def)
+	}
+}

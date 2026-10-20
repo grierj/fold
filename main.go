@@ -177,7 +177,7 @@ func (a *App) setupRouter() *gin.Engine {
 	// redirect would 301-loop client-side routes (e.g. "/" -> "/"), so it
 	// must stay off.
 	r.RedirectTrailingSlash = false
-	r.Use(gin.Logger(), gin.Recovery(), securityHeaders(a.Config.CookieSecure))
+	r.Use(accessLog(), gin.Recovery(), securityHeaders(a.Config.CookieSecure))
 	// Cap every request body before anything parses it (the CSRF check
 	// reads form fields, and Gin spools big multipart bodies to disk).
 	r.Use(limitBody(maxRequestBytes))
@@ -207,7 +207,8 @@ func (a *App) setupRouter() *gin.Engine {
 	// Routes outside the CSRF and setup middleware (C17). They authenticate
 	// with provider signatures (hooks) or signed tokens (RFC 8058 one-click
 	// unsubscribe) instead. Their handlers arrive with messaging (M3);
-	// until then they answer 404. csrfExemptRoutes must match this list.
+	// until then they answer 404. TestCSRFExemptRoutesAreExact (csrf_test.go)
+	// keeps its csrfExemptRoutes list equal to these routes.
 	r.Any("/hooks/*path", notFound)
 	r.POST("/u/unsubscribe/:token", notFound)
 
@@ -224,6 +225,10 @@ func (a *App) setupRouter() *gin.Engine {
 
 	// JSON API.
 	a.registerAPIRoutes(r)
+
+	// ICS calendar feeds (M1.7). GETs ride the setup and CSRF
+	// middleware like everything else; safe methods need no token.
+	a.registerCalendarFeeds(r)
 
 	// Embedded SPA for everything else.
 	r.NoRoute(a.serveSPA())

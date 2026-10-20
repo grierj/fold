@@ -492,12 +492,6 @@ func liveTokenManage(db *gorm.DB, raw string) (*models.Registration, *models.Eve
 	return &reg, &occ, &ev, grp, nil
 }
 
-// liveGuestManage is the guest-registration entry point to the shared
-// token manage path.
-func liveGuestManage(db *gorm.DB, raw string) (*models.Registration, *models.EventOccurrence, *models.Event, *models.Group, error) {
-	return liveTokenManage(db, raw)
-}
-
 func (a *App) apiGetGuestRegistration(c *gin.Context) {
 	reg, occ, ev, grp, err := liveTokenManage(a.DB, c.Param("token"))
 	if err != nil {
