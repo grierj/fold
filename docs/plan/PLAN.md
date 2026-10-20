@@ -1787,7 +1787,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] Recurring events appear as one VEVENT with RRULE, EXDATE, and RECURRENCE-ID
   - [x] A revoked or regenerated token returns 404
   - [x] Leaving an invite-only group removes its events from the personal feed on the next fetch
-  - [ ] Video links follow `video_reveal`
+  - [ ] Video links follow `video_reveal` (moved to M1.8: events have no video fields yet; M1.8 adds them and its `registered_only` check covers feeds)
 - Tests: golden files; permission tests; ETag test.
 
 **M1.8 Video, remote, childcare**

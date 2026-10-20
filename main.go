@@ -177,7 +177,7 @@ func (a *App) setupRouter() *gin.Engine {
 	// redirect would 301-loop client-side routes (e.g. "/" -> "/"), so it
 	// must stay off.
 	r.RedirectTrailingSlash = false
-	r.Use(gin.Logger(), gin.Recovery(), securityHeaders(a.Config.CookieSecure))
+	r.Use(accessLog(), gin.Recovery(), securityHeaders(a.Config.CookieSecure))
 	// Cap every request body before anything parses it (the CSRF check
 	// reads form fields, and Gin spools big multipart bodies to disk).
 	r.Use(limitBody(maxRequestBytes))
