@@ -37,7 +37,7 @@ function CategoryIcon({ category }: { category: Notification["category"] }) {
 
 // NotificationRow: the whole row links to the item and opens it (marks it
 // read). Buttons and × sit outside the link (6.3).
-export function NotificationRow({
+function NotificationRow({
   n, feed, onArchived, onNavigate,
 }: {
   n: Notification;
@@ -127,7 +127,7 @@ export function NotificationRow({
 
 // ArchivedToast: "Archived · Undo", 8 s, paused while hovered or focused
 // (WCAG 2.2.1).
-export function ArchivedToast({ item, onUndo, onClose }: { item: Notification; onUndo: () => void; onClose: () => void }) {
+function ArchivedToast({ item, onUndo, onClose }: { item: Notification; onUndo: () => void; onClose: () => void }) {
   const [paused, setPaused] = useState(false);
   useEffect(() => {
     if (paused) return;
@@ -179,7 +179,7 @@ function Skeleton() {
   );
 }
 
-export function FeedEmpty({ text }: { text?: string }) {
+function FeedEmpty({ text }: { text?: string }) {
   return (
     <EmptyState
       framed={false}

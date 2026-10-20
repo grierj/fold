@@ -207,7 +207,8 @@ func (a *App) setupRouter() *gin.Engine {
 	// Routes outside the CSRF and setup middleware (C17). They authenticate
 	// with provider signatures (hooks) or signed tokens (RFC 8058 one-click
 	// unsubscribe) instead. Their handlers arrive with messaging (M3);
-	// until then they answer 404. csrfExemptRoutes must match this list.
+	// until then they answer 404. TestCSRFExemptRoutesAreExact (csrf_test.go)
+	// keeps its csrfExemptRoutes list equal to these routes.
 	r.Any("/hooks/*path", notFound)
 	r.POST("/u/unsubscribe/:token", notFound)
 

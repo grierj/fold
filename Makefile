@@ -3,7 +3,7 @@
 DEV_COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 DEV_DATABASE_URL := postgres://fold:fold@localhost:5432/fold?sslmode=disable
 
-.PHONY: dev test lint devdb e2e lint-sh provision-dry-run
+.PHONY: dev test lint lint-go lint-web devdb e2e lint-sh provision-dry-run
 
 # Start the dev database and wait until it accepts connections.
 devdb:
@@ -38,9 +38,18 @@ e2e:
 		cd web && npx playwright test; \
 	fi
 
-lint: lint-sh
+# make lint runs everything; CI runs lint-go and lint-sh in the test job and
+# lint-web in the web job, after npm ci.
+lint: lint-sh lint-go lint-web
+
+lint-go:
 	go vet ./...
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
+	go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+
+# Unused files, exports and dependencies in web/ (knip, pinned in package.json).
+lint-web:
+	cd web && npx knip
 
 # Shell scripts under deploy/digitalocean. -x follows source= directives.
 lint-sh:

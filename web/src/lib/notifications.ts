@@ -10,11 +10,11 @@ const CHANGED = "fold:notifications-changed";
 
 // notificationsChanged asks the bell and any open list to refetch (after
 // an archive, a read, or an inline action).
-export function notificationsChanged() {
+function notificationsChanged() {
   window.dispatchEvent(new Event(CHANGED));
 }
 
-export const POLL_MS = 60_000;
+const POLL_MS = 60_000;
 
 // useBadge polls GET /notifications/badge every 60 s while the tab is
 // visible, and refetches on focus, on navigation (refreshKey), when coming

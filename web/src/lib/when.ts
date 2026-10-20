@@ -48,7 +48,7 @@ export function badgeParts(iso: string, zone = browserTimeZone()): { month: stri
 
 // "Pacific time", from the zone's generic name; the IANA id when the browser
 // can't name it.
-export function zoneName(tzid: string): string {
+function zoneName(tzid: string): string {
   const generic = zoneGenericName(tzid);
   if (!generic || /^GMT/.test(generic)) return tzid;
   return `${shortZoneName(generic)} time`;

@@ -41,7 +41,7 @@ interface RequestOptions {
   anonymousOK?: boolean;
 }
 
-export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
+async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
   const method = (opts.method ?? "GET").toUpperCase();
   const headers: Record<string, string> = { Accept: "application/json" };
   let body: string | undefined;
