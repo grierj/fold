@@ -834,7 +834,6 @@ func TestFormControlGuardCatchesPlaceholderLabel(t *testing.T) {
 	}
 }
 
-
 // --- One list filter for event visibility ---
 //
 // Lists of events go through visibleEvents (api_event_access.go), which
