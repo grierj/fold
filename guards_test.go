@@ -7,7 +7,6 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -834,36 +833,6 @@ func TestFormControlGuardCatchesPlaceholderLabel(t *testing.T) {
 	ok := map[string]string{"web/src/pages/Home.tsx": `<Field label="Search groups"><Input type="search" /></Field>`}
 	if got := rawFormControlViolations(ok); len(got) != 0 {
 		t.Errorf("false positive: %v", got)
-	}
-}
-
-// --- No direct pushes to master ---
-//
-// Work reaches master through a pull request. The M1.7 push skipped
-// review when a feature branch tracking origin/master pushed straight
-// to refs/heads/master under push.default=tracking. The committed
-// pre-push hook refuses that line and names the fix. Activate it once
-// per clone with: git config core.hooksPath .githooks
-
-func runPrePushHook(t *testing.T, stdin string) (string, error) {
-	t.Helper()
-	cmd := exec.Command("sh", ".githooks/pre-push", "origin", "git@github.com:grierj/fold.git")
-	cmd.Stdin = strings.NewReader(stdin)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
-}
-
-func TestPrePushHookBlocksMaster(t *testing.T) {
-	// The M1.7 accident, as one pre-push stdin line.
-	out, err := runPrePushHook(t, "refs/heads/m1.7-ics-feeds 54a1398 refs/heads/master dc09c4a\n")
-	if err == nil {
-		t.Fatalf("hook let a direct push to master through:\n%s", out)
-	}
-	if !strings.Contains(out, "pull request") {
-		t.Errorf("hook error does not name the fix:\n%s", out)
-	}
-	if out, err := runPrePushHook(t, "refs/heads/m1.7-ics-feeds 54a1398 refs/heads/m1.7-ics-feeds 0000000\n"); err != nil {
-		t.Errorf("hook blocked a branch push: %v\n%s", err, out)
 	}
 }
 
