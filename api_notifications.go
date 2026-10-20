@@ -223,18 +223,6 @@ func userIn(tx *gorm.DB, id uint) *models.User {
 	return &u
 }
 
-// viewerIn loads a recipient as a viewer for a visibility check inside
-// tx. A guest-status account (M1.4) is never a signed-in viewer: it is
-// treated as nil, matching guestDisplay, so a private group's name,
-// place, or link never reaches a guest by email.
-func viewerIn(tx *gorm.DB, id uint) *models.User {
-	u := userIn(tx, id)
-	if u != nil && u.Status == models.UserGuest {
-		return nil
-	}
-	return u
-}
-
 // canSeeGroupIn is canSeeGroup against tx, so it sees the transaction's
 // own changes (a membership just removed, a visibility just changed).
 func canSeeGroupIn(tx *gorm.DB, u *models.User, g *models.Group) bool {
@@ -242,6 +230,105 @@ func canSeeGroupIn(tx *gorm.DB, u *models.User, g *models.Group) bool {
 		return false
 	}
 	return policy.CanSeeGroup(asPerson(u), asGroup(g), relIn(tx, u.ID, g.ID))
+}
+
+// noticeFacts is everything eventNoticeVars needs for a batch of
+// recipients, loaded once with IN queries (issue #76, the relsFor
+// pattern in api_event_access.go) instead of re-read per person.
+// viewers holds each recipient as a signed-in viewer: a
+// guest-status account (M1.4) or a missing account is absent, never a
+// signed-in viewer, matching guestDisplay, so a private group's name,
+// place, or link never reaches a guest by email.
+type noticeFacts struct {
+	groups  map[uint]*models.Group
+	viewers map[uint]*models.User
+	rels    map[[2]uint]policy.Rel // by {userID, groupID}
+	zones   map[uint]*time.Location
+	church  *time.Location
+}
+
+// loadNoticeFacts loads the groups, recipients, their memberships in
+// those groups and their zones for a batch of event notices, plus the
+// church zone once when anyone needs it. Like groupsByID and relsFor,
+// a failed load leaves the fact absent, the same answer the per-person
+// First calls gave.
+func loadNoticeFacts(tx *gorm.DB, groupIDs, userIDs []uint) *noticeFacts {
+	f := &noticeFacts{
+		groups:  map[uint]*models.Group{},
+		viewers: map[uint]*models.User{},
+		rels:    map[[2]uint]policy.Rel{},
+		zones:   map[uint]*time.Location{},
+		church:  time.UTC,
+	}
+	if len(groupIDs) > 0 {
+		var gs []models.Group
+		tx.Where("id IN ?", groupIDs).Find(&gs)
+		for i := range gs {
+			f.groups[gs[i].ID] = &gs[i]
+		}
+	}
+	var users []models.User
+	if len(userIDs) > 0 {
+		tx.Where("id IN ?", userIDs).Find(&users)
+	}
+	loaded := make(map[uint]bool, len(users))
+	for i := range users {
+		loaded[users[i].ID] = true
+	}
+	needChurch := false
+	for _, id := range userIDs {
+		if !loaded[id] {
+			needChurch = true
+		}
+	}
+	for i := range users {
+		if users[i].Status != models.UserGuest {
+			f.viewers[users[i].ID] = &users[i]
+		}
+		if loc, err := events.LoadZone(users[i].Timezone); err == nil {
+			f.zones[users[i].ID] = loc
+		} else {
+			needChurch = true
+		}
+	}
+	if needChurch {
+		f.church = churchZone(tx)
+		for i := range users {
+			if _, ok := f.zones[users[i].ID]; !ok {
+				f.zones[users[i].ID] = f.church
+			}
+		}
+	}
+	if len(groupIDs) > 0 && len(userIDs) > 0 {
+		var ms []models.Membership
+		tx.Where("user_id IN ? AND group_id IN ?", userIDs, groupIDs).Find(&ms)
+		for _, m := range ms {
+			f.rels[[2]uint{m.UserID, m.GroupID}] = membershipRel(m)
+		}
+	}
+	return f
+}
+
+// canSeeGroup is canSeeGroupIn against the preloaded facts: the same
+// policy call, with the membership relIn would have loaded.
+func (f *noticeFacts) canSeeGroup(userID uint, g *models.Group) bool {
+	u := f.viewers[userID]
+	if u == nil || g == nil {
+		return false
+	}
+	return policy.CanSeeGroup(asPerson(u), asGroup(g), f.rels[[2]uint{userID, g.ID}])
+}
+
+// zone is the preloaded recipientZone for userID: their own zone, else
+// the church's, else UTC.
+func (f *noticeFacts) zone(userID uint) *time.Location {
+	if loc, ok := f.zones[userID]; ok && loc != nil {
+		return loc
+	}
+	if f.church != nil {
+		return f.church
+	}
+	return time.UTC
 }
 
 const approvalsLink = "/admin?tab=approvals"
@@ -365,33 +452,47 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 		Order("occurrence_id, user_id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	// Load the occurrences, their events and every recipient's facts
+	// once (issue #76); the loop below only writes notices.
+	var occRows []models.EventOccurrence
+	tx.Where("id IN ?", occIDs).Find(&occRows)
+	occByID := make(map[uint]*models.EventOccurrence, len(occRows))
+	eventIDs := make([]uint, 0, len(occRows))
+	for i := range occRows {
+		occByID[occRows[i].ID] = &occRows[i]
+		eventIDs = append(eventIDs, occRows[i].EventID)
+	}
+	evByID := map[uint]*models.Event{}
+	var groupIDs []uint
+	if len(eventIDs) > 0 {
+		var evRows []models.Event
+		tx.Where("id IN ?", eventIDs).Find(&evRows)
+		for i := range evRows {
+			evByID[evRows[i].ID] = &evRows[i]
+			if evRows[i].GroupID != nil {
+				groupIDs = append(groupIDs, *evRows[i].GroupID)
+			}
+		}
+	}
+	userIDs := make([]uint, 0, len(rows))
+	for _, r := range rows {
+		userIDs = append(userIDs, r.UserID)
+	}
+	facts := loadNoticeFacts(tx, groupIDs, userIDs)
 	var ids []uint
 	for _, r := range rows {
-		var o models.EventOccurrence
-		var ev models.Event
-		if tx.First(&o, r.OccID).Error != nil || tx.First(&ev, o.EventID).Error != nil {
+		o := occByID[r.OccID]
+		if o == nil {
 			continue
 		}
-		var g *models.Group
-		if ev.GroupID != nil {
-			var row models.Group
-			if tx.First(&row, *ev.GroupID).Error == nil && canSeeGroupIn(tx, viewerIn(tx, r.UserID), &row) {
-				g = &row
-			}
+		ev := evByID[o.EventID]
+		if ev == nil {
+			continue
 		}
-		place := ev.Location
-		if o.LocationOverride != nil {
-			place = *o.LocationOverride
-		}
-		vars := notify.Vars{Event: ev.Title, When: formatWhen(o.StartsAt, recipientZone(tx, r.UserID)), Place: place}
-		link := fmt.Sprintf("/events/%d", ev.ID)
-		if g != nil {
-			vars.Event = firstNonEmpty(ev.Title, g.Name) // group-ok: g is set only when canSeeGroupIn is true
-			if o.LocationOverride == nil {
-				vars.Place = firstNonEmpty(ev.Location, g.Location) // group-ok: g is set only when canSeeGroupIn is true
-			}
-			link = fmt.Sprintf("/groups/%d", g.ID)
-		}
+		vars, link := eventNoticeVars(ev, o, r.UserID, facts)
 		end := o.EndsAt
 		if end.IsZero() {
 			end = o.StartsAt
@@ -455,6 +556,11 @@ func zoneOrChurch(tx *gorm.DB, tz string) *time.Location {
 	if loc, err := events.LoadZone(tz); err == nil {
 		return loc
 	}
+	return churchZone(tx)
+}
+
+// churchZone is the church's zone from its setting, else UTC.
+func churchZone(tx *gorm.DB) *time.Location {
 	var s models.Setting
 	if tx.Where("key = ?", settingTimezone).First(&s).Error == nil {
 		if loc, err := events.LoadZone(s.Value); err == nil {
