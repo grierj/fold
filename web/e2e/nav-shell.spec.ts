@@ -10,6 +10,9 @@ test("phones get a tab bar that reaches every main page, and it never covers a f
   await expect(tabs).toBeVisible();
   await expect(page.getByRole("link", { name: "powered by Fold" }).or(page.getByText("powered by Fold")).first()).toBeVisible();
 
+  await expect(tabs.getByRole("link")).toHaveCount(5);
+  await tabs.getByRole("link", { name: "Calendar" }).click();
+  await expect(page).toHaveURL(/\/calendar$/);
   await tabs.getByRole("link", { name: "My groups" }).click();
   await expect(page).toHaveURL(/\/my-groups$/);
   await tabs.getByRole("link", { name: /notification/i }).click();
@@ -45,6 +48,7 @@ test("desktop keeps a top bar and no tab bar", async ({ page }) => {
   const main = page.getByRole("navigation", { name: "Main" });
   await expect(main.getByRole("link", { name: "My groups" })).toBeVisible();
   await expect(main.getByRole("link", { name: "Start a group" })).toBeVisible();
+  await expect(main.getByRole("link", { name: "Calendar" })).toBeVisible();
   await signOut(page);
 });
 
