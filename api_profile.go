@@ -143,9 +143,28 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 		jsonError(c, http.StatusConflict, "an account with that email already exists")
 		return
 	}
+	// Per-user and per-target limits (#92): a member can't use the change
+	// form to spam an address, and the target gets at most a few links.
+	// Past the limit the answer is the same; nothing is sent.
+	ctx := c.Request.Context()
+	userOK, err := a.targetAllow(ctx, "emailchange:user:"+strconv.FormatUint(uint64(u.ID), 10))
+	addrOK := false
+	if err == nil {
+		addrOK, err = a.targetAllow(ctx, "emailchange:addr:"+normalizeEmail(newEmail))
+	}
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not start email change")
+		return
+	}
+	if !userOK || !addrOK {
+		// Answer as usual and log it (DEC-52): nothing is stored or sent.
+		log.Printf("email change rate limited: user=%d", u.ID)
+		c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(u), "verificationSent": true})
+		return
+	}
 	oldEmail := u.Email
 	var raw string
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		var err error
 		raw, err = createAccountToken(tx, models.TokenEmailVerify, u.ID,
 			map[string]any{"new_email": newEmail}, tokenTTL)
