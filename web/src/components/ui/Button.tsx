@@ -25,16 +25,19 @@ export function ButtonLink({
   variant,
   size = "md",
   layout,
+  reloadDocument,
   children,
 }: {
   to: string;
+  // A server URL, not an SPA route (a .ics feed): the browser loads it.
+  reloadDocument?: boolean;
   variant: ButtonVariant;
   size?: "md" | "sm";
   layout?: string;
   children: ReactNode;
 }) {
   return (
-    <Link to={to} className={buttonClass(variant, size, layout)}>
+    <Link to={to} reloadDocument={reloadDocument} className={buttonClass(variant, size, layout)}>
       {children}
     </Link>
   );
