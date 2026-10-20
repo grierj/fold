@@ -9,13 +9,14 @@ import (
 )
 
 // Secrets travel in some URLs: calendar feed tokens (/cal/u/<token>.ics),
-// guest manage links, and the ?token= of email links the SPA serves. The
+// guest manage links, invitation links (/api/v1/invitations/<token>), and the ?token= of email links the SPA serves. The
 // access log keeps the route but never the secret, and drops every query
 // string, so a log file or a log shipper can't replay a link.
 var secretPathPrefixes = []string{
 	"/cal/u/",
 	"/guest/manage/",
 	"/api/v1/guest-registrations/manage/",
+	"/api/v1/invitations/",
 }
 
 func redactLogPath(path string) string {
@@ -24,6 +25,9 @@ func redactLogPath(path string) string {
 			continue
 		}
 		rest := path[len(p):]
+		if path == "/api/v1/invitations/accept" {
+			return path // a fixed route; its token travels in the body
+		}
 		tail := ""
 		if i := strings.IndexByte(rest, '/'); i >= 0 {
 			tail = rest[i:]
