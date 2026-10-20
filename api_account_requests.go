@@ -225,6 +225,14 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return false
 	}
+	// Per-address limit (#91): rotating IPs can't flood one inbox, or the
+	// admins, with requests for that address. Same answer, nothing stored
+	// or sent.
+	if ok, err := a.targetAllow(ctx, "acctreq:addr:"+v.email); err != nil || !ok {
+		log.Printf("account request address limited: source=%s err=%v", source, err)
+		a.answerAccountRequest(c, source)
+		return false
+	}
 	var existing models.User
 	// A guest row (M1.4) is not an account yet: its owner asking for one
 	// is the normal upgrade path, not the already-have-an-account path.
@@ -281,16 +289,28 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		jsonError(c, http.StatusInternalServerError, "could not save your request")
 		return false
 	}
-	a.deliverNotificationEmails(emailed)
-	if source == models.RequestSelfSignup {
-		if err := a.sendRequestReceivedEmail(v.email); err != nil {
-			log.Printf("request-received email to %s: %v", v.email, err)
+	// A duplicate of a pending request is stored and flagged on the bell,
+	// but sends nothing: the requester and the admins were already
+	// emailed about the first one (#91).
+	if !flags.Duplicate {
+		a.deliverNotificationEmails(emailed)
+		if source == models.RequestSelfSignup {
+			if err := a.sendRequestReceivedEmail(v.email); err != nil {
+				log.Printf("request-received email to %s: %v", v.email, err)
+			}
 		}
-		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
-	} else {
-		c.JSON(http.StatusOK, gin.H{"message": "Thanks — an admin will review it, and your friend will hear from us then."})
 	}
+	a.answerAccountRequest(c, source)
 	return true
+}
+
+// answerAccountRequest is the uniform success reply for each door.
+func (a *App) answerAccountRequest(c *gin.Context, source string) {
+	if source == models.RequestSelfSignup {
+		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "Thanks — an admin will review it, and your friend will hear from us then."})
 }
 
 // apiCreateAccountRequest is the public self-signup door (DEC-4): it

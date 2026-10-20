@@ -484,3 +484,53 @@ func TestDuplicatePendingFlagged(t *testing.T) {
 		t.Fatalf("inline duplicate approval: %d", w.Code)
 	}
 }
+
+func mailsTo(app *App, addr string) int64 {
+	var n int64
+	app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", addr).Count(&n)
+	return n
+}
+
+// #91: rotating IPs can't flood one address. Past the per-address limit
+// the answer is the same, but nothing is stored or sent.
+func TestAccountRequestPerAddressLimit(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	for i := 0; i < targetHourLimit+3; i++ {
+		anon := anonClient(t, app, "10.20.0."+itoa2(uint(i+1)))
+		w := anon.do("POST", "/api/v1/account-requests",
+			signupBody("Victim", "victim@example.com", "adult", ""), true)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), signupThanks) {
+			t.Fatalf("submit %d: %d %s", i, w.Code, w.Body.String())
+		}
+	}
+	var stored int64
+	app.DB.Model(&models.AccountRequest{}).Where("email = ?", "victim@example.com").Count(&stored)
+	if stored != targetHourLimit {
+		t.Fatalf("stored %d requests, want %d", stored, targetHourLimit)
+	}
+	// One request-received email; the duplicates (stored, flagged) send nothing.
+	if n := mailsTo(app, "victim@example.com"); n != 1 {
+		t.Fatalf("victim got %d emails, want 1", n)
+	}
+	if n := mailsTo(app, testEmail("admin")); n > 1 {
+		t.Fatalf("admin got %d emails, want at most 1", n)
+	}
+}
+
+// #91: an address that already has an account gets the account-exists
+// hint at most up to the per-address limit.
+func TestAccountExistsHintPerAddressLimit(t *testing.T) {
+	app := testApp(t)
+	alice := newTestUser(t, app, "alice", "pw", models.RoleMember)
+	for i := 0; i < targetHourLimit+3; i++ {
+		anon := anonClient(t, app, "10.21.0."+itoa2(uint(i+1)))
+		if w := anon.do("POST", "/api/v1/account-requests",
+			signupBody("Alice", alice.Email, "adult", ""), true); w.Code != http.StatusOK {
+			t.Fatalf("submit %d: %d", i, w.Code)
+		}
+	}
+	if n := mailsTo(app, alice.Email); n != targetHourLimit {
+		t.Fatalf("alice got %d hints, want %d", n, targetHourLimit)
+	}
+}
