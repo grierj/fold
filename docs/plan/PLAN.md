@@ -1759,15 +1759,15 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Depends on: M1.2
 - Scope: 5.4 in full, including remote capacity, guests, and removal by leaders and hosts (DEC-20). Also the DEC-38 rules for disabled and re-enabled accounts: hidden and uncounted while disabled, and left out with an "ask a leader" notice when a restore would exceed capacity (DEC-47). Event-change and waitlist notifications (5.12; Quill's "M2.x" phase, placed here because Fold's Phase 2 is Rooms): cancellations, time or place changes, and "you're in" off the waitlist go in the bell for people going or waitlisted, and by email. The no-auto-promotion cutoff notice goes to leaders. Each event item has `expires_at` set to the occurrence end and is auto-archived (not deleted) after that. Reminders stay out of the bell (7.7).
 - Acceptance:
-  - [ ] 50 concurrent "going" requests on a 10-seat event give exactly 10 going and 40 waitlisted (Postgres test)
-  - [ ] Cancelling promotes the earliest entry that fits, skipping a party too big for the free seats
-  - [ ] No auto-promotion inside the cutoff; the leader is notified instead
-  - [ ] Promoted people get an email with a one-click "I can't come" link
-  - [ ] There is no approval step: a sign-up is `going` (or `waitlisted`) at once; a leader or host can remove anyone, and the removed person is told (DEC-30)
-  - [ ] Registrations of a disabled account are hidden from attendee lists and never count toward capacity, waitlist math, or attendee counts (DEC-38)
-  - [ ] Re-enabling an account whose registration would overfill an occurrence leaves it out: the registration is dropped, audited, and the person gets a notice to ask a leader or host, who can add them over capacity by explicit choice (DEC-38, DEC-47)
-  - [ ] Cancelling an occurrence, or changing its time or place, gives each going or waitlisted person one bell item (never batched for cancellations) and an email; a promotion gives "you're in"
-  - [ ] After the occurrence ends, its event items are archived automatically and still show under Archived
+  - [x] 50 concurrent "going" requests on a 10-seat event give exactly 10 going and 40 waitlisted (Postgres test)
+  - [x] Cancelling promotes the earliest entry that fits, skipping a party too big for the free seats
+  - [x] No auto-promotion inside the cutoff; the leader is notified instead
+  - [x] Promoted people get an email with a one-click "I can't come" link
+  - [x] There is no approval step: a sign-up is `going` (or `waitlisted`) at once; a leader or host can remove anyone, and the removed person is told (DEC-30)
+  - [x] Registrations of a disabled account are hidden from attendee lists and never count toward capacity, waitlist math, or attendee counts (DEC-38)
+  - [x] Re-enabling an account whose registration would overfill an occurrence leaves it out: the registration is dropped, audited, and the person gets a notice to ask a leader or host, who can add them over capacity by explicit choice (DEC-38, DEC-47)
+  - [x] Cancelling an occurrence, or changing its time or place, gives each going or waitlisted person one bell item (never batched for cancellations) and an email; a promotion gives "you're in"
+  - [x] After the occurrence ends, its event items are archived automatically and still show under Archived
 - Tests: unit tests on the promotion function plus the concurrency test; notification expiry test.
 
 **M1.6 Calendar views**

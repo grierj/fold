@@ -659,3 +659,76 @@ func TestDeliveryRecipientsReadFailureLeavesRowsPending(t *testing.T) {
 		t.Fatalf("retry after the failure sent %d emails, want 1", sent)
 	}
 }
+
+// Time and place changes email each going or waitlisted person too, not
+// only the bell.
+func TestOccurrenceChangeEmailsGoingAndWaitlisted(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ChangeMail")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	_, c1 := mkUser(t, app, &g, "cm1")
+	u2, c2 := mkUser(t, app, &g, "cm2")
+	_, c3 := mkUser(t, app, &g, "cm3")
+	registerAs(c1, eventID, date, "going", nil)
+	registerAs(c2, eventID, date, "going", nil)
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+	if got := regStatus(t, app, u2.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("cm2 = %q, want waitlisted", got)
+	}
+	registerAs(c3, eventID, date, "maybe", nil)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", eventID, date),
+		map[string]any{"location": "Annex"}, http.StatusOK)
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{{"cm1", true}, {"cm2", true}, {"cm3", false}} {
+		m, err := devOutbox(t, app).LatestTo(testEmail(tc.name))
+		got := err == nil && strings.HasPrefix(m.Subject, "Updated:")
+		if got != tc.want {
+			t.Fatalf("%s change email = %v, want %v (%+v)", tc.name, got, tc.want, m)
+		}
+	}
+}
+
+// Event items expire at the occurrence end, through the real API path,
+// and then show under Archived only.
+func TestEventItemsArchiveAfterOccurrenceEnds(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Expire")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(5), true)
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	u, c := mkUser(t, app, &g, "ex1")
+	registerAs(c, eventID, date, "going", nil)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", eventID, date),
+		map[string]any{"location": "Annex"}, http.StatusOK)
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+	var row models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", u.ID, "event.changed").First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.ExpiresAt == nil || !row.ExpiresAt.Equal(occ.EndsAt) {
+		t.Fatalf("expires_at = %v, want occurrence end %v", row.ExpiresAt, occ.EndsAt)
+	}
+	if findKind(feed(t, c, ""), "event.changed") == nil {
+		t.Fatal("not in the inbox before the end")
+	}
+	// Move the clock past the end by moving the expiry into the past.
+	past := time.Now().Add(-time.Minute)
+	app.DB.Model(&models.Notification{}).Where("id = ?", row.ID).Update("expires_at", past)
+	if findKind(feed(t, c, ""), "event.changed") != nil {
+		t.Fatal("still in the inbox after the end")
+	}
+	if findKind(feed(t, c, "archived"), "event.changed") == nil {
+		t.Fatal("not under Archived after the end")
+	}
+	var kept int64
+	app.DB.Model(&models.Notification{}).Where("id = ?", row.ID).Count(&kept)
+	if kept != 1 {
+		t.Fatal("expired item was deleted, want archived")
+	}
+}
