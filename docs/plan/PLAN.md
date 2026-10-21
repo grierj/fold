@@ -1521,7 +1521,7 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 | Release | Contents | Milestones |
 |---|---|---|
 | v0.2 Foundations | Postgres-only clean baseline, CLI, trusted proxies, CSRF route groups, visibility enum and policy, email login, member removal and sole-leader handoff, security headers and dependency scanning, frontend test tooling | M0.1–M0.4 (M0.3 is M0.3a + M0.3b) |
-| v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy, frontend toolchain upgrades (Vite 8, React 19, Tailwind 4, Node 24), per-date visibility | M1.1a–M1.13 |
+| v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy, frontend toolchain upgrades (Vite 8, React 19, Tailwind 4, Node 24), per-date visibility, series RSVP and RSVP-aware calendar | M1.1a–M1.14 |
 | v0.4 Email | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay | M3.1–M3.6, M3.11 |
 | v0.5 MVP | Encrypted settings, SPA setup wizard, legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs: the first version a church can run | M4.1–M4.5, M4.9, M5.1–M5.4 |
 | v0.6 Rooms | Rooms, by-room view and feed, suggestions | M2.1–M2.3 |
@@ -1907,6 +1907,19 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] A church-wide event's date can be `public` or `private` only; a non-admin host can set it on events they host
 - Tests: policy tables for effective visibility; API tests for the audit row, notices, privacy keys, and series-edit interaction; a Playwright test for the private-series, one-public-date flow.
 
+**M1.14 Series RSVP and RSVP-aware calendar**
+- Depends on: M1.5 (capacity and waitlist), M1.6 (calendar views), M1.7 (ICS feeds). Best after M1.13, so series-wide responses use each date's effective visibility.
+- Why: Grier, Oct 20, 2026 (via Big Boss): the calendar and feeds should show where a person stands, and answering a long series one date at a time is tedious.
+- Scope:
+  - **RSVP-aware display.** In the person's calendar views (8.1) and personal ICS feed (8.2), a date they haven't answered or said maybe to shows ghosted but keeps every detail (time, place, description, and the video link where the video-link rule allows). A date they said "Can't go" to leaves their calendar and feed. A date they are going to shows solid. Waitlisted shows ghosted with a "Waitlisted" label. Ghosting is never color alone: it has a text label, and in ICS it is `STATUS:TENTATIVE` (going stays `CONFIRMED`; declined dates are omitted, which needs per-date RECURRENCE-ID or EXDATE handling for series). Public and group feeds don't change.
+  - **Respond to every date in a series.** On a series, "Going to all dates" (or Maybe or Can't go) applies the same answer to every future scheduled date. Each date goes through the normal locked registration path, so capacity, the waitlist, and cutoffs apply per date, and the result lists which dates ended up waitlisted or full. Dates added later by the series (`occurrences.extend`) are not answered automatically in v1. Dates a leader removed the person from stay removed.
+  - **"This and following" responses.** From one date, a person can change their answer for that date and every later scheduled date of the series. Per-date rules apply the same way as above. This is a response scope only; series *edits* still have no "this and following" split (5.3).
+- Acceptance:
+  - [ ] Unanswered and maybe dates show ghosted, with a text label and full details; going dates show solid; declined dates are gone from that person's calendar views and personal feed (UI and ICS tests)
+  - [ ] "Going to all dates" registers every future date, waitlists the full ones in line order, and reports which were waitlisted; removed dates stay removed
+  - [ ] "This and following" changes that date and every later one and leaves earlier dates alone
+  - [ ] Every bulk response goes through the per-date locked path (a concurrency test, like M1.5's)
+- Tests: API tests for bulk and this-and-following responses; feed golden files for ghosted (TENTATIVE) and omitted dates; Playwright tests for the calendar's ghosted and solid states.
 ### 14.5 Phase 2: Rooms
 
 **M2.1 Rooms and bookings**
