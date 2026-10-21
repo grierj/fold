@@ -32,9 +32,12 @@ type FeedOccurrence struct {
 // safely. Overrides holds the in-window customized, non-cancelled dates
 // and CancelledDates the in-window cancelled series dates.
 type FeedEvent struct {
-	ID              uint
-	Title           string
-	Description     string
+	ID          uint
+	Title       string
+	Description string
+	// VideoURL is the event's video link, already cleared for this feed's
+	// viewer by the handler (5.8, M1.8); "" renders nothing.
+	VideoURL        string
 	Location        string
 	TZID            string
 	StartsLocal     string // YYYY-MM-DDTHH:MM, the series wall clock
@@ -56,13 +59,16 @@ type FeedSingle struct {
 	OriginalDate string
 	Title        string
 	Description  string
-	Location     string
-	TZID         string
-	StartsAt     time.Time
-	EndsAt       time.Time
-	URL          string
-	UpdatedAt    time.Time
-	Status       string // CONFIRMED or TENTATIVE, or "" to omit
+	// VideoURL is the event's video link, already cleared for this date's
+	// viewer by the handler (5.8, M1.8); "" renders nothing.
+	VideoURL  string
+	Location  string
+	TZID      string
+	StartsAt  time.Time
+	EndsAt    time.Time
+	URL       string
+	UpdatedAt time.Time
+	Status    string // CONFIRMED or TENTATIVE, or "" to omit
 }
 
 type Feed struct {
@@ -215,7 +221,7 @@ func renderEvent(ev *FeedEvent, host string) ([][]string, *time.Location, time.T
 		}
 		lines = append(lines, "EXDATE;TZID="+ev.TZID+":"+strings.Join(walls, ","))
 	}
-	lines = append(lines, textLines(ev.Title, ev.Description, ev.URL, ev.Location)...)
+	lines = append(lines, textLines(ev.Title, ev.Description, ev.URL, ev.Location, ev.VideoURL)...)
 	lines = append(lines, "END:VEVENT")
 
 	out := [][]string{lines}
@@ -229,7 +235,7 @@ func renderEvent(ev *FeedEvent, host string) ([][]string, *time.Location, time.T
 			"DTEND;TZID=" + ev.TZID + ":" + endsAt(&o, ev.DurationMinutes).In(loc).Format(icsWall),
 		}
 		b = append(b, textLines(orSeries(o.Title, ev.Title), ev.Description, ev.URL,
-			orSeries(o.Location, ev.Location))...)
+			orSeries(o.Location, ev.Location), ev.VideoURL)...)
 		b = append(b, "END:VEVENT")
 		out = append(out, b)
 	}
@@ -249,7 +255,7 @@ func renderOneTime(ev *FeedEvent, loc *time.Location, start time.Time, host stri
 			"DTSTART;TZID=" + ev.TZID + ":" + start.Format(icsWall),
 			"DTEND;TZID=" + ev.TZID + ":" + start.Add(dur).Format(icsWall),
 		}
-		b = append(b, textLines(ev.Title, ev.Description, ev.URL, ev.Location)...)
+		b = append(b, textLines(ev.Title, ev.Description, ev.URL, ev.Location, ev.VideoURL)...)
 		return append(b, "END:VEVENT"), true
 	}
 	o := sortedOccurrences(ev.Occurrences)[0]
@@ -279,7 +285,7 @@ func renderSingle(s *FeedSingle, host string) ([]string, *time.Location, bool) {
 	if s.Status != "" {
 		b = append(b, "STATUS:"+s.Status)
 	}
-	b = append(b, textLines(s.Title, s.Description, s.URL, s.Location)...)
+	b = append(b, textLines(s.Title, s.Description, s.URL, s.Location, s.VideoURL)...)
 	return append(b, "END:VEVENT"), loc, true
 }
 
@@ -295,11 +301,11 @@ func singleBlock(uid string, ev *FeedEvent, o *FeedOccurrence, loc *time.Locatio
 		b = append(b, "STATUS:"+status)
 	}
 	b = append(b, textLines(orSeries(o.Title, ev.Title), ev.Description, ev.URL,
-		orSeries(o.Location, ev.Location))...)
+		orSeries(o.Location, ev.Location), ev.VideoURL)...)
 	return append(b, "END:VEVENT")
 }
 
-func textLines(title, description, url, location string) []string {
+func textLines(title, description, url, location, videoURL string) []string {
 	lines := []string{"SUMMARY:" + escapeText(title)}
 	desc := strings.TrimRight(description, " \t\r\n")
 	switch {
@@ -307,6 +313,12 @@ func textLines(title, description, url, location string) []string {
 		desc += "\n\n" + url
 	case desc == "":
 		desc = url
+	}
+	if videoURL != "" {
+		if desc != "" {
+			desc += "\n\n"
+		}
+		desc += "Join by video: " + videoURL
 	}
 	if desc != "" {
 		lines = append(lines, "DESCRIPTION:"+escapeText(desc))

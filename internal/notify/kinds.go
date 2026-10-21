@@ -72,6 +72,10 @@ type Vars struct {
 	// example a registration manage link). It appears in the email body
 	// only, never in the bell, and only on rows for that recipient.
 	ManageURL string
+	// VideoURL is the event's video link (5.8, M1.8). The caller sets it
+	// only when this recipient may see it (policy.CanSeeVideoLink); it
+	// appears in the email body only, never in the bell.
+	VideoURL string
 }
 
 // Kind is one registry entry (5.12).
@@ -265,6 +269,9 @@ func init() {
 		},
 		RenderEmail: func(v Vars) (string, string) {
 			title, body := "You're in: "+or(v.Event, "an event"), join(v.When, v.Place)
+			if v.VideoURL != "" {
+				body += "\n\nJoin by video: " + v.VideoURL
+			}
 			if v.ManageURL != "" {
 				body += "\n\nCan't come after all? Cancel your registration here:\n" + v.ManageURL
 			}

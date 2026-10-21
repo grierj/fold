@@ -35,6 +35,8 @@ function occurrence(over: Partial<EventOccurrence>): EventOccurrence {
     spotsLeft: null,
     waitlistEnabled: false,
     guestsAllowed: 0,
+    videoProvider: "none",
+    videoReveal: "registered_only",
     ...over,
   };
 }

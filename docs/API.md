@@ -398,12 +398,13 @@ POST /api/v1/events/:id/cancel              → 200 {}        (leader, host, or 
      body: {date: "YYYY-MM-DD"} — cancels that stored date
 PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (leader, host, or admin)
      body: any of {startsLocal, durationMinutes, location, title} — this date only
+POST /api/v1/events/video/jitsi             → 200 {url}   (leader, host, or admin)
 ```
 
 `event`: `{id, groupId?, groupName?, groupVisibility?, hostedBy?, title,
 description, startsLocal, durationMinutes, tzid, startsAt, endsAt, location,
 recurrenceRule, rruleUntil, visibility, leaderOpened, churchWide,
-hosts?}`. `groupId` is omitted for a church-wide event and for an opened
+hosts?, videoProvider, videoUrl?, videoReveal, videoHidden?}`. `groupId` is omitted for a church-wide event and for an opened
 event whose group the viewer cannot see; `hostedBy` is the church name
 then. `hosts` (`{userId, name, email}`) is present for an admin reading a
 church-wide event. `startsAt` and `endsAt` are UTC. `startsLocal` is the
@@ -417,7 +418,8 @@ myRegistration: "going"|"maybe"|"declined"|"waitlisted"|"removed"|null,
 myGuestCount?, myWaitlistPosition?, visibility,
 leaderOpened, churchWide, groupId?, groupName?, hostedBy?,
 attendeesVisible, attendees?, capacity, seatsUsed, spotsLeft,
-waitlistEnabled, guestsAllowed}`. `startsAt`/`endsAt` are UTC.
+waitlistEnabled, guestsAllowed, videoProvider, videoUrl?, videoReveal,
+videoHidden?}`. `startsAt`/`endsAt` are UTC.
 `startsLocal`/`endsLocal` are the wall clock in `tzid`, including a
 per-date override. `overridden` is true when this date has its own time,
 title, or location. `attendees` (`{userId, name, status, guestCount}`) is
@@ -430,7 +432,7 @@ meanings apart. `spotsLeft` is null when unlimited and never below 0.
 
 Create body: `{title?, description?, startsLocal, durationMinutes, tzid?,
 location?, recurrenceRule?, rruleUntil?, capacity?, waitlistEnabled?,
-guestsAllowed?}`. `description` is plain text, at
+guestsAllowed?, videoProvider?, videoUrl?, videoReveal?}`. `description` is plain text, at
 most 5000 characters, the same limit as a group description. `startsLocal`
 and `durationMinutes` (1 to 10080) are required. Omit `tzid` to use the
 church time zone. The schedule
@@ -442,6 +444,32 @@ positive whole number or null (null clears to unlimited); `waitlistEnabled`
 holds overflow sign-ups on a waitlist when a capacity is set;
 `guestsAllowed` is 0–5 (null clears to 0), capping extra unnamed guests on
 one registration.
+
+Video (5.8, M1.8) is a link out, never an embed (DEC-16). `videoProvider`
+is `none`, `link`, or `jitsi` (default `none`, which clears the URL);
+`videoUrl` must be a full `https://` address of at most 2048 characters
+when a provider is set; `videoReveal` is `always` or `registered_only`
+(the default). `POST /events/video/jitsi` mints a new
+`https://<jitsi_domain>/<church-slug>-<12 random chars>` locally (no API
+call). A Jitsi link is validated like a pasted one (https, a host, no
+userinfo such as `https://meet.jit.si@evil.example`); its host is not pinned
+to `jitsi_domain`, since a leader may edit it. The link reaches a response only when the viewer may see it
+(`policy.CanSeeVideoLink`): under `registered_only`, people going on that
+date plus the event's leaders or hosts and admins; otherwise `videoUrl`
+is omitted and `videoHidden` is true. The same rule governs the ICS
+feeds (the public feeds carry `always` links only) and the waitlist
+promotion email, with one widening for the owner of a personal ICS feed
+(DEC-70): under `registered_only` the feed also carries the link for a
+date they said maybe to, and for a date they haven't answered when they
+are a member of the event's group or a host. Waitlisted, declined,
+cancelled and removed dates, outsiders who haven't answered, and
+signed-out viewers never get it (`policy.CanSeeVideoLinkInFeed`).
+
+A recurring series in a personal feed is one VEVENT, so if any in-window
+date qualifies, the link rides on the whole series entry. This
+series-wide link is accepted for now; a strict per-date reveal would emit
+RECURRENCE-ID overrides for the qualifying dates and leave the link off
+the master VEVENT.
 
 A series edit (`PUT /events/:id`) applies to every future date. Future
 means `startsAt` is strictly after now; a date already underway stays.
