@@ -13,10 +13,14 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	"fold/internal/accounts"
 	"fold/internal/audit"
 	"fold/internal/events"
 	"fold/internal/mail"
+	"fold/internal/notify"
+	"fold/internal/policy"
 	"fold/models"
 	"fold/storage"
 
@@ -539,4 +543,602 @@ func (a *App) serveUpload(c *gin.Context) {
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Cache-Control", "public, max-age=86400")
 	http.ServeContent(c.Writer, c.Request, st.Name(), st.ModTime(), f)
+}
+
+// ---------------------------------------------------------------------------
+// My household (M1.9 slice 1, 5.3, 5.10, DEC-32). An account gets a
+// household on first use, named after the account's last name. Any adult
+// account in the household manages it (policy.CanManageHousehold).
+// Adding a child or teen writes a pending guardian link and asks the
+// admins to confirm it; an adult needs no approval. Nothing here touches
+// registrations; household people register from slice 2.
+// ---------------------------------------------------------------------------
+
+type householdPersonJSON struct {
+	ID              uint   `json:"id"`
+	HouseholdID     uint   `json:"householdId"`
+	FirstName       string `json:"firstName"`
+	LastName        string `json:"lastName"`
+	Name            string `json:"name"`
+	Kind            string `json:"kind"` // child | teen | adult
+	BirthDate       string `json:"birthDate,omitempty"`
+	CareNotes       string `json:"careNotes"`
+	PhotoConsent    bool   `json:"photoConsent"`
+	LinkStatus      string `json:"linkStatus"` // pending | confirmed | rejected | revoked | none
+	GuardianLinkID  *uint  `json:"guardianLinkId,omitempty"`
+	ConvertedUserID *uint  `json:"convertedUserId,omitempty"`
+	CreatedBy       uint   `json:"createdBy"`
+}
+
+type householdAccountJSON struct {
+	UserID   uint   `json:"userId"`
+	Name     string `json:"name"`
+	Relation string `json:"relation"` // guardian | adult | teen
+}
+
+type householdJSON struct {
+	ID        uint                   `json:"id"`
+	Name      string                 `json:"name"`
+	Address   string                 `json:"address"`
+	CreatedBy uint                   `json:"createdBy"`
+	People    []householdPersonJSON  `json:"people"`
+	Accounts  []householdAccountJSON `json:"accounts"`
+}
+
+// householdAccountIn loads a user's household account row in db (their
+// only one: user_id is unique).
+func householdAccountIn(db *gorm.DB, userID uint) (models.HouseholdAccount, bool) {
+	var acct models.HouseholdAccount
+	if err := db.Where("user_id = ?", userID).First(&acct).Error; err != nil {
+		return acct, false
+	}
+	return acct, true
+}
+
+// householdRelOf turns a household account row into policy facts.
+func householdRelOf(acct models.HouseholdAccount, found bool) policy.HouseholdRel {
+	return policy.HouseholdRel{
+		Account: found,
+		Adult:   found && (acct.Relation == models.HouseholdRelationGuardian || acct.Relation == models.HouseholdRelationAdult),
+	}
+}
+
+// defaultHouseholdName names a new household after the account's last
+// name: "Smith household" for John Smith.
+func defaultHouseholdName(u *models.User) string {
+	name := strings.TrimSpace(u.Name)
+	if name == "" {
+		name = strings.TrimSpace(u.DisplayName)
+	}
+	fields := strings.Fields(name)
+	if len(fields) == 0 {
+		return "My household"
+	}
+	return fields[len(fields)-1] + " household"
+}
+
+// ensureHousehold loads the user's household, creating it on first use
+// (audited household.created). It answers and reports false on failure.
+func (a *App) ensureHousehold(c *gin.Context, u *models.User) (*models.Household, models.HouseholdAccount, bool) {
+	if acct, found := householdAccountIn(a.DB, u.ID); found {
+		var household models.Household
+		if err := a.DB.First(&household, acct.HouseholdID).Error; err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not load household")
+			return nil, acct, false
+		}
+		return &household, acct, true
+	}
+	if !policy.CanCreateHousehold(asPerson(u)) {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return nil, models.HouseholdAccount{}, false
+	}
+	household := models.Household{Name: defaultHouseholdName(u), CreatedBy: u.ID}
+	var acct models.HouseholdAccount
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&household).Error; err != nil {
+			return err
+		}
+		acct = models.HouseholdAccount{HouseholdID: household.ID, UserID: u.ID, Relation: models.HouseholdRelationGuardian}
+		if err := tx.Create(&acct).Error; err != nil {
+			return err
+		}
+		return audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.HouseholdCreated,
+			TargetType: "household", TargetID: household.ID, IP: c.ClientIP()})
+	})
+	if err != nil {
+		// A concurrent first use may have won the unique user row.
+		if acct, found := householdAccountIn(a.DB, u.ID); found {
+			var household models.Household
+			if ferr := a.DB.First(&household, acct.HouseholdID).Error; ferr == nil {
+				return &household, acct, true
+			}
+		}
+		jsonError(c, http.StatusInternalServerError, "could not create household")
+		return nil, acct, false
+	}
+	return &household, acct, true
+}
+
+// manageMyHousehold is ensureHousehold plus policy.CanManageHousehold:
+// a teen household account sees the household exists but manages none of
+// it (403, section 6).
+func (a *App) manageMyHousehold(c *gin.Context) (*models.Household, bool) {
+	u := apiUser(c)
+	household, acct, ok := a.ensureHousehold(c, u)
+	if !ok {
+		return nil, false
+	}
+	if !policy.CanManageHousehold(asPerson(u), householdRelOf(acct, true)) {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return nil, false
+	}
+	return household, true
+}
+
+// guardianLinksForPeople loads every guardian link for the people, by
+// person id, oldest first.
+func guardianLinksForPeople(db *gorm.DB, personIDs []uint) map[uint][]models.GuardianLink {
+	out := map[uint][]models.GuardianLink{}
+	if len(personIDs) == 0 {
+		return out
+	}
+	var links []models.GuardianLink
+	db.Where("person_id IN ?", personIDs).Order("id").Find(&links)
+	for _, l := range links {
+		if l.PersonID != nil {
+			out[*l.PersonID] = append(out[*l.PersonID], l)
+		}
+	}
+	return out
+}
+
+// effectiveLink is a person's link status for display: a confirmed link
+// wins, then a pending one (still waiting), then the latest decided one.
+// No link at all is "none" (an adult, who needs no approval).
+func effectiveLink(links []models.GuardianLink) (string, *uint) {
+	if len(links) == 0 {
+		return "none", nil
+	}
+	for _, status := range []string{models.GuardianConfirmed, models.GuardianPending} {
+		for _, l := range links {
+			if l.Status == status {
+				id := l.ID
+				return status, &id
+			}
+		}
+	}
+	last := links[len(links)-1]
+	return last.Status, &last.ID
+}
+
+func toHouseholdPersonJSON(person *models.HouseholdPerson, links []models.GuardianLink) householdPersonJSON {
+	status, linkID := effectiveLink(links)
+	if person.Kind == models.HouseholdAdult {
+		// An adult needs no approval, whatever links a former kind left.
+		status, linkID = "none", nil
+	}
+	return householdPersonJSON{
+		ID: person.ID, HouseholdID: person.HouseholdID,
+		FirstName: person.FirstName, LastName: person.LastName, Name: person.FullName(),
+		Kind: person.Kind, BirthDate: formatBirthDate(person.BirthDate),
+		CareNotes: person.CareNotes, PhotoConsent: person.PhotoConsent,
+		LinkStatus: status, GuardianLinkID: linkID,
+		ConvertedUserID: person.ConvertedUserID, CreatedBy: person.CreatedBy,
+	}
+}
+
+func (a *App) toHouseholdJSON(household *models.Household) householdJSON {
+	out := householdJSON{
+		ID: household.ID, Name: household.Name, Address: household.Address,
+		CreatedBy: household.CreatedBy,
+		People:    []householdPersonJSON{}, Accounts: []householdAccountJSON{},
+	}
+	var people []models.HouseholdPerson
+	a.DB.Where("household_id = ?", household.ID).Order("id").Find(&people)
+	ids := make([]uint, 0, len(people))
+	for i := range people {
+		ids = append(ids, people[i].ID)
+	}
+	links := guardianLinksForPeople(a.DB, ids)
+	for i := range people {
+		out.People = append(out.People, toHouseholdPersonJSON(&people[i], links[people[i].ID]))
+	}
+	var accounts []models.HouseholdAccount
+	a.DB.Where("household_id = ?", household.ID).Order("id").Find(&accounts)
+	for _, acct := range accounts {
+		out.Accounts = append(out.Accounts, householdAccountJSON{
+			UserID: acct.UserID, Name: nameIn(a.DB, acct.UserID), Relation: acct.Relation,
+		})
+	}
+	return out
+}
+
+// createGuardianLink writes a pending link for a child or teen person
+// and asks the admins to confirm it, all in tx (DEC-32). It returns the
+// notification ids to deliver email for after the commit.
+func createGuardianLink(tx *gorm.DB, guardianID uint, person *models.HouseholdPerson) (*models.GuardianLink, []uint, error) {
+	link := models.GuardianLink{GuardianUserID: guardianID, PersonID: &person.ID, Status: models.GuardianPending}
+	if err := tx.Create(&link).Error; err != nil {
+		return nil, nil, err
+	}
+	ids, err := notifyGuardianLinkPending(tx, &link, person)
+	return &link, ids, err
+}
+
+// revokeGuardianLinks ends every live (pending or confirmed) link to a
+// person in tx: a pending task is resolved withdrawn, and each revoked
+// link is audited (DEC-32 rows are never purged).
+func revokeGuardianLinks(tx *gorm.DB, c *gin.Context, actor uint, person *models.HouseholdPerson) error {
+	var links []models.GuardianLink
+	tx.Where("person_id = ? AND status IN ?", person.ID,
+		[]string{models.GuardianPending, models.GuardianConfirmed}).Find(&links)
+	now := time.Now().UTC()
+	for _, link := range links {
+		res := tx.Model(&models.GuardianLink{}).Where("id = ? AND status = ?", link.ID, link.Status).
+			Updates(map[string]any{"status": models.GuardianRevoked, "decided_at": now})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			continue
+		}
+		if link.Status == models.GuardianPending {
+			if _, err := notify.Resolve(tx, notify.HouseholdLinkPending, link.ID, &actor, "withdrawn"); err != nil {
+				return err
+			}
+		}
+		if err := audit.Write(tx, audit.Entry{Actor: &actor, Action: audit.GuardianLinkRevoked,
+			TargetType: "guardian_link", TargetID: link.ID,
+			Meta: map[string]any{"guardianUserId": link.GuardianUserID, "personId": person.ID},
+			IP:   c.ClientIP()}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// apiGetMyHousehold returns the user's household, creating it on first
+// use ("My household" creates it).
+func (a *App) apiGetMyHousehold(c *gin.Context) {
+	household, ok := a.manageMyHousehold(c)
+	if !ok {
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"household": a.toHouseholdJSON(household)})
+}
+
+// apiUpdateMyHousehold renames the household or sets its address.
+func (a *App) apiUpdateMyHousehold(c *gin.Context) {
+	household, ok := a.manageMyHousehold(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Name    *string `json:"name"`
+		Address *string `json:"address"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		jsonError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	updates := map[string]any{}
+	if body.Name != nil {
+		name := strings.TrimSpace(*body.Name)
+		if name == "" {
+			jsonError(c, http.StatusBadRequest, "name is required")
+			return
+		}
+		if len(name) > 100 {
+			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+			return
+		}
+		updates["name"] = name
+	}
+	if body.Address != nil {
+		address := strings.TrimSpace(*body.Address)
+		if len(address) > 500 {
+			jsonError(c, http.StatusBadRequest, "address is too long")
+			return
+		}
+		updates["address"] = address
+	}
+	if len(updates) > 0 {
+		if err := a.DB.Model(household).Updates(updates).Error; err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not save household")
+			return
+		}
+		if err := a.DB.First(household, household.ID).Error; err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not load household")
+			return
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"household": a.toHouseholdJSON(household)})
+}
+
+// householdPersonInput is the add/edit body. Fields are pointers so an
+// edit can tell "not provided" from "set to empty". Name is a fallback
+// for clients that send one field: it splits into first and last.
+type householdPersonInput struct {
+	FirstName    *string `json:"firstName"`
+	LastName     *string `json:"lastName"`
+	Name         *string `json:"name"`
+	Kind         *string `json:"kind"`
+	BirthDate    *string `json:"birthDate"`
+	CareNotes    *string `json:"careNotes"`
+	PhotoConsent *bool   `json:"photoConsent"`
+}
+
+func validHouseholdKind(kind string) bool {
+	return kind == models.HouseholdChild || kind == models.HouseholdTeen || kind == models.HouseholdAdult
+}
+
+// splitPersonName splits a single name field into first and last names.
+func splitPersonName(name string) (string, string) {
+	fields := strings.Fields(strings.TrimSpace(name))
+	if len(fields) == 0 {
+		return "", ""
+	}
+	if len(fields) == 1 {
+		return fields[0], ""
+	}
+	return fields[0], strings.Join(fields[1:], " ")
+}
+
+// apiAddHouseholdPerson adds someone to the user's household (created on
+// first use). A child or teen also gets a pending guardian link and the
+// admins a waiting task (DEC-32); an adult needs no approval.
+func (a *App) apiAddHouseholdPerson(c *gin.Context) {
+	household, ok := a.manageMyHousehold(c)
+	if !ok {
+		return
+	}
+	me := apiUser(c)
+	var body householdPersonInput
+	if err := c.ShouldBindJSON(&body); err != nil {
+		jsonError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	first, last := "", ""
+	if body.FirstName != nil {
+		first = strings.TrimSpace(*body.FirstName)
+	}
+	if body.LastName != nil {
+		last = strings.TrimSpace(*body.LastName)
+	}
+	if first == "" && body.Name != nil {
+		first, last = splitPersonName(*body.Name)
+	}
+	if first == "" {
+		jsonError(c, http.StatusBadRequest, "first name is required")
+		return
+	}
+	if len(first) > 100 || len(last) > 100 {
+		jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+		return
+	}
+	kind := ""
+	if body.Kind != nil {
+		kind = strings.TrimSpace(*body.Kind)
+	}
+	if !validHouseholdKind(kind) {
+		jsonError(c, http.StatusBadRequest, "kind must be child, teen, or adult")
+		return
+	}
+	var birth *time.Time
+	if body.BirthDate != nil && strings.TrimSpace(*body.BirthDate) != "" {
+		parsed, err := accounts.ParseBirthDate(strings.TrimSpace(*body.BirthDate))
+		if err != nil {
+			jsonError(c, http.StatusBadRequest, "birth date must be a real date (YYYY-MM-DD)")
+			return
+		}
+		birth = parsed
+	}
+	careNotes := ""
+	if body.CareNotes != nil {
+		careNotes = strings.TrimSpace(*body.CareNotes)
+	}
+	if len(careNotes) > 5000 {
+		jsonError(c, http.StatusBadRequest, "care notes are too long")
+		return
+	}
+	photoConsent := false
+	if body.PhotoConsent != nil {
+		photoConsent = *body.PhotoConsent
+	}
+	person := models.HouseholdPerson{
+		HouseholdID: household.ID, FirstName: first, LastName: last, Kind: kind,
+		BirthDate: birth, CareNotes: careNotes, PhotoConsent: photoConsent, CreatedBy: me.ID,
+	}
+	var emailed []uint
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&person).Error; err != nil {
+			return err
+		}
+		meta := map[string]any{"personId": person.ID, "kind": person.Kind}
+		if policy.NeedsGuardianLink(person.Kind) {
+			link, ids, err := createGuardianLink(tx, me.ID, &person)
+			if err != nil {
+				return err
+			}
+			emailed = append(emailed, ids...)
+			meta["guardianLinkId"] = link.ID
+		}
+		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.HouseholdPersonAdded,
+			TargetType: "household", TargetID: household.ID, Meta: meta, IP: c.ClientIP()})
+	})
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not add that person")
+		return
+	}
+	a.deliverNotificationEmails(emailed)
+	links := guardianLinksForPeople(a.DB, []uint{person.ID})
+	c.JSON(http.StatusCreated, gin.H{"person": toHouseholdPersonJSON(&person, links[person.ID])})
+}
+
+// loadMyHouseholdPerson loads a person in the user's household for an
+// edit or removal: 404 when they have no household or the person is not
+// in it, 403 when their account in it may not manage it (a teen account).
+func (a *App) loadMyHouseholdPerson(c *gin.Context) (*models.Household, *models.HouseholdPerson, bool) {
+	u := apiUser(c)
+	id, _ := strconv.Atoi(c.Param("id"))
+	acct, found := householdAccountIn(a.DB, u.ID)
+	if !found {
+		jsonError(c, http.StatusNotFound, "household person not found")
+		return nil, nil, false
+	}
+	if !policy.CanManageHousehold(asPerson(u), householdRelOf(acct, true)) {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return nil, nil, false
+	}
+	var household models.Household
+	if err := a.DB.First(&household, acct.HouseholdID).Error; err != nil {
+		jsonError(c, http.StatusNotFound, "household person not found")
+		return nil, nil, false
+	}
+	var person models.HouseholdPerson
+	if err := a.DB.Where("id = ? AND household_id = ?", id, household.ID).First(&person).Error; err != nil {
+		jsonError(c, http.StatusNotFound, "household person not found")
+		return nil, nil, false
+	}
+	return &household, &person, true
+}
+
+// apiUpdateHouseholdPerson edits a person in the user's household. A
+// kind change keeps DEC-32 true: becoming a child or teen starts a
+// pending guardian link, and becoming an adult revokes live links.
+func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
+	_, person, ok := a.loadMyHouseholdPerson(c)
+	if !ok {
+		return
+	}
+	me := apiUser(c)
+	var body householdPersonInput
+	if err := c.ShouldBindJSON(&body); err != nil {
+		jsonError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	updates := map[string]any{}
+	if body.Name != nil && body.FirstName == nil && body.LastName == nil {
+		first, last := splitPersonName(*body.Name)
+		body.FirstName, body.LastName = &first, &last
+	}
+	if body.FirstName != nil {
+		first := strings.TrimSpace(*body.FirstName)
+		if first == "" {
+			jsonError(c, http.StatusBadRequest, "first name is required")
+			return
+		}
+		if len(first) > 100 {
+			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+			return
+		}
+		updates["first_name"] = first
+	}
+	if body.LastName != nil {
+		last := strings.TrimSpace(*body.LastName)
+		if len(last) > 100 {
+			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+			return
+		}
+		updates["last_name"] = last
+	}
+	newKind := person.Kind
+	if body.Kind != nil {
+		newKind = strings.TrimSpace(*body.Kind)
+		if !validHouseholdKind(newKind) {
+			jsonError(c, http.StatusBadRequest, "kind must be child, teen, or adult")
+			return
+		}
+		updates["kind"] = newKind
+	}
+	if body.BirthDate != nil {
+		if strings.TrimSpace(*body.BirthDate) == "" {
+			updates["birth_date"] = nil
+		} else {
+			parsed, err := accounts.ParseBirthDate(strings.TrimSpace(*body.BirthDate))
+			if err != nil {
+				jsonError(c, http.StatusBadRequest, "birth date must be a real date (YYYY-MM-DD)")
+				return
+			}
+			updates["birth_date"] = parsed
+		}
+	}
+	if body.CareNotes != nil {
+		careNotes := strings.TrimSpace(*body.CareNotes)
+		if len(careNotes) > 5000 {
+			jsonError(c, http.StatusBadRequest, "care notes are too long")
+			return
+		}
+		updates["care_notes"] = careNotes
+	}
+	if body.PhotoConsent != nil {
+		updates["photo_consent"] = *body.PhotoConsent
+	}
+	oldKind := person.Kind
+	var emailed []uint
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if len(updates) > 0 {
+			if err := tx.Model(person).Updates(updates).Error; err != nil {
+				return err
+			}
+		}
+		// Reload in tx so the link work and its notices use saved facts.
+		if err := tx.First(person, person.ID).Error; err != nil {
+			return err
+		}
+		switch {
+		case policy.NeedsGuardianLink(oldKind) && !policy.NeedsGuardianLink(newKind):
+			return revokeGuardianLinks(tx, c, me.ID, person)
+		case !policy.NeedsGuardianLink(oldKind) && policy.NeedsGuardianLink(newKind):
+			var live int64
+			tx.Model(&models.GuardianLink{}).Where("person_id = ? AND status IN ?", person.ID,
+				[]string{models.GuardianPending, models.GuardianConfirmed}).Count(&live)
+			if live > 0 {
+				return nil
+			}
+			_, ids, err := createGuardianLink(tx, me.ID, person)
+			emailed = append(emailed, ids...)
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not save that person")
+		return
+	}
+	a.deliverNotificationEmails(emailed)
+	var fresh models.HouseholdPerson
+	if err := a.DB.First(&fresh, person.ID).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load that person")
+		return
+	}
+	links := guardianLinksForPeople(a.DB, []uint{fresh.ID})
+	c.JSON(http.StatusOK, gin.H{"person": toHouseholdPersonJSON(&fresh, links[fresh.ID])})
+}
+
+// apiDeleteHouseholdPerson removes a person from the user's household:
+// a soft delete, with live guardian links revoked and any waiting admin
+// task resolved withdrawn, audited in the same transaction.
+func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
+	household, person, ok := a.loadMyHouseholdPerson(c)
+	if !ok {
+		return
+	}
+	me := apiUser(c)
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := revokeGuardianLinks(tx, c, me.ID, person); err != nil {
+			return err
+		}
+		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.HouseholdPersonRemoved,
+			TargetType: "household", TargetID: household.ID,
+			Meta: map[string]any{"personId": person.ID, "kind": person.Kind}, IP: c.ClientIP()}); err != nil {
+			return err
+		}
+		return tx.Delete(person).Error
+	})
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not remove that person")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{})
 }

@@ -84,6 +84,10 @@ var tsContracts = []struct {
 	{attendeeJSON{}, "Attendee"},
 	{registrationJSON{}, "RegistrationResponse"},
 	{calendarFeedJSON{}, "CalendarFeed"},
+	{householdJSON{}, "Household"},
+	{householdPersonJSON{}, "HouseholdPerson"},
+	{householdAccountJSON{}, "HouseholdAccount"},
+	{guardianLinkJSON{}, "GuardianLink"},
 }
 
 var tsFieldRe = regexp.MustCompile(`^\s+(\w+)\??:`)

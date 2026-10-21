@@ -370,6 +370,24 @@ func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags model
 	})
 }
 
+// notifyGuardianLinkPending asks every admin to confirm a guardian link
+// to a child or teen household person (a task, DEC-32, M1.9). The rows
+// go to admins only, so they name the guardian and the person; the email
+// variant names nobody. Resolved on confirm and reject (and withdrawn
+// when the person is removed before a decision).
+func notifyGuardianLinkPending(tx *gorm.DB, link *models.GuardianLink, person *models.HouseholdPerson) ([]uint, error) {
+	return notify.Send(tx, notify.Msg{
+		Kind: notify.HouseholdLinkPending, To: adminIDs(tx), Actor: &link.GuardianUserID,
+		SubjectType: "guardian_link", SubjectID: link.ID, Link: approvalsLink,
+		Vars: notify.Vars{
+			Actor: nameIn(tx, link.GuardianUserID), Person: person.FullName(),
+			Change: person.Kind, Teen: person.Kind == models.HouseholdTeen,
+		},
+		Data:      map[string]any{"guardianLinkId": link.ID, "personId": person.ID},
+		DedupeKey: fmt.Sprintf("household.link_pending:%d", link.ID),
+	})
+}
+
 // notifyDeletionRequested asks every admin to delete or keep a group.
 func notifyDeletionRequested(tx *gorm.DB, g *models.Group, actor uint) ([]uint, error) {
 	return notify.Send(tx, notify.Msg{

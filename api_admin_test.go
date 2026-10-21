@@ -477,3 +477,134 @@ func TestAdminEditCannotBypassTeenConsent(t *testing.T) {
 	adult := newTestUser(t, app, "adult94", "password1234", models.RoleMember)
 	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(adult.ID), map[string]string{"role": models.RoleAdmin}, http.StatusOK)
 }
+
+// Guardian links (M1.9 slice 1, DEC-32): a child or teen added to a
+// household waits for an admin, who confirms it only with a check note.
+func TestAdminGuardianLinksConfirmReject(t *testing.T) {
+	app := testApp(t)
+	adminUser := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	newTestUser(t, app, "pat", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	pat := loginAPI(t, app, "pat", "password1234")
+
+	child := addMyPerson(t, pat, map[string]any{"firstName": "Kid", "lastName": "Smith", "kind": "child", "birthDate": "2020-05-01"})
+	teen := addMyPerson(t, pat, map[string]any{"firstName": "Tess", "kind": "teen", "birthDate": "2012-03-04"})
+	addMyPerson(t, pat, map[string]any{"firstName": "Mary", "kind": "adult"})
+
+	// Members never see or decide the queue.
+	if w := pat.do("GET", "/api/v1/admin/guardian-links?status=pending", nil, false); w.Code != http.StatusForbidden {
+		t.Fatalf("member lists guardian links: %d, want 403", w.Code)
+	}
+
+	listLinks := func(status string) []guardianLinkJSON {
+		t.Helper()
+		w := admin.do("GET", "/api/v1/admin/guardian-links?status="+status, nil, false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list guardian links %s: %d %s", status, w.Code, w.Body.String())
+		}
+		var body struct {
+			GuardianLinks []guardianLinkJSON `json:"guardianLinks"`
+		}
+		decodeJSON(t, w, &body)
+		return body.GuardianLinks
+	}
+	pending := listLinks("pending")
+	if len(pending) != 2 {
+		t.Fatalf("pending links: %+v", pending)
+	}
+	var childLink, teenLink guardianLinkJSON
+	for _, l := range pending {
+		if l.PersonID != nil && *l.PersonID == child.ID {
+			childLink = l
+		}
+		if l.PersonID != nil && *l.PersonID == teen.ID {
+			teenLink = l
+		}
+	}
+	if childLink.PersonName != "Kid Smith" || childLink.PersonKind != "child" || childLink.BirthDate != "2020-05-01" || childLink.GuardianName == "" {
+		t.Fatalf("child link row: %+v", childLink)
+	}
+	if teenLink.PersonKind != "teen" {
+		t.Fatalf("teen link row: %+v", teenLink)
+	}
+	if w := admin.do("GET", "/api/v1/admin/guardian-links?status=bogus", nil, false); w.Code != http.StatusBadRequest {
+		t.Fatalf("bogus status: %d, want 400", w.Code)
+	}
+
+	confirmPath := "/api/v1/admin/guardian-links/" + itoa2(childLink.ID) + "/confirm"
+	// No check note, no confirmation (DEC-32), and nothing changes.
+	w := admin.do("POST", confirmPath, map[string]string{}, true)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("confirm without a note: %d %s, want 400", w.Code, w.Body.String())
+	}
+	var link models.GuardianLink
+	app.DB.First(&link, childLink.ID)
+	if link.Status != models.GuardianPending {
+		t.Fatalf("link after noteless confirm: %+v", link)
+	}
+
+	// With a note: confirmed, by this admin, decided now, task resolved.
+	w = admin.do("POST", confirmPath, map[string]string{"checkNote": "Known family; parent came to the office"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirm link: %d %s", w.Code, w.Body.String())
+	}
+	var decided struct {
+		GuardianLink guardianLinkJSON `json:"guardianLink"`
+	}
+	decodeJSON(t, w, &decided)
+	if decided.GuardianLink.Status != models.GuardianConfirmed || decided.GuardianLink.ConfirmedBy == nil ||
+		*decided.GuardianLink.ConfirmedBy != adminUser.ID || decided.GuardianLink.CheckNote == "" || decided.GuardianLink.DecidedAt == nil {
+		t.Fatalf("confirmed link: %+v", decided.GuardianLink)
+	}
+	if rows, _ := auditRows(t, app, audit.GuardianLinkConfirmed); len(rows) != 1 || rows[0].TargetType != "guardian_link" || rows[0].TargetID != childLink.ID {
+		t.Fatalf("guardian_link.confirmed audit: %+v", rows)
+	}
+	if _, _, waiting, _ := badge(t, admin, ""); waiting != 1 {
+		t.Fatalf("admin waiting after one confirm: %d, want 1 (the teen)", waiting)
+	}
+	if h := getMyHousehold(t, pat); h.People[0].LinkStatus != models.GuardianConfirmed {
+		found := ""
+		for _, p := range h.People {
+			if p.ID == child.ID {
+				found = p.LinkStatus
+			}
+		}
+		t.Fatalf("holder sees child link as %q, want confirmed", found)
+	}
+	// Deciding again loses the race cleanly.
+	if w := admin.do("POST", confirmPath, map[string]string{"checkNote": "again"}, true); w.Code != http.StatusConflict {
+		t.Fatalf("second confirm: %d %s, want 409", w.Code, w.Body.String())
+	}
+
+	// Rejecting needs no note; the holder sees the rejection.
+	rejectPath := "/api/v1/admin/guardian-links/" + itoa2(teenLink.ID) + "/reject"
+	w = admin.do("POST", rejectPath, map[string]string{}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("reject link: %d %s", w.Code, w.Body.String())
+	}
+	decodeJSON(t, w, &decided)
+	if decided.GuardianLink.Status != models.GuardianRejected {
+		t.Fatalf("rejected link: %+v", decided.GuardianLink)
+	}
+	if rows, _ := auditRows(t, app, audit.GuardianLinkRejected); len(rows) != 1 {
+		t.Fatalf("guardian_link.rejected audit rows: %d", len(rows))
+	}
+	if _, _, waiting, _ := badge(t, admin, ""); waiting != 0 {
+		t.Fatalf("admin waiting after both decisions: %d", waiting)
+	}
+	if links := listLinks("pending"); len(links) != 0 {
+		t.Fatalf("pending after decisions: %+v", links)
+	}
+	if links := listLinks("confirmed"); len(links) != 1 || links[0].ID != childLink.ID {
+		t.Fatalf("confirmed list: %+v", links)
+	}
+	for _, p := range getMyHousehold(t, pat).People {
+		if p.ID == teen.ID && p.LinkStatus != models.GuardianRejected {
+			t.Fatalf("holder sees teen link as %q, want rejected", p.LinkStatus)
+		}
+	}
+	// A missing link is a 404 for an admin too.
+	if w := admin.do("POST", "/api/v1/admin/guardian-links/999999/confirm", map[string]string{"checkNote": "x"}, true); w.Code != http.StatusNotFound {
+		t.Fatalf("missing link: %d, want 404", w.Code)
+	}
+}

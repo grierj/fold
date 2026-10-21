@@ -68,6 +68,8 @@ export const ERROR_COPY = {
   invalid_guests: "Guests allowed needs to be a number from 0 to 5.",
   invalid_timezone: "Pick a time zone from the list.",
   invalid_feed_scope: "That feed choice isn't available. Pick My events or Everything I can see.",
+  invalid_kind: "Pick who this person is: a child, a teen, or an adult.",
+  check_note_required: "Write how you checked this link first. A short note is fine, like “Known family; parent came to the office.”",
   invalid_video_url: "That video link needs to be a full address starting with https://. Paste the whole link and try again.",
   invalid_video_provider: "Pick no video link, paste a link, or a Jitsi link.",
   invalid_video_reveal: "Pick who sees the video link: registered people only, or everyone who can see the event.",

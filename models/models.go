@@ -561,6 +561,98 @@ type AccountRequest struct {
 	UpdatedAt time.Time `gorm:"not null;default:now()"`
 }
 
+// Household people and guardian links (5.3, 5.10, DEC-8, DEC-23,
+// DEC-32, M1.9). A household person has no login, email, or phone: a
+// child under 13, a teen without their own email, or an adult who shares
+// the account holder's email.
+const (
+	HouseholdChild = "child"
+	HouseholdTeen  = "teen"
+	HouseholdAdult = "adult"
+
+	HouseholdRelationGuardian = "guardian"
+	HouseholdRelationAdult    = "adult"
+	HouseholdRelationTeen     = "teen"
+
+	GuardianPending   = "pending"
+	GuardianConfirmed = "confirmed"
+	GuardianRejected  = "rejected"
+	GuardianRevoked   = "revoked"
+)
+
+// Household is one household (5.3). It is created on first use, named
+// after the account's last name, and editable. CreatedBy has no GORM
+// association, like AccountRequest's user references.
+type Household struct {
+	ID        uint      `gorm:"primaryKey"`
+	Name      string    `gorm:"not null"`
+	Address   string    `gorm:"not null;default:''"`
+	CreatedBy uint      `gorm:"not null;index"`
+	CreatedAt time.Time `gorm:"not null;default:now()"`
+	UpdatedAt time.Time `gorm:"not null;default:now()"`
+}
+
+// HouseholdAccount is a person in a household who has their own account
+// (5.3). UserID is unique: an account belongs to at most one household.
+type HouseholdAccount struct {
+	ID          uint      `gorm:"primaryKey"`
+	HouseholdID uint      `gorm:"not null;index"`
+	UserID      uint      `gorm:"not null;uniqueIndex:idx_household_accounts_user_id"`
+	Relation    string    `gorm:"not null"` // guardian | adult | teen
+	CreatedAt   time.Time `gorm:"not null;default:now()"`
+	UpdatedAt   time.Time `gorm:"not null;default:now()"`
+}
+
+// HouseholdPerson is a person with no account (5.3, DEC-8, DEC-23).
+// CareNotes are visible only as section 6 allows (policy.CanSeeCareNotes);
+// PhotoConsent defaults to no (10.3). ConvertedUserID is set when the
+// person is turned into their own account (M1.9 slice 3). Removal is a
+// soft delete, so guardian links and later registrations keep the row.
+type HouseholdPerson struct {
+	ID              uint           `gorm:"primaryKey"`
+	HouseholdID     uint           `gorm:"not null;index"`
+	FirstName       string         `gorm:"not null"`
+	LastName        string         `gorm:"not null;default:''"`
+	Kind            string         `gorm:"not null"` // child | teen | adult
+	BirthDate       *time.Time     `gorm:"type:date"`
+	CareNotes       string         `gorm:"type:text;not null;default:''"`
+	PhotoConsent    bool           `gorm:"not null;default:false"`
+	CreatedBy       uint           `gorm:"not null"`
+	ConvertedUserID *uint          `gorm:""`
+	CreatedAt       time.Time      `gorm:"not null;default:now()"`
+	UpdatedAt       time.Time      `gorm:"not null;default:now()"`
+	DeletedAt       gorm.DeletedAt `gorm:"index"`
+}
+
+// FullName is the person's first and last names joined for display.
+func (p HouseholdPerson) FullName() string {
+	if p.LastName == "" {
+		return p.FirstName
+	}
+	if p.FirstName == "" {
+		return p.LastName
+	}
+	return p.FirstName + " " + p.LastName
+}
+
+// GuardianLink links an adult to a teen or child (5.3, DEC-32). Exactly
+// one of TeenUserID (a teen account) or PersonID (a household person) is
+// set, enforced by a CHECK. Every link starts pending; only an admin can
+// confirm it, writing how they checked in CheckNote. There is no
+// auto-confirm path.
+type GuardianLink struct {
+	ID             uint      `gorm:"primaryKey"`
+	GuardianUserID uint      `gorm:"not null;index"`
+	TeenUserID     *uint     `gorm:"index"`
+	PersonID       *uint     `gorm:"index"`
+	Status         string    `gorm:"not null;default:pending;index"` // pending | confirmed | rejected | revoked
+	ConfirmedBy    *uint     `gorm:""`
+	CheckNote      string    `gorm:"not null;default:''"`
+	CreatedAt      time.Time `gorm:"not null;default:now()"`
+	UpdatedAt      time.Time `gorm:"not null;default:now()"`
+	DecidedAt      *time.Time
+}
+
 // All lists every model, in dependency order. The drift check and the test
 // helpers use it; a new model must be added here and to a migration.
 func All() []any {
@@ -569,6 +661,7 @@ func All() []any {
 		&Membership{}, &Registration{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
+		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{},
 	}
 }
 
