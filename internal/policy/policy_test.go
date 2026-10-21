@@ -559,6 +559,35 @@ func TestCanRegisterGuest(t *testing.T) {
 	}
 }
 
+// CanSeeVideoLink (5.8, M1.8): "always" shows everyone who can see the
+// event; "registered_only" shows only people going on that date plus the
+// event's managers. Waitlisted, maybe and declined are isGoing=false.
+func TestCanSeeVideoLink(t *testing.T) {
+	cases := []struct {
+		name               string
+		reveal             string
+		isGoing, isManager bool
+		want               bool
+	}{
+		{"always: outsider sees it", VideoRevealAlways, false, false, true},
+		{"always: going sees it", VideoRevealAlways, true, false, true},
+		{"always: manager sees it", VideoRevealAlways, false, true, true},
+		{"registered_only: going sees it", VideoRevealRegisteredOnly, true, false, true},
+		{"registered_only: leader/host/admin sees it", VideoRevealRegisteredOnly, false, true, true},
+		{"registered_only: waitlisted does not", VideoRevealRegisteredOnly, false, false, false},
+		{"registered_only: outsider does not", VideoRevealRegisteredOnly, false, false, false},
+		{"empty fails closed like registered_only", "", false, false, false},
+		{"empty: going still sees it", "", true, false, true},
+		{"unknown value fails closed", "sometimes", false, false, false},
+		{"unknown value: manager still sees it", "sometimes", false, true, true},
+	}
+	for _, c := range cases {
+		if got := CanSeeVideoLink(c.reveal, c.isGoing, c.isManager); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestCanRegisterEvent(t *testing.T) {
 	hidden := active(InviteOnly)
 	if !CanRegisterEvent(adult, groupEvent(Public), hidden, none) {

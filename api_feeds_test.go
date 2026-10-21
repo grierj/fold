@@ -400,3 +400,91 @@ func TestFeedRecurringAcceptance(t *testing.T) {
 		t.Fatalf("feed is missing the moved date's RECURRENCE-ID entry:\n%s", body)
 	}
 }
+
+// unfoldFeed joins ICS folded lines so a long URL can be searched whole.
+func unfoldFeed(body string) string { return strings.ReplaceAll(body, "\r\n ", "") }
+
+// Video links in feeds (5.8, M1.8): the public feeds carry an "always"
+// link only. A personal feed carries a registered_only link for a date
+// its owner is going to — not for a waitlisted date, and not at all for
+// someone merely looking.
+func TestFeedVideoLinkReveal(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	start := feedStart(7)
+
+	const alwaysLink = "https://meet.example.org/always-room"
+	const quietLink = "https://meet.example.org/quiet-room"
+	gid := createFeedGroup(t, admin, "Video Choir", models.VisibilityPublic, "Hall")
+	open := createFeedEvent(t, admin, gid, "Open Video Night", start, "")
+	quiet := createFeedEvent(t, admin, gid, "Quiet Video Night", start.AddDate(0, 0, 1), "")
+	setVideo := func(id uint, reveal, link string, extra map[string]any) {
+		updates := map[string]any{
+			"video_provider": models.VideoProviderLink, "video_url": link, "video_reveal": reveal,
+		}
+		for k, v := range extra {
+			updates[k] = v
+		}
+		if err := app.DB.Model(&models.Event{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	setVideo(open.ID, models.VideoRevealAlways, alwaysLink, nil)
+	setVideo(quiet.ID, models.VideoRevealRegisteredOnly, quietLink,
+		map[string]any{"capacity": 1, "waitlist_enabled": true})
+
+	anon := newAPIClient(t, app)
+	for _, path := range []string{"/cal/public.ics", fmt.Sprintf("/cal/groups/%d.ics", gid)} {
+		body := unfoldFeed(feedBody(t, anon, path))
+		if !strings.Contains(body, "Join by video: "+alwaysLink) {
+			t.Fatalf("%s is missing the always link:\n%s", path, body)
+		}
+		if strings.Contains(body, quietLink) {
+			t.Fatalf("%s leaks the registered-only link:\n%s", path, body)
+		}
+	}
+
+	mk := func(name string) *apiClient {
+		newTestUser(t, app, name, "password1234", models.RoleMember)
+		return loginAPI(t, app, name, "password1234")
+	}
+	quietDate := feedDate(start.AddDate(0, 0, 1))
+	going := mk("fgoing")
+	if code, body := registerAs(going, quiet.ID, quietDate, "going", nil); code != http.StatusOK {
+		t.Fatalf("going register: %d %s", code, body)
+	}
+	waiting := mk("fwaiting")
+	if code, body := registerAs(waiting, quiet.ID, quietDate, "going", nil); code != http.StatusOK {
+		t.Fatalf("waitlist register: %d %s", code, body)
+	}
+	looking := mk("flooking")
+
+	// Going: the standalone date in a "mine" feed carries the link.
+	body := unfoldFeed(feedBody(t, going, createFeedLink(t, going, models.CalendarFeedMine)))
+	if !strings.Contains(body, "Join by video: "+quietLink) {
+		t.Fatalf("going person's feed is missing the link:\n%s", body)
+	}
+	// Waitlisted: the date is there (TENTATIVE) but the link is not.
+	body = unfoldFeed(feedBody(t, waiting, createFeedLink(t, waiting, models.CalendarFeedMine)))
+	if !strings.Contains(body, "Quiet Video Night") || !strings.Contains(body, "TENTATIVE") {
+		t.Fatalf("waitlisted feed should carry the date as tentative:\n%s", body)
+	}
+	if strings.Contains(body, quietLink) {
+		t.Fatalf("waitlisted feed leaks the link:\n%s", body)
+	}
+	// Looking with "all I can see": the series is there, the quiet link
+	// is not, the always link is.
+	body = unfoldFeed(feedBody(t, looking, createFeedLink(t, looking, models.CalendarFeedAll)))
+	if strings.Contains(body, quietLink) {
+		t.Fatalf("a bystander's feed leaks the link:\n%s", body)
+	}
+	if !strings.Contains(body, "Join by video: "+alwaysLink) {
+		t.Fatalf("an all-scope feed is missing the always link:\n%s", body)
+	}
+	// The leader's own feed carries it (they run the event).
+	body = unfoldFeed(feedBody(t, admin, createFeedLink(t, admin, models.CalendarFeedAll)))
+	if !strings.Contains(body, "Join by video: "+quietLink) {
+		t.Fatalf("leader's feed is missing the link:\n%s", body)
+	}
+}

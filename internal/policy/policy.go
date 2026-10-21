@@ -337,6 +337,26 @@ func CanRegisterGuest(ev EventView, g Group) bool {
 	return CanSeeEvent(nil, ev, g, Rel{})
 }
 
+// Video reveal settings (5.8, M1.8).
+const (
+	VideoRevealAlways         = "always"
+	VideoRevealRegisteredOnly = "registered_only"
+)
+
+// CanSeeVideoLink decides who sees an event's video link (5.8, M1.8): with
+// "always", everyone who can see the event; with "registered_only" (the
+// default, and anything unexpected, failing closed), only people
+// registered going for that date, plus the event's leaders or hosts and
+// admins (isManager). Waitlisted, maybe and declined do not see it. The
+// caller checks CanSeeEvent first and only calls this when the event has
+// a link at all.
+func CanSeeVideoLink(reveal string, isGoing, isManager bool) bool {
+	if reveal == VideoRevealAlways {
+		return true
+	}
+	return isGoing || isManager
+}
+
 // IsAdmin gates the admin area: approvals, users and roles, settings, and
 // (later) the audit log.
 func IsAdmin(p *Person) bool { return p != nil && p.Admin }

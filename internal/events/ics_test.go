@@ -290,3 +290,30 @@ func TestICSRenderIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+// A video link the handler cleared for the viewer rides in the
+// DESCRIPTION (M1.8); with none set, nothing renders.
+func TestICSVideoLinkInDescription(t *testing.T) {
+	link := "https://meet.example.org/choir-abc123def4"
+	base := Feed{
+		Name: "Fold", Host: "church.example.org",
+		WindowStart: utc(2026, 11, 1, 0, 0), WindowEnd: utc(2027, 11, 1, 0, 0),
+		Events: []FeedEvent{{
+			ID: 21, Title: "Choir practice", TZID: "UTC", StartsLocal: "2026-12-01T19:00",
+			DurationMinutes: 60, UpdatedAt: utc(2026, 11, 1, 8, 0), VideoURL: link,
+		}},
+		Singles: []FeedSingle{{
+			EventID: 22, OriginalDate: "2026-12-02", Title: "One rehearsal", TZID: "UTC",
+			StartsAt: utc(2026, 12, 2, 19, 0), EndsAt: utc(2026, 12, 2, 20, 0),
+			UpdatedAt: utc(2026, 11, 1, 8, 0), VideoURL: link, Status: "CONFIRMED",
+		}},
+	}
+	if got := strings.Count(string(RenderFeed(base)), "Join by video:"); got != 2 {
+		t.Fatalf("series and single should each carry the link, got %d mentions", got)
+	}
+	base.Events[0].VideoURL = ""
+	base.Singles[0].VideoURL = ""
+	if out := string(RenderFeed(base)); strings.Contains(out, "Join by video") || strings.Contains(out, link) {
+		t.Fatal("an unset video link reached the feed")
+	}
+}

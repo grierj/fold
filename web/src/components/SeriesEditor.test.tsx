@@ -4,7 +4,7 @@ import { SeriesEditor } from "./SeriesEditor";
 
 vi.mock("../api", () => ({
   ApiError: class extends Error {},
-  Events: { update: vi.fn() },
+  Events: { update: vi.fn(), generateJitsi: vi.fn().mockResolvedValue({ url: "https://meet.jit.si/fold-abc123def4" }) },
   Site: { get: vi.fn().mockResolvedValue({ timezone: "UTC" }) },
 }));
 
@@ -24,6 +24,9 @@ describe("SeriesEditor", () => {
           capacity: 20,
           waitlistEnabled: true,
           guestsAllowed: 2,
+          videoProvider: "link",
+          videoUrl: "https://zoom.example.org/j/123",
+          videoReveal: "registered_only",
         }}
         idPrefix="test"
         onSaved={() => {}}
@@ -37,6 +40,11 @@ describe("SeriesEditor", () => {
     expect(screen.getByText(/0–5/)).toBeInTheDocument();
     expect(screen.getByLabelText(/^Waitlist when full/)).toBeChecked();
     expect(screen.getByText(/refuses new registrations/)).toBeInTheDocument();
+    // The Video section carries the series' link and who may see it.
+    expect((screen.getByLabelText("Video link") as HTMLInputElement).value).toBe(
+      "https://zoom.example.org/j/123"
+    );
+    expect((screen.getByLabelText("Who sees the link") as HTMLSelectElement).value).toBe("registered_only");
   });
 
   it("shows an empty capacity as no limit", () => {

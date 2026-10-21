@@ -226,6 +226,15 @@ function DateRow({
           {instance.location ? ` · ${instance.location}` : ""}
         </div>
         {held && <div className="text-sm text-text-muted">{held}</div>}
+        {instance.videoUrl ? (
+          <div className="text-sm">
+            <a href={instance.videoUrl} target="_blank" rel="noopener noreferrer" className="text-primary font-semibold">
+              Join by video
+            </a>
+          </div>
+        ) : instance.videoHidden ? (
+          <div className="text-sm text-text-muted">Register to get the link</div>
+        ) : null}
         {instance.overridden && (
           <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
         )}

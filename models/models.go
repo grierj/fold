@@ -59,6 +59,17 @@ const (
 	RegSourceGuestForm = "guest_form"
 )
 
+// Video providers and reveal settings (5.8, M1.8). The link is a plain
+// link out; there is no embedded video anywhere (DEC-16).
+const (
+	VideoProviderNone  = "none"
+	VideoProviderLink  = "link"
+	VideoProviderJitsi = "jitsi"
+
+	VideoRevealAlways         = "always"
+	VideoRevealRegisteredOnly = "registered_only"
+)
+
 // Occurrence statuses. A cancelled date is a row, not a separate exception.
 const (
 	OccurrenceScheduled = "scheduled"
@@ -231,8 +242,14 @@ type Event struct {
 	WaitlistEnabled bool `gorm:"not null;default:false"`
 	// GuestsAllowed caps the extra unnamed guests one registration may
 	// bring (0-5, enforced by a CHECK).
-	GuestsAllowed   int     `gorm:"not null;default:0"`
-	StartsLocal     string  `gorm:"not null"` // YYYY-MM-DDTHH:MM, no offset
+	GuestsAllowed int `gorm:"not null;default:0"`
+	// Video is a link out to a call (5.8, M1.8, DEC-16): none, a pasted
+	// link, or a generated Jitsi room. VideoReveal decides who may see
+	// the URL; see policy.CanSeeVideoLink.
+	VideoProvider   string  `gorm:"not null;default:none"`            // none | link | jitsi
+	VideoURL        string  `gorm:"type:text;not null;default:''"`    // empty unless a provider is set
+	VideoReveal     string  `gorm:"not null;default:registered_only"` // always | registered_only
+	StartsLocal     string  `gorm:"not null"`                         // YYYY-MM-DDTHH:MM, no offset
 	DurationMinutes int     `gorm:"not null"`
 	TZID            string  `gorm:"column:tzid;not null"`
 	RRule           string  `gorm:"column:rrule;not null"`

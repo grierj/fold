@@ -293,6 +293,30 @@ func TestOnlyLoginAndInvitesAnswer429(t *testing.T) {
 	}
 }
 
+// DEC-16: video is link-out only — a plain anchor to the call, in a new
+// tab. Nothing in web/src may embed a frame.
+func TestNoVideoEmbed(t *testing.T) {
+	err := filepath.WalkDir("web/src", func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if strings.Contains(strings.ToLower(string(b)), "<iframe") {
+			t.Errorf("%s embeds an <iframe>; video is a link out in a new tab (DEC-16)", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Colors come from the theme tokens in web/src/index.css (UI makeover PR 3),
 // so a token change reaches every screen. A hex color anywhere else, or a
 // class from Tailwind's own palette (bg-red-600; it builds nothing now that

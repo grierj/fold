@@ -42,6 +42,11 @@ export interface GroupSummary {
 // their members and admins.
 export type Visibility = "public" | "private" | "invite_only";
 
+// Video links (5.8, M1.8): a pasted link or a generated Jitsi room, and
+// who may see it. videoUrl arrives only when the viewer may see it.
+export type VideoProvider = "none" | "link" | "jitsi";
+export type VideoReveal = "always" | "registered_only";
+
 export interface Member {
   id: number;
   name: string;
@@ -165,6 +170,12 @@ export interface EventOccurrence {
   guestsAllowed: number;
   myGuestCount?: number;
   myWaitlistPosition?: number;
+  // Video link for this date (M1.8). videoUrl is set only when you may
+  // see it; videoHidden means a link exists but you can't yet.
+  videoProvider: VideoProvider;
+  videoUrl?: string;
+  videoReveal: VideoReveal;
+  videoHidden?: boolean;
 }
 
 // NOTE: the implementation returns {group, members, upcomingEvents,
@@ -207,6 +218,12 @@ export interface EventSeries {
   capacity: number | null;
   waitlistEnabled: boolean;
   guestsAllowed: number;
+  // Video link (M1.8). At series level it shows under "always" and to
+  // the event's leaders or hosts; people going to a date get it there.
+  videoProvider: VideoProvider;
+  videoUrl?: string;
+  videoReveal: VideoReveal;
+  videoHidden?: boolean;
 }
 
 // The register endpoint's registration object (M1.5): the final status,

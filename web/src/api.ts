@@ -102,6 +102,8 @@ import type {
   RegistrationStatus,
   SoleLedGroup,
   User,
+  VideoProvider,
+  VideoReveal,
   Visibility,
   VisibilityImpact,
 } from "./types";
@@ -195,6 +197,9 @@ export const Groups = {
       capacity?: number | null;
       waitlistEnabled?: boolean;
       guestsAllowed?: number | null;
+      videoProvider?: VideoProvider;
+      videoUrl?: string;
+      videoReveal?: VideoReveal;
     }
   ) => api<{ event: EventSeries }>(`/groups/${id}/events`, { method: "POST", body: data }),
 };
@@ -270,6 +275,9 @@ export const Events = {
     capacity?: number | null;
     waitlistEnabled?: boolean;
     guestsAllowed?: number | null;
+    videoProvider?: VideoProvider;
+    videoUrl?: string;
+    videoReveal?: VideoReveal;
   }) => api<{ event: EventSeries }>("/events", { method: "POST", body: data }),
   setVisibility: (
     id: number,
@@ -296,8 +304,13 @@ export const Events = {
       capacity?: number | null;
       waitlistEnabled?: boolean;
       guestsAllowed?: number | null;
+      videoProvider?: VideoProvider;
+      videoUrl?: string;
+      videoReveal?: VideoReveal;
     }
   ) => api<{ event: EventSeries }>(`/events/${id}`, { method: "PUT", body: data }),
+  // Mint a fresh Jitsi room URL (M1.8); each call makes a new one.
+  generateJitsi: () => api<{ url: string }>("/events/video/jitsi", { method: "POST", body: {} }),
   register: (id: number, status: RegistrationStatus, date: string, guestCount?: number) =>
     api<{ registration: RegistrationResponse }>(`/events/${id}/registrations`, {
       method: "PUT",

@@ -13,6 +13,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/events"
+	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -163,9 +164,11 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 	}
 
 	// Option A needs the viewer's own going and waitlisted dates on
-	// events that don't arrive as a whole series.
+	// events that don't arrive as a whole series. A personal feed also
+	// needs them to reveal a registered_only video link (M1.8): going
+	// only, per occurrence.
 	myStatus := map[uint]string{}
-	if opts.personal && opts.scope == models.CalendarFeedMine && viewer != nil && len(occs) > 0 {
+	if opts.personal && viewer != nil && len(occs) > 0 {
 		occIDs := make([]uint, len(occs))
 		for i := range occs {
 			occIDs[i] = occs[i].ID
@@ -189,6 +192,19 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		if shown := a.groupShownTo(viewer, grp, rel); shown != nil {
 			groupLoc = shown.Location
 		}
+		viewerAdmin := viewer != nil && asPerson(viewer).Admin
+		// The video link reaches a feed only as policy allows (M1.8): the
+		// public and group feeds (no viewer) carry an "always" link only;
+		// a personal feed carries a registered_only link for the dates
+		// its owner is going to, and for events they lead, host or admin.
+		videoFor := func(isGoing bool) string {
+			if link := videoLinkOf(ev); link != "" &&
+				policy.CanSeeVideoLink(videoRevealOf(ev), isGoing,
+					rel.Leader || hosted[ev.ID] || viewerAdmin) {
+				return link
+			}
+			return ""
+		}
 		full := !opts.personal || opts.scope == models.CalendarFeedAll || rel.Member || hosted[ev.ID]
 		if !full {
 			for _, occ := range list {
@@ -204,7 +220,8 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 				feed.Singles = append(feed.Singles, events.FeedSingle{
 					EventID: ev.ID, OriginalDate: occ.OriginalDate,
 					Title: eff.Title, Description: ev.Description, Location: eff.Location,
-					TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
+					VideoURL: videoFor(status == models.RegGoing),
+					TZID:     ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
 					URL: a.feedEventURL(ev.ID), UpdatedAt: occ.UpdatedAt, Status: s,
 				})
 			}
@@ -218,9 +235,19 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		if ev.RRuleUntil != nil {
 			until = *ev.RRuleUntil
 		}
+		// One series entry covers every date and the link is the same on
+		// all of them, so going to any in-window date reveals it here.
+		goingAny := false
+		for _, occ := range list {
+			if myStatus[occ.ID] == models.RegGoing {
+				goingAny = true
+				break
+			}
+		}
 		fe := events.FeedEvent{
 			ID: ev.ID, Title: ev.Title, Description: ev.Description, Location: seriesLoc,
-			TZID: ev.TZID, StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes,
+			VideoURL: videoFor(goingAny),
+			TZID:     ev.TZID, StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes,
 			RRule: ev.RRule, RRuleUntil: until,
 			URL: a.feedEventURL(ev.ID), UpdatedAt: ev.UpdatedAt,
 		}

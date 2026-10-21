@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"fold/internal/audit"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -262,6 +263,55 @@ func TestCancelPromotesEarliestFittingParty(t *testing.T) {
 	}
 	if got := countRegs(t, app, occ.ID, models.RegGoing); got != 2 {
 		t.Fatalf("going = %d, want 2 (p2 and promoted p3)", got)
+	}
+}
+
+// A promotion email carries the video link to the person who just got
+// in — they are going now, so registered_only allows it (5.8, M1.8). The
+// bell item for the same promotion never shows it.
+func TestPromotionEmailCarriesVideoLink(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Promote Video")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+	if err := app.DB.Model(&models.Event{}).Where("id = ?", eventID).Updates(map[string]any{
+		"video_provider": models.VideoProviderLink, "video_url": videoLink,
+		"video_reveal": models.VideoRevealRegisteredOnly,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	mk := func(name string) (*models.User, *apiClient) {
+		u := newTestUser(t, app, name, "password1234", models.RoleMember)
+		addMember(t, app, u, &g, models.MembershipMember)
+		return u, loginAPI(t, app, name, "password1234")
+	}
+	_, c1 := mk("pv1")
+	u2, c2 := mk("pv2")
+	if code, body := registerAs(c1, eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatalf("first going: %d %s", code, body)
+	}
+	if code, body := registerAs(c2, eventID, date, "going", nil); code != http.StatusOK {
+		t.Fatalf("waitlist: %d %s", code, body)
+	}
+	// Nothing was promoted yet, so pv2 has heard nothing.
+	var sent int64
+	app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", u2.Email).Count(&sent)
+	if sent != 0 {
+		t.Fatalf("emails before promotion = %d, want 0", sent)
+	}
+	if code, body := registerAs(c1, eventID, date, "declined", nil); code != http.StatusOK {
+		t.Fatalf("cancel: %d %s", code, body)
+	}
+	m := latestEmail(t, app, u2.Email)
+	if !strings.Contains(m.Subject, "You're in") || !strings.Contains(m.Body, "Join by video: "+videoLink) {
+		t.Fatalf("promotion email = %q / %q, want the video link", m.Subject, m.Body)
+	}
+	for _, n := range feed(t, c2, "") {
+		if strings.Contains(n.Title+n.Body, videoLink) {
+			t.Fatalf("bell leaked the video link: %q / %q", n.Title, n.Body)
+		}
 	}
 }
 

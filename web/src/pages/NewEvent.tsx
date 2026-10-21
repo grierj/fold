@@ -10,6 +10,7 @@ import { useAuth } from "../auth";
 import { weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
 import { errorText } from "../lib/errors";
+import { VideoField, emptyVideo, type VideoValue } from "../components/VideoField";
 import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
 import { Button } from "../components/ui/Button";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -33,6 +34,7 @@ export function NewEvent() {
   const [groupVisibility, setGroupVisibility] = useState<Visibility>("public");
   const [visibility, setVisibility] = useState<Visibility>("public");
   const [visReason, setVisReason] = useState("");
+  const [video, setVideo] = useState<VideoValue>(emptyVideo);
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -84,6 +86,10 @@ export function NewEvent() {
       setError("Pick at least one day to repeat weekly.");
       return;
     }
+    if (video.provider !== "none" && video.url.trim() === "") {
+      setError(video.provider === "jitsi" ? "Generate a Jitsi link, or pick No video link." : "Paste the video link, or pick No video link.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -97,6 +103,9 @@ export function NewEvent() {
         recurrenceRule: recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "",
         visibility,
         ...(visReason.trim() ? { visibilityReason: visReason.trim() } : {}),
+        videoProvider: video.provider,
+        videoUrl: video.provider === "none" ? "" : video.url.trim(),
+        videoReveal: video.reveal,
       });
       navigate(`/groups/${id}`);
     } catch (err) {
@@ -220,6 +229,9 @@ export function NewEvent() {
           reason={visReason}
           onReason={setVisReason}
         />
+        <div className="border-t border-border pt-4">
+          <VideoField idPrefix="event" value={video} onChange={setVideo} />
+        </div>
         <div className="border-t border-border pt-4">
           <Checkbox label="Repeat weekly" checked={recurring} onChange={(e) => onRecurring(e.target.checked)} />
           {recurring && (

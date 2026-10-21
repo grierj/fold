@@ -80,6 +80,10 @@ var errorCodes = map[string]string{
 	"capacity must be a positive whole number, or empty for no limit":                    "invalid_capacity",
 	"guestsAllowed must be a whole number from 0 to 5, or empty for none":                "invalid_guests",
 	"timezone must be an IANA name, for example America/Denver":                          "invalid_timezone",
+	"video link must be a full https:// address":                                         "invalid_video_url",
+	"videoProvider must be none, link, or jitsi":                                         "invalid_video_provider",
+	"videoReveal must be always or registered_only":                                      "invalid_video_reveal",
+	"video link is too long":                                                             "too_long",
 
 	// Calendar feeds
 	"scope must be mine or all": "invalid_feed_scope",
