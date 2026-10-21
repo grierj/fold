@@ -37,7 +37,8 @@ describe("VideoField", () => {
     expect(f.getValue().provider).toBe("link");
     f.rerender();
     const input = screen.getByLabelText("Video link") as HTMLInputElement;
-    await userEvent.type(input, "https://zoom.example.org/j/1");
+    await userEvent.click(input);
+    await userEvent.paste("https://zoom.example.org/j/1");
     expect(f.getValue().url).toContain("https://zoom.example.org/j/1");
     const reveal = screen.getByLabelText("Who sees the link") as HTMLSelectElement;
     expect(reveal.value).toBe("registered_only");
