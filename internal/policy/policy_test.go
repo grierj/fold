@@ -606,3 +606,27 @@ func TestCanRegisterEvent(t *testing.T) {
 		t.Error("signed-in person registers for a private church-wide event")
 	}
 }
+
+func TestCanSeeVideoLinkInFeed(t *testing.T) {
+	for _, tc := range []struct {
+		reveal, status   string
+		inGroup, manager bool
+		want             bool
+	}{
+		{"always", "declined", false, false, true},
+		{"registered_only", "going", false, false, true},
+		{"registered_only", "maybe", false, false, true},
+		{"registered_only", "", true, false, true},
+		{"registered_only", "", false, false, false},
+		{"registered_only", "waitlisted", true, false, false},
+		{"registered_only", "declined", true, false, false},
+		{"registered_only", "cancelled", true, false, false},
+		{"registered_only", "removed", true, false, false},
+		{"registered_only", "declined", false, true, true},
+		{"bogus", "", false, false, false},
+	} {
+		if got := CanSeeVideoLinkInFeed(tc.reveal, tc.status, tc.inGroup, tc.manager); got != tc.want {
+			t.Errorf("%+v: got %v", tc, got)
+		}
+	}
+}

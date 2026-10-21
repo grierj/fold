@@ -22,14 +22,37 @@ const PROVIDERS: { value: VideoProvider; label: string; description?: string }[]
   { value: "jitsi", label: "Jitsi link", description: "We make a room link for you. No account needed." },
 ];
 
+// videoProblem is the browser-side check before submit: a chosen
+// provider needs a full https:// link. The server checks again.
+export function videoProblem(v: VideoValue): string | null {
+  if (v.provider === "none") return null;
+  const url = v.url.trim();
+  if (url === "") {
+    return v.provider === "jitsi" ? "Generate a Jitsi link, or pick No video link." : "Paste the video link, or pick No video link.";
+  }
+  if (!/^https:\/\/\S+$/i.test(url)) return "The video link needs to be a full address starting with https://.";
+  return null;
+}
+
+// isVideoError tells a form whether a server error is about the video link.
+export const isVideoError = (msg: string) => /video link/i.test(msg);
+
+// focusVideoUrl moves focus to the link input after an error.
+export function focusVideoUrl(idPrefix: string) {
+  setTimeout(() => document.getElementById(`video-url-${idPrefix}`)?.focus(), 0);
+}
+
 export function VideoField({
   idPrefix,
   value,
   onChange,
+  error: formError,
 }: {
   idPrefix: string;
   value: VideoValue;
   onChange: (next: VideoValue) => void;
+  // The form's empty-link or server error for the link, if any.
+  error?: string | null;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -57,17 +80,21 @@ export function VideoField({
             label={p.label}
             description={p.description}
             checked={value.provider === p.value}
-            onChange={() => onChange({ ...value, provider: p.value })}
+            onChange={() => {
+              setError(null);
+              onChange({ ...value, provider: p.value });
+            }}
           />
         ))}
       </Choices>
       {value.provider !== "none" && (
         <>
+          <div className="space-y-2">
           <Field
             id={`video-url-${idPrefix}`}
             label="Video link"
-            hint="The full address, starting with https://"
-            error={error ?? undefined}
+            hint={value.provider === "jitsi" ? "Made by the button below. You can also edit it." : "The full address, starting with https://"}
+            error={error ?? formError ?? undefined}
           >
             <Input
               type="url"
@@ -82,6 +109,7 @@ export function VideoField({
               {busy ? "Making your link…" : value.url ? "Generate a new Jitsi link" : "Generate Jitsi link"}
             </Button>
           )}
+          </div>
           <Field
             id={`video-reveal-${idPrefix}`}
             label="Who sees the link"

@@ -71,6 +71,8 @@ func TestVideoLinkValidation(t *testing.T) {
 		{"videoProvider": "jitsi", "videoUrl": "ftp://meet.example.org/room"},
 		{"videoProvider": "zoom", "videoUrl": videoLink},
 		{"videoProvider": "link", "videoUrl": videoLink, "videoReveal": "sometimes"},
+		{"videoProvider": "link", "videoUrl": "https://meet.jit.si@evil.example/room"},
+		{"videoProvider": "jitsi", "videoUrl": "https://user:pw@meet.jit.si/room"},
 		{"videoProvider": "link", "videoUrl": "https://example.org/" + strings.Repeat("a", 2048)},
 	}
 	for i, extra := range bad {
@@ -203,7 +205,7 @@ func TestVideoRevealInEventAPI(t *testing.T) {
 	}
 }
 
-var jitsiURLRe = regexp.MustCompile(`^https://[a-z0-9.-]+/[a-z0-9]+(?:-[a-z0-9]+)*-[a-z0-9]{10}$`)
+var jitsiURLRe = regexp.MustCompile(`^https://[a-z0-9.-]+/[a-z0-9]+(?:-[a-z0-9]+)*-[a-z0-9]{12}$`)
 
 func generateJitsi(t *testing.T, c *apiClient, want int) string {
 	t.Helper()

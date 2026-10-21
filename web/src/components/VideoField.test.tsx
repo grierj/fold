@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { VideoField, emptyVideo, type VideoValue } from "./VideoField";
+import { VideoField, emptyVideo, videoProblem, type VideoValue } from "./VideoField";
 
 const generateJitsi = vi.fn().mockResolvedValue({ url: "https://meet.jit.si/fold-abc123def4" });
 
@@ -63,5 +63,29 @@ describe("VideoField", () => {
       "https://meet.example.org/room"
     );
     expect((screen.getByLabelText("Who sees the link") as HTMLSelectElement).value).toBe("always");
+  });
+});
+
+describe("VideoField errors", () => {
+  it("shows the form's error on the link input", () => {
+    render(
+      <VideoField
+        idPrefix="err"
+        value={{ provider: "link", url: "", reveal: "registered_only" }}
+        onChange={() => {}}
+        error="Paste the video link, or pick No video link."
+      />
+    );
+    const input = screen.getByLabelText("Video link");
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(input.getAttribute("aria-describedby")).toContain("video-url-err-error");
+    expect(input.id).toBe("video-url-err");
+  });
+
+  it("checks for a full https:// link before submit", () => {
+    expect(videoProblem(emptyVideo)).toBeNull();
+    expect(videoProblem({ provider: "link", url: "", reveal: "always" })).toMatch(/Paste the video link/);
+    expect(videoProblem({ provider: "link", url: "http://x.example", reveal: "always" })).toMatch(/https:\/\//);
+    expect(videoProblem({ provider: "link", url: "https://x.example/r", reveal: "always" })).toBeNull();
   });
 });

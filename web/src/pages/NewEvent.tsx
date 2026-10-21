@@ -10,7 +10,7 @@ import { useAuth } from "../auth";
 import { weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
 import { errorText } from "../lib/errors";
-import { VideoField, emptyVideo, type VideoValue } from "../components/VideoField";
+import { VideoField, focusVideoUrl, isVideoError, videoProblem, emptyVideo, type VideoValue } from "../components/VideoField";
 import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
 import { Button } from "../components/ui/Button";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -39,6 +39,7 @@ export function NewEvent() {
   const [days, setDays] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -86,8 +87,11 @@ export function NewEvent() {
       setError("Pick at least one day to repeat weekly.");
       return;
     }
-    if (video.provider !== "none" && video.url.trim() === "") {
-      setError(video.provider === "jitsi" ? "Generate a Jitsi link, or pick No video link." : "Paste the video link, or pick No video link.");
+    const videoMsg = videoProblem(video);
+    setVideoError(videoMsg);
+    if (videoMsg) {
+      setError(videoMsg);
+      focusVideoUrl("event");
       return;
     }
     setBusy(true);
@@ -109,7 +113,12 @@ export function NewEvent() {
       });
       navigate(`/groups/${id}`);
     } catch (err) {
-      setError(errorText(err, "We couldn't schedule the event."));
+      const msg = errorText(err, "We couldn't schedule the event.");
+      setError(msg);
+      if (isVideoError(msg)) {
+        setVideoError(msg);
+        focusVideoUrl("event");
+      }
     } finally {
       setBusy(false);
     }
@@ -230,7 +239,7 @@ export function NewEvent() {
           onReason={setVisReason}
         />
         <div className="border-t border-border pt-4">
-          <VideoField idPrefix="event" value={video} onChange={setVideo} />
+          <VideoField idPrefix="event" value={video} onChange={setVideo} error={videoError} />
         </div>
         <div className="border-t border-border pt-4">
           <Checkbox label="Repeat weekly" checked={recurring} onChange={(e) => onRecurring(e.target.checked)} />

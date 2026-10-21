@@ -8,7 +8,8 @@ import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
 import { Menu } from "../components/ui/Menu";
 import { Field, FormError, Input } from "../components/ui/Field";
-import { Button } from "../components/ui/Button";
+import { Button, ButtonLink } from "../components/ui/Button";
+import { ExternalLinkIcon } from "../components/icons";
 import { FormActions } from "../components/ui/FormActions";
 import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
@@ -227,13 +228,15 @@ function DateRow({
         </div>
         {held && <div className="text-sm text-text-muted">{held}</div>}
         {instance.videoUrl ? (
-          <div className="text-sm">
-            <a href={instance.videoUrl} target="_blank" rel="noopener noreferrer" className="text-primary font-semibold">
+          <div>
+            <ButtonLink to={instance.videoUrl} external variant="secondary">
               Join by video
-            </a>
+              <span className="sr-only"> (opens in a new tab)</span>
+              <ExternalLinkIcon className="h-4 w-4" />
+            </ButtonLink>
           </div>
         ) : instance.videoHidden ? (
-          <div className="text-sm text-text-muted">Register to get the link</div>
+          <div className="text-sm text-text-muted">Tap Going below to get the video link.</div>
         ) : null}
         {instance.overridden && (
           <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>

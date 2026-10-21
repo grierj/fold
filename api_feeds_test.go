@@ -488,3 +488,77 @@ func TestFeedVideoLinkReveal(t *testing.T) {
 		t.Fatalf("leader's feed is missing the link:\n%s", body)
 	}
 }
+
+// DEC-70: in a personal feed a registered_only link also reaches the
+// owner when they said maybe, or when they are in the event's group and
+// haven't answered. Declined, waitlisted, and outsiders who haven't
+// answered still get nothing. A member going to one date of a series
+// gets that date with the link in a "mine" feed (and the whole series
+// entry carries it in an "all" feed, accepted for now).
+func TestFeedVideoLinkMaybeNoResponseAndSeriesDate(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	start := feedStart(7)
+	const link = "https://meet.example.org/series-room"
+	gid := createFeedGroup(t, admin, "Series Video", models.VisibilityPublic, "Hall")
+	ev := createFeedEvent(t, admin, gid, "Weekly Video Study", start, "FREQ=WEEKLY;COUNT=3")
+	if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{
+		"video_provider": models.VideoProviderLink, "video_url": link,
+		"video_reveal": models.VideoRevealRegisteredOnly,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var g models.Group
+	app.DB.First(&g, gid)
+	dates := []string{feedDate(start), feedDate(start.AddDate(0, 0, 7)), feedDate(start.AddDate(0, 0, 14))}
+	mk := func(name string, member bool) *apiClient {
+		u := newTestUser(t, app, name, "password1234", models.RoleMember)
+		if member {
+			addMember(t, app, u, &g, models.MembershipMember)
+		}
+		return loginAPI(t, app, name, "password1234")
+	}
+	has := func(c *apiClient, scope string) bool {
+		return strings.Contains(unfoldFeed(feedBody(t, c, createFeedLink(t, c, scope))), link)
+	}
+
+	silentMember := mk("vsilent", true)
+	if !has(silentMember, models.CalendarFeedAll) {
+		t.Fatal("a member who hasn't answered should see the link")
+	}
+	maybeOutsider := mk("vmaybe", false)
+	if code, body := registerAs(maybeOutsider, ev.ID, dates[0], "maybe", nil); code != http.StatusOK {
+		t.Fatalf("maybe: %d %s", code, body)
+	}
+	if !has(maybeOutsider, models.CalendarFeedAll) {
+		t.Fatal("a maybe should see the link")
+	}
+	silentOutsider := mk("voutsider", false)
+	if has(silentOutsider, models.CalendarFeedAll) {
+		t.Fatal("an outsider who hasn't answered must not see the link")
+	}
+	decliner := mk("vdecline", true)
+	for _, d := range dates {
+		if code, body := registerAs(decliner, ev.ID, d, "declined", nil); code != http.StatusOK {
+			t.Fatalf("decline %s: %d %s", d, code, body)
+		}
+	}
+	if has(decliner, models.CalendarFeedAll) {
+		t.Fatal("someone who declined every date must not see the link")
+	}
+
+	// Going to one date: an outsider's "mine" feed has just that date,
+	// with the link.
+	oneDate := mk("vonedate", false)
+	if code, body := registerAs(oneDate, ev.ID, dates[1], "going", nil); code != http.StatusOK {
+		t.Fatalf("going: %d %s", code, body)
+	}
+	body := unfoldFeed(feedBody(t, oneDate, createFeedLink(t, oneDate, models.CalendarFeedMine)))
+	if strings.Count(body, "BEGIN:VEVENT") != 1 || !strings.Contains(body, "Join by video: "+link) {
+		t.Fatalf("one-date feed should carry one date with the link:\n%s", body)
+	}
+	if !has(oneDate, models.CalendarFeedAll) {
+		t.Fatal("the series entry should carry the link for someone going to one date")
+	}
+}

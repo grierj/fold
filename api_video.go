@@ -57,13 +57,16 @@ func videoLinkOf(ev *models.Event) string {
 	return ev.VideoURL
 }
 
-// validVideoURL: an absolute https:// URL with a host and no spaces.
+// validVideoURL: an absolute https:// URL with a host, no spaces, and no
+// userinfo (https://meet.jit.si@evil.example goes to evil.example). A
+// Jitsi link is checked the same way as a pasted one: a leader may edit
+// it, so its host is not pinned to jitsi_domain.
 func validVideoURL(s string) bool {
 	if s == "" || strings.ContainsAny(s, " \t\r\n") {
 		return false
 	}
 	u, err := url.Parse(s)
-	return err == nil && u.Scheme == "https" && u.Host != ""
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil
 }
 
 // parseVideoEdits reads videoProvider, videoUrl and videoReveal from a
@@ -216,17 +219,26 @@ func (a *App) churchSlug() string {
 	return churchSlug(a.siteName())
 }
 
-const jitsiRoomAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+const (
+	jitsiRoomAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789"
+	jitsiRoomLen      = 12
+)
 
-// jitsiRoom returns 10 random room characters from crypto/rand.
+// jitsiRoom returns 12 random room characters from crypto/rand. Bytes at
+// or above 252 (7*36) are rejected so every character is equally likely.
 func jitsiRoom() (string, error) {
-	raw := make([]byte, 10)
-	if _, err := rand.Read(raw); err != nil {
-		return "", err
-	}
-	out := make([]byte, len(raw))
-	for i, b := range raw {
-		out[i] = jitsiRoomAlphabet[int(b)%len(jitsiRoomAlphabet)]
+	const limit = 256 - 256%len(jitsiRoomAlphabet)
+	out := make([]byte, 0, jitsiRoomLen)
+	buf := make([]byte, 32)
+	for len(out) < jitsiRoomLen {
+		if _, err := rand.Read(buf); err != nil {
+			return "", err
+		}
+		for _, b := range buf {
+			if int(b) < limit && len(out) < jitsiRoomLen {
+				out = append(out, jitsiRoomAlphabet[int(b)%len(jitsiRoomAlphabet)])
+			}
+		}
 	}
 	return string(out), nil
 }

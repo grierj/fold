@@ -180,6 +180,19 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 			myStatus[r.OccurrenceID] = r.Status
 		}
 	}
+	// Every response the owner gave, for the DEC-70 feed video rule.
+	anyStatus := map[uint]string{}
+	if opts.personal && viewer != nil && len(occs) > 0 {
+		occIDs := make([]uint, len(occs))
+		for i := range occs {
+			occIDs[i] = occs[i].ID
+		}
+		var rows []models.Registration
+		a.DB.Select("occurrence_id", "status").Where("user_id = ? AND occurrence_id IN ?", viewer.ID, occIDs).Find(&rows)
+		for _, r := range rows {
+			anyStatus[r.OccurrenceID] = r.Status
+		}
+	}
 
 	for _, id := range visibleIDs {
 		ev := byID[id]
@@ -193,15 +206,25 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 			groupLoc = shown.Location
 		}
 		viewerAdmin := viewer != nil && asPerson(viewer).Admin
-		// The video link reaches a feed only as policy allows (M1.8): the
-		// public and group feeds (no viewer) carry an "always" link only;
-		// a personal feed carries a registered_only link for the dates
-		// its owner is going to, and for events they lead, host or admin.
-		videoFor := func(isGoing bool) string {
-			if link := videoLinkOf(ev); link != "" &&
-				policy.CanSeeVideoLink(videoRevealOf(ev), isGoing,
-					rel.Leader || hosted[ev.ID] || viewerAdmin) {
-				return link
+		// The video link reaches a feed only as policy allows (M1.8,
+		// DEC-70): the public and group feeds (no viewer) carry an
+		// "always" link only. A personal feed carries a registered_only
+		// link for a date its owner is going to or said maybe to, a date
+		// a group member or host hasn't answered, and events they lead,
+		// host or admin. Waitlisted and declined dates never get it.
+		videoFor := func(statuses ...string) string {
+			link := videoLinkOf(ev)
+			if link == "" || !opts.personal || viewer == nil {
+				if link != "" && policy.CanSeeVideoLink(videoRevealOf(ev), false, false) {
+					return link
+				}
+				return ""
+			}
+			for _, st := range statuses {
+				if policy.CanSeeVideoLinkInFeed(videoRevealOf(ev), st,
+					rel.Member || hosted[ev.ID], rel.Leader || hosted[ev.ID] || viewerAdmin) {
+					return link
+				}
 			}
 			return ""
 		}
@@ -220,7 +243,7 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 				feed.Singles = append(feed.Singles, events.FeedSingle{
 					EventID: ev.ID, OriginalDate: occ.OriginalDate,
 					Title: eff.Title, Description: ev.Description, Location: eff.Location,
-					VideoURL: videoFor(status == models.RegGoing),
+					VideoURL: videoFor(anyStatus[occ.ID]),
 					TZID:     ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
 					URL: a.feedEventURL(ev.ID), UpdatedAt: occ.UpdatedAt, Status: s,
 				})
@@ -236,17 +259,17 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 			until = *ev.RRuleUntil
 		}
 		// One series entry covers every date and the link is the same on
-		// all of them, so going to any in-window date reveals it here.
-		goingAny := false
+		// all of them, so any in-window date the owner may see it for
+		// reveals it on the whole entry (accepted for now; see API.md).
+		seriesStatuses := make([]string, 0, len(list))
 		for _, occ := range list {
-			if myStatus[occ.ID] == models.RegGoing {
-				goingAny = true
-				break
+			if occ.Status != models.OccurrenceCancelled {
+				seriesStatuses = append(seriesStatuses, anyStatus[occ.ID])
 			}
 		}
 		fe := events.FeedEvent{
 			ID: ev.ID, Title: ev.Title, Description: ev.Description, Location: seriesLoc,
-			VideoURL: videoFor(goingAny),
+			VideoURL: videoFor(seriesStatuses...),
 			TZID:     ev.TZID, StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes,
 			RRule: ev.RRule, RRuleUntil: until,
 			URL: a.feedEventURL(ev.ID), UpdatedAt: ev.UpdatedAt,

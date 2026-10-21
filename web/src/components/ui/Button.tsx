@@ -26,9 +26,13 @@ export function ButtonLink({
   size = "md",
   layout,
   reloadDocument,
+  external,
   children,
 }: {
   to: string;
+  // An address outside Fold (a video call): a plain anchor that opens in
+  // a new tab. The caller adds the "(opens in a new tab)" text.
+  external?: boolean;
   // A server URL, not an SPA route (a .ics feed): the browser loads it.
   reloadDocument?: boolean;
   variant: ButtonVariant;
@@ -36,6 +40,13 @@ export function ButtonLink({
   layout?: string;
   children: ReactNode;
 }) {
+  if (external) {
+    return (
+      <a href={to} target="_blank" rel="noopener noreferrer" className={buttonClass(variant, size, layout)}>
+        {children}
+      </a>
+    );
+  }
   return (
     <Link to={to} reloadDocument={reloadDocument} className={buttonClass(variant, size, layout)}>
       {children}

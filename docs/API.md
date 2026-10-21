@@ -450,13 +450,26 @@ is `none`, `link`, or `jitsi` (default `none`, which clears the URL);
 `videoUrl` must be a full `https://` address of at most 2048 characters
 when a provider is set; `videoReveal` is `always` or `registered_only`
 (the default). `POST /events/video/jitsi` mints a new
-`https://<jitsi_domain>/<church-slug>-<10 random chars>` locally (no API
-call). The link reaches a response only when the viewer may see it
+`https://<jitsi_domain>/<church-slug>-<12 random chars>` locally (no API
+call). A Jitsi link is validated like a pasted one (https, a host, no
+userinfo such as `https://meet.jit.si@evil.example`); its host is not pinned
+to `jitsi_domain`, since a leader may edit it. The link reaches a response only when the viewer may see it
 (`policy.CanSeeVideoLink`): under `registered_only`, people going on that
 date plus the event's leaders or hosts and admins; otherwise `videoUrl`
 is omitted and `videoHidden` is true. The same rule governs the ICS
 feeds (the public feeds carry `always` links only) and the waitlist
-promotion email.
+promotion email, with one widening for the owner of a personal ICS feed
+(DEC-70): under `registered_only` the feed also carries the link for a
+date they said maybe to, and for a date they haven't answered when they
+are a member of the event's group or a host. Waitlisted, declined,
+cancelled and removed dates, outsiders who haven't answered, and
+signed-out viewers never get it (`policy.CanSeeVideoLinkInFeed`).
+
+A recurring series in a personal feed is one VEVENT, so if any in-window
+date qualifies, the link rides on the whole series entry. This
+series-wide link is accepted for now; a strict per-date reveal would emit
+RECURRENCE-ID overrides for the qualifying dates and leave the link off
+the master VEVENT.
 
 A series edit (`PUT /events/:id`) applies to every future date. Future
 means `startsAt` is strictly after now; a date already underway stays.
