@@ -247,6 +247,13 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 	userID uint, manageRaw string, actor *uint, app *App) ([]uint, error) {
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
 	vars.ManageURL = app.emailBaseURL() + "/guest/manage/" + manageRaw
+	// A promoted person is going now, so a video link set to
+	// registered_only may reach them (5.8, M1.8); the email carries it,
+	// the bell doesn't.
+	if video := videoLinkOf(ev); video != "" &&
+		policy.CanSeeVideoLink(videoRevealOf(ev), true, false) {
+		vars.VideoURL = video
+	}
 	end := o.EndsAt
 	if end.IsZero() {
 		end = o.StartsAt

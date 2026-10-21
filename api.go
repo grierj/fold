@@ -168,6 +168,14 @@ type occurrenceJSON struct {
 	// is set only when the viewer is waitlisted.
 	MyGuestCount       *int `json:"myGuestCount,omitempty"`
 	MyWaitlistPosition *int `json:"myWaitlistPosition,omitempty"`
+	// Video link (5.8, M1.8). VideoURL is present only when this viewer
+	// may see it for this date (policy.CanSeeVideoLink); VideoHidden says
+	// a link exists but is being withheld, so the UI can say "Register
+	// to get the link".
+	VideoProvider string `json:"videoProvider"`
+	VideoURL      string `json:"videoUrl,omitempty"`
+	VideoReveal   string `json:"videoReveal"`
+	VideoHidden   bool   `json:"videoHidden,omitempty"`
 }
 
 type attendeeJSON struct {
@@ -209,6 +217,13 @@ type eventJSON struct {
 	Capacity        *int `json:"capacity"`
 	WaitlistEnabled bool `json:"waitlistEnabled"`
 	GuestsAllowed   int  `json:"guestsAllowed"`
+	// Video link (5.8, M1.8). At series level the link shows under
+	// "always" and to the event's managers; a person going to one date
+	// gets it on that date's occurrence row instead.
+	VideoProvider string `json:"videoProvider"`
+	VideoURL      string `json:"videoUrl,omitempty"`
+	VideoReveal   string `json:"videoReveal"`
+	VideoHidden   bool   `json:"videoHidden,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +504,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// date range, as slim rows with no attendee data.
 	v1.GET("/calendar", a.optionalUser(), a.apiCalendar)
 	v1.POST("/events", a.apiAuth(), a.apiAdmin(), a.apiCreateChurchEvent)
+	// Video (M1.8): mint a Jitsi room URL (leaders, hosts, admins).
+	v1.POST("/events/video/jitsi", a.apiAuth(), a.apiGenerateJitsiLink)
 	v1.GET("/events/:id", a.optionalUser(), a.apiGetEvent)
 	v1.PUT("/events/:id", a.apiAuth(), a.apiUpdateEvent)
 	v1.DELETE("/events/:id", a.apiAuth(), a.apiDeleteEvent)

@@ -205,6 +205,9 @@ function EventRow({
                 capacity: instance.capacity,
                 waitlistEnabled: instance.waitlistEnabled,
                 guestsAllowed: instance.guestsAllowed,
+                videoProvider: instance.videoProvider,
+                videoUrl: instance.videoUrl,
+                videoReveal: instance.videoReveal,
               }}
               idPrefix={`${instance.id}`}
               locationHint="Leave it blank to use the group's location."

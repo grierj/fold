@@ -13,6 +13,7 @@ import (
 
 	"fold/internal/audit"
 	"fold/internal/events"
+	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -163,9 +164,11 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 	}
 
 	// Option A needs the viewer's own going and waitlisted dates on
-	// events that don't arrive as a whole series.
+	// events that don't arrive as a whole series. A personal feed also
+	// needs them to reveal a registered_only video link (M1.8): going
+	// only, per occurrence.
 	myStatus := map[uint]string{}
-	if opts.personal && opts.scope == models.CalendarFeedMine && viewer != nil && len(occs) > 0 {
+	if opts.personal && viewer != nil && len(occs) > 0 {
 		occIDs := make([]uint, len(occs))
 		for i := range occs {
 			occIDs[i] = occs[i].ID
@@ -175,6 +178,19 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 			[]string{models.RegGoing, models.RegWaitlisted}).Find(&rows)
 		for _, r := range rows {
 			myStatus[r.OccurrenceID] = r.Status
+		}
+	}
+	// Every response the owner gave, for the DEC-70 feed video rule.
+	anyStatus := map[uint]string{}
+	if opts.personal && viewer != nil && len(occs) > 0 {
+		occIDs := make([]uint, len(occs))
+		for i := range occs {
+			occIDs[i] = occs[i].ID
+		}
+		var rows []models.Registration
+		a.DB.Select("occurrence_id", "status").Where("user_id = ? AND occurrence_id IN ?", viewer.ID, occIDs).Find(&rows)
+		for _, r := range rows {
+			anyStatus[r.OccurrenceID] = r.Status
 		}
 	}
 
@@ -188,6 +204,29 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		groupLoc := ""
 		if shown := a.groupShownTo(viewer, grp, rel); shown != nil {
 			groupLoc = shown.Location
+		}
+		viewerAdmin := viewer != nil && asPerson(viewer).Admin
+		// The video link reaches a feed only as policy allows (M1.8,
+		// DEC-70): the public and group feeds (no viewer) carry an
+		// "always" link only. A personal feed carries a registered_only
+		// link for a date its owner is going to or said maybe to, a date
+		// a group member or host hasn't answered, and events they lead,
+		// host or admin. Waitlisted and declined dates never get it.
+		videoFor := func(statuses ...string) string {
+			link := videoLinkOf(ev)
+			if link == "" || !opts.personal || viewer == nil {
+				if link != "" && policy.CanSeeVideoLink(videoRevealOf(ev), false, false) {
+					return link
+				}
+				return ""
+			}
+			for _, st := range statuses {
+				if policy.CanSeeVideoLinkInFeed(videoRevealOf(ev), st,
+					rel.Member || hosted[ev.ID], rel.Leader || hosted[ev.ID] || viewerAdmin) {
+					return link
+				}
+			}
+			return ""
 		}
 		full := !opts.personal || opts.scope == models.CalendarFeedAll || rel.Member || hosted[ev.ID]
 		if !full {
@@ -204,7 +243,8 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 				feed.Singles = append(feed.Singles, events.FeedSingle{
 					EventID: ev.ID, OriginalDate: occ.OriginalDate,
 					Title: eff.Title, Description: ev.Description, Location: eff.Location,
-					TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
+					VideoURL: videoFor(anyStatus[occ.ID]),
+					TZID:     ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
 					URL: a.feedEventURL(ev.ID), UpdatedAt: occ.UpdatedAt, Status: s,
 				})
 			}
@@ -218,9 +258,19 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		if ev.RRuleUntil != nil {
 			until = *ev.RRuleUntil
 		}
+		// One series entry covers every date and the link is the same on
+		// all of them, so any in-window date the owner may see it for
+		// reveals it on the whole entry (accepted for now; see API.md).
+		seriesStatuses := make([]string, 0, len(list))
+		for _, occ := range list {
+			if occ.Status != models.OccurrenceCancelled {
+				seriesStatuses = append(seriesStatuses, anyStatus[occ.ID])
+			}
+		}
 		fe := events.FeedEvent{
 			ID: ev.ID, Title: ev.Title, Description: ev.Description, Location: seriesLoc,
-			TZID: ev.TZID, StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes,
+			VideoURL: videoFor(seriesStatuses...),
+			TZID:     ev.TZID, StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes,
 			RRule: ev.RRule, RRuleUntil: until,
 			URL: a.feedEventURL(ev.ID), UpdatedAt: ev.UpdatedAt,
 		}

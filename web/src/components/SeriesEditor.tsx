@@ -7,6 +7,8 @@ import { FormActions } from "./ui/FormActions";
 import { ZonePicker } from "./ui/ZonePicker";
 import { WeekdayPicker } from "./WeekdayPicker";
 import { Button } from "./ui/Button";
+import { VideoField, focusVideoUrl, isVideoError, videoProblem, type VideoValue } from "./VideoField";
+import type { VideoProvider, VideoReveal } from "../types";
 
 
 export interface SeriesFields {
@@ -22,6 +24,9 @@ export interface SeriesFields {
   capacity: number | null;
   waitlistEnabled: boolean;
   guestsAllowed: number;
+  videoProvider?: VideoProvider;
+  videoUrl?: string;
+  videoReveal?: VideoReveal;
 }
 
 // SeriesEditor is the one "Edit series" / "Edit event" form, used on the
@@ -59,8 +64,15 @@ export function SeriesEditor({
   const [capacity, setCapacity] = useState(instance.capacity === null ? "" : String(instance.capacity));
   const [waitlistEnabled, setWaitlistEnabled] = useState(instance.waitlistEnabled);
   const [guestsAllowed, setGuestsAllowed] = useState(instance.guestsAllowed);
+  const initialVideo: VideoValue = {
+    provider: instance.videoProvider ?? "none",
+    url: instance.videoUrl ?? "",
+    reveal: instance.videoReveal ?? "registered_only",
+  };
+  const [video, setVideo] = useState<VideoValue>(initialVideo);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
 
   function toggleDay(v: string) {
     setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
@@ -70,6 +82,13 @@ export function SeriesEditor({
     e.preventDefault();
     if (simple && recurring && days.length === 0) {
       setError("Pick at least one day to repeat weekly.");
+      return;
+    }
+    const videoMsg = videoProblem(video);
+    setVideoError(videoMsg);
+    if (videoMsg) {
+      setError(videoMsg);
+      focusVideoUrl(idPrefix);
       return;
     }
     setBusy(true);
@@ -92,6 +111,9 @@ export function SeriesEditor({
       capacity?: number | null;
       waitlistEnabled?: boolean;
       guestsAllowed?: number;
+      videoProvider?: VideoProvider;
+      videoUrl?: string;
+      videoReveal?: VideoReveal;
     } = {
       title: title.trim(),
       description: description.trim(),
@@ -105,11 +127,25 @@ export function SeriesEditor({
     if (capTrimmed !== capInitial) body.capacity = capTrimmed === "" ? null : Number(capTrimmed);
     if (waitlistEnabled !== instance.waitlistEnabled) body.waitlistEnabled = waitlistEnabled;
     if (guestsAllowed !== instance.guestsAllowed) body.guestsAllowed = guestsAllowed;
+    if (
+      video.provider !== initialVideo.provider ||
+      video.url.trim() !== initialVideo.url ||
+      video.reveal !== initialVideo.reveal
+    ) {
+      body.videoProvider = video.provider;
+      body.videoUrl = video.provider === "none" ? "" : video.url.trim();
+      body.videoReveal = video.reveal;
+    }
     try {
       await Events.update(instance.eventId, body);
       onSaved();
     } catch (err) {
-      setError(errorText(err, "We couldn't update the series."));
+      const msg = errorText(err, "We couldn't update the series.");
+      setError(msg);
+      if (isVideoError(msg)) {
+        setVideoError(msg);
+        focusVideoUrl(idPrefix);
+      }
       setBusy(false);
     }
   }
@@ -209,6 +245,7 @@ export function SeriesEditor({
         checked={waitlistEnabled}
         onChange={(e) => setWaitlistEnabled(e.target.checked)}
       />
+      <VideoField idPrefix={idPrefix} value={video} onChange={setVideo} error={videoError} />
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save series"}

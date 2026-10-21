@@ -9,6 +9,29 @@ import (
 	"testing"
 )
 
+// The promotion email carries the video link (M1.8); the bell never does.
+func TestPromotionEmailCarriesVideoLink(t *testing.T) {
+	k, ok := Lookup(RegistrationPromoted)
+	if !ok {
+		t.Fatal("registration.promoted is not registered")
+	}
+	link := "https://meet.example.org/room-1"
+	v := Vars{Event: "Supper", When: "Tue 7pm", VideoURL: link}
+	_, bell := k.Render(v)
+	if strings.Contains(bell, link) {
+		t.Errorf("the bell shows the video link: %q", bell)
+	}
+	_, email := k.RenderForEmail(v)
+	if !strings.Contains(email, "Join by video: "+link) {
+		t.Errorf("the email has no video link: %q", email)
+	}
+	v.VideoURL = ""
+	_, email = k.RenderForEmail(v)
+	if strings.Contains(email, "Join by video") {
+		t.Errorf("no link set, but the email mentions one: %q", email)
+	}
+}
+
 // Every string constant in kinds.go whose value looks like a kind key
 // ("thing.event") must be registered, so a forgotten register call fails
 // here instead of at Send time (#79).

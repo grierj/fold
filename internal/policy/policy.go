@@ -337,6 +337,46 @@ func CanRegisterGuest(ev EventView, g Group) bool {
 	return CanSeeEvent(nil, ev, g, Rel{})
 }
 
+// Video reveal settings (5.8, M1.8).
+const (
+	VideoRevealAlways         = "always"
+	VideoRevealRegisteredOnly = "registered_only"
+)
+
+// CanSeeVideoLink decides who sees an event's video link (5.8, M1.8): with
+// "always", everyone who can see the event; with "registered_only" (the
+// default, and anything unexpected, failing closed), only people
+// registered going for that date, plus the event's leaders or hosts and
+// admins (isManager). Waitlisted, maybe and declined do not see it. The
+// caller checks CanSeeEvent first and only calls this when the event has
+// a link at all.
+func CanSeeVideoLink(reveal string, isGoing, isManager bool) bool {
+	if reveal == VideoRevealAlways {
+		return true
+	}
+	return isGoing || isManager
+}
+
+// CanSeeVideoLinkInFeed is the personal ICS feed rule (DEC-70, Grier,
+// Oct 20, 2026). It widens CanSeeVideoLink for the feed owner only:
+// "always" shows the link; under "registered_only" the owner sees it when
+// going or maybe on that date, when they haven't answered and are a member
+// of the event's group or a host (inGroup), or when they manage the
+// event. Waitlisted, declined, cancelled and removed never see it, and an
+// outsider who hasn't answered doesn't either. status is "" for no answer.
+func CanSeeVideoLinkInFeed(reveal, status string, inGroup, isManager bool) bool {
+	if CanSeeVideoLink(reveal, status == "going", isManager) {
+		return true
+	}
+	switch status {
+	case "maybe":
+		return true
+	case "":
+		return inGroup
+	}
+	return false
+}
+
 // IsAdmin gates the admin area: approvals, users and roles, settings, and
 // (later) the audit log.
 func IsAdmin(p *Person) bool { return p != nil && p.Admin }

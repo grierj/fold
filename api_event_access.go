@@ -136,6 +136,9 @@ func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Gro
 
 func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) eventJSON {
 	j := toEventJSON(ev)
+	if policy.CanManageEvent(asPerson(me), f.view, f.rel) {
+		revealVideoToManager(&j, ev)
+	}
 	if shown := a.groupShownTo(me, f.group, f.rel); ev.GroupID == nil || shown == nil {
 		j.GroupID = nil
 		j.GroupName = ""
@@ -291,6 +294,10 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 	if !ok {
 		return
 	}
+	vid, ok := parseVideoEdits(c, body.eventBody, nil)
+	if !ok {
+		return
+	}
 	spec, ok := a.specFrom(c, body.eventBody, nil, true)
 	if !ok {
 		return
@@ -316,7 +323,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 	ev := models.Event{
 		Visibility: vis, CreatedBy: creator.ID,
 	}
-	applySpec(&ev, spec, body.eventBody, ed)
+	applySpec(&ev, spec, body.eventBody, ed, vid)
 	if !textOK(c, ev.Title, ev.Description, ev.Location) {
 		return
 	}

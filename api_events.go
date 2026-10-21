@@ -220,6 +220,10 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 				}
 			}
 		}
+		// The video link is per date: going on this date (or running the
+		// event) reveals a registered_only link (policy.CanSeeVideoLink).
+		applyVideoReveal(&inst, ev,
+			mine[o.ID].Status == models.RegGoing, showDeclined[ev.ID])
 		inst.AttendeesVisible = showNames[ev.ID]
 		if showNames[ev.ID] {
 			inst.Attendees = names[o.ID]
@@ -336,7 +340,7 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 	if ev.RRuleUntil != nil {
 		until = *ev.RRuleUntil
 	}
-	return occurrenceJSON{
+	inst := occurrenceJSON{
 		ID: o.ID, EventID: ev.ID, Date: o.OriginalDate,
 		StartsAt: start.UTC(), EndsAt: end.UTC(),
 		StartsLocal: events.FormatWall(start, loc), EndsLocal: events.FormatWall(end, loc),
@@ -350,6 +354,10 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 		WaitlistEnabled: ev.WaitlistEnabled,
 		GuestsAllowed:   ev.GuestsAllowed,
 	}
+	// Fail closed: only an "always" link shows from here. Callers that
+	// know the viewer refine it with applyVideoReveal (api_video.go).
+	applyVideoReveal(&inst, ev, false, false)
+	return inst
 }
 
 func toEventJSON(ev *models.Event) eventJSON {
@@ -362,7 +370,7 @@ func toEventJSON(ev *models.Event) eventJSON {
 	if ev.RRuleUntil != nil {
 		until = *ev.RRuleUntil
 	}
-	return eventJSON{
+	j := eventJSON{
 		ID: ev.ID, GroupID: ev.GroupID, Title: ev.Title, Description: ev.Description,
 		StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes, TZID: ev.TZID,
 		StartsAt: start.UTC(), EndsAt: end.UTC(),
@@ -371,7 +379,18 @@ func toEventJSON(ev *models.Event) eventJSON {
 		ChurchWide: ev.GroupID == nil,
 		Capacity:   ev.Capacity, WaitlistEnabled: ev.WaitlistEnabled,
 		GuestsAllowed: ev.GuestsAllowed,
+		VideoProvider: videoProviderOf(ev), VideoReveal: videoRevealOf(ev),
 	}
+	// Fail closed like occurrenceToJSON; presentEvent refines for the
+	// event's managers, and create/update responses go to a manager.
+	if link := videoLinkOf(ev); link != "" {
+		if policy.CanSeeVideoLink(j.VideoReveal, false, false) {
+			j.VideoURL = link
+		} else {
+			j.VideoHidden = true
+		}
+	}
+	return j
 }
 
 func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
@@ -429,6 +448,10 @@ type eventBody struct {
 	Capacity        *json.RawMessage `json:"capacity"`
 	WaitlistEnabled *bool            `json:"waitlistEnabled"`
 	GuestsAllowed   *json.RawMessage `json:"guestsAllowed"`
+	// Video link (5.8, M1.8); see parseVideoEdits in api_video.go.
+	VideoProvider *string `json:"videoProvider"`
+	VideoURL      *string `json:"videoUrl"`
+	VideoReveal   *string `json:"videoReveal"`
 }
 
 func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creating bool) (events.Spec, bool) {
@@ -472,7 +495,7 @@ func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creat
 	return spec, true
 }
 
-func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEdits) {
+func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEdits, vid videoEdits) {
 	ev.StartsLocal = spec.StartsLocal
 	ev.DurationMinutes = spec.DurationMinutes
 	ev.TZID = spec.TZID
@@ -503,6 +526,10 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 	if ed.guestsSet {
 		ev.GuestsAllowed = ed.guests
 	}
+	// Video (M1.8): vid holds the effective, validated values.
+	ev.VideoProvider = vid.provider
+	ev.VideoURL = vid.url
+	ev.VideoReveal = vid.reveal
 }
 
 func textOK(c *gin.Context, title, description, location string) bool {
@@ -577,6 +604,10 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 	if !ok {
 		return
 	}
+	vid, ok := parseVideoEdits(c, body, nil)
+	if !ok {
+		return
+	}
 
 	spec, ok := a.specFrom(c, body, nil, true)
 	if !ok {
@@ -589,7 +620,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		GroupID: &gid, Visibility: g.Visibility,
 		CreatedBy: apiUser(c).ID,
 	}
-	applySpec(&ev, spec, body, ed)
+	applySpec(&ev, spec, body, ed, vid)
 	if !textOK(c, ev.Title, ev.Description, ev.Location) {
 		return
 	}
@@ -645,7 +676,9 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		return
 	}
 	a.deliverNotificationEmails(emailed)
-	c.JSON(http.StatusCreated, gin.H{"event": toEventJSON(&ev)})
+	j := toEventJSON(&ev)
+	revealVideoToManager(&j, &ev) // the creator leads the group or is an admin
+	c.JSON(http.StatusCreated, gin.H{"event": j})
 }
 
 func (a *App) loadManagedEvent(c *gin.Context) (*models.Event, bool) {
@@ -715,6 +748,10 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	if !ok {
 		return
 	}
+	vid, ok := parseVideoEdits(c, body, ev)
+	if !ok {
+		return
+	}
 	me := apiUser(c)
 	var emailed []uint
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
@@ -723,7 +760,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			return err
 		}
 		oldCap, oldPlace := locked.Capacity, locked.Location
-		applySpec(&locked, spec, body, ed)
+		applySpec(&locked, spec, body, ed, vid)
 		if err := tx.Save(&locked).Error; err != nil {
 			return err
 		}
@@ -845,7 +882,9 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		return
 	}
 	a.deliverNotificationEmails(emailed)
-	c.JSON(http.StatusOK, gin.H{"event": toEventJSON(ev)})
+	j := toEventJSON(ev)
+	revealVideoToManager(&j, ev) // loadManagedEvent: only managers reach here
+	c.JSON(http.StatusOK, gin.H{"event": j})
 }
 
 func (a *App) apiDeleteEvent(c *gin.Context) {
@@ -1063,6 +1102,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			}
 		}
 		inst = occurrenceToJSON(ev, &o, groupLoc)
+		applyVideoReveal(&inst, ev, false, true) // managers see the link
 		inst.Visibility = ev.Visibility
 		inst.LeaderOpened = ev.LeaderOpened
 		inst.ChurchWide = ev.GroupID == nil

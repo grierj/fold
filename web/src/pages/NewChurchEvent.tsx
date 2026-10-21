@@ -10,6 +10,7 @@ import { useAuth } from "../auth";
 import { weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
 import { errorText } from "../lib/errors";
+import { VideoField, focusVideoUrl, isVideoError, videoProblem, emptyVideo, type VideoValue } from "../components/VideoField";
 import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
 import { Button } from "../components/ui/Button";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -26,10 +27,12 @@ export function NewChurchEvent() {
   const [location, setLocation] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("public");
   const [hostEmail, setHostEmail] = useState("");
+  const [video, setVideo] = useState<VideoValue>(emptyVideo);
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [videoError, setVideoError] = useState<string | null>(null);
 
   function toggleDay(v: string) {
     setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
@@ -53,6 +56,13 @@ export function NewChurchEvent() {
       setError("Pick at least one day to repeat weekly.");
       return;
     }
+    const videoMsg = videoProblem(video);
+    setVideoError(videoMsg);
+    if (videoMsg) {
+      setError(videoMsg);
+      focusVideoUrl("church-event");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -66,10 +76,18 @@ export function NewChurchEvent() {
         visibility,
         hosts: hostEmail.trim() ? [hostEmail.trim()] : [],
         recurrenceRule: recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "",
+        videoProvider: video.provider,
+        videoUrl: video.provider === "none" ? "" : video.url.trim(),
+        videoReveal: video.reveal,
       });
       navigate(`/events/${event.id}`);
     } catch (err) {
-      setError(errorText(err, "We couldn't schedule the event."));
+      const msg = errorText(err, "We couldn't schedule the event.");
+      setError(msg);
+      if (isVideoError(msg)) {
+        setVideoError(msg);
+        focusVideoUrl("church-event");
+      }
     } finally {
       setBusy(false);
     }
@@ -171,6 +189,9 @@ export function NewChurchEvent() {
         <Field id="church-event-host" label="Another host's email" optional hint="They must already have an account.">
           <Input type="email" value={hostEmail} onChange={(e) => setHostEmail(e.target.value)} />
         </Field>
+        <div className="border-t border-border pt-4">
+          <VideoField idPrefix="church-event" value={video} onChange={setVideo} error={videoError} />
+        </div>
         <div className="border-t border-border pt-4">
           <Checkbox
             label="Repeat weekly"
