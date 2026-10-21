@@ -669,10 +669,15 @@ func TestOccurrenceChangeEmailsGoingAndWaitlisted(t *testing.T) {
 	var g models.Group
 	app.DB.Where("id = ?", gid).First(&g)
 	_, c1 := mkUser(t, app, &g, "cm1")
-	_, c2 := mkUser(t, app, &g, "cm2")
+	u2, c2 := mkUser(t, app, &g, "cm2")
 	_, c3 := mkUser(t, app, &g, "cm3")
 	registerAs(c1, eventID, date, "going", nil)
-	registerAs(c2, eventID, date, "going", nil) // waitlisted
+	registerAs(c2, eventID, date, "going", nil)
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+	if got := regStatus(t, app, u2.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("cm2 = %q, want waitlisted", got)
+	}
 	registerAs(c3, eventID, date, "maybe", nil)
 	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", eventID, date),
 		map[string]any{"location": "Annex"}, http.StatusOK)
