@@ -71,6 +71,9 @@ export const ERROR_COPY = {
   invalid_video_url: "That video link needs to be a full address starting with https://. Paste the whole link and try again.",
   invalid_video_provider: "Pick no video link, paste a link, or a Jitsi link.",
   invalid_video_reveal: "Pick who sees the video link: registered people only, or everyone who can see the event.",
+  remote_not_available: "This event doesn't offer remote attendance. Register in person instead.",
+  invalid_attendance_mode: "Pick in person or remote.",
+  invalid_remote_capacity: "The remote seat limit needs to be a whole number of 0 or more, or leave it empty for no limit.",
 
   // Uploads
   file_too_large: "That picture is too big. Please use one under 5 MB.",

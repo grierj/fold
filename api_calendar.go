@@ -83,6 +83,12 @@ func (a *App) apiCalendar(c *gin.Context) {
 	if onlyGroup != nil {
 		q = q.Where("group_id = ?", *onlyGroup)
 	}
+	// remote=1 keeps only events that offer remote attendance (M1.8
+	// slice 2). Filtering on the event row here means a hidden event is
+	// dropped by visibleEvents exactly as without the filter.
+	if c.Query("remote") == "1" {
+		q = q.Where("remote_available = ?", true)
+	}
 	// deleted=1 lists deleted groups' events too, for admins only (DEC-68).
 	vs, err := a.visibleEventsWith(me, q, c.Query("deleted") == "1")
 	if err != nil {

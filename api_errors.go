@@ -84,6 +84,9 @@ var errorCodes = map[string]string{
 	"videoProvider must be none, link, or jitsi":                                         "invalid_video_provider",
 	"videoReveal must be always or registered_only":                                      "invalid_video_reveal",
 	"video link is too long":                                                             "too_long",
+	"remote attendance isn't available for this event":                                   "remote_not_available",
+	"attendanceMode must be in_person or remote":                                         "invalid_attendance_mode",
+	"remoteCapacity must be a whole number of 0 or more, or empty for no limit":          "invalid_remote_capacity",
 
 	// Calendar feeds
 	"scope must be mine or all": "invalid_feed_scope",

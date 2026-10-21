@@ -689,3 +689,251 @@ func TestDroppedOnReenableCanBeAddedOverCapacity(t *testing.T) {
 		t.Fatalf("added back: %q", got)
 	}
 }
+
+// --- Remote attendance (M1.8 slice 2) ---
+
+// seedRemoteEvent creates a group event with remote attendance on, the
+// given per-pool caps (nil is unlimited), and the waitlist flag.
+func seedRemoteEvent(t *testing.T, app *App, admin *apiClient, gid string, capacity, remoteCapacity *int, waitlist bool) (uint, string) {
+	t.Helper()
+	start := time.Now().UTC().AddDate(0, 0, 30).Truncate(24 * time.Hour).Add(18 * time.Hour)
+	body := map[string]any{
+		"title": "Hybrid", "startsLocal": start.Format("2006-01-02T15:04"),
+		"durationMinutes": 60, "tzid": "UTC",
+		"waitlistEnabled": waitlist, "guestsAllowed": 5,
+		"remoteAvailable": true,
+	}
+	if capacity != nil {
+		body["capacity"] = *capacity
+	}
+	if remoteCapacity != nil {
+		body["remoteCapacity"] = *remoteCapacity
+	}
+	w := admin.do("POST", "/api/v1/groups/"+gid+"/events", body, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create remote event: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	if !created.Event.RemoteAvailable {
+		t.Fatalf("created event lost remoteAvailable: %+v", created.Event)
+	}
+	return created.Event.ID, start.Format("2006-01-02")
+}
+
+// registerModeAs PUTs a registration in one attendance mode.
+func registerModeAs(c *apiClient, eventID uint, date, status, mode string) (int, string) {
+	body := map[string]any{"date": date, "status": status, "attendanceMode": mode}
+	w := c.do("PUT", fmt.Sprintf("/api/v1/events/%d/registrations", eventID), body, true)
+	return w.Code, w.Body.String()
+}
+
+func regMode(t *testing.T, app *App, userID, occID uint) string {
+	t.Helper()
+	var r models.Registration
+	if err := app.DB.Where("user_id = ? AND occurrence_id = ?", userID, occID).First(&r).Error; err != nil {
+		t.Fatalf("load registration: %v", err)
+	}
+	return r.AttendanceMode
+}
+
+// The remote pool fills on its own: a full in-person pool does not
+// block a remote seat, and each pool waitlists separately. The
+// occurrence JSON carries both pools and each attendee's mode.
+func TestRemotePoolFillsSeparatelyFromInPerson(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HybridPools")
+	eventID, date := seedRemoteEvent(t, app, admin, gid, intPtr(1), intPtr(1), true)
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	uIn, cIn := mkUser(t, app, &g, "rp-in")
+	uRe, cRe := mkUser(t, app, &g, "rp-re")
+	uIn2, cIn2 := mkUser(t, app, &g, "rp-in2")
+	uRe2, cRe2 := mkUser(t, app, &g, "rp-re2")
+
+	if code, body := registerModeAs(cIn, eventID, date, "going", models.AttendanceInPerson); code != http.StatusOK {
+		t.Fatalf("in-person going: %d %s", code, body)
+	}
+	// In-person is now full; the remote seat is still open.
+	if code, body := registerModeAs(cRe, eventID, date, "going", models.AttendanceRemote); code != http.StatusOK {
+		t.Fatalf("remote going: %d %s", code, body)
+	}
+	if code, body := registerModeAs(cIn2, eventID, date, "going", models.AttendanceInPerson); code != http.StatusOK {
+		t.Fatalf("in-person overflow: %d %s", code, body)
+	}
+	if code, body := registerModeAs(cRe2, eventID, date, "going", models.AttendanceRemote); code != http.StatusOK {
+		t.Fatalf("remote overflow: %d %s", code, body)
+	}
+
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+	for u, want := range map[*models.User]string{uIn: models.RegGoing, uRe: models.RegGoing, uIn2: models.RegWaitlisted, uRe2: models.RegWaitlisted} {
+		if got := regStatus(t, app, u.ID, occ.ID); got != want {
+			t.Fatalf("user %d status = %q, want %q", u.ID, got, want)
+		}
+	}
+	if got := regMode(t, app, uRe.ID, occ.ID); got != models.AttendanceRemote {
+		t.Fatalf("remote registration mode = %q", got)
+	}
+	if used, err := seatsUsed(app.DB, occ.ID); err != nil || used != 1 {
+		t.Fatalf("in-person seats = %d (%v), want 1", used, err)
+	}
+	if used, err := remoteSeatsUsed(app.DB, occ.ID); err != nil || used != 1 {
+		t.Fatalf("remote seats = %d (%v), want 1", used, err)
+	}
+
+	// The occurrence JSON reports both pools and labels remote people.
+	list := listOccurrences(t, admin, gid, date, date)
+	inst := occurrenceOn(t, list, date)
+	if !inst.RemoteAvailable || inst.RemoteCapacity == nil || *inst.RemoteCapacity != 1 ||
+		inst.RemoteSeatsUsed != 1 || inst.RemoteSpotsLeft == nil || *inst.RemoteSpotsLeft != 0 {
+		t.Fatalf("occurrence remote fields: %+v", inst)
+	}
+	modes := map[uint]string{}
+	for _, at := range inst.Attendees {
+		modes[at.UserID] = at.AttendanceMode
+	}
+	if modes[uRe.ID] != models.AttendanceRemote || modes[uIn.ID] != models.AttendanceInPerson {
+		t.Fatalf("attendee modes = %v", modes)
+	}
+}
+
+// A full remote pool waitlists a remote party, and cancelling a remote
+// going promotes the earliest remote entry — not an in-person entry
+// ahead of it in the one waitlist.
+func TestRemoteWaitlistPromotesEarliestRemote(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HybridWait")
+	eventID, date := seedRemoteEvent(t, app, admin, gid, intPtr(1), intPtr(1), true)
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	_, cIn := mkUser(t, app, &g, "rw-in")
+	uRe, cRe := mkUser(t, app, &g, "rw-re")
+	uInWait, cInWait := mkUser(t, app, &g, "rw-inwait")
+	uReWait, cReWait := mkUser(t, app, &g, "rw-rewait")
+	uReWait2, cReWait2 := mkUser(t, app, &g, "rw-rewait2")
+
+	// Fill both pools, then line up: in-person first, then two remote.
+	for _, step := range []struct {
+		c    *apiClient
+		mode string
+	}{{cIn, models.AttendanceInPerson}, {cRe, models.AttendanceRemote},
+		{cInWait, models.AttendanceInPerson}, {cReWait, models.AttendanceRemote}, {cReWait2, models.AttendanceRemote}} {
+		if code, body := registerModeAs(step.c, eventID, date, "going", step.mode); code != http.StatusOK {
+			t.Fatalf("register %s: %d %s", step.mode, code, body)
+		}
+	}
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+	if got := regStatus(t, app, uReWait.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("first remote overflow = %q, want waitlisted", got)
+	}
+
+	// The remote going cancels (switching to maybe keeps their mode,
+	// passed explicitly here). The earliest remote entry moves up; the
+	// in-person entry ahead of it and the later remote entry stay.
+	if code, body := registerModeAs(cRe, eventID, date, "declined", models.AttendanceRemote); code != http.StatusOK {
+		t.Fatalf("remote cancel: %d %s", code, body)
+	}
+	var promoted models.Registration
+	app.DB.Where("user_id = ? AND occurrence_id = ?", uReWait.ID, occ.ID).First(&promoted)
+	if promoted.Status != models.RegGoing || promoted.PromotedAt == nil || promoted.AttendanceMode != models.AttendanceRemote {
+		t.Fatalf("promoted remote row: status=%q mode=%q promoted_at=%v", promoted.Status, promoted.AttendanceMode, promoted.PromotedAt)
+	}
+	if got := regStatus(t, app, uInWait.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("in-person waitlist = %q, want still waitlisted", got)
+	}
+	if got := regStatus(t, app, uReWait2.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("second remote waitlist = %q, want still waitlisted", got)
+	}
+	if got := regStatus(t, app, uRe.ID, occ.ID); got != models.RegDeclined {
+		t.Fatalf("canceller = %q, want declined", got)
+	}
+}
+
+// Remote is refused with 400 when the event does not offer it, and a
+// bad mode is a 400 too. No registration row is made.
+func TestRemoteRefusedWhenNotAvailable(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "NoRemote")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(10), true)
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	u, c := mkUser(t, app, &g, "nr1")
+
+	if code, body := registerModeAs(c, eventID, date, "going", models.AttendanceRemote); code != http.StatusBadRequest {
+		t.Fatalf("remote on non-remote event: %d %s, want 400", code, body)
+	}
+	if code, body := registerModeAs(c, eventID, date, "going", "carrier_pigeon"); code != http.StatusBadRequest {
+		t.Fatalf("bad mode: %d %s, want 400", code, body)
+	}
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+	var n int64
+	app.DB.Model(&models.Registration{}).Where("user_id = ? AND occurrence_id = ?", u.ID, occ.ID).Count(&n)
+	if n != 0 {
+		t.Fatal("a row was made for a refused remote registration")
+	}
+	// In person still works on the same event.
+	if code, body := registerModeAs(c, eventID, date, "going", models.AttendanceInPerson); code != http.StatusOK {
+		t.Fatalf("in-person control: %d %s", code, body)
+	}
+}
+
+// Switching a going registration to the other pool re-registers under
+// the lock: it takes a seat there when one fits, and waitlists when
+// the new pool is full.
+func TestSwitchingModeReRegistersInNewPool(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HybridSwitch")
+	eventID, date := seedRemoteEvent(t, app, admin, gid, intPtr(2), intPtr(1), true)
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	uRe, cRe := mkUser(t, app, &g, "sw-re")
+	uSw, cSw := mkUser(t, app, &g, "sw-sw")
+
+	if code, body := registerModeAs(cRe, eventID, date, "going", models.AttendanceRemote); code != http.StatusOK {
+		t.Fatalf("remote going: %d %s", code, body)
+	}
+	if code, body := registerModeAs(cSw, eventID, date, "going", models.AttendanceInPerson); code != http.StatusOK {
+		t.Fatalf("switcher in-person going: %d %s", code, body)
+	}
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+
+	// The remote pool is full, so switching to remote waitlists.
+	code, body := registerModeAs(cSw, eventID, date, "going", models.AttendanceRemote)
+	if code != http.StatusOK {
+		t.Fatalf("switch to full remote pool: %d %s", code, body)
+	}
+	if got := regStatus(t, app, uSw.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("after switch to full pool = %q, want waitlisted", got)
+	}
+	if got := regMode(t, app, uSw.ID, occ.ID); got != models.AttendanceRemote {
+		t.Fatalf("waitlisted switch mode = %q, want remote", got)
+	}
+	if used, _ := seatsUsed(app.DB, occ.ID); used != 0 {
+		t.Fatalf("in-person seats after switch = %d, want 0 (seat freed)", used)
+	}
+
+	// Switching back to in-person, which has room, seats them again.
+	if code, body := registerModeAs(cSw, eventID, date, "going", models.AttendanceInPerson); code != http.StatusOK {
+		t.Fatalf("switch back: %d %s", code, body)
+	}
+	if got := regStatus(t, app, uSw.ID, occ.ID); got != models.RegGoing {
+		t.Fatalf("after switch back = %q, want going", got)
+	}
+	if got := regMode(t, app, uSw.ID, occ.ID); got != models.AttendanceInPerson {
+		t.Fatalf("switch-back mode = %q, want in_person", got)
+	}
+	// The original remote registration was never touched.
+	if got := regStatus(t, app, uRe.ID, occ.ID); got != models.RegGoing {
+		t.Fatalf("remote going = %q, want going", got)
+	}
+}

@@ -1,6 +1,8 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { RsvpButtons } from "./RsvpButtons";
+import { Events } from "../api";
 import type { EventOccurrence } from "../types";
 
 vi.mock("../api", () => ({
@@ -35,6 +37,10 @@ function occurrence(over: Partial<EventOccurrence>): EventOccurrence {
     spotsLeft: null,
     waitlistEnabled: false,
     guestsAllowed: 0,
+    remoteAvailable: false,
+    remoteCapacity: null,
+    remoteSeatsUsed: 0,
+    remoteSpotsLeft: null,
     videoProvider: "none",
     videoReveal: "registered_only",
     ...over,
@@ -77,6 +83,64 @@ describe("RsvpButtons", () => {
     );
     expect(screen.getByText(/removed your registration/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Going" })).not.toBeInTheDocument();
+  });
+
+  it("hides the attendance choice when remote is not available", () => {
+    render(<RsvpButtons instance={occurrence({})} onChange={() => {}} />);
+    expect(screen.queryByText("How you'll attend")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remote" })).not.toBeInTheDocument();
+  });
+
+  it("shows In person / Remote and registers in the picked pool", async () => {
+    vi.mocked(Events.register).mockResolvedValue({
+      registration: {
+        userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01",
+        status: "going", guestCount: 0, waitlistPosition: null, attendanceMode: "remote",
+      },
+    });
+    const onChange = vi.fn();
+    render(
+      <RsvpButtons
+        instance={occurrence({ remoteAvailable: true, remoteCapacity: 5, remoteSeatsUsed: 1, remoteSpotsLeft: 4 })}
+        onChange={onChange}
+      />
+    );
+    expect(screen.getByText("How you'll attend")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "In person" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByRole("button", { name: "Remote" }));
+    await userEvent.click(screen.getByRole("button", { name: "Going" }));
+    expect(Events.register).toHaveBeenCalledWith(7, "going", "2026-12-01", 0, "remote");
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attendanceMode: "remote" }));
+  });
+
+  it("starts on my saved mode and offers the switch back", () => {
+    render(
+      <RsvpButtons
+        instance={occurrence({
+          remoteAvailable: true,
+          myRegistration: "going",
+          myAttendanceMode: "remote",
+        })}
+        onChange={() => {}}
+      />
+    );
+    expect(screen.getByRole("button", { name: "Remote" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("disables Going when the picked remote pool is full with no waitlist", async () => {
+    render(
+      <RsvpButtons
+        instance={occurrence({
+          capacity: 10, seatsUsed: 0, spotsLeft: 10,
+          remoteAvailable: true, remoteCapacity: 2, remoteSeatsUsed: 2, remoteSpotsLeft: 0,
+          waitlistEnabled: false,
+        })}
+        onChange={() => {}}
+      />
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Remote" }));
+    expect(screen.getByText("This event is full.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Going" })).toBeDisabled();
   });
 
   it("shows the guest count input when guests are allowed", () => {

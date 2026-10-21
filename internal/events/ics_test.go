@@ -317,3 +317,29 @@ func TestICSVideoLinkInDescription(t *testing.T) {
 		t.Fatal("an unset video link reached the feed")
 	}
 }
+
+// An event that offers remote attendance says so in the DESCRIPTION
+// (8.2, M1.8 slice 2), on series entries and standalone dates alike.
+func TestICSRemoteAvailableInDescription(t *testing.T) {
+	base := Feed{
+		Name: "Fold", Host: "church.example.org",
+		WindowStart: utc(2026, 11, 1, 0, 0), WindowEnd: utc(2027, 11, 1, 0, 0),
+		Events: []FeedEvent{{
+			ID: 23, Title: "Choir practice", TZID: "UTC", StartsLocal: "2026-12-01T19:00",
+			DurationMinutes: 60, UpdatedAt: utc(2026, 11, 1, 8, 0), RemoteAvailable: true,
+		}},
+		Singles: []FeedSingle{{
+			EventID: 24, OriginalDate: "2026-12-02", Title: "One rehearsal", TZID: "UTC",
+			StartsAt: utc(2026, 12, 2, 19, 0), EndsAt: utc(2026, 12, 2, 20, 0),
+			UpdatedAt: utc(2026, 11, 1, 8, 0), RemoteAvailable: true, Status: "CONFIRMED",
+		}},
+	}
+	if got := strings.Count(string(RenderFeed(base)), "Remote attendance available"); got != 2 {
+		t.Fatalf("series and single should each mention remote, got %d mentions", got)
+	}
+	base.Events[0].RemoteAvailable = false
+	base.Singles[0].RemoteAvailable = false
+	if out := string(RenderFeed(base)); strings.Contains(out, "Remote attendance available") {
+		t.Fatal("a non-remote event claimed remote attendance")
+	}
+}

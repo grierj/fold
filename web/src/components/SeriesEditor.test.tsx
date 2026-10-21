@@ -24,6 +24,8 @@ describe("SeriesEditor", () => {
           capacity: 20,
           waitlistEnabled: true,
           guestsAllowed: 2,
+          remoteAvailable: true,
+          remoteCapacity: 15,
           videoProvider: "link",
           videoUrl: "https://zoom.example.org/j/123",
           videoReveal: "registered_only",
@@ -40,6 +42,9 @@ describe("SeriesEditor", () => {
     expect(screen.getByText(/0–5/)).toBeInTheDocument();
     expect(screen.getByLabelText(/^Waitlist when full/)).toBeChecked();
     expect(screen.getByText(/refuses new registrations/)).toBeInTheDocument();
+    // Remote attendance carries its own cap, separate from the room.
+    expect(screen.getByLabelText(/^Remote attendance/)).toBeChecked();
+    expect((screen.getByLabelText(/^Remote capacity/) as HTMLInputElement).value).toBe("15");
     // The Video section carries the series' link and who may see it.
     expect((screen.getByLabelText("Video link") as HTMLInputElement).value).toBe(
       "https://zoom.example.org/j/123"

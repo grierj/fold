@@ -8,6 +8,7 @@ import { ZonePicker } from "./ui/ZonePicker";
 import { WeekdayPicker } from "./WeekdayPicker";
 import { Button } from "./ui/Button";
 import { VideoField, focusVideoUrl, isVideoError, videoProblem, type VideoValue } from "./VideoField";
+import { RemoteField, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
 import type { VideoProvider, VideoReveal } from "../types";
 
 
@@ -27,6 +28,8 @@ export interface SeriesFields {
   videoProvider?: VideoProvider;
   videoUrl?: string;
   videoReveal?: VideoReveal;
+  remoteAvailable?: boolean;
+  remoteCapacity?: number | null;
 }
 
 // SeriesEditor is the one "Edit series" / "Edit event" form, used on the
@@ -70,9 +73,12 @@ export function SeriesEditor({
     reveal: instance.videoReveal ?? "registered_only",
   };
   const [video, setVideo] = useState<VideoValue>(initialVideo);
+  const initialRemote = remoteFrom(instance.remoteAvailable, instance.remoteCapacity);
+  const [remote, setRemote] = useState<RemoteValue>(initialRemote);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
 
   function toggleDay(v: string) {
     setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
@@ -89,6 +95,12 @@ export function SeriesEditor({
     if (videoMsg) {
       setError(videoMsg);
       focusVideoUrl(idPrefix);
+      return;
+    }
+    const remoteMsg = remoteProblem(remote);
+    setRemoteError(remoteMsg);
+    if (remoteMsg) {
+      setError(remoteMsg);
       return;
     }
     setBusy(true);
@@ -111,6 +123,8 @@ export function SeriesEditor({
       capacity?: number | null;
       waitlistEnabled?: boolean;
       guestsAllowed?: number;
+      remoteAvailable?: boolean;
+      remoteCapacity?: number | null;
       videoProvider?: VideoProvider;
       videoUrl?: string;
       videoReveal?: VideoReveal;
@@ -127,6 +141,11 @@ export function SeriesEditor({
     if (capTrimmed !== capInitial) body.capacity = capTrimmed === "" ? null : Number(capTrimmed);
     if (waitlistEnabled !== instance.waitlistEnabled) body.waitlistEnabled = waitlistEnabled;
     if (guestsAllowed !== instance.guestsAllowed) body.guestsAllowed = guestsAllowed;
+    // Same only-when-changed rule as capacity: an untouched remote cap
+    // on the group page must not clobber a per-date override.
+    if (remote.available !== initialRemote.available || remote.capacity.trim() !== initialRemote.capacity) {
+      Object.assign(body, remoteBody(remote));
+    }
     if (
       video.provider !== initialVideo.provider ||
       video.url.trim() !== initialVideo.url ||
@@ -245,6 +264,7 @@ export function SeriesEditor({
         checked={waitlistEnabled}
         onChange={(e) => setWaitlistEnabled(e.target.checked)}
       />
+      <RemoteField idPrefix={idPrefix} value={remote} onChange={setRemote} error={remoteError} />
       <VideoField idPrefix={idPrefix} value={video} onChange={setVideo} error={videoError} />
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>

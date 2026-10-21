@@ -42,6 +42,10 @@ export interface GroupSummary {
 // their members and admins.
 export type Visibility = "public" | "private" | "invite_only";
 
+// How a registration attends (M1.8 slice 2): each mode counts against
+// its own seat pool.
+export type AttendanceMode = "in_person" | "remote";
+
 // Video links (5.8, M1.8): a pasted link or a generated Jitsi room, and
 // who may see it. videoUrl arrives only when the viewer may see it.
 export type VideoProvider = "none" | "link" | "jitsi";
@@ -122,6 +126,7 @@ export interface Attendee {
   name: string;
   status: RegistrationStatus;
   guestCount: number;
+  attendanceMode: AttendanceMode;
 }
 
 // One date of an event. date is the series date and stays put when a
@@ -168,8 +173,15 @@ export interface EventOccurrence {
   spotsLeft: number | null;
   waitlistEnabled: boolean;
   guestsAllowed: number;
+  // Remote attendance (M1.8 slice 2): the second seat pool, mirroring
+  // the in-person fields. remoteCapacity is this date's effective cap.
+  remoteAvailable: boolean;
+  remoteCapacity: number | null;
+  remoteSeatsUsed: number;
+  remoteSpotsLeft: number | null;
   myGuestCount?: number;
   myWaitlistPosition?: number;
+  myAttendanceMode?: AttendanceMode;
   // Video link for this date (M1.8). videoUrl is set only when you may
   // see it; videoHidden means a link exists but you can't yet.
   videoProvider: VideoProvider;
@@ -218,6 +230,9 @@ export interface EventSeries {
   capacity: number | null;
   waitlistEnabled: boolean;
   guestsAllowed: number;
+  // Remote attendance (M1.8 slice 2). remoteCapacity null is unlimited.
+  remoteAvailable: boolean;
+  remoteCapacity: number | null;
   // Video link (M1.8). At series level it shows under "always" and to
   // the event's leaders or hosts; people going to a date get it there.
   videoProvider: VideoProvider;
@@ -236,6 +251,7 @@ export interface RegistrationResponse {
   status: RegistrationStatus;
   guestCount: number;
   waitlistPosition: number | null;
+  attendanceMode: AttendanceMode;
 }
 
 export interface EventDetailResponse {

@@ -269,3 +269,49 @@ func TestCalendarShowDeletedIsAdminOnly(t *testing.T) {
 		}
 	}
 }
+
+// remote=1 keeps only events that offer remote attendance (M1.8
+// slice 2), for signed-in and signed-out viewers alike, and never
+// widens visibility: a hidden group's remote event stays hidden.
+func TestCalendarRemoteFilter(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+
+	open := createGroupAs(t, admin, "Open Choir", models.VisibilityPublic)
+	scheduleGroupEvent(t, admin, open, "In Person Only")
+	w := admin.do("POST", "/api/v1/groups/"+itoa(open)+"/events", map[string]any{
+		"title": "Hybrid Night", "startsLocal": "2026-12-01T19:00", "durationMinutes": 60,
+		"tzid": "UTC", "remoteAvailable": true,
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create remote event: %d %s", w.Code, w.Body.String())
+	}
+	secret := createGroupAs(t, admin, "Secret Remote", models.VisibilityInviteOnly)
+	w = admin.do("POST", "/api/v1/groups/"+itoa(secret)+"/events", map[string]any{
+		"title": "Secret Hybrid", "startsLocal": "2026-12-01T19:00", "durationMinutes": 60,
+		"tzid": "UTC", "remoteAvailable": true,
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create secret remote event: %d %s", w.Code, w.Body.String())
+	}
+
+	const window = "from=2026-11-30&to=2026-12-02&tz=UTC"
+	for _, who := range []*apiClient{admin, newAPIClient(t, app)} {
+		page, raw := getCalendar(t, who, window+"&remote=1", http.StatusOK)
+		if hasTitle(page, "In Person Only") {
+			t.Fatalf("remote=1 kept an in-person-only event: %v", calendarTitles(page))
+		}
+		if !hasTitle(page, "Hybrid Night") {
+			t.Fatalf("remote=1 dropped the remote event: %v", calendarTitles(page))
+		}
+		if who != admin && (hasTitle(page, "Secret Hybrid") || strings.Contains(raw, "Secret Remote")) {
+			t.Fatalf("signed-out remote=1 saw an invite-only event: %s", raw)
+		}
+	}
+	// Without the filter both public events are there.
+	page, _ := getCalendar(t, newAPIClient(t, app), window, http.StatusOK)
+	if !hasTitle(page, "In Person Only") || !hasTitle(page, "Hybrid Night") {
+		t.Fatalf("unfiltered calendar: %v", calendarTitles(page))
+	}
+}

@@ -77,6 +77,7 @@ export function EventDetail() {
             myRegistration: reg.status,
             myGuestCount: reg.guestCount,
             myWaitlistPosition: reg.waitlistPosition ?? undefined,
+            myAttendanceMode: reg.attendanceMode,
             registrations,
           };
         }),
@@ -363,7 +364,7 @@ function ManageRoster({ instance, onChanged, onClose }: { instance: EventOccurre
         {roster.map((a) => (
           <li key={a.userId} className="flex items-center justify-between gap-3">
             <span>
-              {a.name} <span className="text-text-muted">· {a.status}</span>
+              {a.name} <span className="text-text-muted">· {a.status}{a.attendanceMode === "remote" ? " · remote" : ""}</span>
             </span>
             <span className="flex gap-2">
               {a.status === "waitlisted" && (
@@ -418,6 +419,9 @@ function DateEditor({
   const [title, setTitle] = useState(instance.title);
   const [location, setLocation] = useState(instance.location);
   const [capacity, setCapacity] = useState(instance.capacity === null ? "" : String(instance.capacity));
+  const [remoteCapacity, setRemoteCapacity] = useState(
+    instance.remoteCapacity === null ? "" : String(instance.remoteCapacity)
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -429,6 +433,7 @@ function DateEditor({
       location?: string;
       title?: string;
       capacityOverride?: number | null;
+      remoteCapacityOverride?: number | null;
     } = {};
     const startsLocal = `${date}T${time}`;
     if (startsLocal !== instance.startsLocal) body.startsLocal = startsLocal;
@@ -438,6 +443,11 @@ function DateEditor({
     const capTrimmed = capacity.trim();
     const capCurrent = instance.capacity === null ? "" : String(instance.capacity);
     if (capTrimmed !== capCurrent) body.capacityOverride = capTrimmed === "" ? null : Number(capTrimmed);
+    if (instance.remoteAvailable) {
+      const rcTrimmed = remoteCapacity.trim();
+      const rcCurrent = instance.remoteCapacity === null ? "" : String(instance.remoteCapacity);
+      if (rcTrimmed !== rcCurrent) body.remoteCapacityOverride = rcTrimmed === "" ? null : Number(rcTrimmed);
+    }
     if (Object.keys(body).length === 0) {
       onClose();
       return;
@@ -493,6 +503,22 @@ function DateEditor({
           onChange={(e) => setCapacity(e.target.value)}
         />
       </Field>
+      {instance.remoteAvailable && (
+        <Field
+          id={`cev-rcap-${instance.id}`}
+          label="Remote capacity for this date"
+          optional
+          hint="Leave it blank to use the event’s remote capacity, or 0 for no remote seats."
+        >
+          <Input
+            type="number"
+            min={0}
+            placeholder="Same as the event"
+            value={remoteCapacity}
+            onChange={(e) => setRemoteCapacity(e.target.value)}
+          />
+        </Field>
+      )}
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save this date"}

@@ -1,13 +1,19 @@
 import { useState } from "react";
 import { Events } from "../api";
-import type { EventOccurrence, RegistrationResponse, RegistrationStatus } from "../types";
+import type { AttendanceMode, EventOccurrence, RegistrationResponse, RegistrationStatus } from "../types";
 import { errorText } from "../lib/errors";
 import { Field, FormError, Input } from "./ui/Field";
+import { Chip } from "./ui/Chip";
 
 const OPTIONS: { value: RegistrationStatus; label: string }[] = [
   { value: "going", label: "Going" },
   { value: "maybe", label: "Maybe" },
   { value: "declined", label: "Can't go" },
+];
+
+const MODES: { value: AttendanceMode; label: string }[] = [
+  { value: "in_person", label: "In person" },
+  { value: "remote", label: "Remote" },
 ];
 
 // Registration for one event date, as a Going / Maybe / Can't go
@@ -24,15 +30,21 @@ export function RsvpButtons({
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [guests, setGuests] = useState(instance.myGuestCount ?? 0);
+  const [mode, setMode] = useState<AttendanceMode>(instance.myAttendanceMode ?? "in_person");
 
   const mine = instance.myRegistration;
   const removed = mine === "removed";
   const waitlisted = mine === "waitlisted";
+  // Full is judged in the pool you picked: remote seats are their own.
+  const myMode = instance.myAttendanceMode ?? "in_person";
+  const poolFull =
+    mode === "remote"
+      ? instance.remoteCapacity !== null && (instance.remoteSpotsLeft ?? 1) <= 0
+      : instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0;
   const fullNoWaitlist =
-    instance.capacity !== null &&
-    (instance.spotsLeft ?? 1) <= 0 &&
+    poolFull &&
     !instance.waitlistEnabled &&
-    mine !== "going" &&
+    !(mine === "going" && myMode === mode) &&
     mine !== "waitlisted";
 
   async function choose(status: RegistrationStatus) {
@@ -40,7 +52,13 @@ export function RsvpButtons({
     setError(null);
     try {
       const guestCount = status === "going" ? guests : 0;
-      const { registration } = await Events.register(instance.eventId, status, instance.date, guestCount);
+      const { registration } = await Events.register(
+        instance.eventId,
+        status,
+        instance.date,
+        guestCount,
+        instance.remoteAvailable ? mode : undefined
+      );
       onChange(registration);
     } catch (e) {
       setError(errorText(e, "We couldn't save your answer."));
@@ -66,6 +84,21 @@ export function RsvpButtons({
         </div>
       )}
       {fullNoWaitlist && <div className="text-sm font-semibold text-text-muted mb-2">This event is full.</div>}
+      {instance.remoteAvailable && (
+        <div className="mb-2">
+          <div className="text-sm text-text-muted mb-1">How you&apos;ll attend</div>
+          <div role="group" aria-label="How you'll attend" className="flex gap-2 flex-wrap">
+            {MODES.map((m) => (
+              <Chip key={m.value} selected={mode === m.value} disabled={busy !== null} onClick={() => setMode(m.value)}>
+                {m.label}
+              </Chip>
+            ))}
+          </div>
+          {mine === "going" && mode !== myMode && (
+            <div className="text-sm text-text-muted mt-1">Tap Going to switch to {mode === "remote" ? "remote" : "in person"}.</div>
+          )}
+        </div>
+      )}
       <div className="flex gap-2 flex-wrap items-center">
         {/* Segmented control (DEC-63): one joined row, the chosen answer filled. */}
         <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
