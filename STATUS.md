@@ -56,3 +56,4 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 ## Follow-ups (not yet claimed)
 
 - CI hardening (Warden review of #83, Oct 20, 2026; issue #95): claimed by Wright, in review. Actions pinned to full SHAs and a top-level `permissions: contents: read`, enforced by `TestWorkflowActionsPinnedAndReadOnly`.
+- VideoField polish (Illuminator, optional, from the #102 review): N7, clear the field's error when the link or the video option changes; N8, add a little space between the event page's time line and the "Join by video" button.
