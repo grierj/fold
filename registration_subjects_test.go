@@ -231,3 +231,22 @@ func TestPendingTeenRegistrationNamesStayPrivate(t *testing.T) {
 		t.Fatal("household lost visibility")
 	}
 }
+
+// DEC-82: the teen badge is for event leaders and admins only.
+func TestTeenAccountTypeOnlyForLeadersAndAdmins(t *testing.T) {
+	teen := models.User{ID: 3, Name: "Taylor", Status: models.UserActive, AccountType: models.AccountTeen}
+	member := models.User{ID: 4, Status: models.UserActive, Role: models.RoleMember, AccountType: models.AccountAdult}
+	admin := models.User{ID: 5, Status: models.UserActive, Role: models.RoleAdmin, AccountType: models.AccountAdult}
+	f := newSubjectFacts(time.Now())
+	f.users[teen.ID] = &teen
+	row := models.Registration{ID: 5, UserID: &teen.ID, Status: models.RegGoing}
+	if dto := f.attendee(row, models.EventOccurrence{}, &member, false, false, time.Now()); dto == nil || dto.AccountType != "" {
+		t.Fatalf("ordinary attendee got the badge: %+v", dto)
+	}
+	if dto := f.attendee(row, models.EventOccurrence{}, &member, true, false, time.Now()); dto == nil || dto.AccountType != models.AccountTeen {
+		t.Fatal("leader lost the badge")
+	}
+	if dto := f.attendee(row, models.EventOccurrence{}, &admin, false, false, time.Now()); dto == nil || dto.AccountType != models.AccountTeen {
+		t.Fatal("admin lost the badge")
+	}
+}

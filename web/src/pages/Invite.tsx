@@ -12,8 +12,8 @@ import { Skeleton } from "../components/ui/Skeleton";
 const INVITE_EXPIRED = "This invitation has expired or was already used. Ask the person who invited you for a new one.";
 import type { Invitation } from "../types";
 
-// Accept an invitation (M1.2, 5.10). The person sets a password and gets an
-// active account; no approval step. The token is single use and expires.
+// Accept a single-use invitation and choose a password. Household adults
+// wait for admin approval; teens wait for consent.
 export function Invite() {
   const [params] = useSearchParams();
   const token = params.get("token") ?? "";
@@ -108,10 +108,10 @@ export function Invite() {
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-2">You're invited to {site}</h1>
       {invitation?.conversion && <div className="mb-4 space-y-2">
-        <p>Create your own account for {invitation.name}. Your past and upcoming sign-ups will move to your account when you accept. Group memberships do not move, so some private events may no longer be available.</p>
+        <p>Create your own account for {invitation.name}. Your past and upcoming sign-ups will move to your account {invitation.accountType === "teen" ? "when you accept" : "after an admin approves"}. Group memberships do not move, so some private events may no longer be available.</p>
         <p>{invitation.accountType === "teen"
           ? "A church admin needs to confirm your parent or guardian before you can sign in."
-          : "A church admin needs to approve your account before you can sign in."}</p>
+          : "A church admin needs to approve your account before you can sign in. Until then, nothing changes: your household keeps managing your sign-ups as before."}</p>
       </div>}
       {invitation?.groupName && (
         <p className="text-text-muted mb-6">
@@ -121,7 +121,7 @@ export function Invite() {
       {!invitation?.groupName && <div className="mb-6" />}
       <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
         {error && <FormError>{error}</FormError>}
-        <Field id="invite-your-name" label="Your name">
+        <Field id="invite-your-name" label="Your name" hint={invitation?.conversion ? "You can change it later in your profile." : undefined}>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -150,7 +150,7 @@ export function Invite() {
   );
 }
 
-// Shown after a teen or a converted adult accepts. Focus moves to the
+// Shown after a teen or an adult accepts. Focus moves to the
 // heading so screen readers start here; no live region, because the whole
 // page changed (PR 111 M1). Adults wait for approval (Warden, PR 111 F1).
 function AccountWaiting({ reason }: { reason: "consent" | "approval" }) {
@@ -160,8 +160,8 @@ function AccountWaiting({ reason }: { reason: "consent" | "approval" }) {
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold mb-4 focus:outline-none">Your account is almost ready</h1>
       <p>{reason === "consent"
-        ? "Almost done. A church admin needs to confirm your parent or guardian before you can sign in. Your sign-ups are already on your account. Ask your church office if you have questions."
-        : "Almost done. A church admin needs to approve your account before you can sign in. We'll email you when it's approved. Your sign-ups are already on your account."}</p>
+        ? "A church admin needs to confirm your parent or guardian before you can sign in. Your sign-ups are already on your account. We can't email you about signing in yet, so ask your church office when your account is ready."
+        : "A church admin needs to approve your account before you can sign in. Until then, nothing changes: your household keeps managing your sign-ups as before. We'll email you when it's approved. Then you can sign in with the password you chose."}</p>
     </div>
   );
 }

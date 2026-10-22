@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -68,27 +70,42 @@ func TestHouseholdConversionTransfersEveryRow(t *testing.T) {
 	if !strings.Contains(response, `"conversion":true`) || strings.Contains(response, "householdId") || strings.Contains(response, "birthDate") {
 		t.Fatal(response)
 	}
-	// Converted adults wait for admin approval (Warden, PR 111 F1).
+	// Adults keep their household identity until approval.
 	waiting := acceptConversion(t, app, token, http.StatusOK)
 	apiDo(t, waiting, "GET", "/api/v1/auth/me", nil, http.StatusUnauthorized)
 	if loginAPIExpectFail(t, app, "independent@example.com", "password1234") {
-		t.Fatal("converted adult signed in before approval")
+		t.Fatal("adult signed in before approval")
 	}
-	var user models.User
-	if err := app.DB.Where("email = ?", "independent@example.com").First(&user).Error; err != nil {
+	assertConversionUnmoved(t, app, person, "independent@example.com", original)
+	var request models.AccountRequest
+	if err := app.DB.Where("email = ? AND source = ? AND status = ?", "independent@example.com", models.RequestHouseholdConversion, models.RequestPending).First(&request).Error; err != nil {
 		t.Fatal(err)
 	}
-	if user.CanSignIn() || user.Status != models.UserInvited || user.AccountType != models.AccountAdult || user.BirthDate == nil || user.Name != person.Name {
-		t.Fatalf("new account: %+v", user)
+	if request.PasswordHash == nil || request.HouseholdPersonID == nil || request.InvitationID == nil {
+		t.Fatal("missing held conversion details")
 	}
-	var request models.AccountRequest
-	if err := app.DB.Where("email = ? AND source = ? AND status = ?", user.Email, models.RequestHouseholdConversion, models.RequestPending).First(&request).Error; err != nil {
-		t.Fatal("no approval request:", err)
+	apiDo(t, c, "POST", conversionPath(person.ID), map[string]any{"email": "other@example.com"}, http.StatusConflict)
+	apiDo(t, c, "POST", conversionPath(person.ID)+"/resend", nil, http.StatusConflict)
+	if err := conversionEmailAvailable(app.DB, request.Email, 0); !errors.Is(err, errConversionEmail) {
+		t.Fatal("pending request did not reserve email", err)
+	}
+	apiDo(t, admin, "POST", "/api/v1/invitations", map[string]any{"email": request.Email, "name": "Reserved"}, http.StatusConflict)
+	rawPending := apiDo(t, c, "GET", "/api/v1/me/household", nil, http.StatusOK)
+	if !strings.Contains(rawPending, "awaiting_approval") {
+		t.Fatal(rawPending)
 	}
 	apiDo(t, admin, "POST", "/api/v1/admin/account-requests/"+itoa(request.ID)+"/approve", map[string]any{}, http.StatusOK)
-	app.DB.First(&user, user.ID)
-	if user.Status != models.UserActive {
-		t.Fatalf("approval left status %s", user.Status)
+	var user models.User
+	if err := app.DB.Where("email = ?", request.Email).First(&user).Error; err != nil {
+		t.Fatal(err)
+	}
+	if user.Status != models.UserActive || user.AccountType != models.AccountAdult || user.BirthDate == nil || user.Name != person.Name {
+		t.Fatalf("approved account: %+v", user)
+	}
+	request = models.AccountRequest{ID: request.ID}
+	app.DB.First(&request, request.ID)
+	if request.PasswordHash != nil {
+		t.Fatal("approval retained held hash")
 	}
 	signedIn := loginAPI(t, app, "independent@example.com", "password1234")
 	apiDo(t, signedIn, "GET", "/api/v1/auth/me", nil, http.StatusOK)
@@ -326,8 +343,8 @@ func TestHouseholdConversionConcurrentDoubleAccept(t *testing.T) {
 	if !((codes[0] == 200 && codes[1] == 400) || (codes[1] == 200 && codes[0] == 400)) {
 		t.Fatalf("double accept: %v", codes)
 	}
-	if auditCount(t, app, audit.HouseholdPersonConverted) != 1 {
-		t.Fatal("conversion occurred twice")
+	if auditCount(t, app, audit.AccountRequested) != 1 || auditCount(t, app, audit.HouseholdPersonConverted) != 0 {
+		t.Fatal("acceptance did not create exactly one pending request")
 	}
 }
 
@@ -351,7 +368,10 @@ func TestHouseholdConversionRollbackAfterTransfer(t *testing.T) {
 	})
 	var before models.Registration
 	app.DB.Where("household_person_id = ?", person.ID).First(&before)
-	acceptConversion(t, app, token, http.StatusInternalServerError)
+	acceptConversion(t, app, token, http.StatusOK)
+	var request models.AccountRequest
+	app.DB.Where("email = ?", "rollback@example.com").First(&request)
+	apiDo(t, admin, "POST", "/api/v1/admin/account-requests/"+itoa(request.ID)+"/approve", map[string]any{}, http.StatusInternalServerError)
 	var after models.Registration
 	app.DB.First(&after, before.ID)
 	if !reflect.DeepEqual(before, after) || after.RegisteredBy == nil || *after.RegisteredBy != holder.ID {
@@ -374,8 +394,8 @@ func TestHouseholdConversionRollbackAfterTransfer(t *testing.T) {
 	}
 	var inv models.Invitation
 	app.DB.Where("token_hash = ?", hashToken(token)).First(&inv)
-	if inv.AcceptedAt != nil || auditCount(t, app, audit.HouseholdPersonConverted) != 0 {
-		t.Fatal("failed transfer consumed token or left audit")
+	if inv.AcceptedAt == nil || auditCount(t, app, audit.HouseholdPersonConverted) != 0 {
+		t.Fatal("failed transfer lost acceptance or left audit")
 	}
 	var notices int64
 	app.DB.Model(&models.Notification{}).Where("kind = ?", notify.HouseholdConverted).Count(&notices)
@@ -383,7 +403,7 @@ func TestHouseholdConversionRollbackAfterTransfer(t *testing.T) {
 		t.Fatal("failed transfer left notifications")
 	}
 	app.DB.Exec(`DROP TRIGGER reject_conversion_test ON household_people`)
-	acceptConversion(t, app, token, http.StatusOK)
+	approveConversionForEmail(t, app, admin, "rollback@example.com")
 }
 
 func TestHouseholdConversionRechecksAgeAndReservesEmailAtAccept(t *testing.T) {
@@ -422,7 +442,15 @@ func TestHouseholdConversionsSharingOccurrencesDoNotDeadlock(t *testing.T) {
 		batchAnswer(t, pair.c, eventID, date, map[string]any{"people": []map[string]any{{"personId": pair.p, "status": "going"}}}, http.StatusOK)
 	}
 	tokens := []string{inviteHouseholdPerson(t, app, ca, pa.ID, "shareda@example.com"), inviteHouseholdPerson(t, app, cb, pb.ID, "sharedb@example.com")}
-	clients := []*apiClient{newAPIClient(t, app), newAPIClient(t, app)}
+	var requests []models.AccountRequest
+	for _, token := range tokens {
+		acceptConversion(t, app, token, http.StatusOK)
+	}
+	app.DB.Where("source = ? AND status = ?", models.RequestHouseholdConversion, models.RequestPending).Order("id").Find(&requests)
+	if len(requests) != 2 {
+		t.Fatal("missing conversion requests")
+	}
+	clients := []*apiClient{loginAPI(t, app, "admin", "password1234"), loginAPI(t, app, "admin", "password1234")}
 	for _, c := range clients {
 		c.fetchCSRF()
 	}
@@ -434,7 +462,7 @@ func TestHouseholdConversionsSharingOccurrencesDoNotDeadlock(t *testing.T) {
 		go func(i int, c *apiClient) {
 			defer wg.Done()
 			<-start
-			codes[i] = c.do("POST", "/api/v1/invitations/accept", map[string]any{"token": tokens[i], "password": "password1234"}, true).Code
+			codes[i] = c.do("POST", "/api/v1/admin/account-requests/"+itoa(requests[i].ID)+"/approve", map[string]any{}, true).Code
 		}(i, c)
 	}
 	close(start)
@@ -508,7 +536,7 @@ func TestHouseholdConversionCompetesWithHouseholdMutations(t *testing.T) {
 			}
 			var count int64
 			app.DB.Model(&models.User{}).Where("email = ?", "mutation@example.com").Count(&count)
-			if (codes[0] == 200) != (count == 1) {
+			if count != 0 {
 				t.Fatalf("accept response and account disagree: %v count %d", codes, count)
 			}
 		})
@@ -572,6 +600,7 @@ func TestHouseholdConversionLargeHistoryIsAtomic(t *testing.T) {
 	token := inviteHouseholdPerson(t, app, c, person.ID, "history@example.com")
 	began := time.Now()
 	acceptConversion(t, app, token, http.StatusOK)
+	approveConversionForEmail(t, app, admin, "history@example.com")
 	t.Logf("atomic transfer of %d historical occurrences took %s", total, time.Since(began))
 	var remaining, transferred int64
 	app.DB.Model(&models.Registration{}).Where("household_person_id = ?", person.ID).Count(&remaining)
@@ -625,44 +654,13 @@ func TestConversionCompetesWithOrdinaryInvitation(t *testing.T) {
 	}
 }
 
-// Rejecting a converted adult's request disables the account, so its
-// seats go to the waitlist (Warden, PR 111 F1).
-func TestHouseholdConversionRejectedAdultFreesSeat(t *testing.T) {
-	app := testApp(t)
-	admin, gid := openGroup(t, app, "ConversionReject")
-	_, c, person, _ := householdFamily(t, app, admin, "rejectparent")
-	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
-	batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": person.ID, "status": "going"}}}, http.StatusOK)
-	newTestUser(t, app, "waiter", "password1234", models.RoleMember)
-	waiter := loginAPI(t, app, "waiter", "password1234")
-	apiDo(t, waiter, "POST", "/api/v1/groups/"+gid+"/join", nil, http.StatusOK)
-	apiDo(t, waiter, "PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", map[string]any{"date": date, "status": "going"}, http.StatusOK)
-	token := inviteHouseholdPerson(t, app, c, person.ID, "rejected@example.com")
-	acceptConversion(t, app, token, http.StatusOK)
-	var request models.AccountRequest
-	if err := app.DB.Where("email = ? AND source = ?", "rejected@example.com", models.RequestHouseholdConversion).First(&request).Error; err != nil {
-		t.Fatal(err)
-	}
-	apiDo(t, admin, "POST", "/api/v1/admin/account-requests/"+itoa(request.ID)+"/reject", map[string]any{}, http.StatusOK)
-	var user models.User
-	app.DB.Where("email = ?", "rejected@example.com").First(&user)
-	if user.Status != models.UserDisabled {
-		t.Fatalf("rejected conversion status %s", user.Status)
-	}
-	var w models.Registration
-	app.DB.Joins("JOIN users ON users.id = registrations.user_id").Where("users.email = ?", testEmail("waiter")).First(&w)
-	if w.Status != models.RegGoing {
-		t.Fatalf("waiter not promoted: %s", w.Status)
-	}
-}
-
 // A rate-limited first invitation saves nothing, so a limited sender can't
 // reserve a newcomer's email (Warden, PR 111 F2).
 func TestHouseholdConversionSuppressedFirstSendSavesNothing(t *testing.T) {
 	app := testApp(t)
 	admin, _ := openGroup(t, app, "ConversionSuppressed")
 	_, c, person, _ := householdFamily(t, app, admin, "suppressparent")
-	inviteHouseholdPerson(t, app, c, person.ID, "fill@example.com")
+	normal := apiDo(t, c, "POST", conversionPath(person.ID), map[string]any{"email": "fill@example.com"}, http.StatusCreated)
 	for range leaderInviteDailyLimit - 1 {
 		apiDo(t, c, "POST", conversionPath(person.ID)+"/resend", nil, http.StatusOK)
 	}
@@ -670,6 +668,24 @@ func TestHouseholdConversionSuppressedFirstSendSavesNothing(t *testing.T) {
 	raw := apiDo(t, c, "POST", conversionPath(person.ID), map[string]any{"email": "newcomer@example.com"}, http.StatusCreated)
 	if !strings.Contains(raw, "newcomer@example.com") {
 		t.Fatal("suppressed send should still look normal:", raw)
+	}
+	var normalJSON, suppressedJSON map[string]map[string]any
+	if err := json.Unmarshal([]byte(normal), &normalJSON); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(raw), &suppressedJSON); err != nil {
+		t.Fatal(err)
+	}
+	keys := func(m map[string]any) []string {
+		var out []string
+		for k := range m {
+			out = append(out, k)
+		}
+		sort.Strings(out)
+		return out
+	}
+	if !reflect.DeepEqual(keys(normalJSON["conversion"]), keys(suppressedJSON["conversion"])) {
+		t.Fatal("suppressed response has different keys")
 	}
 	var count int64
 	app.DB.Model(&models.Invitation{}).Where("email = ?", "newcomer@example.com").Count(&count)
@@ -679,5 +695,109 @@ func TestHouseholdConversionSuppressedFirstSendSavesNothing(t *testing.T) {
 	app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", "newcomer@example.com").Count(&count)
 	if count != 0 {
 		t.Fatal("suppressed send mailed")
+	}
+}
+
+func approveConversionForEmail(t *testing.T, app *App, admin *apiClient, email string) {
+	t.Helper()
+	var req models.AccountRequest
+	if err := app.DB.Where("email = ? AND status = ?", email, models.RequestPending).First(&req).Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, admin, "POST", "/api/v1/admin/account-requests/"+itoa(req.ID)+"/approve", map[string]any{}, http.StatusOK)
+}
+
+func assertConversionUnmoved(t *testing.T, app *App, person householdPersonJSON, email string, before []models.Registration) {
+	t.Helper()
+	var after []models.Registration
+	app.DB.Where("household_person_id = ?", person.ID).Order("id").Find(&after)
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("pending conversion changed sign-ups")
+	}
+	var n int64
+	app.DB.Unscoped().Model(&models.User{}).Where("email = ?", email).Count(&n)
+	if n != 0 {
+		t.Fatal("pending conversion created a user")
+	}
+	var fresh models.HouseholdPerson
+	app.DB.First(&fresh, person.ID)
+	if fresh.ConvertedUserID != nil {
+		t.Fatal("pending conversion marked person converted")
+	}
+	app.DB.Model(&models.HouseholdAccount{}).Where("household_id = ?", person.HouseholdID).Count(&n)
+	if n != 1 {
+		t.Fatal("pending conversion added a household account")
+	}
+}
+
+func TestHouseholdConversionClosedRequestKeepsHousehold(t *testing.T) {
+	for _, decision := range []string{"reject", "expire"} {
+		t.Run(decision, func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "ClosedConversion")
+			_, c, person, _ := householdFamily(t, app, admin, "closedparent")
+			eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+			batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": person.ID, "status": "going"}}}, http.StatusOK)
+			var before []models.Registration
+			app.DB.Where("household_person_id = ?", person.ID).Order("id").Find(&before)
+			token := inviteHouseholdPerson(t, app, c, person.ID, "closed@example.com")
+			acceptConversion(t, app, token, http.StatusOK)
+			var req models.AccountRequest
+			app.DB.Where("email = ?", "closed@example.com").First(&req)
+			if decision == "reject" {
+				apiDo(t, admin, "POST", "/api/v1/admin/account-requests/"+itoa(req.ID)+"/reject", map[string]any{}, http.StatusOK)
+			} else {
+				app.DB.Model(&req).Update("expires_at", time.Now().Add(-time.Hour))
+				if _, err := app.expirePendingRequests(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertConversionUnmoved(t, app, person, req.Email, before)
+			req = models.AccountRequest{ID: req.ID}
+			app.DB.First(&req, req.ID)
+			if req.Status == models.RequestPending || req.PasswordHash != nil {
+				t.Fatal("request did not close and clear credentials")
+			}
+			inviteHouseholdPerson(t, app, c, person.ID, req.Email)
+		})
+	}
+}
+
+func TestHouseholdConversionApprovalRefusesUnavailable(t *testing.T) {
+	for _, change := range []string{"deleted", "converted", "email taken", "holder disabled"} {
+		t.Run(change, func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "UnavailableConversion")
+			holder, c, person, _ := householdFamily(t, app, admin, "unavailableparent")
+			eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+			batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": person.ID, "status": "going"}}}, http.StatusOK)
+			token := inviteHouseholdPerson(t, app, c, person.ID, "unavailable@example.com")
+			acceptConversion(t, app, token, http.StatusOK)
+			var req models.AccountRequest
+			app.DB.Where("email = ?", "unavailable@example.com").First(&req)
+			switch change {
+			case "deleted":
+				apiDo(t, c, "DELETE", "/api/v1/me/household/people/"+itoa(person.ID), nil, http.StatusOK)
+			case "converted":
+				if err := app.DB.Model(&models.HouseholdPerson{}).Where("id = ?", person.ID).Update("converted_user_id", holder.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "email taken":
+				u := models.User{Email: req.Email, Name: "Other", Role: models.RoleMember, Status: models.UserActive, AccountType: models.AccountAdult}
+				if err := app.DB.Create(&u).Error; err != nil {
+					t.Fatal(err)
+				}
+			case "holder disabled":
+				app.DB.Model(&holder).Update("status", models.UserDisabled)
+			}
+			apiDo(t, admin, "POST", "/api/v1/admin/account-requests/"+itoa(req.ID)+"/approve", map[string]any{}, http.StatusConflict)
+			app.DB.First(&req, req.ID)
+			if req.Status != models.RequestPending || req.PasswordHash == nil {
+				t.Fatal("refused approval closed the request")
+			}
+			if auditCount(t, app, audit.HouseholdPersonConverted) != 0 {
+				t.Fatal("refused approval converted person")
+			}
+		})
 	}
 }

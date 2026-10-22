@@ -790,6 +790,15 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 	for i := range invitations {
 		conversions[*invitations[i].HouseholdPersonID] = conversionMetadata(&invitations[i])
 	}
+	if len(ids) > 0 {
+		var requests []models.AccountRequest
+		if err := a.DB.Where("household_person_id IN ? AND source = ? AND status = ?", ids, models.RequestHouseholdConversion, models.RequestPending).Find(&requests).Error; err != nil {
+			return out, err
+		}
+		for _, req := range requests {
+			conversions[*req.HouseholdPersonID] = conversionJSON{Email: req.Email, ExpiresAt: req.ExpiresAt, State: "awaiting_approval"}
+		}
+	}
 	for i := range people {
 		row, err := a.toHouseholdPersonJSON(&people[i], links[people[i].ID], viewer, batch)
 		if err != nil {

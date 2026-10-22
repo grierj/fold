@@ -194,6 +194,13 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		if existing.ID != 0 && (existing.Status != models.UserGuest || existing.DeletedAt.Valid) {
 			return errEmailTaken
 		}
+		var pending int64
+		if err := tx.Model(&models.AccountRequest{}).Where("email = ? AND source = ? AND status = ?", email, models.RequestHouseholdConversion, models.RequestPending).Count(&pending).Error; err != nil {
+			return err
+		}
+		if pending != 0 {
+			return errConversionEmail
+		}
 		var n int64
 		if err := tx.Model(&models.Invitation{}).Where("email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email).Count(&n).Error; err != nil {
 			return err

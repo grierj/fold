@@ -8,7 +8,9 @@ import { ChildcareBadge } from "./ChildcareBadge";
 
 // The API has already authorized each field. Notes are also cleared locally
 // when time-limited access expires or the tab returns after that boundary.
-export function AttendeeDetails({ attendee: a, childcare = true, status }: { attendee: Attendee; childcare?: boolean; status?: string }) {
+// showAccountType is for the leader roster only: the teen badge is for
+// leaders and admins (DEC-82), and the API also leaves it out for others.
+export function AttendeeDetails({ attendee: a, childcare = true, status, showAccountType = false }: { attendee: Attendee; childcare?: boolean; status?: string; showAccountType?: boolean }) {
   const subject = attendeeSubject(a);
   const person: HouseholdAttendee | undefined = subject?.kind === "household" ? subject.person : undefined;
   const holder: RegisteredBy | undefined = person?.registeredBy;
@@ -26,7 +28,7 @@ export function AttendeeDetails({ attendee: a, childcare = true, status }: { att
     <span>{a.name}{person && showHousehold(person.householdName, holder?.name) && <> · {person.householdName}</>}</span>
     <span className="inline-flex flex-wrap items-center gap-1 ml-1">
       {person && person.kind !== "adult" && <Badge>{person.kind === "child" ? "Child" : "Teen"}</Badge>}
-      {!person && a.accountType === "teen" && <Badge>Teen</Badge>}
+      {!person && showAccountType && a.accountType === "teen" && <Badge>Teen</Badge>}
       {person?.age !== undefined && <span>Age {person.age}</span>}
       {a.attendanceMode === "remote" && <RemoteBadge />}
       {a.guestCount > 0 && <span>+{a.guestCount}</span>}

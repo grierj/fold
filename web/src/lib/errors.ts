@@ -13,6 +13,8 @@ import { ApiError } from "../api";
 export const ERROR_COPY = {
   household_conversion_unavailable: "This person can't create an account yet. Check their birth date, choose Adult or Teen, and ask your church office to check their guardian link.",
   household_conversion_email: "That email isn't available. Use a different email address.",
+  household_conversion_person: "This household person was removed or already has an account. Reject this request; their household can ask for help if needed.",
+  household_conversion_approval: "This account is waiting for an admin. Wait for their decision before sending another invitation.",
   household_conversion_open: "An invitation is already open. Cancel it before choosing a different email.",
   household_conversion_holder: "A responsible account isn't available. Ask your church office to check it before trying again.",
   household_person_converted: "This person has their own account now. Use their account instead.",

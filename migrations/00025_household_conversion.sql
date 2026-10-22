@@ -11,6 +11,12 @@ ALTER TABLE account_requests DROP CONSTRAINT account_requests_source_check;
 ALTER TABLE account_requests ADD CONSTRAINT account_requests_source_check
     CHECK (source IN ('self_signup', 'member_invite', 'guest_upgrade', 'household_conversion'));
 
+ALTER TABLE account_requests ADD COLUMN password_hash text;
+ALTER TABLE account_requests ADD COLUMN household_person_id bigint REFERENCES household_people(id);
+ALTER TABLE account_requests ADD COLUMN invitation_id bigint REFERENCES invitations(id);
+CREATE UNIQUE INDEX idx_account_requests_pending_conversion ON account_requests(household_person_id)
+    WHERE source = 'household_conversion' AND status = 'pending';
+
 -- +goose Down
 -- +goose StatementBegin
 DO $$ BEGIN
@@ -23,6 +29,10 @@ END $$;
 ALTER TABLE account_requests DROP CONSTRAINT account_requests_source_check;
 ALTER TABLE account_requests ADD CONSTRAINT account_requests_source_check
     CHECK (source IN ('self_signup', 'member_invite', 'guest_upgrade'));
+DROP INDEX idx_account_requests_pending_conversion;
+ALTER TABLE account_requests DROP COLUMN invitation_id;
+ALTER TABLE account_requests DROP COLUMN household_person_id;
+ALTER TABLE account_requests DROP COLUMN password_hash;
 DROP INDEX idx_invitations_open_conversion;
 ALTER TABLE invitations DROP CONSTRAINT invitations_conversion;
 ALTER TABLE invitations DROP COLUMN revoked_at;

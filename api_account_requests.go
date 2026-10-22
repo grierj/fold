@@ -451,9 +451,9 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		outcome, auditAction = "approved", audit.AccountApproved
 	}
 	var userID uint
-	var created, upgraded, activated bool
+	var created, upgraded bool
 	var raw string
-	var promoted []uint
+	var mailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		status := models.RequestRejected
@@ -463,7 +463,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		res := tx.Model(&models.AccountRequest{}).
 			Where("id = ? AND status = ?", req.ID, models.RequestPending).
 			Updates(map[string]any{
-				"status": status, "decided_by": me.ID, "decided_at": now, "decision_note": note,
+				"status": status, "decided_by": me.ID, "decided_at": now, "decision_note": note, "password_hash": nil,
 			})
 		if res.Error != nil {
 			return res.Error
@@ -472,7 +472,14 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			return errRequestHandled
 		}
 		meta := map[string]any{"accountType": req.AccountType}
-		if approve {
+		if approve && req.Source == models.RequestHouseholdConversion {
+			var err error
+			userID, err = a.approveHouseholdConversion(tx, c, req, &mailed)
+			if err != nil {
+				return err
+			}
+			meta["userId"] = userID
+		} else if approve {
 			var existing models.User
 			found := tx.Where("email = ?", req.Email).Limit(1).Find(&existing).RowsAffected == 1
 			if found && existing.Status == models.UserGuest {
@@ -496,13 +503,6 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				if err != nil {
 					return err
 				}
-			} else if found && req.Source == models.RequestHouseholdConversion && existing.Status == models.UserInvited && existing.PasswordHash != nil {
-				// A converted adult set their password at acceptance; approval
-				// only makes the account active (Warden, PR 111 F1).
-				if err := tx.Model(&existing).Update("status", models.UserActive).Error; err != nil {
-					return err
-				}
-				userID, activated = existing.ID, true
 			} else if found {
 				userID = existing.ID
 			} else {
@@ -529,27 +529,8 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			}
 			meta["userId"] = userID
 			meta["created"] = created
-			if activated {
-				meta["activatedConversion"] = true
-			}
 			if upgraded {
 				meta["upgradedGuest"] = true
-			}
-		}
-		if !approve && req.Source == models.RequestHouseholdConversion {
-			// A rejected converted adult can't sign in; their account is
-			// disabled so its seats and childcare places go to the waitlist.
-			var existing models.User
-			if tx.Where("email = ? AND status = ?", req.Email, models.UserInvited).Limit(1).Find(&existing).RowsAffected == 1 {
-				if err := tx.Model(&existing).Updates(map[string]any{"status": models.UserDisabled, "session_version": gorm.Expr("session_version + 1")}).Error; err != nil {
-					return err
-				}
-				ids, err := a.promoteOnDisable(tx, existing.ID)
-				if err != nil {
-					return err
-				}
-				promoted = ids
-				meta["disabledUserId"] = existing.ID
 			}
 		}
 		if _, err := notify.Resolve(tx, notify.AccountRequested, req.ID, &me.ID, outcome); err != nil {
@@ -562,6 +543,10 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		a.alreadyHandled(c, notify.AccountRequested, req.ID)
 		return
 	}
+	if errors.Is(err, errConversionPerson) || errors.Is(err, errConversionUnavailable) || errors.Is(err, errConversionHolder) || errors.Is(err, errConversionEmail) {
+		conversionError(c, err)
+		return
+	}
 	if emailTaken(err) {
 		jsonError(c, http.StatusConflict, "that email is unavailable; use a different email")
 		return
@@ -572,9 +557,9 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	}
 	// Decision emails go out after the decision is committed; the
 	// person is emailed either way (M1.3 acceptance).
-	a.deliverNotificationEmails(promoted)
+	a.deliverNotificationEmails(mailed)
 	if approve {
-		if activated {
+		if req.Source == models.RequestHouseholdConversion {
 			if err := a.sendConversionApprovedEmail(req); err != nil {
 				log.Printf("account approved email to %s: %v", req.Email, err)
 			}
@@ -702,7 +687,7 @@ func (a *App) expirePendingRequests() (int64, error) {
 		err := a.DB.Transaction(func(tx *gorm.DB) error {
 			res := tx.Model(&models.AccountRequest{}).
 				Where("id = ? AND status = ?", id, models.RequestPending).
-				Update("status", models.RequestExpired)
+				Updates(map[string]any{"status": models.RequestExpired, "password_hash": nil})
 			if res.Error != nil || res.RowsAffected == 0 {
 				return res.Error
 			}

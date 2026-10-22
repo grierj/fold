@@ -18,10 +18,12 @@ An adult in your household, or a church admin, can invite a household adult or t
 
 1. Open Profile, then My household. Choose Create their own account beside the person.
 2. Enter their own email address and choose Send account invitation. The email must have no existing account or open invitation.
-3. They open the email link within 24 hours and choose a password. Until they accept, their details and sign-ups stay as they are.
-4. When they accept, every past and upcoming sign-up moves to their new account. Their answers and waitlist places stay the same. The new account stays in your household and appears under Accounts.
+3. They open the email link within 24 hours and choose a password. For an adult, their details and sign-ups stay as they are until an admin approves.
+4. After an admin approves an adult, or when a teen accepts, every past and upcoming sign-up moves to their new account. Their answers and waitlist places stay the same. The new account stays in your household and appears under Accounts.
 
-An adult's account then waits for a church admin to approve it, the same as signing up yourself; they get an email when they can sign in. A teen's account waits for consent, and each guardian link needs a fresh admin check. Confirming the link does not yet let the teen sign in. Their existing sign-ups still use seats and remain visible to event leaders. Ask your church office for help with changes while the account is waiting.
+Until an admin approves an adult, nothing changes: your household keeps managing their sign-ups as before. You'll see Account waiting for an admin beside them. They get an email after approval and sign in with the password they chose. If the request is rejected or expires after 30 days, their details and sign-ups stay as they were, and you can invite them again.
+
+A teen's account waits for consent, and each guardian link needs a fresh admin check. Confirming the link does not yet let the teen sign in. Their existing sign-ups still use seats and remain visible to event leaders. Ask your church office for help with changes while the account is waiting.
 
 Group memberships do not move to the new account. Some private or invite-only events may no longer be available. Ask the event's leader or the church office about access.
 

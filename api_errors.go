@@ -20,6 +20,8 @@ import (
 var errorCodes = map[string]string{
 	"this person cannot create an account yet; check their birth date, account type and guardian link":                 "household_conversion_unavailable",
 	"that email is unavailable; use a different email":                                                                 "household_conversion_email",
+	"this household person was removed or already has an account; reject this request":                                 "household_conversion_person",
+	"this account is waiting for an admin; wait for their decision":                                                    "household_conversion_approval",
 	"cancel the current invitation before choosing a different email":                                                  "household_conversion_open",
 	"a responsible account is unavailable; ask your church office to check it":                                         "household_conversion_holder",
 	"this person has their own account; use their account instead":                                                     "household_person_converted",

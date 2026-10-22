@@ -151,7 +151,7 @@ export function HouseholdCard() {
   }, [household, editing, converting]);
 
   async function remove(p: HouseholdPerson) {
-    if (!confirm(`Remove ${p.name} from your household?${p.conversion ? " This also cancels their account invitation." : ""}`)) return;
+    if (!confirm(`Remove ${p.name} from your household?${p.conversion && p.conversion.state !== "awaiting_approval" ? " This also cancels their account invitation." : ""}`)) return;
     setError(null);
     try {
       await Households.removePerson(p.id);
@@ -205,7 +205,7 @@ export function HouseholdCard() {
         <>
           {household.accounts.length > 1 && (
             <p className="text-sm text-text-muted mb-3">
-              Accounts: {household.accounts.map((a: HouseholdAccount) => `${a.name}${a.status === "pending_consent" ? " (teen, waiting for an admin check)" : a.status === "invited" ? " (waiting for an admin)" : ""}`).join(", ")}
+              Accounts: {household.accounts.map((a: HouseholdAccount) => `${a.name}${a.status === "pending_consent" ? " (teen, waiting for an admin check)" : ""}`).join(", ")}
             </p>
           )}
           <ul className="space-y-3">
@@ -244,13 +244,14 @@ export function HouseholdCard() {
                     </div>
                   </div>
                 )}
-                {p.conversion && <div className="mt-3 space-y-2">
+                {p.conversion?.state === "awaiting_approval" && <p className="mt-3 text-sm text-text-muted">Account waiting for an admin</p>}
+                {p.conversion && p.conversion.state !== "awaiting_approval" && <div className="mt-3 space-y-2">
                   <p className="text-sm text-text-muted break-words">{p.conversion.state === "expired" ? "Invitation expired" : "Invitation pending"}: {p.conversion.email}. Expires {formatWhen(p.conversion.expiresAt)}.</p>
-                  <p className="text-sm text-text-muted">Changing their name, type or birth date cancels this invitation. Their sign-ups stay as they are until they accept.</p>
+                  <p className="text-sm text-text-muted">Changing their name, type or birth date cancels this invitation. Their sign-ups stay as they are {p.kind === "adult" ? "until an admin approves" : "until they accept"}.</p>
                   <ConversionActions person={p} onChanged={async (message) => { setStatus(message); focusNext.current = p.id; await load(); }} />
                 </div>}
                 {!p.conversion && p.canConvert && converting !== p.id && <Button variant="secondary" layout="mt-3" onClick={() => setConverting(p.id)}>Create their own account</Button>}
-                {!p.conversion && converting === p.id && <ConversionForm person={p} onCancel={() => { focusNext.current = p.id; setConverting(null); }} onSent={async () => { focusNext.current = p.id; setConverting(null); setStatus(`Invitation sent for ${p.name}. Their sign-ups will move when they accept.`); await load(); }} />}
+                {!p.conversion && converting === p.id && <ConversionForm person={p} onCancel={() => { focusNext.current = p.id; setConverting(null); }} onSent={async () => { focusNext.current = p.id; setConverting(null); setStatus(`Invitation sent for ${p.name}. Their sign-ups will move ${p.kind === "adult" ? "after an admin approves" : "when they accept"}.`); await load(); }} />}
               </li>
             ))}
           </ul>
@@ -289,7 +290,7 @@ function ConversionForm({ person, onCancel, onSent }: { person: HouseholdPerson;
     finally { setBusy(false); }
   }
   return <form ref={ref} onSubmit={submit} className="mt-3 space-y-3" aria-label={`Create an account for ${person.name}`}>
-    <p className="text-sm">Use their own email address. All past and upcoming sign-ups move to their new account only when they accept. Group memberships do not move.</p>
+    <p className="text-sm">Use their own email address. All past and upcoming sign-ups move to their new account {person.kind === "adult" ? "after an admin approves" : "when they accept"}. Group memberships do not move.</p>
     {person.kind === "teen"
       ? <p className="text-sm">A church admin will need to confirm you as their parent or guardian before they can sign in.</p>
       : <p className="text-sm">A church admin will approve their account before they can sign in.</p>}

@@ -28,7 +28,7 @@ async function shoot(page: import("@playwright/test").Page, name: string) {
 }
 
 for (const kind of ["adult", "teen"] as const) {
-  test(`household ${kind} invitation transfers sign-ups on acceptance`, async ({ page, request }) => {
+  test(`household ${kind} invitation transfers sign-ups when the account is ready`, async ({ page, request }) => {
     test.skip((await request.get("/dev/outbox")).status() !== 200, "Requires E2E_APP_ENV=dev for the mail outbox");
     const admin = await apiAs(request, "grier");
     const account = `conversion-${kind}-parent`;
@@ -79,11 +79,24 @@ for (const kind of ["adult", "teen"] as const) {
     await shoot(page, `conversion-${kind}-waiting`);
     expect((await page.request.get("/api/v1/auth/me")).status()).toBe(401);
     if (kind === "adult") {
-      const { requests } = await admin("GET", "/admin/account-requests");
-      const request = requests.find((r: { email: string; source: string }) => r.email === destination);
-      expect(request?.source).toBe("household_conversion");
-      await admin("POST", `/admin/account-requests/${request.id}/approve`, {});
-      await apiAs(page.request, `conversion-${kind}-own`);
+      await expect(page.getByText(/your household keeps managing your sign-ups/)).toBeVisible();
+      await signIn(page, account);
+      await page.goto("/profile");
+      await expect(page.getByText("Account waiting for an admin")).toBeVisible();
+      await expect(page.getByRole("button", { name: `Edit Conversion ${kind}` })).toBeVisible();
+      await shoot(page, "conversion-adult-household-awaiting-approval");
+      const household = await parent("GET", "/me/household");
+      expect(household.household.people).toEqual(expect.arrayContaining([expect.objectContaining({ id: person.id, conversion: expect.objectContaining({ state: "awaiting_approval" }) })]));
+      const beforeApproval = await parent("GET", `/events/${event.id}`);
+      expect(beforeApproval.occurrences[0].myHouseholdRegistrations).toEqual(expect.arrayContaining([expect.objectContaining({ registrationId, personId: person.id, status: "going" })]));
+      await page.goto(`/events/${event.id}`);
+      await expect(page.getByText(`Conversion ${kind}`, { exact: true }).first()).toBeVisible();
+      await signIn(page, "grier");
+      await page.goto("/admin");
+      const card = page.getByText(`Conversion ${kind}`, { exact: true }).locator("xpath=ancestor::div[contains(@class,'rounded-lg')][1]");
+      await card.getByRole("button", { name: "Approve" }).click();
+      await expect(card).toHaveCount(0);
+      await signIn(page, `conversion-${kind}-own`);
       expect((await page.request.get("/api/v1/auth/me")).status()).toBe(200);
     }
     const updated = await admin("GET", `/events/${event.id}`);

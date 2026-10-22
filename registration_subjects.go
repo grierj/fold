@@ -397,7 +397,10 @@ func (f *subjectFacts) attendee(r models.Registration, o models.EventOccurrence,
 				return nil
 			}
 		}
-		out.AccountType = holder.AccountType
+		// The teen badge is for leaders and admins only (DEC-82).
+		if manager || policy.IsAdmin(asPerson(me)) {
+			out.AccountType = holder.AccountType
+		}
 		return &out
 	}
 	person := f.people[*r.HouseholdPersonID]

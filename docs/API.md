@@ -140,7 +140,7 @@ A teen also needs a pending or confirmed guardian link to an active adult
 account in the same household. Children cannot convert, even after turning 13
 until their saved type is corrected. Disabled responsible accounts block conversion.
 
-`conversion` is `{id, email, expiresAt, state: "pending"|"expired"}`.
+`conversion` is `{email, expiresAt, state: "pending"|"expired"|"awaiting_approval"}`.
 Household people include `canConvert` and optional `conversion` metadata,
 never a token or hash. Household accounts include `status`; converted people
 appear only under accounts and cannot be edited or removed as household people.
@@ -153,18 +153,32 @@ remains available after eligibility changes. Name, kind, or birth-date edits
 and deletion revoke the invitation in the same transaction. Care notes,
 photo consent, and household name or address changes keep it open.
 
-Conversion uses the existing invitation endpoints below. Acceptance creates
-a member account without group memberships, transfers every registration
-in place, and adds an adult or teen account to the same household. IDs,
-answers, attendance mode, queue order, and timestamps stay unchanged;
-`registeredBy` and named childcare flags are cleared. Event access is checked
-for the new account from then on. An adult receives `{pendingApproval: true}`
-without a session: the account is `invited` with its password set, and a
-`household_conversion` account request waits in the admin queue (DEC-4,
-DEC-30). Approving it makes the account active and emails a sign-in note, not a
-set-password link. Rejecting it disables the account, which frees its seats for
-the waitlist. A first send suppressed by the invitation limit saves no
-invitation row, but the response looks the same. A teen receives `{pendingConsent: true}`
+Conversion uses the existing invitation endpoints below. For an adult,
+acceptance returns `{pendingApproval: true}` without a session. It stores a
+pending `household_conversion` account request with the chosen password's
+bcrypt hash and the household person and invitation IDs, and marks the
+invitation accepted. It creates no user or household account and changes no
+registrations or guardian links. The household continues managing the person
+and all their sign-ups. While pending, the email is reserved and new or resent
+conversion invitations for that person return 409 with
+`household_conversion_approval`. The household person remains in `people`
+with `conversion.state: "awaiting_approval"`.
+
+Approval creates an active member account using the held password hash,
+transfers every registration in place, marks the person converted, and adds
+an adult account to the same household, all in the decision transaction.
+IDs, answers, attendance mode, queue order, and timestamps stay unchanged;
+`registeredBy` and named childcare flags are cleared. Group memberships do
+not move. Approval emails a sign-in note referring to the password already
+chosen. A deleted or converted person, unavailable email, or unavailable
+responsible account returns 409 and leaves the request pending. Rejection
+or 30-day expiry closes the request and clears the held password hash;
+nothing needs undoing, and the email can be invited again.
+
+A first send suppressed by the invitation limit saves no invitation row,
+but the response has the same keys as a normal send. Teens still convert
+at acceptance: their member account, registrations, household account and
+fresh guardian links are created then. A teen receives `{pendingConsent: true}`
 without a user profile or a new session. Their sign-ups still count toward
 capacity and remain visible to event managers. Fresh account-targeted guardian
 links wait for admin checks; confirming them never activates the teen.

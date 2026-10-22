@@ -64,8 +64,14 @@ it("puts the roster status below the signer and above notes", () => {
   expect(status.compareDocumentPosition(ages) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
-it("badges a converted teen account", () => {
-  render(<AttendeeDetails attendee={{ registrationId: 12, userId: 12, name: "Taylor", status: "going", attendanceMode: "in_person", guestCount: 0, accountType: "teen" }} />);
+it("badges a converted teen account on the leader roster", () => {
+  render(<AttendeeDetails attendee={{ registrationId: 12, userId: 12, name: "Taylor", status: "going", attendanceMode: "in_person", guestCount: 0, accountType: "teen" }} showAccountType />);
   expect(screen.getByText("Teen")).toBeInTheDocument();
   expect(screen.queryByText(/Signed up by/)).not.toBeInTheDocument();
+});
+
+it("hides the teen badge from ordinary attendee lists (DEC-82)", () => {
+  render(<AttendeeDetails attendee={{ registrationId: 12, userId: 12, name: "Taylor", status: "going", attendanceMode: "in_person", guestCount: 0, accountType: "teen" }} />);
+  expect(screen.getByText("Taylor")).toBeInTheDocument();
+  expect(screen.queryByText("Teen")).not.toBeInTheDocument();
 });
