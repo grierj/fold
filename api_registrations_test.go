@@ -1704,7 +1704,11 @@ func TestRegistrationReadBudget(t *testing.T) {
 	}
 	_ = newTestUser(t, app, "solo", "password1234", "member")
 	solo := loginAPI(t, app, "solo", "password1234")
+	n = 0
 	apiDo(t, solo, "PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", map[string]any{"date": date, "status": "going"}, http.StatusOK)
+	if n > 12 {
+		t.Fatalf("solo going PUT read %d times, budget 12", n)
+	}
 	n = 0
 	apiDo(t, solo, "GET", "/api/v1/events/"+itoa(eventID), nil, http.StatusOK)
 	if n > 20 {

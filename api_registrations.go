@@ -513,7 +513,7 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 		}
 		childcare = events.Pool{Capacity: ev.ChildcareCapacity, Used: used}
 	}
-	facts := loadSubjectFacts(tx, wl, nil)
+	facts := a.loadSubjectFacts(tx, wl, nil)
 	access := map[uint]bool{}
 	today := a.householdClock(now)
 	entries := make([]events.WaitEntry, 0, len(wl))
@@ -1048,7 +1048,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		}
 		var facts subjectFacts
 		if len(body.People) > 0 {
-			facts = loadSubjectFacts(tx, candidates, &holder)
+			facts = a.loadSubjectFacts(tx, candidates, &holder)
 		}
 		access := map[uint]bool{}
 		for _, r := range candidates {
@@ -1585,7 +1585,7 @@ func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, int
 					currentRegs = append(currentRegs, candidate)
 				}
 			}
-			facts = loadSubjectFacts(tx, currentRegs, nil)
+			facts = a.loadSubjectFacts(tx, currentRegs, nil)
 			facts.users[holder.ID] = &holder
 			access = map[uint]bool{}
 		}

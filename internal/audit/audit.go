@@ -109,6 +109,9 @@ const (
 	// Target is the invitation; meta has email and the optional groupId and
 	// overLimit.
 	InvitationCreated = "invitation.created"
+	InvitationResent = "invitation.resent"
+	InvitationRevoked = "invitation.revoked"
+	HouseholdPersonConverted = "household.person_converted"
 
 	// InvitationAccepted: the person accepted and got an active account.
 	// Target is the invitation; meta has userId and the optional groupId.

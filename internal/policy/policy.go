@@ -547,6 +547,21 @@ func CanManageHousehold(p *Person, rel HouseholdRel) bool {
 	return !p.Teen && rel.Adult
 }
 
+// CanConvertHouseholdPerson requires current adult authority and birth-date
+// evidence. A teen needs a live guardian who is an active household adult.
+func CanConvertHouseholdPerson(p *Person, rel HouseholdRel, person HouseholdPerson, active, guardian bool) bool {
+	if !active || p == nil || p.Teen || !CanManageHousehold(p, rel) || person.Deleted || person.Converted || person.AgeYears == nil {
+		return false
+	}
+	return (person.Kind == KindAdult && *person.AgeYears >= 18) ||
+		(person.Kind == KindTeen && *person.AgeYears >= 13 && *person.AgeYears < 18 && guardian)
+}
+
+// CanCancelHouseholdConversion remains available after eligibility changes.
+func CanCancelHouseholdConversion(p *Person, rel HouseholdRel, active bool) bool {
+	return active && p != nil && !p.Teen && CanManageHousehold(p, rel)
+}
+
 // householdPersonConfirmed reports whether the person counts as
 // confirmed for people outside the household: an adult (no link needed)
 // or a child or teen with a confirmed guardian link. Until then leaders

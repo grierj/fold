@@ -18,6 +18,11 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	"this person cannot create an account yet; check their birth date, account type and guardian link": "household_conversion_unavailable",
+	"that email is unavailable; use a different email": "household_conversion_email",
+	"cancel the current invitation before choosing a different email": "household_conversion_open",
+	"a responsible account is unavailable; ask your church office to check it": "household_conversion_holder",
+	"this person has their own account; use their account instead": "household_person_converted",
 	"waiting for an admin to confirm; ask your church office to check the household link":                              "household_link_pending",
 	"this household link is not confirmed; ask your church office to check it":                                         "household_link_unconfirmed",
 	"add a birth date in profile before signing this person up":                                                        "household_birth_date_required",

@@ -43,12 +43,20 @@ type invitationJSON struct {
 	GroupID   *uint     `json:"groupId,omitempty"`
 	GroupName string    `json:"groupName,omitempty"`
 	ExpiresAt time.Time `json:"expiresAt"`
+	Conversion bool `json:"conversion"`
+	AccountType string `json:"accountType"`
+}
+
+type invitationAcceptanceJSON struct {
+	User *userJSON `json:"user,omitempty"`
+	PendingConsent bool `json:"pendingConsent"`
 }
 
 func (a *App) toInvitationJSON(inv *models.Invitation) invitationJSON {
 	out := invitationJSON{
 		ID: inv.ID, Email: inv.Email, Name: inv.Name,
 		GroupID: inv.GroupID, ExpiresAt: inv.ExpiresAt,
+		Conversion: inv.HouseholdPersonID != nil, AccountType: inv.AccountType,
 	}
 	if inv.Group.ID != 0 {
 		out.GroupName = inv.Group.Name
@@ -138,7 +146,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		return
 	}
 	var dup models.Invitation
-	if a.DB.Where("email = ? AND accepted_at IS NULL AND expires_at > now()", email).
+	if a.DB.Where("email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email).
 		Limit(1).Find(&dup).RowsAffected == 1 {
 		jsonError(c, http.StatusConflict, "that email was already invited")
 		return
@@ -157,6 +165,13 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		TokenHash: hash, ExpiresAt: time.Now().UTC().Add(tokenTTL),
 	}
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockInvitationEmail(tx, email); err != nil { return err }
+		var existing models.User
+		if err := tx.Unscoped().Where("email = ?", email).Limit(1).Find(&existing).Error; err != nil { return err }
+		if existing.ID != 0 && (existing.Status != models.UserGuest || existing.DeletedAt.Valid) { return errEmailTaken }
+		var n int64
+		if err := tx.Model(&models.Invitation{}).Where("email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email).Count(&n).Error; err != nil { return err }
+		if n > 0 { return errConversionEmail }
 		if err := tx.Create(&inv).Error; err != nil {
 			return err
 		}
@@ -168,6 +183,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 			TargetType: "invitation", TargetID: inv.ID, Meta: meta, IP: c.ClientIP()})
 	})
 	if err != nil {
+		if errors.Is(err, errEmailTaken) || errors.Is(err, errConversionEmail) { jsonError(c, http.StatusConflict, "that email was already invited"); return }
 		jsonError(c, http.StatusInternalServerError, "could not create invitation")
 		return
 	}
@@ -215,6 +231,7 @@ func (a *App) apiGetInvitation(c *gin.Context) {
 		"invitation":  a.toInvitationJSON(inv),
 		"inviterName": nameIn(a.DB, inv.InvitedBy),
 		"siteName":    a.siteName(),
+		"site": a.siteName(),
 	})
 }
 
@@ -238,17 +255,25 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "password must be at least 10 characters")
 		return
 	}
+	initial, err := liveInvitation(a.DB, body.Token)
+	if err != nil { jsonError(c, http.StatusBadRequest, "that invitation is invalid or has expired"); return }
+	if initial.HouseholdPersonID != nil {
+		a.acceptHouseholdConversion(c, body.Token, body.Password, initial)
+		return
+	}
 	name := strings.TrimSpace(body.Name)
 	if len(name) > 100 {
 		jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
 		return
 	}
 	var userID uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		inv, err := liveInvitation(tx, body.Token)
 		if err != nil {
 			return err
 		}
+		if inv.HouseholdPersonID != nil { return errTokenInvalid }
+		if err := lockInvitationEmail(tx, inv.Email); err != nil { return err }
 		if name == "" {
 			name = inv.Name
 		}
@@ -259,8 +284,8 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		// (C5), so their guest registrations stay theirs. Any other
 		// existing account refuses the accept.
 		var existing models.User
-		guestRow := tx.Where("email = ?", inv.Email).Limit(1).Find(&existing).RowsAffected == 1
-		if guestRow && existing.Status != models.UserGuest {
+		guestRow := tx.Unscoped().Where("email = ?", inv.Email).Limit(1).Find(&existing).RowsAffected == 1
+		if guestRow && (existing.Status != models.UserGuest || existing.DeletedAt.Valid) {
 			return errEmailTaken
 		}
 		var group *models.Group
@@ -339,7 +364,7 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 	case errors.Is(err, errNeedName):
 		jsonError(c, http.StatusBadRequest, "name is required")
 		return
-	case errors.Is(err, errEmailTaken):
+	case errors.Is(err, errEmailTaken), emailTaken(err):
 		jsonError(c, http.StatusConflict, "an account with that email already exists")
 		return
 	case errors.Is(err, errGroupNotActive):
@@ -357,11 +382,13 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not accept invitation")
 		return
 	}
+	if fresh.CanSignIn() {
 	if err := a.signInSession(c, &fresh); err != nil {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh)})
+	}
+	c.JSON(http.StatusOK, invitationAcceptanceJSON{User: userJSONPtr(a.toUserJSON(&fresh)), PendingConsent: fresh.Status == models.UserPendingConsent})
 }
 
 // errNeedName: the accept form needs a name and the invitation had none.

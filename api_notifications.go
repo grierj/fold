@@ -376,14 +376,20 @@ func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags model
 // variant names nobody. Resolved on confirm and reject (and withdrawn
 // when the person is removed before a decision).
 func notifyGuardianLinkPending(tx *gorm.DB, link *models.GuardianLink, person *models.HouseholdPerson) ([]uint, error) {
+	vars := notify.Vars{Actor: nameIn(tx, link.GuardianUserID)}
+	data := map[string]any{"guardianLinkId": link.ID}
+	if person != nil {
+		vars.Person, vars.Change, vars.Teen = person.FullName(), person.Kind, person.Kind == models.HouseholdTeen
+		data["personId"] = person.ID
+	} else if link.TeenUserID != nil {
+		vars.Person, vars.Change, vars.Teen = nameIn(tx, *link.TeenUserID), "teen_account", true
+		data["teenUserId"] = *link.TeenUserID
+	}
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.HouseholdLinkPending, To: adminIDs(tx), Actor: &link.GuardianUserID,
 		SubjectType: "guardian_link", SubjectID: link.ID, Link: approvalsLink,
-		Vars: notify.Vars{
-			Actor: nameIn(tx, link.GuardianUserID), Person: person.FullName(),
-			Change: person.Kind, Teen: person.Kind == models.HouseholdTeen,
-		},
-		Data:      map[string]any{"guardianLinkId": link.ID, "personId": person.ID},
+		Vars: vars,
+		Data: data,
 		DedupeKey: fmt.Sprintf("household.link_pending:%d", link.ID),
 	})
 }

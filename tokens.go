@@ -108,7 +108,7 @@ func createInvitationToken() (raw, hash string, err error) {
 // not expired.
 func liveInvitation(tx *gorm.DB, raw string) (*models.Invitation, error) {
 	var inv models.Invitation
-	res := tx.Where("token_hash = ? AND accepted_at IS NULL AND expires_at > now()",
+	res := tx.Where("token_hash = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()",
 		hashToken(raw)).First(&inv)
 	if res.Error != nil {
 		return nil, errTokenInvalid

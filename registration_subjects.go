@@ -116,7 +116,7 @@ func (a *App) eligibleRegistration(tx *gorm.DB, r models.Registration, ev *model
 }
 
 func (a *App) eligibleRegistrationForHolder(tx *gorm.DB, r models.Registration, ev *models.Event, now time.Time, override *models.User) bool {
-	f := loadSubjectFacts(tx, []models.Registration{r}, nil)
+	f := a.loadSubjectFacts(tx, []models.Registration{r}, nil)
 	if override != nil {
 		f.users[override.ID] = override
 	}
@@ -277,8 +277,8 @@ func (f *subjectFacts) day() time.Time {
 	return f.today
 }
 
-func loadSubjectFacts(db *gorm.DB, regs []models.Registration, viewer *models.User) subjectFacts {
-	f := newSubjectFacts(time.Now().UTC())
+func (a *App) loadSubjectFacts(db *gorm.DB, regs []models.Registration, viewer *models.User) subjectFacts {
+	f := a.requestFacts()
 	f.load(db, regs, viewer)
 	return *f
 }
