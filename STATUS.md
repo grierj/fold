@@ -21,7 +21,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.6 Calendar views | done (merged, #73) | Wright | `calendar` |
 | M1.7 ICS feeds | done (landed on master without a PR; reviewed and fixed in the m17-fixes PR; video_reveal moves to M1.8) | Muse, Wright | `m1.7-ics-feeds`, `m17-fixes` |
 | M1.8 Video, remote, childcare | unclaimed | | |
-| M1.9 Households and household people | in progress: slice 1 backend in review (#106); next: slice 1 UI, then slices 2–3 (docs/plan/M1.9-BRIEF.md) | Wright | `m1.9-households` |
+| M1.9 Households and household people | in progress: slice 1 backend merged (#106); slice 1 UI in review, then slices 2–3 (docs/plan/M1.9-BRIEF.md) | Wright | `m1.9-households` |
 | M1.10 Teen accounts, consent, badges | unclaimed | | |
 | M1.11 Contact privacy and direct-contact requests | unclaimed | | |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
@@ -64,7 +64,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
   3. M1.9 slice 2: registering household people. It depends on #105's counting.
   4. M1.9 slice 3: conversion and docs/MEMBERS.md.
 
-  Judgment calls are logged in /workspace/fold-ui-audit/M1.9-JUDGMENT-CALLS.md.
+  Judgment calls are logged in docs/plan/M1.9-JUDGMENT-CALLS.md.
 - Warden follow-ups from the #106 review (Oct 21, 2026):
   1. An admin confirming their own guardian link: decided by Grier as DEC-79 and done in #106. Blocked while another active admin exists; a sole admin may, audited as `selfConfirm`.
   2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind.
