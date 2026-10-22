@@ -35,7 +35,7 @@ fold
 # The directory itself must exist for go:embed; only the marker file is committed.
 web/dist/*
 !web/dist/README.txt
-web/node_modules/
+web/node_modules
 # Playwright output (make e2e).
 web/test-results/
 web/screens/

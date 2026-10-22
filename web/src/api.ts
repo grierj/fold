@@ -93,6 +93,9 @@ import type {
   GroupDetailResponse,
   GuestRegistration,
   GroupSummary,
+  GuardianLink,
+  Household,
+  HouseholdPerson,
   Invitation,
   Member,
   Notification,
@@ -557,4 +560,35 @@ export const AdminGroups = {
     api<unknown>(`/admin/groups/${id}/members`, { method: "POST", body: { userId, role, overLimit } }),
   removeMember: (id: number | string, userId: number) =>
     api<unknown>(`/admin/groups/${id}/members/${userId}`, { method: "DELETE" }),
+};
+
+export interface HouseholdPersonInput {
+  firstName: string;
+  lastName?: string;
+  kind: HouseholdPerson["kind"];
+  birthDate?: string;
+  careNotes?: string;
+  photoConsent?: boolean;
+}
+
+// GET never creates: it answers {household: null} until the household
+// exists, and always for teen accounts (Warden, PR 106).
+export const Households = {
+  mine: () => api<{ household: Household | null }>("/me/household"),
+  update: (data: { name?: string; address?: string }) =>
+    api<{ household: Household }>("/me/household", { method: "PUT", body: data }),
+  addPerson: (data: HouseholdPersonInput) =>
+    api<{ person: HouseholdPerson }>("/me/household/people", { method: "POST", body: data }),
+  updatePerson: (id: number, data: HouseholdPersonInput) =>
+    api<{ person: HouseholdPerson }>(`/me/household/people/${id}`, { method: "PUT", body: data }),
+  removePerson: (id: number) => api<Record<string, never>>(`/me/household/people/${id}`, { method: "DELETE" }),
+};
+
+export const AdminGuardianLinks = {
+  list: (status = "pending") =>
+    api<{ guardianLinks: GuardianLink[] }>(`/admin/guardian-links?status=${encodeURIComponent(status)}`),
+  confirm: (id: number, checkNote: string) =>
+    api<{ guardianLink: GuardianLink }>(`/admin/guardian-links/${id}/confirm`, { method: "POST", body: { checkNote } }),
+  reject: (id: number, note?: string) =>
+    api<{ guardianLink: GuardianLink }>(`/admin/guardian-links/${id}/reject`, { method: "POST", body: { note: note || undefined } }),
 };
