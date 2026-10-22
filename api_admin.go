@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgconn"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ---------------------------------------------------------------------------
@@ -236,6 +237,18 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 	}
 	errHandled := errors.New("already handled")
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if link.PersonID != nil {
+			var person models.HouseholdPerson
+			if err := tx.First(&person, *link.PersonID).Error; err != nil {
+				return err
+			}
+			if err := lockHousehold(tx, person.HouseholdID); err != nil {
+				return err
+			}
+			if err := tx.First(&person, *link.PersonID).Error; err != nil {
+				return err
+			}
+		}
 		now := time.Now().UTC()
 		updates := map[string]any{"status": status, "decided_at": now, "check_note": note}
 		if confirm {
@@ -495,6 +508,9 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		disabling := updates["status"] == models.UserDisabled
 		var emailed []uint
 		err := a.DB.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(u, u.ID).Error; err != nil {
+				return err
+			}
 			if disabling {
 				ids, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled")
 				emailed = append(emailed, ids...)
@@ -528,7 +544,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				// Registrations come back as they were when they fit;
 				// a row that would overfill is dropped and the person
 				// is told to ask a leader or host (DEC-38, DEC-47, M1.5).
-				ids, err = restoreRegistrations(c, tx, u.ID)
+				ids, err = a.restoreRegistrations(c, tx, u.ID, s)
 				emailed = append(emailed, ids...)
 				if err != nil {
 					return err
@@ -584,6 +600,9 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// sessions end.
 	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(u, u.ID).Error; err != nil {
+			return err
+		}
 		ids, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
 		emailed = append(emailed, ids...)
 		if err != nil {

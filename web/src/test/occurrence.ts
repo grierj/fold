@@ -22,6 +22,7 @@ export function occurrence(over: Partial<EventOccurrence>): EventOccurrence {
     overridden: false,
     registrations: { going: 0, maybe: 0, declined: 0, waitlisted: 0 },
     myRegistration: null,
+    myHouseholdRegistrations: [],
     capacity: null,
     seatsUsed: 0,
     spotsLeft: null,

@@ -4,6 +4,7 @@ import (
 	"fold/internal/audit"
 	"fold/models"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -249,8 +250,8 @@ func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
 	}
 	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
 	_, occ := seedEvent(t, app, joined, co.ID, start)
-	app.DB.Create(&models.Registration{UserID: pat.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
-	app.DB.Create(&models.Registration{UserID: viewer.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
+	app.DB.Create(&models.Registration{UserID: &pat.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
+	app.DB.Create(&models.Registration{UserID: &viewer.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
 
 	admin := loginAs(t, app, "admin", "password1234")
 	other := loginAs(t, app, "viewer", "password1234")
@@ -809,5 +810,54 @@ func TestAdminDeleteUserPromotesWaiter(t *testing.T) {
 	}
 	if got := regStatus(t, app, waiter.ID, occ.ID); got != models.RegGoing {
 		t.Fatalf("waiter after delete = %q, want going", got)
+	}
+}
+
+func TestHouseholdRestoreUsesCumulativePools(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HouseholdRestore")
+	eventID, date := seedChildcareEvent(t, app, admin, gid, intPtr(2), intPtr(1), true)
+	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(eventID), map[string]any{"remoteAvailable": true, "remoteCapacity": 1}, http.StatusOK)
+	holder, c, spouse, child := householdFamily(t, app, admin, "returningfamily")
+	result := batchAnswer(t, c, eventID, date, map[string]any{"status": "going", "attendanceMode": "in_person", "people": []map[string]any{{"personId": spouse.ID, "status": "going", "attendanceMode": "remote"}, {"personId": child.ID, "status": "going", "childcareRequested": true}}}, http.StatusOK)
+	occurrenceID := result.Registration.OccurrenceID
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(holder.ID), map[string]any{"status": "disabled"}, http.StatusOK)
+	if used, err := seatsUsed(app.DB, occurrenceID); err != nil || used != 0 {
+		t.Fatalf("disabled seats: %d %v", used, err)
+	}
+	if used, err := remoteSeatsUsed(app.DB, occurrenceID); err != nil || used != 0 {
+		t.Fatalf("disabled remote seats: %d %v", used, err)
+	}
+	if used, err := childcareUsedFor(app.DB, occurrenceID, 0); err != nil || used != 0 {
+		t.Fatalf("disabled care: %d %v", used, err)
+	}
+	filler := newTestUser(t, app, "filler", "password1234", models.RoleMember)
+	code, raw := registerAs(loginAPI(t, app, "filler", "password1234"), eventID, date, "going", nil)
+	if code != 200 {
+		t.Fatal(raw)
+	}
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(holder.ID), map[string]any{"status": "active"}, http.StatusOK)
+	if got := regStatus(t, app, holder.ID, occurrenceID); got != models.RegGoing {
+		t.Fatalf("own answer %s", got)
+	}
+	if got := regStatus(t, app, filler.ID, occurrenceID); got != models.RegGoing {
+		t.Fatalf("filler answer %s", got)
+	}
+	var rows []models.Registration
+	app.DB.Where("registered_by = ?", holder.ID).Find(&rows)
+	if len(rows) != 1 || rows[0].HouseholdPersonID == nil || *rows[0].HouseholdPersonID != spouse.ID || rows[0].Status != models.RegGoing {
+		t.Fatalf("cumulative restoration %+v", rows)
+	}
+	page, _ := getEvent(t, admin, eventID, http.StatusOK)
+	if len(page.Occurrences[0].RemovedRegistrations) != 1 || page.Occurrences[0].RemovedRegistrations[0].HouseholdPerson == nil || page.Occurrences[0].RemovedRegistrations[0].HouseholdPerson.PersonID != child.ID {
+		t.Fatalf("recovery %+v", page.Occurrences[0].RemovedRegistrations)
+	}
+	apiDo(t, admin, "POST", "/api/v1/events/"+itoa(eventID)+"/registrations/add", map[string]any{"date": date, "personId": child.ID, "registeredBy": holder.ID, "overCapacity": true}, http.StatusOK)
+	page, _ = getEvent(t, admin, eventID, http.StatusOK)
+	if len(page.Occurrences[0].RemovedRegistrations) != 0 {
+		t.Fatal("restored person still appears in recovery")
+	}
+	if got := findKind(feed(t, loginAPI(t, app, "returningfamily", "password1234"), ""), "registration.not_restored"); got == nil || !strings.Contains(got.Title, "Kit") {
+		t.Fatalf("holder notice %+v", got)
 	}
 }

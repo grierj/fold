@@ -2,15 +2,17 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Events } from "../api";
+import { Events, Households } from "../api";
 import type { EventDetailResponse } from "../types";
 import { occurrence } from "../test/occurrence";
 import { EventDetail } from "./EventDetail";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false }) }));
 vi.mock("../api", async (importActual) => ({
+  ...(await importActual<typeof import("../api")>()),
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
-  Events: { get: vi.fn(), updateOccurrence: vi.fn() },
+  Households: { mine: vi.fn().mockResolvedValue({ household: null }) },
+  Events: { get: vi.fn(), updateOccurrence: vi.fn(), register: vi.fn() },
 }));
 
 const page: EventDetailResponse = {
@@ -25,7 +27,7 @@ const page: EventDetailResponse = {
   occurrences: [occurrence({
     remoteAvailable: true, remoteCapacity: 5, remoteSpotsLeft: 4,
     attendeesVisible: true,
-    attendees: [{ userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "remote" }],
+    attendees: [{ registrationId: 31, userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "remote" }],
   })],
   canManage: true, canSetVisibility: false,
 };
@@ -44,6 +46,7 @@ async function editDate() {
 describe("EventDetail remote seats", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(Households.mine).mockResolvedValue({ household: null });
     vi.mocked(Events.get).mockResolvedValue(page);
     vi.mocked(Events.updateOccurrence).mockResolvedValue({ occurrence: page.occurrences[0] });
   });
@@ -73,8 +76,8 @@ describe("EventDetail remote seats", () => {
     renderPage();
     await userEvent.click(await screen.findByRole("button", { name: "More for 2026-12-01" }));
     await userEvent.click(screen.getByRole("menuitem", { name: "Manage sign-ups" }));
-    const roster = within(screen.getByRole("region", { name: "Manage sign-ups" }));
-    expect(roster.getByText("Sam")).toBeInTheDocument();
+    const roster = within(await screen.findByRole("region", { name: "Manage sign-ups" }));
+    expect(roster.getByText("Sam", { selector: "span:not(.sr-only)" })).toBeInTheDocument();
     expect(roster.getByText("Remote")).toHaveClass("bg-sunken", "text-text-muted");
   });
 });
@@ -84,4 +87,17 @@ it("shows the public childcare ages and notes", async () => {
   renderPage();
   expect(await screen.findByText("Childcare available · 2–5")).toBeInTheDocument();
   expect(screen.getByText("Check in at the nursery.")).toBeInTheDocument();
+});
+
+it("shares one household fetch across dates and refreshes server state after child-only answers", async () => {
+  vi.mocked(Households.mine).mockResolvedValue({ household: { id: 1, name: "Family", address: "", createdBy: 2, accounts: [], people: [{ id: 3, householdId: 1, firstName: "Mary", lastName: "", name: "Mary", kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] } });
+  vi.mocked(Events.get).mockResolvedValue({ ...page, occurrences: [page.occurrences[0], { ...page.occurrences[0], id: 2, date: "2026-12-08" }] });
+  vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 12, personId: 3, registeredBy: 2, status: "going", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }] });
+  const before = vi.mocked(Events.get).mock.calls.length;
+  const householdBefore = vi.mocked(Households.mine).mock.calls.length;
+  renderPage(); const editors = await screen.findAllByRole("form", { name: "Household answers" });
+  await userEvent.click(within(editors[0]).getByRole("checkbox", { name: "Mary" }));
+  await userEvent.click(within(editors[0]).getByRole("button", { name: "Save answers" }));
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(before + 2));
+  expect(Households.mine).toHaveBeenCalledTimes(householdBefore + 1);
 });

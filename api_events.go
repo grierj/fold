@@ -120,6 +120,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	ids := make([]uint, len(kept))
 	for i := range kept {
 		ids[i] = kept[i].ID
+		kept[i].Event = *byID[kept[i].EventID]
 	}
 	type countRow struct {
 		OccurrenceID uint
@@ -127,7 +128,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		N            int64
 	}
 	var counts []countRow
-	a.DB.Model(&models.Registration{}).Joins(listedUsers("registrations")).
+	a.DB.Model(&models.Registration{}).Joins(listedRegistrations()).
 		Select("registrations.occurrence_id, registrations.status, count(*) as n").
 		Where("registrations.occurrence_id IN ? AND registrations.status NOT IN ?",
 			ids, []string{models.RegCancelled, models.RegRemoved}).
@@ -193,7 +194,17 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	if err != nil {
 		childcareUsed = map[uint]int{}
 	}
-	names := a.attendeeNames(kept, showNames, showChildcare)
+	// One set of household facts and one church-local clock per request.
+	facts := a.requestFacts()
+	names, removed := a.attendeeNames(kept, showNames, showChildcare, showDeclined, me, facts)
+	ownHousehold := a.myHouseholdAnswers(ids, me, facts)
+	// Only a household account can have registered someone by name.
+	householdVideo := map[uint]bool{}
+	if me != nil {
+		if _, inHousehold := facts.accounts[me.ID]; inHousehold {
+			householdVideo = householdGoingMap(a.DB, ids, me, true)
+		}
+	}
 
 	for i := range kept {
 		o := &kept[i]
@@ -209,6 +220,13 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 			loc = shown.Location
 		}
 		inst := occurrenceToJSON(ev, o, loc)
+		inst.MyHouseholdRegistrations = ownHousehold[o.ID]
+		if inst.MyHouseholdRegistrations == nil {
+			inst.MyHouseholdRegistrations = []myHouseholdRegistrationJSON{}
+		}
+		if showDeclined[ev.ID] {
+			inst.RemovedRegistrations = removed[o.ID]
+		}
 		inst.Visibility = ev.Visibility
 		inst.LeaderOpened = ev.LeaderOpened
 		inst.ChurchWide = ev.GroupID == nil
@@ -249,7 +267,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		// The video link is per date: going on this date (or running the
 		// event) reveals a registered_only link (policy.CanSeeVideoLink).
 		applyVideoReveal(&inst, ev,
-			mine[o.ID].Status == models.RegGoing, showDeclined[ev.ID])
+			mine[o.ID].Status == models.RegGoing || householdVideo[o.ID], showDeclined[ev.ID])
 		inst.AttendeesVisible = showNames[ev.ID]
 		if showNames[ev.ID] {
 			inst.Attendees = names[o.ID]
@@ -270,89 +288,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	return out
 }
 
-// attendeeNames loads listed registrants for the occurrences whose events
-// allow names. Disabled accounts stay out via listedUsers, and removed
-// registrations are never listed. Waitlisted names follow the same
-// CanSeeAttendeeNames rule as going names; they come back in promotion
-// (line) order so the UI can render the waitlist section.
-func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare map[uint]bool) map[uint][]attendeeJSON {
-	out := map[uint][]attendeeJSON{}
-	ids := []uint{}
-	showChildcare := map[uint]bool{}
-	for _, o := range kept {
-		showChildcare[o.ID] = childcare[o.EventID]
-		if show[o.EventID] {
-			ids = append(ids, o.ID)
-		}
-	}
-	if len(ids) == 0 {
-		return out
-	}
-	type row struct {
-		OccurrenceID      uint
-		UserID            uint
-		Name              string
-		DisplayName       string
-		Status            string
-		GuestCount        int
-		AttendanceMode    string
-		ChildcareCount    int
-		ChildcareAgesNote string
-		WaitlistedAt      *time.Time
-	}
-	var rows []row
-	a.DB.Model(&models.Registration{}).Joins(listedUsers("registrations")).
-		Select("registrations.occurrence_id, registrations.user_id, users.name, users.display_name, registrations.status, registrations.guest_count, registrations.attendance_mode, registrations.childcare_count, registrations.childcare_ages_note, registrations.waitlisted_at").
-		Where("registrations.occurrence_id IN ? AND registrations.status NOT IN ?",
-			ids, []string{models.RegCancelled, models.RegRemoved}).
-		Order("users.display_name, users.name, users.id").
-		Scan(&rows)
-	byOcc := map[uint][]row{}
-	for _, r := range rows {
-		byOcc[r.OccurrenceID] = append(byOcc[r.OccurrenceID], r)
-	}
-	for occID, rs := range byOcc {
-		var rest, wait []row
-		for _, r := range rs {
-			if r.Status == models.RegWaitlisted {
-				wait = append(wait, r)
-			} else {
-				rest = append(rest, r)
-			}
-		}
-		sort.SliceStable(wait, func(i, j int) bool {
-			ai, aj := wait[i].WaitlistedAt, wait[j].WaitlistedAt
-			if ai != nil && aj != nil && !ai.Equal(*aj) {
-				return ai.Before(*aj)
-			}
-			if (ai == nil) != (aj == nil) {
-				return aj == nil
-			}
-			return wait[i].UserID < wait[j].UserID
-		})
-		for _, r := range append(rest, wait...) {
-			name := r.DisplayName
-			if name == "" {
-				name = r.Name
-			}
-			if name == "" {
-				name = "Member"
-			}
-			var count *int
-			var ages *string
-			if showChildcare[occID] {
-				count, ages = &r.ChildcareCount, &r.ChildcareAgesNote
-			}
-			out[occID] = append(out[occID], attendeeJSON{
-				UserID: r.UserID, Name: name, Status: r.Status, GuestCount: r.GuestCount,
-				AttendanceMode: attendanceModeOf(r.AttendanceMode),
-				ChildcareCount: count, ChildcareAgesNote: ages,
-			})
-		}
-	}
-	return out
-}
-
+// occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.
 func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc string) occurrenceJSON {
 	loc, err := time.LoadLocation(ev.TZID)
 	if err != nil {

@@ -90,18 +90,27 @@ func groupAndRel(ev *models.Event, groups map[uint]*models.Group, rels map[uint]
 }
 
 func (a *App) factsFor(u *models.User, ev *models.Event) eventFacts {
+	return a.factsForIn(a.DB, u, ev)
+}
+
+func (a *App) factsForIn(db *gorm.DB, u *models.User, ev *models.Event) eventFacts {
 	f := eventFacts{}
 	if ev.GroupID != nil {
 		var g models.Group
-		if err := a.DB.First(&g, *ev.GroupID).Error; err == nil {
+		if err := db.First(&g, *ev.GroupID).Error; err == nil {
 			f.group = &g
-			f.rel = a.relOf(u, g.ID)
+			if u != nil {
+				var m models.Membership
+				if db.Where("user_id = ? AND group_id = ?", u.ID, g.ID).First(&m).Error == nil {
+					f.rel = membershipRel(m)
+				}
+			}
 		}
 	}
 	host := false
 	if ev.GroupID == nil && u != nil {
 		var n int64
-		a.DB.Model(&models.EventHost{}).Where("event_id = ? AND user_id = ?", ev.ID, u.ID).Count(&n)
+		db.Model(&models.EventHost{}).Where("event_id = ? AND user_id = ?", ev.ID, u.ID).Count(&n)
 		host = n > 0
 	}
 	f.view = viewOf(ev, host)

@@ -360,7 +360,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			status = models.RegWaitlisted
 			wlAt = &now
 		}
-		reg := models.Registration{UserID: user.ID, OccurrenceID: occ.ID}
+		reg := models.Registration{UserID: &user.ID, OccurrenceID: occ.ID}
 		var prior models.Registration
 		if tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).
 			First(&prior).RowsAffected == 1 && prior.Status == models.RegRemoved {
@@ -473,14 +473,14 @@ func liveTokenManage(db *gorm.DB, raw string) (*models.Registration, *models.Eve
 		return nil, nil, nil, nil, errTokenInvalid
 	}
 	var reg models.Registration
-	if err := db.Preload("Occurrence.Event").
-		Where("manage_token_hash = ? AND manage_token_hash <> ?", hashToken(raw), "").
-		Where("status <> ?", models.RegRemoved).
+	if err := db.Preload("Occurrence.Event").Joins(listedRegistrations()).
+		Where("registrations.manage_token_hash = ? AND registrations.manage_token_hash <> ?", hashToken(raw), "").
+		Where("registrations.status <> ? AND (registrations.household_person_id IS NULL OR registrations.status <> ?)", models.RegRemoved, models.RegCancelled).
 		First(&reg).Error; err != nil {
 		return nil, nil, nil, nil, errTokenInvalid
 	}
 	occ := reg.Occurrence
-	if occ.ID == 0 || time.Now().UTC().After(occ.EndsAt) {
+	if occ.ID == 0 || time.Now().UTC().After(occ.EndsAt) || (reg.HouseholdPersonID != nil && occ.Status != models.OccurrenceScheduled) {
 		return nil, nil, nil, nil, errTokenInvalid
 	}
 	ev := occ.Event
@@ -517,6 +517,9 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		if err != nil {
 			return err
 		}
+		if err := lockRegistrationHolder(tx, reg.ID, occ.ID); err != nil {
+			return errTokenInvalid
+		}
 		before := reg.Status
 		cancellable := before == models.RegGoing || before == models.RegMaybe ||
 			before == models.RegWaitlisted
@@ -531,6 +534,12 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		if err != nil {
 			return err
 		}
+		fresh, _, _, _, err := liveTokenManage(tx, c.Param("token"))
+		if err != nil {
+			return err
+		}
+		reg = fresh
+		before = reg.Status
 		res := tx.Model(&models.Registration{}).
 			Where("id = ? AND status IN ?", reg.ID,
 				[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).
@@ -546,12 +555,16 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		if res.RowsAffected == 0 {
 			return errTokenInvalid
 		}
+		if reg.HouseholdPersonID != nil {
+			if err := tx.Model(reg).Update("manage_token_hash", "").Error; err != nil {
+				return err
+			}
+		}
 		reg.Status = models.RegCancelled
 		if err := audit.Write(tx, audit.Entry{Action: audit.RegistrationCancelled,
 			TargetType: "event", TargetID: ev.ID,
-			Meta: map[string]any{"userId": reg.UserID, "occurrenceId": occ.ID,
-				"reason": "manage_link"},
-			IP: c.ClientIP()}); err != nil {
+			Meta: registrationMeta(*reg),
+			IP:   c.ClientIP()}); err != nil {
 			return err
 		}
 		if before == models.RegGoing {

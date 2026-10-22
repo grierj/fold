@@ -91,3 +91,58 @@ describe("HouseholdCard focus and states (PR 107 review)", () => {
     expect(screen.getByText("Child")).toHaveClass("bg-sunken");
   });
 });
+
+describe("household name and address", () => {
+  beforeEach(() => { vi.resetAllMocks(); mine.mockResolvedValue({ household: { ...household, people: [], address: "Old address" } }); });
+
+  it("shows an empty household's details and saves through the existing endpoint", async () => {
+    const { Households } = await import("../api");
+    vi.mocked(Households.update).mockResolvedValue({ household: { ...household, people: [], name: "New household", address: "New address" } } as Awaited<ReturnType<typeof Households.update>>);
+    render(<HouseholdCard />);
+    const rename = await screen.findByRole("button", { name: "Rename" });
+    expect(screen.getByText("Old address")).toBeInTheDocument();
+    await userEvent.click(rename);
+    expect(screen.getByLabelText(/^Household name/)).toHaveFocus();
+    await userEvent.clear(screen.getByLabelText(/^Household name/)); await userEvent.type(screen.getByLabelText(/^Household name/), "New household");
+    await userEvent.clear(screen.getByLabelText(/^Address/)); await userEvent.type(screen.getByLabelText(/^Address/), "New address");
+    await userEvent.click(screen.getByRole("button", { name: "Save household" }));
+    expect(Households.update).toHaveBeenCalledWith({ name: "New household", address: "New address" });
+    expect(screen.getByText("New household")).toBeInTheDocument(); expect(screen.getByText("New address")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Saved your household name and address.");
+    await vi.waitFor(() => expect(rename).toHaveFocus());
+  });
+
+  it("sends an explicit address clear and preserves valid fields on failure", async () => {
+    const { Households } = await import("../api");
+    vi.mocked(Households.update).mockRejectedValueOnce(new Error("offline"));
+    render(<HouseholdCard />);
+    await userEvent.click(await screen.findByRole("button", { name: "Edit address" }));
+    expect(screen.getByLabelText(/^Household name/)).toHaveAttribute("maxlength", "100");
+    expect(screen.getByLabelText(/^Address/)).toHaveAttribute("maxlength", "500");
+    await userEvent.clear(screen.getByLabelText(/^Address/));
+    await userEvent.click(screen.getByRole("button", { name: "Save household" }));
+    expect(Households.update).toHaveBeenCalledWith({ name: "Smith household", address: "" });
+    expect(screen.getByLabelText(/^Household name/)).toHaveValue("Smith household"); expect(screen.getByLabelText(/^Address/)).toHaveValue("");
+    expect(screen.getByRole("alert")).toHaveTextContent("We couldn't reach Fold.");
+  });
+
+  it("validates a required name before sending", async () => {
+    const { Households } = await import("../api"); render(<HouseholdCard />);
+    await userEvent.click(await screen.findByRole("button", { name: "Rename" }));
+    await userEvent.clear(screen.getByLabelText(/^Household name/));
+    // Native validation and the shared field validation both reject it.
+    screen.getByRole("form", { name: "Edit household" }).setAttribute("novalidate", "");
+    await userEvent.click(screen.getByRole("button", { name: "Save household" }));
+    expect(Households.update).not.toHaveBeenCalled(); expect(screen.getByLabelText(/^Household name/)).toHaveAttribute("aria-invalid", "true");
+  });
+
+  it("preserves inaccessible care notes while explicitly clearing a visible optional field", async () => {
+    const { Households } = await import("../api");
+    mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], careNotes: undefined }] } });
+    vi.mocked(Households.updatePerson).mockRejectedValue(new Error("offline"));
+    render(<HouseholdCard />); await userEvent.click(await screen.findByRole("button", { name: "Edit Kid Smith" }));
+    await userEvent.clear(screen.getByLabelText(/^Last name/)); await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(Households.updatePerson).toHaveBeenCalledWith(5, expect.objectContaining({ lastName: "", careNotes: undefined }));
+    expect(screen.getByLabelText(/^Care notes/)).toHaveAccessibleDescription(expect.stringContaining("24 hours"));
+  });
+});

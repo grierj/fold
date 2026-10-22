@@ -513,6 +513,9 @@ type HouseholdRel struct {
 // link wins, then a pending one, then the latest decided one. "" means
 // no link, which is the adult case: adults need no approval (DEC-32).
 type HouseholdPerson struct {
+	AgeYears   *int
+	Deleted    bool
+	Converted  bool
 	Kind       string // child | teen | adult
 	LinkStatus string // pending | confirmed | rejected | revoked | ""
 }
@@ -549,7 +552,13 @@ func CanManageHousehold(p *Person, rel HouseholdRel) bool {
 // or a child or teen with a confirmed guardian link. Until then leaders
 // and hosts see nothing about the person (5.3, DEC-32).
 func householdPersonConfirmed(person HouseholdPerson) bool {
-	return person.Kind == KindAdult || person.LinkStatus == LinkConfirmed
+	if person.Deleted || person.Converted {
+		return false
+	}
+	if person.Kind == KindAdult {
+		return person.AgeYears != nil && *person.AgeYears >= 18
+	}
+	return person.LinkStatus == LinkConfirmed
 }
 
 // CanSeeHouseholdPerson decides who sees a household person's name and
@@ -621,3 +630,57 @@ func CanSeeCareNotes(p *Person, person HouseholdPerson, rel HouseholdRel, window
 // link to a teen or child, with a note on how it was checked (DEC-32).
 // There is no auto-confirm path, and a leader role never grants this.
 func CanConfirmGuardianLink(p *Person) bool { return IsAdmin(p) }
+
+// HouseholdRegistrationProblem validates saved age and person-link facts.
+func HouseholdRegistrationProblem(person HouseholdPerson) string {
+	if person.Deleted || person.Converted {
+		return "household_registration_holder_unavailable"
+	}
+	if person.AgeYears == nil {
+		return "household_birth_date_required"
+	}
+	if *person.AgeYears < 0 || (person.Kind == KindAdult && *person.AgeYears < 18) {
+		return "household_age_mismatch"
+	}
+	if person.Kind == KindAdult {
+		return ""
+	}
+	if person.Kind != KindChild && person.Kind != KindTeen {
+		return "household_age_mismatch"
+	}
+	// PLAN 2.x bands: child under 13, teen 13 to 17 (Warden, PR 110 N1).
+	// Nobody 18 or older is a child or teen, and a teen can't be under 13.
+	// A child who turned 13 stays registrable until the guardian updates
+	// the kind; the accounts.age_rollover job flags them (judgment call 39).
+	if *person.AgeYears >= 18 || (person.Kind == KindTeen && *person.AgeYears < 13) {
+		return "household_age_mismatch"
+	}
+	if person.LinkStatus == LinkPending {
+		return "household_link_pending"
+	}
+	if person.LinkStatus != LinkConfirmed {
+		return "household_link_unconfirmed"
+	}
+	return ""
+}
+
+// CanRegisterHouseholdPerson grants self-service only through an adult
+// household account, with both actor and responsible holder event access.
+func CanRegisterHouseholdPerson(actor, holder *Person, actorRel, rel HouseholdRel, person HouseholdPerson, holderActive, actorAccess, holderAccess bool) string {
+	if actor == nil || actor.Teen || holder == nil || holder.Teen || !holderActive || !rel.Adult || !rel.Account {
+		return "household_registration_holder_unavailable"
+	}
+	if !actorRel.Account || !actorRel.Adult || !actorAccess || !holderAccess {
+		return "household_registration_holder_unavailable"
+	}
+	return HouseholdRegistrationProblem(person)
+}
+
+// CanManageHouseholdRegistration never lets management bypass the holder's
+// authority, event visibility, age or confirmation.
+func CanManageHouseholdRegistration(actor, holder *Person, managesEvent, previouslyRegistered bool, rel HouseholdRel, person HouseholdPerson, holderActive, holderAccess bool) string {
+	if actor == nil || actor.Teen || (!actor.Admin && (!managesEvent || !previouslyRegistered)) {
+		return "household_registration_holder_unavailable"
+	}
+	return CanRegisterHouseholdPerson(holder, holder, rel, rel, person, holderActive, holderAccess, holderAccess)
+}

@@ -61,3 +61,16 @@ test("capture the main pages", async ({ page, request }) => {
   }
   await signOut(page);
 });
+
+test("capture household selected answers, metadata editor and long care disclosures", async ({ page, request }) => {
+  const { uiPages, open } = await import("./ui-pages");
+  for (const ui of (await uiPages(request)).filter((p) => ["profile", "event", "event-leader"].includes(p.id))) {
+    await signIn(page, ui.who!);
+    await open(page, ui);
+    await shoot(page, `household-${ui.id}`);
+    if (ui.id === "event-leader") {
+      await page.getByRole("button", { name: "Show full care notes for Kit" }).click();
+      await shoot(page, "household-care-expanded");
+    }
+  }
+});

@@ -13,6 +13,10 @@ import (
 
 // Actions. Add new ones here so they are easy to find and query.
 const (
+	RegistrationChanged    = "registration.changed"
+	RegistrationRestored   = "registration.restored"
+	HouseholdUpdated       = "household.updated"
+	HouseholdPersonUpdated = "household.person_updated"
 	// RoleChanged: someone was made a group leader, or stopped being one.
 	// Target is the group; meta has userId, oldRole and newRole ("leader",
 	// "member", or "none" when they left or were removed).
@@ -81,7 +85,7 @@ const (
 
 	// RegistrationPromoted: a leader or host promoted one waitlisted row
 	// by hand (M1.5). Target is the event. Meta: userId, occurrenceId.
-	// Automatic promotions are not audited; the notification row exists.
+	// Automatic transitions also record registration.changed.
 	RegistrationPromoted = "registration.promoted"
 
 	// RegistrationAddedOverCapacity: a leader, host, or admin added

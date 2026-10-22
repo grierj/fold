@@ -55,4 +55,18 @@ setup("first-run setup and seed data", async ({ page, request }) => {
     });
     await admin("POST", `/admin/groups/${g.id}/members`, { userId: ids.sam, role: "member" });
   }
+  // Dedicated household fixtures leave the existing account-only flows intact.
+  await admin("POST", "/admin/users", { name: "Household Parent", email: email("household-parent"), password: PASSWORD, role: "member" });
+  const parent = await apiAs(request, "household-parent");
+  const { person: mary } = await parent("POST", "/me/household/people", { firstName: "Mary", kind: "adult", birthDate: "1990-01-01" });
+  const { person: kit } = await parent("POST", "/me/household/people", { firstName: "Kit", kind: "child", birthDate: "2020-05-01", careNotes: "Allergy: follow the care plan.\n" + "LongCareNote".repeat(120) });
+  const adminAgain = await apiAs(request, "grier");
+  await adminAgain("POST", `/admin/guardian-links/${kit.guardianLinkId}/confirm`, { checkNote: "Known family" });
+  const starts = new Date(Date.now() + 6 * 3600_000).toISOString().slice(0, 16);
+  const { event: householdEvent } = await adminAgain("POST", `/groups/${group.id}/events`, { title: "Household check night", startsLocal: starts, durationMinutes: 60, tzid: "UTC", capacity: 1, waitlistEnabled: true, remoteAvailable: true, remoteCapacity: 1, childcareAvailable: true, childcareCapacity: 1 });
+  const parentAgain = await apiAs(request, "household-parent");
+  await parentAgain("PUT", `/events/${householdEvent.id}/registrations`, { date: starts.slice(0, 10), status: "going", attendanceMode: "remote", people: [{ personId: kit.id, status: "going", attendanceMode: "in_person", childcareRequested: true }, { personId: mary.id, status: "going", attendanceMode: "in_person" }] });
+  // The household seed's notices are handled; leave the admin bell as the
+  // other specs expect.
+  await (await apiAs(request, "grier"))("POST", "/notifications/read-all", {});
 });

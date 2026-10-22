@@ -5,7 +5,8 @@ export function childcareCountProblem(count: string): string | null {
     ? null : "Enter a whole number from 0 to 20 children.";
 }
 
-export function ChildcareRequestField({ count, ages, onCount, onAges, error, disabled, full }: {
+export function ChildcareRequestField({ count, ages, onCount, onAges, error, disabled, full, named = false }: {
+  named?: boolean;
   count: string;
   ages: string;
   onCount: (count: string) => void;
@@ -17,8 +18,8 @@ export function ChildcareRequestField({ count, ages, onCount, onAges, error, dis
   return (
     <Choices legend="Childcare for this date">
       <div className="space-y-3">
-        <Field label="Children needing childcare" optional
-          hint={full ? "Childcare is full for this date" : "Enter a whole number from 0 to 20."} error={error}>
+        <Field label={named ? "Other children needing childcare" : "Children needing childcare"} optional
+          hint={full ? "Childcare is full for this date" : named ? "Enter 0 to 20. Do not include children selected by name above." : "Enter a whole number from 0 to 20."} error={error}>
           <Input type="text" inputMode="numeric" value={count} onChange={(e) => onCount(e.target.value)} disabled={disabled || full} />
         </Field>
         <Field label="Ages" optional hint="For example: 3 and 7. Only you and the event's leaders, hosts and admins can see this.">

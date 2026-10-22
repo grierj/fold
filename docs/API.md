@@ -571,14 +571,17 @@ now through 90 days.
 ### Registration
 
 ```
-PUT /api/v1/events/:id/registrations   → 200 {registration}   (auth)
-  body: {status: "going"|"maybe"|"declined", date: "YYYY-MM-DD", guestCount?}
+PUT /api/v1/events/:id/registrations   → 200 {registration, people}   (auth)
+  body: {date: "YYYY-MM-DD", status?: "going"|"maybe"|"declined", guestCount?,
+         attendanceMode?, childcareCount?, childcareAgesNote?,
+         people?: [{personId, status, attendanceMode?, childcareRequested?}]}
 POST /api/v1/events/:id/registrations/remove  → 200 {} | 403 | 404  (leader/host)
-  body: {date: "YYYY-MM-DD", userId, note?}
+  body: {date: "YYYY-MM-DD", registrationId, note?}
 POST /api/v1/events/:id/registrations/promote → 200 {} | 403 | 404 | 409  (leader/host)
-  body: {date: "YYYY-MM-DD", userId}
+  body: {date: "YYYY-MM-DD", registrationId}
 POST /api/v1/events/:id/registrations/add     → 200 {} | 403 | 404 | 409  (leader/host)
-  body: {date: "YYYY-MM-DD", userId?, email?, guestCount?, overCapacity?}
+  body: {date: "YYYY-MM-DD", userId? | email? | (personId + registeredBy),
+         guestCount?, childcareRequested?, overCapacity?}
 ```
 
 `registration`: `{userId, eventId, occurrenceId, date, status, guestCount,
@@ -596,6 +599,33 @@ A removed person cannot re-register alone (409). `overCapacity` is refused
 on self-registration (400). Cancelling, declining, or moving going→maybe
 promotes the earliest waitlisted party that fits; inside 2 hours of the
 start nobody is auto-promoted and leaders/hosts get `waitlist.cutoff`.
+
+Household people (M1.9 slice 2). `people` registers confirmed people from
+the caller's household by name, one registration and one seat each, in that
+person's `attendanceMode` pool, under the same occurrence lock and waitlist
+order as anyone. The holder's own fields are optional: an omitted holder
+`status` leaves the holder unchanged, and unmentioned people are unchanged.
+Any failed answer rolls back the whole batch. The response's `registration`
+is the holder's row (null if never answered), and `people` is
+`[{registrationId, personId, registeredBy, status, attendanceMode,
+waitlistPosition, childcareRequested}]`. Errors (409): `household_link_pending`
+("Waiting for an admin to confirm"), `household_link_unconfirmed`,
+`household_birth_date_required` and `household_age_mismatch` (an `adult`
+person needs a birth date proving 18 or older; the kind alone isn't trusted),
+`household_remote_childcare`, `household_registration_holder_unavailable`.
+
+Childcare with household people: `childcareRequested` is an explicit
+per-child choice for an in-person named child, one childcare spot each.
+Remote people never use childcare. `childcareCount` stays the holder's
+count of unnamed children. DEC-80 promotion applies to both.
+
+Attendee lists give each row a `registrationId`. A household row has no
+`userId` and carries `householdPerson: {personId, name, householdName, kind,
+age?, registeredBy: {userId, name}}`; the UI shows "Kit · Leader household
+(via John Smith)". Age and care notes follow section 6 (care notes to the
+event's leaders and hosts from 24 h before to 24 h after the date). Notices
+about a household person go to the holder. When a holder is disabled, their
+household people's rows are hidden and uncounted with theirs (DEC-38).
 
 Leaders and hosts can remove anyone's registration (sets `removed`, tells
 the person with the note, audited), hand-promote one waitlisted party

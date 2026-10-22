@@ -84,6 +84,9 @@ import type {
   AccountRequest,
   AgeBand,
   AttendanceMode,
+  Attendee,
+  HouseholdAttendee,
+  RegistrationCommand,
   CalendarFeed,
   EventDetailResponse,
   EventHostRow,
@@ -102,8 +105,7 @@ import type {
   NotificationFeed,
   NotificationFilter,
   OpenedDecision,
-  RegistrationResponse,
-  RegistrationStatus,
+  RegistrationBatch,
   SoleLedGroup,
   User,
   VideoProvider,
@@ -335,19 +337,18 @@ export const Events = {
   ) => api<{ event: EventSeries }>(`/events/${id}`, { method: "PUT", body: data }),
   // Mint a fresh Jitsi room URL (M1.8); each call makes a new one.
   generateJitsi: () => api<{ url: string }>("/events/video/jitsi", { method: "POST", body: {} }),
-  register: (id: number, status: RegistrationStatus, date: string, guestCount?: number, attendanceMode?: AttendanceMode, childcare?: { childcareCount: number; childcareAgesNote: string }) =>
-    api<{ registration: RegistrationResponse }>(`/events/${id}/registrations`, {
-      method: "PUT",
-      body: { status, date, guestCount, attendanceMode, ...childcare },
-    }),
+  register: (id: number, data: RegistrationCommand) =>
+    api<RegistrationBatch>(`/events/${id}/registrations`, { method: "PUT", body: data }),
   // Pruning and hand promotion (M1.5): leaders and hosts remove anyone,
   // promote one waitlisted row by hand, or add someone directly.
-  removeRegistration: (id: number, date: string, userId: number, note?: string) =>
-    api<unknown>(`/events/${id}/registrations/remove`, { method: "POST", body: { date, userId, note } }),
-  promoteRegistration: (id: number, date: string, userId: number) =>
-    api<unknown>(`/events/${id}/registrations/promote`, { method: "POST", body: { date, userId } }),
+  removeRegistration: (id: number, date: string, registrationId: number, note?: string) =>
+    api<unknown>(`/events/${id}/registrations/remove`, { method: "POST", body: { date, registrationId, note } }),
+  promoteRegistration: (id: number, date: string, registrationId: number) =>
+    api<unknown>(`/events/${id}/registrations/promote`, { method: "POST", body: { date, registrationId } }),
   addRegistration: (id: number, date: string, email: string, overCapacity?: boolean, childcare?: { childcareCount: number; childcareAgesNote: string }) =>
     api<unknown>(`/events/${id}/registrations/add`, { method: "POST", body: { date, email, overCapacity, ...childcare } }),
+  restoreRegistration: (id: number, date: string, target: { userId: number } | { personId: number; registeredBy: number }, attendanceMode: AttendanceMode, overCapacity: boolean) =>
+    api<unknown>(`/events/${id}/registrations/add`, { method: "POST", body: { date, ...target, attendanceMode, overCapacity } }),
   cancelOccurrence: (id: number, date: string) =>
     api<unknown>(`/events/${id}/cancel`, { method: "POST", body: { date } }),
   updateOccurrence: (
@@ -592,3 +593,11 @@ export const AdminGuardianLinks = {
   reject: (id: number, note?: string) =>
     api<{ guardianLink: GuardianLink }>(`/admin/guardian-links/${id}/reject`, { method: "POST", body: { note: note || undefined } }),
 };
+
+// Mixed wire rows become an exclusive presentation identity at the API
+// boundary. Invalid both/neither identities never become action targets.
+export function attendeeSubject(row: Attendee): { kind: "user"; userId: number } | { kind: "household"; person: HouseholdAttendee } | null {
+  if (row.userId !== undefined && !row.householdPerson) return { kind: "user", userId: row.userId };
+  if (row.userId === undefined && row.householdPerson) return { kind: "household", person: row.householdPerson };
+  return null;
+}

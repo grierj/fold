@@ -464,10 +464,10 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 		UserID uint
 		OccID  uint
 	}
-	if err := tx.Table("registrations").Select("user_id, occurrence_id AS occ_id").
-		Where("occurrence_id IN ? AND status IN ?", occIDs,
+	if err := tx.Table("registrations").Joins(listedRegistrations()).Distinct("users.id AS user_id, registrations.occurrence_id AS occ_id").
+		Where("registrations.occurrence_id IN ? AND registrations.status IN ?", occIDs,
 			[]string{models.RegGoing, models.RegWaitlisted}).
-		Order("occurrence_id, user_id").Scan(&rows).Error; err != nil {
+		Order("occ_id, user_id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
@@ -533,6 +533,10 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 // that their registrations were cancelled. It names neither the group nor
 // the place and links nowhere private (PR #41).
 func notifyRegistrationCancelled(tx *gorm.DB, actor uint, ev *models.Event, userID uint) ([]uint, error) {
+	u := userIn(tx, userID)
+	if u == nil || u.Status == models.UserDisabled {
+		return nil, nil
+	}
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationCancelled, To: []uint{userID}, Actor: &actor,
 		SubjectType: "event", SubjectID: ev.ID, Link: "/", Vars: notify.Vars{Event: ev.Title},

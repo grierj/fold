@@ -1,7 +1,6 @@
 import { useId, useState } from "react";
 import { Button } from "./ui/Button";
-import { RemoteBadge } from "./RemoteBadge";
-import { ChildcareBadge } from "./ChildcareBadge";
+import { AttendeeDetails } from "./AttendeeDetails";
 import type { EventOccurrence } from "../types";
 
 // Attendance for one date (UI makeover PR 6, DEC-63): counts first, then
@@ -25,12 +24,12 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
       <div>
         {going === 0 && maybe === 0 ? "No one yet" : `${going} going${maybe ? ` · ${maybe} maybe` : ""}`}
         {declined ? ` · ${declined} can't go` : ""}
-        {instance.capacity !== null && ` · ${instance.spotsLeft} of ${instance.capacity} seats left`}
+        {instance.capacity !== null && ` · ${seatsLeft(instance.spotsLeft ?? 0, instance.capacity, "")}`}
         {instance.remoteAvailable && instance.remoteCapacity === 0 && " · No remote seats on this date"}
         {instance.remoteAvailable &&
           instance.remoteCapacity !== null &&
           instance.remoteCapacity > 0 &&
-          ` · ${instance.remoteSpotsLeft} of ${instance.remoteCapacity} remote seats left`}
+          ` · ${seatsLeft(instance.remoteSpotsLeft ?? 0, instance.remoteCapacity, "remote ")}`}
       </div>
       {instance.remoteAvailable && instance.remoteCapacity !== 0 && <div>Remote attendance available</div>}
       {instance.childcareFull && <div>Childcare is full for this date</div>}
@@ -39,6 +38,7 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
           ? `${instance.childcareUsed} children in childcare`
           : `${Math.max(0, instance.childcareCapacity - instance.childcareUsed)} of ${instance.childcareCapacity} childcare spots left`}</div>
       )}
+      {going + maybe > coming.length && <p>Some household attendees appear only in the count.</p>}
       {coming.length + cant.length > 0 && (
         <>
           <Button variant="link" aria-expanded={open} aria-controls={listId} onClick={() => setOpen((v) => !v)}>
@@ -47,21 +47,23 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
           {open && (
             <ul id={listId} className="space-y-0.5">
               {coming.map((a) => (
-                <li key={a.userId}>
-                  {a.name}
+                <li key={a.registrationId}>
+                  <AttendeeDetails attendee={a} childcare={instance.childcareAvailable} />
                   {a.status === "maybe" && " (maybe)"}
-                  {a.attendanceMode === "remote" && <> <RemoteBadge /></>}
-                  {a.guestCount > 0 && ` +${a.guestCount}`}
-                  {instance.childcareAvailable && (a.childcareCount ?? 0) > 0 && <> <ChildcareBadge count={a.childcareCount} /></>}
-                  {instance.childcareAvailable && a.childcareAgesNote && <span className="block text-text-muted">Ages: {a.childcareAgesNote}</span>}
                 </li>
               ))}
               {cant.length > 0 && <li className="pt-1 font-medium">Can&apos;t go</li>}
-              {cant.map((a) => <li key={a.userId}>{a.name}</li>)}
+              {cant.map((a) => <li key={a.registrationId}><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} /></li>)}
             </ul>
           )}
         </>
       )}
     </div>
   );
+}
+
+// "0 of 1 seat left", "In-person seats full" (Illuminator, PR 110 N4).
+function seatsLeft(left: number, capacity: number, kind: "" | "remote "): string {
+  if (left <= 0) return kind ? "Remote seats full" : "Seats full";
+  return `${left} of ${capacity} ${kind}${capacity === 1 ? "seat" : "seats"} left`;
 }

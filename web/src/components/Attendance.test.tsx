@@ -5,11 +5,18 @@ import { Attendance } from "./Attendance";
 import { occurrence } from "../test/occurrence";
 
 describe("Attendance", () => {
+  it("uses singular and full seat wording (PR 110 N4)", () => {
+    const { rerender } = render(<Attendance instance={occurrence({ capacity: 1, spotsLeft: 1 })} />);
+    expect(screen.getByText(/1 of 1 seat left/)).toBeInTheDocument();
+    rerender(<Attendance instance={occurrence({ capacity: 1, spotsLeft: 0, remoteAvailable: true, remoteCapacity: 2, remoteSpotsLeft: 0 })} />);
+    expect(screen.getByText(/Seats full · Remote seats full/)).toBeInTheDocument();
+  });
+
   it("counts remote seats and marks remote attendees with a neutral badge", async () => {
     render(<Attendance instance={occurrence({
       remoteAvailable: true, remoteCapacity: 5, remoteSpotsLeft: 4,
       attendeesVisible: true,
-      attendees: [{ userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "remote" }],
+      attendees: [{ registrationId: 31, userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "remote" }],
     })} />);
     expect(screen.getByText(/4 of 5 remote seats left/)).toBeInTheDocument();
     expect(screen.getByText("Remote attendance available")).toBeInTheDocument();
@@ -28,14 +35,14 @@ describe("Attendance", () => {
 
 it("shows childcare totals and requests supplied to a manager", async () => {
   render(<Attendance instance={occurrence({ childcareAvailable: true, childcareUsed: 2, childcareCapacity: 5,
-    attendeesVisible: true, attendees: [{ userId: 3, name: "Sam", status: "going", guestCount: 0,
+    attendeesVisible: true, attendees: [{ registrationId: 31, userId: 3, name: "Sam", status: "going", guestCount: 0,
       attendanceMode: "in_person", childcareCount: 2, childcareAgesNote: "3 and 5" }],
   })} />);
   expect(screen.getByText("3 of 5 childcare spots left")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Show who's coming" }));
   expect(screen.getByText("Sam")).toBeInTheDocument();
   expect(screen.getByText("+2 childcare")).toHaveClass("bg-sunken", "text-text-muted");
-  expect(screen.getByText("Ages: 3 and 5")).toHaveClass("block", "text-text-muted");
+  expect(screen.getByText("Ages: 3 and 5")).toHaveClass("line-clamp-3", "whitespace-pre-wrap");
 });
 
 it("does not invent childcare totals when they are omitted", () => {

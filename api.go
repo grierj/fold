@@ -151,8 +151,10 @@ type occurrenceJSON struct {
 	HostedBy              string           `json:"hostedBy,omitempty"`
 	// AttendeesVisible is false when the caller gets a count only. An empty
 	// allowed list is omitted; the bool is what says names were allowed.
-	AttendeesVisible bool           `json:"attendeesVisible"`
-	Attendees        []attendeeJSON `json:"attendees,omitempty"`
+	AttendeesVisible         bool                          `json:"attendeesVisible"`
+	Attendees                []attendeeJSON                `json:"attendees,omitempty"`
+	MyHouseholdRegistrations []myHouseholdRegistrationJSON `json:"myHouseholdRegistrations"`
+	RemovedRegistrations     []attendeeJSON                `json:"removedRegistrations,omitempty"`
 	// Capacity, waitlist, and guests (M1.5). Capacity is the effective
 	// cap for this date (per-date override wins); null means unlimited.
 	// SpotsLeft is null when unlimited and never below 0. SeatsUsed
@@ -198,9 +200,12 @@ type occurrenceJSON struct {
 }
 
 type attendeeJSON struct {
-	UserID uint   `json:"userId"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	RegistrationID     uint                   `json:"registrationId"`
+	HouseholdPerson    *householdAttendeeJSON `json:"householdPerson,omitempty"`
+	ChildcareRequested *bool                  `json:"childcareRequested,omitempty"`
+	UserID             *uint                  `json:"userId,omitempty"`
+	Name               string                 `json:"name"`
+	Status             string                 `json:"status"`
 	// GuestCount is the extra unnamed guests this party brings (M1.5).
 	GuestCount int `json:"guestCount"`
 	// AttendanceMode is in_person or remote (M1.8 slice 2).
@@ -382,9 +387,8 @@ func membershipRel(m models.Membership) policy.Rel {
 // removed (DEC-35).
 const memberRemoved = "removed"
 
-// listedUsers joins memberships or registrations (the table name) to accounts
-// that are listed: not deleted and not disabled. A disabled account keeps its
-// memberships and registrations, but they are hidden and never counted (DEC-38).
+// listedUsers is the account-only membership join: not deleted or disabled.
+// Registration queries use listedRegistrations for their two subject types.
 func listedUsers(table string) string {
 	return "JOIN users ON users.id = " + table + ".user_id AND users.deleted_at IS NULL AND users.status <> 'disabled'"
 }

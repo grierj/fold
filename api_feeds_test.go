@@ -599,3 +599,21 @@ func TestFeedMentionsChildcareAndAges(t *testing.T) {
 		}
 	}
 }
+
+func TestHouseholdOnlyPersonalFeedKeepsDetailsPrivate(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HouseholdFeed")
+	ev, date := createVideoEvent(t, admin, gid, map[string]any{"remoteAvailable": true, "videoProvider": "link", "videoUrl": videoLink, "videoReveal": "registered_only"})
+	_, c, spouse, child := householdFamily(t, app, admin, "feedholder")
+	batchAnswer(t, c, ev.ID, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going", "attendanceMode": "remote"}, {"personId": child.ID, "status": "going"}}}, http.StatusOK)
+	path := createFeedLink(t, c, "mine")
+	raw := fetchFeed(t, newAPIClient(t, app), path).Body.String()
+	if !strings.Contains(raw, ev.Title) || !strings.Contains(raw, videoLink) {
+		t.Fatalf("missing personal date/link %s", raw)
+	}
+	for _, secret := range []string{"Mary", "Kit", "Private allergy note", "household", "2020-05-01"} {
+		if strings.Contains(raw, secret) {
+			t.Fatalf("feed leak %s", raw)
+		}
+	}
+}

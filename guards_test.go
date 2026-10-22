@@ -87,6 +87,13 @@ var tsContracts = []struct {
 	{guestRegistrationJSON{}, "GuestRegistration"},
 	{attendeeJSON{}, "Attendee"},
 	{registrationJSON{}, "RegistrationResponse"},
+	{registrationBatchJSON{}, "RegistrationBatch"},
+	{householdAnswer{}, "HouseholdAnswer"},
+	{registrationBatchInput{}, "RegistrationCommand"},
+	{householdRegistrationJSON{}, "HouseholdRegistration"},
+	{myHouseholdRegistrationJSON{}, "MyHouseholdRegistration"},
+	{registeredByJSON{}, "RegisteredBy"},
+	{householdAttendeeJSON{}, "HouseholdAttendee"},
 	{calendarFeedJSON{}, "CalendarFeed"},
 }
 
@@ -966,6 +973,27 @@ func TestWorkflowActionsPinnedAndReadOnly(t *testing.T) {
 			if strings.Contains(line, "uses:") && !strings.Contains(line, "uses: ./") && !pinned.MatchString(line) {
 				t.Errorf("%s:%d: action not pinned to a full SHA: %s", f, i+1, strings.TrimSpace(line))
 			}
+		}
+	}
+}
+
+// Registration subjects must pass through the mixed holder scope; membership
+// joins remain account-only.
+func TestRegistrationQueriesUseSubjectScope(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(src), `listedUsers("registrations")`) {
+			t.Errorf("%s uses the account-only registration join", file)
 		}
 	}
 }

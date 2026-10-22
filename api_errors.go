@@ -18,6 +18,12 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	"waiting for an admin to confirm; ask your church office to check the household link":                              "household_link_pending",
+	"this household link is not confirmed; ask your church office to check it":                                         "household_link_unconfirmed",
+	"add a birth date in profile before signing this person up":                                                        "household_birth_date_required",
+	"the birth date does not match an adult; correct it or choose child or teen in profile":                            "household_age_mismatch",
+	"remote attendees cannot request childcare; clear the childcare choice first":                                      "household_remote_childcare",
+	"the responsible account cannot register this person; ask your church office to check their account and household": "household_registration_holder_unavailable",
 	// Signing in and passwords
 	"invalid email or password":                          "bad_credentials",
 	"too many sign-in attempts; try again in 15 minutes": "locked_out",

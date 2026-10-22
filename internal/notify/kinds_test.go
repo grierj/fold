@@ -68,3 +68,20 @@ func TestEveryKindConstIsRegistered(t *testing.T) {
 		t.Errorf("kinds.go declares %d kind keys, registry has %d", found, len(registry))
 	}
 }
+
+func TestHouseholdRegistrationWordsNameTheAttendee(t *testing.T) {
+	for _, key := range []string{RegistrationPromoted, RegistrationRemoved, RegistrationNotRestored} {
+		kind, ok := Lookup(key)
+		if !ok {
+			t.Fatal(key)
+		}
+		title, body := kind.Render(Vars{Person: "Kit", Event: "Family night"})
+		if !strings.Contains(title+body, "Kit") {
+			t.Fatalf("%s did not identify household attendee: %s %s", key, title, body)
+		}
+		ordinaryTitle, ordinaryBody := kind.Render(Vars{Event: "Family night"})
+		if strings.Contains(ordinaryTitle+ordinaryBody, "Kit") {
+			t.Fatal("household wording reached user notice")
+		}
+	}
+}

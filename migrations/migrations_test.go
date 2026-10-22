@@ -442,3 +442,79 @@ func TestChildcareMigration23(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHouseholdRegistrationMigration24(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 23); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string) {
+		t.Helper()
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	exec(`INSERT INTO users(id,email,status) VALUES(1,'holder@example.com','active'),(2,'other@example.com','active')`)
+	exec(`INSERT INTO households(id,name,created_by) VALUES(1,'Household',1)`)
+	exec(`INSERT INTO household_people(id,household_id,first_name,kind,created_by) VALUES(1,1,'Kit','child',1),(2,1,'Mary','adult',1)`)
+	exec(`INSERT INTO events(id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by) VALUES(1,'Event','','2026-12-01T18:00',60,'UTC','','','public',1)`)
+	exec(`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at) VALUES(1,1,'2026-12-01','2026-12-01 18:00+00','2026-12-01 19:00+00')`)
+	exec(`INSERT INTO registrations(occurrence_id,user_id,status) VALUES(1,1,'going')`)
+	if _, err := p.UpTo(ctx, 24); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM registrations WHERE user_id=1 AND registered_by IS NULL AND household_person_id IS NULL AND NOT childcare_requested`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("preserved user row: %d %v", n, err)
+	}
+	// With no household answers, rollback and upgrading again are lossless.
+	if _, err := p.DownTo(ctx, 23); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 24); err != nil {
+		t.Fatal(err)
+	}
+	exec(`INSERT INTO registrations(occurrence_id,household_person_id,registered_by,status,childcare_requested) VALUES(1,1,1,'going',true)`)
+	for name, q := range map[string]string{
+		"no identity":                `INSERT INTO registrations(occurrence_id,status) VALUES(1,'going')`,
+		"both identities":            `INSERT INTO registrations(occurrence_id,user_id,household_person_id,registered_by,status) VALUES(1,2,2,1,'going')`,
+		"no holder":                  `INSERT INTO registrations(occurrence_id,household_person_id,status) VALUES(1,2,'going')`,
+		"holder on user":             `INSERT INTO registrations(occurrence_id,user_id,registered_by,status) VALUES(1,2,1,'going')`,
+		"named guests":               `INSERT INTO registrations(occurrence_id,household_person_id,registered_by,status,guest_count) VALUES(1,2,1,'going',1)`,
+		"named count":                `INSERT INTO registrations(occurrence_id,household_person_id,registered_by,status,childcare_count) VALUES(1,2,1,'going',1)`,
+		"named ages":                 `INSERT INTO registrations(occurrence_id,household_person_id,registered_by,status,childcare_ages_note) VALUES(1,2,1,'going','3')`,
+		"remote childcare":           `INSERT INTO registrations(occurrence_id,household_person_id,registered_by,status,attendance_mode,childcare_requested) VALUES(1,2,1,'going','remote',true)`,
+		"user childcare flag":        `INSERT INTO registrations(occurrence_id,user_id,status,childcare_requested) VALUES(1,2,'going',true)`,
+		"duplicate account":          `INSERT INTO registrations(occurrence_id,user_id,status) VALUES(1,1,'removed')`,
+		"duplicate household person": `INSERT INTO registrations(occurrence_id,household_person_id,registered_by,status) VALUES(1,1,2,'cancelled')`,
+		"person foreign key":         `INSERT INTO registrations(occurrence_id,household_person_id,registered_by,status) VALUES(1,9999,1,'going')`,
+		"holder foreign key":         `INSERT INTO registrations(occurrence_id,household_person_id,registered_by,status) VALUES(1,2,9999,'going')`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := db.Exec(q); err == nil {
+				t.Fatal("invalid registration accepted")
+			}
+		})
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM registrations WHERE occurrence_id=1`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("user/person namespaces %d %v", n, err)
+	}
+	if _, err := p.DownTo(ctx, 23); err == nil || !strings.Contains(err.Error(), "household registrations exist") {
+		t.Fatalf("unguarded rollback: %v", err)
+	}
+	exec(`DELETE FROM registrations WHERE household_person_id IS NOT NULL`)
+	if _, err := p.DownTo(ctx, 23); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO registrations(occurrence_id,status) VALUES(1,'going')`); err == nil {
+		t.Fatal("user_id not restored to required")
+	}
+	if _, err := p.UpTo(ctx, 24); err != nil {
+		t.Fatal(err)
+	}
+}

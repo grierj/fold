@@ -352,12 +352,15 @@ type Membership struct {
 // token travels only in the confirmation email and lets the guest cancel
 // without an account.
 type Registration struct {
-	ID           uint            `gorm:"primaryKey"`
-	OccurrenceID uint            `gorm:"not null;uniqueIndex:idx_registration"`
-	Occurrence   EventOccurrence `gorm:"foreignKey:OccurrenceID"`
-	UserID       uint            `gorm:"not null;uniqueIndex:idx_registration"`
-	User         User            `gorm:"foreignKey:UserID"`
-	Status       string          `gorm:"not null"` // going | maybe | declined | cancelled | waitlisted | removed
+	ID                 uint            `gorm:"primaryKey"`
+	OccurrenceID       uint            `gorm:"not null;uniqueIndex:idx_registration;uniqueIndex:idx_household_registration,where:household_person_id IS NOT NULL"`
+	Occurrence         EventOccurrence `gorm:"foreignKey:OccurrenceID"`
+	UserID             *uint           `gorm:"uniqueIndex:idx_registration"`
+	HouseholdPersonID  *uint           `gorm:"uniqueIndex:idx_household_registration,where:household_person_id IS NOT NULL;index:idx_registrations_household_person_id,where:household_person_id IS NOT NULL"`
+	RegisteredBy       *uint           `gorm:"index:idx_registrations_registered_by,where:registered_by IS NOT NULL"`
+	ChildcareRequested bool            `gorm:"not null;default:false"`
+	User               User            `gorm:"foreignKey:UserID"`
+	Status             string          `gorm:"not null"` // going | maybe | declined | cancelled | waitlisted | removed
 	// AttendanceMode is the pool this registration counts against (M1.8
 	// slice 2); a waitlisted entry keeps its mode in line.
 	AttendanceMode  string `gorm:"not null;default:in_person"` // in_person | remote

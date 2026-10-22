@@ -11,6 +11,12 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
+  household_link_pending: "Waiting for an admin to confirm. Ask your church office to check the household link before signing them up.",
+  household_link_unconfirmed: "This household link isn't confirmed. Ask your church office to check it before signing them up.",
+  household_birth_date_required: "Add a birth date in Profile before signing this person up.",
+  household_age_mismatch: "The birth date doesn't match an adult. Check their birth date and choose Child or Teen in Profile if needed.",
+  household_remote_childcare: "Remote attendees can't request childcare. Clear their childcare choice before switching to remote.",
+  household_registration_holder_unavailable: "The responsible account can't sign this person up right now. Ask your church office to check their account and household.",
   // Signing in and passwords
   bad_credentials: "That email and password don't match. Check them and try again.",
   locked_out: "Too many sign-in attempts. Please wait 15 minutes, then try again.",
@@ -75,7 +81,7 @@ export const ERROR_COPY = {
   invalid_video_provider: "Pick no video link, paste a link, or a Jitsi link.",
   invalid_video_reveal: "Pick who sees the video link: registered people only, or everyone who can see the event.",
   childcare_not_available: "This event doesn't offer childcare. Set the number of children to 0 to save your answer.",
-  childcare_full: "Childcare is full for this date. You're still going.",
+  childcare_full: "Childcare is full for this date. Your answers haven't changed. Try without childcare or ask a leader.",
   childcare_capacity_zero: "Uncheck childcare instead of a 0 childcare limit.",
   invalid_childcare_capacity: "The childcare limit needs to be a whole number from 1 to 100,000, or leave it empty for no limit.",
   childcare_notes_too_long: "The notes for parents are too long. Shorten them to 500 characters.",

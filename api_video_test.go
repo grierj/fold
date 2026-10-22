@@ -282,3 +282,20 @@ func TestChurchSlug(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoteHouseholdGoingGivesHolderVideo(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HouseholdVideo")
+	ev, date := createVideoEvent(t, admin, gid, map[string]any{"remoteAvailable": true, "remoteCapacity": 1, "videoProvider": "link", "videoUrl": videoLink, "videoReveal": "registered_only"})
+	_, c, spouse, _ := householdFamily(t, app, admin, "videoholder")
+	batchAnswer(t, c, ev.ID, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going", "attendanceMode": "remote"}}}, http.StatusOK)
+	page, raw := getEvent(t, c, ev.ID, http.StatusOK)
+	if page.Occurrences[0].MyRegistration != nil || page.Occurrences[0].VideoURL != videoLink {
+		t.Fatalf("household entitlement %s", raw)
+	}
+	batchAnswer(t, c, ev.ID, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "maybe"}}}, http.StatusOK)
+	_, raw = getEvent(t, c, ev.ID, http.StatusOK)
+	if strings.Contains(raw, videoLink) {
+		t.Fatalf("maybe household video %s", raw)
+	}
+}

@@ -596,7 +596,7 @@ func TestAddHouseholdPeopleAndLinks(t *testing.T) {
 		"firstName": "Kid", "lastName": "Smith", "kind": "child",
 		"birthDate": "2020-05-01", "careNotes": "Peanut allergy", "photoConsent": true,
 	})
-	if child.LinkStatus != models.GuardianPending || child.GuardianLinkID == nil || child.BirthDate != "2020-05-01" || !child.PhotoConsent || child.CareNotes != "Peanut allergy" {
+	if child.LinkStatus != models.GuardianPending || child.GuardianLinkID == nil || child.BirthDate != "2020-05-01" || !child.PhotoConsent || child.CareNotes != nil {
 		t.Fatalf("child person: %+v", child)
 	}
 	var link models.GuardianLink
@@ -659,7 +659,7 @@ func TestHouseholdPersonEditAndRemove(t *testing.T) {
 		Person householdPersonJSON `json:"person"`
 	}
 	decodeJSON(t, w, &edited)
-	if edited.Person.FirstName != "Kidd" || edited.Person.CareNotes != "Asthma inhaler" || edited.Person.LinkStatus != models.GuardianPending {
+	if edited.Person.FirstName != "Kidd" || edited.Person.CareNotes != nil || edited.Person.LinkStatus != models.GuardianPending {
 		t.Fatalf("edited person: %+v", edited.Person)
 	}
 
@@ -667,7 +667,7 @@ func TestHouseholdPersonEditAndRemove(t *testing.T) {
 	if _, _, waiting, _ := badge(t, admin, ""); waiting != 1 {
 		t.Fatalf("admin waiting before kind change: %d", waiting)
 	}
-	w = c.do("PUT", path, map[string]any{"kind": "adult"}, true)
+	w = c.do("PUT", path, map[string]any{"kind": "adult", "birthDate": "1990-01-02"}, true)
 	decodeJSON(t, w, &edited)
 	if edited.Person.Kind != "adult" || edited.Person.LinkStatus != "none" {
 		t.Fatalf("adult after kind change: %+v", edited.Person)
@@ -738,5 +738,73 @@ func TestHouseholdIsolation(t *testing.T) {
 	}
 	if h := getMyHousehold(t, ana); len(h.People) != 1 || h.People[0].FirstName != "AnaKid" {
 		t.Fatalf("Ana's household after Ben's attempts: %+v", h.People)
+	}
+}
+
+func TestHouseholdRegistrationAgeAndLifecycle(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "PersonLifecycle")
+	eventID, date := seedChildcareEvent(t, app, admin, gid, intPtr(2), intPtr(1), true)
+	_, c, spouse, child := householdFamily(t, app, admin, "lifecycle")
+	result := batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going"}, {"personId": child.ID, "status": "going", "childcareRequested": true}}}, http.StatusOK)
+	spousePath := "/api/v1/me/household/people/" + itoa(spouse.ID)
+	apiDo(t, c, "PUT", spousePath, map[string]any{"birthDate": ""}, http.StatusConflict)
+	apiDo(t, c, "PUT", "/api/v1/me/household/people/"+itoa(child.ID), map[string]any{"kind": "adult"}, http.StatusConflict)
+	apiDo(t, c, "POST", "/api/v1/me/household/people", map[string]any{"firstName": "Minor", "kind": "adult", "birthDate": "2020-01-01"}, http.StatusConflict)
+	unknown := addMyPerson(t, c, map[string]any{"firstName": "Unknown", "kind": "adult"})
+	if unknown.RegistrationEligibility != "birth_date_required" {
+		t.Fatalf("unknown adult eligibility %+v", unknown)
+	}
+	batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": unknown.ID, "status": "going"}}}, http.StatusConflict)
+	apiDo(t, c, "PUT", "/api/v1/me/household/people/"+itoa(child.ID), map[string]any{"kind": "teen", "birthDate": "2012-01-01"}, http.StatusOK)
+	var r models.Registration
+	if err := app.DB.First(&r, result.People[1].RegistrationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != models.RegGoing || r.ChildcareRequested {
+		t.Fatalf("kind edit %+v", r)
+	}
+	apiDo(t, c, "DELETE", spousePath, nil, http.StatusOK)
+	r = models.Registration{}
+	if err := app.DB.First(&r, result.People[0].RegistrationID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != models.RegCancelled || r.ManageTokenHash != "" {
+		t.Fatalf("person delete %+v", r)
+	}
+}
+
+func TestHouseholdProfileNotesRequireGuardian(t *testing.T) {
+	app := testApp(t)
+	admin, _ := openGroup(t, app, "Notes")
+	holder, c, _, child := householdFamily(t, app, admin, "careholder")
+	second := newTestUser(t, app, "nonGuardian", "password1234", models.RoleMember)
+	h := getMyHousehold(t, c)
+	if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: h.ID, UserID: second.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
+		t.Fatal(err)
+	}
+	other := loginAPI(t, app, "nonGuardian", "password1234")
+	raw := apiDo(t, other, "GET", "/api/v1/me/household", nil, http.StatusOK)
+	if strings.Contains(raw, "Private allergy note") || strings.Contains(raw, `"careNotes"`) {
+		t.Fatalf("unguarded notes: %s", raw)
+	}
+	apiDo(t, other, "PUT", "/api/v1/me/household/people/"+itoa(child.ID), map[string]any{"firstName": "Kitty"}, http.StatusOK)
+	h = getMyHousehold(t, c)
+	found := false
+	for _, p := range h.People {
+		if p.ID == child.ID {
+			found = true
+			if p.CareNotes == nil || *p.CareNotes != "Private allergy note" {
+				t.Fatalf("omitted care cleared: %+v", p)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("child disappeared")
+	}
+	var link models.GuardianLink
+	app.DB.Where("person_id = ? AND guardian_user_id = ?", child.ID, holder.ID).First(&link)
+	if link.Status != models.GuardianConfirmed {
+		t.Fatal("edit revoked a confirmed guardian")
 	}
 }
