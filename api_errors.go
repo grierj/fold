@@ -86,12 +86,13 @@ var errorCodes = map[string]string{
 	"video link is too long":                                                             "too_long",
 
 	// Households and guardian links (M1.9, DEC-32)
-	"kind must be child, teen, or adult":            "invalid_kind",
-	"first name is required":                        "missing_field",
-	"care notes are too long":                       "too_long",
-	"address is too long":                           "too_long",
-	"a check note is required to confirm this link": "check_note_required",
-	"check note must be at most 500 characters":     "too_long",
+	"kind must be child, teen, or adult":                "invalid_kind",
+	"first name is required":                            "missing_field",
+	"care notes are too long":                           "too_long",
+	"address is too long":                               "too_long",
+	"a check note is required to confirm this link":     "check_note_required",
+	"another admin must confirm your own guardian link": "self_confirm_blocked",
+	"check note must be at most 500 characters":         "too_long",
 
 	// Calendar feeds
 	"scope must be mine or all": "invalid_feed_scope",

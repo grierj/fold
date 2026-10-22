@@ -215,6 +215,21 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		jsonError(c, http.StatusBadRequest, "check note must be at most 500 characters")
 		return
 	}
+	// DEC-79: an admin cannot confirm their own guardian link while another
+	// active admin exists; a sole admin may, and the audit marks it.
+	selfConfirm := confirm && link.GuardianUserID == me.ID
+	if selfConfirm {
+		var admins int64
+		if err := a.DB.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).
+			Count(&admins).Error; err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not check admins")
+			return
+		}
+		if admins > 1 {
+			jsonError(c, http.StatusForbidden, "another admin must confirm your own guardian link")
+			return
+		}
+	}
 	status, outcome, auditAction := models.GuardianRejected, "rejected", audit.GuardianLinkRejected
 	if confirm {
 		status, outcome, auditAction = models.GuardianConfirmed, "approved", audit.GuardianLinkConfirmed
@@ -238,6 +253,9 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 			return err
 		}
 		meta := map[string]any{"guardianUserId": link.GuardianUserID, "checkNote": note}
+		if selfConfirm {
+			meta["selfConfirm"] = true
+		}
 		if link.PersonID != nil {
 			meta["personId"] = *link.PersonID
 		}

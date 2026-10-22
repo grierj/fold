@@ -66,6 +66,6 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 
   Judgment calls are logged in /workspace/fold-ui-audit/M1.9-JUDGMENT-CALLS.md.
 - Warden follow-ups from the #106 review (Oct 21, 2026):
-  1. An admin can confirm their own guardian link (api_admin.go around lines 197 and 228). Warden is asking Grier, so it's unchanged for now.
+  1. An admin confirming their own guardian link: decided by Grier as DEC-79 and done in #106. Blocked while another active admin exists; a sole admin may, audited as `selfConfirm`.
   2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind.
   3. A confirmed teen link survives a switch to `child`. Probably fine, and left as is.

@@ -181,7 +181,8 @@ const (
 
 	// GuardianLinkConfirmed / GuardianLinkRejected: an admin decided a
 	// pending guardian link (DEC-32). Target is the link; meta has
-	// guardianUserId, personId (or teenUserId) and checkNote. The admins'
+	// guardianUserId, personId (or teenUserId), checkNote, and selfConfirm
+	// when a sole admin confirmed their own link (DEC-79). The admins'
 	// notification tasks are resolved in the same transaction.
 	GuardianLinkConfirmed = "guardian_link.confirmed"
 	GuardianLinkRejected  = "guardian_link.rejected"

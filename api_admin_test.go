@@ -608,3 +608,54 @@ func TestAdminGuardianLinksConfirmReject(t *testing.T) {
 		t.Fatalf("missing link: %d, want 404", w.Code)
 	}
 }
+
+// DEC-79: an admin cannot confirm their own guardian link while another
+// active admin exists; another admin can. A sole admin may confirm their
+// own link, and the audit row marks it as a self-confirm.
+func TestGuardianLinkSelfConfirm(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "ada", "password1234", models.RoleAdmin)
+	ada := loginAPI(t, app, "ada", "password1234")
+	pendingFor := func(c *apiClient, name string) uint {
+		t.Helper()
+		p := addMyPerson(t, c, map[string]any{"firstName": name, "kind": "child", "birthDate": "2020-05-01"})
+		var link models.GuardianLink
+		if err := app.DB.Where("person_id = ?", p.ID).First(&link).Error; err != nil {
+			t.Fatal(err)
+		}
+		return link.ID
+	}
+	note := map[string]string{"checkNote": "Known family"}
+
+	// Sole admin: allowed and audited as a self-confirm.
+	solo := pendingFor(ada, "Solo")
+	if w := ada.do("POST", "/api/v1/admin/guardian-links/"+itoa2(solo)+"/confirm", note, true); w.Code != http.StatusOK {
+		t.Fatalf("sole admin self-confirm: %d %s", w.Code, w.Body.String())
+	}
+	rows, metas := auditRows(t, app, audit.GuardianLinkConfirmed)
+	if len(rows) != 1 || rows[0].TargetID != solo || !metas[0].SelfConfirm {
+		t.Fatalf("self-confirm audit: %+v %+v", rows, metas)
+	}
+
+	// With a second active admin, self-confirm is refused and nothing changes.
+	newTestUser(t, app, "bea", "password1234", models.RoleAdmin)
+	bea := loginAPI(t, app, "bea", "password1234")
+	second := pendingFor(ada, "Second")
+	path := "/api/v1/admin/guardian-links/" + itoa2(second) + "/confirm"
+	if w := ada.do("POST", path, note, true); w.Code != http.StatusForbidden {
+		t.Fatalf("multi-admin self-confirm: %d %s, want 403", w.Code, w.Body.String())
+	}
+	var link models.GuardianLink
+	app.DB.First(&link, second)
+	if link.Status != models.GuardianPending {
+		t.Fatalf("link after refused self-confirm: %+v", link)
+	}
+	// The other admin can confirm it, and it is not a self-confirm.
+	if w := bea.do("POST", path, note, true); w.Code != http.StatusOK {
+		t.Fatalf("other admin confirm: %d %s", w.Code, w.Body.String())
+	}
+	rows, metas = auditRows(t, app, audit.GuardianLinkConfirmed)
+	if len(rows) != 2 || rows[1].TargetID != second || metas[1].SelfConfirm {
+		t.Fatalf("other-admin audit: %+v %+v", rows, metas)
+	}
+}

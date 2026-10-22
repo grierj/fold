@@ -118,7 +118,7 @@ POST   /api/v1/me/household/people          → 201 {person}  {firstName, lastNa
 PUT    /api/v1/me/household/people/:id      → 200 {person}
 DELETE /api/v1/me/household/people/:id      → 200 {}
 GET    /api/v1/admin/guardian-links?status=pending  → 200 {guardianLinks}   (admin)
-POST   /api/v1/admin/guardian-links/:id/confirm     → 200 {guardianLink}    {checkNote} (admin; note required)
+POST   /api/v1/admin/guardian-links/:id/confirm     → 200 {guardianLink}    {checkNote} (admin; note required; not your own link while another active admin exists, DEC-79)
 POST   /api/v1/admin/guardian-links/:id/reject      → 200 {guardianLink}    {note?} (admin)
 ```
 
