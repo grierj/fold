@@ -28,7 +28,9 @@ describe("GuardianLinkCard (M1.9, DEC-32, DEC-79)", () => {
   });
 
   it("shows the self-confirm message and keeps the item", async () => {
-    confirmLink.mockRejectedValue(new ApiError(403, "x", { code: "self_confirm_blocked" }));
+    confirmLink.mockImplementation(async () => {
+      throw new ApiError(403, "x", { code: "self_confirm_blocked" });
+    });
     const done = vi.fn();
     render(<GuardianLinkCard link={link} onDone={done} />);
     await userEvent.type(screen.getByLabelText(/How did you check/), "Known family");

@@ -7,7 +7,7 @@ import { Checkbox, Choices, Field, FormError, Input, Radio, Textarea } from "./u
 import { Skeleton } from "./ui/Skeleton";
 
 // "My household" on the Profile page (M1.9 slice 1). GET never creates the
-// household: it is null until the first person is added (Warden, #106).
+// household: it is null until the first person is added (Warden, PR 106).
 // Children and teens wait for an admin to confirm the link (DEC-32).
 
 const KIND_LABEL: Record<HouseholdPerson["kind"], string> = { child: "Child", teen: "Teen", adult: "Adult" };

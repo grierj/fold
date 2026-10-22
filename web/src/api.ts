@@ -551,7 +551,7 @@ export interface HouseholdPersonInput {
 }
 
 // GET never creates: it answers {household: null} until the household
-// exists, and always for teen accounts (Warden, #106).
+// exists, and always for teen accounts (Warden, PR 106).
 export const Households = {
   mine: () => api<{ household: Household | null }>("/me/household"),
   update: (data: { name?: string; address?: string }) =>

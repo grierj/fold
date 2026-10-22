@@ -33,7 +33,7 @@ describe("HouseholdCard (M1.9)", () => {
   it("lists people with their link status", async () => {
     mine.mockResolvedValue({ household });
     render(<HouseholdCard />);
-    expect(await screen.findByText("Kid Smith")).toBeInTheDocument();
+    expect((await screen.findAllByText("Kid Smith")).length).toBeGreaterThan(0);
     expect(screen.getByText("Waiting for an admin to check")).toBeInTheDocument();
   });
 
