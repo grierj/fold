@@ -125,7 +125,7 @@ func TestHouseholdConversionReservationsAndLifecycle(t *testing.T) {
 	outsider := newTestUser(t, app, "outsider", "password1234", models.RoleMember)
 	outside := loginAPI(t, app, "outsider", "password1234")
 	apiDo(t, outside, "POST", conversionPath(person.ID), map[string]any{"email": "new@example.com"}, http.StatusNotFound)
-	apiDo(t, newAPIClient(t, app), "POST", conversionPath(person.ID), map[string]any{"email": "new@example.com"}, http.StatusUnauthorized)
+	apiDo(t, anonClient(t, app, "192.0.2.77"), "POST", conversionPath(person.ID), map[string]any{"email": "new@example.com"}, http.StatusUnauthorized)
 	apiDo(t, c, "POST", conversionPath(child.ID), map[string]any{"email": "child@example.com"}, http.StatusConflict)
 	apiDo(t, c, "POST", conversionPath(person.ID), map[string]any{"email": holder.Email}, http.StatusConflict)
 	for i, status := range []string{models.UserActive, models.UserInvited, models.UserDisabled, models.UserPendingConsent, models.UserGuest} {
@@ -268,11 +268,11 @@ func TestHouseholdConversionMailLimitCountsResends(t *testing.T) {
 	app := testApp(t)
 	admin, _ := openGroup(t, app, "ConversionLimits")
 	_, c, person, _ := householdFamily(t, app, admin, "limitparent")
-	token := inviteHouseholdPerson(t, app, c, person.ID, "limit@example.com")
+	inviteHouseholdPerson(t, app, c, person.ID, "limit@example.com")
 	for range leaderInviteDailyLimit - 1 {
 		apiDo(t, c, "POST", conversionPath(person.ID)+"/resend", nil, http.StatusOK)
 	}
-	token = tokenInEmail(t, latestEmail(t, app, "limit@example.com"))
+	token := tokenInEmail(t, latestEmail(t, app, "limit@example.com"))
 	var before models.Invitation
 	app.DB.Where("household_person_id = ?", person.ID).First(&before)
 	apiDo(t, c, "POST", conversionPath(person.ID)+"/resend", nil, http.StatusOK)

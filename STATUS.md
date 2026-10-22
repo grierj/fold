@@ -60,21 +60,15 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 - (Illuminator, PR 110 N5) Use the Going/Maybe/Can't go radios for each household person instead of the "Answer for X" select (judgment call 38).
 - (M1.9 slice 2, judgment call 34) Seat-only manager removal still doesn't auto-promote; making every removal promote (5.4) is deferred.
 - (Warden, PR 110) Solo RSVP membership race: a solo answer no longer re-checks `canRegisterIn` under the locks. Either re-check it after `lockOccurrence`, or have membership removal take the occurrence lock.
-- (Warden, PR 110) `loadSubjectFacts` seeds its clock with UTC instead of `householdClock`, so callers that don't set `today` compute ages on the UTC date (DEC-81 says church-local).
+- (Warden, PR 110) `loadSubjectFacts` seeds its clock with UTC instead of `householdClock`, so callers that don't set `today` compute ages on the UTC date (DEC-81 says church-local). Done in #111.
 - (Whittler, PR 110) Select attendee names in the attendee query so the account load can be skipped (GET /events/:id to about 18 reads).
-- (Whittler, PR 110) Assert that a solo going PUT stays at or under 12 reads in `TestRegistrationReadBudget` (it measures the maybe path now).
-- (Illuminator, PR 110 N8) On roster rows, show the status ("Going") under "Signed up by", above the notes.
-- (Illuminator, PR 110 N9) Give Profile's lazy-loaded household card a placeholder of about its real height, so the page doesn't jump.
+- (Whittler, PR 110) Assert that a solo going PUT stays at or under 12 reads in `TestRegistrationReadBudget` (it measures the maybe path now). Done in #111.
+- (Illuminator, PR 110 N8) On roster rows, show the status ("Going") under "Signed up by", above the notes. Done in #111.
+- (Illuminator, PR 110 N9) Give Profile's lazy-loaded household card a placeholder of about its real height, so the page doesn't jump. Done in #111.
 - CI hardening (Warden review of #83, Oct 20, 2026; issue #95): claimed by Wright, in review. Actions pinned to full SHAs and a top-level `permissions: contents: read`, enforced by `TestWorkflowActionsPinnedAndReadOnly`.
 - VideoField polish (Illuminator, optional, from the #102 review): N7, clear the field's error when the link or the video option changes; N8, add a little space between the event page's time line and the "Join by video" button.
 - Terminology (Grier, Oct 20, 2026; DEC-78): rethink the name "private" for groups. The word is overloaded, because private groups are visible to every signed-in member.
-- M1.8/M1.9 stopping point (Oct 21, 2026; Wonder Full quota exhausted, work paused by Grier). M1.8 slice 2 (remote) is in review in #105. M1.8 slice 3 (childcare) hasn't started; its decisions are in the brief's "Slice 3" section. M1.9 slice 1 backend is in review in #106: households, household people, guardian links, the admin confirm/reject endpoints, policy, audit, the notice to admins and migration 00022. Next pieces, in order:
-  1. M1.9 slice 1 UI: the "My household" card on Profile, "Household links" under admin Approvals, and the api.ts/types.ts client. It was left out so knip stays green.
-  2. M1.8 slice 3: childcare. Migration 00021 is reserved for it.
-  3. M1.9 slice 2: registering household people. It depends on #105's counting.
-  4. M1.9 slice 3: conversion and docs/MEMBERS.md.
-
-  Judgment calls are logged in docs/plan/M1.9-JUDGMENT-CALLS.md.
+- M1.8/M1.9 progress (Oct 22, 2026). M1.8 remote (#105) and childcare are merged. M1.9 slice 1 (households, #106 and UI) and slice 2 (registering household people, #110, DEC-81) are merged. M1.9 slice 3 (turning a household person into their own account by invitation, plus docs/MEMBERS.md) is in review in #111. Judgment calls are logged in docs/plan/M1.9-JUDGMENT-CALLS.md.
 - Warden follow-ups from the #106 review (Oct 21, 2026):
   1. An admin confirming their own guardian link: decided by Grier as DEC-79 and done in #106. Blocked while another active admin exists; a sole admin may, audited as `selfConfirm`.
   2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind. Done in #110.
