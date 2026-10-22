@@ -4,12 +4,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mine = vi.fn();
 const addPerson = vi.fn();
+const convert = vi.fn();
+const resend = vi.fn();
+const cancel = vi.fn();
 vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
-  Households: { mine: () => mine(), addPerson: (d: unknown) => addPerson(d), update: vi.fn(), updatePerson: vi.fn(), removePerson: vi.fn() },
+  Households: { mine: () => mine(), addPerson: (d: unknown) => addPerson(d), update: vi.fn(), updatePerson: vi.fn(), removePerson: vi.fn(), convert: (id: number, email: string) => convert(id, email), resendConversion: (id: number) => resend(id), cancelConversion: (id: number) => cancel(id) },
 }));
 
 import { HouseholdCard, personProblems } from "./HouseholdCard";
+import { ApiError } from "../api";
 
 const household = {
   id: 1, name: "Smith household", address: "", createdBy: 1,
@@ -145,4 +149,38 @@ describe("household name and address", () => {
     expect(Households.updatePerson).toHaveBeenCalledWith(5, expect.objectContaining({ lastName: "", careNotes: undefined }));
     expect(screen.getByLabelText(/^Care notes/)).toHaveAccessibleDescription(expect.stringContaining("24 hours"));
   });
+});
+
+it("preserves the conversion email and focuses its error", async () => {
+  mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], name: "Mary", kind: "adult", canConvert: true }] } });
+  convert.mockRejectedValue(new ApiError(409, "private server text", { code: "household_conversion_email" }));
+  render(<HouseholdCard />);
+  await userEvent.click(await screen.findByRole("button", { name: "Create their own account" }));
+  const email = screen.getByLabelText("Their email address");
+  await userEvent.type(email, "mary@example.com");
+  await userEvent.click(screen.getByRole("button", { name: "Send account invitation" }));
+  expect(await screen.findByText("That email isn't available. Use a different email address.")).toBeInTheDocument();
+  expect(email).toHaveValue("mary@example.com");
+  expect(email).toHaveFocus();
+  expect(screen.getByRole("link", { name: "Accounts and household help" })).toHaveAttribute("href", "/help/members");
+});
+
+it("shows pending destination, resend and cancellation without editing it", async () => {
+  mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], canConvert: true, conversion: { id: 10, email: "new@example.com", expiresAt: "2026-12-01T12:00:00Z", state: "pending" } }] } });
+  resend.mockResolvedValue({}); cancel.mockResolvedValue({});
+  render(<HouseholdCard />);
+  expect(await screen.findByText(/Invitation pending: new@example.com/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Resend" }));
+  expect(resend).toHaveBeenCalledWith(5);
+  expect(await screen.findByText(/Invitation resent. The previous link/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Cancel invitation" }));
+  expect(cancel).toHaveBeenCalledWith(5);
+});
+
+it("shows a converted teen once under accounts with no person controls", async () => {
+  mine.mockResolvedValue({ household: { ...household, people: [], accounts: [...household.accounts, { userId: 2, name: "Taylor", relation: "teen", status: "pending_consent" }] } });
+  render(<HouseholdCard />);
+  expect(await screen.findByText(/Taylor \(Teen, waiting for consent\)/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Edit Taylor" })).not.toBeInTheDocument();
+  expect(screen.queryByText("No one in your household yet")).not.toBeInTheDocument();
 });

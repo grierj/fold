@@ -1,7 +1,19 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { User } from "../types";
+
+const actor = vi.hoisted(() => ({ user: null as User | null }));
+const chunk = vi.hoisted(() => {
+  let finish = () => {};
+  const ready = new Promise<void>((resolve) => { finish = resolve; });
+  return { ready, finish: () => finish() };
+});
+vi.mock("../components/HouseholdCard", async () => {
+  await chunk.ready;
+  return { HouseholdCard: () => <div>Household loaded</div> };
+});
 
 const get = vi.fn();
 const create = vi.fn();
@@ -10,10 +22,10 @@ vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
   CalendarFeeds: { get: () => get(), create: (s: string) => create(s), setScope: (s: string) => setScope(s), revoke: vi.fn() },
 }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: null, loading: false }) }));
+vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, refresh: vi.fn(), logout: vi.fn(), isAdmin: false }) }));
 
 import { ApiError } from "../api";
-import { CalendarFeedCard } from "./Profile";
+import { CalendarFeedCard, ProfilePage } from "./Profile";
 
 const renderCard = () => render(<MemoryRouter><CalendarFeedCard /></MemoryRouter>);
 
@@ -57,4 +69,14 @@ describe("CalendarFeedCard (M17-REVIEW)", () => {
     await userEvent.click(await screen.findByLabelText(/Everything I can see/));
     expect(await screen.findByLabelText(/My events/)).toBeChecked();
   });
+});
+
+it("reserves household card height while its lazy chunk is slow", async () => {
+  actor.user = { id: 1, name: "Pat Smith", displayName: "Pat", email: "pat@example.com", phone: "", avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "America/Boise" };
+  get.mockResolvedValue({ calendarFeed: { hasToken: false, scope: "mine" } });
+  render(<MemoryRouter><ProfilePage /></MemoryRouter>);
+  expect(screen.getByRole("region", { name: "My household loading" })).toHaveClass("min-h-80");
+  await act(async () => { chunk.finish(); await chunk.ready; });
+  expect(await screen.findByText("Household loaded")).toBeInTheDocument();
+  actor.user = null;
 });

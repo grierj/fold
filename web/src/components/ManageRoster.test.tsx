@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError, Events } from "../api";
@@ -41,4 +41,20 @@ it("stacks actions under details and names statuses in words (PR 110 M1, N2)", (
   expect(screen.getByText("Waitlist position 2")).toBeInTheDocument();
   expect(screen.getByText("Going")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Remove Sam" }).closest("li")).toHaveClass("flex-col", "sm:flex-row");
+});
+
+it("keeps waitlist positions per pool and places status before care notes", () => {
+  render(<ManageRoster instance={occurrence({ childcareAvailable: true, attendees: [
+    { ...child, registrationId: 101, attendanceMode: "remote", householdPerson: { ...child.householdPerson!, careNotes: "First note" } },
+    { ...child, registrationId: 102, attendanceMode: "in_person" },
+    { ...child, registrationId: 103, attendanceMode: "remote" },
+  ] })} onChanged={() => {}} onClose={() => {}} />);
+  expect(screen.getAllByText("Waitlist position 1")).toHaveLength(2);
+  expect(screen.getByText("Waitlist position 2")).toBeInTheDocument();
+  const note = screen.getByText("Care notes: First note");
+  const row = note.closest("li");
+  if (!row) throw new Error("missing roster row");
+  const signer = within(row).getByText(/Signed up by/);
+  expect(signer.nextElementSibling).toHaveTextContent("Waitlist position 1");
+  expect(row.textContent?.indexOf("Waitlist position 1")).toBeLessThan(row.textContent?.indexOf("Care notes") ?? 0);
 });

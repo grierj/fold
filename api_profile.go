@@ -1293,6 +1293,10 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		return tx.Delete(person).Error
 	})
 	if err != nil {
+		if errors.Is(err, errConversionUnavailable) {
+			conversionError(c, err)
+			return
+		}
 		jsonError(c, http.StatusInternalServerError, "could not remove that person")
 		return
 	}

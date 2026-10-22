@@ -54,3 +54,18 @@ it("offers no toggle for a short note", () => {
   expect(screen.getByText("Care notes: Peanut allergy")).toBeInTheDocument();
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
 });
+
+it("puts the roster status below the signer and above notes", () => {
+  render(<AttendeeDetails attendee={{ ...attendee, childcareAgesNote: "3 and 7" }} status="Waitlist position 2" />);
+  const signer = screen.getByText("Signed up by John Smith");
+  const status = screen.getByText("Waitlist position 2");
+  const ages = screen.getByText("Ages: 3 and 7");
+  expect(signer.nextElementSibling).toBe(status);
+  expect(status.compareDocumentPosition(ages) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it("badges a converted teen account", () => {
+  render(<AttendeeDetails attendee={{ registrationId: 12, userId: 12, name: "Taylor", status: "going", attendanceMode: "in_person", guestCount: 0, accountType: "teen" }} />);
+  expect(screen.getByText("Teen")).toBeInTheDocument();
+  expect(screen.queryByText(/Signed up by/)).not.toBeInTheDocument();
+});
