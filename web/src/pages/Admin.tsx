@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Admin, AdminAccountRequests, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
+import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
-import type { AccountRequest, GroupSummary, Member, User } from "../types";
+import type { AccountRequest, GuardianLink, GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
+import { GuardianLinkCard } from "../components/GuardianLinkCard";
 import { Button } from "../components/ui/Button";
 import { errorText } from "../lib/errors";
 import { Choices, Field, FormError, Input, Radio, Select } from "../components/ui/Field";
@@ -224,6 +225,9 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [deletions, setDeletions] = useState<GroupSummary[]>([]);
   const [requests, setRequests] = useState<AccountRequest[]>([]);
+  const [links, setLinks] = useState<GuardianLink[]>([]);
+  const [announce, setAnnounce] = useState("");
+  const focusLinks = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -231,13 +235,14 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
     setLoading(true);
     setError(null);
     try {
-      const [pending, requested, accounts] = await Promise.all([
-        Admin.pending(), Admin.deletions(), AdminAccountRequests.list(),
+      const [pending, requested, accounts, guardian] = await Promise.all([
+        Admin.pending(), Admin.deletions(), AdminAccountRequests.list(), AdminGuardianLinks.list(),
       ]);
+      setLinks(guardian.guardianLinks);
       setGroups(pending.groups);
       setDeletions(requested.groups);
       setRequests(accounts.requests);
-      onCount(pending.groups.length + requested.groups.length + accounts.requests.length);
+      onCount(pending.groups.length + requested.groups.length + accounts.requests.length + guardian.guardianLinks.length);
     } catch (e) {
       setError(errorText(e, "We couldn't load the approval queue."));
     } finally {
@@ -249,15 +254,27 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
     load();
   }, [load]);
 
+  // After a confirm or reject the card goes away: focus the next link card,
+  // or the section heading, or the tab content when nothing is left (M1).
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (loading || !focusLinks.current) return;
+    focusLinks.current = false;
+    const root = rootRef.current;
+    const next = root?.querySelector<HTMLElement>("[data-link-card] textarea");
+    (next ?? root?.querySelector<HTMLElement>("#household-links-heading") ?? root)?.focus();
+  }, [links, loading]);
+
   return (
-    <div>
+    <div ref={rootRef} tabIndex={-1} className="focus:outline-none">
+      <p role="status" aria-live="polite" className="sr-only">{announce}</p>
       {loading && <Skeleton kind="lines" />}
       {!loading && error && <ErrorNotice message={error} onRetry={load} />}
-      {!loading && !error && groups.length === 0 && deletions.length === 0 && requests.length === 0 && (
+      {!loading && !error && groups.length === 0 && deletions.length === 0 && requests.length === 0 && links.length === 0 && (
         <EmptyState
           illustration={<Illustration name="all-caught-up" />}
           title="All caught up"
-          body="New group and account requests show up here for you to review."
+          body="New group, account and household link requests show up here for you to review."
         />
       )}
       {requests.length > 0 && (
@@ -265,6 +282,22 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
           <h2 className="text-xl font-bold">Account requests</h2>
           {requests.map((r) => (
             <AccountRequestCard key={r.id} request={r} onDone={load} />
+          ))}
+        </div>
+      )}
+      {links.length > 0 && (
+        <div className="space-y-4 mb-8">
+          <h2 id="household-links-heading" tabIndex={-1} className="text-xl font-bold focus:outline-none">Household links</h2>
+          {links.map((l) => (
+            <GuardianLinkCard
+              key={l.id}
+              link={l}
+              onDone={(msg) => {
+                setAnnounce(msg);
+                focusLinks.current = true;
+                load();
+              }}
+            />
           ))}
         </div>
       )}

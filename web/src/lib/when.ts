@@ -148,3 +148,8 @@ export function formatPeriod(view: "week" | "month", first: string, last: string
   if (fm !== lm) return `${md(first)} – ${md(last)}, ${ly}`;
   return `${md(first)} – ${Number(last.slice(8))}, ${ly}`;
 }
+
+// "May 4, 2016", for a birth date stored as YYYY-MM-DD.
+export function formatBirthDate(day: string): string {
+  return fmt(asDate(day), "UTC", { month: "long", day: "numeric", year: "numeric" });
+}

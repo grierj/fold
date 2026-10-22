@@ -66,7 +66,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
   3. M1.9 slice 2: registering household people. It depends on #105's counting.
   4. M1.9 slice 3: conversion and docs/MEMBERS.md.
 
-  Judgment calls are logged in /workspace/fold-ui-audit/M1.9-JUDGMENT-CALLS.md.
+  Judgment calls are logged in docs/plan/M1.9-JUDGMENT-CALLS.md.
 - Warden follow-ups from the #106 review (Oct 21, 2026):
   1. An admin confirming their own guardian link: decided by Grier as DEC-79 and done in #106. Blocked while another active admin exists; a sole admin may, audited as `selfConfirm`.
   2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind.
