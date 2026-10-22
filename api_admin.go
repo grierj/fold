@@ -603,7 +603,17 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		if err := tx.Where("user_id = ?", u.ID).Delete(&models.Notification{}).Error; err != nil {
 			return err
 		}
-		return tx.Delete(u).Error
+		if err := tx.Delete(u).Error; err != nil {
+			return err
+		}
+		// The deleted account no longer counts, so its seats and childcare
+		// spots are free: promote waiters now (Whittler, PR 109).
+		promoted, err := a.promoteOnDisable(tx, u.ID)
+		if err != nil {
+			return err
+		}
+		emailed = append(emailed, promoted...)
+		return nil
 	})
 	if needSuccessors(c, err) {
 		return

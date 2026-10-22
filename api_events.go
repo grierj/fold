@@ -958,10 +958,10 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 					return err
 				}
 				ids, err := a.promoteLocked(tx, &locked, lockedOcc, now, &me.ID)
-				emailed = append(emailed, ids...)
 				if err != nil {
 					return err
 				}
+				emailed = append(emailed, ids...)
 			}
 		}
 		return nil
@@ -1200,10 +1200,10 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 				events.EffectiveRemoteCapacity(ev.RemoteCapacity, newRemoteOverride))
 		if capMoved || remoteCapMoved {
 			ids, err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
-			emailed = append(emailed, ids...)
 			if err != nil {
 				return err
 			}
+			emailed = append(emailed, ids...)
 		}
 		inst = occurrenceToJSON(ev, &o, groupLoc)
 		applyVideoReveal(&inst, ev, false, true) // managers see the link

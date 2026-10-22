@@ -524,9 +524,6 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 	rows []models.Registration, now time.Time, actor *uint) ([]uint, error) {
 	var emailed []uint
 	for _, r := range rows {
-		if err := checkChildcare(tx, ev, o.ID, r.ID, r.ChildcareCount); err != nil {
-			return nil, err
-		}
 		raw, hash, err := createInvitationToken()
 		if err != nil {
 			return nil, err
@@ -1073,6 +1070,11 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		seats := 1 + r.GuestCount
 		if !events.Fits(cap, used, seats) {
 			return errEventFull
+		}
+		// Automatic picks are childcare-checked by PickPromotionsByPool; a
+		// manual promote checks here (DEC-80).
+		if err := checkChildcare(tx, ev, locked.ID, r.ID, r.ChildcareCount); err != nil {
+			return err
 		}
 		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RegistrationPromoted,
 			TargetType: "event", TargetID: ev.ID,

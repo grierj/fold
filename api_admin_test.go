@@ -783,3 +783,31 @@ func TestDisabledChildcareUncountedAndLeftOutWhenFull(t *testing.T) {
 		t.Fatal("missing ask-a-leader notice")
 	}
 }
+
+// Deleting an account frees its seats, so the next waiter is promoted in
+// the same transaction (Whittler, PR 109).
+func TestAdminDeleteUserPromotesWaiter(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "DeletePromote")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	goer, cGoer := mkUser(t, app, &g, "del-goer")
+	waiter, cWaiter := mkUser(t, app, &g, "del-waiter")
+	for _, c := range []*apiClient{cGoer, cWaiter} {
+		if code, body := registerModeAs(c, eventID, date, "going", models.AttendanceInPerson); code != http.StatusOK {
+			t.Fatalf("register: %d %s", code, body)
+		}
+	}
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+	if got := regStatus(t, app, waiter.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("waiter = %q, want waitlisted", got)
+	}
+	if w := admin.do("DELETE", "/api/v1/admin/users/"+itoa2(goer.ID), nil, true); w.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	if got := regStatus(t, app, waiter.ID, occ.ID); got != models.RegGoing {
+		t.Fatalf("waiter after delete = %q, want going", got)
+	}
+}
