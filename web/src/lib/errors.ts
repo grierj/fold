@@ -75,7 +75,7 @@ export const ERROR_COPY = {
   invalid_video_provider: "Pick no video link, paste a link, or a Jitsi link.",
   invalid_video_reveal: "Pick who sees the video link: registered people only, or everyone who can see the event.",
   childcare_not_available: "This event doesn't offer childcare. Set the number of children to 0 to save your answer.",
-  childcare_full: "Childcare is full for this date. You can still come.",
+  childcare_full: "Childcare is full for this date. You're still going.",
   childcare_capacity_zero: "Uncheck childcare instead of a 0 childcare limit.",
   invalid_childcare_capacity: "The childcare limit needs to be a whole number from 1 to 100,000, or leave it empty for no limit.",
   childcare_notes_too_long: "The notes for parents are too long. Shorten them to 500 characters.",

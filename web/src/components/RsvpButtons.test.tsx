@@ -207,10 +207,10 @@ describe("childcare RSVP", () => {
     expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, "going", "2026-12-01", 0, undefined,
       { childcareCount: 0, childcareAgesNote: "" });
     expect(going).toHaveAttribute("aria-pressed", "false");
-    expect(screen.queryByText("Add childcare")).not.toBeInTheDocument();
+    expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
     await act(async () => complete());
     expect(going).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText("Add childcare")).toBeInTheDocument();
+    expect(screen.getByText("Childcare for this date")).toBeInTheDocument();
     expect(screen.getByLabelText(/^Children needing childcare/)).toHaveValue("0");
     expect(screen.getByRole("status")).toHaveTextContent("Saved: going, no childcare");
     expect(screen.getByRole("status")).toHaveFocus();
@@ -221,7 +221,7 @@ describe("childcare RSVP", () => {
     render(<SavedRsvp />);
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.queryByText("Add childcare")).not.toBeInTheDocument();
+    expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("We couldn't reach Fold.");
   });
 
@@ -242,7 +242,7 @@ describe("childcare RSVP", () => {
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("ties a full response to the count and offers Go without childcare", async () => {
+  it("ties a full response to the count and offers Clear childcare request", async () => {
     vi.mocked(Events.register)
       .mockRejectedValueOnce(new ApiError(409, "childcare is full for this date", { code: "childcare_full" }))
       .mockResolvedValueOnce({ registration });
@@ -254,18 +254,18 @@ describe("childcare RSVP", () => {
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(count).toHaveValue("2");
     expect(count).toHaveAttribute("aria-invalid", "true");
-    expect(count).toHaveAccessibleDescription(expect.stringContaining("Childcare is full for this date. You can still come."));
+    expect(count).toHaveAccessibleDescription(expect.stringContaining("Childcare is full for this date. You're still going."));
     expect(count).toHaveFocus();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByLabelText(/^Ages/)).toHaveValue("3 and 7");
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(screen.getByRole("button", { name: "Go without childcare" }));
+    await userEvent.click(screen.getByRole("button", { name: "Clear childcare request" }));
     expect(Events.register).toHaveBeenLastCalledWith(7, "going", "2026-12-01", 0, undefined,
       { childcareCount: 0, childcareAgesNote: "" });
     expect(screen.getByRole("status")).toHaveTextContent("Saved: going, no childcare");
     expect(screen.getByRole("status")).toHaveFocus();
     expect(count).not.toHaveAttribute("aria-invalid");
-    expect(screen.queryByRole("button", { name: "Go without childcare" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Clear childcare request" })).not.toBeInTheDocument();
   });
 
   it("prefills your request, focuses invalid counts, and leaves Maybe independent", async () => {
@@ -281,7 +281,7 @@ describe("childcare RSVP", () => {
     expect(Events.register).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
     expect(Events.register).toHaveBeenCalledWith(7, "maybe", "2026-12-01", 0, undefined, undefined);
-    expect(screen.queryByText("Add childcare")).not.toBeInTheDocument();
+    expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
   });
 
   it("disables a known full count while still saving Going without childcare", async () => {
@@ -309,7 +309,7 @@ describe("childcare RSVP", () => {
     render(<SavedRsvp initial={occurrence({ childcareAvailable: true, waitlistEnabled: true })} />);
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.queryByText("Add childcare")).not.toBeInTheDocument();
+    expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("You're on the in-person waitlist.");
   });
 });

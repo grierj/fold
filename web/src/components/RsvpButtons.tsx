@@ -206,7 +206,6 @@ export function RsvpButtons({
       </div>
       {instance.childcareAvailable && mine === "going" && (
         <div className="mt-3 space-y-3">
-          <p className="font-semibold">Add childcare</p>
           <ChildcareRequestField count={children} ages={ages} onCount={setChildren} onAges={setAges}
             error={childcareError} disabled={busy !== null} full={instance.childcareFull} />
           <div className="flex flex-wrap gap-2">
@@ -215,7 +214,7 @@ export function RsvpButtons({
             </Button>
             {childcareFullError && <Button variant="secondary" disabled={busy !== null}
               onClick={() => void choose("going", mode, false, { childcareCount: 0, childcareAgesNote: "" })}>
-              Go without childcare
+              Clear childcare request
             </Button>}
           </div>
         </div>
