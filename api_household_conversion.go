@@ -86,8 +86,12 @@ func (a *App) conversionAllowed(tx *gorm.DB, actor *models.User, person *models.
 		return false, err
 	}
 	var unavailable int64
-	if err := tx.Model(&models.Registration{}).Joins("JOIN users ON users.id = registrations.registered_by").Where("registrations.household_person_id = ? AND (users.deleted_at IS NOT NULL OR users.status <> ?)", person.ID, models.UserActive).Count(&unavailable).Error; err != nil { return false, err }
-	if unavailable > 0 { return false, nil }
+	if err := tx.Model(&models.Registration{}).Joins("JOIN users ON users.id = registrations.registered_by").Where("registrations.household_person_id = ? AND (users.deleted_at IS NOT NULL OR users.status <> ?)", person.ID, models.UserActive).Count(&unavailable).Error; err != nil {
+		return false, err
+	}
+	if unavailable > 0 {
+		return false, nil
+	}
 	return policy.CanConvertHouseholdPerson(asPerson(actor), conversionRelation(tx, actor.ID, person.HouseholdID), householdFacts(person, nil, today), actor.Status == models.UserActive && !actor.DeletedAt.Valid, len(guardians) > 0), nil
 }
 
@@ -134,11 +138,11 @@ func conversionSendAllowed(tx *gorm.DB, actor uint, email string) (bool, error) 
 	}
 	var byActor, byEmail int64
 	kinds := []string{audit.InvitationCreated, audit.InvitationResent}
-	if err := tx.Model(&models.AuditLog{}).Where("actor_id = ? AND action IN ? AND created_at > now() - interval '24 hours'", actor, kinds).Count(&byActor).Error; err != nil {
+	if err := tx.Model(&models.AuditLog{}).Where("actor_id = ? AND action IN ? AND at > now() - interval '24 hours'", actor, kinds).Count(&byActor).Error; err != nil {
 		return false, err
 	}
 	// Join the invitation instead of putting destination email in conversion audits.
-	if err := tx.Model(&models.AuditLog{}).Joins("JOIN invitations ON invitations.id = audit_logs.target_id AND audit_logs.target_type = 'invitation'").Where("invitations.email = ? AND audit_logs.action IN ? AND audit_logs.created_at > now() - interval '24 hours'", email, kinds).Count(&byEmail).Error; err != nil {
+	if err := tx.Model(&models.AuditLog{}).Joins("JOIN invitations ON invitations.id = audit_logs.target_id AND audit_logs.target_type = 'invitation'").Where("invitations.email = ? AND audit_logs.action IN ? AND audit_logs.at > now() - interval '24 hours'", email, kinds).Count(&byEmail).Error; err != nil {
 		return false, err
 	}
 	return byActor < leaderInviteDailyLimit && byEmail < leaderInviteDailyLimit, nil
@@ -416,7 +420,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			}
 			// Re-enabling an inviter requires a fresh issue or resend.
 			var disabled int64
-			if err := tx.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'user' AND target_id = ? AND created_at >= COALESCE((SELECT max(created_at) FROM audit_logs WHERE target_type = 'invitation' AND target_id = ? AND action IN ?), ?)", audit.UserDisabled, inviter.ID, inv.ID, []string{audit.InvitationCreated, audit.InvitationResent}, inv.CreatedAt).Count(&disabled).Error; err != nil {
+			if err := tx.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'user' AND target_id = ? AND at >= COALESCE((SELECT max(at) FROM audit_logs WHERE target_type = 'invitation' AND target_id = ? AND action IN ?), ?)", audit.UserDisabled, inviter.ID, inv.ID, []string{audit.InvitationCreated, audit.InvitationResent}, inv.CreatedAt).Count(&disabled).Error; err != nil {
 				return err
 			}
 			if disabled > 0 {

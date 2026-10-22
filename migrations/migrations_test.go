@@ -518,3 +518,53 @@ func TestHouseholdRegistrationMigration24(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHouseholdConversionMigration25(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 25); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DownTo(ctx, 24); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 25); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string) {
+		t.Helper()
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO users(id,email,status) VALUES(1,'holder@example.com','active')`)
+	exec(`INSERT INTO households(id,name,created_by) VALUES(1,'Family',1)`)
+	exec(`INSERT INTO household_people(id,household_id,first_name,kind,created_by) VALUES(1,1,'Mary','adult',1)`)
+	exec(`INSERT INTO invitations(id,email,invited_by,household_person_id,token_hash,expires_at) VALUES(1,'new@example.com',1,1,'first',now() - interval '1 hour')`)
+	for name, q := range map[string]string{
+		"expired still reserves person": `INSERT INTO invitations(email,invited_by,household_person_id,token_hash,expires_at) VALUES('other@example.com',1,1,'second',now())`,
+		"no over limit":                 `UPDATE invitations SET over_limit=true WHERE id=1`,
+		"member only":                   `UPDATE invitations SET role='leader' WHERE id=1`,
+		"person foreign key":            `UPDATE invitations SET household_person_id=999 WHERE id=1`,
+	} {
+		if _, err := db.Exec(q); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+	exec(`UPDATE invitations SET revoked_at=now() WHERE id=1`)
+	exec(`INSERT INTO invitations(email,invited_by,household_person_id,token_hash,expires_at) VALUES('other@example.com',1,1,'second',now())`)
+	if _, err := p.DownTo(ctx, 24); err == nil || !strings.Contains(err.Error(), "conversion invitations exist") {
+		t.Fatalf("rollback with conversions: %v", err)
+	}
+	exec(`DELETE FROM invitations`)
+	if _, err := p.DownTo(ctx, 24); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 25); err != nil {
+		t.Fatal(err)
+	}
+}

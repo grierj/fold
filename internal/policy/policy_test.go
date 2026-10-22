@@ -847,3 +847,45 @@ func TestHouseholdRegistrationEligibility(t *testing.T) {
 		t.Fatal("own event recovery denied")
 	}
 }
+
+func TestCanConvertHouseholdPerson(t *testing.T) {
+	adult := &Person{ID: 1}
+	admin := &Person{ID: 2, Admin: true}
+	teen := &Person{ID: 3, Teen: true}
+	age := func(n int) *int { return &n }
+	own := HouseholdRel{Account: true, Adult: true}
+	for _, tt := range []struct {
+		name                   string
+		actor                  *Person
+		rel                    HouseholdRel
+		person                 HouseholdPerson
+		active, guardian, want bool
+	}{
+		{"holder adult", adult, own, HouseholdPerson{Kind: KindAdult, AgeYears: age(18)}, true, false, true},
+		{"admin across households", admin, HouseholdRel{}, HouseholdPerson{Kind: KindAdult, AgeYears: age(18)}, true, false, true},
+		{"outsider", adult, HouseholdRel{}, HouseholdPerson{Kind: KindAdult, AgeYears: age(18)}, true, false, false},
+		{"signed out", nil, own, HouseholdPerson{Kind: KindAdult, AgeYears: age(18)}, true, false, false},
+		{"disabled", admin, own, HouseholdPerson{Kind: KindAdult, AgeYears: age(18)}, false, false, false},
+		{"guest", adult, own, HouseholdPerson{Kind: KindAdult, AgeYears: age(18)}, false, false, false},
+		{"teen actor", teen, own, HouseholdPerson{Kind: KindAdult, AgeYears: age(18)}, true, false, false},
+		{"unknown date", admin, own, HouseholdPerson{Kind: KindAdult}, true, false, false},
+		{"adult mismatch", admin, own, HouseholdPerson{Kind: KindAdult, AgeYears: age(17)}, true, false, false},
+		{"teen 12", adult, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(12)}, true, true, false},
+		{"teen 13", adult, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(13)}, true, true, true},
+		{"teen 17", adult, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(17)}, true, true, true},
+		{"teen 18", adult, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(18)}, true, true, false},
+		{"child 13", admin, own, HouseholdPerson{Kind: KindChild, AgeYears: age(13)}, true, true, false},
+		{"no guardian", admin, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(13)}, true, false, false},
+		{"deleted", admin, own, HouseholdPerson{Kind: KindAdult, AgeYears: age(18), Deleted: true}, true, false, false},
+		{"converted", admin, own, HouseholdPerson{Kind: KindAdult, AgeYears: age(18), Converted: true}, true, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanConvertHouseholdPerson(tt.actor, tt.rel, tt.person, tt.active, tt.guardian); got != tt.want {
+				t.Fatalf("got %t, want %t", got, tt.want)
+			}
+		})
+	}
+	if !CanCancelHouseholdConversion(adult, own, true) || CanCancelHouseholdConversion(teen, own, true) || CanCancelHouseholdConversion(admin, own, false) {
+		t.Fatal("cancellation authority")
+	}
+}

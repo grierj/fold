@@ -35,6 +35,7 @@ var errEmailTaken = errors.New("email taken")
 
 // errGroupNotActive: the invitation's group is no longer active.
 var errGroupNotActive = errors.New("group not active")
+var errInvitationLimit = errors.New("invitation limit reached (20 per day)")
 
 type invitationJSON struct {
 	ID          uint      `json:"id"`
@@ -125,8 +126,8 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 
 	if !asPerson(me).Admin {
 		var n int64
-		a.DB.Model(&models.Invitation{}).
-			Where("invited_by = ? AND created_at > now() - interval '24 hours'", me.ID).
+		a.DB.Model(&models.AuditLog{}).
+			Where("actor_id = ? AND action IN ? AND at > now() - interval '24 hours'", me.ID, []string{audit.InvitationCreated, audit.InvitationResent}).
 			Count(&n)
 		if n >= leaderInviteDailyLimit {
 			_ = audit.Write(a.DB, audit.Entry{Actor: &me.ID, Action: audit.InvitationRateLimited,
@@ -168,6 +169,15 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		if err := lockInvitationEmail(tx, email); err != nil {
 			return err
 		}
+		if !asPerson(me).Admin {
+			allowed, err := conversionSendAllowed(tx, me.ID, email)
+			if err != nil {
+				return err
+			}
+			if !allowed {
+				return errInvitationLimit
+			}
+		}
 		var existing models.User
 		if err := tx.Unscoped().Where("email = ?", email).Limit(1).Find(&existing).Error; err != nil {
 			return err
@@ -193,6 +203,10 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 			TargetType: "invitation", TargetID: inv.ID, Meta: meta, IP: c.ClientIP()})
 	})
 	if err != nil {
+		if errors.Is(err, errInvitationLimit) {
+			jsonError(c, http.StatusTooManyRequests, "invitation limit reached (20 per day)")
+			return
+		}
 		if errors.Is(err, errEmailTaken) || errors.Is(err, errConversionEmail) {
 			jsonError(c, http.StatusConflict, "that email was already invited")
 			return
