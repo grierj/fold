@@ -259,55 +259,103 @@ type subjectFacts struct {
 	households map[uint]models.Household
 	users      map[uint]*models.User
 	accounts   map[uint]models.HouseholdAccount
+	// loadedAccounts marks users whose household account was looked up,
+	// found or not.
+	loadedAccounts map[uint]bool
 	// today is the one clock for household ages: the church-local date
 	// (Warden, PR 110 N2). Eligibility and the displayed age both use it.
 	today time.Time
+	// clock supplies today on first use, so a request that shows no
+	// household person never reads the church time zone.
+	clock func() time.Time
+}
+
+func (f *subjectFacts) day() time.Time {
+	if f.today.IsZero() && f.clock != nil {
+		f.today = f.clock()
+	}
+	return f.today
 }
 
 func loadSubjectFacts(db *gorm.DB, regs []models.Registration, viewer *models.User) subjectFacts {
-	f := subjectFacts{people: map[uint]*models.HouseholdPerson{}, households: map[uint]models.Household{}, users: map[uint]*models.User{}, accounts: map[uint]models.HouseholdAccount{}, today: time.Now().UTC()}
+	f := newSubjectFacts(time.Now().UTC())
+	f.load(db, regs, viewer)
+	return *f
+}
+
+func newSubjectFacts(today time.Time) *subjectFacts {
+	return &subjectFacts{people: map[uint]*models.HouseholdPerson{}, links: map[uint][]models.GuardianLink{}, households: map[uint]models.Household{}, users: map[uint]*models.User{}, accounts: map[uint]models.HouseholdAccount{}, loadedAccounts: map[uint]bool{}, today: today}
+}
+
+// requestFacts is one request's shared facts, on the church-local clock.
+func (a *App) requestFacts() *subjectFacts {
+	f := newSubjectFacts(time.Time{})
+	f.clock = func() time.Time { return a.householdClock(time.Now().UTC()) }
+	return f
+}
+
+// load adds the facts for regs and viewer that aren't loaded yet, so one
+// request can share a single set of facts across its lists (Whittler, PR 110).
+func (f *subjectFacts) load(db *gorm.DB, regs []models.Registration, viewer *models.User) {
 	var personIDs, userIDs, householdIDs []uint
-	if viewer != nil {
-		userIDs = append(userIDs, viewer.ID)
-	}
-	for _, r := range regs {
-		userIDs = append(userIDs, registrationHolder(r))
-		if r.HouseholdPersonID != nil {
-			personIDs = append(personIDs, *r.HouseholdPersonID)
+	seenUser := map[uint]bool{}
+	addUser := func(id uint) {
+		if _, ok := f.users[id]; !ok && !seenUser[id] {
+			seenUser[id] = true
+			userIDs = append(userIDs, id)
 		}
 	}
-	var people []models.HouseholdPerson
+	if viewer != nil {
+		addUser(viewer.ID)
+	}
+	seenPerson := map[uint]bool{}
+	for _, r := range regs {
+		addUser(registrationHolder(r))
+		if r.HouseholdPersonID != nil {
+			if _, ok := f.people[*r.HouseholdPersonID]; !ok && !seenPerson[*r.HouseholdPersonID] {
+				seenPerson[*r.HouseholdPersonID] = true
+				personIDs = append(personIDs, *r.HouseholdPersonID)
+			}
+		}
+	}
 	if len(personIDs) > 0 {
+		var people []models.HouseholdPerson
 		db.Where("id IN ?", personIDs).Find(&people)
+		seenHousehold := map[uint]bool{}
+		for i := range people {
+			p := &people[i]
+			f.people[p.ID] = p
+			if _, ok := f.households[p.HouseholdID]; !ok && !seenHousehold[p.HouseholdID] {
+				seenHousehold[p.HouseholdID] = true
+				householdIDs = append(householdIDs, p.HouseholdID)
+			}
+		}
+		for id, links := range guardianLinksForPeople(db, personIDs) {
+			f.links[id] = links
+		}
 	}
-	for i := range people {
-		p := &people[i]
-		f.people[p.ID] = p
-		householdIDs = append(householdIDs, p.HouseholdID)
-	}
-	f.links = guardianLinksForPeople(db, personIDs)
-	var households []models.Household
 	if len(householdIDs) > 0 {
+		var households []models.Household
 		db.Where("id IN ?", householdIDs).Find(&households)
+		for _, h := range households {
+			f.households[h.ID] = h
+		}
 	}
-	for _, h := range households {
-		f.households[h.ID] = h
-	}
-	var users []models.User
 	if len(userIDs) > 0 {
+		var users []models.User
 		db.Where("id IN ?", userIDs).Find(&users)
-	}
-	for i := range users {
-		f.users[users[i].ID] = &users[i]
-	}
-	var accts []models.HouseholdAccount
-	if len(userIDs) > 0 {
+		for i := range users {
+			f.users[users[i].ID] = &users[i]
+		}
+		var accts []models.HouseholdAccount
 		db.Where("user_id IN ?", userIDs).Find(&accts)
+		for _, acct := range accts {
+			f.accounts[acct.UserID] = acct
+		}
+		for _, id := range userIDs {
+			f.loadedAccounts[id] = true
+		}
 	}
-	for _, acct := range accts {
-		f.accounts[acct.UserID] = acct
-	}
-	return f
 }
 
 func (f subjectFacts) relation(viewer *models.User, person *models.HouseholdPerson, manager bool) policy.HouseholdRel {
@@ -326,7 +374,7 @@ func (f subjectFacts) relation(viewer *models.User, person *models.HouseholdPers
 	return rel
 }
 
-func (f subjectFacts) attendee(r models.Registration, o models.EventOccurrence, me *models.User, manager, childcare bool, now time.Time) *attendeeJSON {
+func (f *subjectFacts) attendee(r models.Registration, o models.EventOccurrence, me *models.User, manager, childcare bool, now time.Time) *attendeeJSON {
 	holder := f.users[registrationHolder(r)]
 	if holder == nil {
 		return nil
@@ -344,14 +392,14 @@ func (f subjectFacts) attendee(r models.Registration, o models.EventOccurrence, 
 		return nil
 	}
 	rel := f.relation(me, person, manager)
-	facts := householdFacts(person, f.links[person.ID], f.today)
+	facts := householdFacts(person, f.links[person.ID], f.day())
 	if !policy.CanSeeHouseholdPerson(asPerson(me), facts, rel) {
 		return nil
 	}
 	out.Name = person.FullName()
 	hp := &householdAttendeeJSON{PersonID: person.ID, Name: person.FullName(), HouseholdName: f.households[person.HouseholdID].Name, Kind: person.Kind, RegisteredBy: registeredByJSON{UserID: holder.ID, Name: holder.PublicName()}}
 	if person.BirthDate != nil {
-		age := accounts.AgeOn(*person.BirthDate, f.today)
+		age := accounts.AgeOn(*person.BirthDate, f.day())
 		hp.Age = &age
 	}
 	careRel := rel
@@ -371,7 +419,7 @@ func (f subjectFacts) attendee(r models.Registration, o models.EventOccurrence, 
 	return &out
 }
 
-func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, managers map[uint]bool, me *models.User) (map[uint][]attendeeJSON, map[uint][]attendeeJSON) {
+func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, managers map[uint]bool, me *models.User, facts *subjectFacts) (map[uint][]attendeeJSON, map[uint][]attendeeJSON) {
 	out, removed := map[uint][]attendeeJSON{}, map[uint][]attendeeJSON{}
 	var ids []uint
 	byID := map[uint]models.EventOccurrence{}
@@ -386,9 +434,8 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, mana
 	}
 	var rows []models.Registration
 	a.DB.Joins(listedRegistrations()).Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).Order("registrations.waitlisted_at ASC NULLS FIRST, registrations.id").Find(&rows)
-	facts := loadSubjectFacts(a.DB, rows, me)
+	facts.load(a.DB, rows, me)
 	now := time.Now().UTC()
-	facts.today = a.householdClock(now)
 	for _, r := range rows {
 		o := byID[r.OccurrenceID]
 		if r.Status == models.RegRemoved && !managers[o.EventID] {
@@ -404,27 +451,27 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, mana
 			out[o.ID] = append(out[o.ID], *dto)
 		}
 	}
-	a.appendRecoverableRegistrations(kept, managers, me, removed, now)
+	a.appendRecoverableRegistrations(kept, managers, me, removed, now, facts)
 	return out, removed
 }
 
-func (a *App) myHouseholdAnswers(occurrenceIDs []uint, viewer *models.User) map[uint][]myHouseholdRegistrationJSON {
+func (a *App) myHouseholdAnswers(occurrenceIDs []uint, viewer *models.User, facts *subjectFacts) map[uint][]myHouseholdRegistrationJSON {
 	out := map[uint][]myHouseholdRegistrationJSON{}
 	if viewer == nil {
 		return out
 	}
-	acct, found := householdAccountIn(a.DB, viewer.ID)
+	facts.load(a.DB, nil, viewer)
+	acct, found := facts.accounts[viewer.ID]
 	if !found || !policy.CanManageHousehold(asPerson(viewer), householdRelOf(acct, found)) {
 		return out
 	}
 	var regs []models.Registration
 	a.DB.Joins("JOIN household_people ON household_people.id = registrations.household_person_id AND household_people.deleted_at IS NULL AND household_people.converted_user_id IS NULL").Where("household_people.household_id = ? AND registrations.occurrence_id IN ? AND registrations.status <> ?", acct.HouseholdID, occurrenceIDs, models.RegCancelled).Find(&regs)
-	facts := loadSubjectFacts(a.DB, regs, viewer)
-	facts.today = a.householdClock(time.Now().UTC())
+	facts.load(a.DB, regs, viewer)
 	for _, r := range regs {
 		person := facts.people[*r.HouseholdPersonID]
 		holder := facts.users[registrationHolder(r)]
-		if person == nil || !policy.CanSeeHouseholdPerson(asPerson(viewer), householdFacts(person, facts.links[person.ID], facts.today), facts.relation(viewer, person, false)) {
+		if person == nil || !policy.CanSeeHouseholdPerson(asPerson(viewer), householdFacts(person, facts.links[person.ID], facts.day()), facts.relation(viewer, person, false)) {
 			continue
 		}
 		unavailable := holder == nil || holder.Status != models.UserActive
@@ -467,7 +514,7 @@ func householdGoingMap(db *gorm.DB, occurrenceIDs []uint, viewer *models.User, r
 
 // Recovery data comes only from this event's audited dropped rows. It is
 // revalidated for the manager and holder before exposing any person facts.
-func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, managers map[uint]bool, me *models.User, out map[uint][]attendeeJSON, now time.Time) {
+func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, managers map[uint]bool, me *models.User, out map[uint][]attendeeJSON, now time.Time, facts *subjectFacts) {
 	if me == nil {
 		return
 	}
@@ -531,8 +578,7 @@ func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, mana
 		}
 		regs = append(regs, r)
 	}
-	facts := loadSubjectFacts(a.DB, regs, me)
-	facts.today = a.householdClock(now)
+	facts.load(a.DB, regs, me)
 	for _, r := range regs {
 		o := byOcc[r.OccurrenceID]
 		dto := facts.attendee(r, o, me, true, false, now)

@@ -194,9 +194,17 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	if err != nil {
 		childcareUsed = map[uint]int{}
 	}
-	names, removed := a.attendeeNames(kept, showNames, showChildcare, showDeclined, me)
-	ownHousehold := a.myHouseholdAnswers(ids, me)
-	householdVideo := householdGoingMap(a.DB, ids, me, true)
+	// One set of household facts and one church-local clock per request.
+	facts := a.requestFacts()
+	names, removed := a.attendeeNames(kept, showNames, showChildcare, showDeclined, me, facts)
+	ownHousehold := a.myHouseholdAnswers(ids, me, facts)
+	// Only a household account can have registered someone by name.
+	householdVideo := map[uint]bool{}
+	if me != nil {
+		if _, inHousehold := facts.accounts[me.ID]; inHousehold {
+			householdVideo = householdGoingMap(a.DB, ids, me, true)
+		}
+	}
 
 	for i := range kept {
 		o := &kept[i]

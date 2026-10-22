@@ -907,10 +907,16 @@ func (a *App) apiRegister(c *gin.Context) {
 		}
 		seen[answer.PersonID] = true
 	}
-	acct, found := householdAccountIn(a.DB, u.ID)
-	if len(body.People) > 0 && !policy.CanManageHousehold(asPerson(u), householdRelOf(acct, found)) {
-		jsonError(c, 403, "forbidden")
-		return
+	// Household facts are read only when the answer names people, so a
+	// solo RSVP costs what it did before slice 2 (Whittler, PR 110).
+	var acct models.HouseholdAccount
+	if len(body.People) > 0 {
+		var found bool
+		acct, found = householdAccountIn(a.DB, u.ID)
+		if !policy.CanManageHousehold(asPerson(u), householdRelOf(acct, found)) {
+			jsonError(c, 403, "forbidden")
+			return
+		}
 	}
 	var o models.EventOccurrence
 	if a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, body.Date, models.OccurrenceScheduled).First(&o).Error != nil {
@@ -959,13 +965,22 @@ func (a *App) apiRegister(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if err := tx.First(ev, ev.ID).Error; err != nil {
-			return err
-		}
-		if locked.Status != models.OccurrenceScheduled || !a.canRegisterIn(tx, &holder, ev) {
+		if locked.Status != models.OccurrenceScheduled {
 			return errOccurrenceNotFound
 		}
-		today := a.householdClock(now)
+		// Named people re-check access under the locks; the holder's own
+		// answer keeps the pre-slice-2 check above, which cancelLosers
+		// serializes against through the occurrence lock.
+		var today time.Time
+		if len(body.People) > 0 {
+			if err := tx.First(ev, ev.ID).Error; err != nil {
+				return err
+			}
+			if !a.canRegisterIn(tx, &holder, ev) {
+				return errOccurrenceNotFound
+			}
+			today = a.householdClock(now)
+		}
 		personIDs := make([]uint, 0, len(body.People))
 		for _, answer := range body.People {
 			personIDs = append(personIDs, answer.PersonID)
@@ -1031,7 +1046,10 @@ func (a *App) apiRegister(c *gin.Context) {
 		for _, ch := range changes {
 			candidates = append(candidates, ch.next)
 		}
-		facts := loadSubjectFacts(tx, candidates, &holder)
+		var facts subjectFacts
+		if len(body.People) > 0 {
+			facts = loadSubjectFacts(tx, candidates, &holder)
+		}
 		access := map[uint]bool{}
 		for _, r := range candidates {
 			if r.HouseholdPersonID != nil && !facts.eligible(a, tx, r, ev, today, access) {
