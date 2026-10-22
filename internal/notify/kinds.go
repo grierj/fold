@@ -240,9 +240,6 @@ func init() {
 		Key: AccountRequested, Category: CatAdmin, Waiting: true, AllowEmail: true,
 		Actions: []Action{{Key: ActionApproveAccount, Label: "Approve"}},
 		Render: func(v Vars) (string, string) {
-			if v.Change == "teen_account" {
-				return "Check a guardian link for " + or(v.Person, "a teen account"), "The account is waiting for consent. Confirming this link does not let the teen sign in yet."
-			}
 			who := or(v.Person, "Someone")
 			if v.Teen {
 				who += " (teen)"
@@ -340,6 +337,9 @@ func init() {
 		// ("child" or "teen").
 		Key: HouseholdLinkPending, Category: CatAdmin, Waiting: true, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
+			if v.Change == "teen_account" {
+				return "Check a guardian link for " + or(v.Person, "a teen account"), "The account is waiting for consent. Confirming this link does not let the teen sign in yet."
+			}
 			who := or(v.Person, "Someone")
 			if v.Change != "" {
 				who += " (" + v.Change + ")"

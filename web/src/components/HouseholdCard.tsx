@@ -148,7 +148,7 @@ export function HouseholdCard() {
           ? root?.querySelector<HTMLElement>("[data-add]")
           : root?.querySelector<HTMLElement>("h2");
     (el ?? root?.querySelector<HTMLElement>("h2"))?.focus();
-  }, [household, editing]);
+  }, [household, editing, converting]);
 
   async function remove(p: HouseholdPerson) {
     if (!confirm(`Remove ${p.name} from your household?${p.conversion ? " This also cancels their account invitation." : ""}`)) return;
@@ -247,10 +247,10 @@ export function HouseholdCard() {
                 {p.conversion && <div className="mt-3 space-y-2">
                   <p className="text-sm text-text-muted break-words">{p.conversion.state === "expired" ? "Invitation expired" : "Invitation pending"}: {p.conversion.email}. Expires {formatWhen(p.conversion.expiresAt)}.</p>
                   <p className="text-sm text-text-muted">Changing their name, type or birth date cancels this invitation. Their sign-ups stay as they are until they accept.</p>
-                  <ConversionActions person={p} onChanged={async (message) => { setStatus(message); await load(); }} />
+                  <ConversionActions person={p} onChanged={async (message) => { setStatus(message); focusNext.current = p.id; await load(); }} />
                 </div>}
                 {!p.conversion && p.canConvert && converting !== p.id && <Button variant="secondary" layout="mt-3" onClick={() => setConverting(p.id)}>Create their own account</Button>}
-                {!p.conversion && converting === p.id && <ConversionForm person={p} onCancel={() => setConverting(null)} onSent={async () => { setConverting(null); setStatus(`Invitation sent for ${p.name}. Their sign-ups will move when they accept.`); await load(); }} />}
+                {!p.conversion && converting === p.id && <ConversionForm person={p} onCancel={() => { focusNext.current = p.id; setConverting(null); }} onSent={async () => { focusNext.current = p.id; setConverting(null); setStatus(`Invitation sent for ${p.name}. Their sign-ups will move when they accept.`); await load(); }} />}
               </li>
             ))}
           </ul>

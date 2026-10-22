@@ -11,7 +11,7 @@ vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>
 
 beforeEach(() => { vi.resetAllMocks(); });
 it("explains conversion and shows teen success without entering signed-in pages", async () => {
-  vi.mocked(Invitations.get).mockResolvedValue({ site: "Our church", invitation: { id: 1, name: "Taylor", email: "taylor@example.com", conversion: true, accountType: "teen", expiresAt: "2026-12-01T00:00:00Z" } });
+  vi.mocked(Invitations.get).mockResolvedValue({ site: "Our church", siteName: "Our church", inviterName: "Pat", invitation: { id: 1, name: "Taylor", email: "taylor@example.com", conversion: true, accountType: "teen", expiresAt: "2026-12-01T00:00:00Z" } });
   vi.mocked(Invitations.accept).mockResolvedValue({ pendingConsent: true });
   render(<MemoryRouter initialEntries={["/invite?token=secret"]}><Invite /></MemoryRouter>);
   expect(await screen.findByText(/Your past and upcoming sign-ups will move/)).toBeInTheDocument();
@@ -25,7 +25,7 @@ it("explains conversion and shows teen success without entering signed-in pages"
 });
 
 it("signs in an adult conversion after acceptance", async () => {
-  vi.mocked(Invitations.get).mockResolvedValue({ site: "Our church", invitation: { id: 1, name: "Mary", email: "mary@example.com", conversion: true, accountType: "adult", expiresAt: "2026-12-01T00:00:00Z" } });
+  vi.mocked(Invitations.get).mockResolvedValue({ site: "Our church", siteName: "Our church", inviterName: "Pat", invitation: { id: 1, name: "Mary", email: "mary@example.com", conversion: true, accountType: "adult", expiresAt: "2026-12-01T00:00:00Z" } });
   vi.mocked(Invitations.accept).mockResolvedValue({ pendingConsent: false });
   render(<MemoryRouter initialEntries={["/invite?token=secret"]}><Invite /></MemoryRouter>);
   await screen.findByLabelText("Your name");

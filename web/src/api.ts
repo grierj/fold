@@ -101,6 +101,7 @@ import type {
   HouseholdPerson,
   Invitation,
   InvitationAcceptance,
+  InvitationContext,
   HouseholdConversion,
   Member,
   Notification,
@@ -406,7 +407,7 @@ export const Invitations = {
     overLimit?: boolean;
   }) => api<{ invitation: Invitation }>("/invitations", { method: "POST", body: data }),
   get: (token: string) =>
-    api<{ invitation: Invitation; site: string }>(`/invitations/${encodeURIComponent(token)}`),
+    api<InvitationContext>(`/invitations/${encodeURIComponent(token)}`),
   accept: (data: { token: string; name: string; password: string }) =>
     api<InvitationAcceptance>(`/invitations/accept`, { method: "POST", body: data }),
 };

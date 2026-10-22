@@ -331,6 +331,13 @@ export interface InvitationAcceptance {
   pendingConsent: boolean;
 }
 
+export interface InvitationContext {
+  invitation: Invitation;
+  inviterName: string;
+  siteName: string;
+  site: string;
+}
+
 export interface HouseholdConversion {
   id: number;
   email: string;

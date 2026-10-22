@@ -212,3 +212,22 @@ func TestSubjectFactsChurchLocalBirthday(t *testing.T) {
 		t.Fatal("account-only rendering read the church clock")
 	}
 }
+
+func TestPendingTeenRegistrationNamesStayPrivate(t *testing.T) {
+	teen := models.User{ID: 3, Name: "Taylor", Status: models.UserPendingConsent, AccountType: models.AccountTeen}
+	member := models.User{ID: 4, Status: models.UserActive, AccountType: models.AccountAdult}
+	f := newSubjectFacts(time.Now())
+	f.users[teen.ID] = &teen
+	f.accounts[teen.ID] = models.HouseholdAccount{HouseholdID: 9, UserID: teen.ID, Relation: models.HouseholdRelationTeen}
+	row := models.Registration{ID: 5, UserID: &teen.ID, Status: models.RegGoing}
+	if dto := f.attendee(row, models.EventOccurrence{}, &member, false, false, time.Now()); dto != nil {
+		t.Fatal("unrelated member saw pending teen")
+	}
+	if dto := f.attendee(row, models.EventOccurrence{}, &member, true, false, time.Now()); dto == nil || dto.AccountType != models.AccountTeen {
+		t.Fatal("manager lost pending teen visibility")
+	}
+	f.accounts[member.ID] = models.HouseholdAccount{HouseholdID: 9, UserID: member.ID, Relation: models.HouseholdRelationAdult}
+	if dto := f.attendee(row, models.EventOccurrence{}, &member, false, false, time.Now()); dto == nil {
+		t.Fatal("household lost visibility")
+	}
+}

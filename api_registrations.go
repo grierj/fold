@@ -1557,7 +1557,6 @@ func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, int
 	careUsed := 0
 	var facts subjectFacts
 	var access map[uint]bool
-	today := a.householdClock(now)
 	for _, r := range regs {
 		if currentID != r.OccurrenceID {
 			var err error
@@ -1589,7 +1588,7 @@ func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, int
 				}
 			}
 			facts = a.loadSubjectFacts(tx, currentRegs, nil)
-			facts.today = today
+			facts.clock = func() time.Time { return a.householdClock(now) }
 			facts.users[holder.ID] = &holder
 			access = map[uint]bool{}
 		}

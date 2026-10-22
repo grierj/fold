@@ -53,6 +53,11 @@ test("household profile, pending link, independent answers, privacy and recovery
   await page.getByRole("button", { name: /^More for/ }).click(); await page.getByRole("menuitem", { name: "Manage sign-ups" }).click();
   await expect(page.getByText("Kit · Flow household")).toBeVisible();
   await expect(page.getByText("Signed up by Flow Parent").first()).toBeVisible();
+  const childRow = page.getByText("Kit · Flow household").locator("..", { has: page.getByText("Signed up by Flow Parent") });
+  await expect(childRow.locator("div", { hasText: /^Signed up by Flow Parent$/ }).first()).toBeVisible();
+  const order = await childRow.evaluate((node) => node.textContent ?? "");
+  expect(order.indexOf("Going")).toBeGreaterThan(order.indexOf("Signed up by"));
+  expect(order.indexOf("Going")).toBeLessThan(order.indexOf("Care notes"));
   const fullNotes = page.getByRole("button", { name: "Show full care notes for Kit" });
   await fullNotes.click(); await expect(page.getByRole("button", { name: "Hide care notes" })).toHaveAttribute("aria-expanded", "true");
   page.on("dialog", (dialog) => dialog.accept());

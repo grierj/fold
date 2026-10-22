@@ -85,3 +85,26 @@ func TestHouseholdRegistrationWordsNameTheAttendee(t *testing.T) {
 		}
 	}
 }
+
+func TestConvertedTeenGuardianTaskExplainsConsent(t *testing.T) {
+	kind, ok := Lookup(HouseholdLinkPending)
+	if !ok {
+		t.Fatal("missing guardian notification")
+	}
+	title, body := kind.Render(Vars{Person: "Taylor", Change: "teen_account", Teen: true})
+	if !strings.Contains(title, "Taylor") || !strings.Contains(body, "does not let the teen sign in") {
+		t.Fatalf("account-targeted task: %s %s", title, body)
+	}
+	title, body = kind.RenderForEmail(Vars{Person: "Taylor", Actor: "Pat", Change: "teen_account", Teen: true})
+	if strings.Contains(title+body, "Taylor") || strings.Contains(title+body, "Pat") {
+		t.Fatal("minor name leaked to email")
+	}
+	kind, ok = Lookup(HouseholdConverted)
+	if !ok || len(kind.Actions) != 0 || kind.Waiting {
+		t.Fatal("conversion notice must not be an approval task")
+	}
+	_, body = kind.Render(Vars{Person: "Taylor", Teen: true})
+	if !strings.Contains(body, "cannot sign in") {
+		t.Fatal("teen notice lacks waiting explanation")
+	}
+}

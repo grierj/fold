@@ -162,6 +162,7 @@ for the new account from then on. A teen receives `{pendingConsent: true}`
 without a user profile or a new session. Their sign-ups still count toward
 capacity and remain visible to event managers. Fresh account-targeted guardian
 links wait for admin checks; confirming them never activates the teen.
+Unrelated members do not see pending teen names in attendee lists.
 
 Creation and resend share the 20-per-rolling-day invitation limit by sender
 and destination, including resends. Counters live in Postgres audit rows.
@@ -328,7 +329,7 @@ status, joinedAt}`
 
 ```
 POST /api/v1/invitations          → 201 {invitation}  (auth)
-GET  /api/v1/invitations/:token   → 200 {invitation, site} | 400  (public)
+GET  /api/v1/invitations/:token   → 200 {invitation, inviterName, siteName, site} | 404  (public)
 POST /api/v1/invitations/accept   → 200 {user?, pendingConsent} | 400 | 409  (public)
 ```
 

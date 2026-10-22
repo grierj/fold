@@ -55,6 +55,9 @@ func TestHouseholdConversionTransfersEveryRow(t *testing.T) {
 			original = append(original, row)
 		}
 	}
+	if err := app.DB.Where("household_person_id = ?", person.ID).Order("id").Find(&original).Error; err != nil {
+		t.Fatal(err)
+	}
 	token := inviteHouseholdPerson(t, app, c, person.ID, "independent@example.com")
 	var before []models.Registration
 	app.DB.Where("household_person_id = ?", person.ID).Order("id").Find(&before)
@@ -273,6 +276,7 @@ func TestHouseholdConversionMailLimitCountsResends(t *testing.T) {
 	var before models.Invitation
 	app.DB.Where("household_person_id = ?", person.ID).First(&before)
 	apiDo(t, c, "POST", conversionPath(person.ID)+"/resend", nil, http.StatusOK)
+	apiDo(t, admin, "POST", conversionPath(person.ID)+"/resend", nil, http.StatusOK)
 	var after models.Invitation
 	app.DB.First(&after, before.ID)
 	var count int64
@@ -427,11 +431,19 @@ func TestHouseholdConversionsSharingOccurrencesDoNotDeadlock(t *testing.T) {
 }
 
 func TestHouseholdConversionCompetesWithHouseholdMutations(t *testing.T) {
-	for _, operation := range []string{"batch", "disable", "edit", "delete", "resend", "cancel"} {
+	for _, operation := range []string{"batch", "second adult batch", "disable", "edit", "delete", "resend", "cancel"} {
 		t.Run(operation, func(t *testing.T) {
 			app := testApp(t)
 			admin, gid := openGroup(t, app, "MutationConversion")
 			holder, c, person, _ := householdFamily(t, app, admin, "mutationparent")
+			batchClient := c
+			if operation == "second adult batch" {
+				second := newTestUser(t, app, "mutationsecond", "password1234", models.RoleMember)
+				if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: person.HouseholdID, UserID: second.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
+					t.Fatal(err)
+				}
+				batchClient = loginAPI(t, app, "mutationsecond", "password1234")
+			}
 			eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
 			batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": person.ID, "status": "going"}}}, http.StatusOK)
 			token := inviteHouseholdPerson(t, app, c, person.ID, "mutation@example.com")
@@ -450,8 +462,8 @@ func TestHouseholdConversionCompetesWithHouseholdMutations(t *testing.T) {
 				defer wg.Done()
 				<-start
 				switch operation {
-				case "batch":
-					codes[1] = c.do("PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", map[string]any{"date": date, "people": []map[string]any{{"personId": person.ID, "status": "maybe"}}}, true).Code
+				case "batch", "second adult batch":
+					codes[1] = batchClient.do("PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", map[string]any{"date": date, "people": []map[string]any{{"personId": person.ID, "status": "maybe"}}}, true).Code
 				case "disable":
 					codes[1] = admin.do("PUT", "/api/v1/admin/users/"+itoa(holder.ID), map[string]any{"status": "disabled"}, true).Code
 				case "edit":
@@ -482,5 +494,115 @@ func TestHouseholdConversionCompetesWithHouseholdMutations(t *testing.T) {
 				t.Fatalf("accept response and account disagree: %v count %d", codes, count)
 			}
 		})
+	}
+}
+
+func TestTeenConversionPreservesEligibleGuardiansOnly(t *testing.T) {
+	app := testApp(t)
+	admin, _ := openGroup(t, app, "GuardianConversion")
+	holder, c, _, _ := householdFamily(t, app, admin, "guardianparent")
+	person := addMyPerson(t, c, map[string]any{"firstName": "Teen", "kind": "teen", "birthDate": time.Now().UTC().AddDate(-15, 0, 0).Format("2006-01-02")})
+	second := newTestUser(t, app, "secondguardian", "password1234", models.RoleMember)
+	outsider := newTestUser(t, app, "outsideguardian", "password1234", models.RoleMember)
+	if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: person.HouseholdID, UserID: second.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, guardian := range []uint{second.ID, outsider.ID} {
+		if err := app.DB.Create(&models.GuardianLink{GuardianUserID: guardian, PersonID: &person.ID, Status: models.GuardianConfirmed, ConfirmedBy: &holder.ID, CheckNote: "Old decision"}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	token := inviteHouseholdPerson(t, app, admin, person.ID, "guardianteen@example.com")
+	acceptConversion(t, app, token, http.StatusOK)
+	var user models.User
+	app.DB.Where("email = ?", "guardianteen@example.com").First(&user)
+	var links []models.GuardianLink
+	app.DB.Where("teen_user_id = ?", user.ID).Order("guardian_user_id").Find(&links)
+	if len(links) != 2 {
+		t.Fatalf("new guardians: %+v", links)
+	}
+	seen := map[uint]bool{}
+	for _, link := range links {
+		seen[link.GuardianUserID] = true
+		if link.Status != models.GuardianPending || link.CheckNote != "" || link.ConfirmedBy != nil {
+			t.Fatal("old decision copied")
+		}
+	}
+	if !seen[holder.ID] || !seen[second.ID] || seen[outsider.ID] {
+		t.Fatal("guardian set changed")
+	}
+}
+
+func TestHouseholdConversionLargeHistoryIsAtomic(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HistoryConversion")
+	holder, c, person, _ := householdFamily(t, app, admin, "historyparent")
+	eventID, _ := seedCappedEvent(t, app, admin, gid, nil, true)
+	start := time.Now().UTC().AddDate(-5, 0, 0).Truncate(24 * time.Hour)
+	const total = 300
+	for i := range total {
+		at := start.AddDate(0, 0, i)
+		o := models.EventOccurrence{EventID: eventID, OriginalDate: at.Format("2006-01-02"), StartsAt: at, EndsAt: at.Add(time.Hour), Status: models.OccurrenceCancelled}
+		if err := app.DB.Create(&o).Error; err != nil {
+			t.Fatal(err)
+		}
+		r := models.Registration{OccurrenceID: o.ID, HouseholdPersonID: &person.ID, RegisteredBy: &holder.ID, Status: models.RegCancelled, AttendanceMode: models.AttendanceInPerson, ChildcareRequested: true}
+		if err := app.DB.Create(&r).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	token := inviteHouseholdPerson(t, app, c, person.ID, "history@example.com")
+	began := time.Now()
+	acceptConversion(t, app, token, http.StatusOK)
+	t.Logf("atomic transfer of %d historical occurrences took %s", total, time.Since(began))
+	var remaining, transferred int64
+	app.DB.Model(&models.Registration{}).Where("household_person_id = ?", person.ID).Count(&remaining)
+	app.DB.Model(&models.Registration{}).Joins("JOIN users ON users.id = registrations.user_id").Where("users.email = ? AND registrations.registered_by IS NULL AND NOT registrations.childcare_requested", "history@example.com").Count(&transferred)
+	if remaining != 0 || transferred != total {
+		t.Fatalf("partial history transfer: %d remaining, %d transferred", remaining, transferred)
+	}
+}
+
+func TestConversionInviterReenabledNeedsFreshLink(t *testing.T) {
+	app := testApp(t)
+	admin, _ := openGroup(t, app, "ReenabledConversion")
+	holder, c, person, _ := householdFamily(t, app, admin, "reenabledparent")
+	token := inviteHouseholdPerson(t, app, c, person.ID, "reenabled@example.com")
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(holder.ID), map[string]any{"status": "disabled"}, http.StatusOK)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(holder.ID), map[string]any{"status": "active"}, http.StatusOK)
+	acceptConversion(t, app, token, http.StatusConflict)
+	c = loginAPI(t, app, "reenabledparent", "password1234")
+	apiDo(t, c, "POST", conversionPath(person.ID)+"/resend", nil, http.StatusOK)
+	fresh := tokenInEmail(t, latestEmail(t, app, "reenabled@example.com"))
+	acceptConversion(t, app, fresh, http.StatusOK)
+}
+
+func TestConversionCompetesWithOrdinaryInvitation(t *testing.T) {
+	app := testApp(t)
+	admin, _ := openGroup(t, app, "EmailCompetition")
+	_, c, person, _ := householdFamily(t, app, admin, "emailparent")
+	var codes [2]int
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		codes[0] = c.do("POST", conversionPath(person.ID), map[string]any{"email": "competition@example.com"}, true).Code
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		codes[1] = admin.do("POST", "/api/v1/invitations", map[string]any{"email": "competition@example.com"}, true).Code
+	}()
+	close(start)
+	wg.Wait()
+	if !((codes[0] == 201 && codes[1] == 409) || (codes[1] == 201 && codes[0] == 409)) {
+		t.Fatalf("invitation email reservation race: %v", codes)
+	}
+	var n int64
+	app.DB.Model(&models.Invitation{}).Where("email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", "competition@example.com").Count(&n)
+	if n != 1 {
+		t.Fatalf("email reserved %d times", n)
 	}
 }

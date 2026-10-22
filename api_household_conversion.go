@@ -90,7 +90,7 @@ func (a *App) conversionAllowed(tx *gorm.DB, actor *models.User, person *models.
 		return false, err
 	}
 	if unavailable > 0 {
-		return false, nil
+		return false, errConversionHolder
 	}
 	return policy.CanConvertHouseholdPerson(asPerson(actor), conversionRelation(tx, actor.ID, person.HouseholdID), householdFacts(person, nil, today), actor.Status == models.UserActive && !actor.DeletedAt.Valid, len(guardians) > 0), nil
 }
@@ -178,7 +178,6 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 	var inv models.Invitation
 	actor := *apiUser(c)
 	send := false
-	today := a.householdClock(time.Now().UTC())
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, actor.ID).Error; err != nil {
 			return err
@@ -189,7 +188,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		if err := tx.First(person, person.ID).Error; err != nil {
 			return err
 		}
-		allowed, err := a.conversionAllowed(tx, &actor, person, today)
+		allowed, err := a.conversionAllowed(tx, &actor, person, a.householdClock(time.Now().UTC()))
 		if err != nil {
 			return err
 		}
@@ -223,12 +222,12 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			return err
 		}
 		if !allowed {
-			// Keep the normal response shape without creating a deliverable token.
 			log.Printf("household invitation send suppressed for actor %d", actor.ID)
-			if inv.ID == 0 {
-				inv = models.Invitation{Email: body.Email, ExpiresAt: time.Now().UTC().Add(tokenTTL)}
+			// Keep an existing token intact. A first invitation is still saved,
+			// so it can be resent later through the same household controls.
+			if inv.ID != 0 {
+				return nil
 			}
-			return nil
 		}
 		if !resend && inv.ID != 0 {
 			if err := revokeConversionInvitation(tx, &inv, actor.ID, c.ClientIP()); err != nil {
@@ -249,7 +248,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 				return err
 			}
 		}
-		send = true
+		send = allowed
 		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: action, TargetType: "invitation", TargetID: inv.ID, Meta: map[string]any{"personId": person.ID, "householdId": person.HouseholdID}, IP: c.ClientIP()})
 	})
 	if err != nil {

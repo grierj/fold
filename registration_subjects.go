@@ -386,6 +386,17 @@ func (f *subjectFacts) attendee(r models.Registration, o models.EventOccurrence,
 		out.ChildcareAgesNote = &r.ChildcareAgesNote
 	}
 	if r.HouseholdPersonID == nil {
+		if holder.Status == models.UserPendingConsent && holder.AccountType == models.AccountTeen {
+			viewerAccount, viewerFound := models.HouseholdAccount{}, false
+			if me != nil {
+				viewerAccount, viewerFound = f.accounts[me.ID]
+			}
+			holderAccount, holderFound := f.accounts[holder.ID]
+			rel := householdRelOf(viewerAccount, viewerFound && holderFound && viewerAccount.HouseholdID == holderAccount.HouseholdID)
+			if !policy.CanSeePendingTeenAttendee(asPerson(me), rel, manager) {
+				return nil
+			}
+		}
 		out.AccountType = holder.AccountType
 		return &out
 	}

@@ -562,6 +562,12 @@ func CanCancelHouseholdConversion(p *Person, rel HouseholdRel, active bool) bool
 	return active && p != nil && !p.Teen && CanManageHousehold(p, rel)
 }
 
+// CanSeePendingTeenAttendee keeps a converted teen's existing manager and
+// household visibility while the account waits for consent (judgment 44).
+func CanSeePendingTeenAttendee(p *Person, rel HouseholdRel, manager bool) bool {
+	return p != nil && !p.Teen && (p.Admin || rel.Adult || manager)
+}
+
 // householdPersonConfirmed reports whether the person counts as
 // confirmed for people outside the household: an adult (no link needed)
 // or a child or teen with a confirmed guardian link. Until then leaders

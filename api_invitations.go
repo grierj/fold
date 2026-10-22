@@ -53,6 +53,13 @@ type invitationAcceptanceJSON struct {
 	PendingConsent bool      `json:"pendingConsent"`
 }
 
+type invitationContextJSON struct {
+	Invitation  invitationJSON `json:"invitation"`
+	InviterName string         `json:"inviterName"`
+	SiteName    string         `json:"siteName"`
+	Site        string         `json:"site"`
+}
+
 func (a *App) toInvitationJSON(inv *models.Invitation) invitationJSON {
 	out := invitationJSON{
 		ID: inv.ID, Email: inv.Email, Name: inv.Name,
@@ -254,11 +261,10 @@ func (a *App) apiGetInvitation(c *gin.Context) {
 	if inv.GroupID != nil {
 		a.DB.First(&inv.Group, *inv.GroupID)
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"invitation":  a.toInvitationJSON(inv),
-		"inviterName": nameIn(a.DB, inv.InvitedBy),
-		"siteName":    a.siteName(),
-		"site":        a.siteName(),
+	c.JSON(http.StatusOK, invitationContextJSON{
+		Invitation:  a.toInvitationJSON(inv),
+		InviterName: nameIn(a.DB, inv.InvitedBy),
+		SiteName:    a.siteName(), Site: a.siteName(),
 	})
 }
 

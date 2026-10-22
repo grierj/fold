@@ -889,3 +889,25 @@ func TestCanConvertHouseholdPerson(t *testing.T) {
 		t.Fatal("cancellation authority")
 	}
 }
+
+func TestCanSeePendingTeenAttendee(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		actor         *Person
+		rel           HouseholdRel
+		manager, want bool
+	}{
+		{"leader", &Person{ID: 1}, HouseholdRel{}, true, true},
+		{"admin", &Person{ID: 1, Admin: true}, HouseholdRel{}, false, true},
+		{"household adult", &Person{ID: 1}, HouseholdRel{Adult: true}, false, true},
+		{"unrelated", &Person{ID: 1}, HouseholdRel{}, false, false},
+		{"teen", &Person{ID: 1, Teen: true}, HouseholdRel{Adult: true}, false, false},
+		{"signed out", nil, HouseholdRel{}, false, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanSeePendingTeenAttendee(tt.actor, tt.rel, tt.manager); got != tt.want {
+				t.Fatalf("got %t want %t", got, tt.want)
+			}
+		})
+	}
+}
