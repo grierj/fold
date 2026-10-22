@@ -145,7 +145,7 @@ func (f subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *m
 	}
 	acct, found := f.accounts[holder.ID]
 	rel := householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID)
-	if policy.CanRegisterHouseholdPerson(asPerson(holder), asPerson(holder), rel, householdFacts(person, f.links[person.ID], today), holder.Status == models.UserActive, allowed, allowed) != "" {
+	if policy.CanRegisterHouseholdPerson(asPerson(holder), asPerson(holder), rel, rel, householdFacts(person, f.links[person.ID], today), holder.Status == models.UserActive, allowed, allowed) != "" {
 		return false
 	}
 	return !r.ChildcareRequested || (person.Kind == models.HouseholdChild && r.AttendanceMode != models.AttendanceRemote)
@@ -358,7 +358,7 @@ func (f subjectFacts) attendee(r models.Registration, o models.EventOccurrence, 
 	careRel := rel
 	careRel.EventManager = manager && r.Status == models.RegGoing && o.Status == models.OccurrenceScheduled
 	window := &policy.EventWindow{StartsAt: o.StartsAt, EndsAt: o.EndsAt}
-	if policy.CanSeeCareNotes(asPerson(me), facts, careRel, window, now) {
+	if r.Status==models.RegGoing && o.Status==models.OccurrenceScheduled && policy.CanSeeCareNotes(asPerson(me), facts, careRel, window, now) {
 		hp.CareNotes = &person.CareNotes
 		if !policy.IsAdmin(asPerson(me)) && !rel.Guardian {
 			until := o.EndsAt.Add(24 * time.Hour)

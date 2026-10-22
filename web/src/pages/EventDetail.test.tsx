@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Events } from "../api";
+import { Events, Households } from "../api";
 import type { EventDetailResponse } from "../types";
 import { occurrence } from "../test/occurrence";
 import { EventDetail } from "./EventDetail";
@@ -45,6 +45,7 @@ async function editDate() {
 describe("EventDetail remote seats", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.mocked(Households.mine).mockResolvedValue({ household: null });
     vi.mocked(Events.get).mockResolvedValue(page);
     vi.mocked(Events.updateOccurrence).mockResolvedValue({ occurrence: page.occurrences[0] });
   });

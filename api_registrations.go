@@ -650,7 +650,8 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 		if r.ID != 0 && tx.First(&current, r.ID).Error == nil && current.Status == models.RegGoing && current.AttendanceMode == r.AttendanceMode {
 			used -= 1 + current.GuestCount
 		}
-		if !events.Fits(capacityForMode(ev, o, r.AttendanceMode), used, 1+r.GuestCount) {
+		sameGoing:=current.Status==models.RegGoing && current.AttendanceMode==r.AttendanceMode
+ if !(sameGoing && r.GuestCount<=current.GuestCount) && !events.Fits(capacityForMode(ev, o, r.AttendanceMode), used, 1+r.GuestCount) {
 			if ch.old.Status == models.RegGoing && ch.old.AttendanceMode == r.AttendanceMode {
 				return errEventFull
 			}
@@ -661,9 +662,9 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 			if r.WaitlistedAt == nil || ch.old.AttendanceMode != r.AttendanceMode {
 				r.WaitlistedAt = &now
 			}
-		} else if err := checkChildcare(tx, ev, o.ID, r.ID, effectiveChildcare(ev, *r)); err != nil {
-			return err
-		}
+		} else if !(sameGoing && effectiveChildcare(ev,*r)<=effectiveChildcare(ev,current)) {
+ if err:=checkChildcare(tx,ev,o.ID,r.ID,effectiveChildcare(ev,*r));err!=nil {return err}
+ }
 	}
 	return saveRegistration(tx, r)
 }
@@ -1047,7 +1048,8 @@ func (a *App) canRegisterIn(tx *gorm.DB, u *models.User, ev *models.Event) bool 
 	if f.group != nil {
 		gp = asGroup(f.group)
 	}
-	return policy.CanRegisterEvent(asPerson(u), f.view, gp, f.rel)
+	if u!=nil && u.Status==models.UserGuest {return policy.CanRegisterGuest(f.view,gp)}
+ return policy.CanRegisterEvent(asPerson(u), f.view, gp, f.rel)
 }
 
 // ---------------------------------------------------------------------------

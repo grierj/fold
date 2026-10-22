@@ -552,7 +552,9 @@ func CanManageHousehold(p *Person, rel HouseholdRel) bool {
 // or a child or teen with a confirmed guardian link. Until then leaders
 // and hosts see nothing about the person (5.3, DEC-32).
 func householdPersonConfirmed(person HouseholdPerson) bool {
-	return person.Kind == KindAdult || person.LinkStatus == LinkConfirmed
+	if person.Deleted || person.Converted {return false}
+ if person.Kind == KindAdult {return person.AgeYears!=nil && *person.AgeYears>=18}
+ return person.LinkStatus == LinkConfirmed
 }
 
 // CanSeeHouseholdPerson decides who sees a household person's name and
@@ -653,11 +655,11 @@ func HouseholdRegistrationProblem(person HouseholdPerson) string {
 
 // CanRegisterHouseholdPerson grants self-service only through an adult
 // household account, with both actor and responsible holder event access.
-func CanRegisterHouseholdPerson(actor, holder *Person, rel HouseholdRel, person HouseholdPerson, holderActive, actorAccess, holderAccess bool) string {
+func CanRegisterHouseholdPerson(actor, holder *Person, actorRel, rel HouseholdRel, person HouseholdPerson, holderActive, actorAccess, holderAccess bool) string {
 	if actor == nil || actor.Teen || holder == nil || holder.Teen || !holderActive || !rel.Adult || !rel.Account {
 		return "household_registration_holder_unavailable"
 	}
-	if !actorAccess || !holderAccess {
+	if !actorRel.Account || !actorRel.Adult || !actorAccess || !holderAccess {
 		return "household_registration_holder_unavailable"
 	}
 	return HouseholdRegistrationProblem(person)
@@ -666,8 +668,8 @@ func CanRegisterHouseholdPerson(actor, holder *Person, rel HouseholdRel, person 
 // CanManageHouseholdRegistration never lets management bypass the holder's
 // authority, event visibility, age or confirmation.
 func CanManageHouseholdRegistration(actor, holder *Person, managesEvent, previouslyRegistered bool, rel HouseholdRel, person HouseholdPerson, holderActive, holderAccess bool) string {
-	if actor == nil || (!actor.Admin && (!managesEvent || !previouslyRegistered)) {
+	if actor == nil || actor.Teen || (!actor.Admin && (!managesEvent || !previouslyRegistered)) {
 		return "household_registration_holder_unavailable"
 	}
-	return CanRegisterHouseholdPerson(holder, holder, rel, person, holderActive, holderAccess, holderAccess)
+	return CanRegisterHouseholdPerson(holder, holder, rel, rel, person, holderActive, holderAccess, holderAccess)
 }

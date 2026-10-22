@@ -35,7 +35,7 @@ it("shows childcare totals and requests supplied to a manager", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Show who's coming" }));
   expect(screen.getByText("Sam")).toBeInTheDocument();
   expect(screen.getByText("+2 childcare")).toHaveClass("bg-sunken", "text-text-muted");
-  expect(screen.getByText("Ages: 3 and 5")).toHaveClass("block", "text-text-muted");
+  expect(screen.getByText("Ages: 3 and 5")).toHaveClass("line-clamp-3", "whitespace-pre-wrap");
 });
 
 it("does not invent childcare totals when they are omitted", () => {
