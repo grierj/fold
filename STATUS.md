@@ -20,8 +20,8 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.5 Capacity, waitlist, pruning | done (merged, #57) | Winston | `m1.5-capacity-waitlist-pruning` |
 | M1.6 Calendar views | done (merged, #73) | Wright | `calendar` |
 | M1.7 ICS feeds | done (landed on master without a PR; reviewed and fixed in the m17-fixes PR; video_reveal moves to M1.8) | Muse, Wright | `m1.7-ics-feeds`, `m17-fixes` |
-| M1.8 Video, remote, childcare | in progress (video #102 and remote #105 merged; childcare next) | Wright | `m1.8-remote-capacity` |
-| M1.9 Households and household people | in progress: slice 1 backend merged (#106); slice 1 UI in review (#107); then slices 2–3 (docs/plan/M1.9-BRIEF.md) | Wright | `m1.9-households`, `m1.9-household-ui` |
+| M1.8 Video, remote, childcare | done (video #102, remote #105, childcare #109 merged) | Wright | `m1.8-remote-capacity` |
+| M1.9 Households and household people | in progress: slice 1 merged (#106, #107); slice 2 (registering household people) in review (#110); then slice 3 (docs/plan/M1.9-BRIEF.md) | Wright | `m1.9-household-rsvp` |
 | M1.10 Teen accounts, consent, badges | unclaimed | | |
 | M1.11 Contact privacy and direct-contact requests | unclaimed | | |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
@@ -57,6 +57,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 
 - (Illuminator, #105 N10) Watch that a stray arrow key in the "How you'll attend" radio group can't change a Going answer by accident (switching mode saves immediately).
 - (Whittler, #105) An admin re-adding someone who is already going in the same pool counts their seats twice (api_registrations.go admin add path, ~1150-1157). Fix: subtract the existing going party from used seats before the fit check.
+- (M1.9 slice 2, judgment call 34) Seat-only manager removal still doesn't auto-promote; making every removal promote (5.4) is deferred.
 - CI hardening (Warden review of #83, Oct 20, 2026; issue #95): claimed by Wright, in review. Actions pinned to full SHAs and a top-level `permissions: contents: read`, enforced by `TestWorkflowActionsPinnedAndReadOnly`.
 - VideoField polish (Illuminator, optional, from the #102 review): N7, clear the field's error when the link or the video option changes; N8, add a little space between the event page's time line and the "Join by video" button.
 - Terminology (Grier, Oct 20, 2026; DEC-78): rethink the name "private" for groups. The word is overloaded, because private groups are visible to every signed-in member.
@@ -69,5 +70,5 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
   Judgment calls are logged in docs/plan/M1.9-JUDGMENT-CALLS.md.
 - Warden follow-ups from the #106 review (Oct 21, 2026):
   1. An admin confirming their own guardian link: decided by Grier as DEC-79 and done in #106. Blocked while another active admin exists; a sole admin may, audited as `selfConfirm`.
-  2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind.
+  2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind. Done in #110.
   3. A confirmed teen link survives a switch to `child`. Probably fine, and left as is.
