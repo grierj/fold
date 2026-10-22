@@ -34,3 +34,11 @@ it("shows childcare refusal without pretending the restore succeeded", async () 
   await userEvent.click(screen.getByRole("button", { name: "Add back Kit" }));
   expect(screen.getByRole("alert")).toHaveTextContent("Childcare is full"); expect(changed).not.toHaveBeenCalled();
 });
+
+it("stacks actions under details and names statuses in words (PR 110 M1, N2)", () => {
+  render(<ManageRoster instance={occurrence({ attendees: [{ ...child, attendanceMode: "in_person" }, { ...child, registrationId: 93, name: "Mary", attendanceMode: "in_person" }, { registrationId: 92, userId: 3, name: "Sam", status: "going", attendanceMode: "in_person", guestCount: 0 }] })} onChanged={() => {}} onClose={() => {}} />);
+  expect(screen.getByText("Waitlist position 1")).toBeInTheDocument();
+  expect(screen.getByText("Waitlist position 2")).toBeInTheDocument();
+  expect(screen.getByText("Going")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Remove Sam" }).closest("li")).toHaveClass("flex-col", "sm:flex-row");
+});

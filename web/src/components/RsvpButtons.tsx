@@ -252,6 +252,7 @@ function HouseholdRsvp({ instance, people, onChange }: { instance: EventOccurren
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const [childcareError, setChildcareError] = useState<string | null>(null);
   const group = useId();
   const patch = (id: number, values: Partial<Answer>) => setDrafts((d) => ({ ...d, [id]: { ...d[id], ...values } }));
   const offersRemote = instance.remoteAvailable && instance.remoteCapacity !== 0;
@@ -259,7 +260,8 @@ function HouseholdRsvp({ instance, people, onChange }: { instance: EventOccurren
   async function save(e: React.FormEvent) {
     e.preventDefault(); setError(null); setMessage("");
     const problem = childcareCountProblem(children);
-    if (problem) { setError(problem); return; }
+    if (problem) { showFieldErrors(root.current, () => setChildcareError(problem)); return; }
+    setChildcareError(null);
     const answers: HouseholdAnswer[] = [];
     const command: RegistrationCommand = { date: instance.date, people: answers };
     if (instance.myRegistration !== "removed" && (me.selected || ["going", "waitlisted", "maybe"].includes(instance.myRegistration ?? ""))) {
@@ -308,7 +310,7 @@ function HouseholdRsvp({ instance, people, onChange }: { instance: EventOccurren
         <Checkbox label="Me" checked={me.selected} disabled={busy} onChange={(e) => setMe({ ...me, selected: e.target.checked })} />
         {me.selected && <>{controls("you", me, (values) => setMe({ ...me, ...values }))}
           {instance.guestsAllowed > 0 && <Field label="Extra guests" hint={"Up to " + instance.guestsAllowed + "."}><Input type="number" min={0} max={instance.guestsAllowed} value={guests} onChange={(e) => setGuests(Number(e.target.value))} /></Field>}
-          {instance.childcareAvailable && <ChildcareRequestField count={children} ages={ages} onCount={setChildren} onAges={setAges} disabled={busy} full={instance.childcareFull} named />}
+          {instance.childcareAvailable && <ChildcareRequestField count={children} ages={ages} onCount={setChildren} onAges={setAges} error={childcareError} disabled={busy} full={instance.childcareFull} named />}
         </>}
       </>}
     </div>
@@ -317,7 +319,8 @@ function HouseholdRsvp({ instance, people, onChange }: { instance: EventOccurren
       const reason = saved?.status === "removed" ? "A leader removed this registration. Ask them to add this person back." : saved?.unavailable ? "The responsible account is unavailable. Ask your church office to check it." : ELIGIBILITY[p.registrationEligibility];
       return <div key={p.id} data-household-person={p.id} className="rounded-lg border border-border p-3">
         <Checkbox label={p.name} checked={d.selected} disabled={busy || !!reason} onChange={(e) => patch(p.id, { selected: e.target.checked })} />
-        <p className="text-sm text-text-muted">{p.kind === "child" ? "Child" : p.kind === "teen" ? "Teen" : "Adult"}{p.age !== undefined ? " · Age " + p.age : ""}{saved ? " (via " + saved.holderName + ")" : ""}</p>
+        <p className="text-sm text-text-muted">{p.kind === "child" ? "Child" : p.kind === "teen" ? "Teen" : "Adult"}{p.age !== undefined ? " · Age " + p.age : ""}</p>
+        {saved && <p className="text-sm text-text-muted">Signed up by {saved.holderName}</p>}
         {saved && !saved.unavailable && <p className="text-sm text-text-muted">{saved.status === "waitlisted" ? `Waitlist position ${saved.waitlistPosition}` : saved.status === "going" ? `Going ${saved.attendanceMode === "remote" ? "remotely" : "in person"}` : saved.status === "maybe" ? "Maybe" : saved.status === "declined" ? "Can’t go" : "Removed"}</p>}
         {reason && <p className="text-sm text-text-muted">{reason} <Link className="inline-flex min-h-11 items-center text-primary underline" to="/profile">Edit household in Profile</Link></p>}
         {!reason && d.selected && controls(p.name, d, (values) => patch(p.id, values), p.kind === "child")}

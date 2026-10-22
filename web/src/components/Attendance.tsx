@@ -24,12 +24,12 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
       <div>
         {going === 0 && maybe === 0 ? "No one yet" : `${going} going${maybe ? ` · ${maybe} maybe` : ""}`}
         {declined ? ` · ${declined} can't go` : ""}
-        {instance.capacity !== null && ` · ${instance.spotsLeft} of ${instance.capacity} seats left`}
+        {instance.capacity !== null && ` · ${seatsLeft(instance.spotsLeft ?? 0, instance.capacity, "")}`}
         {instance.remoteAvailable && instance.remoteCapacity === 0 && " · No remote seats on this date"}
         {instance.remoteAvailable &&
           instance.remoteCapacity !== null &&
           instance.remoteCapacity > 0 &&
-          ` · ${instance.remoteSpotsLeft} of ${instance.remoteCapacity} remote seats left`}
+          ` · ${seatsLeft(instance.remoteSpotsLeft ?? 0, instance.remoteCapacity, "remote ")}`}
       </div>
       {instance.remoteAvailable && instance.remoteCapacity !== 0 && <div>Remote attendance available</div>}
       {instance.childcareFull && <div>Childcare is full for this date</div>}
@@ -60,4 +60,10 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
       )}
     </div>
   );
+}
+
+// "0 of 1 seat left", "In-person seats full" (Illuminator, PR 110 N4).
+function seatsLeft(left: number, capacity: number, kind: "" | "remote "): string {
+  if (left <= 0) return kind ? "Remote seats full" : "Seats full";
+  return `${left} of ${capacity} ${kind}${capacity === 1 ? "seat" : "seats"} left`;
 }

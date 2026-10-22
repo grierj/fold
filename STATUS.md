@@ -57,6 +57,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 
 - (Illuminator, #105 N10) Watch that a stray arrow key in the "How you'll attend" radio group can't change a Going answer by accident (switching mode saves immediately).
 - (Whittler, #105) An admin re-adding someone who is already going in the same pool counts their seats twice (api_registrations.go admin add path, ~1150-1157). Fix: subtract the existing going party from used seats before the fit check.
+- (Illuminator, PR 110 N5) Use the Going/Maybe/Can't go radios for each household person instead of the "Answer for X" select (judgment call 38).
 - (M1.9 slice 2, judgment call 34) Seat-only manager removal still doesn't auto-promote; making every removal promote (5.4) is deferred.
 - CI hardening (Warden review of #83, Oct 20, 2026; issue #95): claimed by Wright, in review. Actions pinned to full SHAs and a top-level `permissions: contents: read`, enforced by `TestWorkflowActionsPinnedAndReadOnly`.
 - VideoField polish (Illuminator, optional, from the #102 review): N7, clear the field's error when the link or the video option changes; N8, add a little space between the event page's time line and the "Join by video" button.

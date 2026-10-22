@@ -9,7 +9,8 @@ afterEach(() => vi.useRealTimers());
 
 it("shares household labels without inventing a surname, badges and authorized ages", () => {
   render(<AttendeeDetails attendee={attendee} />);
-  expect(screen.getByText("Kit · Leader household (via John Smith)")).toBeInTheDocument();
+  expect(screen.getByText("Kit · Leader household")).toBeInTheDocument();
+  expect(screen.getByText("Signed up by John Smith")).toBeInTheDocument();
   expect(screen.getByText("Child")).toBeInTheDocument(); expect(screen.getByText("Age 6")).toBeInTheDocument();
   expect(screen.getByText("+1 childcare")).toBeInTheDocument();
   expect(screen.queryByText("Kit Smith")).not.toBeInTheDocument();
@@ -40,4 +41,16 @@ it("does not create missing private fields and handles a remote user separately"
   render(<AttendeeDetails attendee={{ registrationId: 3, userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "remote" }} />);
   expect(screen.getByText("Sam")).toBeInTheDocument(); expect(screen.getByText("Remote")).toBeInTheDocument();
   expect(screen.queryByText(/household|Age|Care notes/)).not.toBeInTheDocument(); expect(screen.queryByRole("button")).not.toBeInTheDocument();
+});
+
+it("leaves out a household name that only repeats the signer's surname", () => {
+  render(<AttendeeDetails attendee={{ ...attendee, householdPerson: { ...attendee.householdPerson!, householdName: "Smith household" } }} />);
+  expect(screen.getByText("Kit")).toBeInTheDocument();
+  expect(screen.queryByText(/Smith household/)).not.toBeInTheDocument();
+});
+
+it("offers no toggle for a short note", () => {
+  render(<AttendeeDetails attendee={{ ...attendee, householdPerson: { ...attendee.householdPerson!, careNotes: "Peanut allergy" } }} />);
+  expect(screen.getByText("Care notes: Peanut allergy")).toBeInTheDocument();
+  expect(screen.queryByRole("button")).not.toBeInTheDocument();
 });

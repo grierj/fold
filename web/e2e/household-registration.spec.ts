@@ -51,7 +51,8 @@ test("household profile, pending link, independent answers, privacy and recovery
   expect(unrelated).not.toContain("Flow household"); expect(unrelated).not.toContain("Private allergy"); expect(unrelated).not.toContain('"householdPerson"');
   await signIn(page, "grier"); await page.goto(`/events/${event.id}`);
   await page.getByRole("button", { name: /^More for/ }).click(); await page.getByRole("menuitem", { name: "Manage sign-ups" }).click();
-  await expect(page.getByText("Kit · Flow household (via Flow Parent)")).toBeVisible();
+  await expect(page.getByText("Kit · Flow household")).toBeVisible();
+  await expect(page.getByText("Signed up by Flow Parent").first()).toBeVisible();
   const fullNotes = page.getByRole("button", { name: "Show full care notes for Kit" });
   await fullNotes.click(); await expect(page.getByRole("button", { name: "Hide care notes" })).toHaveAttribute("aria-expanded", "true");
   page.on("dialog", (dialog) => dialog.accept());

@@ -332,6 +332,17 @@ describe("named household answers", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Kit: going remotely");
   });
 
+  it("ties a bad childcare count to its field and focuses it (PR 110 M2)", async () => {
+    family();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Me" }));
+    const count = screen.getByLabelText(/^Other children needing childcare/);
+    await userEvent.clear(count); await userEvent.type(count, "-1");
+    await userEvent.click(screen.getByRole("button", { name: "Save answers" }));
+    expect(Events.register).not.toHaveBeenCalled();
+    expect(count).toHaveAttribute("aria-invalid", "true");
+    expect(count).toHaveFocus();
+  });
+
   it("sends an explicit decline on unselection and keeps another person's mode independent", async () => {
     vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 9, personId: 17, registeredBy: 3, status: "declined", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }, { registrationId: 10, personId: 18, registeredBy: 3, status: "waitlisted", attendanceMode: "remote", waitlistPosition: 2, childcareRequested: false }] });
     family(occurrence({ remoteAvailable: true, myHouseholdRegistrations: [{ registrationId: 9, personId: 17, registeredBy: 3, holderName: "Holder", status: "going", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false, unavailable: false }] }));

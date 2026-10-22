@@ -57,8 +57,8 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
     <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">Manage sign-ups</h3><Button variant="link" onClick={onClose}>Close</Button></div>
     {error && <FormError>{error}</FormError>}
     {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by email below." />}
-    <ul className="space-y-3 my-3">{roster.map((a) => <li key={a.registrationId} className="flex flex-wrap items-start justify-between gap-3">
-      <div className="min-w-0 flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} /><span className="text-sm text-text-muted">{a.status}</span></div>
+    <ul className="space-y-3 my-3">{roster.map((a) => <li key={a.registrationId} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+      <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} /><div className="text-sm text-text-muted">{statusLabel(a, roster)}</div></div>
       <div className="flex flex-wrap gap-2">
         {a.status === "waitlisted" && <Button variant="secondary" disabled={busy !== null} onClick={() => void action(a, "promote")}>Promote</Button>}
         <Button variant="danger-outline" aria-label={`Remove ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "remove")}>Remove</Button>
@@ -66,10 +66,25 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
     </li>)}</ul>
     {(instance.removedRegistrations?.length ?? 0) > 0 && <section aria-label="Removed or left out" className="my-4">
       <h4 className="font-semibold">Removed or left out</h4>
-      <ul className="space-y-3 mt-2">{instance.removedRegistrations?.map((a) => <li key={a.registrationId} className="flex flex-wrap items-start justify-between gap-3">
-        <AttendeeDetails attendee={a} childcare={false} /><Button variant="secondary" aria-label={`Add back ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "restore")}>Add back</Button>
+      <ul className="space-y-3 mt-2">{instance.removedRegistrations?.map((a) => <li key={a.registrationId} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+        <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={false} /></div><Button variant="secondary" aria-label={`Add back ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "restore")}>Add back</Button>
       </li>)}</ul>
     </section>}
     <form onSubmit={add} className="space-y-2"><Field label="Add someone" hint="Their email address"><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></Field><Button type="submit" variant="secondary" disabled={busy !== null}>{busy === "add" ? "Adding…" : "Add"}</Button></form>
   </section>;
+}
+
+// Roster status in the RSVP form's words (Illuminator, PR 110 N2).
+// The API lists waiters in waitlist order; each attendance pool has its own line.
+function statusLabel(a: Attendee, roster: Attendee[]): string {
+  switch (a.status) {
+    case "going": return a.attendanceMode === "remote" ? "Going remotely" : "Going";
+    case "maybe": return "Maybe";
+    case "waitlisted": {
+      const line = roster.filter((r) => r.status === "waitlisted" && r.attendanceMode === a.attendanceMode);
+      return `Waitlist position ${line.indexOf(a) + 1}`;
+    }
+    case "declined": return "Can't go";
+    default: return "Removed";
+  }
 }

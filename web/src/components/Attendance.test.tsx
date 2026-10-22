@@ -5,6 +5,13 @@ import { Attendance } from "./Attendance";
 import { occurrence } from "../test/occurrence";
 
 describe("Attendance", () => {
+  it("uses singular and full seat wording (PR 110 N4)", () => {
+    const { rerender } = render(<Attendance instance={occurrence({ capacity: 1, spotsLeft: 1 })} />);
+    expect(screen.getByText(/1 of 1 seat left/)).toBeInTheDocument();
+    rerender(<Attendance instance={occurrence({ capacity: 1, spotsLeft: 0, remoteAvailable: true, remoteCapacity: 2, remoteSpotsLeft: 0 })} />);
+    expect(screen.getByText(/Seats full · Remote seats full/)).toBeInTheDocument();
+  });
+
   it("counts remote seats and marks remote attendees with a neutral badge", async () => {
     render(<Attendance instance={occurrence({
       remoteAvailable: true, remoteCapacity: 5, remoteSpotsLeft: 4,

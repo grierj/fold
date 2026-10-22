@@ -283,7 +283,7 @@ function HouseholdForm({ household, onSave, onCancel }: { household: Household; 
   }
   return <form ref={root} aria-label="Edit household" onSubmit={save} className="mt-3 space-y-3 rounded-lg border border-border p-4">
     <Field label="Household name" hint="Required. Up to 100 characters." error={nameError}><Input value={name} onChange={(e) => setName(e.target.value)} required maxLength={100} /></Field>
-    <Field label="Address" optional hint="Up to 500 characters. Leave empty to clear the address."><Textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={3} maxLength={500} /></Field>
+    <Field label="Address" optional hint="Optional. Up to 500 characters."><Textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={3} maxLength={500} /></Field>
     {error && <FormError>{error}</FormError>}
     <div className="flex flex-wrap gap-3"><Button variant="primary" type="submit" disabled={busy}>{busy ? "Saving…" : "Save household"}</Button><Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button></div>
   </form>;

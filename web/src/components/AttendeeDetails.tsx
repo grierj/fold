@@ -1,5 +1,5 @@
 import { attendeeSubject } from "../api";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { Attendee, HouseholdAttendee, RegisteredBy } from "../types";
 import { Button } from "./ui/Button";
 import { Badge } from "./ui/Badge";
@@ -23,7 +23,7 @@ export function AttendeeDetails({ attendee: a, childcare = true }: { attendee: A
   const notes = person?.careNotesVisibleUntil && clock > new Date(person.careNotesVisibleUntil).getTime() ? undefined : person?.careNotes;
   if (!subject) return null;
   return <div className="min-w-0 break-words">
-    <span>{a.name}{person && <> · {person.householdName} (via {holder?.name})</>}</span>
+    <span>{a.name}{person && showHousehold(person.householdName, holder?.name) && <> · {person.householdName}</>}</span>
     <span className="inline-flex flex-wrap items-center gap-1 ml-1">
       {person && person.kind !== "adult" && <Badge>{person.kind === "child" ? "Child" : "Teen"}</Badge>}
       {person?.age !== undefined && <span>Age {person.age}</span>}
@@ -31,18 +31,33 @@ export function AttendeeDetails({ attendee: a, childcare = true }: { attendee: A
       {a.guestCount > 0 && <span>+{a.guestCount}</span>}
       {childcare && (a.childcareRequested || (a.childcareCount ?? 0) > 0) && <ChildcareBadge count={a.childcareRequested ? 1 : a.childcareCount} />}
     </span>
+    {person && holder && <div className="text-sm text-text-muted">Signed up by {holder.name}</div>}
     {childcare && a.childcareAgesNote && <Note text={a.childcareAgesNote} label="Ages" name={a.name} />}
     {notes && <Note text={notes} label="Care notes" name={a.name} />}
   </div>;
 }
 
+// The household name only adds something when it isn't the signer's
+// surname household ("Smith household" under John Smith) (PR 110 N1).
+function showHousehold(household: string, holder?: string): boolean {
+  const last = holder?.trim().split(/\s+/).pop()?.toLowerCase();
+  return !last || household.trim().toLowerCase() !== `${last} household`;
+}
+
 function Note({ text, label, name }: { text: string; label: string; name: string }) {
   const [open, setOpen] = useState(false);
+  const [clamped, setClamped] = useState(text.length > 120);
   const id = useId();
+  const ref = useRef<HTMLDivElement>(null);
+  // Offer the toggle only when the clamp actually cuts the note (PR 110 N3).
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && !open && el.clientHeight > 0) setClamped(el.scrollHeight > el.clientHeight + 1);
+  }, [text, open]);
   return <div className="mt-1 text-sm text-text-muted">
-    <div id={id} className={`whitespace-pre-wrap wrap-anywhere ${open ? "" : "line-clamp-3"}`}>{label}: {text}</div>
-    <Button variant="link" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
+    <div ref={ref} id={id} className={`whitespace-pre-wrap wrap-anywhere ${open ? "" : "line-clamp-3"}`}>{label}: {text}</div>
+    {(clamped || open) && <Button variant="link" aria-expanded={open} aria-controls={id} onClick={() => setOpen(!open)}>
       {open ? `Hide ${label.toLowerCase()}` : `Show full ${label.toLowerCase()} for ${name}`}
-    </Button>
+    </Button>}
   </div>;
 }
