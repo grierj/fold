@@ -128,6 +128,7 @@ func TestHouseholdAttendeeCareProjection(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			r.Status = tt.status
+			f.today = start // the age clock is fixed; only the care window moves
 			dto := f.attendee(r, o, tt.viewer, tt.manager, true, tt.now)
 			if (dto != nil) != tt.visible {
 				t.Fatalf("visibility: %+v", dto)

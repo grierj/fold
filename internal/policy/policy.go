@@ -648,6 +648,13 @@ func HouseholdRegistrationProblem(person HouseholdPerson) string {
 	if person.Kind != KindChild && person.Kind != KindTeen {
 		return "household_age_mismatch"
 	}
+	// PLAN 2.x bands: child under 13, teen 13 to 17 (Warden, PR 110 N1).
+	// Nobody 18 or older is a child or teen, and a teen can't be under 13.
+	// A child who turned 13 stays registrable until the guardian updates
+	// the kind; the accounts.age_rollover job flags them (judgment call 39).
+	if *person.AgeYears >= 18 || (person.Kind == KindTeen && *person.AgeYears < 13) {
+		return "household_age_mismatch"
+	}
 	if person.LinkStatus == LinkPending {
 		return "household_link_pending"
 	}

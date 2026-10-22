@@ -779,7 +779,7 @@ func TestCanSeeChildcare(t *testing.T) {
 }
 
 func TestHouseholdRegistrationEligibility(t *testing.T) {
-	age17, age18, age6, future := 17, 18, 6, -1
+	age12, age13, age17, age18, age6, future := 12, 13, 17, 18, 6, -1
 	adultRel := HouseholdRel{Account: true, Adult: true}
 	for _, tt := range []struct {
 		name   string
@@ -791,7 +791,14 @@ func TestHouseholdRegistrationEligibility(t *testing.T) {
 		{"adult below eighteen even with old link", HouseholdPerson{Kind: KindAdult, AgeYears: &age17, LinkStatus: LinkConfirmed}, "household_age_mismatch"},
 		{"future birth date", HouseholdPerson{Kind: KindChild, AgeYears: &future, LinkStatus: LinkConfirmed}, "household_age_mismatch"},
 		{"confirmed child", HouseholdPerson{Kind: KindChild, AgeYears: &age6, LinkStatus: LinkConfirmed}, ""},
-		{"confirmed teen labelled conservatively", HouseholdPerson{Kind: KindTeen, AgeYears: &age18, LinkStatus: LinkConfirmed}, ""},
+		{"teen at eighteen", HouseholdPerson{Kind: KindTeen, AgeYears: &age18, LinkStatus: LinkConfirmed}, "household_age_mismatch"},
+		{"teen at seventeen", HouseholdPerson{Kind: KindTeen, AgeYears: &age17, LinkStatus: LinkConfirmed}, ""},
+		{"teen at thirteen", HouseholdPerson{Kind: KindTeen, AgeYears: &age13, LinkStatus: LinkConfirmed}, ""},
+		{"teen at twelve", HouseholdPerson{Kind: KindTeen, AgeYears: &age12, LinkStatus: LinkConfirmed}, "household_age_mismatch"},
+		{"child at twelve", HouseholdPerson{Kind: KindChild, AgeYears: &age12, LinkStatus: LinkConfirmed}, ""},
+		{"child who turned thirteen awaits rollover", HouseholdPerson{Kind: KindChild, AgeYears: &age13, LinkStatus: LinkConfirmed}, ""},
+		{"child at seventeen awaits rollover", HouseholdPerson{Kind: KindChild, AgeYears: &age17, LinkStatus: LinkConfirmed}, ""},
+		{"child at eighteen", HouseholdPerson{Kind: KindChild, AgeYears: &age18, LinkStatus: LinkConfirmed}, "household_age_mismatch"},
 		{"pending child", HouseholdPerson{Kind: KindChild, AgeYears: &age6, LinkStatus: LinkPending}, "household_link_pending"},
 		{"rejected child", HouseholdPerson{Kind: KindChild, AgeYears: &age6, LinkStatus: LinkRejected}, "household_link_unconfirmed"},
 		{"revoked child", HouseholdPerson{Kind: KindChild, AgeYears: &age6, LinkStatus: LinkRevoked}, "household_link_unconfirmed"},

@@ -756,7 +756,7 @@ func TestHouseholdRegistrationAgeAndLifecycle(t *testing.T) {
 		t.Fatalf("unknown adult eligibility %+v", unknown)
 	}
 	batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": unknown.ID, "status": "going"}}}, http.StatusConflict)
-	apiDo(t, c, "PUT", "/api/v1/me/household/people/"+itoa(child.ID), map[string]any{"kind": "teen"}, http.StatusOK)
+	apiDo(t, c, "PUT", "/api/v1/me/household/people/"+itoa(child.ID), map[string]any{"kind": "teen", "birthDate": "2012-01-01"}, http.StatusOK)
 	var r models.Registration
 	if err := app.DB.First(&r, result.People[1].RegistrationID).Error; err != nil {
 		t.Fatal(err)
