@@ -162,6 +162,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		remoteUsedMap = map[uint]int{}
 	}
 
+	showChildcare := map[uint]bool{}
 	showNames := map[uint]bool{}
 	// Who said "can't go" (count and names) is only for the people who run
 	// the event: admins, the group's leaders, a church-wide event's hosts
@@ -175,10 +176,24 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		if g != nil {
 			gp = asGroup(g)
 		}
+		showChildcare[ev.ID] = policy.CanSeeChildcare(p, viewOf(ev, hosted[ev.ID]), rel)
 		showNames[ev.ID] = policy.CanSeeAttendeeNames(p, viewOf(ev, hosted[ev.ID]), gp, rel)
 		showDeclined[ev.ID] = policy.CanManageEvent(p, viewOf(ev, hosted[ev.ID]), rel)
 	}
-	names := a.attendeeNames(kept, showNames)
+	// Managers need totals; everyone else only needs to know if a
+	// limited childcare pool is full. Skip dates that need neither.
+	childcareIDs := []uint{}
+	for _, o := range kept {
+		ev := byID[o.EventID]
+		if ev.ChildcareAvailable && (showChildcare[ev.ID] || ev.ChildcareCapacity != nil) {
+			childcareIDs = append(childcareIDs, o.ID)
+		}
+	}
+	childcareUsed, err := childcareUsedMap(a.DB, childcareIDs)
+	if err != nil {
+		childcareUsed = map[uint]int{}
+	}
+	names := a.attendeeNames(kept, showNames, showChildcare)
 
 	for i := range kept {
 		o := &kept[i]
@@ -208,6 +223,12 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		inst.SeatsUsed = used
 		inst.SpotsLeft = spotsLeftFor(inst.Capacity, used)
 		remoteUsed := remoteUsedMap[o.ID]
+		inst.ChildcareFull = ev.ChildcareAvailable && ev.ChildcareCapacity != nil && childcareUsed[o.ID] >= *ev.ChildcareCapacity
+		if showChildcare[ev.ID] && ev.ChildcareAvailable {
+			n := childcareUsed[o.ID]
+			inst.ChildcareUsed = &n
+			inst.ChildcareSpotsLeft = spotsLeftFor(ev.ChildcareCapacity, n)
+		}
 		inst.RemoteSeatsUsed = remoteUsed
 		inst.RemoteSpotsLeft = spotsLeftFor(inst.RemoteCapacity, remoteUsed)
 		if r, ok := mine[o.ID]; ok {
@@ -215,6 +236,8 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 			inst.MyRegistration = &s
 			gc := r.GuestCount
 			inst.MyGuestCount = &gc
+			inst.MyChildcareCount = &r.ChildcareCount
+			inst.MyChildcareAgesNote = &r.ChildcareAgesNote
 			m := attendanceModeOf(r.AttendanceMode)
 			inst.MyAttendanceMode = &m
 			if r.Status == models.RegWaitlisted {
@@ -252,10 +275,12 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 // registrations are never listed. Waitlisted names follow the same
 // CanSeeAttendeeNames rule as going names; they come back in promotion
 // (line) order so the UI can render the waitlist section.
-func (a *App) attendeeNames(kept []models.EventOccurrence, show map[uint]bool) map[uint][]attendeeJSON {
+func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare map[uint]bool) map[uint][]attendeeJSON {
 	out := map[uint][]attendeeJSON{}
 	ids := []uint{}
+	showChildcare := map[uint]bool{}
 	for _, o := range kept {
+		showChildcare[o.ID] = childcare[o.EventID]
 		if show[o.EventID] {
 			ids = append(ids, o.ID)
 		}
@@ -264,18 +289,20 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show map[uint]bool) m
 		return out
 	}
 	type row struct {
-		OccurrenceID   uint
-		UserID         uint
-		Name           string
-		DisplayName    string
-		Status         string
-		GuestCount     int
-		AttendanceMode string
-		WaitlistedAt   *time.Time
+		OccurrenceID      uint
+		UserID            uint
+		Name              string
+		DisplayName       string
+		Status            string
+		GuestCount        int
+		AttendanceMode    string
+		ChildcareCount    int
+		ChildcareAgesNote string
+		WaitlistedAt      *time.Time
 	}
 	var rows []row
 	a.DB.Model(&models.Registration{}).Joins(listedUsers("registrations")).
-		Select("registrations.occurrence_id, registrations.user_id, users.name, users.display_name, registrations.status, registrations.guest_count, registrations.attendance_mode, registrations.waitlisted_at").
+		Select("registrations.occurrence_id, registrations.user_id, users.name, users.display_name, registrations.status, registrations.guest_count, registrations.attendance_mode, registrations.childcare_count, registrations.childcare_ages_note, registrations.waitlisted_at").
 		Where("registrations.occurrence_id IN ? AND registrations.status NOT IN ?",
 			ids, []string{models.RegCancelled, models.RegRemoved}).
 		Order("users.display_name, users.name, users.id").
@@ -311,9 +338,15 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show map[uint]bool) m
 			if name == "" {
 				name = "Member"
 			}
+			var count *int
+			var ages *string
+			if showChildcare[occID] {
+				count, ages = &r.ChildcareCount, &r.ChildcareAgesNote
+			}
 			out[occID] = append(out[occID], attendeeJSON{
 				UserID: r.UserID, Name: name, Status: r.Status, GuestCount: r.GuestCount,
 				AttendanceMode: attendanceModeOf(r.AttendanceMode),
+				ChildcareCount: count, ChildcareAgesNote: ages,
 			})
 		}
 	}
@@ -354,10 +387,12 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 		RecurrenceRule: ev.RRule, RRuleUntil: until, SeriesStartsLocal: ev.StartsLocal,
 		Overridden:  o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil,
 		SeriesTitle: ev.Title, SeriesLocation: ev.Location, SeriesDurationMinutes: ev.DurationMinutes,
-		Registrations:   map[string]int64{"going": 0, "maybe": 0, "waitlisted": 0},
-		Capacity:        events.EffectiveCapacity(ev.Capacity, o.CapacityOverride),
-		WaitlistEnabled: ev.WaitlistEnabled,
-		GuestsAllowed:   ev.GuestsAllowed,
+		Registrations:      map[string]int64{"going": 0, "maybe": 0, "waitlisted": 0},
+		Capacity:           events.EffectiveCapacity(ev.Capacity, o.CapacityOverride),
+		WaitlistEnabled:    ev.WaitlistEnabled,
+		GuestsAllowed:      ev.GuestsAllowed,
+		ChildcareAvailable: ev.ChildcareAvailable, ChildcareNotes: ev.ChildcareNotes,
+		ChildcareCapacity: ev.ChildcareCapacity, ChildcareAges: ev.ChildcareAges,
 		RemoteAvailable: ev.RemoteAvailable,
 		RemoteCapacity:  events.EffectiveRemoteCapacity(ev.RemoteCapacity, o.RemoteCapacityOverride),
 	}
@@ -385,7 +420,9 @@ func toEventJSON(ev *models.Event) eventJSON {
 		Visibility: ev.Visibility, LeaderOpened: ev.LeaderOpened,
 		ChurchWide: ev.GroupID == nil,
 		Capacity:   ev.Capacity, WaitlistEnabled: ev.WaitlistEnabled,
-		GuestsAllowed:   ev.GuestsAllowed,
+		GuestsAllowed:      ev.GuestsAllowed,
+		ChildcareAvailable: ev.ChildcareAvailable, ChildcareNotes: ev.ChildcareNotes,
+		ChildcareCapacity: ev.ChildcareCapacity, ChildcareAges: ev.ChildcareAges,
 		RemoteAvailable: ev.RemoteAvailable, RemoteCapacity: ev.RemoteCapacity,
 		VideoProvider: videoProviderOf(ev), VideoReveal: videoRevealOf(ev),
 	}
@@ -458,8 +495,12 @@ type eventBody struct {
 	GuestsAllowed   *json.RawMessage `json:"guestsAllowed"`
 	// Remote attendance (M1.8 slice 2). RemoteCapacity is raw JSON like
 	// Capacity: null clears to unlimited; a set limit must be positive.
-	RemoteAvailable *bool            `json:"remoteAvailable"`
-	RemoteCapacity  *json.RawMessage `json:"remoteCapacity"`
+	RemoteAvailable    *bool            `json:"remoteAvailable"`
+	RemoteCapacity     *json.RawMessage `json:"remoteCapacity"`
+	ChildcareAvailable *bool            `json:"childcareAvailable"`
+	ChildcareNotes     *string          `json:"childcareNotes"`
+	ChildcareCapacity  json.RawMessage  `json:"childcareCapacity"`
+	ChildcareAges      *string          `json:"childcareAges"`
 	// Video link (5.8, M1.8); see parseVideoEdits in api_video.go.
 	VideoProvider *string `json:"videoProvider"`
 	VideoURL      *string `json:"videoUrl"`
@@ -544,6 +585,18 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 	}
 	if ed.remoteCapSet {
 		ev.RemoteCapacity = ed.remoteCap
+	}
+	if body.ChildcareAvailable != nil {
+		ev.ChildcareAvailable = *body.ChildcareAvailable
+	}
+	if body.ChildcareNotes != nil {
+		ev.ChildcareNotes = strings.TrimSpace(*body.ChildcareNotes)
+	}
+	if body.ChildcareAges != nil {
+		ev.ChildcareAges = strings.TrimSpace(*body.ChildcareAges)
+	}
+	if ed.childcareCapSet {
+		ev.ChildcareCapacity = ed.childcareCap
 	}
 	// Video (M1.8): vid holds the effective, validated values.
 	ev.VideoProvider = vid.provider
@@ -780,6 +833,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		}
 		oldCap, oldPlace := locked.Capacity, locked.Location
 		oldRemoteCap := locked.RemoteCapacity
+		oldChildcareCap, oldChildcareAvailable := locked.ChildcareCapacity, locked.ChildcareAvailable
 		applySpec(&locked, spec, body, ed, vid)
 		if err := tx.Save(&locked).Error; err != nil {
 			return err
@@ -868,13 +922,14 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				}
 			}
 		}
-		// Capacity change: promote per future occurrence where either
-		// pool's effective capacity changed (old vs new). Lowering
-		// promotes nobody new; the fits check inside promotion makes
-		// that a no-op, and nobody is ever removed (Decision 3).
+		// Capacity change: promote per future occurrence where an attendance
+		// pool or childcare limit changed (old vs new). Promotion checks
+		// the remaining room in every pool; nobody is removed (Decision 3).
 		capChanged := ed.capSet && !intPtrEqual(oldCap, ed.cap)
 		remoteCapChanged := ed.remoteCapSet && !intPtrEqual(oldRemoteCap, ed.remoteCap)
-		if capChanged || remoteCapChanged {
+		childcareChanged := !intPtrEqual(oldChildcareCap, locked.ChildcareCapacity) ||
+			oldChildcareAvailable != locked.ChildcareAvailable
+		if capChanged || remoteCapChanged || childcareChanged {
 			// The new series values, for dates a change doesn't cover.
 			newCap, newRemoteCap := oldCap, oldRemoteCap
 			if ed.capSet {
@@ -895,7 +950,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				sameRemote := intPtrEqual(
 					events.EffectiveRemoteCapacity(oldRemoteCap, occs[i].RemoteCapacityOverride),
 					events.EffectiveRemoteCapacity(newRemoteCap, occs[i].RemoteCapacityOverride))
-				if sameIn && sameRemote {
+				if sameIn && sameRemote && !childcareChanged {
 					continue
 				}
 				lockedOcc, err := lockOccurrence(tx, occs[i].ID)
@@ -903,10 +958,10 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 					return err
 				}
 				ids, err := a.promoteLocked(tx, &locked, lockedOcc, now, &me.ID)
-				emailed = append(emailed, ids...)
 				if err != nil {
 					return err
 				}
+				emailed = append(emailed, ids...)
 			}
 		}
 		return nil
@@ -1145,10 +1200,10 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 				events.EffectiveRemoteCapacity(ev.RemoteCapacity, newRemoteOverride))
 		if capMoved || remoteCapMoved {
 			ids, err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
-			emailed = append(emailed, ids...)
 			if err != nil {
 				return err
 			}
+			emailed = append(emailed, ids...)
 		}
 		inst = occurrenceToJSON(ev, &o, groupLoc)
 		applyVideoReveal(&inst, ev, false, true) // managers see the link
@@ -1167,6 +1222,14 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		}
 		inst.RemoteSeatsUsed = remoteUsed
 		inst.RemoteSpotsLeft = spotsLeftFor(inst.RemoteCapacity, remoteUsed)
+		if ev.ChildcareAvailable {
+			n, err := childcareUsedFor(tx, o.ID, 0)
+			if err != nil {
+				return err
+			}
+			inst.ChildcareUsed = &n
+			inst.ChildcareSpotsLeft = spotsLeftFor(ev.ChildcareCapacity, n)
+		}
 		var mineReg models.Registration
 		if tx.Where("user_id = ? AND occurrence_id = ? AND status <> ?",
 			me.ID, o.ID, models.RegCancelled).First(&mineReg).Error == nil {
@@ -1174,6 +1237,8 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			inst.MyRegistration = &s
 			gc := mineReg.GuestCount
 			inst.MyGuestCount = &gc
+			inst.MyChildcareCount = &mineReg.ChildcareCount
+			inst.MyChildcareAgesNote = &mineReg.ChildcareAgesNote
 			m := attendanceModeOf(mineReg.AttendanceMode)
 			inst.MyAttendanceMode = &m
 			if mineReg.Status == models.RegWaitlisted {

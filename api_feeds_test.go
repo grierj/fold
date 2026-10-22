@@ -582,3 +582,20 @@ func TestFeedVideoLinkMaybeNoResponseAndSeriesDate(t *testing.T) {
 		t.Fatal("the series entry should carry the link for someone going to one date")
 	}
 }
+
+func TestFeedMentionsChildcareAndAges(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	start := feedStart(7)
+	gid := createFeedGroup(t, admin, "Family Feed", models.VisibilityPublic, "Hall")
+	offered := createFeedEvent(t, admin, gid, "Family Night", start, "")
+	createFeedEvent(t, admin, gid, "Adults Night", start.AddDate(0, 0, 1), "")
+	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(offered.ID), map[string]any{"childcareAvailable": true, "childcareAges": "Ages 2–5"}, http.StatusOK)
+	for _, path := range []string{"/cal/public.ics", "/cal/groups/" + itoa(gid) + ".ics"} {
+		body := unfoldFeed(feedBody(t, newAPIClient(t, app), path))
+		if strings.Count(body, "Childcare available (Ages 2–5)") != 1 {
+			t.Fatalf("%s childcare description: %s", path, body)
+		}
+	}
+}

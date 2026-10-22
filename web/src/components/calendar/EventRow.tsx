@@ -3,6 +3,7 @@ import type { CalendarOccurrence } from "../../types";
 import { formatTime } from "../../lib/when";
 import { CheckIcon, ClockIcon } from "../icons";
 import { RemoteBadge } from "../RemoteBadge";
+import { ChildcareBadge } from "../ChildcareBadge";
 
 const STATUS = { going: "Going", maybe: "Maybe", waitlisted: "Waitlisted" } as const;
 
@@ -45,6 +46,7 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
         </span>
         <StatusBadge status={occ.myStatus} />
         {occ.remoteAvailable && <RemoteBadge />}
+        {occ.childcareAvailable && <ChildcareBadge />}
       </span>
       <span className="mt-1 block font-semibold text-text">{occ.title || occ.groupName}</span>
       <span className="mt-1 flex min-w-0 items-center gap-1 text-sm text-text-muted">
@@ -76,7 +78,7 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
 export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurrence; pointerOnly?: boolean; stacked?: boolean }) {
   const time = formatTime(occ.startsAt);
   const title = occ.title || occ.groupName || "";
-  const name = [`${time} ${title}`, occ.churchWide ? "Church-wide" : occ.groupName, occ.groupDeleted && "deleted group", occ.remoteAvailable && "Remote", occ.myStatus && STATUS[occ.myStatus]]
+  const name = [`${time} ${title}`, occ.churchWide ? "Church-wide" : occ.groupName, occ.groupDeleted && "deleted group", occ.remoteAvailable && "Remote", occ.childcareAvailable && "Childcare", occ.myStatus && STATUS[occ.myStatus]]
     .filter(Boolean)
     .join(", ");
   return (
@@ -108,6 +110,7 @@ export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurren
         </>
       )}
       {occ.remoteAvailable && <RemoteBadge />}
+      {occ.childcareAvailable && <ChildcareBadge />}
     </Link>
   );
 }

@@ -88,12 +88,14 @@ func parseRemoteCapacity(raw *json.RawMessage, allowZero bool) (cap *int, set bo
 // guestsAllowed (0-5, null clears to 0), plus the remote pool's cap
 // (M1.8 slice 2; nil clears to unlimited).
 type capacityEdits struct {
-	cap          *int
-	capSet       bool
-	guests       int
-	guestsSet    bool
-	remoteCap    *int
-	remoteCapSet bool
+	cap             *int
+	capSet          bool
+	guests          int
+	guestsSet       bool
+	remoteCap       *int
+	remoteCapSet    bool
+	childcareCap    *int
+	childcareCapSet bool
 }
 
 // parseGuestsAllowed reads guestsAllowed from a body: null clears it to
@@ -131,6 +133,9 @@ func parseCapacityEdits(c *gin.Context, body eventBody) (capacityEdits, bool) {
 	ed.remoteCap, ed.remoteCapSet, msg = parseRemoteCapacity(body.RemoteCapacity, false)
 	if msg != "" {
 		jsonError(c, http.StatusBadRequest, msg)
+		return ed, false
+	}
+	if !parseChildcareEdits(c, body, &ed) {
 		return ed, false
 	}
 	return ed, true
@@ -480,19 +485,27 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 		}
 		pools[mode] = events.Pool{Capacity: capacityForMode(ev, o, mode), Used: used}
 	}
+	childcare := events.Pool{}
+	if ev.ChildcareAvailable && ev.ChildcareCapacity != nil {
+		used, err := childcareUsedFor(tx, o.ID, 0)
+		if err != nil {
+			return nil, err
+		}
+		childcare = events.Pool{Capacity: ev.ChildcareCapacity, Used: used}
+	}
 	entries := make([]events.WaitEntry, len(wl))
 	for i, r := range wl {
-		entries[i] = events.WaitEntry{ID: r.ID, Seats: 1 + r.GuestCount, Mode: attendanceModeOf(r.AttendanceMode)}
+		entries[i] = events.WaitEntry{ID: r.ID, Seats: 1 + r.GuestCount, Mode: attendanceModeOf(r.AttendanceMode), Childcare: r.ChildcareCount}
 	}
 	if events.InCutoff(now, o.StartsAt) {
 		// Nobody is auto-promoted; the leaders or hosts are told only
 		// when someone in line could actually take a freed seat.
-		if len(events.PickPromotionsByPool(entries, pools)) > 0 {
+		if len(events.PickPromotionsByPool(entries, pools, childcare)) > 0 {
 			return notifyWaitlistCutoff(tx, ev, o, actor)
 		}
 		return nil, nil
 	}
-	picks := events.PickPromotionsByPool(entries, pools)
+	picks := events.PickPromotionsByPool(entries, pools, childcare)
 	if len(picks) == 0 {
 		return nil, nil
 	}
@@ -554,7 +567,7 @@ type registrationOutcome struct {
 // not offer remote attendance. Switching mode on a going registration
 // is a re-register in the new pool and may waitlist (M1.8 slice 2).
 func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
-	userID uint, want string, guestCount int, requestedMode string, now time.Time) (*registrationOutcome, []uint, error) {
+	userID uint, want string, guestCount int, requestedMode string, childcare childcareRequest, now time.Time) (*registrationOutcome, []uint, error) {
 	var existing models.Registration
 	found := tx.Where("user_id = ? AND occurrence_id = ?", userID, o.ID).
 		First(&existing).RowsAffected == 1
@@ -581,6 +594,23 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 		return nil, nil, err
 	}
 	fits := func(seats int) bool { return events.Fits(poolCap, used, seats) }
+	count, ages := childcare.values(existing)
+	childcareFreed := found && existing.Status == models.RegGoing && count < existing.ChildcareCount
+	if childcare.ChildcareCount != nil && count > 0 && !ev.ChildcareAvailable {
+		return nil, nil, errChildcareUnavailable
+	}
+	willGo := want == models.RegGoing && ((found && existing.Status == models.RegGoing && oldMode == mode) || fits(1+guestCount))
+	if willGo {
+		if err := checkChildcare(tx, ev, o.ID, existing.ID, count); err != nil {
+			return nil, nil, err
+		}
+	}
+	if found {
+		if err := tx.Model(&existing).Updates(map[string]any{"childcare_count": count, "childcare_ages_note": ages}).Error; err != nil {
+			return nil, nil, err
+		}
+		existing.ChildcareCount, existing.ChildcareAgesNote = count, ages
+	}
 
 	var emailed []uint
 	out := &registrationOutcome{}
@@ -617,7 +647,7 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 			if fits(seats) {
 				if !found {
 					existing = models.Registration{
-						UserID: userID, OccurrenceID: o.ID,
+						UserID: userID, OccurrenceID: o.ID, ChildcareCount: count, ChildcareAgesNote: ages,
 						Status: models.RegGoing, GuestCount: guestCount, Source: models.RegSourceWeb,
 						AttendanceMode: mode,
 					}
@@ -639,7 +669,7 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 			}
 			if !found {
 				existing = models.Registration{
-					UserID: userID, OccurrenceID: o.ID,
+					UserID: userID, OccurrenceID: o.ID, ChildcareCount: count, ChildcareAgesNote: ages,
 					Status: models.RegWaitlisted, GuestCount: guestCount,
 					Source:       models.RegSourceWeb,
 					WaitlistedAt: &now, AttendanceMode: mode,
@@ -738,7 +768,7 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 			}
 			existing.GuestCount = guestCount
 			out.reg = existing
-			if newSeats < oldSeats {
+			if newSeats < oldSeats || childcareFreed {
 				ids, err := a.promoteLocked(tx, ev, o, now, nil)
 				if err != nil {
 					return nil, nil, err
@@ -750,7 +780,7 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 	default: // maybe, declined
 		if !found {
 			existing = models.Registration{
-				UserID: userID, OccurrenceID: o.ID,
+				UserID: userID, OccurrenceID: o.ID, ChildcareCount: count, ChildcareAgesNote: ages,
 				Status: want, GuestCount: guestCount, Source: models.RegSourceWeb,
 				AttendanceMode: mode,
 			}
@@ -791,7 +821,9 @@ type registrationJSON struct {
 	WaitlistPosition *int   `json:"waitlistPosition"`
 	// AttendanceMode is the pool the registration landed in (M1.8
 	// slice 2): in_person or remote.
-	AttendanceMode string `json:"attendanceMode"`
+	AttendanceMode    string `json:"attendanceMode"`
+	ChildcareCount    int    `json:"childcareCount"`
+	ChildcareAgesNote string `json:"childcareAgesNote"`
 }
 
 func (a *App) apiRegister(c *gin.Context) {
@@ -818,9 +850,13 @@ func (a *App) apiRegister(c *gin.Context) {
 		// AttendanceMode is in_person or remote (M1.8 slice 2); absent
 		// keeps an existing registration's pool (in_person for a new one).
 		AttendanceMode *string `json:"attendanceMode"`
+		childcareRequest
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "status and date are required")
+		return
+	}
+	if !body.childcareRequest.validate(c, &ev) {
 		return
 	}
 	requestedMode := ""
@@ -872,7 +908,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		out, ids, err := a.registerLocked(tx, &ev, locked, u.ID, body.Status, guestCount, requestedMode, time.Now().UTC())
+		out, ids, err := a.registerLocked(tx, &ev, locked, u.ID, body.Status, guestCount, requestedMode, body.childcareRequest, time.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -880,6 +916,12 @@ func (a *App) apiRegister(c *gin.Context) {
 		return nil
 	})
 	switch {
+	case errors.Is(err, errChildcareFull):
+		jsonError(c, http.StatusConflict, errChildcareFull.Error())
+		return
+	case errors.Is(err, errChildcareUnavailable):
+		jsonError(c, http.StatusBadRequest, errChildcareUnavailable.Error())
+		return
 	case errors.Is(err, errRemoteNotAvailable):
 		jsonError(c, http.StatusBadRequest, "remote attendance isn't available for this event")
 		return
@@ -899,6 +941,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		Date: body.Date, Status: outcome.reg.Status,
 		GuestCount: outcome.reg.GuestCount, WaitlistPosition: outcome.position,
 		AttendanceMode: attendanceModeOf(outcome.reg.AttendanceMode),
+		ChildcareCount: outcome.reg.ChildcareCount, ChildcareAgesNote: outcome.reg.ChildcareAgesNote,
 	}
 	c.JSON(http.StatusOK, gin.H{"registration": resp})
 }
@@ -964,8 +1007,15 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 			return err
 		}
 		emailed = append(emailed, ids...)
-		// No auto-promotion here: pruning is deliberate, and the leader
-		// may be freeing the seat for a specific add or hand promotion.
+		// DEC-80 retries the waitlist when pruning frees childcare.
+		// Seat-only pruning keeps the seat for a specific add or hand promotion.
+		if r.Status == models.RegGoing && r.ChildcareCount > 0 && ev.ChildcareAvailable {
+			ids, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
+			if err != nil {
+				return err
+			}
+			emailed = append(emailed, ids...)
+		}
 		return nil
 	})
 	if errors.Is(err, errRegNotFound) {
@@ -1021,13 +1071,9 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		if !events.Fits(cap, used, seats) {
 			return errEventFull
 		}
-		raw, hash, err := createInvitationToken()
-		if err != nil {
-			return err
-		}
-		if err := tx.Model(&models.Registration{}).Where("id = ?", r.ID).Updates(map[string]any{
-			"status": models.RegGoing, "promoted_at": time.Now().UTC(), "manage_token_hash": hash,
-		}).Error; err != nil {
+		// Automatic picks are childcare-checked by PickPromotionsByPool; a
+		// manual promote checks here (DEC-80).
+		if err := checkChildcare(tx, ev, locked.ID, r.ID, r.ChildcareCount); err != nil {
 			return err
 		}
 		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RegistrationPromoted,
@@ -1037,7 +1083,7 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		}); err != nil {
 			return err
 		}
-		ids, err := notifyRegistrationPromoted(tx, ev, locked, r.UserID, raw, &me.ID, a)
+		ids, err := a.promoteRows(tx, ev, locked, []models.Registration{r}, time.Now().UTC(), &me.ID)
 		if err != nil {
 			return err
 		}
@@ -1050,6 +1096,9 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		return
 	case errors.Is(err, errEventFull):
 		jsonError(c, http.StatusConflict, "that party doesn't fit in the seats left")
+		return
+	case errors.Is(err, errChildcareFull):
+		jsonError(c, http.StatusConflict, errChildcareFull.Error())
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not promote registration")
@@ -1073,9 +1122,13 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		// AttendanceMode seats the person in that pool; absent keeps an
 		// existing registration's mode (in_person for a new one).
 		AttendanceMode *string `json:"attendanceMode"`
+		childcareRequest
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Date == "" || (body.UserID == 0 && body.Email == "") {
 		jsonError(c, http.StatusBadRequest, "userId or email, and date, are required")
+		return
+	}
+	if !body.childcareRequest.validate(c, ev) {
 		return
 	}
 	addMode := ""
@@ -1148,6 +1201,10 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		var r models.Registration
 		found := tx.Where("user_id = ? AND occurrence_id = ?", target.ID, locked.ID).
 			First(&r).RowsAffected == 1
+		count, ages := body.childcareRequest.values(r)
+		if err := checkChildcare(tx, ev, locked.ID, r.ID, count); err != nil {
+			return err
+		}
 		mode := models.AttendanceInPerson
 		if found {
 			mode = attendanceModeOf(r.AttendanceMode)
@@ -1162,6 +1219,9 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		if err != nil {
 			return err
 		}
+		if found && r.Status == models.RegGoing && attendanceModeOf(r.AttendanceMode) == mode {
+			used -= 1 + r.GuestCount
+		}
 		seats := 1 + guestCount
 		over := !events.Fits(cap, used, seats)
 		if over && !overCap {
@@ -1170,6 +1230,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		updates := map[string]any{
 			"status": models.RegGoing, "guest_count": guestCount, "attendance_mode": mode,
 			"removed_by": nil, "removal_note": "", "waitlisted_at": nil, "promoted_at": nil,
+			"childcare_count": count, "childcare_ages_note": ages,
 		}
 		if found {
 			if err := tx.Model(&models.Registration{}).Where("id = ?", r.ID).Updates(updates).Error; err != nil {
@@ -1177,7 +1238,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			}
 		} else {
 			r = models.Registration{
-				UserID: target.ID, OccurrenceID: locked.ID,
+				UserID: target.ID, OccurrenceID: locked.ID, ChildcareCount: count, ChildcareAgesNote: ages,
 				Status: models.RegGoing, GuestCount: guestCount, Source: models.RegSourceAdmin,
 				AttendanceMode: mode,
 			}
@@ -1197,9 +1258,22 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		}); err != nil {
 			return err
 		}
+		if found && r.Status == models.RegGoing && count < r.ChildcareCount {
+			ids, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
+			if err != nil {
+				return err
+			}
+			emailed = append(emailed, ids...)
+		}
 		return nil
 	})
 	switch {
+	case errors.Is(err, errChildcareFull):
+		jsonError(c, http.StatusConflict, errChildcareFull.Error())
+		return
+	case errors.Is(err, errChildcareUnavailable):
+		jsonError(c, http.StatusBadRequest, errChildcareUnavailable.Error())
+		return
 	case errors.Is(err, errEventFull):
 		body := errorBody(http.StatusConflict, "This event is full")
 		body["full"] = true
@@ -1287,23 +1361,29 @@ func restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint) ([]uint, err
 		// here, so its seats are not in used yet.
 		mode := attendanceModeOf(r.AttendanceMode)
 		cap := capacityForMode(&ev, o, mode)
-		if cap == nil {
-			continue // unlimited: every row fits
-		}
+
 		used, err := seatsUsedForMode(tx, o.ID, mode)
 		if err != nil {
 			return nil, err
 		}
 		seats := 1 + r.GuestCount
-		if events.Fits(cap, used, seats) {
+		childcareErr := checkChildcare(tx, &ev, o.ID, r.ID, r.ChildcareCount)
+		if childcareErr != nil && !errors.Is(childcareErr, errChildcareFull) {
+			return nil, childcareErr
+		}
+		if events.Fits(cap, used, seats) && childcareErr == nil {
 			continue // fits: stays going, counts again once enabled
+		}
+		childcareUsed, err := childcareUsedFor(tx, o.ID, r.ID)
+		if err != nil {
+			return nil, err
 		}
 		if err := tx.Delete(&r).Error; err != nil {
 			return nil, err
 		}
 		if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.RegistrationNotRestored,
 			TargetType: "event", TargetID: ev.ID,
-			Meta: map[string]any{"userId": userID, "occurrenceId": o.ID, "seats": used, "capacity": *cap, "attendanceMode": mode},
+			Meta: map[string]any{"userId": userID, "occurrenceId": o.ID, "seats": used, "capacity": cap, "attendanceMode": mode, "childcareUsed": childcareUsed, "childcareCapacity": ev.ChildcareCapacity},
 			IP:   c.ClientIP(),
 		}); err != nil {
 			return nil, err

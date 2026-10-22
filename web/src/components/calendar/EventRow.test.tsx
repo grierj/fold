@@ -13,7 +13,7 @@ const occ = (o: Partial<CalendarOccurrence>): CalendarOccurrence => ({
   location: "Room 201",
   groupId: 3,
   groupName: "Room 201 class",
-  churchWide: false, remoteAvailable: false,
+  churchWide: false, remoteAvailable: false, childcareAvailable: false,
   myStatus: null,
   ...o,
 });
@@ -75,4 +75,9 @@ describe("EventRow deleted group (DEC-68)", () => {
     wrap(<EventRow occ={occ({ groupDeleted: true })} />);
     expect(screen.getByText("Deleted group")).toHaveClass("bg-sunken", "text-text-muted");
   });
+});
+
+it.each([EventRow, EventChip])("marks childcare availability with a neutral calendar badge", (Component) => {
+  wrap(<Component occ={occ({ childcareAvailable: true })} />);
+  expect(screen.getByText("Childcare")).toHaveClass("bg-sunken", "text-text-muted");
 });

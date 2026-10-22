@@ -1,8 +1,10 @@
-import { useId, useState } from "react";
+import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequestField";
+import { Button } from "./ui/Button";
+import { useId, useRef, useState } from "react";
 import { Events } from "../api";
 import type { AttendanceMode, EventOccurrence, RegistrationResponse, RegistrationStatus } from "../types";
 import { errorCode, errorText } from "../lib/errors";
-import { Choices, Field, FormError, Input, Radio } from "./ui/Field";
+import { Choices, Field, FormError, Input, Radio, showFieldErrors } from "./ui/Field";
 
 const OPTIONS: { value: RegistrationStatus; label: string }[] = [
   { value: "going", label: "Going" },
@@ -34,6 +36,12 @@ export function RsvpButtons({
   const mode = offersRemote ? pickedMode : "in_person";
   const [statusMessage, setStatusMessage] = useState("");
   const modeName = useId();
+  const root = useRef<HTMLDivElement>(null);
+  const savedStatus = useRef<HTMLDivElement>(null);
+  const [children, setChildren] = useState(String(instance.myChildcareCount ?? 0));
+  const [ages, setAges] = useState(instance.myChildcareAgesNote ?? "");
+  const [childcareError, setChildcareError] = useState<string | null>(null);
+  const [childcareFullError, setChildcareFullError] = useState(false);
 
   const mine = instance.myRegistration;
   const removed = mine === "removed";
@@ -58,9 +66,12 @@ export function RsvpButtons({
       ? "Remote seats are full. You can still come in person, or join the remote waitlist."
       : "Remote seats are full. You can still come in person.";
 
-  async function choose(status: RegistrationStatus, attendanceMode = mode, switching = false) {
+  async function choose(status: RegistrationStatus, attendanceMode = mode, switching = false,
+    childcare?: Parameters<typeof Events.register>[5]) {
     setBusy(status);
     setError(null);
+    setChildcareError(null);
+    setChildcareFullError(false);
     setStatusMessage("");
     try {
       const guestCount = status === "going" ? guests : 0;
@@ -69,22 +80,51 @@ export function RsvpButtons({
         status,
         instance.date,
         guestCount,
-        instance.remoteAvailable ? attendanceMode : undefined
+        instance.remoteAvailable ? attendanceMode : undefined,
+        status === "going" && instance.childcareAvailable
+          ? childcare ?? (mine !== "going" ? { childcareCount: 0, childcareAgesNote: "" } : undefined)
+          : undefined
       );
       onChange(registration);
       if (switching) {
         setStatusMessage(registration.status === "waitlisted"
           ? `You're on the ${attendanceMode === "remote" ? "remote" : "in-person"} waitlist.`
           : `Switched to ${attendanceMode === "remote" ? "remote" : "in person"}`);
+      } else if (instance.childcareAvailable && status === "going") {
+        setChildren(String(registration.childcareCount));
+        setAges(registration.childcareAgesNote);
+        setStatusMessage(registration.status === "waitlisted"
+          ? `You're on the ${attendanceMode === "remote" ? "remote" : "in-person"} waitlist.`
+          : `Saved: going, ${registration.childcareCount > 0
+            ? `${registration.childcareCount} ${registration.childcareCount === 1 ? "child" : "children"} in childcare`
+            : "no childcare"}`);
+        savedStatus.current?.focus();
       }
     } catch (e) {
       if (switching) setMode(myMode);
+      if (errorCode(e) === "childcare_full") {
+        showFieldErrors(root.current, () => {
+          setBusy(null);
+          setChildcareError(errorText(e, "We couldn't save your childcare request."));
+          setChildcareFullError(true);
+        });
+        return;
+      }
       setError(attendanceMode === "remote" && errorCode(e) === "event_full"
         ? remoteFullMessage
         : errorText(e, "We couldn't save your answer."));
     } finally {
       setBusy(null);
     }
+  }
+
+  function saveChildcare() {
+    const problem = childcareCountProblem(children);
+    if (problem) {
+      showFieldErrors(root.current, () => setChildcareError(problem));
+      return;
+    }
+    void choose("going", mode, false, { childcareCount: Number(children), childcareAgesNote: ages.trim() });
   }
 
   if (removed) {
@@ -96,7 +136,7 @@ export function RsvpButtons({
   }
 
   return (
-    <div>
+    <div ref={root}>
       {waitlisted && instance.myWaitlistPosition != null && (
         <div className="text-sm font-semibold text-text-muted mb-2">
           You&apos;re on the waitlist — position {instance.myWaitlistPosition}. We&apos;ll email you if a spot
@@ -130,7 +170,7 @@ export function RsvpButtons({
           </div>
         </div>
       )}
-      <div role="status" className="text-sm text-text-muted mb-2">{statusMessage}</div>
+      <div ref={savedStatus} role="status" tabIndex={-1} className="text-sm text-text-muted mb-2">{statusMessage}</div>
       <div className="flex gap-2 flex-wrap items-center">
         {/* Segmented control (DEC-63): one joined row, the chosen answer filled. */}
         <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
@@ -164,6 +204,21 @@ export function RsvpButtons({
           </Field>
         )}
       </div>
+      {instance.childcareAvailable && mine === "going" && (
+        <div className="mt-3 space-y-3">
+          <ChildcareRequestField count={children} ages={ages} onCount={setChildren} onAges={setAges}
+            error={childcareError} disabled={busy !== null} full={instance.childcareFull} />
+          <div className="flex flex-wrap gap-2">
+            <Button variant="primary" disabled={busy !== null} onClick={saveChildcare}>
+              {busy === "going" ? "Saving…" : "Save"}
+            </Button>
+            {childcareFullError && <Button variant="secondary" disabled={busy !== null}
+              onClick={() => void choose("going", mode, false, { childcareCount: 0, childcareAgesNote: "" })}>
+              Clear childcare request
+            </Button>}
+          </div>
+        </div>
+      )}
       {error && <FormError layout="mt-1">{error}</FormError>}
     </div>
   );

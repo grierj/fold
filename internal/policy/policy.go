@@ -323,6 +323,12 @@ func CanMessageEvent(p *Person, ev EventView, r Rel) bool {
 	return r.Leader
 }
 
+// CanSeeChildcare protects childcare totals and other people's requests.
+// The caller has already checked event visibility.
+func CanSeeChildcare(p *Person, ev EventView, r Rel) bool {
+	return CanManageEvent(p, ev, r)
+}
+
 // CanRegisterEvent: a signed-in person who can see the event may register.
 // That includes an outsider of an opened invite-only event. It does not add
 // them to the group. Signed-out visitors use CanRegisterGuest instead.

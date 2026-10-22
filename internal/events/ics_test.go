@@ -343,3 +343,21 @@ func TestICSRemoteAvailableInDescription(t *testing.T) {
 		t.Fatal("a non-remote event claimed remote attendance")
 	}
 }
+
+func TestICSChildcareDescription(t *testing.T) {
+	f := Feed{Host: "church.example.org", Events: []FeedEvent{{
+		ID: 1, Title: "Family Night", TZID: "UTC", StartsLocal: "2026-12-01T19:00", DurationMinutes: 60,
+		ChildcareAvailable: true, ChildcareAges: "Ages 2–5", RRule: "FREQ=WEEKLY;COUNT=2",
+		Overrides: []FeedOccurrence{{OriginalDate: "2026-12-08", StartsAt: utc(2026, 12, 8, 20, 0), EndsAt: utc(2026, 12, 8, 21, 0), Title: "New time"}},
+	}}, Singles: []FeedSingle{{EventID: 2, OriginalDate: "2026-12-02", Title: "One date", TZID: "UTC",
+		StartsAt: utc(2026, 12, 2, 19, 0), EndsAt: utc(2026, 12, 2, 20, 0), ChildcareAvailable: true,
+	}}}
+	out := strings.ReplaceAll(string(RenderFeed(f)), "\r\n ", "")
+	if strings.Count(out, "Childcare available") != 3 || strings.Count(out, "Childcare available (Ages 2–5)") != 2 {
+		t.Fatalf("childcare missing from series, override or single:\n%s", out)
+	}
+	f.Events[0].ChildcareAvailable, f.Singles[0].ChildcareAvailable = false, false
+	if strings.Contains(string(RenderFeed(f)), "Childcare available") {
+		t.Fatal("childcare-off event advertised childcare")
+	}
+}

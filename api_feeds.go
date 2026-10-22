@@ -243,7 +243,7 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 				feed.Singles = append(feed.Singles, events.FeedSingle{
 					EventID: ev.ID, OriginalDate: occ.OriginalDate,
 					Title: eff.Title, Description: ev.Description, Location: eff.Location,
-					VideoURL: videoFor(anyStatus[occ.ID]), RemoteAvailable: ev.RemoteAvailable,
+					VideoURL: videoFor(anyStatus[occ.ID]), RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: ev.ChildcareAvailable, ChildcareAges: ev.ChildcareAges,
 					TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
 					URL: a.feedEventURL(ev.ID), UpdatedAt: occ.UpdatedAt, Status: s,
 				})
@@ -269,7 +269,7 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		}
 		fe := events.FeedEvent{
 			ID: ev.ID, Title: ev.Title, Description: ev.Description, Location: seriesLoc,
-			VideoURL: videoFor(seriesStatuses...), RemoteAvailable: ev.RemoteAvailable,
+			VideoURL: videoFor(seriesStatuses...), RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: ev.ChildcareAvailable, ChildcareAges: ev.ChildcareAges,
 			TZID: ev.TZID, StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes,
 			RRule: ev.RRule, RRuleUntil: until,
 			URL: a.feedEventURL(ev.ID), UpdatedAt: ev.UpdatedAt,

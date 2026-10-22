@@ -749,3 +749,30 @@ func TestCanSeeVideoLinkInFeed(t *testing.T) {
 		}
 	}
 }
+
+func TestCanSeeChildcare(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		viewer *Person
+		event  EventView
+		rel    Rel
+		want   bool
+	}{
+		{"signed out", nil, EventView{}, none, false},
+		{"ordinary member", adult, EventView{}, member, false},
+		{"outsider", adult, EventView{}, none, false},
+		{"group leader", adult, EventView{}, leader, true},
+		{"admin", admin, EventView{}, none, true},
+		{"church host", adult, EventView{ChurchWide: true, Host: true}, none, true},
+		{"host row on a group event", adult, EventView{Host: true}, none, false},
+		{"unrelated leader on church event", adult, EventView{ChurchWide: true}, leader, false},
+		{"church attendee", adult, EventView{ChurchWide: true}, member, false},
+		{"signed out with relation", nil, EventView{ChurchWide: true, Host: true}, leader, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanSeeChildcare(tt.viewer, tt.event, tt.rel); got != tt.want {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

@@ -1,3 +1,4 @@
+import { ChildcareField, childcareBody, childcareProblem, emptyChildcare, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "../components/ChildcareField";
 import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
 import { ZonePicker } from "../components/ui/ZonePicker";
@@ -36,12 +37,14 @@ export function NewEvent() {
   const [visibility, setVisibility] = useState<Visibility>("public");
   const [visReason, setVisReason] = useState("");
   const [video, setVideo] = useState<VideoValue>(emptyVideo);
+  const [childcare, setChildcare] = useState<ChildcareValue>(emptyChildcare);
   const [remote, setRemote] = useState<RemoteValue>(emptyRemote);
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [childcareError, setChildcareError] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -97,6 +100,13 @@ export function NewEvent() {
       focusVideoUrl("event");
       return;
     }
+    const childcareMsg = childcareProblem(childcare);
+    setChildcareError(childcareMsg);
+    if (childcareMsg) {
+      setError(childcareMsg);
+      focusChildcareCapacity("event");
+      return;
+    }
     const remoteMsg = remoteProblem(remote);
     setRemoteError(remoteMsg);
     if (remoteMsg) {
@@ -121,11 +131,13 @@ export function NewEvent() {
         videoUrl: video.provider === "none" ? "" : video.url.trim(),
         videoReveal: video.reveal,
         ...remoteBody(remote),
+        ...childcareBody(childcare),
       });
       navigate(`/groups/${id}`);
     } catch (err) {
       const msg = errorText(err, "We couldn't schedule the event.");
       setError(msg);
+      if (isChildcareCapacityError(msg)) { setChildcareError(msg); focusChildcareCapacity("event"); }
       if (isRemoteError(msg)) {
         setRemoteError(msg);
         focusRemoteCapacity("event");
@@ -255,6 +267,9 @@ export function NewEvent() {
         />
         <div className="border-t border-border pt-4">
           <VideoField idPrefix="event" value={video} onChange={setVideo} error={videoError} />
+        </div>
+        <div className="border-t border-border pt-4">
+          <ChildcareField idPrefix={"event"} value={childcare} onChange={setChildcare} error={childcareError} />
         </div>
         <div className="border-t border-border pt-4">
           <RemoteField idPrefix="event" value={remote} onChange={setRemote} error={remoteError} />

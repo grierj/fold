@@ -756,3 +756,58 @@ func TestGuardianLinkSelfConfirmIgnoresInactiveAdmins(t *testing.T) {
 		t.Fatalf("self-confirm audit: %+v", metas)
 	}
 }
+
+func TestDisabledChildcareUncountedAndLeftOutWhenFull(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ChildcareRestore")
+	id, date := seedChildcareEvent(t, app, admin, gid, nil, intPtr(1), false)
+	u := newTestUser(t, app, "restoreparent", "password1234", models.RoleMember)
+	c := loginAPI(t, app, "restoreparent", "password1234")
+	r := childcareAs(t, c, id, date, "going", 1, http.StatusOK)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(u.ID), map[string]any{"status": "disabled"}, http.StatusOK)
+	if used, err := childcareUsedFor(app.DB, r.OccurrenceID, 0); err != nil || used != 0 {
+		t.Fatalf("disabled childcare counts: %d %v", used, err)
+	}
+	// This going request fits only because the disabled request is ignored.
+	childcareAs(t, admin, id, date, "going", 1, http.StatusOK)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(u.ID), map[string]any{"status": "active"}, http.StatusOK)
+	var n int64
+	app.DB.Model(&models.Registration{}).Where("user_id = ? AND occurrence_id = ?", u.ID, r.OccurrenceID).Count(&n)
+	if n != 0 {
+		t.Fatal("restored over childcare capacity with unlimited attendance")
+	}
+	if auditCount(t, app, audit.RegistrationNotRestored) != 1 {
+		t.Fatal("missing not-restored audit")
+	}
+	if findKind(feed(t, loginAPI(t, app, "restoreparent", "password1234"), ""), "registration.not_restored") == nil {
+		t.Fatal("missing ask-a-leader notice")
+	}
+}
+
+// Deleting an account frees its seats, so the next waiter is promoted in
+// the same transaction (Whittler, PR 109).
+func TestAdminDeleteUserPromotesWaiter(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "DeletePromote")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	goer, cGoer := mkUser(t, app, &g, "del-goer")
+	waiter, cWaiter := mkUser(t, app, &g, "del-waiter")
+	for _, c := range []*apiClient{cGoer, cWaiter} {
+		if code, body := registerModeAs(c, eventID, date, "going", models.AttendanceInPerson); code != http.StatusOK {
+			t.Fatalf("register: %d %s", code, body)
+		}
+	}
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+	if got := regStatus(t, app, waiter.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("waiter = %q, want waitlisted", got)
+	}
+	if w := admin.do("DELETE", "/api/v1/admin/users/"+itoa2(goer.ID), nil, true); w.Code != http.StatusOK {
+		t.Fatalf("delete: %d %s", w.Code, w.Body.String())
+	}
+	if got := regStatus(t, app, waiter.ID, occ.ID); got != models.RegGoing {
+		t.Fatalf("waiter after delete = %q, want going", got)
+	}
+}

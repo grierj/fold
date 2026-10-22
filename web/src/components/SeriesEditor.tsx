@@ -1,3 +1,4 @@
+import { ChildcareField, childcareBody, childcareFrom, childcareProblem, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "./ChildcareField";
 import { useState } from "react";
 import { Events } from "../api";
 import { bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
@@ -28,6 +29,10 @@ export interface SeriesFields {
   videoProvider?: VideoProvider;
   videoUrl?: string;
   videoReveal?: VideoReveal;
+  childcareAvailable?: boolean;
+  childcareCapacity?: number | null;
+  childcareAges?: string;
+  childcareNotes?: string;
   remoteAvailable?: boolean;
   remoteCapacity?: number | null;
 }
@@ -73,11 +78,14 @@ export function SeriesEditor({
     reveal: instance.videoReveal ?? "registered_only",
   };
   const [video, setVideo] = useState<VideoValue>(initialVideo);
+  const initialChildcare = childcareFrom(instance.childcareAvailable, instance.childcareCapacity, instance.childcareAges, instance.childcareNotes);
+  const [childcare, setChildcare] = useState<ChildcareValue>(initialChildcare);
   const initialRemote = remoteFrom(instance.remoteAvailable, instance.remoteCapacity);
   const [remote, setRemote] = useState<RemoteValue>(initialRemote);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [childcareError, setChildcareError] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
   function toggleDay(v: string) {
@@ -95,6 +103,13 @@ export function SeriesEditor({
     if (videoMsg) {
       setError(videoMsg);
       focusVideoUrl(idPrefix);
+      return;
+    }
+    const childcareMsg = childcareProblem(childcare);
+    setChildcareError(childcareMsg);
+    if (childcareMsg) {
+      setError(childcareMsg);
+      focusChildcareCapacity(idPrefix);
       return;
     }
     const remoteMsg = remoteProblem(remote);
@@ -124,6 +139,10 @@ export function SeriesEditor({
       capacity?: number | null;
       waitlistEnabled?: boolean;
       guestsAllowed?: number;
+      childcareAvailable?: boolean;
+      childcareCapacity?: number | null;
+      childcareAges?: string;
+      childcareNotes?: string;
       remoteAvailable?: boolean;
       remoteCapacity?: number | null;
       videoProvider?: VideoProvider;
@@ -139,6 +158,7 @@ export function SeriesEditor({
       recurrenceRule,
       rruleUntil: until,
     };
+    if (JSON.stringify(childcare) !== JSON.stringify(initialChildcare)) Object.assign(body, childcareBody(childcare));
     if (capTrimmed !== capInitial) body.capacity = capTrimmed === "" ? null : Number(capTrimmed);
     if (waitlistEnabled !== instance.waitlistEnabled) body.waitlistEnabled = waitlistEnabled;
     if (guestsAllowed !== instance.guestsAllowed) body.guestsAllowed = guestsAllowed;
@@ -162,6 +182,7 @@ export function SeriesEditor({
     } catch (err) {
       const msg = errorText(err, "We couldn't update the series.");
       setError(msg);
+      if (isChildcareCapacityError(msg)) { setChildcareError(msg); focusChildcareCapacity(idPrefix); }
       if (isRemoteError(msg)) {
         setRemoteError(msg);
         focusRemoteCapacity(idPrefix);
@@ -269,6 +290,7 @@ export function SeriesEditor({
         checked={waitlistEnabled}
         onChange={(e) => setWaitlistEnabled(e.target.checked)}
       />
+      <ChildcareField idPrefix={idPrefix} value={childcare} onChange={setChildcare} error={childcareError} />
       <RemoteField idPrefix={idPrefix} value={remote} onChange={setRemote} error={remoteError} />
       <VideoField idPrefix={idPrefix} value={video} onChange={setVideo} error={videoError} />
       <FormActions>

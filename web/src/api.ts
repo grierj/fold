@@ -203,6 +203,10 @@ export const Groups = {
       guestsAllowed?: number | null;
       remoteAvailable?: boolean;
       remoteCapacity?: number | null;
+      childcareAvailable?: boolean;
+      childcareCapacity?: number | null;
+      childcareAges?: string;
+      childcareNotes?: string;
       videoProvider?: VideoProvider;
       videoUrl?: string;
       videoReveal?: VideoReveal;
@@ -256,12 +260,13 @@ export const AdminAccountRequests = {
 };
 
 export const Calendar = {
-  list: (q: { from: string; to: string; tz: string; mine?: boolean; group?: string; deleted?: boolean; remote?: boolean }) => {
+  list: (q: { from: string; to: string; tz: string; mine?: boolean; group?: string; deleted?: boolean; remote?: boolean; childcare?: boolean }) => {
     const p = new URLSearchParams({ from: q.from, to: q.to, tz: q.tz });
     if (q.mine) p.set("mine", "1");
     if (q.group) p.set("group", q.group);
     if (q.deleted) p.set("deleted", "1");
     if (q.remote) p.set("remote", "1");
+    if (q.childcare) p.set("childcare", "1");
     return api<{ occurrences: CalendarOccurrence[]; truncated: boolean }>(`/calendar?${p}`);
   },
 };
@@ -284,6 +289,10 @@ export const Events = {
     guestsAllowed?: number | null;
     remoteAvailable?: boolean;
     remoteCapacity?: number | null;
+      childcareAvailable?: boolean;
+      childcareCapacity?: number | null;
+      childcareAges?: string;
+      childcareNotes?: string;
     videoProvider?: VideoProvider;
     videoUrl?: string;
     videoReveal?: VideoReveal;
@@ -315,6 +324,10 @@ export const Events = {
       guestsAllowed?: number | null;
       remoteAvailable?: boolean;
       remoteCapacity?: number | null;
+      childcareAvailable?: boolean;
+      childcareCapacity?: number | null;
+      childcareAges?: string;
+      childcareNotes?: string;
       videoProvider?: VideoProvider;
       videoUrl?: string;
       videoReveal?: VideoReveal;
@@ -322,10 +335,10 @@ export const Events = {
   ) => api<{ event: EventSeries }>(`/events/${id}`, { method: "PUT", body: data }),
   // Mint a fresh Jitsi room URL (M1.8); each call makes a new one.
   generateJitsi: () => api<{ url: string }>("/events/video/jitsi", { method: "POST", body: {} }),
-  register: (id: number, status: RegistrationStatus, date: string, guestCount?: number, attendanceMode?: AttendanceMode) =>
+  register: (id: number, status: RegistrationStatus, date: string, guestCount?: number, attendanceMode?: AttendanceMode, childcare?: { childcareCount: number; childcareAgesNote: string }) =>
     api<{ registration: RegistrationResponse }>(`/events/${id}/registrations`, {
       method: "PUT",
-      body: { status, date, guestCount, attendanceMode },
+      body: { status, date, guestCount, attendanceMode, ...childcare },
     }),
   // Pruning and hand promotion (M1.5): leaders and hosts remove anyone,
   // promote one waitlisted row by hand, or add someone directly.
@@ -333,8 +346,8 @@ export const Events = {
     api<unknown>(`/events/${id}/registrations/remove`, { method: "POST", body: { date, userId, note } }),
   promoteRegistration: (id: number, date: string, userId: number) =>
     api<unknown>(`/events/${id}/registrations/promote`, { method: "POST", body: { date, userId } }),
-  addRegistration: (id: number, date: string, email: string, overCapacity?: boolean) =>
-    api<unknown>(`/events/${id}/registrations/add`, { method: "POST", body: { date, email, overCapacity } }),
+  addRegistration: (id: number, date: string, email: string, overCapacity?: boolean, childcare?: { childcareCount: number; childcareAgesNote: string }) =>
+    api<unknown>(`/events/${id}/registrations/add`, { method: "POST", body: { date, email, overCapacity, ...childcare } }),
   cancelOccurrence: (id: number, date: string) =>
     api<unknown>(`/events/${id}/cancel`, { method: "POST", body: { date } }),
   updateOccurrence: (

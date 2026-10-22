@@ -19,6 +19,7 @@ const page: EventDetailResponse = {
     tzid: "UTC", startsAt: "2026-12-01T19:00:00Z", endsAt: "2026-12-01T20:00:00Z", location: "Hall",
     recurrenceRule: "", visibility: "public", leaderOpened: false, churchWide: false,
     capacity: null, waitlistEnabled: false, guestsAllowed: 0,
+    childcareAvailable: false, childcareCapacity: null, childcareAges: "", childcareNotes: "",
     remoteAvailable: true, remoteCapacity: 5, videoProvider: "none", videoReveal: "registered_only",
   },
   occurrences: [occurrence({
@@ -76,4 +77,11 @@ describe("EventDetail remote seats", () => {
     expect(roster.getByText("Sam")).toBeInTheDocument();
     expect(roster.getByText("Remote")).toHaveClass("bg-sunken", "text-text-muted");
   });
+});
+
+it("shows the public childcare ages and notes", async () => {
+  vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, childcareAvailable: true, childcareAges: "2–5", childcareNotes: "Check in at the nursery." } });
+  renderPage();
+  expect(await screen.findByText("Childcare available · 2–5")).toBeInTheDocument();
+  expect(screen.getByText("Check in at the nursery.")).toBeInTheDocument();
 });

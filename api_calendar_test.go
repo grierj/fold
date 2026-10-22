@@ -335,3 +335,40 @@ func TestCalendarRemoteFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestCalendarChildcareFilter(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	open := createGroupAs(t, admin, "Open Nursery", models.VisibilityPublic)
+	plain := scheduleGroupEvent(t, admin, open, "No Childcare")
+	offered := scheduleGroupEvent(t, admin, open, "Family Night")
+	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(offered.ID), map[string]any{"childcareAvailable": true}, http.StatusOK)
+	secret := createGroupAs(t, admin, "Secret Nursery", models.VisibilityInviteOnly)
+	hidden := scheduleGroupEvent(t, admin, secret, "Hidden Family Night")
+	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(hidden.ID), map[string]any{"childcareAvailable": true}, http.StatusOK)
+	const window = "from=2026-11-30&to=2026-12-02&tz=UTC"
+	for _, who := range []*apiClient{admin, newAPIClient(t, app)} {
+		page, raw := getCalendar(t, who, window+"&childcare=1", http.StatusOK)
+		if hasTitle(page, plain.Title) || !hasTitle(page, offered.Title) {
+			t.Fatalf("childcare filter: %s", raw)
+		}
+		for _, row := range page.Occurrences {
+			if !row.ChildcareAvailable {
+				t.Fatalf("missing childcare flag: %+v", row)
+			}
+		}
+		if who != admin && (hasTitle(page, hidden.Title) || strings.Contains(raw, "Secret Nursery")) {
+			t.Fatalf("filter widened visibility: %s", raw)
+		}
+	}
+	page, _ := getCalendar(t, newAPIClient(t, app), window, http.StatusOK)
+	if !hasTitle(page, plain.Title) || !hasTitle(page, offered.Title) {
+		t.Fatalf("unfiltered: %v", calendarTitles(page))
+	}
+	for _, row := range page.Occurrences {
+		if row.ChildcareAvailable != (row.EventID == offered.ID) {
+			t.Fatalf("wrong childcare flag: %+v", row)
+		}
+	}
+}
