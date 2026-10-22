@@ -1,5 +1,4 @@
-import { HouseholdCard } from "../components/HouseholdCard";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AccountRequests, CalendarFeeds, Profile as ProfileApi } from "../api";
 import type { CalendarFeed } from "../types";
@@ -13,6 +12,9 @@ import { errorText } from "../lib/errors";
 import { Choices, Field, FormError, Input, Radio, showFieldErrors } from "../components/ui/Field";
 import { Skeleton } from "../components/ui/Skeleton";
 import { ErrorNotice } from "../components/ErrorNotice";
+
+// Only Profile shows the household card, so it loads on its own (bundle budget).
+const HouseholdCard = lazy(() => import("../components/HouseholdCard").then((m) => ({ default: m.HouseholdCard })));
 
 export function ProfilePage() {
   const { user, loading, refresh, logout, isAdmin } = useAuth();
@@ -319,7 +321,7 @@ export function ProfilePage() {
 
       <CalendarFeedCard />
 
-      {user.accountType !== "teen" && <HouseholdCard />}
+      {user.accountType !== "teen" && <Suspense fallback={<Skeleton kind="lines" />}><HouseholdCard /></Suspense>}
 
       {user.accountType !== "teen" && (
         <div className="mt-6">
