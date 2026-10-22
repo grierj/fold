@@ -38,6 +38,7 @@ describe("GuardianLinkCard (M1.9, DEC-32, DEC-79)", () => {
     await userEvent.type(screen.getByLabelText(/How did you check/), "Known family");
     await userEvent.click(screen.getByRole("button", { name: "Confirm link" }));
     expect(await screen.findByText("Another admin needs to confirm your own household link.")).toBeInTheDocument();
+    expect(screen.getByText("Another admin needs to confirm your own household link.").closest("[tabindex]")).toHaveFocus();
     expect(done).not.toHaveBeenCalled();
   });
 });

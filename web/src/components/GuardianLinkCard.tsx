@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AdminGuardianLinks } from "../api";
 import type { GuardianLink } from "../types";
 import { errorText } from "../lib/errors";
@@ -17,6 +17,11 @@ export function GuardianLinkCard({ link, onDone }: { link: GuardianLink; onDone:
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"" | "confirm" | "reject">("");
   const ref = useRef<HTMLDivElement>(null);
+  const alertRef = useRef<HTMLDivElement>(null);
+  // Move focus to a server error, such as the DEC-79 self-confirm block.
+  useEffect(() => {
+    if (error) alertRef.current?.focus();
+  }, [error]);
   const who = `${link.personName}'s link to ${link.guardianName}`;
 
   async function confirmLink() {
@@ -71,7 +76,11 @@ export function GuardianLinkCard({ link, onDone }: { link: GuardianLink; onDone:
           <Input value={rejectNote} onChange={(e) => setRejectNote(e.target.value)} maxLength={500} />
         </Field>
       </div>
-      {error && <FormError layout="mt-2">{error}</FormError>}
+      {error && (
+        <div ref={alertRef} tabIndex={-1} className="focus:outline-none">
+          <FormError layout="mt-2">{error}</FormError>
+        </div>
+      )}
       <div className="flex gap-3 mt-4">
         <Button variant="primary" onClick={confirmLink} disabled={!!busy}>{busy === "confirm" ? "Confirming…" : "Confirm link"}</Button>
         <Button variant="danger-outline" onClick={rejectLink} disabled={!!busy}>{busy === "reject" ? "Saving…" : "Don't confirm"}</Button>
