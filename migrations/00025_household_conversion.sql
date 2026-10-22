@@ -5,7 +5,7 @@ ALTER TABLE invitations ADD CONSTRAINT invitations_conversion CHECK (
     household_person_id IS NULL OR (group_id IS NULL AND NOT over_limit AND role = 'member')
 );
 CREATE UNIQUE INDEX idx_invitations_open_conversion ON invitations(household_person_id)
-    WHERE accepted_at IS NULL AND revoked_at IS NULL;
+    WHERE household_person_id IS NOT NULL AND accepted_at IS NULL AND revoked_at IS NULL;
 
 -- +goose Down
 -- +goose StatementBegin

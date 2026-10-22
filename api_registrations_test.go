@@ -1719,4 +1719,11 @@ func TestRegistrationReadBudget(t *testing.T) {
 	if n > 21 {
 		t.Fatalf("admin GET read %d times, budget 21", n)
 	}
+	// GET /me/household (Whittler, PR 111): canConvert is computed from one
+	// batch per request, not per person (18 before this fix, 9 before slice 3).
+	n = 0
+	apiDo(t, c, "GET", "/api/v1/me/household", nil, http.StatusOK)
+	if n > 12 {
+		t.Fatalf("household GET read %d times, budget 12", n)
+	}
 }

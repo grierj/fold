@@ -505,7 +505,7 @@ type Invitation struct {
 	TokenHash         string    `gorm:"not null;uniqueIndex:idx_invitations_token_hash"`
 	ExpiresAt         time.Time `gorm:"not null"`
 	AcceptedAt        *time.Time
-	HouseholdPersonID *uint `gorm:"uniqueIndex:idx_invitations_open_conversion,where:accepted_at IS NULL AND revoked_at IS NULL"`
+	HouseholdPersonID *uint `gorm:"uniqueIndex:idx_invitations_open_conversion,where:household_person_id IS NOT NULL AND accepted_at IS NULL AND revoked_at IS NULL"`
 	RevokedAt         *time.Time
 	CreatedAt         time.Time `gorm:"not null;default:now()"`
 }

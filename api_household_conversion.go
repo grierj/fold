@@ -70,6 +70,65 @@ func conversionRelation(tx *gorm.DB, actor uint, household uint) policy.Househol
 	return householdRelOf(acct, found && acct.HouseholdID == household)
 }
 
+// conversionBatch holds what canConvert needs for a set of household
+// people, loaded once per request: the church-local date, the actor's
+// relation to the household, the household's eligible guardians, and the
+// people whose sign-ups have a disabled or deleted holder (PR 111, Whittler).
+type conversionBatch struct {
+	actor     *models.User
+	today     time.Time
+	rel       policy.HouseholdRel
+	guardians map[uint]bool
+	blocked   map[uint]bool
+}
+
+func (a *App) loadConversionBatch(tx *gorm.DB, actor *models.User, householdID uint, personIDs []uint) (*conversionBatch, error) {
+	b := &conversionBatch{actor: actor, today: a.householdClock(time.Now().UTC()), guardians: map[uint]bool{}, blocked: map[uint]bool{}}
+	if actor == nil || len(personIDs) == 0 {
+		return b, nil
+	}
+	b.rel = conversionRelation(tx, actor.ID, householdID)
+	var guardians []uint
+	if err := tx.Table("household_accounts ha").
+		Joins("JOIN users ON users.id = ha.user_id AND users.deleted_at IS NULL AND users.status = 'active' AND users.account_type = 'adult'").
+		Where("ha.household_id = ? AND ha.relation IN ('adult','guardian')", householdID).
+		Pluck("ha.user_id", &guardians).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range guardians {
+		b.guardians[id] = true
+	}
+	var blocked []uint
+	if err := tx.Model(&models.Registration{}).Joins("JOIN users ON users.id = registrations.registered_by").
+		Where("registrations.household_person_id IN ? AND (users.deleted_at IS NOT NULL OR users.status <> ?)", personIDs, models.UserActive).
+		Distinct("registrations.household_person_id").Pluck("registrations.household_person_id", &blocked).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range blocked {
+		b.blocked[id] = true
+	}
+	return b, nil
+}
+
+// allowed reports whether the actor may convert person, whose guardian
+// links are already loaded. A blocked holder returns errConversionHolder.
+func (b *conversionBatch) allowed(person *models.HouseholdPerson, links []models.GuardianLink) (bool, error) {
+	if b == nil || b.actor == nil {
+		return false, nil
+	}
+	if b.blocked[person.ID] {
+		return false, errConversionHolder
+	}
+	hasGuardian := false
+	for _, link := range links {
+		if (link.Status == models.GuardianPending || link.Status == models.GuardianConfirmed) && b.guardians[link.GuardianUserID] {
+			hasGuardian = true
+		}
+	}
+	actor := b.actor
+	return policy.CanConvertHouseholdPerson(asPerson(actor), b.rel, householdFacts(person, nil, b.today), actor.Status == models.UserActive && !actor.DeletedAt.Valid, hasGuardian), nil
+}
+
 func conversionGuardians(tx *gorm.DB, person *models.HouseholdPerson) ([]uint, error) {
 	var ids []uint
 	err := tx.Model(&models.GuardianLink{}).
@@ -80,19 +139,16 @@ func conversionGuardians(tx *gorm.DB, person *models.HouseholdPerson) ([]uint, e
 	return ids, err
 }
 
-func (a *App) conversionAllowed(tx *gorm.DB, actor *models.User, person *models.HouseholdPerson, today time.Time) (bool, error) {
-	guardians, err := conversionGuardians(tx, person)
+func (a *App) conversionAllowed(tx *gorm.DB, actor *models.User, person *models.HouseholdPerson) (bool, error) {
+	b, err := a.loadConversionBatch(tx, actor, person.HouseholdID, []uint{person.ID})
 	if err != nil {
 		return false, err
 	}
-	var unavailable int64
-	if err := tx.Model(&models.Registration{}).Joins("JOIN users ON users.id = registrations.registered_by").Where("registrations.household_person_id = ? AND (users.deleted_at IS NOT NULL OR users.status <> ?)", person.ID, models.UserActive).Count(&unavailable).Error; err != nil {
+	var links []models.GuardianLink
+	if err := tx.Where("person_id = ?", person.ID).Order("id").Find(&links).Error; err != nil {
 		return false, err
 	}
-	if unavailable > 0 {
-		return false, errConversionHolder
-	}
-	return policy.CanConvertHouseholdPerson(asPerson(actor), conversionRelation(tx, actor.ID, person.HouseholdID), householdFacts(person, nil, today), actor.Status == models.UserActive && !actor.DeletedAt.Valid, len(guardians) > 0), nil
+	return b.allowed(person, links)
 }
 
 // Conversion loaders find the target first so admins can act across households.
@@ -188,7 +244,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		if err := tx.First(person, person.ID).Error; err != nil {
 			return err
 		}
-		allowed, err := a.conversionAllowed(tx, &actor, person, a.householdClock(time.Now().UTC()))
+		allowed, err := a.conversionAllowed(tx, &actor, person)
 		if err != nil {
 			return err
 		}
@@ -410,7 +466,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if inviter == nil {
 				return errConversionRetry
 			}
-			allowed, err := a.conversionAllowed(tx, inviter, &person, a.householdClock(time.Now().UTC()))
+			allowed, err := a.conversionAllowed(tx, inviter, &person)
 			if err != nil {
 				return err
 			}
@@ -439,9 +495,15 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err := tx.Model(&models.Registration{}).Where("household_person_id = ?", person.ID).Distinct("occurrence_id").Order("occurrence_id").Pluck("occurrence_id", &occurrenceIDs).Error; err != nil {
 				return err
 			}
-			for _, id := range occurrenceIDs {
-				if _, err := lockOccurrence(tx, id); err != nil {
+			// One statement locks every affected date, in id order like
+			// lockOccurrence's callers, so it can't deadlock with them.
+			if len(occurrenceIDs) > 0 {
+				var occurrences []models.EventOccurrence
+				if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", occurrenceIDs).Order("id").Find(&occurrences).Error; err != nil {
 					return err
+				}
+				if len(occurrences) != len(occurrenceIDs) {
+					return gorm.ErrRecordNotFound
 				}
 			}
 			var regs []models.Registration
