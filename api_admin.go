@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"fold/internal/audit"
 	"fold/internal/notify"
@@ -101,6 +102,180 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{})
+}
+
+// ---------------------------------------------------------------------------
+// Admin: guardian links (M1.9 slice 1, DEC-32). A child or teen added to
+// a household waits here; only an admin confirms it, with a note on how
+// it was checked. There is no auto-confirm path.
+// ---------------------------------------------------------------------------
+
+type guardianLinkJSON struct {
+	ID             uint       `json:"id"`
+	GuardianUserID uint       `json:"guardianUserId"`
+	GuardianName   string     `json:"guardianName"`
+	TeenUserID     *uint      `json:"teenUserId,omitempty"`
+	PersonID       *uint      `json:"personId,omitempty"`
+	PersonName     string     `json:"personName"`
+	PersonKind     string     `json:"personKind"` // child | teen
+	BirthDate      string     `json:"birthDate,omitempty"`
+	HouseholdID    uint       `json:"householdId,omitempty"`
+	HouseholdName  string     `json:"householdName,omitempty"`
+	Status         string     `json:"status"` // pending | confirmed | rejected | revoked
+	CheckNote      string     `json:"checkNote"`
+	ConfirmedBy    *uint      `json:"confirmedBy,omitempty"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	DecidedAt      *time.Time `json:"decidedAt,omitempty"`
+}
+
+func (a *App) toGuardianLinkJSON(link *models.GuardianLink) guardianLinkJSON {
+	out := guardianLinkJSON{
+		ID: link.ID, GuardianUserID: link.GuardianUserID, GuardianName: nameIn(a.DB, link.GuardianUserID),
+		TeenUserID: link.TeenUserID, PersonID: link.PersonID, Status: link.Status,
+		CheckNote: link.CheckNote, ConfirmedBy: link.ConfirmedBy,
+		CreatedAt: link.CreatedAt, DecidedAt: link.DecidedAt,
+	}
+	if link.PersonID != nil {
+		var person models.HouseholdPerson
+		if err := a.DB.Unscoped().First(&person, *link.PersonID).Error; err == nil {
+			out.PersonName = person.FullName()
+			out.PersonKind = person.Kind
+			out.BirthDate = formatBirthDate(person.BirthDate)
+			out.HouseholdID = person.HouseholdID
+			var household models.Household
+			if err := a.DB.First(&household, person.HouseholdID).Error; err == nil {
+				out.HouseholdName = household.Name
+			}
+		}
+	} else if link.TeenUserID != nil {
+		out.PersonName = nameIn(a.DB, *link.TeenUserID)
+		out.PersonKind = models.HouseholdTeen
+		var teen models.User
+		if err := a.DB.Unscoped().First(&teen, *link.TeenUserID).Error; err == nil {
+			out.BirthDate = formatBirthDate(teen.BirthDate)
+		}
+	}
+	return out
+}
+
+func (a *App) apiListGuardianLinks(c *gin.Context) {
+	status := c.DefaultQuery("status", models.GuardianPending)
+	q := a.DB.Order("created_at, id")
+	switch status {
+	case models.GuardianPending, models.GuardianConfirmed, models.GuardianRejected, models.GuardianRevoked:
+		q = q.Where("status = ?", status)
+	case "all":
+	default:
+		jsonError(c, http.StatusBadRequest, "unknown status")
+		return
+	}
+	var rows []models.GuardianLink
+	q.Find(&rows)
+	out := make([]guardianLinkJSON, 0, len(rows))
+	for i := range rows {
+		out = append(out, a.toGuardianLinkJSON(&rows[i]))
+	}
+	c.JSON(http.StatusOK, gin.H{"guardianLinks": out})
+}
+
+func (a *App) apiConfirmGuardianLink(c *gin.Context) { a.decideGuardianLink(c, true) }
+func (a *App) apiRejectGuardianLink(c *gin.Context)  { a.decideGuardianLink(c, false) }
+
+// decideGuardianLink confirms or rejects a pending guardian link,
+// conditional on it still being pending, and resolves every admin's task
+// in the same transaction (5.12). Confirming requires a check note
+// saying how the admin checked (DEC-32); "note" is accepted for the same
+// field, like the other approval endpoints.
+func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
+	id, _ := strconv.Atoi(c.Param("id"))
+	var link models.GuardianLink
+	if err := a.DB.First(&link, id).Error; err != nil {
+		jsonError(c, http.StatusNotFound, "guardian link not found")
+		return
+	}
+	me := apiUser(c)
+	if !policy.CanConfirmGuardianLink(asPerson(me)) {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return
+	}
+	var body struct {
+		CheckNote string `json:"checkNote"`
+		Note      string `json:"note"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	note := strings.TrimSpace(body.CheckNote)
+	if note == "" {
+		note = strings.TrimSpace(body.Note)
+	}
+	if confirm && note == "" {
+		jsonError(c, http.StatusBadRequest, "a check note is required to confirm this link")
+		return
+	}
+	if len(note) > 500 {
+		jsonError(c, http.StatusBadRequest, "check note must be at most 500 characters")
+		return
+	}
+	// DEC-79: an admin cannot confirm their own guardian link while another
+	// active admin exists; a sole admin may, and the audit marks it.
+	selfConfirm := confirm && link.GuardianUserID == me.ID
+	if selfConfirm {
+		var otherAdmins int64
+		if err := a.DB.Model(&models.User{}).Where("id <> ? AND role = ? AND status = ?", me.ID, models.RoleAdmin, models.UserActive).
+			Count(&otherAdmins).Error; err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not check admins")
+			return
+		}
+		if otherAdmins > 0 {
+			jsonError(c, http.StatusForbidden, "another admin must confirm your own guardian link")
+			return
+		}
+	}
+	status, outcome, auditAction := models.GuardianRejected, "rejected", audit.GuardianLinkRejected
+	if confirm {
+		status, outcome, auditAction = models.GuardianConfirmed, "approved", audit.GuardianLinkConfirmed
+	}
+	errHandled := errors.New("already handled")
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		now := time.Now().UTC()
+		updates := map[string]any{"status": status, "decided_at": now, "check_note": note}
+		if confirm {
+			updates["confirmed_by"] = me.ID
+		}
+		res := tx.Model(&models.GuardianLink{}).Where("id = ? AND status = ?", link.ID, models.GuardianPending).
+			Updates(updates)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return errHandled
+		}
+		if _, err := notify.Resolve(tx, notify.HouseholdLinkPending, link.ID, &me.ID, outcome); err != nil {
+			return err
+		}
+		meta := map[string]any{"guardianUserId": link.GuardianUserID, "checkNote": note}
+		if selfConfirm {
+			meta["selfConfirm"] = true
+		}
+		if link.PersonID != nil {
+			meta["personId"] = *link.PersonID
+		}
+		if link.TeenUserID != nil {
+			meta["teenUserId"] = *link.TeenUserID
+		}
+		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction,
+			TargetType: "guardian_link", TargetID: link.ID, Meta: meta, IP: c.ClientIP()})
+	})
+	if errors.Is(err, errHandled) {
+		a.alreadyHandled(c, notify.HouseholdLinkPending, link.ID)
+		return
+	}
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not decide that link")
+		return
+	}
+	var fresh models.GuardianLink
+	a.DB.First(&fresh, link.ID)
+	c.JSON(http.StatusOK, gin.H{"guardianLink": a.toGuardianLinkJSON(&fresh)})
 }
 
 // ---------------------------------------------------------------------------

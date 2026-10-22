@@ -383,6 +383,7 @@ type auditMeta struct {
 	DepartingUserID uint   `json:"departingUserId"`
 	Status          string `json:"status"`
 	Limit           int    `json:"limit"`
+	SelfConfirm     bool   `json:"selfConfirm"`
 }
 
 func auditRows(t *testing.T, app *App, action string) ([]models.AuditLog, []auditMeta) {

@@ -163,6 +163,34 @@ const (
 	// "all" (8.2 Options A and B). Target is the user; meta has
 	// oldScope and newScope.
 	CalendarTokenScopeChanged = "calendar_token.scope_changed"
+
+	// HouseholdCreated: an account got a household on first use (M1.9,
+	// 5.3). Target is the household.
+	HouseholdCreated = "household.created"
+
+	// HouseholdPersonAdded: an adult account in the household added a
+	// household person (M1.9). Target is the household; meta has
+	// personId, kind, and guardianLinkId when a child or teen started a
+	// pending link (DEC-32).
+	HouseholdPersonAdded = "household.person_added"
+
+	// HouseholdPersonRemoved: a household person was removed (M1.9).
+	// Target is the household; meta has personId and kind. Any live
+	// guardian link is revoked alongside (GuardianLinkRevoked).
+	HouseholdPersonRemoved = "household.person_removed"
+
+	// GuardianLinkConfirmed / GuardianLinkRejected: an admin decided a
+	// pending guardian link (DEC-32). Target is the link; meta has
+	// guardianUserId, personId (or teenUserId), checkNote, and selfConfirm
+	// when a sole admin confirmed their own link (DEC-79). The admins'
+	// notification tasks are resolved in the same transaction.
+	GuardianLinkConfirmed = "guardian_link.confirmed"
+	GuardianLinkRejected  = "guardian_link.rejected"
+
+	// GuardianLinkRevoked: a live guardian link ended because the
+	// household person was removed or stopped being a child or teen
+	// (M1.9). Target is the link; meta has guardianUserId and personId.
+	GuardianLinkRevoked = "guardian_link.revoked"
 )
 
 // Entry is one audit record. Actor is nil for system actions.
