@@ -451,8 +451,9 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		outcome, auditAction = "approved", audit.AccountApproved
 	}
 	var userID uint
-	var created, upgraded bool
+	var created, upgraded, activated bool
 	var raw string
+	var promoted []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		status := models.RequestRejected
@@ -495,6 +496,13 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				if err != nil {
 					return err
 				}
+			} else if found && req.Source == models.RequestHouseholdConversion && existing.Status == models.UserInvited && existing.PasswordHash != nil {
+				// A converted adult set their password at acceptance; approval
+				// only makes the account active (Warden, PR 111 F1).
+				if err := tx.Model(&existing).Update("status", models.UserActive).Error; err != nil {
+					return err
+				}
+				userID, activated = existing.ID, true
 			} else if found {
 				userID = existing.ID
 			} else {
@@ -521,8 +529,27 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			}
 			meta["userId"] = userID
 			meta["created"] = created
+			if activated {
+				meta["activatedConversion"] = true
+			}
 			if upgraded {
 				meta["upgradedGuest"] = true
+			}
+		}
+		if !approve && req.Source == models.RequestHouseholdConversion {
+			// A rejected converted adult can't sign in; their account is
+			// disabled so its seats and childcare places go to the waitlist.
+			var existing models.User
+			if tx.Where("email = ? AND status = ?", req.Email, models.UserInvited).Limit(1).Find(&existing).RowsAffected == 1 {
+				if err := tx.Model(&existing).Updates(map[string]any{"status": models.UserDisabled, "session_version": gorm.Expr("session_version + 1")}).Error; err != nil {
+					return err
+				}
+				ids, err := a.promoteOnDisable(tx, existing.ID)
+				if err != nil {
+					return err
+				}
+				promoted = ids
+				meta["disabledUserId"] = existing.ID
 			}
 		}
 		if _, err := notify.Resolve(tx, notify.AccountRequested, req.ID, &me.ID, outcome); err != nil {
@@ -545,8 +572,13 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	}
 	// Decision emails go out after the decision is committed; the
 	// person is emailed either way (M1.3 acceptance).
+	a.deliverNotificationEmails(promoted)
 	if approve {
-		if created || upgraded {
+		if activated {
+			if err := a.sendConversionApprovedEmail(req); err != nil {
+				log.Printf("account approved email to %s: %v", req.Email, err)
+			}
+		} else if created || upgraded {
 			if err := a.sendAccountApprovedEmail(req, raw); err != nil {
 				log.Printf("account approved email to %s: %v", req.Email, err)
 			}
@@ -760,6 +792,16 @@ Set your password here (the link works once and expires in 24 hours):
 %s%s
 
 After that you can sign in with this email address.`, a.siteName(), link, extra),
+	})
+}
+
+func (a *App) sendConversionApprovedEmail(req *models.AccountRequest) error {
+	return a.Mailer.Send(context.Background(), foldmail.Message{
+		To:      req.Email,
+		Subject: fmt.Sprintf("Your %s account is approved", a.siteName()),
+		Text: fmt.Sprintf(`Good news — your account at %s is approved.
+
+You can now sign in at %s/login with this email address and the password you chose.`, a.siteName(), a.emailBaseURL()),
 	})
 }
 

@@ -279,11 +279,13 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		}
 		if !allowed {
 			log.Printf("household invitation send suppressed for actor %d", actor.ID)
-			// Keep an existing token intact. A first invitation is still saved,
-			// so it can be resent later through the same household controls.
-			if inv.ID != 0 {
-				return nil
+			// Keep an existing token intact. A first invitation isn't saved,
+			// so a limited sender can't reserve a newcomer's email (Warden,
+			// PR 111 F2). The answer still looks like a normal send.
+			if inv.ID == 0 {
+				inv = models.Invitation{Email: body.Email, ExpiresAt: time.Now().UTC().Add(tokenTTL)}
 			}
+			return nil
 		}
 		if !resend && inv.ID != 0 {
 			if err := revokeConversionInvitation(tx, &inv, actor.ID, c.ClientIP()); err != nil {
@@ -321,6 +323,25 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		status = http.StatusOK
 	}
 	c.JSON(status, gin.H{"conversion": conversionMetadata(&inv)})
+}
+
+// createConversionApprovalRequest puts a converted adult in the admin
+// account-request queue, as self-signup does (DEC-4, DEC-30).
+func createConversionApprovalRequest(tx *gorm.DB, user *models.User, inviter uint, ip string) ([]uint, error) {
+	req := models.AccountRequest{
+		Name: user.Name, Email: user.Email, BirthDate: user.BirthDate,
+		AccountType: models.AccountAdult, Source: models.RequestHouseholdConversion,
+		RequestedBy: &inviter, Status: models.RequestPending, Flags: "{}", IP: ip,
+		ExpiresAt: time.Now().UTC().Add(requestLifetime),
+	}
+	if err := tx.Create(&req).Error; err != nil {
+		return nil, err
+	}
+	if err := audit.Write(tx, audit.Entry{Action: audit.AccountRequested, TargetType: "account_request", TargetID: req.ID,
+		Meta: map[string]any{"source": models.RequestHouseholdConversion, "accountType": models.AccountAdult, "hasWarnings": false, "userId": user.ID}, IP: ip}); err != nil {
+		return nil, err
+	}
+	return notifyAccountRequested(tx, &req, models.RequestFlags{})
 }
 
 func revokeConversionInvitation(tx *gorm.DB, inv *models.Invitation, actor uint, ip string) error {
@@ -519,12 +540,22 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 					return errConversionHolder
 				}
 			}
-			user = models.User{Email: inv.Email, Name: person.FullName(), Role: models.RoleMember, Status: models.UserActive, AccountType: person.Kind, BirthDate: person.BirthDate, PasswordHash: prepared.PasswordHash}
+			// Adults wait for admin approval like self-signup (DEC-4, DEC-30;
+			// Warden, PR 111 F1). Invited with a password can't sign in;
+			// approval makes the account active. Teens wait for consent.
+			user = models.User{Email: inv.Email, Name: person.FullName(), Role: models.RoleMember, Status: models.UserInvited, AccountType: person.Kind, BirthDate: person.BirthDate, PasswordHash: prepared.PasswordHash}
 			if person.Kind == models.HouseholdTeen {
 				user.Status = models.UserPendingConsent
 			}
 			if err := tx.Create(&user).Error; err != nil {
 				return err
+			}
+			if person.Kind != models.HouseholdTeen {
+				notices, err := createConversionApprovalRequest(tx, &user, inv.InvitedBy, c.ClientIP())
+				if err != nil {
+					return err
+				}
+				mailed = append(mailed, notices...)
 			}
 			// One statement satisfies all subject, holder and named-care constraints.
 			res := tx.Model(&models.Registration{}).Where("household_person_id = ?", person.ID).UpdateColumns(map[string]any{"user_id": user.ID, "household_person_id": nil, "registered_by": nil, "childcare_requested": false})
@@ -605,7 +636,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 		}
 		c.JSON(http.StatusOK, invitationAcceptanceJSON{User: userJSONPtr(a.toUserJSON(&user))})
 	} else {
-		c.JSON(http.StatusOK, invitationAcceptanceJSON{PendingConsent: true})
+		c.JSON(http.StatusOK, invitationAcceptanceJSON{PendingConsent: user.Status == models.UserPendingConsent, PendingApproval: user.Status == models.UserInvited})
 	}
 }
 

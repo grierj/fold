@@ -51,6 +51,8 @@ type invitationJSON struct {
 type invitationAcceptanceJSON struct {
 	User           *userJSON `json:"user,omitempty"`
 	PendingConsent bool      `json:"pendingConsent"`
+	// PendingApproval: a converted adult waits for an admin (DEC-4).
+	PendingApproval bool `json:"pendingApproval"`
 }
 
 type invitationContextJSON struct {

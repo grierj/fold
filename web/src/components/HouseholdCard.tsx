@@ -205,7 +205,7 @@ export function HouseholdCard() {
         <>
           {household.accounts.length > 1 && (
             <p className="text-sm text-text-muted mb-3">
-              Accounts: {household.accounts.map((a: HouseholdAccount) => `${a.name}${a.status === "pending_consent" ? " (teen, waiting for an admin check)" : ""}`).join(", ")}
+              Accounts: {household.accounts.map((a: HouseholdAccount) => `${a.name}${a.status === "pending_consent" ? " (teen, waiting for an admin check)" : a.status === "invited" ? " (waiting for an admin)" : ""}`).join(", ")}
             </p>
           )}
           <ul className="space-y-3">
@@ -290,7 +290,9 @@ function ConversionForm({ person, onCancel, onSent }: { person: HouseholdPerson;
   }
   return <form ref={ref} onSubmit={submit} className="mt-3 space-y-3" aria-label={`Create an account for ${person.name}`}>
     <p className="text-sm">Use their own email address. All past and upcoming sign-ups move to their new account only when they accept. Group memberships do not move.</p>
-    {person.kind === "teen" && <p className="text-sm">A church admin will need to confirm you as their parent or guardian before they can sign in.</p>}
+    {person.kind === "teen"
+      ? <p className="text-sm">A church admin will need to confirm you as their parent or guardian before they can sign in.</p>
+      : <p className="text-sm">A church admin will approve their account before they can sign in.</p>}
     <Field label="Their email address" hint="Required. Use an email that has no account or open invitation." error={error ?? undefined}><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="off" /></Field>
     <div className="flex flex-wrap gap-3"><Button variant="primary" type="submit" disabled={busy}>{busy ? "Sending…" : "Send account invitation"}</Button><Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button></div>
   </form>;

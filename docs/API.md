@@ -158,7 +158,13 @@ a member account without group memberships, transfers every registration
 in place, and adds an adult or teen account to the same household. IDs,
 answers, attendance mode, queue order, and timestamps stay unchanged;
 `registeredBy` and named childcare flags are cleared. Event access is checked
-for the new account from then on. A teen receives `{pendingConsent: true}`
+for the new account from then on. An adult receives `{pendingApproval: true}`
+without a session: the account is `invited` with its password set, and a
+`household_conversion` account request waits in the admin queue (DEC-4,
+DEC-30). Approving it makes the account active and emails a sign-in note, not a
+set-password link. Rejecting it disables the account, which frees its seats for
+the waitlist. A first send suppressed by the invitation limit saves no
+invitation row, but the response looks the same. A teen receives `{pendingConsent: true}`
 without a user profile or a new session. Their sign-ups still count toward
 capacity and remain visible to event managers. Fresh account-targeted guardian
 links wait for admin checks; confirming them never activates the teen.
@@ -330,7 +336,7 @@ status, joinedAt}`
 ```
 POST /api/v1/invitations          → 201 {invitation}  (auth)
 GET  /api/v1/invitations/:token   → 200 {invitation, inviterName, siteName, site} | 404  (public)
-POST /api/v1/invitations/accept   → 200 {user?, pendingConsent} | 400 | 409  (public)
+POST /api/v1/invitations/accept   → 200 {user?, pendingConsent, pendingApproval} | 400 | 409  (public)
 ```
 
 Invitations (M1.2, 5.10, DEC-4): admins invite into any group or none;

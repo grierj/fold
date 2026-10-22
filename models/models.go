@@ -105,6 +105,9 @@ const (
 	RequestSelfSignup   = "self_signup"
 	RequestMemberInvite = "member_invite"
 	RequestGuestUpgrade = "guest_upgrade"
+	// RequestHouseholdConversion: an adult household person accepted an
+	// account invitation; the account waits for admin approval (DEC-4).
+	RequestHouseholdConversion = "household_conversion"
 
 	RequestPending   = "pending"
 	RequestApproved  = "approved"
@@ -577,7 +580,7 @@ type AccountRequest struct {
 	AccountType  string     `gorm:"not null;default:adult"` // adult | teen
 	BirthDate    *time.Time `gorm:"type:date"`
 	Message      string     `gorm:"type:text;not null;default:''"`
-	Source       string     `gorm:"not null"` // self_signup | member_invite | guest_upgrade
+	Source       string     `gorm:"not null"` // self_signup | member_invite | guest_upgrade | household_conversion
 	RequestedBy  *uint      `gorm:"index"`
 	GroupID      *uint      `gorm:"index"`
 	Status       string     `gorm:"not null;default:pending;index"` // pending | approved | rejected | expired | withdrawn

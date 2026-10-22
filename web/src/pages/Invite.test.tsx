@@ -12,7 +12,7 @@ vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>
 beforeEach(() => { vi.resetAllMocks(); });
 it("explains conversion and shows teen success without entering signed-in pages", async () => {
   vi.mocked(Invitations.get).mockResolvedValue({ site: "Our church", siteName: "Our church", inviterName: "Pat", invitation: { id: 1, name: "Taylor", email: "taylor@example.com", conversion: true, accountType: "teen", expiresAt: "2026-12-01T00:00:00Z" } });
-  vi.mocked(Invitations.accept).mockResolvedValue({ pendingConsent: true });
+  vi.mocked(Invitations.accept).mockResolvedValue({ pendingConsent: true, pendingApproval: false });
   render(<MemoryRouter initialEntries={["/invite?token=secret"]}><Invite /></MemoryRouter>);
   expect(await screen.findByText(/Your past and upcoming sign-ups will move/)).toBeInTheDocument();
   expect(screen.getByLabelText("Your name")).toHaveAttribute("readonly");
@@ -26,12 +26,15 @@ it("explains conversion and shows teen success without entering signed-in pages"
   expect(document.body).not.toHaveTextContent("password1234");
 });
 
-it("signs in an adult conversion after acceptance", async () => {
+it("shows a converted adult the admin-approval wait (Warden, PR 111 F1)", async () => {
   vi.mocked(Invitations.get).mockResolvedValue({ site: "Our church", siteName: "Our church", inviterName: "Pat", invitation: { id: 1, name: "Mary", email: "mary@example.com", conversion: true, accountType: "adult", expiresAt: "2026-12-01T00:00:00Z" } });
-  vi.mocked(Invitations.accept).mockResolvedValue({ pendingConsent: false });
+  vi.mocked(Invitations.accept).mockResolvedValue({ pendingConsent: false, pendingApproval: true });
   render(<MemoryRouter initialEntries={["/invite?token=secret"]}><Invite /></MemoryRouter>);
-  await screen.findByLabelText("Your name");
+  expect(await screen.findByText("A church admin needs to approve your account before you can sign in.")).toBeInTheDocument();
   await userEvent.type(screen.getByLabelText("Choose a password"), "password1234");
   await userEvent.click(screen.getByRole("button", { name: "Create my account" }));
-  expect(refresh).toHaveBeenCalledOnce();
+  const waiting = await screen.findByRole("heading", { name: "Your account is almost ready" });
+  expect(waiting).toHaveFocus();
+  expect(screen.getByText(/needs to approve your account/)).toBeInTheDocument();
+  expect(refresh).not.toHaveBeenCalled();
 });

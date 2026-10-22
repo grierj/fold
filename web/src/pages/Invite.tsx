@@ -26,7 +26,7 @@ export function Invite() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [waiting, setWaiting] = useState(false);
+  const [waiting, setWaiting] = useState<"consent" | "approval" | null>(null);
 
   useEffect(() => {
     if (!token) {
@@ -56,7 +56,8 @@ export function Invite() {
     try {
       const result = await InvitationsApi.accept({ token, name, password });
       setPassword("");
-      if (result.pendingConsent) { setWaiting(true); return; }
+      if (result.pendingConsent) { setWaiting("consent"); return; }
+      if (result.pendingApproval) { setWaiting("approval"); return; }
       await refresh();
       navigate("/", { replace: true });
     } catch (e) {
@@ -82,7 +83,7 @@ export function Invite() {
     );
   }
 
-  if (waiting) return <TeenWaiting />;
+  if (waiting) return <AccountWaiting reason={waiting} />;
 
   if (!token || (!invitation && error)) {
     return (
@@ -108,7 +109,9 @@ export function Invite() {
       <h1 className="text-3xl font-bold mb-2">You're invited to {site}</h1>
       {invitation?.conversion && <div className="mb-4 space-y-2">
         <p>Create your own account for {invitation.name}. Your past and upcoming sign-ups will move to your account when you accept. Group memberships do not move, so some private events may no longer be available.</p>
-        {invitation.accountType === "teen" && <p>A church admin needs to confirm your parent or guardian before you can sign in.</p>}
+        <p>{invitation.accountType === "teen"
+          ? "A church admin needs to confirm your parent or guardian before you can sign in."
+          : "A church admin needs to approve your account before you can sign in."}</p>
       </div>}
       {invitation?.groupName && (
         <p className="text-text-muted mb-6">
@@ -147,15 +150,18 @@ export function Invite() {
   );
 }
 
-// Shown after a teen accepts. Focus moves to the heading so screen readers
-// start here; no live region, because the whole page changed (PR 111 M1).
-function TeenWaiting() {
+// Shown after a teen or a converted adult accepts. Focus moves to the
+// heading so screen readers start here; no live region, because the whole
+// page changed (PR 111 M1). Adults wait for approval (Warden, PR 111 F1).
+function AccountWaiting({ reason }: { reason: "consent" | "approval" }) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
   return (
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold mb-4 focus:outline-none">Your account is almost ready</h1>
-      <p>Almost done. A church admin needs to confirm your parent or guardian before you can sign in. Your sign-ups are already on your account. Ask your church office if you have questions.</p>
+      <p>{reason === "consent"
+        ? "Almost done. A church admin needs to confirm your parent or guardian before you can sign in. Your sign-ups are already on your account. Ask your church office if you have questions."
+        : "Almost done. A church admin needs to approve your account before you can sign in. We'll email you when it's approved. Your sign-ups are already on your account."}</p>
     </div>
   );
 }

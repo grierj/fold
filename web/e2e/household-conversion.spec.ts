@@ -74,12 +74,17 @@ for (const kind of ["adult", "teen"] as const) {
     await shoot(page, `conversion-${kind}-accept`);
     await page.getByLabel("Choose a password").fill(PASSWORD);
     await page.getByRole("button", { name: "Create my account" }).click();
-    if (kind === "teen") {
-      await expect(page.getByRole("heading", { name: "Your account is almost ready" })).toBeVisible();
-      await shoot(page, "conversion-teen-waiting");
-      expect((await page.request.get("/api/v1/auth/me")).status()).toBe(401);
-    } else {
-      await expect(page).toHaveURL(/\/$/);
+    // Teens wait for consent; adults wait for admin approval (Warden, PR 111 F1).
+    await expect(page.getByRole("heading", { name: "Your account is almost ready" })).toBeVisible();
+    await shoot(page, `conversion-${kind}-waiting`);
+    expect((await page.request.get("/api/v1/auth/me")).status()).toBe(401);
+    if (kind === "adult") {
+      const { requests } = await admin("GET", "/admin/account-requests");
+      const request = requests.find((r: { email: string; source: string }) => r.email === destination);
+      expect(request?.source).toBe("household_conversion");
+      await admin("POST", `/admin/account-requests/${request.id}/approve`, {});
+      await apiAs(page.request, `conversion-${kind}-own`);
+      expect((await page.request.get("/api/v1/auth/me")).status()).toBe(200);
     }
     const updated = await admin("GET", `/events/${event.id}`);
     expect(updated.occurrences[0].spotsLeft).toBe(0);

@@ -329,6 +329,7 @@ export type AgeBand = "adult" | "teen" | "under13";
 export interface InvitationAcceptance {
   user?: User;
   pendingConsent: boolean;
+  pendingApproval: boolean;
 }
 
 export interface InvitationContext {
@@ -364,7 +365,7 @@ export interface AccountRequest {
   accountType: "adult" | "teen";
   birthDate?: string;
   message: string;
-  source: "self_signup" | "member_invite" | "guest_upgrade";
+  source: "self_signup" | "member_invite" | "guest_upgrade" | "household_conversion";
   requestedBy?: number;
   requestedByName?: string;
   groupId?: number;
