@@ -152,3 +152,38 @@ func TestHouseholdAttendeeCareProjection(t *testing.T) {
 		})
 	}
 }
+
+func TestSubjectFactsChurchLocalBirthday(t *testing.T) {
+ app := testApp(t)
+ holder := newTestUser(t, app, "clockholder", "password1234", models.RoleMember)
+ household := models.Household{Name: "Clock family", CreatedBy: holder.ID}
+ if err := app.DB.Create(&household).Error; err != nil { t.Fatal(err) }
+ if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: household.ID, UserID: holder.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil { t.Fatal(err) }
+ birth := time.Date(2008,10,22,0,0,0,0,time.UTC)
+ person := models.HouseholdPerson{HouseholdID: household.ID, FirstName: "Birthday", Kind: models.HouseholdAdult, BirthDate: &birth, CreatedBy: holder.ID}
+ if err := app.DB.Create(&person).Error; err != nil { t.Fatal(err) }
+ row := models.Registration{ID: 1, HouseholdPersonID: &person.ID, RegisteredBy: &holder.ID, Status: models.RegGoing, AttendanceMode: models.AttendanceInPerson}
+ for _, tt := range []struct { zone, instant string; age int; eligible bool }{
+  {"America/Boise","2026-10-22T00:30:00Z",17,false},
+  {"Pacific/Kiritimati","2026-10-21T23:30:00Z",18,true},
+  {"America/Boise","2026-10-22T06:00:00Z",18,true},
+ } {
+  t.Run(tt.zone+tt.instant,func(t *testing.T){
+   app.DB.Where(models.Setting{Key: settingTimezone}).Assign(models.Setting{Value: tt.zone}).FirstOrCreate(&models.Setting{})
+   instant,err:=time.Parse(time.RFC3339,tt.instant);if err!=nil {t.Fatal(err)}
+   f:=app.loadSubjectFacts(app.DB,[]models.Registration{row},holder)
+   if !f.today.IsZero() || f.clock==nil {t.Fatal("facts eagerly chose UTC instead of a lazy church clock")}
+   f.clock=func()time.Time{return app.householdClock(instant)}
+   facts:=householdFacts(f.people[person.ID],nil,f.day())
+   if facts.AgeYears==nil || *facts.AgeYears!=tt.age {t.Fatalf("age: %+v",facts)}
+   if got:=policy.HouseholdRegistrationProblem(facts)=="";got!=tt.eligible {t.Fatalf("birthday eligibility: %t",got)}
+   attendee:=f.attendee(row,models.EventOccurrence{Status:models.OccurrenceScheduled},holder,false,false,instant)
+   if attendee==nil || attendee.HouseholdPerson==nil || attendee.HouseholdPerson.Age==nil || *attendee.HouseholdPerson.Age!=tt.age {t.Fatalf("display disagrees: %+v",attendee)}
+  })
+ }
+ // Account-only facts never read the church time zone, including eligibility.
+ f:=app.loadSubjectFacts(app.DB,[]models.Registration{{UserID:&holder.ID}},holder)
+ called:=false;f.clock=func()time.Time{called=true;return time.Now()}
+ _=f.attendee(models.Registration{UserID:&holder.ID},models.EventOccurrence{},holder,false,false,time.Now())
+ if called {t.Fatal("account-only rendering read the church clock")}
+}

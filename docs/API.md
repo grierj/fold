@@ -117,6 +117,9 @@ PUT    /api/v1/me/household                 → 200 {household}  {name?, address
 POST   /api/v1/me/household/people          → 201 {person}  {firstName, lastName, kind, birthDate?, careNotes?, photoConsent?}  (creates the household on first use)
 PUT    /api/v1/me/household/people/:id      → 200 {person}
 DELETE /api/v1/me/household/people/:id      → 200 {}
+POST   /api/v1/me/household/people/:id/convert → 201 {conversion}  {email}
+POST   /api/v1/me/household/people/:id/convert/resend → 200 {conversion}
+DELETE /api/v1/me/household/people/:id/convert → 200 {}
 GET    /api/v1/admin/guardian-links?status=pending  → 200 {guardianLinks}   (admin)
 POST   /api/v1/admin/guardian-links/:id/confirm     → 200 {guardianLink}    {checkNote} (admin; note required; not your own link while another active admin exists, DEC-79)
 POST   /api/v1/admin/guardian-links/:id/reject      → 200 {guardianLink}    {note?} (admin)
@@ -128,6 +131,52 @@ the account's last name. Any adult account in the household manages it; teen
 accounts get `null` from GET and 403 from the writes. Adding a `child` or
 `teen` person opens a pending guardian link that only an admin can confirm,
 with a note on how it was checked (DEC-32); an `adult` needs no approval.
+
+An active adult in the household or an active adult admin can invite an
+eligible household person to their own account. Admins may act across
+households; unrelated members receive 404. A real birth date must prove
+an adult is 18 or older, or a teen is 13 to 17 on the church-local day.
+A teen also needs a pending or confirmed guardian link to an active adult
+account in the same household. Children cannot convert, even after turning 13
+until their saved type is corrected. Disabled responsible accounts block conversion.
+
+`conversion` is `{id, email, expiresAt, state: "pending"|"expired"}`.
+Household people include `canConvert` and optional `conversion` metadata,
+never a token or hash. Household accounts include `status`; converted people
+appear only under accounts and cannot be edited or removed as household people.
+
+Issuing twice to the same pending destination returns its state without
+sending again. A different destination requires cancellation first. Resend
+keeps the destination, rotates the token, and gives it 24 hours. Expired
+invitations are revoked before replacement. Cancellation is idempotent and
+remains available after eligibility changes. Name, kind, or birth-date edits
+and deletion revoke the invitation in the same transaction. Care notes,
+photo consent, and household name or address changes keep it open.
+
+Conversion uses the existing invitation endpoints below. Acceptance creates
+a member account without group memberships, transfers every registration
+in place, and adds an adult or teen account to the same household. IDs,
+answers, attendance mode, queue order, and timestamps stay unchanged;
+`registeredBy` and named childcare flags are cleared. Event access is checked
+for the new account from then on. A teen receives `{pendingConsent: true}`
+without a user profile or a new session. Their sign-ups still count toward
+capacity and remain visible to event managers. Fresh account-targeted guardian
+links wait for admin checks; confirming them never activates the teen.
+
+Creation and resend share the 20-per-rolling-day invitation limit by sender
+and destination, including resends. Counters live in Postgres audit rows.
+Conversion sends over the limit return the normal acknowledgement and log
+the suppression. A suppressed resend keeps the previous link live. Delivery
+failure keeps a retryable invitation. Errors use `household_conversion_email`
+for any unavailable destination, `household_conversion_open` for a different
+pending destination, `household_conversion_unavailable` for eligibility or
+inviter authority, and `household_conversion_holder` for an unavailable
+responsible account discovered during acceptance. Invalid, revoked, expired,
+or consumed links share `link_expired` copy.
+
+`GET /help/members` serves the embedded `docs/MEMBERS.md` as UTF-8 plain text
+with `nosniff`, at the same origin as the app. It needs no session.
+
 ### Uploads
 
 ```
@@ -280,7 +329,7 @@ status, joinedAt}`
 ```
 POST /api/v1/invitations          → 201 {invitation}  (auth)
 GET  /api/v1/invitations/:token   → 200 {invitation, site} | 400  (public)
-POST /api/v1/invitations/accept   → 200 {user, groupId?} | 400 | 409  (public)
+POST /api/v1/invitations/accept   → 200 {user?, pendingConsent} | 400 | 409  (public)
 ```
 
 Invitations (M1.2, 5.10, DEC-4): admins invite into any group or none;
@@ -301,7 +350,10 @@ choice, DEC-39); otherwise it answers `409 {"error":"This group is
 full","full":true}` without consuming the token. The over-limit join is
 audited as `membership.added_over_limit`.
 
-`invitation`: `{id, email, name, groupId?, groupName?, expiresAt}`.
+`invitation`: `{id, email, name, groupId?, groupName?, expiresAt, conversion, accountType}`.
+Ordinary invitations have `conversion: false`. Conversion invitations have
+no group and explain the transfer on the accept page. Adult acceptance
+creates a session only when the resulting account can sign in.
 
 ### Account requests
 

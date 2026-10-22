@@ -175,10 +175,10 @@ export function HouseholdCard() {
   return (
     <section ref={cardRef} className="mt-6" aria-labelledby="household-heading">
       <h2 id="household-heading" tabIndex={-1} className="text-xl font-bold mb-1 focus:outline-none">My household</h2>
-      <p className="text-sm mb-3"><a className="text-link underline" href="/help/members">Accounts and household help</a></p>
+      <p className="text-sm mb-3"><a className="text-primary underline" href="/help/members">Accounts and household help</a></p>
       <p role="status" aria-live="polite" className="sr-only">{status}</p>
       {!loading && loadError && <ErrorNotice message={loadError} onRetry={() => { setLoading(true); load(); }} />}
-      {!loading && !loadError && people.length === 0 && editing !== "new" && !metadata && (
+      {!loading && !loadError && people.length === 0 && (household?.accounts.length ?? 0) <= 1 && editing !== "new" && !metadata && (
         <EmptyState
           level={2}
           title="No one in your household yet"
@@ -271,7 +271,7 @@ export function HouseholdCard() {
           }}
         />
       )}
-      {!loading && !loadError && people.length > 0 && editing !== "new" && addButton}
+      {!loading && !loadError && (people.length > 0 || (household?.accounts.length ?? 0) > 1) && editing !== "new" && addButton}
     </section>
   );
 }
