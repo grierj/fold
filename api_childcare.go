@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	errChildcareUnavailable = errors.New("This event doesn't offer childcare")
-	errChildcareFull        = errors.New("Childcare is full for this date")
+	errChildcareUnavailable = errors.New("this event doesn't offer childcare")
+	errChildcareFull        = errors.New("childcare is full for this date")
 )
 
 // A value RawMessage distinguishes an omitted capacity from explicit null.

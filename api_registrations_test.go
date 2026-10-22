@@ -1080,7 +1080,7 @@ func TestChildcareCapacityAndStoredRequests(t *testing.T) {
 	childcareAs(t, parent, id, date, "going", 0, http.StatusOK)
 	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(id), map[string]any{"childcareAvailable": false}, http.StatusOK)
 	w := parent.do("PUT", "/api/v1/events/"+itoa(id)+"/registrations", map[string]any{"date": date, "status": "going", "childcareCount": 1}, true)
-	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "This event doesn't offer childcare") {
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "this event doesn't offer childcare") {
 		t.Fatalf("off request: %d %s", w.Code, w.Body.String())
 	}
 	// Turning the feature off preserves old counts but stops enforcing them.
