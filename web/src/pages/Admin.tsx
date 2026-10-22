@@ -226,6 +226,8 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
   const [deletions, setDeletions] = useState<GroupSummary[]>([]);
   const [requests, setRequests] = useState<AccountRequest[]>([]);
   const [links, setLinks] = useState<GuardianLink[]>([]);
+  const [announce, setAnnounce] = useState("");
+  const focusLinks = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -252,8 +254,20 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
     load();
   }, [load]);
 
+  // After a confirm or reject the card goes away: focus the next link card,
+  // or the section heading, or the tab content when nothing is left (M1).
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (loading || !focusLinks.current) return;
+    focusLinks.current = false;
+    const root = rootRef.current;
+    const next = root?.querySelector<HTMLElement>("[data-link-card] textarea");
+    (next ?? root?.querySelector<HTMLElement>("#household-links-heading") ?? root)?.focus();
+  }, [links, loading]);
+
   return (
-    <div>
+    <div ref={rootRef} tabIndex={-1} className="focus:outline-none">
+      <p role="status" aria-live="polite" className="sr-only">{announce}</p>
       {loading && <Skeleton kind="lines" />}
       {!loading && error && <ErrorNotice message={error} onRetry={load} />}
       {!loading && !error && groups.length === 0 && deletions.length === 0 && requests.length === 0 && links.length === 0 && (
@@ -273,9 +287,17 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
       )}
       {links.length > 0 && (
         <div className="space-y-4 mb-8">
-          <h2 className="text-xl font-bold">Household links</h2>
+          <h2 id="household-links-heading" tabIndex={-1} className="text-xl font-bold focus:outline-none">Household links</h2>
           {links.map((l) => (
-            <GuardianLinkCard key={l.id} link={l} onDone={load} />
+            <GuardianLinkCard
+              key={l.id}
+              link={l}
+              onDone={(msg) => {
+                setAnnounce(msg);
+                focusLinks.current = true;
+                load();
+              }}
+            />
           ))}
         </div>
       )}

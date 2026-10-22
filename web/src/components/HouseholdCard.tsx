@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Households, type HouseholdPersonInput } from "../api";
 import type { Household, HouseholdAccount, HouseholdPerson } from "../types";
 import { errorText } from "../lib/errors";
+import { formatBirthDate } from "../lib/when";
 import { Button } from "./ui/Button";
-import { Checkbox, Choices, Field, FormError, Input, Radio, Textarea } from "./ui/Field";
+import { Checkbox, Choices, Field, FormError, Input, Radio, showFieldErrors, Textarea } from "./ui/Field";
+import { EmptyState } from "./ui/EmptyState";
+import { ErrorNotice } from "./ErrorNotice";
 import { Skeleton } from "./ui/Skeleton";
 
 // "My household" on the Profile page (M1.9 slice 1). GET never creates the
@@ -17,6 +20,8 @@ const LINK_LABEL: Partial<Record<HouseholdPerson["linkStatus"], string>> = {
   rejected: "Not confirmed",
   revoked: "Link ended",
 };
+const STONE = "inline-block rounded-full bg-sunken px-2 py-0.5 text-xs font-semibold text-text-muted";
+const VIOLET = "inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle";
 
 type Draft = { firstName: string; lastName: string; kind: HouseholdPerson["kind"]; birthDate: string; careNotes: string; photoConsent: boolean };
 const emptyDraft: Draft = { firstName: "", lastName: "", kind: "child", birthDate: "", careNotes: "", photoConsent: false };
@@ -30,23 +35,32 @@ export function personProblems(d: Draft, today: string): { firstName?: string; b
   return out;
 }
 
-function PersonForm({ initial, onSave, onCancel, submitLabel }: {
+function PersonForm({ initial, onSave, onCancel, heading }: {
   initial: Draft;
   onSave: (input: HouseholdPersonInput) => Promise<void>;
   onCancel: () => void;
-  submitLabel: string;
+  heading: string;
 }) {
   const [d, setD] = useState(initial);
   const [shown, setShown] = useState<ReturnType<typeof personProblems>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const formRef = useRef<HTMLFormElement>(null);
   const set = (patch: Partial<Draft>) => setD((prev) => ({ ...prev, ...patch }));
+
+  // N5: focus First name when the form opens.
+  useEffect(() => {
+    formRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+  }, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     const problems = personProblems(d, new Date().toISOString().slice(0, 10));
-    setShown(problems);
-    if (problems.firstName || problems.birthDate) return;
+    if (problems.firstName || problems.birthDate) {
+      showFieldErrors(formRef.current, () => setShown(problems));
+      return;
+    }
+    setShown({});
     setBusy(true);
     setError(null);
     try {
@@ -56,17 +70,17 @@ function PersonForm({ initial, onSave, onCancel, submitLabel }: {
       });
     } catch (err) {
       setError(errorText(err, "We couldn't save that person."));
-    } finally {
       setBusy(false);
     }
   }
 
   return (
-    <form onSubmit={submit} noValidate className="space-y-4 mt-4 rounded-lg border border-border p-4">
+    <form ref={formRef} onSubmit={submit} noValidate aria-label={heading} className="space-y-4 mt-4 rounded-lg border border-border p-4">
+      <h3 className="font-semibold">{heading}</h3>
       <Field label="First name" error={shown.firstName}>
         <Input value={d.firstName} onChange={(e) => set({ firstName: e.target.value })} autoComplete="off" />
       </Field>
-      <Field label="Last name" optional hint="Leave empty to use the household's name.">
+      <Field label="Last name" optional hint="Optional. Leave empty if they go by one name.">
         <Input value={d.lastName} onChange={(e) => set({ lastName: e.target.value })} autoComplete="off" />
       </Field>
       <Choices legend="Who are they?" hint="Children and teens are checked by an admin before the link is confirmed.">
@@ -83,7 +97,7 @@ function PersonForm({ initial, onSave, onCancel, submitLabel }: {
       <Checkbox label="OK to appear in church photos" checked={d.photoConsent} onChange={(e) => set({ photoConsent: e.target.checked })} />
       {error && <FormError>{error}</FormError>}
       <div className="flex gap-3">
-        <Button variant="primary" type="submit" disabled={busy}>{busy ? "Saving…" : submitLabel}</Button>
+        <Button variant="primary" type="submit" disabled={busy}>{busy ? "Saving…" : "Save"}</Button>
         <Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button>
       </div>
     </form>
@@ -97,45 +111,75 @@ function toDraft(p: HouseholdPerson): Draft {
 export function HouseholdCard() {
   const [household, setHousehold] = useState<Household | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<number | "new" | null>(null);
   const [status, setStatus] = useState("");
+  // After a save or removal, where focus goes once the list re-renders (M1).
+  const focusNext = useRef<number | "add" | "heading" | null>(null);
+  const cardRef = useRef<HTMLElement>(null);
 
   const load = useCallback(async () => {
-    setError(null);
+    setLoadError(null);
     try {
       setHousehold((await Households.mine()).household);
     } catch (e) {
-      setError(errorText(e, "We couldn't load your household."));
+      setLoadError(errorText(e, "We couldn't load your household."));
     } finally {
       setLoading(false);
     }
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    const target = focusNext.current;
+    if (target === null || editing !== null) return;
+    focusNext.current = null;
+    const root = cardRef.current;
+    const el =
+      typeof target === "number"
+        ? root?.querySelector<HTMLElement>(`[data-person="${target}"] button`)
+        : target === "add"
+          ? root?.querySelector<HTMLElement>("[data-add]")
+          : root?.querySelector<HTMLElement>("h2");
+    (el ?? root?.querySelector<HTMLElement>("h2"))?.focus();
+  }, [household, editing]);
+
   async function remove(p: HouseholdPerson) {
     if (!confirm(`Remove ${p.name} from your household?`)) return;
+    setError(null);
     try {
       await Households.removePerson(p.id);
       setStatus(`Removed ${p.name}.`);
+      focusNext.current = "heading";
       await load();
     } catch (e) {
       setError(errorText(e, "We couldn't remove that person."));
     }
   }
 
+  const people = household?.people ?? [];
+  const addButton = (
+    <span data-add>
+      <Button variant={people.length ? "secondary" : "primary"} layout="mt-3" onClick={() => setEditing("new")}>Add a household member</Button>
+    </span>
+  );
+
   return (
-    <section className="mt-6" aria-labelledby="household-heading">
-      <h2 id="household-heading" className="text-xl font-bold mb-1">My household</h2>
+    <section ref={cardRef} className="mt-6" aria-labelledby="household-heading">
+      <h2 id="household-heading" tabIndex={-1} className="text-xl font-bold mb-1 focus:outline-none">My household</h2>
       <p role="status" aria-live="polite" className="sr-only">{status}</p>
       {loading && <Skeleton kind="lines" />}
-      {!loading && error && <FormError>{error}</FormError>}
-      {!loading && !household && (
-        <p className="text-sm text-text-muted mb-3">
-          Add your children, teens or other family members so you can sign them up for events together.
-        </p>
+      {!loading && loadError && <ErrorNotice message={loadError} onRetry={() => { setLoading(true); load(); }} />}
+      {!loading && !loadError && people.length === 0 && editing !== "new" && (
+        <EmptyState
+          level={2}
+          title="No one in your household yet"
+          body="Add your children, teens or other family members so you can sign them up for events together."
+          action={<span data-add><Button variant="primary" onClick={() => setEditing("new")}>Add a household member</Button></span>}
+        />
       )}
-      {household && (
+      {household && people.length > 0 && (
         <>
           <p className="text-sm text-text-muted mb-3">{household.name}</p>
           {household.accounts.length > 1 && (
@@ -144,34 +188,37 @@ export function HouseholdCard() {
             </p>
           )}
           <ul className="space-y-3">
-            {household.people.map((p) => (
-              <li key={p.id} className="rounded-lg border border-border p-4">
+            {people.map((p) => (
+              <li key={p.id} data-person={p.id} className="rounded-lg border border-border p-4">
                 {editing === p.id ? (
                   <PersonForm
                     initial={toDraft(p)}
-                    submitLabel="Save"
-                    onCancel={() => setEditing(null)}
+                    heading={`Edit ${p.name}`}
+                    onCancel={() => { focusNext.current = p.id; setEditing(null); }}
                     onSave={async (input) => {
                       await Households.updatePerson(p.id, input);
-                      setEditing(null);
                       setStatus(`Saved ${input.firstName}.`);
+                      focusNext.current = p.id;
                       await load();
+                      setEditing(null);
                     }}
                   />
                 ) : (
                   <div className="flex items-start gap-3 flex-wrap">
                     <div className="grow min-w-0">
-                      <span className="font-semibold">{p.name}</span>
-                      <span className="ml-2 inline-block rounded-full bg-info-subtle px-2 py-0.5 text-xs font-semibold text-info-on-subtle">{KIND_LABEL[p.kind]}</span>
-                      {LINK_LABEL[p.linkStatus] && (
-                        <span className="ml-2 inline-block rounded-full bg-sunken px-2 py-0.5 text-xs font-semibold text-text-muted">{LINK_LABEL[p.linkStatus]}</span>
-                      )}
-                      {p.birthDate && <div className="text-sm text-text-muted mt-0.5">Born {p.birthDate}</div>}
+                      <div className="font-semibold">{p.name}</div>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        <span className={STONE}>{KIND_LABEL[p.kind]}</span>
+                        {LINK_LABEL[p.linkStatus] && (
+                          <span className={p.linkStatus === "confirmed" ? VIOLET : STONE}>{LINK_LABEL[p.linkStatus]}</span>
+                        )}
+                      </div>
+                      {p.birthDate && <div className="text-sm text-text-muted mt-1">Born {formatBirthDate(p.birthDate)}</div>}
                       {p.careNotes && <div className="text-sm text-text-muted">Care notes: {p.careNotes}</div>}
                     </div>
                     <div className="flex gap-2">
-                      <Button variant="secondary" size="sm" onClick={() => setEditing(p.id)}>Edit<span className="sr-only"> {p.name}</span></Button>
-                      <Button variant="danger-outline" size="sm" onClick={() => remove(p)}>Remove<span className="sr-only"> {p.name}</span></Button>
+                      <Button variant="secondary" onClick={() => setEditing(p.id)}>Edit<span className="sr-only"> {p.name}</span></Button>
+                      <Button variant="danger-outline" onClick={() => remove(p)}>Remove<span className="sr-only"> {p.name}</span></Button>
                     </div>
                   </div>
                 )}
@@ -180,22 +227,22 @@ export function HouseholdCard() {
           </ul>
         </>
       )}
-      {!loading && editing === "new" && (
+      {error && <FormError layout="mt-2">{error}</FormError>}
+      {!loading && !loadError && editing === "new" && (
         <PersonForm
           initial={emptyDraft}
-          submitLabel="Add to household"
-          onCancel={() => setEditing(null)}
+          heading="Add a household member"
+          onCancel={() => { focusNext.current = "add"; setEditing(null); }}
           onSave={async (input) => {
-            await Households.addPerson(input);
-            setEditing(null);
+            const { person } = await Households.addPerson(input);
             setStatus(`Added ${input.firstName}.`);
+            focusNext.current = person.id;
             await load();
+            setEditing(null);
           }}
         />
       )}
-      {!loading && editing !== "new" && (
-        <Button variant="secondary" layout="mt-3" onClick={() => setEditing("new")}>Add a household member</Button>
-      )}
+      {!loading && !loadError && people.length > 0 && editing !== "new" && addButton}
     </section>
   );
 }

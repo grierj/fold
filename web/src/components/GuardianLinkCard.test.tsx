@@ -41,3 +41,24 @@ describe("GuardianLinkCard (M1.9, DEC-32, DEC-79)", () => {
     expect(done).not.toHaveBeenCalled();
   });
 });
+
+describe("GuardianLinkCard announcements (PR 107 review N4)", () => {
+  beforeEach(() => {
+    confirmLink.mockReset();
+  });
+
+  it("says when a confirm was a self-confirmation", async () => {
+    confirmLink.mockResolvedValue({ guardianLink: { ...link, status: "confirmed", confirmedBy: 1 } });
+    const done = vi.fn();
+    render(<GuardianLinkCard link={link} onDone={done} />);
+    await userEvent.type(screen.getByLabelText(/How did you check/), "Sole admin");
+    await userEvent.click(screen.getByRole("button", { name: "Confirm link" }));
+    expect(done).toHaveBeenCalledWith("Confirmed Kid Smith's link to Pat Smith. Recorded as a self-confirmation.");
+  });
+
+  it("focuses the note on a missing check note", async () => {
+    render(<GuardianLinkCard link={link} onDone={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm link" }));
+    expect(screen.getByLabelText(/How did you check/)).toHaveFocus();
+  });
+});

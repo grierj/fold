@@ -41,7 +41,7 @@ describe("HouseholdCard (M1.9)", () => {
     mine.mockResolvedValue({ household: null });
     render(<HouseholdCard />);
     await userEvent.click(await screen.findByRole("button", { name: "Add a household member" }));
-    await userEvent.click(screen.getByRole("button", { name: "Add to household" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(screen.getByText("Add a first name.")).toBeInTheDocument();
     expect(screen.getByText("Add a birth date for a child or teen.")).toBeInTheDocument();
     expect(addPerson).not.toHaveBeenCalled();
@@ -55,5 +55,39 @@ describe("personProblems", () => {
   });
   it("refuses a future birth date", () => {
     expect(personProblems({ ...base, birthDate: "2030-01-01" }, "2026-10-21").birthDate).toMatch(/future/);
+  });
+});
+
+describe("HouseholdCard focus and states (PR 107 review)", () => {
+  beforeEach(() => {
+    mine.mockReset();
+    addPerson.mockReset();
+  });
+
+  it("moves focus to the first bad field on a failed check", async () => {
+    mine.mockResolvedValue({ household: null });
+    render(<HouseholdCard />);
+    await userEvent.click(await screen.findByRole("button", { name: "Add a household member" }));
+    expect(screen.getByLabelText("First name")).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(screen.getByLabelText("First name")).toHaveFocus();
+  });
+
+  it("offers Try again when the load fails", async () => {
+    mine.mockRejectedValueOnce(new Error("offline"));
+    mine.mockResolvedValueOnce({ household: null });
+    render(<HouseholdCard />);
+    await userEvent.click(await screen.findByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("No one in your household yet")).toBeInTheDocument();
+  });
+
+  it("formats birth dates and uses the violet badge only for Confirmed", async () => {
+    mine.mockResolvedValue({
+      household: { ...household, people: [{ ...household.people[0], linkStatus: "confirmed" }] },
+    });
+    render(<HouseholdCard />);
+    expect(await screen.findByText("Born May 1, 2020")).toBeInTheDocument();
+    expect(screen.getByText("Confirmed")).toHaveClass("bg-primary-subtle");
+    expect(screen.getByText("Child")).toHaveClass("bg-sunken");
   });
 });
