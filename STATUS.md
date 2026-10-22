@@ -21,7 +21,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.6 Calendar views | done (merged, #73) | Wright | `calendar` |
 | M1.7 ICS feeds | done (landed on master without a PR; reviewed and fixed in the m17-fixes PR; video_reveal moves to M1.8) | Muse, Wright | `m1.7-ics-feeds`, `m17-fixes` |
 | M1.8 Video, remote, childcare | unclaimed | | |
-| M1.9 Households and household people | unclaimed | | |
+| M1.9 Households and household people | in progress: slice 1 backend in review (#106); next: slice 1 UI, then slices 2–3 (docs/plan/M1.9-BRIEF.md) | Wright | `m1.9-households` |
 | M1.10 Teen accounts, consent, badges | unclaimed | | |
 | M1.11 Contact privacy and direct-contact requests | unclaimed | | |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
@@ -58,3 +58,14 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 - CI hardening (Warden review of #83, Oct 20, 2026; issue #95): claimed by Wright, in review. Actions pinned to full SHAs and a top-level `permissions: contents: read`, enforced by `TestWorkflowActionsPinnedAndReadOnly`.
 - VideoField polish (Illuminator, optional, from the #102 review): N7, clear the field's error when the link or the video option changes; N8, add a little space between the event page's time line and the "Join by video" button.
 - Terminology (Grier, Oct 20, 2026; DEC-78): rethink the name "private" for groups. The word is overloaded, because private groups are visible to every signed-in member.
+- M1.8/M1.9 stopping point (Oct 21, 2026; Wonder Full quota exhausted, work paused by Grier). M1.8 slice 2 (remote) is in review in #105. M1.8 slice 3 (childcare) hasn't started; its decisions are in the brief's "Slice 3" section. M1.9 slice 1 backend is in review in #106: households, household people, guardian links, the admin confirm/reject endpoints, policy, audit, the notice to admins and migration 00022. Next pieces, in order:
+  1. M1.9 slice 1 UI: the "My household" card on Profile, "Household links" under admin Approvals, and the api.ts/types.ts client. It was left out so knip stays green.
+  2. M1.8 slice 3: childcare. Migration 00021 is reserved for it.
+  3. M1.9 slice 2: registering household people. It depends on #105's counting.
+  4. M1.9 slice 3: conversion and docs/MEMBERS.md.
+
+  Judgment calls are logged in /workspace/fold-ui-audit/M1.9-JUDGMENT-CALLS.md.
+- Warden follow-ups from the #106 review (Oct 21, 2026):
+  1. An admin confirming their own guardian link: decided by Grier as DEC-79 and done in #106. Blocked while another active admin exists; a sole admin may, audited as `selfConfirm`.
+  2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind.
+  3. A confirmed teen link survives a switch to `child`. Probably fine, and left as is.

@@ -108,6 +108,26 @@ deleted. Pictures are upload-only; the server never fetches a URL (Oct 14
 decision). The CSRF token goes in the
 `X-CSRF-Token` header for multipart posts, same as JSON.
 
+
+### Household (M1.9, DEC-8, DEC-32)
+
+```
+GET    /api/v1/me/household                 → 200 {household|null}  (read-only; null until created)
+PUT    /api/v1/me/household                 → 200 {household}  {name?, address?}  (creates on first use)
+POST   /api/v1/me/household/people          → 201 {person}  {firstName, lastName, kind, birthDate?, careNotes?, photoConsent?}  (creates the household on first use)
+PUT    /api/v1/me/household/people/:id      → 200 {person}
+DELETE /api/v1/me/household/people/:id      → 200 {}
+GET    /api/v1/admin/guardian-links?status=pending  → 200 {guardianLinks}   (admin)
+POST   /api/v1/admin/guardian-links/:id/confirm     → 200 {guardianLink}    {checkNote} (admin; note required; not your own link while another active admin exists, DEC-79)
+POST   /api/v1/admin/guardian-links/:id/reject      → 200 {guardianLink}    {note?} (admin)
+```
+
+`GET /me/household` never writes (Warden, #106). The household is created by
+`PUT /me/household` or the first `POST /me/household/people`, and named after
+the account's last name. Any adult account in the household manages it; teen
+accounts get `null` from GET and 403 from the writes. Adding a `child` or
+`teen` person opens a pending guardian link that only an admin can confirm,
+with a note on how it was checked (DEC-32); an `adult` needs no approval.
 ### Uploads
 
 ```

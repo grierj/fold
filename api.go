@@ -457,6 +457,17 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.PUT("/me/calendar-feed", a.apiAuth(), a.apiUpdateMyCalendarFeed)
 	v1.DELETE("/me/calendar-feed", a.apiAuth(), a.apiDeleteMyCalendarFeed)
 	v1.DELETE("/admin/users/:id/calendar-feed", a.apiAuth(), a.apiAdmin(), a.apiAdminRevokeCalendarFeed)
+	// My household (M1.9 slice 1): GET creates the household on first
+	// use; a child or teen person starts a pending guardian link an
+	// admin confirms below (DEC-32).
+	v1.GET("/me/household", a.apiAuth(), a.apiGetMyHousehold)
+	v1.PUT("/me/household", a.apiAuth(), a.apiUpdateMyHousehold)
+	v1.POST("/me/household/people", a.apiAuth(), a.apiAddHouseholdPerson)
+	v1.PUT("/me/household/people/:id", a.apiAuth(), a.apiUpdateHouseholdPerson)
+	v1.DELETE("/me/household/people/:id", a.apiAuth(), a.apiDeleteHouseholdPerson)
+	v1.GET("/admin/guardian-links", a.apiAuth(), a.apiAdmin(), a.apiListGuardianLinks)
+	v1.POST("/admin/guardian-links/:id/confirm", a.apiAuth(), a.apiAdmin(), a.apiConfirmGuardianLink)
+	v1.POST("/admin/guardian-links/:id/reject", a.apiAuth(), a.apiAdmin(), a.apiRejectGuardianLink)
 
 	// Invitations (M1.2): admins and leaders invite; the person accepts
 	// with a token and sets a password. No approval step.

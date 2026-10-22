@@ -1,6 +1,9 @@
 package policy
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // People used across the tables. A nil *Person is a signed-out guest.
 var (
@@ -604,6 +607,122 @@ func TestCanRegisterEvent(t *testing.T) {
 	}
 	if !CanRegisterEvent(adult, churchEvent(Private, false), Group{}, none) {
 		t.Error("signed-in person registers for a private church-wide event")
+	}
+}
+
+// Section 6, "Create a household; add household people" and "Confirm
+// any guardian or household link" (DEC-32).
+func TestCanManageHousehold(t *testing.T) {
+	adultAccount := HouseholdRel{Account: true, Adult: true}
+	teenAccount := HouseholdRel{Account: true}
+	noneH := HouseholdRel{}
+	cases := []struct {
+		name string
+		p    *Person
+		rel  HouseholdRel
+		want bool
+	}{
+		{"admin manages any household", admin, noneH, true},
+		{"adult account manages own household", adult, adultAccount, true},
+		{"a leader manages only as an adult account in it", adult, adultAccount, true},
+		{"member with no household manages none", adult, noneH, false},
+		{"adult in another household manages none here", adult2, noneH, false},
+		{"teen household account manages none", teen, teenAccount, false},
+		{"teen manages none even with an adult relation fact", teen, adultAccount, false},
+		{"guest manages none", guest, noneH, false},
+	}
+	for _, c := range cases {
+		if got := CanManageHousehold(c.p, c.rel); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+	if !CanCreateHousehold(admin) || !CanCreateHousehold(adult) || CanCreateHousehold(teen) || CanCreateHousehold(guest) {
+		t.Error("signed-in adults create a household; teens and guests do not")
+	}
+	if !NeedsGuardianLink(KindChild) || !NeedsGuardianLink(KindTeen) || NeedsGuardianLink(KindAdult) {
+		t.Error("children and teens wait for an admin; adults need no approval (DEC-32)")
+	}
+	if !CanConfirmGuardianLink(admin) || CanConfirmGuardianLink(adult) || CanConfirmGuardianLink(teen) || CanConfirmGuardianLink(guest) {
+		t.Error("only an admin confirms a guardian link (DEC-32)")
+	}
+}
+
+// Section 6, "See a household person's name and age".
+func TestCanSeeHouseholdPerson(t *testing.T) {
+	childPending := HouseholdPerson{Kind: KindChild, LinkStatus: LinkPending}
+	childConfirmed := HouseholdPerson{Kind: KindChild, LinkStatus: LinkConfirmed}
+	childRejected := HouseholdPerson{Kind: KindChild, LinkStatus: LinkRejected}
+	teenPending := HouseholdPerson{Kind: KindTeen, LinkStatus: LinkPending}
+	adultPerson := HouseholdPerson{Kind: KindAdult}
+	holder := HouseholdRel{Account: true, Adult: true}
+	guardian := HouseholdRel{Guardian: true}
+	manager := HouseholdRel{EventManager: true}
+	noneH := HouseholdRel{}
+	cases := []struct {
+		name   string
+		p      *Person
+		person HouseholdPerson
+		rel    HouseholdRel
+		want   bool
+	}{
+		{"admin sees a pending child", admin, childPending, noneH, true},
+		{"holder sees their pending child (the waiting list)", adult, childPending, holder, true},
+		{"holder sees an adult person", adult, adultPerson, holder, true},
+		{"confirmed guardian sees the child", adult, childConfirmed, guardian, true},
+		{"event leader sees a confirmed child", adult, childConfirmed, manager, true},
+		{"event leader sees an adult person (no link needed)", adult, adultPerson, manager, true},
+		{"event leader sees nothing about a pending child", adult, childPending, manager, false},
+		{"event leader sees nothing about a pending teen", adult, teenPending, manager, false},
+		{"event leader sees nothing about a rejected child", adult, childRejected, manager, false},
+		{"other member sees nothing", adult2, childConfirmed, noneH, false},
+		{"teen sees nothing, even as guardian fact", teen, childConfirmed, guardian, false},
+		{"guest sees nothing", guest, adultPerson, noneH, false},
+	}
+	for _, c := range cases {
+		if got := CanSeeHouseholdPerson(c.p, c.person, c.rel); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// Section 6, "See a household child's care notes": guardians and admins
+// always; leaders and hosts of the event only from 24 hours before to
+// 24 hours after it.
+func TestCanSeeCareNotes(t *testing.T) {
+	start := time.Date(2026, 11, 4, 19, 0, 0, 0, time.UTC)
+	window := &EventWindow{StartsAt: start, EndsAt: start.Add(time.Hour)}
+	child := HouseholdPerson{Kind: KindChild, LinkStatus: LinkConfirmed}
+	childPending := HouseholdPerson{Kind: KindChild, LinkStatus: LinkPending}
+	guardian := HouseholdRel{Guardian: true}
+	manager := HouseholdRel{EventManager: true}
+	holderOnly := HouseholdRel{Account: true, Adult: true}
+	cases := []struct {
+		name   string
+		p      *Person
+		person HouseholdPerson
+		rel    HouseholdRel
+		window *EventWindow
+		now    time.Time
+		want   bool
+	}{
+		{"admin always", admin, childPending, HouseholdRel{}, nil, start.AddDate(0, -1, 0), true},
+		{"confirmed guardian always", adult, child, guardian, nil, start.AddDate(0, -1, 0), true},
+		{"leader at window open (24h before)", adult, child, manager, window, start.Add(-24 * time.Hour), true},
+		{"leader during the event", adult, child, manager, window, start, true},
+		{"leader at window close (24h after end)", adult, child, manager, window, start.Add(25 * time.Hour), true},
+		{"leader before the window", adult, child, manager, window, start.Add(-24*time.Hour - time.Minute), false},
+		{"leader after the window", adult, child, manager, window, start.Add(25*time.Hour + time.Minute), false},
+		{"leader of a pending child, even in the window", adult, childPending, manager, window, start, false},
+		{"leader with no window", adult, child, manager, nil, start, false},
+		{"household adult who is not the confirmed guardian", adult, child, holderOnly, window, start, false},
+		{"other member in the window", adult2, child, HouseholdRel{}, window, start, false},
+		{"teen never", teen, child, guardian, window, start, false},
+		{"guest never", guest, child, manager, window, start, false},
+	}
+	for _, c := range cases {
+		if got := CanSeeCareNotes(c.p, c.person, c.rel, c.window, c.now); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

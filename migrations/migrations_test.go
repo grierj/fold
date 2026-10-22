@@ -323,6 +323,61 @@ func TestMigration15DownMapsStatuses(t *testing.T) {
 	}
 }
 
+// 00022 (M1.9 slice 1): households, household accounts (one household
+// per account), household people, and guardian links naming exactly one
+// of a teen account or a household person. Down drops all four tables.
+func TestHouseholdMigration22(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 22); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	exec(`INSERT INTO users (id, email, name) VALUES (1, 'a@example.com', 'Ann'), (2, 'b@example.com', 'Bob')`)
+	exec(`INSERT INTO households (id, name, created_by) VALUES (1, 'Ann household', 1)`)
+	exec(`INSERT INTO household_accounts (household_id, user_id, relation) VALUES (1, 1, 'guardian')`)
+	if _, err := db.Exec(`INSERT INTO household_accounts (household_id, user_id, relation) VALUES (1, 1, 'adult')`); err == nil {
+		t.Fatal("an account joined a second household row")
+	}
+	exec(`INSERT INTO household_people (id, household_id, first_name, kind, created_by) VALUES (1, 1, 'Kid', 'child', 1)`)
+	exec(`INSERT INTO guardian_links (guardian_user_id, person_id) VALUES (1, 1)`)
+	if _, err := db.Exec(`INSERT INTO guardian_links (guardian_user_id, teen_user_id, person_id) VALUES (1, 2, 1)`); err == nil {
+		t.Fatal("a guardian link named both a teen and a person")
+	}
+	if _, err := db.Exec(`INSERT INTO guardian_links (guardian_user_id) VALUES (1)`); err == nil {
+		t.Fatal("a guardian link named nobody")
+	}
+	if _, err := db.Exec(`INSERT INTO household_people (household_id, first_name, kind, created_by) VALUES (1, 'X', 'alien', 1)`); err == nil {
+		t.Fatal("an unknown household person kind was accepted")
+	}
+	var photo bool
+	if err := db.QueryRow(`SELECT photo_consent FROM household_people WHERE id = 1`).Scan(&photo); err != nil || photo {
+		t.Fatalf("photo consent default = %v (%v), want false", photo, err)
+	}
+	if _, err := p.DownTo(ctx, 19); err != nil {
+		t.Fatalf("down to 19: %v", err)
+	}
+	var exists bool
+	if err := db.QueryRow(`SELECT to_regclass('public.households') IS NOT NULL`).Scan(&exists); err != nil || exists {
+		t.Fatalf("households exists after down = %v (%v)", exists, err)
+	}
+	if _, err := p.UpTo(ctx, 22); err != nil {
+		t.Fatalf("up to 22 again: %v", err)
+	}
+	if err := db.QueryRow(`SELECT to_regclass('public.guardian_links') IS NOT NULL`).Scan(&exists); err != nil || !exists {
+		t.Fatalf("guardian_links missing after re-up = %v (%v)", exists, err)
+	}
+}
+
 // #78: the guest manage-link lookup uses a partial unique index, not a scan.
 func TestManageTokenIndex(t *testing.T) {
 	db := openSQL(t, testdb.Fresh(t, false))

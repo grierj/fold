@@ -4,6 +4,8 @@
 // Group.LeaderID for permissions (C12).
 package policy
 
+import "time"
+
 // Group visibility values (C3). The same enum will be used on events.
 const (
 	Public     = "public"      // anyone, including signed-out visitors
@@ -467,3 +469,149 @@ func CanInvite(p *Person, groupNamed, leadsTarget, leadsAnywhere bool) bool {
 	}
 	return leadsAnywhere
 }
+
+// ---------------------------------------------------------------------------
+// Households (section 6, "Accounts, ages, households"; DEC-8, DEC-32)
+// ---------------------------------------------------------------------------
+
+// Household person kinds (5.3) and guardian link statuses (DEC-32).
+const (
+	KindChild = "child"
+	KindTeen  = "teen"
+	KindAdult = "adult"
+
+	LinkPending   = "pending"
+	LinkConfirmed = "confirmed"
+	LinkRejected  = "rejected"
+	LinkRevoked   = "revoked"
+)
+
+// HouseholdRel is a viewer's relation to one household, and (for Guardian
+// and EventManager) to one household person in it. Handlers load these
+// facts from HouseholdAccount and GuardianLink rows.
+type HouseholdRel struct {
+	// Account: the viewer has a HouseholdAccount row in this household.
+	Account bool
+	// Adult: that row's relation is guardian or adult (not teen).
+	Adult bool
+	// Guardian: the viewer has a confirmed GuardianLink to this person.
+	// A pending link is not guardianship yet (DEC-32).
+	Guardian bool
+	// EventManager: the viewer leads or hosts an event this person is
+	// registered for (registrations arrive in M1.9 slice 2).
+	EventManager bool
+}
+
+// HouseholdPerson is what policy needs to know about a household person.
+// LinkStatus is the person's effective guardian link status: a confirmed
+// link wins, then a pending one, then the latest decided one. "" means
+// no link, which is the adult case: adults need no approval (DEC-32).
+type HouseholdPerson struct {
+	Kind       string // child | teen | adult
+	LinkStatus string // pending | confirmed | rejected | revoked | ""
+}
+
+// NeedsGuardianLink reports whether adding a person of this kind waits
+// for an admin to confirm a guardian link (DEC-32): children and teens
+// do, adults do not. An unknown kind fails closed.
+func NeedsGuardianLink(kind string) bool {
+	return kind != KindAdult
+}
+
+// CanCreateHousehold: a signed-in adult gets a household on first use
+// (section 6: own household only). Teens and guests may not.
+func CanCreateHousehold(p *Person) bool { return p != nil && !p.Teen }
+
+// CanManageHousehold covers naming the household and adding, editing and
+// removing its people: admins over any household, and any adult account
+// in the household over their own. Teens (including a teen household
+// account) and guests manage none. Children and teens added here still
+// wait for an admin to confirm the link (NeedsGuardianLink, DEC-32);
+// managing a household never confirms a link.
+func CanManageHousehold(p *Person, rel HouseholdRel) bool {
+	if p == nil {
+		return false
+	}
+	if p.Admin {
+		return true
+	}
+	return !p.Teen && rel.Adult
+}
+
+// householdPersonConfirmed reports whether the person counts as
+// confirmed for people outside the household: an adult (no link needed)
+// or a child or teen with a confirmed guardian link. Until then leaders
+// and hosts see nothing about the person (5.3, DEC-32).
+func householdPersonConfirmed(person HouseholdPerson) bool {
+	return person.Kind == KindAdult || person.LinkStatus == LinkConfirmed
+}
+
+// CanSeeHouseholdPerson decides who sees a household person's name and
+// age (section 6): admins; a confirmed guardian; an adult account in the
+// same household (the account holders, including the adult who added a
+// child and is still waiting for an admin, who sees the waiting state in
+// their own household list); and the leaders or hosts of an event the
+// person is registered for, once any needed link is confirmed. Teens
+// and guests see household people nowhere.
+func CanSeeHouseholdPerson(p *Person, person HouseholdPerson, rel HouseholdRel) bool {
+	if p == nil {
+		return false
+	}
+	if p.Admin {
+		return true
+	}
+	if p.Teen {
+		return false
+	}
+	if rel.Guardian || rel.Adult {
+		return true
+	}
+	return rel.EventManager && householdPersonConfirmed(person)
+}
+
+// EventWindow is one occurrence's start and end, for CanSeeCareNotes.
+type EventWindow struct {
+	StartsAt time.Time
+	EndsAt   time.Time
+}
+
+// inCareWindow reports whether now is in the care-notes window: from
+// 24 hours before the occurrence starts to 24 hours after it ends
+// (section 6). The bounds are inclusive.
+func (w EventWindow) inCareWindow(now time.Time) bool {
+	end := w.EndsAt
+	if end.Before(w.StartsAt) {
+		end = w.StartsAt
+	}
+	return !now.Before(w.StartsAt.Add(-24*time.Hour)) && !now.After(end.Add(24*time.Hour))
+}
+
+// CanSeeCareNotes decides who sees a household child's care notes
+// (section 6): admins and confirmed guardians always, and the leaders
+// or hosts (rel.EventManager) of an event the child is registered for
+// only during the event window and only once the guardian link is
+// confirmed. An adult account in the household who is not a confirmed
+// guardian of this child does not see the notes through this rule; the
+// household's own list goes through CanManageHousehold instead. Care
+// notes belong to children, so the event-manager path is child-only.
+func CanSeeCareNotes(p *Person, person HouseholdPerson, rel HouseholdRel, window *EventWindow, now time.Time) bool {
+	if p == nil {
+		return false
+	}
+	if p.Admin {
+		return true
+	}
+	if p.Teen {
+		return false
+	}
+	if rel.Guardian {
+		return true
+	}
+	return person.Kind == KindChild && person.LinkStatus == LinkConfirmed &&
+		rel.EventManager && window != nil && window.inCareWindow(now)
+}
+
+// CanConfirmGuardianLink: only an admin confirms a guardian or household
+// link to a teen or child, with a note on how it was checked (DEC-32).
+// There is no auto-confirm path, and a leader role never grants this.
+func CanConfirmGuardianLink(p *Person) bool { return IsAdmin(p) }

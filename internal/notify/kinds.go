@@ -37,6 +37,7 @@ const (
 	RegistrationRemoved     = "registration.removed"
 	RegistrationNotRestored = "registration.not_restored"
 	WaitlistCutoff          = "waitlist.cutoff"
+	HouseholdLinkPending    = "household.link_pending"
 )
 
 // Action is an inline button. Only allow-listed kinds carry one (6.6).
@@ -298,6 +299,27 @@ func init() {
 		Render: func(v Vars) (string, string) {
 			return "You're not back in " + or(v.Event, "one of your events") + " yet",
 				"The event was full when your account was turned back on. Ask a leader or host to add you."
+		},
+	})
+	register(Kind{
+		// A child or teen added to a household waits for an admin to
+		// confirm the guardian link (DEC-32, M1.9): a task, like a pending
+		// group, resolved when an admin confirms or rejects it. No inline
+		// button: confirming needs a check note on the Approvals tab. The
+		// bell names the people for admins; the email variant names
+		// nobody, since a minor is involved. Change is the kind in words
+		// ("child" or "teen").
+		Key: HouseholdLinkPending, Category: CatAdmin, Waiting: true, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			who := or(v.Person, "Someone")
+			if v.Change != "" {
+				who += " (" + v.Change + ")"
+			}
+			return or(v.Actor, "Someone") + " added " + who + " to their household",
+				"The link needs an admin to confirm it before the person can be registered."
+		},
+		RenderEmailSafe: func(Vars) (string, string) {
+			return "New household link to confirm in Fold", "Someone added a child or teen to their household. Sign in to review it."
 		},
 	})
 	register(Kind{
