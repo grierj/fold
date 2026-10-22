@@ -797,14 +797,27 @@ func revokeGuardianLinks(tx *gorm.DB, c *gin.Context, actor uint, person *models
 	return nil
 }
 
-// apiGetMyHousehold returns the user's household, creating it on first
-// use ("My household" creates it).
+// apiGetMyHousehold returns the user's household, or {household: null}
+// when they have none yet. It is read-only (Warden, #106): the household
+// is created by PUT /me/household or POST /me/household/people through
+// ensureHousehold.
 func (a *App) apiGetMyHousehold(c *gin.Context) {
-	household, ok := a.manageMyHousehold(c)
-	if !ok {
+	u := apiUser(c)
+	acct, found := householdAccountIn(a.DB, u.ID)
+	if !found {
+		c.JSON(http.StatusOK, gin.H{"household": nil})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"household": a.toHouseholdJSON(household)})
+	if !policy.CanManageHousehold(asPerson(u), householdRelOf(acct, true)) {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return
+	}
+	var household models.Household
+	if err := a.DB.First(&household, acct.HouseholdID).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load household")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"household": a.toHouseholdJSON(&household)})
 }
 
 // apiUpdateMyHousehold renames the household or sets its address.

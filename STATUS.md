@@ -65,3 +65,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
   4. M1.9 slice 3: conversion and docs/MEMBERS.md.
 
   Judgment calls are logged in /workspace/fold-ui-audit/M1.9-JUDGMENT-CALLS.md.
+- Warden follow-ups from the #106 review (Oct 21, 2026):
+  1. An admin can confirm their own guardian link (api_admin.go around lines 197 and 228). Warden is asking Grier, so it's unchanged for now.
+  2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind.
+  3. A confirmed teen link survives a switch to `child`. Probably fine, and left as is.

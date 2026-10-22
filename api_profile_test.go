@@ -495,6 +495,21 @@ func TestMyHouseholdCreatedOnFirstUse(t *testing.T) {
 	app.DB.Model(u).Update("name", "John Smith")
 	c := loginAPI(t, app, "john", "password1234")
 
+	// GET is read-only (Warden, #106): no household yet means null, and
+	// nothing is written.
+	if w := c.do("GET", "/api/v1/me/household", nil, false); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"household":null`) {
+		t.Fatalf("GET before first use: %d %s", w.Code, w.Body.String())
+	}
+	var none int64
+	app.DB.Model(&models.HouseholdAccount{}).Where("user_id = ?", u.ID).Count(&none)
+	if none != 0 {
+		t.Fatalf("GET created a household account row")
+	}
+	// PUT creates it on first use.
+	if w := c.do("PUT", "/api/v1/me/household", map[string]string{}, true); w.Code != http.StatusOK {
+		t.Fatalf("PUT first use: %d %s", w.Code, w.Body.String())
+	}
+
 	h := getMyHousehold(t, c)
 	if h.Name != "Smith household" || h.CreatedBy != u.ID || len(h.People) != 0 {
 		t.Fatalf("first household: %+v", h)
@@ -502,7 +517,7 @@ func TestMyHouseholdCreatedOnFirstUse(t *testing.T) {
 	if len(h.Accounts) != 1 || h.Accounts[0].UserID != u.ID || h.Accounts[0].Relation != models.HouseholdRelationGuardian {
 		t.Fatalf("household accounts: %+v", h.Accounts)
 	}
-	// First use only: a second GET is the same household, audited once.
+	// Created once: a later GET is the same household, audited once.
 	if again := getMyHousehold(t, c); again.ID != h.ID {
 		t.Fatalf("second GET made household %d, want %d", again.ID, h.ID)
 	}
@@ -541,8 +556,11 @@ func TestTeenAccountGetsNoHousehold(t *testing.T) {
 	teenUser := newTestUser(t, app, "teen", "password1234", models.RoleMember)
 	app.DB.Model(teenUser).Update("account_type", models.AccountTeen)
 	c := loginAPI(t, app, "teen", "password1234")
-	if w := c.do("GET", "/api/v1/me/household", nil, false); w.Code != http.StatusForbidden {
-		t.Fatalf("teen household: %d %s, want 403", w.Code, w.Body.String())
+	if w := c.do("GET", "/api/v1/me/household", nil, false); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"household":null`) {
+		t.Fatalf("teen GET household: %d %s, want null", w.Code, w.Body.String())
+	}
+	if w := c.do("PUT", "/api/v1/me/household", map[string]string{"name": "Mine"}, true); w.Code != http.StatusForbidden {
+		t.Fatalf("teen PUT household: %d %s, want 403", w.Code, w.Body.String())
 	}
 	var count int64
 	app.DB.Model(&models.HouseholdAccount{}).Where("user_id = ?", teenUser.ID).Count(&count)
