@@ -17,7 +17,9 @@ const link = {
 };
 
 describe("GuardianLinkCard (M1.9, DEC-32, DEC-79)", () => {
-  beforeEach(() => confirmLink.mockReset());
+  beforeEach(() => {
+    confirmLink.mockReset();
+  });
 
   it("needs a check note before confirming", async () => {
     const done = vi.fn();
