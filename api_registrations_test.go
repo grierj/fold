@@ -1704,7 +1704,11 @@ func TestRegistrationReadBudget(t *testing.T) {
 	}
 	_ = newTestUser(t, app, "solo", "password1234", "member")
 	solo := loginAPI(t, app, "solo", "password1234")
+	n = 0
 	apiDo(t, solo, "PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", map[string]any{"date": date, "status": "going"}, http.StatusOK)
+	if n > 12 {
+		t.Fatalf("solo going PUT read %d times, budget 12", n)
+	}
 	n = 0
 	apiDo(t, solo, "GET", "/api/v1/events/"+itoa(eventID), nil, http.StatusOK)
 	if n > 20 {
@@ -1715,4 +1719,22 @@ func TestRegistrationReadBudget(t *testing.T) {
 	if n > 21 {
 		t.Fatalf("admin GET read %d times, budget 21", n)
 	}
+	// GET /me/household (Whittler, PR 111): reads don't grow per person or
+	// per account (18 before batching, 9 before slice 3; the pending-approval
+	// lookup adds one, DEC-82). A six-person household reads the same.
+	n = 0
+	apiDo(t, c, "GET", "/api/v1/me/household", nil, http.StatusOK)
+	small := n
+	if n > 11 {
+		t.Fatalf("household GET read %d times, budget 11", n)
+	}
+	for i := 0; i < 6; i++ {
+		apiDo(t, c, "POST", "/api/v1/me/household/people", map[string]any{"firstName": "Extra" + itoa(uint(i)), "kind": "adult", "birthDate": "1990-01-01"}, http.StatusCreated)
+	}
+	n = 0
+	apiDo(t, c, "GET", "/api/v1/me/household", nil, http.StatusOK)
+	if n != small {
+		t.Fatalf("six-person household GET read %d times, want %d (no per-person reads)", n, small)
+	}
+	t.Logf("household GET reads: %d", small)
 }

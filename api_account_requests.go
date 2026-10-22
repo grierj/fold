@@ -453,6 +453,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	var userID uint
 	var created, upgraded bool
 	var raw string
+	var mailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		now := time.Now().UTC()
 		status := models.RequestRejected
@@ -462,7 +463,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		res := tx.Model(&models.AccountRequest{}).
 			Where("id = ? AND status = ?", req.ID, models.RequestPending).
 			Updates(map[string]any{
-				"status": status, "decided_by": me.ID, "decided_at": now, "decision_note": note,
+				"status": status, "decided_by": me.ID, "decided_at": now, "decision_note": note, "password_hash": nil,
 			})
 		if res.Error != nil {
 			return res.Error
@@ -471,7 +472,14 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			return errRequestHandled
 		}
 		meta := map[string]any{"accountType": req.AccountType}
-		if approve {
+		if approve && req.Source == models.RequestHouseholdConversion {
+			var err error
+			userID, err = a.approveHouseholdConversion(tx, c, req, &mailed)
+			if err != nil {
+				return err
+			}
+			meta["userId"] = userID
+		} else if approve {
 			var existing models.User
 			found := tx.Where("email = ?", req.Email).Limit(1).Find(&existing).RowsAffected == 1
 			if found && existing.Status == models.UserGuest {
@@ -535,14 +543,27 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		a.alreadyHandled(c, notify.AccountRequested, req.ID)
 		return
 	}
+	if err != nil && req.Source == models.RequestHouseholdConversion {
+		conversionError(c, err)
+		return
+	}
+	if emailTaken(err) {
+		jsonError(c, http.StatusConflict, "that email is unavailable; use a different email")
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not decide that request")
 		return
 	}
 	// Decision emails go out after the decision is committed; the
 	// person is emailed either way (M1.3 acceptance).
+	a.deliverNotificationEmails(mailed)
 	if approve {
-		if created || upgraded {
+		if req.Source == models.RequestHouseholdConversion {
+			if err := a.sendConversionApprovedEmail(req); err != nil {
+				log.Printf("account approved email to %s: %v", req.Email, err)
+			}
+		} else if created || upgraded {
 			if err := a.sendAccountApprovedEmail(req, raw); err != nil {
 				log.Printf("account approved email to %s: %v", req.Email, err)
 			}
@@ -666,7 +687,7 @@ func (a *App) expirePendingRequests() (int64, error) {
 		err := a.DB.Transaction(func(tx *gorm.DB) error {
 			res := tx.Model(&models.AccountRequest{}).
 				Where("id = ? AND status = ?", id, models.RequestPending).
-				Update("status", models.RequestExpired)
+				Updates(map[string]any{"status": models.RequestExpired, "password_hash": nil})
 			if res.Error != nil || res.RowsAffected == 0 {
 				return res.Error
 			}
@@ -756,6 +777,16 @@ Set your password here (the link works once and expires in 24 hours):
 %s%s
 
 After that you can sign in with this email address.`, a.siteName(), link, extra),
+	})
+}
+
+func (a *App) sendConversionApprovedEmail(req *models.AccountRequest) error {
+	return a.Mailer.Send(context.Background(), foldmail.Message{
+		To:      req.Email,
+		Subject: fmt.Sprintf("Your %s account is approved", a.siteName()),
+		Text: fmt.Sprintf(`Good news — your account at %s is approved.
+
+You can now sign in at %s/login with this email address and the password you chose.`, a.siteName(), a.emailBaseURL()),
 	})
 }
 

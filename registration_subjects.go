@@ -116,14 +116,15 @@ func (a *App) eligibleRegistration(tx *gorm.DB, r models.Registration, ev *model
 }
 
 func (a *App) eligibleRegistrationForHolder(tx *gorm.DB, r models.Registration, ev *models.Event, now time.Time, override *models.User) bool {
-	f := loadSubjectFacts(tx, []models.Registration{r}, nil)
+	f := a.loadSubjectFacts(tx, []models.Registration{r}, nil)
 	if override != nil {
 		f.users[override.ID] = override
 	}
-	return f.eligible(a, tx, r, ev, a.householdClock(now), map[uint]bool{})
+	f.clock = func() time.Time { return a.householdClock(now) }
+	return f.eligible(a, tx, r, ev, map[uint]bool{})
 }
 
-func (f subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, today time.Time, access map[uint]bool) bool {
+func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, access map[uint]bool) bool {
 	holder := f.users[registrationHolder(r)]
 	if holder == nil || holder.Status == models.UserDisabled {
 		return false
@@ -145,7 +146,7 @@ func (f subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *m
 	}
 	acct, found := f.accounts[holder.ID]
 	rel := householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID)
-	if policy.CanRegisterHouseholdPerson(asPerson(holder), asPerson(holder), rel, rel, householdFacts(person, f.links[person.ID], today), holder.Status == models.UserActive, allowed, allowed) != "" {
+	if policy.CanRegisterHouseholdPerson(asPerson(holder), asPerson(holder), rel, rel, householdFacts(person, f.links[person.ID], f.day()), holder.Status == models.UserActive, allowed, allowed) != "" {
 		return false
 	}
 	return !r.ChildcareRequested || (person.Kind == models.HouseholdChild && r.AttendanceMode != models.AttendanceRemote)
@@ -277,8 +278,8 @@ func (f *subjectFacts) day() time.Time {
 	return f.today
 }
 
-func loadSubjectFacts(db *gorm.DB, regs []models.Registration, viewer *models.User) subjectFacts {
-	f := newSubjectFacts(time.Now().UTC())
+func (a *App) loadSubjectFacts(db *gorm.DB, regs []models.Registration, viewer *models.User) subjectFacts {
+	f := a.requestFacts()
 	f.load(db, regs, viewer)
 	return *f
 }
@@ -385,6 +386,21 @@ func (f *subjectFacts) attendee(r models.Registration, o models.EventOccurrence,
 		out.ChildcareAgesNote = &r.ChildcareAgesNote
 	}
 	if r.HouseholdPersonID == nil {
+		if holder.Status == models.UserPendingConsent && holder.AccountType == models.AccountTeen {
+			viewerAccount, viewerFound := models.HouseholdAccount{}, false
+			if me != nil {
+				viewerAccount, viewerFound = f.accounts[me.ID]
+			}
+			holderAccount, holderFound := f.accounts[holder.ID]
+			rel := householdRelOf(viewerAccount, viewerFound && holderFound && viewerAccount.HouseholdID == holderAccount.HouseholdID)
+			if !policy.CanSeePendingTeenAttendee(asPerson(me), rel, manager) {
+				return nil
+			}
+		}
+		// The teen badge is for leaders and admins only (DEC-82).
+		if manager || policy.IsAdmin(asPerson(me)) {
+			out.AccountType = holder.AccountType
+		}
 		return &out
 	}
 	person := f.people[*r.HouseholdPersonID]

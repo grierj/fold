@@ -105,6 +105,9 @@ const (
 	RequestSelfSignup   = "self_signup"
 	RequestMemberInvite = "member_invite"
 	RequestGuestUpgrade = "guest_upgrade"
+	// RequestHouseholdConversion: an adult household person accepted an
+	// account invitation; conversion waits for admin approval (DEC-4).
+	RequestHouseholdConversion = "household_conversion"
 
 	RequestPending   = "pending"
 	RequestApproved  = "approved"
@@ -492,20 +495,22 @@ type AccountToken struct {
 // OverLimit records the inviting leader's or admin's explicit choice to
 // join over the group's member limit on acceptance (DEC-39, audited).
 type Invitation struct {
-	ID          uint      `gorm:"primaryKey"`
-	Email       string    `gorm:"type:citext;not null"`
-	Phone       string    `gorm:"not null;default:''"`
-	Name        string    `gorm:"not null;default:''"`
-	InvitedBy   uint      `gorm:"not null;index"`
-	Role        string    `gorm:"not null;default:member"` // member | leader (group role on accept)
-	AccountType string    `gorm:"not null;default:adult"`  // adult | teen (teens arrive in M1.10)
-	GroupID     *uint     `gorm:"index"`
-	Group       Group     `gorm:"foreignKey:GroupID"`
-	OverLimit   bool      `gorm:"not null;default:false"`
-	TokenHash   string    `gorm:"not null;uniqueIndex:idx_invitations_token_hash"`
-	ExpiresAt   time.Time `gorm:"not null"`
-	AcceptedAt  *time.Time
-	CreatedAt   time.Time `gorm:"not null;default:now()"`
+	ID                uint      `gorm:"primaryKey"`
+	Email             string    `gorm:"type:citext;not null"`
+	Phone             string    `gorm:"not null;default:''"`
+	Name              string    `gorm:"not null;default:''"`
+	InvitedBy         uint      `gorm:"not null;index"`
+	Role              string    `gorm:"not null;default:member"` // member | leader (group role on accept)
+	AccountType       string    `gorm:"not null;default:adult"`  // adult | teen (teens arrive in M1.10)
+	GroupID           *uint     `gorm:"index"`
+	Group             Group     `gorm:"foreignKey:GroupID"`
+	OverLimit         bool      `gorm:"not null;default:false"`
+	TokenHash         string    `gorm:"not null;uniqueIndex:idx_invitations_token_hash"`
+	ExpiresAt         time.Time `gorm:"not null"`
+	AcceptedAt        *time.Time
+	HouseholdPersonID *uint `gorm:"uniqueIndex:idx_invitations_open_conversion,where:household_person_id IS NOT NULL AND accepted_at IS NULL AND revoked_at IS NULL"`
+	RevokedAt         *time.Time
+	CreatedAt         time.Time `gorm:"not null;default:now()"`
 }
 
 // MailOutbox is one email the devoutbox sender stored (5.6, M1.2): the
@@ -568,20 +573,23 @@ func (f RequestFlags) HasWarnings() bool { return f.Duplicate || f.Honeypot || f
 // GroupID is reserved for the guest-upgrade door (M1.4); M1.3 approvals
 // create the account only and never join a group.
 type AccountRequest struct {
-	ID           uint       `gorm:"primaryKey"`
-	Name         string     `gorm:"not null"`
-	Email        string     `gorm:"type:citext;not null;index"`
-	Phone        string     `gorm:"not null;default:''"`
-	AccountType  string     `gorm:"not null;default:adult"` // adult | teen
-	BirthDate    *time.Time `gorm:"type:date"`
-	Message      string     `gorm:"type:text;not null;default:''"`
-	Source       string     `gorm:"not null"` // self_signup | member_invite | guest_upgrade
-	RequestedBy  *uint      `gorm:"index"`
-	GroupID      *uint      `gorm:"index"`
-	Status       string     `gorm:"not null;default:pending;index"` // pending | approved | rejected | expired | withdrawn
-	DecidedBy    *uint
-	DecidedAt    *time.Time
-	DecisionNote string `gorm:"not null;default:''"`
+	PasswordHash      *string `json:"-"`
+	HouseholdPersonID *uint
+	InvitationID      *uint
+	ID                uint       `gorm:"primaryKey"`
+	Name              string     `gorm:"not null"`
+	Email             string     `gorm:"type:citext;not null;index"`
+	Phone             string     `gorm:"not null;default:''"`
+	AccountType       string     `gorm:"not null;default:adult"` // adult | teen
+	BirthDate         *time.Time `gorm:"type:date"`
+	Message           string     `gorm:"type:text;not null;default:''"`
+	Source            string     `gorm:"not null"` // self_signup | member_invite | guest_upgrade | household_conversion
+	RequestedBy       *uint      `gorm:"index"`
+	GroupID           *uint      `gorm:"index"`
+	Status            string     `gorm:"not null;default:pending;index"` // pending | approved | rejected | expired | withdrawn
+	DecidedBy         *uint
+	DecidedAt         *time.Time
+	DecisionNote      string `gorm:"not null;default:''"`
 	// Flags holds the RequestFlags JSON (duplicate, honeypot, rateLimited).
 	Flags     string    `gorm:"type:jsonb;not null;default:'{}'"`
 	IP        string    `gorm:"not null;default:''"`

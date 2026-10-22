@@ -38,6 +38,7 @@ const (
 	RegistrationNotRestored = "registration.not_restored"
 	WaitlistCutoff          = "waitlist.cutoff"
 	HouseholdLinkPending    = "household.link_pending"
+	HouseholdConverted      = "household.converted"
 )
 
 // Action is an inline button. Only allow-listed kinds carry one (6.6).
@@ -250,6 +251,16 @@ func init() {
 		},
 	})
 	register(Kind{
+		Key: HouseholdConverted, Category: CatSafety, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			body := "Their past and upcoming event sign-ups have moved to their account."
+			return or(v.Person, "A household member") + " created their own account", body
+		},
+		RenderEmailSafe: func(Vars) (string, string) {
+			return "A household account was created", "Sign in to Fold to review your household."
+		},
+	})
+	register(Kind{
 		// An event's time or place changed (5.12, M1.5). Vars.Change is
 		// "time", "place", or "time and place". Never batched: one item
 		// per person per occurrence per change.
@@ -323,6 +334,9 @@ func init() {
 		// ("child" or "teen").
 		Key: HouseholdLinkPending, Category: CatAdmin, Waiting: true, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
+			if v.Change == "teen_account" {
+				return "Check a guardian link for " + or(v.Person, "a teen account"), "The account is waiting for consent. Confirming this link does not let the teen sign in yet."
+			}
 			who := or(v.Person, "Someone")
 			if v.Change != "" {
 				who += " (" + v.Change + ")"

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useLocation } from "react-router-dom";
 import { Site } from "../api";
 import { useAuth } from "../auth";
 import { Avatar } from "./Avatar";
@@ -32,6 +32,7 @@ function useSiteName() {
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {
+  const { pathname } = useLocation();
   const { user, loading, logout, isAdmin } = useAuth();
   const site = useSiteName();
   const signedIn = !loading && !!user;
@@ -100,7 +101,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
               <>
                 <NavLink to="/calendar" className={topLink}>Calendar</NavLink>
                 <NavLink to="/join" className={topLink}>Join</NavLink>
-                <NavLink to="/login" className="btn-primary text-sm">Log in</NavLink>
+                {/* On an invitation the form is the main action, and a waiting teen
+                    can't sign in yet, so Log in steps back (PR 111 N3). */}
+                <NavLink to="/login" className={`${pathname.startsWith("/invite") ? "btn-secondary" : "btn-primary"} text-sm`}>Log in</NavLink>
               </>
             )}
           </nav>

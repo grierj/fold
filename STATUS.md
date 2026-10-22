@@ -21,7 +21,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.6 Calendar views | done (merged, #73) | Wright | `calendar` |
 | M1.7 ICS feeds | done (landed on master without a PR; reviewed and fixed in the m17-fixes PR; video_reveal moves to M1.8) | Muse, Wright | `m1.7-ics-feeds`, `m17-fixes` |
 | M1.8 Video, remote, childcare | done (video #102, remote #105, childcare #109 merged) | Wright | `m1.8-remote-capacity` |
-| M1.9 Households and household people | in progress: slice 1 merged (#106, #107); slice 2 (registering household people) in review (#110); then slice 3 (docs/plan/M1.9-BRIEF.md) | Wright | `m1.9-household-rsvp` |
+| M1.9 Households and household people | in progress: slices 1 and 2 merged (#106, #107, #110); slice 3 (conversion, docs/MEMBERS.md) in progress (docs/plan/M1.9-BRIEF.md) | Wright | `m1.9-household-convert` |
 | M1.10 Teen accounts, consent, badges | unclaimed | | |
 | M1.11 Contact privacy and direct-contact requests | unclaimed | | |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
@@ -55,20 +55,22 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 
 ## Follow-ups (not yet claimed)
 
+- M1.10: re-enable household teen conversion with parent consent. Move sign-ups only once consent is granted, approval-first like adults in DEC-82; until then the household keeps managing them. Teen conversion is off in M1.9 to prevent lockout.
+
 - (Illuminator, #105 N10) Watch that a stray arrow key in the "How you'll attend" radio group can't change a Going answer by accident (switching mode saves immediately).
 - (Whittler, #105) An admin re-adding someone who is already going in the same pool counts their seats twice (api_registrations.go admin add path, ~1150-1157). Fix: subtract the existing going party from used seats before the fit check.
 - (Illuminator, PR 110 N5) Use the Going/Maybe/Can't go radios for each household person instead of the "Answer for X" select (judgment call 38).
 - (M1.9 slice 2, judgment call 34) Seat-only manager removal still doesn't auto-promote; making every removal promote (5.4) is deferred.
+- (Warden, PR 110) Solo RSVP membership race: a solo answer no longer re-checks `canRegisterIn` under the locks. Either re-check it after `lockOccurrence`, or have membership removal take the occurrence lock.
+- (Warden, PR 110) `loadSubjectFacts` seeds its clock with UTC instead of `householdClock`, so callers that don't set `today` compute ages on the UTC date (DEC-81 says church-local). Done in #111.
+- (Whittler, PR 110) Select attendee names in the attendee query so the account load can be skipped (GET /events/:id to about 18 reads).
+- (Whittler, PR 110) Assert that a solo going PUT stays at or under 12 reads in `TestRegistrationReadBudget` (it measures the maybe path now). Done in #111.
+- (Illuminator, PR 110 N8) On roster rows, show the status ("Going") under "Signed up by", above the notes. Done in #111.
+- (Illuminator, PR 110 N9) Give Profile's lazy-loaded household card a placeholder of about its real height, so the page doesn't jump. Done in #111.
 - CI hardening (Warden review of #83, Oct 20, 2026; issue #95): claimed by Wright, in review. Actions pinned to full SHAs and a top-level `permissions: contents: read`, enforced by `TestWorkflowActionsPinnedAndReadOnly`.
 - VideoField polish (Illuminator, optional, from the #102 review): N7, clear the field's error when the link or the video option changes; N8, add a little space between the event page's time line and the "Join by video" button.
 - Terminology (Grier, Oct 20, 2026; DEC-78): rethink the name "private" for groups. The word is overloaded, because private groups are visible to every signed-in member.
-- M1.8/M1.9 stopping point (Oct 21, 2026; Wonder Full quota exhausted, work paused by Grier). M1.8 slice 2 (remote) is in review in #105. M1.8 slice 3 (childcare) hasn't started; its decisions are in the brief's "Slice 3" section. M1.9 slice 1 backend is in review in #106: households, household people, guardian links, the admin confirm/reject endpoints, policy, audit, the notice to admins and migration 00022. Next pieces, in order:
-  1. M1.9 slice 1 UI: the "My household" card on Profile, "Household links" under admin Approvals, and the api.ts/types.ts client. It was left out so knip stays green.
-  2. M1.8 slice 3: childcare. Migration 00021 is reserved for it.
-  3. M1.9 slice 2: registering household people. It depends on #105's counting.
-  4. M1.9 slice 3: conversion and docs/MEMBERS.md.
-
-  Judgment calls are logged in docs/plan/M1.9-JUDGMENT-CALLS.md.
+- M1.8/M1.9 progress (Oct 22, 2026). M1.8 remote (#105) and childcare are merged. M1.9 slice 1 (households, #106 and UI) and slice 2 (registering household people, #110, DEC-81) are merged. M1.9 slice 3 (turning a household person into their own account by invitation, plus docs/MEMBERS.md) is in review in #111. Judgment calls are logged in docs/plan/M1.9-JUDGMENT-CALLS.md.
 - Warden follow-ups from the #106 review (Oct 21, 2026):
   1. An admin confirming their own guardian link: decided by Grier as DEC-79 and done in #106. Blocked while another active admin exists; a sole admin may, audited as `selfConfirm`.
   2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind. Done in #110.

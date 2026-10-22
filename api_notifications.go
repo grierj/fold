@@ -236,9 +236,9 @@ func canSeeGroupIn(tx *gorm.DB, u *models.User, g *models.Group) bool {
 // recipients, loaded once with IN queries (issue #76, the relsFor
 // pattern in api_event_access.go) instead of re-read per person.
 // viewers holds each recipient as a signed-in viewer: a
-// guest-status account (M1.4) or a missing account is absent, never a
-// signed-in viewer, matching guestDisplay, so a private group's name,
-// place, or link never reaches a guest by email.
+// guest, pending-consent or missing account is never a signed-in viewer,
+// so a private group's name, place or link cannot be granted by its presence
+// in the recipient list.
 type noticeFacts struct {
 	groups  map[uint]*models.Group
 	viewers map[uint]*models.User
@@ -282,7 +282,7 @@ func loadNoticeFacts(tx *gorm.DB, groupIDs, userIDs []uint) *noticeFacts {
 		}
 	}
 	for i := range users {
-		if users[i].Status != models.UserGuest {
+		if users[i].Status == models.UserActive {
 			f.viewers[users[i].ID] = &users[i]
 		}
 		if loc, err := events.LoadZone(users[i].Timezone); err == nil {
@@ -355,6 +355,10 @@ func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags model
 		source = "Guest asking for an account"
 	}
 	var actor *uint
+	if req.Source == models.RequestHouseholdConversion && req.RequestedBy != nil {
+		source = "Household account invited by " + nameIn(tx, *req.RequestedBy)
+		actor = req.RequestedBy
+	}
 	if req.Source == models.RequestMemberInvite && req.RequestedBy != nil {
 		source = "Invited by " + nameIn(tx, *req.RequestedBy)
 		actor = req.RequestedBy
@@ -376,14 +380,21 @@ func notifyAccountRequested(tx *gorm.DB, req *models.AccountRequest, flags model
 // variant names nobody. Resolved on confirm and reject (and withdrawn
 // when the person is removed before a decision).
 func notifyGuardianLinkPending(tx *gorm.DB, link *models.GuardianLink, person *models.HouseholdPerson) ([]uint, error) {
+	vars := notify.Vars{Actor: nameIn(tx, link.GuardianUserID)}
+	data := map[string]any{"guardianLinkId": link.ID}
+	if person != nil {
+		vars.Person, vars.Change, vars.Teen = person.FullName(), person.Kind, person.Kind == models.HouseholdTeen
+		data["personId"] = person.ID
+	} else if link.TeenUserID != nil {
+		// M1.10 uses account-targeted guardian links for parent consent.
+		vars.Person, vars.Change, vars.Teen = nameIn(tx, *link.TeenUserID), "teen_account", true
+		data["teenUserId"] = *link.TeenUserID
+	}
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.HouseholdLinkPending, To: adminIDs(tx), Actor: &link.GuardianUserID,
 		SubjectType: "guardian_link", SubjectID: link.ID, Link: approvalsLink,
-		Vars: notify.Vars{
-			Actor: nameIn(tx, link.GuardianUserID), Person: person.FullName(),
-			Change: person.Kind, Teen: person.Kind == models.HouseholdTeen,
-		},
-		Data:      map[string]any{"guardianLinkId": link.ID, "personId": person.ID},
+		Vars:      vars,
+		Data:      data,
 		DedupeKey: fmt.Sprintf("household.link_pending:%d", link.ID),
 	})
 }

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"fold/models"
+	"github.com/gin-gonic/gin"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -150,5 +153,22 @@ func TestSetupPageUsesBuiltStylesheet(t *testing.T) {
 	r.ServeHTTP(w, httptest.NewRequest("GET", css, nil))
 	if w.Code != 200 {
 		t.Errorf("GET %s before setup: %d", css, w.Code)
+	}
+}
+
+func TestMemberHelpIsEmbedded(t *testing.T) {
+	router := gin.New()
+	router.GET("/help/members", serveMemberHelp)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest("GET", "/help/members", nil))
+	if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "text/plain; charset=utf-8" || w.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("help response %d %v", w.Code, w.Header())
+	}
+	source, err := os.ReadFile("docs/MEMBERS.md")
+	if err != nil || !bytes.Equal(source, w.Body.Bytes()) {
+		t.Fatalf("help differs from canonical document: %v", err)
+	}
+	if !strings.Contains(w.Body.String(), "My household") || !strings.Contains(w.Body.String(), "Teens can get their own account once parent consent is available.") {
+		t.Fatal("missing member guidance")
 	}
 }

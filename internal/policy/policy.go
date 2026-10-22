@@ -547,6 +547,31 @@ func CanManageHousehold(p *Person, rel HouseholdRel) bool {
 	return !p.Teen && rel.Adult
 }
 
+// CanConvertHouseholdPerson requires current adult authority and birth-date
+// evidence. Teen conversion waits for parent consent in M1.10.
+func CanConvertHouseholdPerson(p *Person, rel HouseholdRel, person HouseholdPerson, active bool) bool {
+	if !active || p == nil || p.Teen || !CanManageHousehold(p, rel) || person.Deleted || person.Converted {
+		return false
+	}
+	return MeetsAdultAccountRules(person)
+}
+
+// MeetsAdultAccountRules requires an adult with a birth date proving age 18+.
+func MeetsAdultAccountRules(person HouseholdPerson) bool {
+	return person.Kind == KindAdult && person.AgeYears != nil && *person.AgeYears >= 18
+}
+
+// CanCancelHouseholdConversion remains available after eligibility changes.
+func CanCancelHouseholdConversion(p *Person, rel HouseholdRel, active bool) bool {
+	return active && p != nil && !p.Teen && CanManageHousehold(p, rel)
+}
+
+// CanSeePendingTeenAttendee keeps a pending teen's existing manager and
+// household visibility while the account waits for consent (judgment 44).
+func CanSeePendingTeenAttendee(p *Person, rel HouseholdRel, manager bool) bool {
+	return p != nil && !p.Teen && (p.Admin || rel.Adult || manager)
+}
+
 // householdPersonConfirmed reports whether the person counts as
 // confirmed for people outside the household: an adult (no link needed)
 // or a child or teen with a confirmed guardian link. Until then leaders

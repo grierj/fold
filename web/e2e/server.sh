@@ -16,9 +16,11 @@ work="${TMPDIR:-/tmp}/fold-e2e"
 rm -rf "$work" && mkdir -p "$work"
 (cd "$root" && go build -o "$work/fold" .)
 
-# Production mode, except cookies work over plain http on 127.0.0.1.
+# Production by default. The invitation scenarios use dev mode's outbox.
+# Cookies work over plain http on 127.0.0.1 in either mode.
 export DATABASE_URL="${base%/*}/$db$query" APP_ENV=prod PORT="${E2E_PORT:-18090}" \
   SESSION_SECRET=e2e-only-session-secret-0123456789abcdef COOKIE_SECURE=false \
   UPLOAD_DIR="$work/uploads"
+export APP_ENV="${E2E_APP_ENV:-prod}"
 cd "$root" # templates/ is read from the working directory
 exec "$work/fold" serve

@@ -117,6 +117,9 @@ PUT    /api/v1/me/household                 → 200 {household}  {name?, address
 POST   /api/v1/me/household/people          → 201 {person}  {firstName, lastName, kind, birthDate?, careNotes?, photoConsent?}  (creates the household on first use)
 PUT    /api/v1/me/household/people/:id      → 200 {person}
 DELETE /api/v1/me/household/people/:id      → 200 {}
+POST   /api/v1/me/household/people/:id/convert → 201 {conversion}  {email}
+POST   /api/v1/me/household/people/:id/convert/resend → 200 {conversion}
+DELETE /api/v1/me/household/people/:id/convert → 200 {}
 GET    /api/v1/admin/guardian-links?status=pending  → 200 {guardianLinks}   (admin)
 POST   /api/v1/admin/guardian-links/:id/confirm     → 200 {guardianLink}    {checkNote} (admin; note required; not your own link while another active admin exists, DEC-79)
 POST   /api/v1/admin/guardian-links/:id/reject      → 200 {guardianLink}    {note?} (admin)
@@ -128,6 +131,88 @@ the account's last name. Any adult account in the household manages it; teen
 accounts get `null` from GET and 403 from the writes. Adding a `child` or
 `teen` person opens a pending guardian link that only an admin can confirm,
 with a note on how it was checked (DEC-32); an `adult` needs no approval.
+
+An active adult in the household or an active adult admin can invite an
+eligible household person to their own account. Admins may act across
+households; unrelated members receive 404. A real birth date must prove
+an adult is 18 or older on the church-local day. Children cannot convert.
+Teen conversion is off until parent consent arrives in M1.10, under
+DEC-82's no-lockout rule. Create, resend, and acceptance of an existing open
+teen invitation return 409 `household_conversion_teen` with
+"teens can get their own account once parent consent is available". Nothing
+changes; the household keeps managing the teen and their sign-ups.
+Disabled responsible accounts block conversion.
+
+`conversion` is `{email, expiresAt, state: "pending"|"expired"|"awaiting_approval"}`.
+Household people include `canConvert` and optional `conversion` metadata.
+Teens have `canConvert: false` and `convertBlocked: "teen"`. These expose
+no token or hash. Household accounts include `status`; converted people
+appear only under accounts and cannot be edited or removed as household people.
+
+Issuing twice to the same pending destination returns its state without
+sending again. A different destination requires cancellation first. Resend
+keeps the destination, rotates the token, and gives it 24 hours. Expired
+invitations are revoked before replacement. Cancellation is idempotent and
+remains available after eligibility changes. Name, kind, or birth-date edits
+and deletion revoke the invitation in the same transaction. Care notes,
+photo consent, and household name or address changes keep it open.
+
+Conversion uses the existing invitation endpoints below. For an adult,
+acceptance returns `{pendingApproval: true}` without a session. It stores a
+pending `household_conversion` account request with the chosen password's
+bcrypt hash and the household person and invitation IDs, and marks the
+invitation accepted. It creates no user or household account and changes no
+registrations or guardian links. The household continues managing the person
+and all their sign-ups. While pending, the email is reserved and new or resent
+conversion invitations for that person return 409 with
+`household_conversion_approval`. The household person remains in `people`
+with `conversion.state: "awaiting_approval"`.
+
+Approval creates an active member account using the held password hash,
+transfers every registration in place, marks the person converted, and adds
+an adult account to the same household, all in the decision transaction.
+IDs, answers, attendance mode, queue order, and timestamps stay unchanged;
+`registeredBy` and named childcare flags are cleared. Group memberships do
+not move. Approval emails a sign-in note referring to the password already
+chosen. A deleted or converted person, unavailable email, or unavailable
+responsible account returns 409 and leaves the request pending. Rejection
+or 30-day expiry closes the request and clears the held password hash;
+nothing needs undoing, and the email can be invited again.
+
+Approval also returns 409 without moving anything or closing the request when:
+
+- The full name or birth date differs from the accepted request snapshot:
+  `household_conversion_details`.
+- The person is no longer an adult with a birth date proving age 18 or older
+  on the church-local date: `household_conversion_adult`.
+- The original inviter is disabled, deleted, or missing:
+  `household_conversion_inviter`.
+- The household's lock set changed during approval:
+  `household_conversion_retry`. Try approving again.
+
+For details, adult-rule, or inviter refusals, reject the stale request before
+asking an active household adult or admin to send a new invitation.
+
+A first send suppressed by the invitation limit saves no invitation row,
+but the response has the same keys as a normal send. Pending-consent teen
+accounts created through other paths retain their seats and the DEC-82
+roster rules. Event managers see them with a teen badge; unrelated members
+do not see their names.
+
+Creation and resend share the 20-per-rolling-day invitation limit by sender
+and destination, including resends. Counters live in Postgres audit rows.
+Conversion sends over the limit return the normal acknowledgement and log
+the suppression. A suppressed resend keeps the previous link live. Delivery
+failure keeps a retryable invitation. Errors use `household_conversion_email`
+for any unavailable destination, `household_conversion_open` for a different
+pending destination, `household_conversion_unavailable` for eligibility or
+inviter authority, and `household_conversion_holder` for an unavailable
+responsible account discovered during acceptance. Invalid, revoked, expired,
+or consumed links share `link_expired` copy.
+
+`GET /help/members` serves the embedded `docs/MEMBERS.md` as UTF-8 plain text
+with `nosniff`, at the same origin as the app. It needs no session.
+
 ### Uploads
 
 ```
@@ -279,8 +364,8 @@ status, joinedAt}`
 
 ```
 POST /api/v1/invitations          → 201 {invitation}  (auth)
-GET  /api/v1/invitations/:token   → 200 {invitation, site} | 400  (public)
-POST /api/v1/invitations/accept   → 200 {user, groupId?} | 400 | 409  (public)
+GET  /api/v1/invitations/:token   → 200 {invitation, inviterName, siteName, site} | 404  (public)
+POST /api/v1/invitations/accept   → 200 {user?, pendingConsent, pendingApproval} | 400 | 409  (public)
 ```
 
 Invitations (M1.2, 5.10, DEC-4): admins invite into any group or none;
@@ -301,7 +386,11 @@ choice, DEC-39); otherwise it answers `409 {"error":"This group is
 full","full":true}` without consuming the token. The over-limit join is
 audited as `membership.added_over_limit`.
 
-`invitation`: `{id, email, name, groupId?, groupName?, expiresAt}`.
+`invitation`: `{id, email, name, groupId?, groupName?, expiresAt, conversion, accountType}`.
+Ordinary invitations have `conversion: false`. Conversion invitations have
+no group and explain the transfer on the accept page. Household adult
+acceptance waits for approval without a session; teen conversion is refused.
+Ordinary acceptance creates a session when the resulting account can sign in.
 
 ### Account requests
 
@@ -310,7 +399,7 @@ POST /api/v1/account-requests              → 200 {message} | 400 | 403  (publi
 POST /api/v1/account-requests/invite-friend → 200 {message} | 400 | 403 | 409  (auth)
 POST /api/v1/account-requests/confirm      {token, password} → 200 {user, pendingConsent?} | 400  (public)
 GET  /api/v1/admin/account-requests?status=pending → {requests: [accountRequest]}  (admin)
-POST /api/v1/admin/account-requests/:id/approve → 200 {request, userId}  (admin)
+POST /api/v1/admin/account-requests/:id/approve → 200 {request, userId} | 409  (admin)
      body: {note?, fromNotification?}
 POST /api/v1/admin/account-requests/:id/reject  → 200 {request, userId: 0}  (admin)
      body: {note?, fromNotification?} — rejection is never inline (403 with fromNotification)

@@ -557,27 +557,31 @@ func (a *App) serveUpload(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 type householdPersonJSON struct {
-	ID                      uint    `json:"id"`
-	HouseholdID             uint    `json:"householdId"`
-	FirstName               string  `json:"firstName"`
-	LastName                string  `json:"lastName"`
-	Name                    string  `json:"name"`
-	Kind                    string  `json:"kind"` // child | teen | adult
-	BirthDate               string  `json:"birthDate,omitempty"`
-	CareNotes               *string `json:"careNotes,omitempty"`
-	RegistrationEligibility string  `json:"registrationEligibility"`
-	Age                     *int    `json:"age,omitempty"`
-	PhotoConsent            bool    `json:"photoConsent"`
-	LinkStatus              string  `json:"linkStatus"` // pending | confirmed | rejected | revoked | none
-	GuardianLinkID          *uint   `json:"guardianLinkId,omitempty"`
-	ConvertedUserID         *uint   `json:"convertedUserId,omitempty"`
-	CreatedBy               uint    `json:"createdBy"`
+	Conversion              *conversionJSON `json:"conversion,omitempty"`
+	ConvertBlocked          string          `json:"convertBlocked,omitempty"`
+	CanConvert              bool            `json:"canConvert"`
+	ID                      uint            `json:"id"`
+	HouseholdID             uint            `json:"householdId"`
+	FirstName               string          `json:"firstName"`
+	LastName                string          `json:"lastName"`
+	Name                    string          `json:"name"`
+	Kind                    string          `json:"kind"` // child | teen | adult
+	BirthDate               string          `json:"birthDate,omitempty"`
+	CareNotes               *string         `json:"careNotes,omitempty"`
+	RegistrationEligibility string          `json:"registrationEligibility"`
+	Age                     *int            `json:"age,omitempty"`
+	PhotoConsent            bool            `json:"photoConsent"`
+	LinkStatus              string          `json:"linkStatus"` // pending | confirmed | rejected | revoked | none
+	GuardianLinkID          *uint           `json:"guardianLinkId,omitempty"`
+	ConvertedUserID         *uint           `json:"convertedUserId,omitempty"`
+	CreatedBy               uint            `json:"createdBy"`
 }
 
 type householdAccountJSON struct {
 	UserID   uint   `json:"userId"`
 	Name     string `json:"name"`
 	Relation string `json:"relation"` // guardian | adult | teen
+	Status   string `json:"status"`
 }
 
 type householdJSON struct {
@@ -715,7 +719,7 @@ func effectiveLink(links []models.GuardianLink) (string, *uint) {
 	return last.Status, &last.ID
 }
 
-func (a *App) toHouseholdPersonJSON(person *models.HouseholdPerson, links []models.GuardianLink, viewer *models.User) householdPersonJSON {
+func (a *App) toHouseholdPersonJSON(person *models.HouseholdPerson, links []models.GuardianLink, viewer *models.User, batch *conversionBatch) (householdPersonJSON, error) {
 	status, linkID := effectiveLink(links)
 	if person.Kind == models.HouseholdAdult {
 		// An adult needs no approval, whatever links a former kind left.
@@ -730,7 +734,7 @@ func (a *App) toHouseholdPersonJSON(person *models.HouseholdPerson, links []mode
 			}
 		}
 	}
-	facts := householdFacts(person, links, a.householdClock(time.Now().UTC()))
+	facts := householdFacts(person, links, batch.today)
 	if policy.CanSeeCareNotes(asPerson(viewer), facts, rel, nil, time.Now().UTC()) {
 		notes = &person.CareNotes
 	}
@@ -743,7 +747,20 @@ func (a *App) toHouseholdPersonJSON(person *models.HouseholdPerson, links []mode
 	if person.ConvertedUserID != nil {
 		eligibility = "converted"
 	}
+	canConvert, err := batch.allowed(person)
+	if errors.Is(err, errConversionHolder) {
+		canConvert, err = false, nil
+	}
+	if err != nil {
+		return householdPersonJSON{}, err
+	}
+	blocked := ""
+	if person.Kind == models.HouseholdTeen {
+		blocked = "teen"
+	}
 	return householdPersonJSON{
+		ConvertBlocked:          blocked,
+		CanConvert:              canConvert,
 		RegistrationEligibility: eligibility, Age: facts.AgeYears,
 		ID: person.ID, HouseholdID: person.HouseholdID,
 		FirstName: person.FirstName, LastName: person.LastName, Name: person.FullName(),
@@ -751,33 +768,85 @@ func (a *App) toHouseholdPersonJSON(person *models.HouseholdPerson, links []mode
 		CareNotes: notes, PhotoConsent: person.PhotoConsent,
 		LinkStatus: status, GuardianLinkID: linkID,
 		ConvertedUserID: person.ConvertedUserID, CreatedBy: person.CreatedBy,
-	}
+	}, nil
 }
 
-func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) householdJSON {
+func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) (householdJSON, error) {
 	out := householdJSON{
 		ID: household.ID, Name: household.Name, Address: household.Address,
 		CreatedBy: household.CreatedBy,
 		People:    []householdPersonJSON{}, Accounts: []householdAccountJSON{},
 	}
 	var people []models.HouseholdPerson
-	a.DB.Where("household_id = ?", household.ID).Order("id").Find(&people)
+	a.DB.Where("household_id = ? AND converted_user_id IS NULL", household.ID).Order("id").Find(&people)
 	ids := make([]uint, 0, len(people))
 	for i := range people {
 		ids = append(ids, people[i].ID)
 	}
 	links := guardianLinksForPeople(a.DB, ids)
-	for i := range people {
-		out.People = append(out.People, a.toHouseholdPersonJSON(&people[i], links[people[i].ID], viewer))
-	}
 	var accounts []models.HouseholdAccount
 	a.DB.Where("household_id = ?", household.ID).Order("id").Find(&accounts)
+	var rel policy.HouseholdRel
 	for _, acct := range accounts {
+		if viewer != nil && acct.UserID == viewer.ID {
+			rel = householdRelOf(acct, true)
+		}
+	}
+	batch, err := a.loadConversionBatchFor(a.DB, viewer, rel, ids)
+	if err != nil {
+		return out, err
+	}
+	var invitations []models.Invitation
+	if len(ids) > 0 {
+		a.DB.Where("household_person_id IN ? AND accepted_at IS NULL AND revoked_at IS NULL", ids).Find(&invitations)
+	}
+	conversions := map[uint]conversionJSON{}
+	for i := range invitations {
+		conversions[*invitations[i].HouseholdPersonID] = conversionMetadata(&invitations[i])
+	}
+	if len(ids) > 0 {
+		var requests []models.AccountRequest
+		if err := a.DB.Where("household_person_id IN ? AND source = ? AND status = ?", ids, models.RequestHouseholdConversion, models.RequestPending).Find(&requests).Error; err != nil {
+			return out, err
+		}
+		for _, req := range requests {
+			conversions[*req.HouseholdPersonID] = conversionJSON{Email: req.Email, ExpiresAt: req.ExpiresAt, State: "awaiting_approval"}
+		}
+	}
+	for i := range people {
+		row, err := a.toHouseholdPersonJSON(&people[i], links[people[i].ID], viewer, batch)
+		if err != nil {
+			return out, err
+		}
+		if conversion, ok := conversions[people[i].ID]; ok {
+			row.Conversion = &conversion
+		}
+		out.People = append(out.People, row)
+	}
+	userIDs := make([]uint, 0, len(accounts))
+	for _, acct := range accounts {
+		userIDs = append(userIDs, acct.UserID)
+	}
+	users := map[uint]models.User{}
+	if len(userIDs) > 0 {
+		var found []models.User
+		if err := a.DB.Where("id IN ?", userIDs).Find(&found).Error; err != nil {
+			return out, err
+		}
+		for _, u := range found {
+			users[u.ID] = u
+		}
+	}
+	for _, acct := range accounts {
+		user, ok := users[acct.UserID]
+		if !ok {
+			continue
+		}
 		out.Accounts = append(out.Accounts, householdAccountJSON{
-			UserID: acct.UserID, Name: nameIn(a.DB, acct.UserID), Relation: acct.Relation,
+			UserID: acct.UserID, Name: user.PublicName(), Relation: acct.Relation, Status: user.Status,
 		})
 	}
-	return out
+	return out, nil
 }
 
 // createGuardianLink writes a pending link for a child or teen person
@@ -844,7 +913,12 @@ func (a *App) apiGetMyHousehold(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load household")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"household": a.toHouseholdJSON(&household, u)})
+	out, err := a.toHouseholdJSON(&household, u)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load your household")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"household": out})
 }
 
 // apiUpdateMyHousehold renames the household or sets its address.
@@ -905,7 +979,12 @@ func (a *App) apiUpdateMyHousehold(c *gin.Context) {
 			return
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"household": a.toHouseholdJSON(household, apiUser(c))})
+	out, err := a.toHouseholdJSON(household, apiUser(c))
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load your household")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"household": out})
 }
 
 // householdPersonInput is the add/edit body. Fields are pointers so an
@@ -1032,7 +1111,16 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 	}
 	a.deliverNotificationEmails(emailed)
 	links := guardianLinksForPeople(a.DB, []uint{person.ID})
-	c.JSON(http.StatusCreated, gin.H{"person": a.toHouseholdPersonJSON(&person, links[person.ID], me)})
+	batch, err := a.loadConversionBatch(a.DB, me, person.HouseholdID, []uint{person.ID})
+	var row householdPersonJSON
+	if err == nil {
+		row, err = a.toHouseholdPersonJSON(&person, links[person.ID], me, batch)
+	}
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load that person")
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"person": row})
 }
 
 // loadMyHouseholdPerson loads a person in the user's household for an
@@ -1058,6 +1146,10 @@ func (a *App) loadMyHouseholdPerson(c *gin.Context) (*models.Household, *models.
 	var person models.HouseholdPerson
 	if err := a.DB.Where("id = ? AND household_id = ?", id, household.ID).First(&person).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "household person not found")
+		return nil, nil, false
+	}
+	if person.ConvertedUserID != nil {
+		jsonError(c, http.StatusConflict, "this person has their own account; use their account instead")
 		return nil, nil, false
 	}
 	return &household, &person, true
@@ -1142,6 +1234,18 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		if err := tx.First(person, person.ID).Error; err != nil {
 			return err
 		}
+		if person.ConvertedUserID != nil {
+			return errConversionUnavailable
+		}
+		material := (body.FirstName != nil && strings.TrimSpace(*body.FirstName) != person.FirstName) ||
+			(body.LastName != nil && strings.TrimSpace(*body.LastName) != person.LastName) ||
+			(body.Kind != nil && newKind != person.Kind) ||
+			(body.BirthDate != nil && strings.TrimSpace(*body.BirthDate) != formatBirthDate(person.BirthDate))
+		if material {
+			if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil {
+				return err
+			}
+		}
 		oldKind := person.Kind
 		merged := *person
 		if body.Kind != nil {
@@ -1211,7 +1315,16 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		return
 	}
 	links := guardianLinksForPeople(a.DB, []uint{fresh.ID})
-	c.JSON(http.StatusOK, gin.H{"person": a.toHouseholdPersonJSON(&fresh, links[fresh.ID], me)})
+	batch, err := a.loadConversionBatch(a.DB, me, fresh.HouseholdID, []uint{fresh.ID})
+	var row householdPersonJSON
+	if err == nil {
+		row, err = a.toHouseholdPersonJSON(&fresh, links[fresh.ID], me, batch)
+	}
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load that person")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"person": row})
 }
 
 // apiDeleteHouseholdPerson removes a person from the user's household:
@@ -1231,6 +1344,12 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		if err := tx.First(person, person.ID).Error; err != nil {
 			return err
 		}
+		if person.ConvertedUserID != nil {
+			return errConversionUnavailable
+		}
+		if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil {
+			return err
+		}
 		ids, err := a.reconcileHouseholdPerson(tx, person, true, me.ID, c.ClientIP())
 		if err != nil {
 			return err
@@ -1247,6 +1366,10 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		return tx.Delete(person).Error
 	})
 	if err != nil {
+		if errors.Is(err, errConversionUnavailable) {
+			conversionError(c, err)
+			return
+		}
 		jsonError(c, http.StatusInternalServerError, "could not remove that person")
 		return
 	}

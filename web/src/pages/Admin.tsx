@@ -194,7 +194,9 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
           <div className="text-sm text-text-muted">
             {request.source === "member_invite"
               ? `Invited by ${request.requestedByName || "a member"}`
-              : "Self-signup"}{" "}
+              : request.source === "household_conversion"
+                ? `Household account, invited by ${request.requestedByName || "a member"}`
+                : "Self-signup"}{" "}
             · asked {new Date(request.createdAt).toLocaleDateString()}
           </div>
           {request.message && <p className="text-text-muted mt-3 whitespace-pre-wrap">{request.message}</p>}

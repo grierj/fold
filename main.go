@@ -209,6 +209,7 @@ func (a *App) setupRouter() *gin.Engine {
 	// Registered before the setup redirect so a database ping still
 	// answers while the wizard is waiting for the first admin.
 	r.GET("/healthz", a.healthz)
+	r.GET("/help/members", serveMemberHelp)
 
 	// Routes outside the CSRF and setup middleware (C17). They authenticate
 	// with provider signatures (hooks) or signed tokens (RFC 8058 one-click
@@ -244,6 +245,14 @@ func (a *App) setupRouter() *gin.Engine {
 
 //go:embed web/dist
 var distFS embed.FS
+
+//go:embed docs/MEMBERS.md
+var memberHelp []byte
+
+func serveMemberHelp(c *gin.Context) {
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Data(http.StatusOK, "text/plain; charset=utf-8", memberHelp)
+}
 
 // stylesheetRe finds the CSS bundle Vite links from index.html.
 var stylesheetRe = regexp.MustCompile(`<link rel="stylesheet"[^>]*href="(/assets/[^"]+\.css)"`)

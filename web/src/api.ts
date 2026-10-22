@@ -100,6 +100,9 @@ import type {
   Household,
   HouseholdPerson,
   Invitation,
+  InvitationAcceptance,
+  InvitationContext,
+  HouseholdConversion,
   Member,
   Notification,
   NotificationFeed,
@@ -404,9 +407,9 @@ export const Invitations = {
     overLimit?: boolean;
   }) => api<{ invitation: Invitation }>("/invitations", { method: "POST", body: data }),
   get: (token: string) =>
-    api<{ invitation: Invitation; site: string }>(`/invitations/${encodeURIComponent(token)}`),
+    api<InvitationContext>(`/invitations/${encodeURIComponent(token)}`),
   accept: (data: { token: string; name: string; password: string }) =>
-    api<{ user: User; groupId?: number }>(`/invitations/accept`, { method: "POST", body: data }),
+    api<InvitationAcceptance>(`/invitations/accept`, { method: "POST", body: data }),
 };
 
 export const Admin = {
@@ -575,6 +578,9 @@ export interface HouseholdPersonInput {
 // GET never creates: it answers {household: null} until the household
 // exists, and always for teen accounts (Warden, PR 106).
 export const Households = {
+  convert: (id: number, email: string) => api<{ conversion: HouseholdConversion }>(`/me/household/people/${id}/convert`, { method: "POST", body: { email } }),
+  resendConversion: (id: number) => api<{ conversion: HouseholdConversion }>(`/me/household/people/${id}/convert/resend`, { method: "POST" }),
+  cancelConversion: (id: number) => api<Record<string, never>>(`/me/household/people/${id}/convert`, { method: "DELETE" }),
   mine: () => api<{ household: Household | null }>("/me/household"),
   update: (data: { name?: string; address?: string }) =>
     api<{ household: Household }>("/me/household", { method: "PUT", body: data }),

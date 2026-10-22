@@ -11,6 +11,18 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
+  household_conversion_details: "This person's details changed after they accepted. Reject this request and ask the household to send a new invitation.",
+  household_conversion_adult: "This person no longer meets the adult account rules. Check their birth date and account type. Reject this request before asking for a new invitation.",
+  household_conversion_inviter: "The person who sent the invitation can no longer manage this household. Reject this request and ask an active household adult or admin to send a new invitation.",
+  household_conversion_retry: "This household changed while you were approving the account. Try approving it again.",
+  household_conversion_teen: "Teens can get their own account once parent consent is available.",
+  household_conversion_unavailable: "This person can't create an account yet. Check their birth date and account type, or ask your church office for help.",
+  household_conversion_email: "That email isn't available. Use a different email address.",
+  household_conversion_person: "This household person was removed or already has an account. Reject this request; their household can ask for help if needed.",
+  household_conversion_approval: "This account is waiting for an admin. Wait for their decision before sending another invitation.",
+  household_conversion_open: "An invitation is already open. Cancel it before choosing a different email.",
+  household_conversion_holder: "A responsible account isn't available. Ask your church office to check it before trying again.",
+  household_person_converted: "This person has their own account now. Use their account instead.",
   household_link_pending: "Waiting for an admin to confirm. Ask your church office to check the household link before signing them up.",
   household_link_unconfirmed: "This household link isn't confirmed. Ask your church office to check it before signing them up.",
   household_birth_date_required: "Add a birth date in Profile before signing this person up.",
