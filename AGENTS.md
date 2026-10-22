@@ -199,6 +199,23 @@ CLI (C11): `fold` (same as `fold serve`), `fold healthcheck`,
 `fold migrate [up|status|down-one]` (needs only `DATABASE_URL`), and
 `fold version` (needs nothing). `--json` gives machine-readable output.
 
+### Before every push: quick sanity checks
+
+Grier's rule (Oct 22, 2026). Run these before each push. They take seconds,
+not the full suite, and catch undefined references, type errors and missing
+fields in test fixtures before CI does:
+
+```bash
+go build ./...
+go vet ./...
+make lint-go                       # go vet + gofmt + staticcheck v0.8.2
+cd web && npx tsc --noEmit         # types, incl. fixture objects missing a field
+cd web && npx knip                 # web lint (make lint-web); web/ has no eslint config
+```
+
+CI runs on pull requests and on pushes to `master` only, so a branch push
+alone starts no CI; open the PR to get the checks.
+
 ### Merging pull requests
 
 Grier's rule (Oct 20, 2026). Wright may merge a fold PR, as a normal merge commit, when all of these hold:
