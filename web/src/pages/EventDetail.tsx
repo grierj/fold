@@ -6,6 +6,8 @@ import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
+import { RemoteBadge } from "../components/RemoteBadge";
+import { focusRemoteCapacity, isRemoteError, remoteProblem } from "../components/RemoteField";
 import { Menu } from "../components/ui/Menu";
 import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
@@ -77,6 +79,7 @@ export function EventDetail() {
             myRegistration: reg.status,
             myGuestCount: reg.guestCount,
             myWaitlistPosition: reg.waitlistPosition ?? undefined,
+            myAttendanceMode: reg.attendanceMode,
             registrations,
           };
         }),
@@ -364,6 +367,7 @@ function ManageRoster({ instance, onChanged, onClose }: { instance: EventOccurre
           <li key={a.userId} className="flex items-center justify-between gap-3">
             <span>
               {a.name} <span className="text-text-muted">· {a.status}</span>
+              {a.attendanceMode === "remote" && <> <RemoteBadge /></>}
             </span>
             <span className="flex gap-2">
               {a.status === "waitlisted" && (
@@ -418,17 +422,29 @@ function DateEditor({
   const [title, setTitle] = useState(instance.title);
   const [location, setLocation] = useState(instance.location);
   const [capacity, setCapacity] = useState(instance.capacity === null ? "" : String(instance.capacity));
+  const [remoteCapacity, setRemoteCapacity] = useState(
+    instance.remoteCapacity === null ? "" : String(instance.remoteCapacity)
+  );
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+  const remotePrefix = `date-${instance.id}`;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    const remoteMsg = remoteProblem({ available: instance.remoteAvailable, capacity: remoteCapacity }, true);
+    setRemoteError(remoteMsg);
+    if (remoteMsg) {
+      focusRemoteCapacity(remotePrefix);
+      return;
+    }
     const body: {
       startsLocal?: string;
       durationMinutes?: number;
       location?: string;
       title?: string;
       capacityOverride?: number | null;
+      remoteCapacityOverride?: number | null;
     } = {};
     const startsLocal = `${date}T${time}`;
     if (startsLocal !== instance.startsLocal) body.startsLocal = startsLocal;
@@ -438,6 +454,11 @@ function DateEditor({
     const capTrimmed = capacity.trim();
     const capCurrent = instance.capacity === null ? "" : String(instance.capacity);
     if (capTrimmed !== capCurrent) body.capacityOverride = capTrimmed === "" ? null : Number(capTrimmed);
+    if (instance.remoteAvailable) {
+      const rcTrimmed = remoteCapacity.trim();
+      const rcCurrent = instance.remoteCapacity === null ? "" : String(instance.remoteCapacity);
+      if (rcTrimmed !== rcCurrent) body.remoteCapacityOverride = rcTrimmed === "" ? null : Number(rcTrimmed);
+    }
     if (Object.keys(body).length === 0) {
       onClose();
       return;
@@ -448,7 +469,12 @@ function DateEditor({
       await Events.updateOccurrence(instance.eventId, instance.date, body);
       onSaved();
     } catch (err) {
-      setError(errorText(err, "We couldn't update this date."));
+      const msg = errorText(err, "We couldn't update this date.");
+      setError(msg);
+      if (isRemoteError(msg)) {
+        setRemoteError(msg);
+        focusRemoteCapacity(remotePrefix);
+      }
       setBusy(false);
     }
   }
@@ -493,6 +519,23 @@ function DateEditor({
           onChange={(e) => setCapacity(e.target.value)}
         />
       </Field>
+      {instance.remoteAvailable && (
+        <Field
+          id={`remote-capacity-${remotePrefix}`}
+          label="Remote seat limit for this date"
+          optional
+          hint="Enter a whole number from 0 to 100,000. Leave it blank to use the event’s remote seat limit, or 0 to close remote seats for this date."
+          error={remoteError}
+        >
+          <Input
+            type="text"
+            inputMode="numeric"
+            placeholder="Same as the event"
+            value={remoteCapacity}
+            onChange={(e) => setRemoteCapacity(e.target.value)}
+          />
+        </Field>
+      )}
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save this date"}

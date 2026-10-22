@@ -83,6 +83,7 @@ async function api<T>(path: string, opts: RequestOptions = {}): Promise<T> {
 import type {
   AccountRequest,
   AgeBand,
+  AttendanceMode,
   CalendarFeed,
   EventDetailResponse,
   EventHostRow,
@@ -200,6 +201,8 @@ export const Groups = {
       capacity?: number | null;
       waitlistEnabled?: boolean;
       guestsAllowed?: number | null;
+      remoteAvailable?: boolean;
+      remoteCapacity?: number | null;
       videoProvider?: VideoProvider;
       videoUrl?: string;
       videoReveal?: VideoReveal;
@@ -253,11 +256,12 @@ export const AdminAccountRequests = {
 };
 
 export const Calendar = {
-  list: (q: { from: string; to: string; tz: string; mine?: boolean; group?: string; deleted?: boolean }) => {
+  list: (q: { from: string; to: string; tz: string; mine?: boolean; group?: string; deleted?: boolean; remote?: boolean }) => {
     const p = new URLSearchParams({ from: q.from, to: q.to, tz: q.tz });
     if (q.mine) p.set("mine", "1");
     if (q.group) p.set("group", q.group);
     if (q.deleted) p.set("deleted", "1");
+    if (q.remote) p.set("remote", "1");
     return api<{ occurrences: CalendarOccurrence[]; truncated: boolean }>(`/calendar?${p}`);
   },
 };
@@ -278,6 +282,8 @@ export const Events = {
     capacity?: number | null;
     waitlistEnabled?: boolean;
     guestsAllowed?: number | null;
+    remoteAvailable?: boolean;
+    remoteCapacity?: number | null;
     videoProvider?: VideoProvider;
     videoUrl?: string;
     videoReveal?: VideoReveal;
@@ -307,6 +313,8 @@ export const Events = {
       capacity?: number | null;
       waitlistEnabled?: boolean;
       guestsAllowed?: number | null;
+      remoteAvailable?: boolean;
+      remoteCapacity?: number | null;
       videoProvider?: VideoProvider;
       videoUrl?: string;
       videoReveal?: VideoReveal;
@@ -314,10 +322,10 @@ export const Events = {
   ) => api<{ event: EventSeries }>(`/events/${id}`, { method: "PUT", body: data }),
   // Mint a fresh Jitsi room URL (M1.8); each call makes a new one.
   generateJitsi: () => api<{ url: string }>("/events/video/jitsi", { method: "POST", body: {} }),
-  register: (id: number, status: RegistrationStatus, date: string, guestCount?: number) =>
+  register: (id: number, status: RegistrationStatus, date: string, guestCount?: number, attendanceMode?: AttendanceMode) =>
     api<{ registration: RegistrationResponse }>(`/events/${id}/registrations`, {
       method: "PUT",
-      body: { status, date, guestCount },
+      body: { status, date, guestCount, attendanceMode },
     }),
   // Pruning and hand promotion (M1.5): leaders and hosts remove anyone,
   // promote one waitlisted row by hand, or add someone directly.
@@ -332,7 +340,7 @@ export const Events = {
   updateOccurrence: (
     id: number,
     date: string,
-    data: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string; capacityOverride?: number | null }
+    data: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string; capacityOverride?: number | null; remoteCapacityOverride?: number | null }
   ) => api<{ occurrence: EventOccurrence }>(`/events/${id}/occurrences/${date}`, { method: "PUT", body: data }),
   delete: (id: number) => api<unknown>(`/events/${id}`, { method: "DELETE" }),
 };

@@ -418,6 +418,9 @@ POST /api/v1/events/:id/cancel              → 200 {}        (leader, host, or 
      body: {date: "YYYY-MM-DD"} — cancels that stored date
 PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (leader, host, or admin)
      body: any of {startsLocal, durationMinutes, location, title} — this date only
+GET  /api/v1/calendar?from=&to=&tz=&mine=1&group=&deleted=1&remote=1
+  → {occurrences: [calendarOccurrence], truncated}   (slim rows, no attendance;
+     remote=1 keeps only events with remoteAvailable)
 POST /api/v1/events/video/jitsi             → 200 {url}   (leader, host, or admin)
 ```
 

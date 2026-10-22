@@ -435,6 +435,78 @@ func TestReenableRestoresOrDropsRegistration(t *testing.T) {
 	}
 }
 
+// DEC-38/47 for the remote pool: a disabled account's remote
+// registration counts in neither pool, and re-enabling into a full
+// remote pool leaves the registration out, even with in-person seats
+// to spare.
+func TestDisabledRemoteRegistrationUncountedAndLeftOutWhenFull(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ReenableRemote")
+	eventID, date := seedRemoteEvent(t, app, admin, gid, intPtr(10), intPtr(1), true)
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	u1 := newTestUser(t, app, "re1", "password1234", models.RoleMember)
+	u2 := newTestUser(t, app, "re2", "password1234", models.RoleMember)
+	addMember(t, app, u1, &g, models.MembershipMember)
+	addMember(t, app, u2, &g, models.MembershipMember)
+	c1 := loginAPI(t, app, "re1", "password1234")
+	c2 := loginAPI(t, app, "re2", "password1234")
+	if code, body := registerModeAs(c1, eventID, date, "going", models.AttendanceRemote); code != http.StatusOK {
+		t.Fatalf("re1 remote going: %d %s", code, body)
+	}
+	if code, body := registerModeAs(c2, eventID, date, "going", models.AttendanceRemote); code != http.StatusOK {
+		t.Fatalf("re2 remote going->waitlisted: %d %s", code, body)
+	}
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+	if used, err := remoteSeatsUsed(app.DB, occ.ID); err != nil || used != 1 {
+		t.Fatalf("remote seats before disable = %d (%v), want 1", used, err)
+	}
+
+	// Disable re1: the row is kept as going but uses no remote seat,
+	// so re2 is promoted into the freed seat and the count stays 1.
+	w := admin.do("PUT", "/api/v1/admin/users/"+itoa(u1.ID), map[string]any{"status": "disabled"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("disable: %d %s", w.Code, w.Body.String())
+	}
+	var r1 models.Registration
+	app.DB.Where("user_id = ? AND occurrence_id = ?", u1.ID, occ.ID).First(&r1)
+	if r1.Status != models.RegGoing || r1.AttendanceMode != models.AttendanceRemote {
+		t.Fatalf("disabled remote row: status=%q mode=%q, want kept going remote", r1.Status, r1.AttendanceMode)
+	}
+	if used, err := remoteSeatsUsed(app.DB, occ.ID); err != nil || used != 1 {
+		t.Fatalf("remote seats after disable = %d (%v), want 1 (only re2; re1 uncounted)", used, err)
+	}
+	var r2 models.Registration
+	app.DB.Where("user_id = ? AND occurrence_id = ?", u2.ID, occ.ID).First(&r2)
+	if r2.Status != models.RegGoing || r2.PromotedAt == nil {
+		t.Fatalf("re2 after disable: status=%q promoted_at=%v", r2.Status, r2.PromotedAt)
+	}
+
+	// Re-enable re1: the remote pool is full (re2), so re1's row is
+	// dropped with the audit row and notice, despite empty in-person seats.
+	w = admin.do("PUT", "/api/v1/admin/users/"+itoa(u1.ID), map[string]any{"status": "active"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("re-enable: %d %s", w.Code, w.Body.String())
+	}
+	var n int64
+	app.DB.Model(&models.Registration{}).Where("user_id = ? AND occurrence_id = ?", u1.ID, occ.ID).Count(&n)
+	if n != 0 {
+		t.Fatal("re1 row still exists after re-enable into a full remote pool")
+	}
+	if c := auditCount(t, app, audit.RegistrationNotRestored); c != 1 {
+		t.Fatalf("registration.not_restored rows = %d, want 1", c)
+	}
+	c1b := loginAPI(t, app, "re1", "password1234")
+	if got := findKind(feed(t, c1b, ""), "registration.not_restored"); got == nil {
+		t.Fatalf("no not_restored notice for re1")
+	}
+	if got := regStatus(t, app, u2.ID, occ.ID); got != models.RegGoing {
+		t.Fatalf("re2 = %q, want still going", got)
+	}
+}
+
 // #94: an admin edit can't make a teen an admin, can't activate a teen
 // waiting for consent (even one with a password), and re-enabling a
 // disabled teen sends it back to waiting for consent.

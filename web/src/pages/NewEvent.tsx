@@ -11,6 +11,7 @@ import { weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
 import { errorText } from "../lib/errors";
 import { VideoField, focusVideoUrl, isVideoError, videoProblem, emptyVideo, type VideoValue } from "../components/VideoField";
+import { RemoteField, focusRemoteCapacity, isRemoteError, emptyRemote, remoteBody, remoteProblem, type RemoteValue } from "../components/RemoteField";
 import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
 import { Button } from "../components/ui/Button";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -35,11 +36,13 @@ export function NewEvent() {
   const [visibility, setVisibility] = useState<Visibility>("public");
   const [visReason, setVisReason] = useState("");
   const [video, setVideo] = useState<VideoValue>(emptyVideo);
+  const [remote, setRemote] = useState<RemoteValue>(emptyRemote);
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -94,6 +97,13 @@ export function NewEvent() {
       focusVideoUrl("event");
       return;
     }
+    const remoteMsg = remoteProblem(remote);
+    setRemoteError(remoteMsg);
+    if (remoteMsg) {
+      setError(remoteMsg);
+      focusRemoteCapacity("event");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -110,11 +120,16 @@ export function NewEvent() {
         videoProvider: video.provider,
         videoUrl: video.provider === "none" ? "" : video.url.trim(),
         videoReveal: video.reveal,
+        ...remoteBody(remote),
       });
       navigate(`/groups/${id}`);
     } catch (err) {
       const msg = errorText(err, "We couldn't schedule the event.");
       setError(msg);
+      if (isRemoteError(msg)) {
+        setRemoteError(msg);
+        focusRemoteCapacity("event");
+      }
       if (isVideoError(msg)) {
         setVideoError(msg);
         focusVideoUrl("event");
@@ -240,6 +255,9 @@ export function NewEvent() {
         />
         <div className="border-t border-border pt-4">
           <VideoField idPrefix="event" value={video} onChange={setVideo} error={videoError} />
+        </div>
+        <div className="border-t border-border pt-4">
+          <RemoteField idPrefix="event" value={remote} onChange={setRemote} error={remoteError} />
         </div>
         <div className="border-t border-border pt-4">
           <Checkbox label="Repeat weekly" checked={recurring} onChange={(e) => onRecurring(e.target.checked)} />

@@ -163,11 +163,21 @@ type occurrenceJSON struct {
 	SpotsLeft       *int `json:"spotsLeft"`
 	WaitlistEnabled bool `json:"waitlistEnabled"`
 	GuestsAllowed   int  `json:"guestsAllowed"`
+	// Remote attendance (M1.8 slice 2): a second seat pool. The remote
+	// fields mirror the in-person ones; remoteCapacity is the effective
+	// cap for this date (per-date override wins), null is unlimited.
+	RemoteAvailable bool `json:"remoteAvailable"`
+	RemoteCapacity  *int `json:"remoteCapacity"`
+	RemoteSeatsUsed int  `json:"remoteSeatsUsed"`
+	RemoteSpotsLeft *int `json:"remoteSpotsLeft"`
 	// MyGuestCount and MyWaitlistPosition describe the signed-in
 	// viewer's own registration; both are absent without one. Position
 	// is set only when the viewer is waitlisted.
 	MyGuestCount       *int `json:"myGuestCount,omitempty"`
 	MyWaitlistPosition *int `json:"myWaitlistPosition,omitempty"`
+	// MyAttendanceMode is the viewer's own pool (in_person or remote);
+	// absent without a registration.
+	MyAttendanceMode *string `json:"myAttendanceMode,omitempty"`
 	// Video link (5.8, M1.8). VideoURL is present only when this viewer
 	// may see it for this date (policy.CanSeeVideoLink); VideoHidden says
 	// a link exists but is being withheld, so the UI can say "Register
@@ -184,6 +194,8 @@ type attendeeJSON struct {
 	Status string `json:"status"`
 	// GuestCount is the extra unnamed guests this party brings (M1.5).
 	GuestCount int `json:"guestCount"`
+	// AttendanceMode is in_person or remote (M1.8 slice 2).
+	AttendanceMode string `json:"attendanceMode"`
 }
 
 type hostJSON struct {
@@ -217,6 +229,10 @@ type eventJSON struct {
 	Capacity        *int `json:"capacity"`
 	WaitlistEnabled bool `json:"waitlistEnabled"`
 	GuestsAllowed   int  `json:"guestsAllowed"`
+	// Remote attendance (M1.8 slice 2). RemoteCapacity null means
+	// unlimited remote seats.
+	RemoteAvailable bool `json:"remoteAvailable"`
+	RemoteCapacity  *int `json:"remoteCapacity"`
 	// Video link (5.8, M1.8). At series level the link shows under
 	// "always" and to the event's managers; a person going to one date
 	// gets it on that date's occurrence row instead.

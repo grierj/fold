@@ -33,6 +33,7 @@ export function CalendarPage() {
   const view: View = params.get("view") === "week" || params.get("view") === "month" ? (params.get("view") as View) : "agenda";
   const date = /^\d{4}-\d{2}-\d{2}$/.test(params.get("date") ?? "") ? params.get("date")! : today;
   const mine = !!user && params.get("mine") === "1";
+  const remote = params.get("remote") === "1";
   const group = params.get("group") ?? "";
   // Admins only: also list deleted groups' events (DEC-68). Off by default.
   const deleted = !!isAdmin && params.get("deleted") === "1";
@@ -59,7 +60,7 @@ export function CalendarPage() {
     let alive = true;
     setLoading(true);
     setError(null);
-    Calendar.list({ from: range.from, to: range.to, tz: zone, mine, group, deleted })
+    Calendar.list({ from: range.from, to: range.to, tz: zone, mine, group, deleted, remote })
       .then(({ occurrences, truncated }) => {
         if (!alive) return;
         setOccs(occurrences);
@@ -70,7 +71,7 @@ export function CalendarPage() {
     return () => {
       alive = false;
     };
-  }, [range.from, range.to, zone, mine, group, deleted, retry]);
+  }, [range.from, range.to, zone, mine, group, deleted, remote, retry]);
 
   function link(next: Record<string, string | null>): string {
     const p = new URLSearchParams(params);
@@ -129,6 +130,9 @@ export function CalendarPage() {
               Just mine
             </Chip>
           )}
+          <Chip selected={remote} onClick={() => go({ remote: remote ? null : "1" })}>
+            Remote seats
+          </Chip>
           {isAdmin && (
             <Chip selected={deleted} onClick={() => go({ deleted: deleted ? null : "1" })}>
               Show deleted events
@@ -167,7 +171,7 @@ export function CalendarPage() {
           loading && occs.length === 0 ? (
             <Skeleton kind="lines" count={6} label="Loading the calendar…" />
           ) : occs.length === 0 ? (
-            <AgendaEmpty mine={mine} group={group} groupName={groupName} signedIn={!!user} go={go} />
+            <AgendaEmpty mine={mine} remote={remote} group={group} groupName={groupName} signedIn={!!user} go={go} />
           ) : (
             <div className="max-w-3xl space-y-6">
               {[...byDay.entries()].map(([d, list]) => (
@@ -214,12 +218,14 @@ export function CalendarPage() {
 
 function AgendaEmpty({
   mine,
+  remote,
   group,
   groupName,
   signedIn,
   go,
 }: {
   mine: boolean;
+  remote: boolean;
   group: string;
   groupName: string;
   signedIn: boolean;
@@ -233,6 +239,16 @@ function AgendaEmpty({
         title="Nothing on your calendar"
         body="Events from your groups and ones you RSVP to show up here."
         action={<Button variant="secondary" onClick={() => go({ mine: null })}>Show everything</Button>}
+      />
+    );
+  }
+  if (remote) {
+    return (
+      <EmptyState
+        illustration={art}
+        title="No remote events coming up"
+        body="Events you can join from home will show up here."
+        action={<Button variant="secondary" onClick={() => go({ remote: null })}>Show everything</Button>}
       />
     );
   }
