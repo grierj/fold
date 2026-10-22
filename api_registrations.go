@@ -841,6 +841,16 @@ func validMode(mode string) bool {
 	return mode == "" || mode == models.AttendanceInPerson || mode == models.AttendanceRemote
 }
 
+type registrationBatchInput struct {
+ Date string `json:"date"`
+ Status string `json:"status"`
+ GuestCount *int `json:"guestCount"`
+ AttendanceMode *string `json:"attendanceMode"`
+ ChildcareCount *int `json:"childcareCount"`
+ ChildcareAgesNote *string `json:"childcareAgesNote"`
+ People []householdAnswer `json:"people"`
+}
+
 func (a *App) apiRegister(c *gin.Context) {
 	ev, _, ok := a.loadVisibleEvent(c)
 	if !ok {
@@ -851,14 +861,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		jsonError(c, 404, "event not found")
 		return
 	}
-	var body struct {
-		Date           string            `json:"date"`
-		Status         string            `json:"status"`
-		GuestCount     *int              `json:"guestCount"`
-		AttendanceMode *string           `json:"attendanceMode"`
-		People         []householdAnswer `json:"people"`
-		childcareRequest
-	}
+	var body registrationBatchInput
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
 	if decoder.Decode(&body) != nil || (body.Status == "" && len(body.People) == 0) || (body.Status != "" && !validAnswer(body.Status)) {
@@ -869,7 +872,8 @@ func (a *App) apiRegister(c *gin.Context) {
 		jsonError(c, 400, "holder fields need status")
 		return
 	}
-	if !body.childcareRequest.validate(c, ev) {
+	care:=childcareRequest{ChildcareCount:body.ChildcareCount,ChildcareAgesNote:body.ChildcareAgesNote}
+ if !care.validate(c, ev) {
 		return
 	}
 	mode := ""
@@ -956,7 +960,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		}
 		changes := []registrationChange{}
 		if body.Status != "" {
-			ch, err := prepareRegistration(tx, locked, userSubject(holder.ID), body.Status, guests, mode, body.childcareRequest, nil, now)
+			ch, err := prepareRegistration(tx, locked, userSubject(holder.ID), body.Status, guests, mode, care, nil, now)
 			if err != nil {
 				return err
 			}

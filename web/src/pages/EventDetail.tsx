@@ -29,7 +29,7 @@ export function EventDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user, loading: authLoading, isAdmin } = useAuth();
-  const people = useHousehold(user);
+  const { people, error: householdError, retry: retryHousehold } = useHousehold(user);
   const [page, setPage] = useState<EventDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -139,6 +139,7 @@ export function EventDetail() {
       )}
 
       <h2 className="text-xl font-bold mt-8 mb-3">Upcoming dates</h2>
+      {householdError && <ErrorNotice message={householdError} onRetry={retryHousehold} />}
       {occurrences.length === 0 && (
         <EmptyState title="No upcoming dates." body="This event has no more dates on the calendar." />
       )}

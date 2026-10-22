@@ -89,6 +89,7 @@ var tsContracts = []struct {
 	{registrationJSON{}, "RegistrationResponse"},
 	{registrationBatchJSON{}, "RegistrationBatch"},
  {householdAnswer{}, "HouseholdAnswer"},
+ {registrationBatchInput{}, "RegistrationCommand"},
 	{householdRegistrationJSON{}, "HouseholdRegistration"},
 	{myHouseholdRegistrationJSON{}, "MyHouseholdRegistration"},
 	{registeredByJSON{}, "RegisteredBy"},

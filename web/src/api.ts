@@ -106,7 +106,6 @@ import type {
   NotificationFilter,
   OpenedDecision,
   RegistrationBatch,
-  RegistrationStatus,
   SoleLedGroup,
   User,
   VideoProvider,

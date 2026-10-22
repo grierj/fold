@@ -414,7 +414,7 @@ export function GroupDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user, loading: authLoading, isAdmin } = useAuth();
-  const people = useHousehold(user);
+  const { people, error: householdError, retry: retryHousehold } = useHousehold(user);
   const [detail, setDetail] = useState<GroupDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -869,7 +869,8 @@ export function GroupDetail() {
                     }
                   />
                 )}
-                {nextDates.map((m) => (
+                {householdError && <ErrorNotice message={householdError} onRetry={retryHousehold} />}
+          {nextDates.map((m) => (
                   <EventRow
                     key={`${m.eventId}-${m.date}`}
                     instance={m}
