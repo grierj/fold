@@ -10,6 +10,7 @@ import { EventDetail } from "./EventDetail";
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false }) }));
 vi.mock("../api", async (importActual) => ({
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
+  Households: { mine: vi.fn().mockResolvedValue({ household: null }) },
   Events: { get: vi.fn(), updateOccurrence: vi.fn() },
 }));
 
@@ -25,7 +26,7 @@ const page: EventDetailResponse = {
   occurrences: [occurrence({
     remoteAvailable: true, remoteCapacity: 5, remoteSpotsLeft: 4,
     attendeesVisible: true,
-    attendees: [{ userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "remote" }],
+    attendees: [{ registrationId: 31, userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "remote" }],
   })],
   canManage: true, canSetVisibility: false,
 };

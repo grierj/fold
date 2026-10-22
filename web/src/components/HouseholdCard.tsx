@@ -35,13 +35,15 @@ export function personProblems(d: Draft, today: string): { firstName?: string; b
   return out;
 }
 
-function PersonForm({ initial, onSave, onCancel, heading }: {
+function PersonForm({ initial, onSave, onCancel, heading, careVisible = true }: {
+  careVisible?: boolean;
   initial: Draft;
   onSave: (input: HouseholdPersonInput) => Promise<void>;
   onCancel: () => void;
   heading: string;
 }) {
   const [d, setD] = useState(initial);
+  const [careTouched, setCareTouched] = useState(false);
   const [shown, setShown] = useState<ReturnType<typeof personProblems>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -65,8 +67,8 @@ function PersonForm({ initial, onSave, onCancel, heading }: {
     setError(null);
     try {
       await onSave({
-        firstName: d.firstName.trim(), lastName: d.lastName.trim() || undefined, kind: d.kind,
-        birthDate: d.birthDate || undefined, careNotes: d.careNotes.trim() || undefined, photoConsent: d.photoConsent,
+        firstName: d.firstName.trim(), lastName: d.lastName.trim(), kind: d.kind,
+        birthDate: d.birthDate, careNotes: careVisible || careTouched ? d.careNotes.trim() : undefined, photoConsent: d.photoConsent,
       });
     } catch (err) {
       setError(errorText(err, "We couldn't save that person."));
@@ -88,11 +90,11 @@ function PersonForm({ initial, onSave, onCancel, heading }: {
           <Radio key={k} name="household-kind" label={KIND_LABEL[k]} checked={d.kind === k} onChange={() => set({ kind: k })} />
         ))}
       </Choices>
-      <Field label="Birth date" optional={d.kind === "adult"} error={shown.birthDate}>
+      <Field label="Birth date" optional={d.kind === "adult"} hint={d.kind === "adult" ? "A birth date is needed before you can sign this adult up for an event." : undefined} error={shown.birthDate}>
         <Input type="date" value={d.birthDate} onChange={(e) => set({ birthDate: e.target.value })} layout="w-48" />
       </Field>
-      <Field label="Care notes" optional hint="Allergies or anything leaders should know. Only leaders of events they attend see this.">
-        <Textarea value={d.careNotes} onChange={(e) => set({ careNotes: e.target.value })} rows={3} maxLength={1000} />
+      <Field label="Care notes" optional hint="Admins and confirmed guardians can read these notes. Their event’s leaders and hosts can read them from 24 hours before it starts until 24 hours after it ends, while they are going.">
+        <Textarea value={d.careNotes} onChange={(e) => { setCareTouched(true); set({ careNotes: e.target.value }); }} rows={3} maxLength={5000} />
       </Field>
       <Checkbox label="OK to appear in church photos" checked={d.photoConsent} onChange={(e) => set({ photoConsent: e.target.checked })} />
       {error && <FormError>{error}</FormError>}
@@ -105,7 +107,7 @@ function PersonForm({ initial, onSave, onCancel, heading }: {
 }
 
 function toDraft(p: HouseholdPerson): Draft {
-  return { firstName: p.firstName, lastName: p.lastName, kind: p.kind, birthDate: p.birthDate ?? "", careNotes: p.careNotes, photoConsent: p.photoConsent };
+  return { firstName: p.firstName, lastName: p.lastName, kind: p.kind, birthDate: p.birthDate ?? "", careNotes: p.careNotes ?? "", photoConsent: p.photoConsent };
 }
 
 export function HouseholdCard() {
@@ -115,6 +117,8 @@ export function HouseholdCard() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<number | "new" | null>(null);
   const [status, setStatus] = useState("");
+  const [metadata, setMetadata] = useState(false);
+  const metadataInvoker = useRef<HTMLButtonElement | null>(null);
   // After a save or removal, where focus goes once the list re-renders (M1).
   const focusNext = useRef<number | "add" | "heading" | null>(null);
   const cardRef = useRef<HTMLElement>(null);
@@ -179,9 +183,23 @@ export function HouseholdCard() {
           action={<span data-add><Button variant="primary" onClick={() => setEditing("new")}>Add a household member</Button></span>}
         />
       )}
+      {household && (
+        <div className="my-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <h3 className="font-semibold break-words min-w-0">{household.name}</h3>
+            <Button variant="secondary" disabled={metadata} onClick={(e) => { metadataInvoker.current = e.currentTarget; setMetadata(true); }}>Rename</Button>
+          </div>
+          <p className="text-sm text-text-muted whitespace-pre-wrap break-words mt-2">{household.address || "No household address yet."}</p>
+          <Button variant="secondary" layout="mt-2" disabled={metadata} onClick={(e) => { metadataInvoker.current = e.currentTarget; setMetadata(true); }}>Edit address</Button>
+          {metadata && <HouseholdForm household={household} onCancel={() => { setMetadata(false); requestAnimationFrame(() => metadataInvoker.current?.focus()); }} onSave={async (name, address) => {
+            const result = await Households.update({ name, address });
+            setHousehold(result.household); setMetadata(false); setStatus("Saved your household name and address.");
+            requestAnimationFrame(() => metadataInvoker.current?.focus());
+          }} />}
+        </div>
+      )}
       {household && people.length > 0 && (
         <>
-          <p className="text-sm text-text-muted mb-3">{household.name}</p>
           {household.accounts.length > 1 && (
             <p className="text-sm text-text-muted mb-3">
               Accounts: {household.accounts.map((a: HouseholdAccount) => a.name).join(", ")}
@@ -193,6 +211,7 @@ export function HouseholdCard() {
                 {editing === p.id ? (
                   <PersonForm
                     initial={toDraft(p)}
+                    careVisible={p.careNotes !== undefined}
                     heading={`Edit ${p.name}`}
                     onCancel={() => { focusNext.current = p.id; setEditing(null); }}
                     onSave={async (input) => {
@@ -245,4 +264,27 @@ export function HouseholdCard() {
       {!loading && !loadError && people.length > 0 && editing !== "new" && addButton}
     </section>
   );
+}
+
+function HouseholdForm({ household, onSave, onCancel }: { household: Household; onSave: (name: string, address: string) => Promise<void>; onCancel: () => void }) {
+  const [name, setName] = useState(household.name);
+  const [address, setAddress] = useState(household.address);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | undefined>();
+  const root = useRef<HTMLFormElement>(null);
+  useEffect(() => { root.current?.querySelector("input")?.focus(); }, []);
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    if (!name.trim() || [...name.trim()].length > 100) { showFieldErrors(root.current, () => setNameError("Enter a household name of 1 to 100 characters.")); return; }
+    setBusy(true); setError(null); setNameError(undefined);
+    try { await onSave(name.trim(), address.trim()); }
+    catch (e) { setError(errorText(e, "We couldn't save your household.")); setBusy(false); }
+  }
+  return <form ref={root} aria-label="Edit household" onSubmit={save} className="mt-3 space-y-3 rounded-lg border border-border p-4">
+    <Field label="Household name" hint="Required. Up to 100 characters." error={nameError}><Input value={name} onChange={(e) => setName(e.target.value)} required maxLength={100} /></Field>
+    <Field label="Address" optional hint="Up to 500 characters. Leave empty to clear the address."><Textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={3} maxLength={500} /></Field>
+    {error && <FormError>{error}</FormError>}
+    <div className="flex flex-wrap gap-3"><Button variant="primary" type="submit" disabled={busy}>{busy ? "Saving…" : "Save household"}</Button><Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button></div>
+  </form>;
 }

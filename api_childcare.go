@@ -95,9 +95,9 @@ func (r childcareRequest) values(old models.Registration) (int, string) {
 // registration before checking a replacement request under the date lock.
 func childcareUsedFor(db *gorm.DB, occurrenceID, exceptRegistration uint) (int, error) {
 	var n int64
-	err := db.Model(&models.Registration{}).Joins(listedUsers("registrations")).
+	err := db.Model(&models.Registration{}).Joins(listedRegistrations()).
 		Where("registrations.occurrence_id = ? AND registrations.status = ? AND registrations.id <> ?", occurrenceID, models.RegGoing, exceptRegistration).
-		Select("COALESCE(SUM(registrations.childcare_count), 0)").Scan(&n).Error
+		Select("COALESCE(SUM(registrations.childcare_count + CASE WHEN registrations.childcare_requested AND registrations.attendance_mode = 'in_person' THEN 1 ELSE 0 END), 0)").Scan(&n).Error
 	return int(n), err
 }
 
@@ -110,9 +110,9 @@ func childcareUsedMap(db *gorm.DB, occurrenceIDs []uint) (map[uint]int, error) {
 		OccurrenceID uint
 		Children     int
 	}
-	err := db.Model(&models.Registration{}).Joins(listedUsers("registrations")).
+	err := db.Model(&models.Registration{}).Joins(listedRegistrations()).
 		Where("registrations.occurrence_id IN ? AND registrations.status = ?", occurrenceIDs, models.RegGoing).
-		Select("registrations.occurrence_id, COALESCE(SUM(registrations.childcare_count), 0) AS children").
+		Select("registrations.occurrence_id, COALESCE(SUM(registrations.childcare_count + CASE WHEN registrations.childcare_requested AND registrations.attendance_mode = 'in_person' THEN 1 ELSE 0 END), 0) AS children").
 		Group("registrations.occurrence_id").Scan(&rows).Error
 	for _, r := range rows {
 		out[r.OccurrenceID] = r.Children
@@ -132,4 +132,18 @@ func checkChildcare(tx *gorm.DB, ev *models.Event, occurrenceID, registrationID 
 		return errChildcareFull
 	}
 	return nil
+}
+
+// effectiveChildcare is shared by row decisions and the aggregate above.
+func effectiveChildcare(ev *models.Event, r models.Registration) int {
+	if !ev.ChildcareAvailable {
+		return 0
+	}
+	if r.HouseholdPersonID != nil {
+		if r.ChildcareRequested && r.AttendanceMode != models.AttendanceRemote {
+			return 1
+		}
+		return 0
+	}
+	return r.ChildcareCount
 }

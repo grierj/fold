@@ -249,8 +249,8 @@ func TestDisableKeepsMembershipsHiddenAndReenableRestoresMember(t *testing.T) {
 	}
 	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Hour)
 	_, occ := seedEvent(t, app, joined, co.ID, start)
-	app.DB.Create(&models.Registration{UserID: pat.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
-	app.DB.Create(&models.Registration{UserID: viewer.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
+	app.DB.Create(&models.Registration{UserID: &pat.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
+	app.DB.Create(&models.Registration{UserID: &viewer.ID, OccurrenceID: occ.ID, Status: models.RegGoing})
 
 	admin := loginAs(t, app, "admin", "password1234")
 	other := loginAs(t, app, "viewer", "password1234")

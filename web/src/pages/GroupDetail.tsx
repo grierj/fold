@@ -1,8 +1,9 @@
+import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
-import type { EventOccurrence, GroupDetailResponse, OpenedDecision, RegistrationResponse, Visibility, VisibilityImpact } from "../types";
+import type { EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { Attendance } from "../components/Attendance";
@@ -123,6 +124,7 @@ function EventRow({
   moreDates,
   loggedIn,
   onRsvp,
+  people,
   onCancelled,
   onChanged,
 }: {
@@ -134,7 +136,8 @@ function EventRow({
   // A series shows its next date only, plus a link to the rest (DEC-63).
   moreDates: number;
   loggedIn: boolean;
-  onRsvp: (eventId: number, date: string, reg: RegistrationResponse) => void;
+  onRsvp: () => void;
+  people: HouseholdPerson[];
   onCancelled: (eventId: number, date: string) => void;
   onChanged: () => void;
 }) {
@@ -180,7 +183,7 @@ function EventRow({
         )}
         {loggedIn && (
           <div className="mt-2">
-            <RsvpButtons instance={instance} onChange={(reg) => onRsvp(instance.eventId, instance.date, reg)} />
+            <RsvpButtons instance={instance} people={people} onChange={onRsvp} />
           </div>
         )}
         {!loggedIn && instance.visibility === "public" && (
@@ -411,6 +414,7 @@ export function GroupDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user, loading: authLoading, isAdmin } = useAuth();
+  const people = useHousehold(user);
   const [detail, setDetail] = useState<GroupDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -511,39 +515,8 @@ export function GroupDetail() {
     }
   }
 
-  // Answer right away, then refetch so names, spots and the waitlist match
-  // the server.
-  function handleRsvp(eventId: number, date: string, reg: RegistrationResponse) {
-    void load(true);
-    setDetail((d) => {
-      if (!d) return d;
-      return {
-        ...d,
-        upcomingEvents: (d.upcomingEvents ?? []).map((m) => {
-          if (m.eventId !== eventId || m.date !== date) return m;
-          const registrations = { ...m.registrations };
-          const before = m.myRegistration;
-          if (before && before !== reg.status) {
-            registrations[before] = Math.max(0, (registrations[before] ?? 0) - 1);
-          }
-          // Only leaders and admins get a "declined" count (DEC-64); don't
-          // invent one for anyone else.
-          if ((!before || before !== reg.status) && (reg.status !== "declined" || "declined" in registrations)) {
-            registrations[reg.status] = (registrations[reg.status] ?? 0) + 1;
-          }
-          return {
-            ...m,
-            myRegistration: reg.status,
-            myGuestCount: reg.guestCount,
-            myWaitlistPosition: reg.waitlistPosition ?? undefined,
-            myAttendanceMode: reg.attendanceMode,
-            myChildcareCount: reg.childcareCount, myChildcareAgesNote: reg.childcareAgesNote,
-            registrations,
-          };
-        }),
-      };
-    });
-  }
+  // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
+  function handleRsvp() { void load(true); }
 
   function handleCancelled(eventId: number, date: string) {
     setDetail((d) =>
@@ -907,6 +880,7 @@ export function GroupDetail() {
                     moreDates={(datesPerEvent.get(m.eventId) ?? 1) - 1}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}
+            people={people}
                     onCancelled={handleCancelled}
                     onChanged={() => void load()}
                   />

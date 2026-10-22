@@ -596,7 +596,7 @@ func TestAddHouseholdPeopleAndLinks(t *testing.T) {
 		"firstName": "Kid", "lastName": "Smith", "kind": "child",
 		"birthDate": "2020-05-01", "careNotes": "Peanut allergy", "photoConsent": true,
 	})
-	if child.LinkStatus != models.GuardianPending || child.GuardianLinkID == nil || child.BirthDate != "2020-05-01" || !child.PhotoConsent || child.CareNotes != "Peanut allergy" {
+	if child.LinkStatus != models.GuardianPending || child.GuardianLinkID == nil || child.BirthDate != "2020-05-01" || !child.PhotoConsent || child.CareNotes != nil {
 		t.Fatalf("child person: %+v", child)
 	}
 	var link models.GuardianLink
@@ -659,7 +659,7 @@ func TestHouseholdPersonEditAndRemove(t *testing.T) {
 		Person householdPersonJSON `json:"person"`
 	}
 	decodeJSON(t, w, &edited)
-	if edited.Person.FirstName != "Kidd" || edited.Person.CareNotes != "Asthma inhaler" || edited.Person.LinkStatus != models.GuardianPending {
+	if edited.Person.FirstName != "Kidd" || edited.Person.CareNotes != nil || edited.Person.LinkStatus != models.GuardianPending {
 		t.Fatalf("edited person: %+v", edited.Person)
 	}
 
@@ -667,7 +667,7 @@ func TestHouseholdPersonEditAndRemove(t *testing.T) {
 	if _, _, waiting, _ := badge(t, admin, ""); waiting != 1 {
 		t.Fatalf("admin waiting before kind change: %d", waiting)
 	}
-	w = c.do("PUT", path, map[string]any{"kind": "adult"}, true)
+	w = c.do("PUT", path, map[string]any{"kind": "adult", "birthDate": "1990-01-02"}, true)
 	decodeJSON(t, w, &edited)
 	if edited.Person.Kind != "adult" || edited.Person.LinkStatus != "none" {
 		t.Fatalf("adult after kind change: %+v", edited.Person)

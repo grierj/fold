@@ -13,6 +13,10 @@ import (
 
 // Actions. Add new ones here so they are easy to find and query.
 const (
+	RegistrationChanged    = "registration.changed"
+	RegistrationRestored   = "registration.restored"
+	HouseholdUpdated       = "household.updated"
+	HouseholdPersonUpdated = "household.person_updated"
 	// RoleChanged: someone was made a group leader, or stopped being one.
 	// Target is the group; meta has userId, oldRole and newRole ("leader",
 	// "member", or "none" when they left or were removed).

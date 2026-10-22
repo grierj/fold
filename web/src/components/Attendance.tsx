@@ -1,7 +1,6 @@
 import { useId, useState } from "react";
 import { Button } from "./ui/Button";
-import { RemoteBadge } from "./RemoteBadge";
-import { ChildcareBadge } from "./ChildcareBadge";
+import { AttendeeDetails } from "./AttendeeDetails";
 import type { EventOccurrence } from "../types";
 
 // Attendance for one date (UI makeover PR 6, DEC-63): counts first, then
@@ -39,6 +38,7 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
           ? `${instance.childcareUsed} children in childcare`
           : `${Math.max(0, instance.childcareCapacity - instance.childcareUsed)} of ${instance.childcareCapacity} childcare spots left`}</div>
       )}
+      {going + maybe > coming.length && <p>Some household attendees appear only in the count.</p>}
       {coming.length + cant.length > 0 && (
         <>
           <Button variant="link" aria-expanded={open} aria-controls={listId} onClick={() => setOpen((v) => !v)}>
@@ -47,17 +47,13 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
           {open && (
             <ul id={listId} className="space-y-0.5">
               {coming.map((a) => (
-                <li key={a.userId}>
-                  {a.name}
+                <li key={a.registrationId}>
+                  <AttendeeDetails attendee={a} childcare={instance.childcareAvailable} />
                   {a.status === "maybe" && " (maybe)"}
-                  {a.attendanceMode === "remote" && <> <RemoteBadge /></>}
-                  {a.guestCount > 0 && ` +${a.guestCount}`}
-                  {instance.childcareAvailable && (a.childcareCount ?? 0) > 0 && <> <ChildcareBadge count={a.childcareCount} /></>}
-                  {instance.childcareAvailable && a.childcareAgesNote && <span className="block text-text-muted">Ages: {a.childcareAgesNote}</span>}
                 </li>
               ))}
               {cant.length > 0 && <li className="pt-1 font-medium">Can&apos;t go</li>}
-              {cant.map((a) => <li key={a.userId}>{a.name}</li>)}
+              {cant.map((a) => <li key={a.registrationId}><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} /></li>)}
             </ul>
           )}
         </>

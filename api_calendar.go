@@ -115,6 +115,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 	// The viewer's own answers, for myStatus and the per-occurrence
 	// "Just mine" rule.
 	mineStatus := map[uint]string{}
+ householdDates:=map[uint]bool{}
 	if me != nil && len(occs) > 0 {
 		occIDs := make([]uint, len(occs))
 		for i := range occs {
@@ -123,9 +124,10 @@ func (a *App) apiCalendar(c *gin.Context) {
 		var rows []models.Registration
 		a.DB.Where("user_id = ? AND occurrence_id IN ? AND status IN ?", me.ID, occIDs,
 			[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Find(&rows)
-		for _, r := range rows {
-			mineStatus[r.OccurrenceID] = r.Status
-		}
+		for _, r := range rows {mineStatus[r.OccurrenceID] = r.Status}
+ var householdRows []models.Registration
+ a.DB.Joins(listedRegistrations()).Where("registrations.registered_by = ? AND registrations.occurrence_id IN ? AND registrations.status IN ?",me.ID,occIDs,[]string{models.RegGoing,models.RegMaybe,models.RegWaitlisted}).Find(&householdRows)
+ for _,r:=range householdRows {householdDates[r.OccurrenceID]=true}
 	}
 
 	// "Just mine" (signed in only; ignored otherwise): my groups' events,
@@ -142,7 +144,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 		}
 		grp, rel := groupAndRel(ev, groups, rels)
 		status, answered := mineStatus[occ.ID]
-		if justMine && !rel.Member && !hosted[ev.ID] && !answered {
+		if justMine && !rel.Member && !hosted[ev.ID] && !answered && !householdDates[occ.ID] {
 			continue
 		}
 		shown := a.groupShownTo(me, grp, rel)

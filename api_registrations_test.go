@@ -371,13 +371,13 @@ func TestRemoveBlocksSelfRegisterUntilAdded(t *testing.T) {
 
 	// A non-manager cannot remove.
 	w := c.do("POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", eventID),
-		map[string]any{"date": date, "userId": u.ID}, true)
+		map[string]any{"date": date, "registrationId": registrationIDFor(t, app, u.ID, eventID, date)}, true)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("member remove: %d, want 403", w.Code)
 	}
 	// The leader removes with a note.
 	w = admin.do("POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", eventID),
-		map[string]any{"date": date, "userId": u.ID, "note": "no-show twice"}, true)
+		map[string]any{"date": date, "registrationId": registrationIDFor(t, app, u.ID, eventID, date), "note": "no-show twice"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("leader remove: %d %s", w.Code, w.Body.String())
 	}
@@ -539,12 +539,12 @@ func TestPromoteActionSeatsWaitlisted(t *testing.T) {
 	// The leader prunes hp1 (no auto-promotion on remove), then hand
 	// promotes hp2 into the freed seat.
 	w := admin.do("POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", eventID),
-		map[string]any{"date": date, "userId": u1.ID}, true)
+		map[string]any{"date": date, "registrationId": registrationIDFor(t, app, u1.ID, eventID, date)}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("remove hp1: %d %s", w.Code, w.Body.String())
 	}
 	w = admin.do("POST", fmt.Sprintf("/api/v1/events/%d/registrations/promote", eventID),
-		map[string]any{"date": date, "userId": u2.ID}, true)
+		map[string]any{"date": date, "registrationId": registrationIDFor(t, app, u2.ID, eventID, date)}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("promote: %d %s", w.Code, w.Body.String())
 	}
@@ -616,7 +616,7 @@ func TestCutoffBlocksAutoPromotionButNotHandPromotion(t *testing.T) {
 	}
 	// The promote action still seats the person.
 	w = admin.do("POST", fmt.Sprintf("/api/v1/events/%d/registrations/promote", eventID),
-		map[string]any{"date": date, "userId": u2.ID}, true)
+		map[string]any{"date": date, "registrationId": registrationIDFor(t, app, u2.ID, eventID, date)}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("hand promote in cutoff: %d %s", w.Code, w.Body.String())
 	}
@@ -682,7 +682,7 @@ func TestDisabledRegistrationHiddenFromEventPage(t *testing.T) {
 	page, _ := getEvent(t, admin, eventID, http.StatusOK)
 	o := page.Occurrences[0]
 	for _, a := range o.Attendees {
-		if a.UserID == u1.ID {
+		if a.UserID != nil && *a.UserID == u1.ID {
 			t.Fatalf("disabled account listed: %+v", o.Attendees)
 		}
 	}
@@ -829,7 +829,9 @@ func TestRemotePoolFillsSeparatelyFromInPerson(t *testing.T) {
 	}
 	modes := map[uint]string{}
 	for _, at := range inst.Attendees {
-		modes[at.UserID] = at.AttendanceMode
+		if at.UserID != nil {
+			modes[*at.UserID] = at.AttendanceMode
+		}
 	}
 	if modes[uRe.ID] != models.AttendanceRemote || modes[uIn.ID] != models.AttendanceInPerson {
 		t.Fatalf("attendee modes = %v", modes)
@@ -1263,7 +1265,7 @@ func TestChildcareFreedPromotesOnlyWithSeat(t *testing.T) {
 					}
 					childcareAs(t, pc, id, date, status, 2, http.StatusOK)
 				case "remove":
-					apiDo(t, admin, "POST", path+"/registrations/remove", map[string]any{"date": date, "userId": parent.ID}, http.StatusOK)
+					apiDo(t, admin, "POST", path+"/registrations/remove", map[string]any{"date": date, "registrationId": registrationIDFor(t, app, parent.ID, id, date)}, http.StatusOK)
 				case "disable":
 					apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(parent.ID), map[string]any{"status": "disabled"}, http.StatusOK)
 				case "manage cancel":
@@ -1319,8 +1321,8 @@ func TestManualChildcarePromotionRequiresRoom(t *testing.T) {
 	if err := app.DB.First(&before, "user_id = ? AND occurrence_id = ?", waiter.ID, r.OccurrenceID).Error; err != nil {
 		t.Fatal(err)
 	}
-	apiDo(t, admin, "POST", path+"/registrations/remove", map[string]any{"date": date, "userId": seated.ID}, http.StatusOK)
-	response := apiDo(t, admin, "POST", path+"/registrations/promote", map[string]any{"date": date, "userId": waiter.ID}, http.StatusConflict)
+	apiDo(t, admin, "POST", path+"/registrations/remove", map[string]any{"date": date, "registrationId": registrationIDFor(t, app, seated.ID, id, date)}, http.StatusOK)
+	response := apiDo(t, admin, "POST", path+"/registrations/promote", map[string]any{"date": date, "registrationId": registrationIDFor(t, app, waiter.ID, id, date)}, http.StatusConflict)
 	if !strings.Contains(response, "childcare_full") {
 		t.Fatal(response)
 	}
@@ -1344,7 +1346,7 @@ func TestManualChildcarePromotionRequiresRoom(t *testing.T) {
 	if got := regStatus(t, app, waiter.ID, r.OccurrenceID); got != models.RegWaitlisted {
 		t.Fatalf("auto-promoted in cutoff: %q", got)
 	}
-	apiDo(t, admin, "POST", path+"/registrations/promote", map[string]any{"date": date, "userId": waiter.ID}, http.StatusOK)
+	apiDo(t, admin, "POST", path+"/registrations/promote", map[string]any{"date": date, "registrationId": registrationIDFor(t, app, waiter.ID, id, date)}, http.StatusOK)
 	if err := app.DB.First(&after, before.ID).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -1392,4 +1394,13 @@ func TestConcurrentChildcareRequestsRespectLimit(t *testing.T) {
 	if used, err := childcareUsedFor(app.DB, occ.ID, 0); err != nil || used != 2 {
 		t.Fatalf("childcare used=%d %v", used, err)
 	}
+}
+
+func registrationIDFor(t *testing.T, app *App, userID, eventID uint, date string) uint {
+	t.Helper()
+	var r models.Registration
+	if err := app.DB.Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").Where("registrations.user_id = ? AND event_occurrences.event_id = ? AND event_occurrences.original_date = ?", userID, eventID, date).First(&r).Error; err != nil {
+		t.Fatal(err)
+	}
+	return r.ID
 }

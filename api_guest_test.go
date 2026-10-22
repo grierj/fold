@@ -455,7 +455,7 @@ func TestGuestRemoveThenReconfirm(t *testing.T) {
 
 	// A leader prunes the guest.
 	apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", ev.ID),
-		map[string]any{"userId": u.ID, "date": guestDate, "note": "no room"}, http.StatusOK)
+		map[string]any{"registrationId": registrationIDFor(t, app, u.ID, ev.ID, guestDate), "date": guestDate, "note": "no room"}, http.StatusOK)
 	if got := regStatus(t, app, u.ID, reg.OccurrenceID); got != models.RegRemoved {
 		t.Fatalf("after remove: %q, want removed", got)
 	}

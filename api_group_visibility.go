@@ -92,7 +92,7 @@ func affectedEvents(tx *gorm.DB, groupID uint, oldVis, newVis string, lock bool)
 func losersQuery(tx *gorm.DB, ev *models.Event, newVis string, now time.Time) *gorm.DB {
 	q := tx.Table("registrations").
 		Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
-		Joins("JOIN users ON users.id = registrations.user_id").
+		Joins("JOIN users ON users.id = COALESCE(registrations.user_id,registrations.registered_by)").
 		Where("event_occurrences.event_id = ? AND event_occurrences.starts_at > ?", ev.ID, now).
 		Where("registrations.status IN ?", []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted})
 	switch newVis {
@@ -105,7 +105,7 @@ func losersQuery(tx *gorm.DB, ev *models.Event, newVis string, now time.Time) *g
 			return q.Where("1 = 0")
 		}
 		return q.Where("users.role <> ?", models.RoleAdmin).
-			Where("NOT EXISTS (SELECT 1 FROM memberships WHERE memberships.user_id = registrations.user_id AND memberships.group_id = ? AND memberships.status = 'active')", *ev.GroupID)
+			Where("NOT EXISTS (SELECT 1 FROM memberships WHERE memberships.user_id = users.id AND memberships.group_id = ? AND memberships.status = 'active')", *ev.GroupID)
 	default:
 		return q.Where("1 = 0")
 	}
@@ -115,7 +115,7 @@ func toImpact(tx *gorm.DB, evs []models.Event, newVis string, now time.Time) []i
 	out := []impactEventJSON{}
 	for i := range evs {
 		var n int64
-		losersQuery(tx, &evs[i], newVis, now).Distinct("registrations.user_id").Count(&n)
+		losersQuery(tx, &evs[i], newVis, now).Select("COUNT(DISTINCT (registrations.user_id,registrations.household_person_id))").Scan(&n)
 		out = append(out, impactEventJSON{ID: evs[i].ID, Title: evs[i].Title, Visibility: evs[i].Visibility, Registrants: n})
 	}
 	return out
@@ -227,47 +227,46 @@ func applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group, oldVis, 
 // the person gets a stored notification. It returns the notification IDs
 // for post-commit email delivery.
 func cancelLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time) ([]uint, error) {
-	var rows []struct {
-		ID     uint
-		UserID uint
-		Date   string
-	}
-	if err := losersQuery(tx, ev, newVis, now).
-		Select("registrations.id, registrations.user_id, event_occurrences.original_date AS date").
-		Order("registrations.user_id, event_occurrences.original_date").Scan(&rows).Error; err != nil {
+	// Lock all affected occurrences before re-reading losers, so a concurrent
+	// batch either sees the tightened visibility or is included here.
+	var occIDs []uint
+	if err := tx.Model(&models.EventOccurrence{}).Where("event_id = ? AND starts_at > ?", ev.ID, now).Order("id").Pluck("id", &occIDs).Error; err != nil {
 		return nil, err
 	}
-	if len(rows) == 0 {
-		return nil, nil
-	}
-	regIDs := make([]uint, 0, len(rows))
-	dates := map[uint][]string{}
-	order := []uint{}
-	for _, r := range rows {
-		regIDs = append(regIDs, r.ID)
-		if _, ok := dates[r.UserID]; !ok {
-			order = append(order, r.UserID)
+	for _, id := range occIDs {
+		if _, err := lockOccurrence(tx, id); err != nil {
+			return nil, err
 		}
-		dates[r.UserID] = append(dates[r.UserID], r.Date)
 	}
-	if err := tx.Where("id IN ?", regIDs).Delete(&models.Registration{}).Error; err != nil {
+	var rows []models.Registration
+	if err := losersQuery(tx, ev, newVis, now).Select("registrations.*").Order("registrations.id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	actor := apiUser(c)
-	var emailed []uint
-	for _, uid := range order {
-		if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.RegistrationCancelled, TargetType: "event", TargetID: ev.ID,
-			Meta: map[string]any{"userId": uid, "dates": dates[uid], "newVisibility": newVis, "reason": "event_more_private"},
-			IP:   c.ClientIP()}); err != nil {
+	holders := map[uint]bool{}
+	var mailed []uint
+	for _, r := range rows {
+		if err := tx.Delete(&r).Error; err != nil {
 			return nil, err
 		}
-		ids, err := notifyRegistrationCancelled(tx, actor.ID, ev, uid)
-		emailed = append(emailed, ids...)
+		meta := registrationMeta(r)
+		meta["newVisibility"] = newVis
+		meta["reason"] = "event_more_private"
+		if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.RegistrationCancelled, TargetType: "event", TargetID: ev.ID, Meta: meta, IP: c.ClientIP()}); err != nil {
+			return nil, err
+		}
+		holder := registrationHolder(r)
+		if holders[holder] {
+			continue
+		}
+		holders[holder] = true
+		ids, err := notifyRegistrationCancelled(tx, actor.ID, ev, holder)
 		if err != nil {
 			return nil, err
 		}
+		mailed = append(mailed, ids...)
 	}
-	return emailed, nil
+	return mailed, nil
 }
 
 // eventImpactOf is what setting one event to newVis would do, in the same

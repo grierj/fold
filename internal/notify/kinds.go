@@ -266,10 +266,16 @@ func init() {
 		// cancel; the bell never shows the token.
 		Key: RegistrationPromoted, Category: CatEvents, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
+			if v.Person != "" {
+				return v.Person + " is in: " + or(v.Event, "an event"), join(v.When, v.Place)
+			}
 			return "You're in: " + or(v.Event, "an event"), join(v.When, v.Place)
 		},
 		RenderEmail: func(v Vars) (string, string) {
 			title, body := "You're in: "+or(v.Event, "an event"), join(v.When, v.Place)
+			if v.Person != "" {
+				title = v.Person + " is in: " + or(v.Event, "an event")
+			}
 			if v.VideoURL != "" {
 				body += "\n\nJoin by video: " + v.VideoURL
 			}
@@ -285,6 +291,9 @@ func init() {
 		Key: RegistrationRemoved, Category: CatEvents, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			body := "A leader or host removed your registration for " + or(v.Event, "an event") + "."
+			if v.Person != "" {
+				body = v.Person + "'s registration was removed for " + or(v.Event, "an event") + "."
+			}
 			if v.Note != "" {
 				body += " Note: " + v.Note
 			}
@@ -297,6 +306,9 @@ func init() {
 		// person is told to ask a leader or host.
 		Key: RegistrationNotRestored, Category: CatEvents, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
+			if v.Person != "" {
+				return v.Person + " could not be added back to " + or(v.Event, "an event"), "Ask a leader or host to add them after checking their household details and available seats."
+			}
 			return "You're not back in " + or(v.Event, "one of your events") + " yet",
 				"The event was full when your account was turned back on. Ask a leader or host to add you."
 		},

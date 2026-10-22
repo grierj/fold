@@ -9,7 +9,7 @@ describe("Attendance", () => {
     render(<Attendance instance={occurrence({
       remoteAvailable: true, remoteCapacity: 5, remoteSpotsLeft: 4,
       attendeesVisible: true,
-      attendees: [{ userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "remote" }],
+      attendees: [{ registrationId: 31, userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "remote" }],
     })} />);
     expect(screen.getByText(/4 of 5 remote seats left/)).toBeInTheDocument();
     expect(screen.getByText("Remote attendance available")).toBeInTheDocument();
@@ -28,7 +28,7 @@ describe("Attendance", () => {
 
 it("shows childcare totals and requests supplied to a manager", async () => {
   render(<Attendance instance={occurrence({ childcareAvailable: true, childcareUsed: 2, childcareCapacity: 5,
-    attendeesVisible: true, attendees: [{ userId: 3, name: "Sam", status: "going", guestCount: 0,
+    attendeesVisible: true, attendees: [{ registrationId: 31, userId: 3, name: "Sam", status: "going", guestCount: 0,
       attendanceMode: "in_person", childcareCount: 2, childcareAgesNote: "3 and 5" }],
   })} />);
   expect(screen.getByText("3 of 5 childcare spots left")).toBeInTheDocument();

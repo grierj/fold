@@ -1,3 +1,5 @@
+import { ManageRoster } from "../components/ManageRoster";
+import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -6,8 +8,6 @@ import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
-import { RemoteBadge } from "../components/RemoteBadge";
-import { ChildcareBadge } from "../components/ChildcareBadge";
 import { focusRemoteCapacity, isRemoteError, remoteProblem } from "../components/RemoteField";
 import { Menu } from "../components/ui/Menu";
 import { Field, FormError, Input } from "../components/ui/Field";
@@ -18,7 +18,7 @@ import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { formatTime, heldIn, zoneNote } from "../lib/when";
-import type { EventDetailResponse, EventHostRow, EventOccurrence, RegistrationResponse } from "../types";
+import type { EventDetailResponse, EventHostRow, EventOccurrence, HouseholdPerson } from "../types";
 import { errorText } from "../lib/errors";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Missing } from "./NotFound";
@@ -29,6 +29,7 @@ export function EventDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user, loading: authLoading, isAdmin } = useAuth();
+  const people = useHousehold(user);
   const [page, setPage] = useState<EventDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -55,39 +56,8 @@ export function EventDetail() {
     load();
   }, [load]);
 
-  // Answer right away, then refetch so names, spots and the waitlist match
-  // the server.
-  function handleRsvp(eventId: number, date: string, reg: RegistrationResponse) {
-    void load(true);
-    setPage((p) => {
-      if (!p) return p;
-      return {
-        ...p,
-        occurrences: p.occurrences.map((m) => {
-          if (m.eventId !== eventId || m.date !== date) return m;
-          const registrations = { ...m.registrations };
-          const before = m.myRegistration;
-          if (before && before !== reg.status) {
-            registrations[before] = Math.max(0, (registrations[before] ?? 0) - 1);
-          }
-          // Only leaders and admins get a "declined" count (DEC-64); don't
-          // invent one for anyone else.
-          if ((!before || before !== reg.status) && (reg.status !== "declined" || "declined" in registrations)) {
-            registrations[reg.status] = (registrations[reg.status] ?? 0) + 1;
-          }
-          return {
-            ...m,
-            myRegistration: reg.status,
-            myGuestCount: reg.guestCount,
-            myWaitlistPosition: reg.waitlistPosition ?? undefined,
-            myAttendanceMode: reg.attendanceMode,
-            myChildcareCount: reg.childcareCount, myChildcareAgesNote: reg.childcareAgesNote,
-            registrations,
-          };
-        }),
-      };
-    });
-  }
+  // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
+  function handleRsvp() { void load(true); }
 
   if (loading || authLoading) {
     return (
@@ -180,6 +150,7 @@ export function EventDetail() {
             loggedIn={!!user}
             canManage={canManage}
             onRsvp={handleRsvp}
+            people={people}
             onChanged={() => void load()}
             onNeedLogin={() => navigate("/login", { state: { from: `/events/${id}` } })}
           />
@@ -194,13 +165,15 @@ function DateRow({
   loggedIn,
   canManage,
   onRsvp,
+  people,
   onChanged,
   onNeedLogin,
 }: {
   instance: EventOccurrence;
   loggedIn: boolean;
   canManage: boolean;
-  onRsvp: (eventId: number, date: string, reg: RegistrationResponse) => void;
+  onRsvp: () => void;
+  people: HouseholdPerson[];
   onChanged: () => void;
   onNeedLogin: () => void;
 }) {
@@ -269,7 +242,7 @@ function DateRow({
     <div className="mt-3">
         <div>
           {loggedIn ? (
-            <RsvpButtons instance={instance} onChange={(status) => onRsvp(instance.eventId, instance.date, status)} />
+            <RsvpButtons instance={instance} people={people} onChange={onRsvp} />
           ) : instance.visibility === "public" ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />
@@ -299,116 +272,6 @@ function DateRow({
         {canManage && managing && <ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} />}
     </div>
     </div>
-  );
-}
-
-// ManageRoster gives leaders and hosts the M1.5 pruning controls for one
-// date: remove anyone, promote a waitlisted person by hand, or add someone
-// directly. Adding over capacity asks for confirmation first.
-function ManageRoster({ instance, onChanged, onClose }: { instance: EventOccurrence; onChanged: () => void; onClose: () => void }) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const [email, setEmail] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  async function remove(userId: number, name: string) {
-    if (!confirm(`Remove ${name}'s registration for this date? They won't be able to re-register on their own.`))
-      return;
-    setBusy(`remove-${userId}`);
-    setError(null);
-    try {
-      await Events.removeRegistration(instance.eventId, instance.date, userId);
-      onChanged();
-    } catch (e) {
-      setError(errorText(e, "We couldn't remove that registration."));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function promote(userId: number) {
-    setBusy(`promote-${userId}`);
-    setError(null);
-    try {
-      await Events.promoteRegistration(instance.eventId, instance.date, userId);
-      onChanged();
-    } catch (e) {
-      setError(errorText(e, "We couldn't move them off the waitlist."));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function add(e: React.FormEvent) {
-    e.preventDefault();
-    const trimmed = email.trim();
-    if (!trimmed) return;
-    const full = instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0;
-    if (full && !confirm("This date is full. Add them over capacity?")) return;
-    setBusy("add");
-    setError(null);
-    try {
-      await Events.addRegistration(instance.eventId, instance.date, trimmed, full || undefined);
-      setEmail("");
-      onChanged();
-    } catch (err) {
-      setError(errorText(err, "We couldn't add that registration."));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  const roster = (instance.attendees ?? []).filter((a) =>
-    ["going", "maybe", "waitlisted"].includes(a.status)
-  );
-  return (
-    <section aria-label="Manage sign-ups" className="mt-3 border-t border-border pt-3">
-      <div className="mb-1 flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold">Manage sign-ups</h3>
-        <Button variant="link" onClick={onClose}>Close</Button>
-      </div>
-      {roster.length === 0 && <p className="text-sm text-text-muted mb-2">No one has signed up yet.</p>}
-      {error && <FormError layout="mb-1">{error}</FormError>}
-      <ul className="text-sm space-y-1 mb-2">
-        {roster.map((a) => (
-          <li key={a.userId} className="flex items-center justify-between gap-3">
-            <span>
-              {a.name} <span className="text-text-muted">· {a.status}</span>
-              {a.attendanceMode === "remote" && <> <RemoteBadge /></>}
-              {instance.childcareAvailable && (a.childcareCount ?? 0) > 0 && <> <ChildcareBadge count={a.childcareCount} /></>}
-              {instance.childcareAvailable && a.childcareAgesNote && <span className="block text-sm text-text-muted">Ages: {a.childcareAgesNote}</span>}
-            </span>
-            <span className="flex gap-2">
-              {a.status === "waitlisted" && (
-                <button
-                  type="button"
-                  disabled={busy !== null}
-                  onClick={() => void promote(a.userId)}
-                  className="text-primary font-medium"
-                >
-                  {busy === `promote-${a.userId}` ? "…" : "Promote"}
-                </button>
-              )}
-              <button
-                type="button"
-                disabled={busy !== null}
-                onClick={() => void remove(a.userId, a.name)}
-                className="text-danger hover:text-danger-hover"
-              >
-                {busy === `remove-${a.userId}` ? "…" : "Remove"}
-              </button>
-            </span>
-          </li>
-        ))}
-      </ul>
-      <form onSubmit={add} className="space-y-2">
-        <Field label="Add someone" hint="Their email address">
-          <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-        </Field>
-        <Button type="submit" variant="secondary" disabled={busy !== null}>
-          {busy === "add" ? "Adding…" : "Add"}
-        </Button>
-      </form>
-    </section>
   );
 }
 

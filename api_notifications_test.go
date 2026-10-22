@@ -552,7 +552,7 @@ func TestCancelDateNoticeReadsStayBounded(t *testing.T) {
 			addMember(t, app, &users[i], &g, models.MembershipMember)
 		}
 		if err := app.DB.Create(&models.Registration{
-			UserID: users[i].ID, OccurrenceID: occ.ID,
+			UserID: &users[i].ID, OccurrenceID: occ.ID,
 			Status: models.RegGoing, Source: models.RegSourceWeb,
 		}).Error; err != nil {
 			t.Fatalf("register %d: %v", i, err)

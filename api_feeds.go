@@ -182,6 +182,7 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 	}
 	// Every response the owner gave, for the DEC-70 feed video rule.
 	anyStatus := map[uint]string{}
+	householdVideo := map[uint]bool{}
 	if opts.personal && viewer != nil && len(occs) > 0 {
 		occIDs := make([]uint, len(occs))
 		for i := range occs {
@@ -191,6 +192,23 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		a.DB.Select("occurrence_id", "status").Where("user_id = ? AND occurrence_id IN ?", viewer.ID, occIDs).Find(&rows)
 		for _, r := range rows {
 			anyStatus[r.OccurrenceID] = r.Status
+		}
+	}
+
+	if opts.personal && viewer != nil {
+		occIDs := []uint{}
+		for _, o := range occs {
+			occIDs = append(occIDs, o.ID)
+		}
+		householdVideo = householdGoingMap(a.DB, occIDs, viewer, true)
+		var rows []models.Registration
+		if len(occIDs) > 0 {
+			a.DB.Joins(listedRegistrations()).Where("registrations.registered_by = ? AND registrations.occurrence_id IN ? AND registrations.status IN ?", viewer.ID, occIDs, []string{models.RegGoing, models.RegWaitlisted}).Order("registrations.id").Find(&rows)
+		}
+		for _, r := range rows {
+			if _, exists := myStatus[r.OccurrenceID]; !exists || r.Status == models.RegGoing {
+				myStatus[r.OccurrenceID] = r.Status
+			}
 		}
 	}
 
@@ -243,7 +261,7 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 				feed.Singles = append(feed.Singles, events.FeedSingle{
 					EventID: ev.ID, OriginalDate: occ.OriginalDate,
 					Title: eff.Title, Description: ev.Description, Location: eff.Location,
-					VideoURL: videoFor(anyStatus[occ.ID]), RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: ev.ChildcareAvailable, ChildcareAges: ev.ChildcareAges,
+					VideoURL: videoFor(feedHouseholdVideoStatus(anyStatus[occ.ID], householdVideo[occ.ID])), RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: ev.ChildcareAvailable, ChildcareAges: ev.ChildcareAges,
 					TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
 					URL: a.feedEventURL(ev.ID), UpdatedAt: occ.UpdatedAt, Status: s,
 				})
@@ -264,7 +282,7 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		seriesStatuses := make([]string, 0, len(list))
 		for _, occ := range list {
 			if occ.Status != models.OccurrenceCancelled {
-				seriesStatuses = append(seriesStatuses, anyStatus[occ.ID])
+				seriesStatuses = append(seriesStatuses, feedHouseholdVideoStatus(anyStatus[occ.ID], householdVideo[occ.ID]))
 			}
 		}
 		fe := events.FeedEvent{
@@ -463,4 +481,11 @@ func (a *App) revokeCalendarToken(c *gin.Context, actorID, userID uint) (bool, e
 		})
 	})
 	return had, err
+}
+
+func feedHouseholdVideoStatus(own string, household bool) string {
+	if household {
+		return models.RegGoing
+	}
+	return own
 }

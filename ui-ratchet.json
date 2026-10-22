@@ -4,7 +4,7 @@
     "web/src/components/GroupVisibilityReview.tsx": 2,
     "web/src/components/Notifications.tsx": 1,
     "web/src/pages/Admin.tsx": 1,
-    "web/src/pages/EventDetail.tsx": 4
+    "web/src/pages/EventDetail.tsx": 2
   },
   "dateFormatting": {
     "web/src/components/Notifications.tsx": 2,
@@ -25,7 +25,7 @@
     "web/src/components/Notifications.tsx": 8,
     "web/src/components/RsvpButtons.tsx": 1,
     "web/src/pages/Admin.tsx": 3,
-    "web/src/pages/EventDetail.tsx": 6,
+    "web/src/pages/EventDetail.tsx": 4,
     "web/src/pages/GroupDetail.tsx": 3,
     "web/src/pages/Home.tsx": 6,
     "web/src/pages/NewChurchEvent.tsx": 1,

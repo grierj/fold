@@ -122,9 +122,12 @@ export interface GuestRegistration {
 // One attendee entry on an occurrence (M1.5 adds guestCount).
 /** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface Attendee {
-  userId: number;
+  registrationId: number;
+  userId?: number;
+  householdPerson?: HouseholdAttendee;
+  childcareRequested?: boolean;
   name: string;
-  status: RegistrationStatus;
+  status: RegistrationStatus | "not_restored";
   guestCount: number;
   attendanceMode: AttendanceMode;
   childcareCount?: number;
@@ -166,6 +169,8 @@ export interface EventOccurrence {
   // False means the caller gets a count only. Names are omitted in that case.
   attendeesVisible?: boolean;
   attendees?: Attendee[];
+  myHouseholdRegistrations: MyHouseholdRegistration[];
+  removedRegistrations?: Attendee[];
   // Capacity, waitlist, and guests (M1.5). capacity is the effective cap
   // for this date; null means unlimited. spotsLeft is null when
   // unlimited and never below 0. seatsUsed counts seats while
@@ -259,6 +264,7 @@ export interface EventSeries {
 // The register endpoint's registration object (M1.5): the final status,
 // the guest count, and the waitlist position (null unless waitlisted).
 export interface RegistrationResponse {
+  registrationId: number;
   userId: number;
   eventId: number;
   occurrenceId: number;
@@ -381,6 +387,7 @@ export interface CalendarFeed {
 
 // Households (M1.9). Mirrors householdJSON and friends in api_profile.go.
 export interface HouseholdPerson {
+  age?: number;
   id: number;
   householdId: number;
   firstName: string;
@@ -388,7 +395,8 @@ export interface HouseholdPerson {
   name: string;
   kind: "child" | "teen" | "adult";
   birthDate?: string;
-  careNotes: string;
+  careNotes?: string;
+  registrationEligibility: "eligible" | "link_pending" | "link_unconfirmed" | "birth_date_required" | "age_mismatch" | "converted" | "registration_holder_unavailable";
   photoConsent: boolean;
   linkStatus: "pending" | "confirmed" | "rejected" | "revoked" | "none";
   guardianLinkId?: number;
@@ -428,4 +436,47 @@ export interface GuardianLink {
   confirmedBy?: number;
   createdAt: string;
   decidedAt?: string;
+}
+
+export interface HouseholdRegistration {
+  registrationId: number;
+  personId: number;
+  registeredBy: number;
+  status: RegistrationStatus;
+  attendanceMode: AttendanceMode;
+  waitlistPosition: number | null;
+  childcareRequested: boolean;
+}
+
+export interface RegistrationBatch {
+  registration: RegistrationResponse | null;
+  people: HouseholdRegistration[];
+}
+
+export interface RegisteredBy {
+  userId: number;
+  name: string;
+}
+
+export interface HouseholdAttendee {
+  personId: number;
+  name: string;
+  householdName: string;
+  kind: "child" | "teen" | "adult";
+  age?: number;
+  registeredBy: RegisteredBy;
+  careNotes?: string;
+  careNotesVisibleUntil?: string;
+}
+
+export interface MyHouseholdRegistration {
+  registrationId: number;
+  personId: number;
+  registeredBy: number;
+  holderName: string;
+  status: RegistrationStatus | "unavailable";
+  attendanceMode: AttendanceMode;
+  waitlistPosition: number | null;
+  childcareRequested: boolean;
+  unavailable: boolean;
 }

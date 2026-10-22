@@ -18,6 +18,12 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+"household_link_pending": "household_link_pending",
+"household_link_unconfirmed": "household_link_unconfirmed",
+"household_birth_date_required": "household_birth_date_required",
+"household_age_mismatch": "household_age_mismatch",
+"household_remote_childcare": "household_remote_childcare",
+"household_registration_holder_unavailable": "household_registration_holder_unavailable",
 	// Signing in and passwords
 	"invalid email or password":                          "bad_credentials",
 	"too many sign-in attempts; try again in 15 minutes": "locked_out",
