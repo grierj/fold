@@ -93,6 +93,7 @@ export function Invite() {
         <h1 className="text-3xl font-bold mb-6">You're invited</h1>
         <EmptyState
           illustration={<Illustration name="link-expired" />}
+          level={2}
           title="This link can't be used"
           body={error ?? "This link is missing its token."}
           action={

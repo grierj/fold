@@ -16,6 +16,17 @@ async function latestInvite(page: Page, address: string): Promise<string> {
   return new URL(link).pathname + new URL(link).search;
 }
 
+// With SCREENS_DIR set, capture a state at 390 and 1280 px.
+async function shoot(page: import("@playwright/test").Page, name: string) {
+  const dir = process.env.SCREENS_DIR;
+  if (!dir) return;
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.screenshot({ path: `${dir}/${name}-${width}.png`, fullPage: true });
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+}
+
 for (const kind of ["adult", "teen"] as const) {
   test(`household ${kind} invitation transfers sign-ups on acceptance`, async ({ page, request }) => {
     test.skip((await request.get("/dev/outbox")).status() !== 200, "Requires E2E_APP_ENV=dev for the mail outbox");
@@ -41,6 +52,7 @@ for (const kind of ["adult", "teen"] as const) {
     await page.getByLabel("Their email address").fill(destination);
     await page.getByRole("button", { name: "Send account invitation" }).click();
     await expect(page.getByText(`Invitation pending: ${destination}`, { exact: false })).toBeVisible();
+    await shoot(page, `conversion-${kind}-pending`);
     const first = await latestInvite(page, destination);
     await page.getByRole("button", { name: "Resend", exact: true }).click();
     await expect(page.getByRole("status")).toContainText("Invitation resent");
@@ -56,12 +68,15 @@ for (const kind of ["adult", "teen"] as const) {
     await page.context().clearCookies();
     await page.goto(second);
     await expect(page.getByRole("heading", { name: "This link can't be used" })).toBeVisible();
+    await shoot(page, `conversion-${kind}-link-used`);
     await page.goto(final);
     await expect(page.getByText(/Your past and upcoming sign-ups will move/)).toBeVisible();
+    await shoot(page, `conversion-${kind}-accept`);
     await page.getByLabel("Choose a password").fill(PASSWORD);
     await page.getByRole("button", { name: "Create my account" }).click();
     if (kind === "teen") {
       await expect(page.getByRole("heading", { name: "Your account is waiting for consent" })).toBeVisible();
+      await shoot(page, "conversion-teen-waiting");
       expect((await page.request.get("/api/v1/auth/me")).status()).toBe(401);
     } else {
       await expect(page).toHaveURL(/\/$/);
