@@ -659,3 +659,28 @@ func TestGuardianLinkSelfConfirm(t *testing.T) {
 		t.Fatalf("other-admin audit: %+v %+v", rows, metas)
 	}
 }
+
+// DEC-79: only other *active* admins block a self-confirm. A disabled or
+// not-yet-active second admin does not (Warden, #106).
+func TestGuardianLinkSelfConfirmIgnoresInactiveAdmins(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "ada", "password1234", models.RoleAdmin)
+	off := newTestUser(t, app, "off", "password1234", models.RoleAdmin)
+	waiting := newTestUser(t, app, "waiting", "password1234", models.RoleAdmin)
+	app.DB.Model(&models.User{}).Where("id = ?", off.ID).Update("status", models.UserDisabled)
+	app.DB.Model(&models.User{}).Where("id = ?", waiting.ID).Update("status", models.UserInvited)
+	ada := loginAPI(t, app, "ada", "password1234")
+
+	p := addMyPerson(t, ada, map[string]any{"firstName": "Kid", "kind": "child", "birthDate": "2020-05-01"})
+	var link models.GuardianLink
+	if err := app.DB.Where("person_id = ?", p.ID).First(&link).Error; err != nil {
+		t.Fatal(err)
+	}
+	w := ada.do("POST", "/api/v1/admin/guardian-links/"+itoa2(link.ID)+"/confirm", map[string]string{"checkNote": "Known family"}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("self-confirm with only inactive other admins: %d %s", w.Code, w.Body.String())
+	}
+	if _, metas := auditRows(t, app, audit.GuardianLinkConfirmed); len(metas) != 1 || !metas[0].SelfConfirm {
+		t.Fatalf("self-confirm audit: %+v", metas)
+	}
+}
