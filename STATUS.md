@@ -55,6 +55,8 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 
 ## Follow-ups (not yet claimed)
 
+- M1.10: re-enable household teen conversion with parent consent. Move sign-ups only once consent is granted, approval-first like adults in DEC-82; until then the household keeps managing them. Teen conversion is off in M1.9 to prevent lockout.
+
 - (Illuminator, #105 N10) Watch that a stray arrow key in the "How you'll attend" radio group can't change a Going answer by accident (switching mode saves immediately).
 - (Whittler, #105) An admin re-adding someone who is already going in the same pool counts their seats twice (api_registrations.go admin add path, ~1150-1157). Fix: subtract the existing going party from used seats before the fit check.
 - (Illuminator, PR 110 N5) Use the Going/Maybe/Can't go radios for each household person instead of the "Answer for X" select (judgment call 38).

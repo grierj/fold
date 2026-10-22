@@ -13,7 +13,7 @@ const INVITE_EXPIRED = "This invitation has expired or was already used. Ask the
 import type { Invitation } from "../types";
 
 // Accept a single-use invitation and choose a password. Household adults
-// wait for admin approval; teens wait for consent.
+// wait for admin approval.
 export function Invite() {
   const [params] = useSearchParams();
   const token = params.get("token") ?? "";
@@ -26,7 +26,7 @@ export function Invite() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [waiting, setWaiting] = useState<"consent" | "approval" | null>(null);
+  const [waiting, setWaiting] = useState(false);
 
   useEffect(() => {
     if (!token) {
@@ -56,8 +56,7 @@ export function Invite() {
     try {
       const result = await InvitationsApi.accept({ token, name, password });
       setPassword("");
-      if (result.pendingConsent) { setWaiting("consent"); return; }
-      if (result.pendingApproval) { setWaiting("approval"); return; }
+      if (result.pendingApproval) { setWaiting(true); return; }
       await refresh();
       navigate("/", { replace: true });
     } catch (e) {
@@ -83,7 +82,7 @@ export function Invite() {
     );
   }
 
-  if (waiting) return <AccountWaiting reason={waiting} />;
+  if (waiting) return <AccountWaiting />;
 
   if (!token || (!invitation && error)) {
     return (
@@ -108,10 +107,8 @@ export function Invite() {
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-2">You're invited to {site}</h1>
       {invitation?.conversion && <div className="mb-4 space-y-2">
-        <p>Create your own account for {invitation.name}. Your past and upcoming sign-ups will move to your account {invitation.accountType === "teen" ? "when you accept" : "after an admin approves"}. Group memberships do not move, so some private events may no longer be available.</p>
-        <p>{invitation.accountType === "teen"
-          ? "A church admin needs to confirm your parent or guardian before you can sign in."
-          : "A church admin needs to approve your account before you can sign in. Until then, nothing changes: your household keeps managing your sign-ups as before."}</p>
+        <p>Create your own account for {invitation.name}. Your past and upcoming sign-ups will move to your account after an admin approves. Group memberships do not move, so some private events may no longer be available.</p>
+        <p>A church admin needs to approve your account before you can sign in. Until then, nothing changes: your household keeps managing your sign-ups as before.</p>
       </div>}
       {invitation?.groupName && (
         <p className="text-text-muted mb-6">
@@ -150,18 +147,16 @@ export function Invite() {
   );
 }
 
-// Shown after a teen or an adult accepts. Focus moves to the
+// Shown after an adult accepts. Focus moves to the
 // heading so screen readers start here; no live region, because the whole
 // page changed (PR 111 M1). Adults wait for approval (Warden, PR 111 F1).
-function AccountWaiting({ reason }: { reason: "consent" | "approval" }) {
+function AccountWaiting() {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
   return (
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold mb-4 focus:outline-none">Your account is almost ready</h1>
-      <p>{reason === "consent"
-        ? "A church admin needs to confirm your parent or guardian before you can sign in. Your sign-ups are already on your account. We can't email you about signing in yet, so ask your church office when your account is ready."
-        : "A church admin needs to approve your account before you can sign in. Until then, nothing changes: your household keeps managing your sign-ups as before. We'll email you when it's approved. Then you can sign in with the password you chose."}</p>
+      <p>A church admin needs to approve your account before you can sign in. Until then, nothing changes: your household keeps managing your sign-ups as before. We'll email you when it's approved. Then you can sign in with the password you chose.</p>
     </div>
   );
 }

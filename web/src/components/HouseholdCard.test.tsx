@@ -177,12 +177,11 @@ it("shows pending destination, resend and cancellation without editing it", asyn
   expect(cancel).toHaveBeenCalledWith(5);
 });
 
-it("shows a converted teen once under accounts with no person controls", async () => {
-  mine.mockResolvedValue({ household: { ...household, people: [], accounts: [...household.accounts, { userId: 2, name: "Taylor", relation: "teen", status: "pending_consent" }] } });
+it("explains why a teen cannot convert and hides the account button", async () => {
+  mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], kind: "teen", canConvert: false, convertBlocked: "teen" }] } });
   render(<HouseholdCard />);
-  expect(await screen.findByText(/Taylor \(teen, waiting for an admin check\)/)).toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Edit Taylor" })).not.toBeInTheDocument();
-  expect(screen.queryByText("No one in your household yet")).not.toBeInTheDocument();
+  expect(await screen.findByText("Teens can get their own account once parent consent is available.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Create their own account" })).not.toBeInTheDocument();
 });
 
  it("keeps an adult editable while approval is pending and hides invitation controls", async () => {

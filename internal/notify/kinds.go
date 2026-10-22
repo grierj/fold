@@ -254,9 +254,6 @@ func init() {
 		Key: HouseholdConverted, Category: CatSafety, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			body := "Their past and upcoming event sign-ups have moved to their account."
-			if v.Teen {
-				body += " They cannot sign in until consent is available."
-			}
 			return or(v.Person, "A household member") + " created their own account", body
 		},
 		RenderEmailSafe: func(Vars) (string, string) {

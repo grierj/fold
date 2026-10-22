@@ -135,14 +135,18 @@ with a note on how it was checked (DEC-32); an `adult` needs no approval.
 An active adult in the household or an active adult admin can invite an
 eligible household person to their own account. Admins may act across
 households; unrelated members receive 404. A real birth date must prove
-an adult is 18 or older, or a teen is 13 to 17 on the church-local day.
-A teen also needs a pending or confirmed guardian link to an active adult
-account in the same household. Children cannot convert, even after turning 13
-until their saved type is corrected. Disabled responsible accounts block conversion.
+an adult is 18 or older on the church-local day. Children cannot convert.
+Teen conversion is off until parent consent arrives in M1.10, under
+DEC-82's no-lockout rule. Create, resend, and acceptance of an existing open
+teen invitation return 409 `household_conversion_teen` with
+"teens can get their own account once parent consent is available". Nothing
+changes; the household keeps managing the teen and their sign-ups.
+Disabled responsible accounts block conversion.
 
 `conversion` is `{email, expiresAt, state: "pending"|"expired"|"awaiting_approval"}`.
-Household people include `canConvert` and optional `conversion` metadata,
-never a token or hash. Household accounts include `status`; converted people
+Household people include `canConvert` and optional `conversion` metadata.
+Teens have `canConvert: false` and `convertBlocked: "teen"`. These expose
+no token or hash. Household accounts include `status`; converted people
 appear only under accounts and cannot be edited or removed as household people.
 
 Issuing twice to the same pending destination returns its state without
@@ -176,13 +180,10 @@ or 30-day expiry closes the request and clears the held password hash;
 nothing needs undoing, and the email can be invited again.
 
 A first send suppressed by the invitation limit saves no invitation row,
-but the response has the same keys as a normal send. Teens still convert
-at acceptance: their member account, registrations, household account and
-fresh guardian links are created then. A teen receives `{pendingConsent: true}`
-without a user profile or a new session. Their sign-ups still count toward
-capacity and remain visible to event managers. Fresh account-targeted guardian
-links wait for admin checks; confirming them never activates the teen.
-Unrelated members do not see pending teen names in attendee lists.
+but the response has the same keys as a normal send. Pending-consent teen
+accounts created through other paths retain their seats and the DEC-82
+roster rules. Event managers see them with a teen badge; unrelated members
+do not see their names.
 
 Creation and resend share the 20-per-rolling-day invitation limit by sender
 and destination, including resends. Counters live in Postgres audit rows.
@@ -373,8 +374,9 @@ audited as `membership.added_over_limit`.
 
 `invitation`: `{id, email, name, groupId?, groupName?, expiresAt, conversion, accountType}`.
 Ordinary invitations have `conversion: false`. Conversion invitations have
-no group and explain the transfer on the accept page. Adult acceptance
-creates a session only when the resulting account can sign in.
+no group and explain the transfer on the accept page. Household adult
+acceptance waits for approval without a session; teen conversion is refused.
+Ordinary acceptance creates a session when the resulting account can sign in.
 
 ### Account requests
 

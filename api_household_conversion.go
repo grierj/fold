@@ -21,6 +21,7 @@ import (
 )
 
 var (
+	errConversionTeen        = errors.New("teens can get their own account once parent consent is available")
 	errConversionUnavailable = errors.New("this person cannot create an account yet; check their birth date, account type and guardian link")
 	errConversionEmail       = errors.New("that email is unavailable; use a different email")
 	errConversionOpen        = errors.New("cancel the current invitation before choosing a different email")
@@ -85,32 +86,21 @@ func conversionRelation(tx *gorm.DB, actor uint, household uint) policy.Househol
 
 // conversionBatch holds what canConvert needs for a set of household
 // people, loaded once per request: the church-local date, the actor's
-// relation to the household, the household's eligible guardians, and the
-// people whose sign-ups have a disabled or deleted holder (PR 111, Whittler).
+// relation to the household, and people whose sign-ups have a disabled
+// or deleted holder (PR 111, Whittler).
 type conversionBatch struct {
-	actor     *models.User
-	today     time.Time
-	rel       policy.HouseholdRel
-	guardians map[uint]bool
-	blocked   map[uint]bool
+	actor   *models.User
+	today   time.Time
+	rel     policy.HouseholdRel
+	blocked map[uint]bool
 }
 
 func (a *App) loadConversionBatch(tx *gorm.DB, actor *models.User, householdID uint, personIDs []uint) (*conversionBatch, error) {
-	b := &conversionBatch{actor: actor, today: a.householdClock(time.Now().UTC()), guardians: map[uint]bool{}, blocked: map[uint]bool{}}
+	b := &conversionBatch{actor: actor, today: a.householdClock(time.Now().UTC()), blocked: map[uint]bool{}}
 	if actor == nil || len(personIDs) == 0 {
 		return b, nil
 	}
 	b.rel = conversionRelation(tx, actor.ID, householdID)
-	var guardians []uint
-	if err := tx.Table("household_accounts ha").
-		Joins("JOIN users ON users.id = ha.user_id AND users.deleted_at IS NULL AND users.status = 'active' AND users.account_type = 'adult'").
-		Where("ha.household_id = ? AND ha.relation IN ('adult','guardian')", householdID).
-		Pluck("ha.user_id", &guardians).Error; err != nil {
-		return nil, err
-	}
-	for _, id := range guardians {
-		b.guardians[id] = true
-	}
 	var blocked []uint
 	if err := tx.Model(&models.Registration{}).Joins("JOIN users ON users.id = registrations.registered_by").
 		Where("registrations.household_person_id IN ? AND (users.deleted_at IS NOT NULL OR users.status <> ?)", personIDs, models.UserActive).
@@ -123,33 +113,17 @@ func (a *App) loadConversionBatch(tx *gorm.DB, actor *models.User, householdID u
 	return b, nil
 }
 
-// allowed reports whether the actor may convert person, whose guardian
-// links are already loaded. A blocked holder returns errConversionHolder.
-func (b *conversionBatch) allowed(person *models.HouseholdPerson, links []models.GuardianLink) (bool, error) {
+// allowed reports whether the actor may convert person.
+// A blocked holder returns errConversionHolder.
+func (b *conversionBatch) allowed(person *models.HouseholdPerson) (bool, error) {
 	if b == nil || b.actor == nil {
 		return false, nil
 	}
 	if b.blocked[person.ID] {
 		return false, errConversionHolder
 	}
-	hasGuardian := false
-	for _, link := range links {
-		if (link.Status == models.GuardianPending || link.Status == models.GuardianConfirmed) && b.guardians[link.GuardianUserID] {
-			hasGuardian = true
-		}
-	}
 	actor := b.actor
-	return policy.CanConvertHouseholdPerson(asPerson(actor), b.rel, householdFacts(person, nil, b.today), actor.Status == models.UserActive && !actor.DeletedAt.Valid, hasGuardian), nil
-}
-
-func conversionGuardians(tx *gorm.DB, person *models.HouseholdPerson) ([]uint, error) {
-	var ids []uint
-	err := tx.Model(&models.GuardianLink{}).
-		Joins("JOIN users ON users.id = guardian_links.guardian_user_id AND users.deleted_at IS NULL AND users.status = 'active' AND users.account_type = 'adult'").
-		Joins("JOIN household_accounts ha ON ha.user_id = users.id AND ha.household_id = ? AND ha.relation IN ('adult','guardian')", person.HouseholdID).
-		Where("guardian_links.person_id = ? AND guardian_links.status IN ?", person.ID, []string{models.GuardianPending, models.GuardianConfirmed}).
-		Distinct("guardian_links.guardian_user_id").Pluck("guardian_links.guardian_user_id", &ids).Error
-	return ids, err
+	return policy.CanConvertHouseholdPerson(asPerson(actor), b.rel, householdFacts(person, nil, b.today), actor.Status == models.UserActive && !actor.DeletedAt.Valid), nil
 }
 
 func (a *App) conversionAllowed(tx *gorm.DB, actor *models.User, person *models.HouseholdPerson) (bool, error) {
@@ -157,11 +131,7 @@ func (a *App) conversionAllowed(tx *gorm.DB, actor *models.User, person *models.
 	if err != nil {
 		return false, err
 	}
-	var links []models.GuardianLink
-	if err := tx.Where("person_id = ?", person.ID).Order("id").Find(&links).Error; err != nil {
-		return false, err
-	}
-	return b.allowed(person, links)
+	return b.allowed(person)
 }
 
 // Conversion loaders find the target first so admins can act across households.
@@ -187,7 +157,7 @@ func (a *App) loadConversionPerson(c *gin.Context) (*models.HouseholdPerson, boo
 
 func conversionError(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, errConversionPerson), errors.Is(err, errConversionPending), errors.Is(err, errConversionUnavailable), errors.Is(err, errConversionEmail), errors.Is(err, errConversionOpen), errors.Is(err, errConversionHolder):
+	case errors.Is(err, errConversionTeen), errors.Is(err, errConversionPerson), errors.Is(err, errConversionPending), errors.Is(err, errConversionUnavailable), errors.Is(err, errConversionEmail), errors.Is(err, errConversionOpen), errors.Is(err, errConversionHolder):
 		jsonError(c, http.StatusConflict, err.Error())
 	case errors.Is(err, errTokenInvalid), errors.Is(err, gorm.ErrRecordNotFound):
 		jsonError(c, http.StatusBadRequest, "that invitation is invalid or has expired")
@@ -256,6 +226,9 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		}
 		if err := tx.First(person, person.ID).Error; err != nil {
 			return err
+		}
+		if person.Kind == models.HouseholdTeen {
+			return errConversionTeen
 		}
 		allowed, err := a.conversionAllowed(tx, &actor, person)
 		if err != nil {
@@ -413,14 +386,8 @@ func (a *App) apiCancelHouseholdConversion(c *gin.Context) {
 }
 
 func (a *App) sendConversionEmail(inv *models.Invitation, actor *models.User, raw string) error {
-	timing := "When you accept, your past and upcoming event sign-ups will move to your account."
-	if inv.AccountType == models.AccountAdult {
-		timing = "Your past and upcoming event sign-ups will move to your account after an admin approves. Until then, your household keeps managing them."
-	}
+	timing := "Your past and upcoming event sign-ups will move to your account after an admin approves. Until then, your household keeps managing them."
 	text := fmt.Sprintf("%s invited you to create an account for %s. %s\n\nChoose your password: %s/invite?token=%s\n\nThis link expires in 24 hours. If this invitation is not for you, ignore it.", actor.PublicName(), inv.Name, timing, a.emailBaseURL(), raw)
-	if inv.AccountType == models.AccountTeen {
-		text += "\n\nYour account will wait for consent. An admin must also check your guardian link. You cannot sign in yet."
-	}
 	return a.Mailer.Send(context.Background(), mail.Message{To: inv.Email, Subject: "Create your own account at " + a.siteName(), Text: text})
 }
 
@@ -429,10 +396,6 @@ func conversionLockIDs(tx *gorm.DB, inv *models.Invitation, person *models.House
 	ids := []uint{inv.InvitedBy}
 	var found []uint
 	if err := tx.Model(&models.HouseholdAccount{}).Where("household_id = ?", person.HouseholdID).Pluck("user_id", &found).Error; err != nil {
-		return nil, err
-	}
-	ids = append(ids, found...)
-	if err := tx.Model(&models.GuardianLink{}).Where("person_id = ?", person.ID).Pluck("guardian_user_id", &found).Error; err != nil {
 		return nil, err
 	}
 	ids = append(ids, found...)
@@ -457,12 +420,10 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 		conversionError(c, err)
 		return
 	}
-	var user models.User
 	var mailed []uint
 	var err error
 	for attempt := 0; attempt < 4; attempt++ {
 		mailed = nil
-		user = models.User{}
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
 			discovery, err := liveInvitation(tx, raw)
 			if err != nil || discovery.HouseholdPersonID == nil {
@@ -507,6 +468,9 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if inv.TokenHash != hashToken(raw) || inv.RevokedAt != nil || inv.AcceptedAt != nil || !inv.ExpiresAt.After(time.Now()) || inv.HouseholdPersonID == nil || *inv.HouseholdPersonID != person.ID {
 				return errTokenInvalid
 			}
+			if person.Kind == models.HouseholdTeen {
+				return errConversionTeen
+			}
 			inviter := locked[inv.InvitedBy]
 			if inviter == nil {
 				return errConversionRetry
@@ -532,12 +496,8 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			if err := conversionEmailAvailable(tx, inv.Email, inv.ID); err != nil {
 				return err
 			}
-			if person.Kind == models.HouseholdAdult {
-				mailed, err = createConversionApprovalRequest(tx, &person, &inv, prepared.PasswordHash, c.ClientIP())
-				if err != nil {
-					return err
-				}
-			} else if err := a.moveHouseholdConversion(tx, c, &inv, &person, locked, freshIDs, prepared.PasswordHash, &user, &mailed); err != nil {
+			mailed, err = createConversionApprovalRequest(tx, &person, &inv, prepared.PasswordHash, c.ClientIP())
+			if err != nil {
 				return err
 			}
 
@@ -559,25 +519,13 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 		return
 	}
 	a.deliverNotificationEmails(mailed)
-	if user.CanSignIn() {
-		if err := a.signInSession(c, &user); err != nil {
-			jsonError(c, http.StatusInternalServerError, "session error")
-			return
-		}
-		c.JSON(http.StatusOK, invitationAcceptanceJSON{User: userJSONPtr(a.toUserJSON(&user))})
-	} else {
-		c.JSON(http.StatusOK, invitationAcceptanceJSON{PendingConsent: user.Status == models.UserPendingConsent, PendingApproval: user.ID == 0})
-	}
+	c.JSON(http.StatusOK, invitationAcceptanceJSON{PendingApproval: true})
 }
 
 func userJSONPtr(u userJSON) *userJSON { return &u }
 
 // moveHouseholdConversion runs after user and household locks are held.
 func (a *App) moveHouseholdConversion(tx *gorm.DB, c *gin.Context, inv *models.Invitation, person *models.HouseholdPerson, locked map[uint]*models.User, ids []uint, passwordHash *string, result *models.User, mailed *[]uint) error {
-	guardians, err := conversionGuardians(tx, person)
-	if err != nil {
-		return err
-	}
 	var occurrenceIDs []uint
 	if err := tx.Model(&models.Registration{}).Where("household_person_id = ?", person.ID).Distinct("occurrence_id").Order("occurrence_id").Pluck("occurrence_id", &occurrenceIDs).Error; err != nil {
 		return err
@@ -607,9 +555,6 @@ func (a *App) moveHouseholdConversion(tx *gorm.DB, c *gin.Context, inv *models.I
 		}
 	}
 	user := models.User{Email: inv.Email, Name: person.FullName(), Role: models.RoleMember, Status: models.UserActive, AccountType: person.Kind, BirthDate: person.BirthDate, PasswordHash: passwordHash}
-	if person.Kind == models.HouseholdTeen {
-		user.Status = models.UserPendingConsent
-	}
 	if err := tx.Create(&user).Error; err != nil {
 		return err
 	}
@@ -633,22 +578,6 @@ func (a *App) moveHouseholdConversion(tx *gorm.DB, c *gin.Context, inv *models.I
 	if err := tx.Create(&models.HouseholdAccount{HouseholdID: person.HouseholdID, UserID: user.ID, Relation: person.Kind}).Error; err != nil {
 		return err
 	}
-	if person.Kind == models.HouseholdTeen {
-		if err := revokeGuardianLinks(tx, c, inv.InvitedBy, person); err != nil {
-			return err
-		}
-		for _, guardian := range guardians {
-			link := models.GuardianLink{GuardianUserID: guardian, TeenUserID: &user.ID, Status: models.GuardianPending}
-			if err := tx.Create(&link).Error; err != nil {
-				return err
-			}
-			notices, err := notifyGuardianLinkPending(tx, &link, nil)
-			if err != nil {
-				return err
-			}
-			*mailed = append(*mailed, notices...)
-		}
-	}
 	meta := map[string]any{"personId": person.ID, "householdId": person.HouseholdID, "invitationId": inv.ID, "userId": user.ID, "accountType": user.AccountType, "transferCount": len(regs)}
 	if err := audit.Write(tx, audit.Entry{Actor: &inv.InvitedBy, Action: audit.HouseholdPersonConverted, TargetType: "household", TargetID: person.HouseholdID, Meta: meta, IP: c.ClientIP()}); err != nil {
 		return err
@@ -661,7 +590,7 @@ func (a *App) moveHouseholdConversion(tx *gorm.DB, c *gin.Context, inv *models.I
 			recipients = append(recipients, id)
 		}
 	}
-	notices, err := notify.Send(tx, notify.Msg{Kind: notify.HouseholdConverted, To: recipients, SubjectType: "household", SubjectID: person.HouseholdID, Link: "/profile", Vars: notify.Vars{Person: user.PublicName(), Teen: user.AccountType == models.AccountTeen}, Data: meta, DedupeKey: fmt.Sprintf("household.converted:%d", inv.ID)})
+	notices, err := notify.Send(tx, notify.Msg{Kind: notify.HouseholdConverted, To: recipients, SubjectType: "household", SubjectID: person.HouseholdID, Link: "/profile", Vars: notify.Vars{Person: user.PublicName()}, Data: meta, DedupeKey: fmt.Sprintf("household.converted:%d", inv.ID)})
 	*mailed = append(*mailed, notices...)
 	return err
 }

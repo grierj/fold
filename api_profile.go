@@ -558,6 +558,7 @@ func (a *App) serveUpload(c *gin.Context) {
 
 type householdPersonJSON struct {
 	Conversion              *conversionJSON `json:"conversion,omitempty"`
+	ConvertBlocked          string          `json:"convertBlocked,omitempty"`
 	CanConvert              bool            `json:"canConvert"`
 	ID                      uint            `json:"id"`
 	HouseholdID             uint            `json:"householdId"`
@@ -746,14 +747,19 @@ func (a *App) toHouseholdPersonJSON(person *models.HouseholdPerson, links []mode
 	if person.ConvertedUserID != nil {
 		eligibility = "converted"
 	}
-	canConvert, err := batch.allowed(person, links)
+	canConvert, err := batch.allowed(person)
 	if errors.Is(err, errConversionHolder) {
 		canConvert, err = false, nil
 	}
 	if err != nil {
 		return householdPersonJSON{}, err
 	}
+	blocked := ""
+	if person.Kind == models.HouseholdTeen {
+		blocked = "teen"
+	}
 	return householdPersonJSON{
+		ConvertBlocked:          blocked,
 		CanConvert:              canConvert,
 		RegistrationEligibility: eligibility, Age: facts.AgeYears,
 		ID: person.ID, HouseholdID: person.HouseholdID,

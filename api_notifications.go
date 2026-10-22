@@ -386,6 +386,7 @@ func notifyGuardianLinkPending(tx *gorm.DB, link *models.GuardianLink, person *m
 		vars.Person, vars.Change, vars.Teen = person.FullName(), person.Kind, person.Kind == models.HouseholdTeen
 		data["personId"] = person.ID
 	} else if link.TeenUserID != nil {
+		// M1.10 uses account-targeted guardian links for parent consent.
 		vars.Person, vars.Change, vars.Teen = nameIn(tx, *link.TeenUserID), "teen_account", true
 		data["teenUserId"] = *link.TeenUserID
 	}

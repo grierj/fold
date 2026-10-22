@@ -211,53 +211,120 @@ func TestHouseholdConversionReservationsAndLifecycle(t *testing.T) {
 	acceptConversion(t, app, token, http.StatusBadRequest)
 }
 
-func TestTeenHouseholdConversionWaitsForConsent(t *testing.T) {
+func TestTeenHouseholdConversionRefused(t *testing.T) {
 	app := testApp(t)
 	admin, gid := openGroup(t, app, "TeenConversion")
-	holder, c, _, _ := householdFamily(t, app, admin, "teenparent")
+	_, c, _, _ := householdFamily(t, app, admin, "teenparent")
 	birth := time.Now().UTC().AddDate(-15, 0, 0).Format("2006-01-02")
 	teen := addMyPerson(t, c, map[string]any{"firstName": "Teen", "kind": "teen", "birthDate": birth})
 	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(*teen.GuardianLinkID)+"/confirm", map[string]any{"checkNote": "Known family"}, http.StatusOK)
 	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
 	batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": teen.ID, "status": "going"}}}, http.StatusOK)
-	token := inviteHouseholdPerson(t, app, c, teen.ID, "teenown@example.com")
-	anon := newAPIClient(t, app)
-	anon.fetchCSRF()
-	response := apiDo(t, anon, "POST", "/api/v1/invitations/accept", map[string]any{"token": token, "password": "password1234"}, http.StatusOK)
-	if strings.Contains(response, `"user"`) || !strings.Contains(response, `"pendingConsent":true`) {
-		t.Fatal(response)
+	checkRefusal := func(body string) {
+		t.Helper()
+		var response struct {
+			Error string `json:"error"`
+			Code  string `json:"code"`
+		}
+		if err := json.Unmarshal([]byte(body), &response); err != nil {
+			t.Fatal(err)
+		}
+		if response.Code != "household_conversion_teen" || response.Error != "teens can get their own account once parent consent is available" {
+			t.Fatal(body)
+		}
 	}
-	apiDo(t, anon, "GET", "/api/v1/auth/me", nil, http.StatusUnauthorized)
-	var user models.User
-	app.DB.Where("email = ?", "teenown@example.com").First(&user)
-	if user.Status != models.UserPendingConsent || user.CanSignIn() {
-		t.Fatal("teen activated")
-	}
-	var link models.GuardianLink
-	if err := app.DB.Where("teen_user_id = ? AND guardian_user_id = ?", user.ID, holder.ID).First(&link).Error; err != nil {
+	checkRefusal(apiDo(t, c, "POST", conversionPath(teen.ID), map[string]any{"email": "teenown@example.com"}, http.StatusConflict))
+	checkRefusal(apiDo(t, admin, "POST", conversionPath(teen.ID), map[string]any{"email": "teenown@example.com"}, http.StatusConflict))
+	var invitationCount int64
+	if err := app.DB.Model(&models.Invitation{}).Where("household_person_id = ?", teen.ID).Count(&invitationCount).Error; err != nil {
 		t.Fatal(err)
 	}
-	if link.Status != models.GuardianPending || link.PersonID != nil || link.ConfirmedBy != nil || link.CheckNote != "" {
-		t.Fatal("guardian decision copied")
+	if invitationCount != 0 {
+		t.Fatal("refused creation saved an invitation")
 	}
-	var old models.GuardianLink
-	app.DB.First(&old, *teen.GuardianLinkID)
-	if old.Status != models.GuardianRevoked {
-		t.Fatal("old link live")
+
+	// An invitation issued before teen conversion was paused must stay untouched.
+	raw, hash, err := createInvitationToken()
+	if err != nil {
+		t.Fatal(err)
 	}
-	inst := eventOccurrence(t, admin, eventID)
-	if inst.SpotsLeft == nil || *inst.SpotsLeft != 0 || !strings.Contains(apiDo(t, admin, "GET", "/api/v1/events/"+itoa(eventID), nil, http.StatusOK), `"name":"Teen"`) {
-		t.Fatal("pending teen lost seat or leader visibility")
+	inv := models.Invitation{HouseholdPersonID: &teen.ID, Email: "teenown@example.com", Name: "Teen", InvitedBy: teen.CreatedBy, Role: models.MembershipMember, AccountType: models.AccountTeen, TokenHash: hash, ExpiresAt: time.Now().UTC().Add(tokenTTL)}
+	if err := app.DB.Create(&inv).Error; err != nil {
+		t.Fatal(err)
 	}
-	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(link.ID)+"/confirm", map[string]any{"checkNote": "Fresh check"}, http.StatusOK)
-	app.DB.First(&user, user.ID)
-	if user.Status != models.UserPendingConsent {
-		t.Fatal("link confirmation activated teen")
+	var beforePerson models.HouseholdPerson
+	var beforeRegs []models.Registration
+	var beforeLinks []models.GuardianLink
+	if err := app.DB.First(&beforePerson, teen.ID).Error; err != nil {
+		t.Fatal(err)
 	}
-	var pending int64
-	app.DB.Model(&models.Notification{}).Where("kind = ? AND subject_id = ? AND resolved_at IS NULL", notify.HouseholdLinkPending, link.ID).Count(&pending)
-	if pending != 0 {
-		t.Fatal("guardian task still open")
+	if err := app.DB.Where("household_person_id = ?", teen.ID).Order("id").Find(&beforeRegs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Where("person_id = ?", teen.ID).Order("id").Find(&beforeLinks).Error; err != nil {
+		t.Fatal(err)
+	}
+	var beforeInv models.Invitation
+	if err := app.DB.First(&beforeInv, inv.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	counts := func() []int64 {
+		t.Helper()
+		var out []int64
+		for _, table := range []any{&models.User{}, &models.HouseholdAccount{}, &models.GuardianLink{}, &models.AccountRequest{}, &models.AuditLog{}, &models.Notification{}} {
+			var n int64
+			if err := app.DB.Model(table).Count(&n).Error; err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, n)
+		}
+		return out
+	}
+	beforeCounts := counts()
+	checkRefusal(apiDo(t, c, "POST", conversionPath(teen.ID)+"/resend", nil, http.StatusConflict))
+	anon := newAPIClient(t, app)
+	anon.fetchCSRF()
+	checkRefusal(apiDo(t, anon, "POST", "/api/v1/invitations/accept", map[string]any{"token": raw, "password": "password1234"}, http.StatusConflict))
+	apiDo(t, anon, "GET", "/api/v1/auth/me", nil, http.StatusUnauthorized)
+	var afterPerson models.HouseholdPerson
+	var afterRegs []models.Registration
+	var afterLinks []models.GuardianLink
+	var afterInv models.Invitation
+	if err := app.DB.First(&afterPerson, teen.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Where("household_person_id = ?", teen.ID).Order("id").Find(&afterRegs).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Where("person_id = ?", teen.ID).Order("id").Find(&afterLinks).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.First(&afterInv, inv.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(beforePerson, afterPerson) || !reflect.DeepEqual(beforeRegs, afterRegs) || !reflect.DeepEqual(beforeLinks, afterLinks) || !reflect.DeepEqual(beforeInv, afterInv) || !reflect.DeepEqual(beforeCounts, counts()) {
+		t.Fatal("teen refusal changed household, registrations, invitation, account state, audits or notices")
+	}
+	if len(afterRegs) != 1 || afterRegs[0].HouseholdPersonID == nil || *afterRegs[0].HouseholdPersonID != teen.ID {
+		t.Fatal("teen sign-up moved")
+	}
+	var household struct {
+		Household householdJSON `json:"household"`
+	}
+	if err := json.Unmarshal([]byte(apiDo(t, c, "GET", "/api/v1/me/household", nil, http.StatusOK)), &household); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, person := range household.Household.People {
+		if person.ID == teen.ID {
+			found = true
+			if person.CanConvert || person.ConvertBlocked != "teen" {
+				t.Fatalf("teen eligibility: %+v", person)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("teen disappeared from household")
 	}
 }
 
@@ -540,42 +607,6 @@ func TestHouseholdConversionCompetesWithHouseholdMutations(t *testing.T) {
 				t.Fatalf("accept response and account disagree: %v count %d", codes, count)
 			}
 		})
-	}
-}
-
-func TestTeenConversionPreservesEligibleGuardiansOnly(t *testing.T) {
-	app := testApp(t)
-	admin, _ := openGroup(t, app, "GuardianConversion")
-	holder, c, _, _ := householdFamily(t, app, admin, "guardianparent")
-	person := addMyPerson(t, c, map[string]any{"firstName": "Teen", "kind": "teen", "birthDate": time.Now().UTC().AddDate(-15, 0, 0).Format("2006-01-02")})
-	second := newTestUser(t, app, "secondguardian", "password1234", models.RoleMember)
-	outsider := newTestUser(t, app, "outsideguardian", "password1234", models.RoleMember)
-	if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: person.HouseholdID, UserID: second.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
-		t.Fatal(err)
-	}
-	for _, guardian := range []uint{second.ID, outsider.ID} {
-		if err := app.DB.Create(&models.GuardianLink{GuardianUserID: guardian, PersonID: &person.ID, Status: models.GuardianConfirmed, ConfirmedBy: &holder.ID, CheckNote: "Old decision"}).Error; err != nil {
-			t.Fatal(err)
-		}
-	}
-	token := inviteHouseholdPerson(t, app, admin, person.ID, "guardianteen@example.com")
-	acceptConversion(t, app, token, http.StatusOK)
-	var user models.User
-	app.DB.Where("email = ?", "guardianteen@example.com").First(&user)
-	var links []models.GuardianLink
-	app.DB.Where("teen_user_id = ?", user.ID).Order("guardian_user_id").Find(&links)
-	if len(links) != 2 {
-		t.Fatalf("new guardians: %+v", links)
-	}
-	seen := map[uint]bool{}
-	for _, link := range links {
-		seen[link.GuardianUserID] = true
-		if link.Status != models.GuardianPending || link.CheckNote != "" || link.ConfirmedBy != nil {
-			t.Fatal("old decision copied")
-		}
-	}
-	if !seen[holder.ID] || !seen[second.ID] || seen[outsider.ID] {
-		t.Fatal("guardian set changed")
 	}
 }
 

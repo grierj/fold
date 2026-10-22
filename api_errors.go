@@ -19,6 +19,7 @@ import (
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
 	"this person cannot create an account yet; check their birth date, account type and guardian link":                 "household_conversion_unavailable",
+	"teens can get their own account once parent consent is available":                                                 "household_conversion_teen",
 	"that email is unavailable; use a different email":                                                                 "household_conversion_email",
 	"this household person was removed or already has an account; reject this request":                                 "household_conversion_person",
 	"this account is waiting for an admin; wait for their decision":                                                    "household_conversion_approval",

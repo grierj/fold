@@ -11,7 +11,8 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
-  household_conversion_unavailable: "This person can't create an account yet. Check their birth date, choose Adult or Teen, and ask your church office to check their guardian link.",
+  household_conversion_teen: "Teens can get their own account once parent consent is available.",
+  household_conversion_unavailable: "This person can't create an account yet. Check their birth date and account type, or ask your church office for help.",
   household_conversion_email: "That email isn't available. Use a different email address.",
   household_conversion_person: "This household person was removed or already has an account. Reject this request; their household can ask for help if needed.",
   household_conversion_approval: "This account is waiting for an admin. Wait for their decision before sending another invitation.",
