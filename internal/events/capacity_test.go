@@ -19,60 +19,12 @@ func TestEffectiveCapacityPicksOverride(t *testing.T) {
 	}
 }
 
-func entries(seats ...int) []WaitEntry {
-	out := make([]WaitEntry, len(seats))
-	for i, s := range seats {
-		out[i] = WaitEntry{ID: uint(i + 1), Seats: s}
-	}
-	return out
-}
-
 func ids(es []WaitEntry) []uint {
 	out := make([]uint, len(es))
 	for i, e := range es {
 		out[i] = e.ID
 	}
 	return out
-}
-
-func TestPickPromotionsInLineOrder(t *testing.T) {
-	got := ids(PickPromotions(10, 7, entries(1, 1, 1), false))
-	if len(got) != 3 || got[0] != 1 || got[1] != 2 || got[2] != 3 {
-		t.Fatalf("got %v, want [1 2 3]", got)
-	}
-}
-
-func TestPickPromotionsSkipsPartyTooBig(t *testing.T) {
-	// 3 free seats: the 5-seat party is skipped, the 2-seat party takes 2.
-	got := ids(PickPromotions(10, 7, entries(5, 2, 1), false))
-	if len(got) != 2 || got[0] != 2 || got[1] != 3 {
-		t.Fatalf("got %v, want [2 3]", got)
-	}
-}
-
-func TestPickPromotionsStopsAtExactSeatCount(t *testing.T) {
-	got := ids(PickPromotions(10, 8, entries(1, 1, 1), false))
-	if len(got) != 2 {
-		t.Fatalf("got %v, want exactly 2 picks", got)
-	}
-	// 0 free seats: nobody.
-	if got := PickPromotions(10, 10, entries(1), false); len(got) != 0 {
-		t.Fatalf("full: got %v, want none", ids(got))
-	}
-}
-
-func TestPickPromotionsNeverAboveCapacity(t *testing.T) {
-	// A party larger than the whole capacity never promotes, even with
-	// every seat free.
-	if got := PickPromotions(4, 0, entries(5), false); len(got) != 0 {
-		t.Fatalf("oversize party: got %v, want none", ids(got))
-	}
-}
-
-func TestPickPromotionsCutoffPicksNobody(t *testing.T) {
-	if got := PickPromotions(10, 0, entries(1, 1), true); len(got) != 0 {
-		t.Fatalf("cutoff: got %v, want none", ids(got))
-	}
 }
 
 func TestEffectiveRemoteCapacity(t *testing.T) {
@@ -140,7 +92,7 @@ func TestPickPromotionsByPoolFillsSeparately(t *testing.T) {
 			seats int
 		}{"remote", 1}, // remote now full
 	)
-	got := ids(PickPromotionsByPool(wl, pools, false))
+	got := ids(PickPromotionsByPool(wl, pools))
 	want := []uint{1, 2, 4}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -171,7 +123,7 @@ func TestPickPromotionsByPoolSkipsTooBigWithoutBlockingOtherPool(t *testing.T) {
 			seats int
 		}{"in_person", 2}, // fits after the skipped party
 	)
-	got := ids(PickPromotionsByPool(wl, pools, false))
+	got := ids(PickPromotionsByPool(wl, pools))
 	if len(got) != 2 || got[0] != 2 || got[1] != 3 {
 		t.Fatalf("got %v, want [2 3]", got)
 	}
@@ -196,12 +148,9 @@ func TestPickPromotionsByPoolUnlimitedAndZero(t *testing.T) {
 			seats int
 		}{"in_person", 1},
 	)
-	got := ids(PickPromotionsByPool(wl, pools, false))
+	got := ids(PickPromotionsByPool(wl, pools))
 	if len(got) != 2 || got[0] != 2 || got[1] != 3 {
 		t.Fatalf("got %v, want [2 3]", got)
-	}
-	if got := PickPromotionsByPool(wl, pools, true); len(got) != 0 {
-		t.Fatalf("cutoff: got %v, want none", ids(got))
 	}
 }
 

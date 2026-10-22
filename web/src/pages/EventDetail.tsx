@@ -6,6 +6,8 @@ import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
+import { RemoteBadge } from "../components/RemoteBadge";
+import { focusRemoteCapacity, isRemoteError, remoteProblem } from "../components/RemoteField";
 import { Menu } from "../components/ui/Menu";
 import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
@@ -364,7 +366,8 @@ function ManageRoster({ instance, onChanged, onClose }: { instance: EventOccurre
         {roster.map((a) => (
           <li key={a.userId} className="flex items-center justify-between gap-3">
             <span>
-              {a.name} <span className="text-text-muted">· {a.status}{a.attendanceMode === "remote" ? " · remote" : ""}</span>
+              {a.name} <span className="text-text-muted">· {a.status}</span>
+              {a.attendanceMode === "remote" && <> <RemoteBadge /></>}
             </span>
             <span className="flex gap-2">
               {a.status === "waitlisted" && (
@@ -422,11 +425,19 @@ function DateEditor({
   const [remoteCapacity, setRemoteCapacity] = useState(
     instance.remoteCapacity === null ? "" : String(instance.remoteCapacity)
   );
+  const [remoteError, setRemoteError] = useState<string | null>(null);
+  const remotePrefix = `date-${instance.id}`;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    const remoteMsg = remoteProblem({ available: instance.remoteAvailable, capacity: remoteCapacity }, true);
+    setRemoteError(remoteMsg);
+    if (remoteMsg) {
+      focusRemoteCapacity(remotePrefix);
+      return;
+    }
     const body: {
       startsLocal?: string;
       durationMinutes?: number;
@@ -458,7 +469,12 @@ function DateEditor({
       await Events.updateOccurrence(instance.eventId, instance.date, body);
       onSaved();
     } catch (err) {
-      setError(errorText(err, "We couldn't update this date."));
+      const msg = errorText(err, "We couldn't update this date.");
+      setError(msg);
+      if (isRemoteError(msg)) {
+        setRemoteError(msg);
+        focusRemoteCapacity(remotePrefix);
+      }
       setBusy(false);
     }
   }
@@ -505,14 +521,15 @@ function DateEditor({
       </Field>
       {instance.remoteAvailable && (
         <Field
-          id={`cev-rcap-${instance.id}`}
-          label="Remote capacity for this date"
+          id={`remote-capacity-${remotePrefix}`}
+          label="Remote seat limit for this date"
           optional
-          hint="Leave it blank to use the event’s remote capacity, or 0 for no remote seats."
+          hint="Enter a whole number from 0 to 100,000. Leave it blank to use the event’s remote seat limit, or 0 to close remote seats for this date."
+          error={remoteError}
         >
           <Input
-            type="number"
-            min={0}
+            type="text"
+            inputMode="numeric"
             placeholder="Same as the event"
             value={remoteCapacity}
             onChange={(e) => setRemoteCapacity(e.target.value)}

@@ -1,53 +1,18 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RsvpButtons } from "./RsvpButtons";
-import { Events } from "../api";
-import type { EventOccurrence } from "../types";
+import { ApiError, Events } from "../api";
+import { occurrence } from "../test/occurrence";
 
-vi.mock("../api", () => ({
-  ApiError: class extends Error {},
+vi.mock("../api", async (importActual) => ({
+  ApiError: (await importActual<typeof import("../api")>()).ApiError,
   Events: { register: vi.fn() },
 }));
 
-function occurrence(over: Partial<EventOccurrence>): EventOccurrence {
-  return {
-    id: 1,
-    eventId: 7,
-    date: "2026-12-01",
-    startsAt: "2026-12-01T19:00:00Z",
-    endsAt: "2026-12-01T20:00:00Z",
-    startsLocal: "2026-12-01T19:00",
-    endsLocal: "2026-12-01T20:00",
-    tzid: "UTC",
-    durationMinutes: 60,
-    location: "Hall",
-    title: "Supper",
-    description: "",
-    recurrenceRule: "",
-    seriesStartsLocal: "2026-12-01T19:00",
-    seriesTitle: "Supper",
-    seriesLocation: "Hall",
-    seriesDurationMinutes: 60,
-    overridden: false,
-    registrations: { going: 0, maybe: 0, declined: 0, waitlisted: 0 },
-    myRegistration: null,
-    capacity: null,
-    seatsUsed: 0,
-    spotsLeft: null,
-    waitlistEnabled: false,
-    guestsAllowed: 0,
-    remoteAvailable: false,
-    remoteCapacity: null,
-    remoteSeatsUsed: 0,
-    remoteSpotsLeft: null,
-    videoProvider: "none",
-    videoReveal: "registered_only",
-    ...over,
-  };
-}
 
 describe("RsvpButtons", () => {
+  beforeEach(() => vi.resetAllMocks());
   it("shows the full state with no waitlist and disables Going", () => {
     render(
       <RsvpButtons
@@ -106,8 +71,11 @@ describe("RsvpButtons", () => {
       />
     );
     expect(screen.getByText("How you'll attend")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "In person" })).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(screen.getByRole("button", { name: "Remote" }));
+    expect(screen.getByRole("radio", { name: "In person" })).toBeChecked();
+    await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
+    expect(Events.register).not.toHaveBeenCalled();
+    expect(screen.getByText("Tap Going to attend remotely.").parentElement).toBeInTheDocument();
+    expect(screen.getByText("Tap Going to attend remotely.")).toHaveAttribute("aria-live", "polite");
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
     expect(Events.register).toHaveBeenCalledWith(7, "going", "2026-12-01", 0, "remote");
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attendanceMode: "remote" }));
@@ -124,7 +92,7 @@ describe("RsvpButtons", () => {
         onChange={() => {}}
       />
     );
-    expect(screen.getByRole("button", { name: "Remote" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("radio", { name: "Remote" })).toBeChecked();
   });
 
   it("disables Going when the picked remote pool is full with no waitlist", async () => {
@@ -138,8 +106,8 @@ describe("RsvpButtons", () => {
         onChange={() => {}}
       />
     );
-    await userEvent.click(screen.getByRole("button", { name: "Remote" }));
-    expect(screen.getByText("This event is full.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
+    expect(screen.getByText("Remote seats are full. You can still come in person.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Going" })).toBeDisabled();
   });
 
@@ -149,5 +117,64 @@ describe("RsvpButtons", () => {
     );
     expect(screen.getByLabelText(/Extra guests/)).toBeInTheDocument();
     expect(screen.getByText(/Up to 2/)).toBeInTheDocument();
+  });
+});
+
+
+describe("remote attendance changes", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it.each([
+    ["in_person", "remote", "Remote", "Switched to remote"],
+    ["remote", "in_person", "In person", "Switched to in person"],
+  ] as const)("saves a going person's switch from %s to %s immediately", async (before, after, label, message) => {
+    const registration = { userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going" as const, guestCount: 1, waitlistPosition: null, attendanceMode: after };
+    vi.mocked(Events.register).mockResolvedValue({ registration });
+    const onChange = vi.fn();
+    render(<RsvpButtons instance={occurrence({ remoteAvailable: true, myRegistration: "going", myAttendanceMode: before, myGuestCount: 1 })} onChange={onChange} />);
+    expect(screen.getByRole("group", { name: "How you'll attend" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("radio", { name: label }));
+    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, "going", "2026-12-01", 1, after);
+    expect(onChange).toHaveBeenCalledWith(registration);
+    expect(screen.getByRole("status")).toHaveTextContent(message);
+  });
+
+  it("restores the saved choice if switching fails", async () => {
+    vi.mocked(Events.register).mockRejectedValue(new Error("offline"));
+    render(<RsvpButtons instance={occurrence({ remoteAvailable: true, myRegistration: "going", myAttendanceMode: "in_person" })} onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
+    await waitFor(() => expect(screen.getByRole("radio", { name: "In person" })).toBeChecked());
+    expect(screen.getByRole("alert")).toHaveTextContent("We couldn't reach Fold. Check your connection and try again.");
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("names the remote pool if a switch is refused because it filled up", async () => {
+    vi.mocked(Events.register).mockRejectedValue(new ApiError(409, "This event is full", { code: "event_full" }));
+    render(<RsvpButtons instance={occurrence({ remoteAvailable: true, myRegistration: "going", myAttendanceMode: "in_person" })} onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Remote seats are full. You can still come in person.");
+    expect(screen.getByRole("radio", { name: "In person" })).toBeChecked();
+  });
+
+  it("announces waitlisting instead of claiming a seat after a switch", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ registration: { userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "waitlisted", guestCount: 0, waitlistPosition: 2, attendanceMode: "remote" } });
+    render(<RsvpButtons instance={occurrence({ remoteAvailable: true, myRegistration: "going", waitlistEnabled: true })} onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
+    expect(screen.getByRole("status")).toHaveTextContent("You're on the remote waitlist.");
+  });
+
+  it("names the remote waitlist when remote seats are full", async () => {
+    render(<RsvpButtons instance={occurrence({ remoteAvailable: true, remoteCapacity: 2, remoteSpotsLeft: 0, waitlistEnabled: true })} onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
+    expect(screen.getByText("Remote seats are full. You can still come in person, or join the remote waitlist.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Going" })).toBeEnabled();
+  });
+
+  it("hides Remote when this date has zero remote seats and registers in person", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ registration: { userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going", guestCount: 0, waitlistPosition: null, attendanceMode: "in_person" } });
+    render(<RsvpButtons instance={occurrence({ remoteAvailable: true, remoteCapacity: 0, remoteSpotsLeft: 0, myAttendanceMode: "remote" })} onChange={() => {}} />);
+    expect(screen.queryByRole("radio", { name: "Remote" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Going" }));
+    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, "going", "2026-12-01", 0, "in_person");
   });
 });

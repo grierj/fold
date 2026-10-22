@@ -457,7 +457,7 @@ type eventBody struct {
 	WaitlistEnabled *bool            `json:"waitlistEnabled"`
 	GuestsAllowed   *json.RawMessage `json:"guestsAllowed"`
 	// Remote attendance (M1.8 slice 2). RemoteCapacity is raw JSON like
-	// Capacity: null clears to unlimited, 0 allows no remote seats.
+	// Capacity: null clears to unlimited; a set limit must be positive.
 	RemoteAvailable *bool            `json:"remoteAvailable"`
 	RemoteCapacity  *json.RawMessage `json:"remoteCapacity"`
 	// Video link (5.8, M1.8); see parseVideoEdits in api_video.go.
@@ -1029,7 +1029,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, capMsg)
 		return
 	}
-	newRemoteOverride, remoteOverrideSet, capMsg := parseRemoteCapacity(body.RemoteCapacityOverride)
+	newRemoteOverride, remoteOverrideSet, capMsg := parseRemoteCapacity(body.RemoteCapacityOverride, true)
 	if capMsg != "" {
 		jsonError(c, http.StatusBadRequest, capMsg)
 		return

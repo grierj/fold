@@ -18,16 +18,17 @@ import (
 // response is a slim row per occurrence — never attendees, counts, seats
 // or declined data — so DEC-64 can't leak in bulk.
 type calendarOccurrenceJSON struct {
-	EventID    uint      `json:"eventId"`
-	Date       string    `json:"date"`
-	StartsAt   time.Time `json:"startsAt"`
-	EndsAt     time.Time `json:"endsAt"`
-	Title      string    `json:"title"`
-	Location   string    `json:"location"`
-	GroupID    *uint     `json:"groupId,omitempty"`
-	GroupName  string    `json:"groupName,omitempty"`
-	ChurchWide bool      `json:"churchWide"`
-	HostedBy   string    `json:"hostedBy,omitempty"`
+	EventID         uint      `json:"eventId"`
+	Date            string    `json:"date"`
+	StartsAt        time.Time `json:"startsAt"`
+	EndsAt          time.Time `json:"endsAt"`
+	Title           string    `json:"title"`
+	Location        string    `json:"location"`
+	GroupID         *uint     `json:"groupId,omitempty"`
+	GroupName       string    `json:"groupName,omitempty"`
+	ChurchWide      bool      `json:"churchWide"`
+	RemoteAvailable bool      `json:"remoteAvailable"`
+	HostedBy        string    `json:"hostedBy,omitempty"`
 	// MyStatus is the viewer's own answer for this date: going, maybe or
 	// waitlisted. Anything else (including "can't go") reads as null.
 	MyStatus *string `json:"myStatus"`
@@ -140,24 +141,29 @@ func (a *App) apiCalendar(c *gin.Context) {
 		if justMine && !rel.Member && !hosted[ev.ID] && !answered {
 			continue
 		}
-		if len(out) >= maxCalendarOccurrences {
-			truncated = true
-			break
-		}
 		shown := a.groupShownTo(me, grp, rel)
 		groupLoc := ""
 		if shown != nil {
 			groupLoc = shown.Location
 		}
 		full := occurrenceToJSON(ev, occ, groupLoc)
+		remoteAvailable := full.RemoteAvailable && (full.RemoteCapacity == nil || *full.RemoteCapacity > 0)
+		if c.Query("remote") == "1" && !remoteAvailable {
+			continue
+		}
+		if len(out) >= maxCalendarOccurrences {
+			truncated = true
+			break
+		}
 		row := calendarOccurrenceJSON{
-			EventID:    ev.ID,
-			Date:       occ.OriginalDate,
-			StartsAt:   full.StartsAt,
-			EndsAt:     full.EndsAt,
-			Title:      full.Title,
-			Location:   full.Location,
-			ChurchWide: ev.GroupID == nil,
+			EventID:         ev.ID,
+			Date:            occ.OriginalDate,
+			StartsAt:        full.StartsAt,
+			EndsAt:          full.EndsAt,
+			Title:           full.Title,
+			Location:        full.Location,
+			ChurchWide:      ev.GroupID == nil,
+			RemoteAvailable: remoteAvailable,
 		}
 		if shown != nil {
 			gid := shown.ID

@@ -87,6 +87,59 @@ func TestMeetingValidation(t *testing.T) {
 	}
 }
 
+func TestRemoteSeatLimitValidation(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Hybrid study")
+	const zeroMessage = "Uncheck remote attendance instead of a 0 remote seat limit"
+	for _, path := range []string{"/api/v1/groups/" + gid + "/events", "/api/v1/events"} {
+		w := admin.do("POST", path, map[string]any{
+			"title": "Hybrid", "startsLocal": "2026-12-01T19:00", "durationMinutes": 60,
+			"tzid": "UTC", "remoteAvailable": true, "remoteCapacity": 0,
+		}, true)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("create with zero at %s: %d %s", path, w.Code, w.Body.String())
+		}
+		var body struct{ Error, Code string }
+		decodeJSON(t, w, &body)
+		if body.Error != zeroMessage || body.Code != "remote_capacity_zero" {
+			t.Fatalf("zero limit error: %+v", body)
+		}
+	}
+	eventID, date := seedRemoteEvent(t, app, admin, gid, nil, intPtr(5), false)
+	path := fmt.Sprintf("/api/v1/events/%d", eventID)
+	for _, bad := range []any{0, -2, 1.5, "1e", 100001} {
+		w := admin.do("PUT", path, map[string]any{"remoteCapacity": bad}, true)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("update remote limit %v: %d %s", bad, w.Code, w.Body.String())
+		}
+		if bad == 0 && !strings.Contains(w.Body.String(), zeroMessage) {
+			t.Fatalf("zero limit message: %s", w.Body.String())
+		}
+	}
+	var ev models.Event
+	app.DB.First(&ev, eventID)
+	if ev.RemoteCapacity == nil || *ev.RemoteCapacity != 5 {
+		t.Fatalf("invalid update changed remote seats: %+v", ev.RemoteCapacity)
+	}
+	datePath := path + "/occurrences/" + date
+	for _, bad := range []any{-1, 1.5, "1e", 100001} {
+		apiDo(t, admin, "PUT", datePath, map[string]any{"remoteCapacityOverride": bad}, http.StatusBadRequest)
+	}
+	w := admin.do("PUT", datePath, map[string]any{"remoteCapacityOverride": 0}, true)
+	if w.Code != http.StatusOK {
+		t.Fatalf("close remote seats on one date: %d %s", w.Code, w.Body.String())
+	}
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ? AND original_date = ?", eventID, date).First(&occ)
+	if occ.RemoteCapacityOverride == nil || *occ.RemoteCapacityOverride != 0 {
+		t.Fatalf("zero per-date override was not stored: %+v", occ.RemoteCapacityOverride)
+	}
+	apiDo(t, admin, "PUT", datePath, map[string]any{"remoteCapacityOverride": nil}, http.StatusOK)
+	apiDo(t, admin, "PUT", path, map[string]any{"remoteCapacity": 1}, http.StatusOK)
+	apiDo(t, admin, "PUT", path, map[string]any{"remoteCapacity": nil}, http.StatusOK)
+	apiDo(t, admin, "PUT", path, map[string]any{"remoteAvailable": false}, http.StatusOK)
+}
+
 // A weekly 7:00 pm America/Boise event stays at 7:00 pm local on both sides
 // of the 2026-11-01 and 2027-03-14 changes, and the API returns both clocks.
 func TestBoiseWeeklyKeepsLocalTime(t *testing.T) {

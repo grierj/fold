@@ -344,6 +344,8 @@ export interface CalendarOccurrence {
   groupId?: number;
   groupName?: string;
   churchWide: boolean;
+  // Offers remote seats on this date; false for a zero per-date limit.
+  remoteAvailable: boolean;
   hostedBy?: string;
   myStatus: "going" | "maybe" | "waitlisted" | null;
   // Set only for an admin who turned on "Show deleted events" (DEC-68).

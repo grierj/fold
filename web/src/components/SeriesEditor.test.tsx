@@ -1,6 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { SeriesEditor } from "./SeriesEditor";
+import { Events } from "../api";
 
 vi.mock("../api", () => ({
   ApiError: class extends Error {},
@@ -9,6 +11,22 @@ vi.mock("../api", () => ({
 }));
 
 describe("SeriesEditor", () => {
+  it.each(["1e", "-2", "0"])("focuses the remote seat limit error for %s and keeps the other fields", async (capacity) => {
+    render(<SeriesEditor series={{
+      eventId: 7, startsLocal: "2026-12-01T19:00", durationMinutes: 60, tzid: "UTC",
+      title: "Supper", description: "", location: "Hall", recurrenceRule: "",
+      capacity: null, waitlistEnabled: false, guestsAllowed: 0, remoteAvailable: true,
+    }} idPrefix="invalid" onSaved={() => {}} />);
+    const input = screen.getByRole("textbox", { name: /^Remote seat limit/ });
+    await userEvent.type(input, capacity);
+    await userEvent.click(screen.getByRole("button", { name: "Save series" }));
+    expect(Events.update).not.toHaveBeenCalled();
+    expect(input).toHaveValue(capacity);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    await waitFor(() => expect(input).toHaveFocus());
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveValue("Supper");
+  });
+
   it("carries the capacity, waitlist, and guest fields with their limit text", () => {
     render(
       <SeriesEditor
@@ -44,7 +62,7 @@ describe("SeriesEditor", () => {
     expect(screen.getByText(/refuses new registrations/)).toBeInTheDocument();
     // Remote attendance carries its own cap, separate from the room.
     expect(screen.getByLabelText(/^Remote attendance/)).toBeChecked();
-    expect((screen.getByLabelText(/^Remote capacity/) as HTMLInputElement).value).toBe("15");
+    expect((screen.getByLabelText(/^Remote seat limit/) as HTMLInputElement).value).toBe("15");
     // The Video section carries the series' link and who may see it.
     expect((screen.getByLabelText("Video link") as HTMLInputElement).value).toBe(
       "https://zoom.example.org/j/123"

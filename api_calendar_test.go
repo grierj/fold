@@ -287,6 +287,13 @@ func TestCalendarRemoteFilter(t *testing.T) {
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create remote event: %d %s", w.Code, w.Body.String())
 	}
+	var hybrid struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &hybrid)
+	closed := scheduleGroupEvent(t, admin, open, "Remote Closed This Date")
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", closed.ID), map[string]any{"remoteAvailable": true}, http.StatusOK)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", closed.ID, closed.StartsLocal[:10]), map[string]any{"remoteCapacityOverride": 0}, http.StatusOK)
 	secret := createGroupAs(t, admin, "Secret Remote", models.VisibilityInviteOnly)
 	w = admin.do("POST", "/api/v1/groups/"+itoa(secret)+"/events", map[string]any{
 		"title": "Secret Hybrid", "startsLocal": "2026-12-01T19:00", "durationMinutes": 60,
@@ -305,6 +312,14 @@ func TestCalendarRemoteFilter(t *testing.T) {
 		if !hasTitle(page, "Hybrid Night") {
 			t.Fatalf("remote=1 dropped the remote event: %v", calendarTitles(page))
 		}
+		if hasTitle(page, "Remote Closed This Date") {
+			t.Fatalf("remote filter kept a date with zero remote seats: %s", raw)
+		}
+		for _, row := range page.Occurrences {
+			if !row.RemoteAvailable {
+				t.Fatalf("remote filter row missing availability: %+v", row)
+			}
+		}
 		if who != admin && (hasTitle(page, "Secret Hybrid") || strings.Contains(raw, "Secret Remote")) {
 			t.Fatalf("signed-out remote=1 saw an invite-only event: %s", raw)
 		}
@@ -313,5 +328,10 @@ func TestCalendarRemoteFilter(t *testing.T) {
 	page, _ := getCalendar(t, newAPIClient(t, app), window, http.StatusOK)
 	if !hasTitle(page, "In Person Only") || !hasTitle(page, "Hybrid Night") {
 		t.Fatalf("unfiltered calendar: %v", calendarTitles(page))
+	}
+	for _, row := range page.Occurrences {
+		if row.RemoteAvailable != (row.EventID == hybrid.Event.ID) {
+			t.Fatalf("unfiltered calendar remote availability: %+v", row)
+		}
 	}
 }

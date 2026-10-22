@@ -61,9 +61,9 @@ func parseCapacity(raw *json.RawMessage) (cap *int, set bool, msg string) {
 	return &n, true, ""
 }
 
-// parseRemoteCapacity is parseCapacity for the remote pool, where 0 is
-// a real cap (no remote seats) instead of an invalid value.
-func parseRemoteCapacity(raw *json.RawMessage) (cap *int, set bool, msg string) {
+// parseRemoteCapacity permits 0 only for a per-date override, to close
+// remote seats on that date. For an event, uncheck remote attendance.
+func parseRemoteCapacity(raw *json.RawMessage, allowZero bool) (cap *int, set bool, msg string) {
 	if raw == nil {
 		return nil, false, ""
 	}
@@ -72,7 +72,13 @@ func parseRemoteCapacity(raw *json.RawMessage) (cap *int, set bool, msg string) 
 	}
 	var n int
 	if json.Unmarshal(*raw, &n) != nil || n < 0 || n > 100000 {
-		return nil, false, "remoteCapacity must be a whole number of 0 or more, or empty for no limit"
+		if allowZero {
+			return nil, false, "remote seat limit for this date must be a whole number from 0 to 100000, or empty"
+		}
+		return nil, false, "remote seat limit must be a whole number from 1 to 100000, or empty for no limit"
+	}
+	if n == 0 && !allowZero {
+		return nil, false, "Uncheck remote attendance instead of a 0 remote seat limit"
 	}
 	return &n, true, ""
 }
@@ -80,7 +86,7 @@ func parseRemoteCapacity(raw *json.RawMessage) (cap *int, set bool, msg string) 
 // capacityEdits holds the parsed M1.5 capacity fields from an event
 // body: capacity (nil clears to unlimited), waitlistEnabled, and
 // guestsAllowed (0-5, null clears to 0), plus the remote pool's cap
-// (M1.8 slice 2; nil clears to unlimited, 0 allows no remote seats).
+// (M1.8 slice 2; nil clears to unlimited).
 type capacityEdits struct {
 	cap          *int
 	capSet       bool
@@ -122,7 +128,7 @@ func parseCapacityEdits(c *gin.Context, body eventBody) (capacityEdits, bool) {
 		jsonError(c, http.StatusBadRequest, msg)
 		return ed, false
 	}
-	ed.remoteCap, ed.remoteCapSet, msg = parseRemoteCapacity(body.RemoteCapacity)
+	ed.remoteCap, ed.remoteCapSet, msg = parseRemoteCapacity(body.RemoteCapacity, false)
 	if msg != "" {
 		jsonError(c, http.StatusBadRequest, msg)
 		return ed, false
@@ -481,12 +487,12 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 	if events.InCutoff(now, o.StartsAt) {
 		// Nobody is auto-promoted; the leaders or hosts are told only
 		// when someone in line could actually take a freed seat.
-		if len(events.PickPromotionsByPool(entries, pools, false)) > 0 {
+		if len(events.PickPromotionsByPool(entries, pools)) > 0 {
 			return notifyWaitlistCutoff(tx, ev, o, actor)
 		}
 		return nil, nil
 	}
-	picks := events.PickPromotionsByPool(entries, pools, false)
+	picks := events.PickPromotionsByPool(entries, pools)
 	if len(picks) == 0 {
 		return nil, nil
 	}
@@ -645,7 +651,11 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 				updates := map[string]any{
 					"status": models.RegWaitlisted, "guest_count": guestCount, "attendance_mode": mode,
 				}
-				if existing.WaitlistedAt == nil {
+				// A waiter switching pools starts a fresh wait in the new
+				// pool, like the going-switch path below (Whittler, #105).
+				restamp := existing.WaitlistedAt == nil ||
+					(existing.Status == models.RegWaitlisted && oldMode != mode)
+				if restamp {
 					updates["waitlisted_at"] = now
 				}
 				if err := tx.Model(&models.Registration{}).Where("id = ?", existing.ID).
@@ -655,7 +665,7 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 				existing.Status = models.RegWaitlisted
 				existing.GuestCount = guestCount
 				existing.AttendanceMode = mode
-				if existing.WaitlistedAt == nil {
+				if restamp {
 					existing.WaitlistedAt = &now
 				}
 			}

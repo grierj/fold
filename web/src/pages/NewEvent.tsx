@@ -11,7 +11,7 @@ import { weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
 import { errorText } from "../lib/errors";
 import { VideoField, focusVideoUrl, isVideoError, videoProblem, emptyVideo, type VideoValue } from "../components/VideoField";
-import { RemoteField, emptyRemote, remoteBody, remoteProblem, type RemoteValue } from "../components/RemoteField";
+import { RemoteField, focusRemoteCapacity, isRemoteError, emptyRemote, remoteBody, remoteProblem, type RemoteValue } from "../components/RemoteField";
 import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
 import { Button } from "../components/ui/Button";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -101,6 +101,7 @@ export function NewEvent() {
     setRemoteError(remoteMsg);
     if (remoteMsg) {
       setError(remoteMsg);
+      focusRemoteCapacity("event");
       return;
     }
     setBusy(true);
@@ -125,6 +126,10 @@ export function NewEvent() {
     } catch (err) {
       const msg = errorText(err, "We couldn't schedule the event.");
       setError(msg);
+      if (isRemoteError(msg)) {
+        setRemoteError(msg);
+        focusRemoteCapacity("event");
+      }
       if (isVideoError(msg)) {
         setVideoError(msg);
         focusVideoUrl("event");

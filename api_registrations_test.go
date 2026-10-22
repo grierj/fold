@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"fold/internal/audit"
 	"net/http"
@@ -11,6 +12,40 @@ import (
 
 	"fold/models"
 )
+
+func TestParseRemoteCapacity(t *testing.T) {
+	for _, tt := range []struct {
+		name, raw string
+		allowZero bool
+		want      *int
+		wantSet   bool
+		wantError string
+	}{
+		{name: "omitted"},
+		{name: "unlimited", raw: "null", wantSet: true},
+		{name: "positive", raw: "1", want: intPtr(1), wantSet: true},
+		{name: "maximum", raw: "100000", want: intPtr(100000), wantSet: true},
+		{name: "zero event", raw: "0", wantError: "Uncheck remote attendance instead of a 0 remote seat limit"},
+		{name: "zero date", raw: "0", allowZero: true, want: intPtr(0), wantSet: true},
+		{name: "negative", raw: "-2", wantError: "remote seat limit must be a whole number from 1 to 100000, or empty for no limit"},
+		{name: "decimal", raw: "1.5", wantError: "remote seat limit must be a whole number from 1 to 100000, or empty for no limit"},
+		{name: "invalid text", raw: `"1e"`, wantError: "remote seat limit must be a whole number from 1 to 100000, or empty for no limit"},
+		{name: "too large", raw: "100001", wantError: "remote seat limit must be a whole number from 1 to 100000, or empty for no limit"},
+		{name: "negative date", raw: "-2", allowZero: true, wantError: "remote seat limit for this date must be a whole number from 0 to 100000, or empty"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var raw *json.RawMessage
+			if tt.raw != "" {
+				value := json.RawMessage(tt.raw)
+				raw = &value
+			}
+			got, set, msg := parseRemoteCapacity(raw, tt.allowZero)
+			if !intPtrEqual(got, tt.want) || set != tt.wantSet || msg != tt.wantError {
+				t.Fatalf("got (%v, %t, %q), want (%v, %t, %q)", got, set, msg, tt.want, tt.wantSet, tt.wantError)
+			}
+		})
+	}
+}
 
 // seedCappedEvent creates a public group event with a capacity and the
 // waitlist flag, on a date far enough out to dodge the promotion cutoff.
@@ -935,5 +970,50 @@ func TestSwitchingModeReRegistersInNewPool(t *testing.T) {
 	// The original remote registration was never touched.
 	if got := regStatus(t, app, uRe.ID, occ.ID); got != models.RegGoing {
 		t.Fatalf("remote going = %q, want going", got)
+	}
+}
+
+// A waiter who switches pools starts a fresh wait in the new pool, so
+// someone already waiting there stays ahead (Whittler, #105).
+func TestWaiterSwitchingModeJoinsBackOfNewPool(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HybridWaitSwitch")
+	eventID, date := seedRemoteEvent(t, app, admin, gid, intPtr(1), intPtr(1), true)
+
+	var g models.Group
+	app.DB.Where("id = ?", gid).First(&g)
+	_, cIn := mkUser(t, app, &g, "ws-in")
+	_, cRe := mkUser(t, app, &g, "ws-re")
+	uA, cA := mkUser(t, app, &g, "ws-a")
+	uB, cB := mkUser(t, app, &g, "ws-b")
+
+	for _, step := range []struct {
+		c    *apiClient
+		mode string
+	}{{cIn, models.AttendanceInPerson}, {cRe, models.AttendanceRemote},
+		{cA, models.AttendanceInPerson}, {cB, models.AttendanceRemote}} {
+		if code, body := registerModeAs(step.c, eventID, date, "going", step.mode); code != http.StatusOK {
+			t.Fatalf("register %s: %d %s", step.mode, code, body)
+		}
+	}
+	var occ models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&occ)
+
+	// A (in-person waiter, ahead of B in line) switches to remote.
+	if code, body := registerModeAs(cA, eventID, date, "going", models.AttendanceRemote); code != http.StatusOK {
+		t.Fatalf("A switch: %d %s", code, body)
+	}
+	if got := regStatus(t, app, uA.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("A after switch = %q, want waitlisted", got)
+	}
+	// A remote seat frees: B, who was waiting for remote first, moves up.
+	if code, body := registerModeAs(cRe, eventID, date, "declined", models.AttendanceRemote); code != http.StatusOK {
+		t.Fatalf("remote cancel: %d %s", code, body)
+	}
+	if got := regStatus(t, app, uB.ID, occ.ID); got != models.RegGoing {
+		t.Fatalf("B = %q, want going (B stays ahead)", got)
+	}
+	if got := regStatus(t, app, uA.ID, occ.ID); got != models.RegWaitlisted {
+		t.Fatalf("A = %q, want still waitlisted", got)
 	}
 }

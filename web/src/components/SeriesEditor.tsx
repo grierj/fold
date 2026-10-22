@@ -8,7 +8,7 @@ import { ZonePicker } from "./ui/ZonePicker";
 import { WeekdayPicker } from "./WeekdayPicker";
 import { Button } from "./ui/Button";
 import { VideoField, focusVideoUrl, isVideoError, videoProblem, type VideoValue } from "./VideoField";
-import { RemoteField, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
+import { RemoteField, focusRemoteCapacity, isRemoteError, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
 import type { VideoProvider, VideoReveal } from "../types";
 
 
@@ -101,6 +101,7 @@ export function SeriesEditor({
     setRemoteError(remoteMsg);
     if (remoteMsg) {
       setError(remoteMsg);
+      focusRemoteCapacity(idPrefix);
       return;
     }
     setBusy(true);
@@ -161,6 +162,10 @@ export function SeriesEditor({
     } catch (err) {
       const msg = errorText(err, "We couldn't update the series.");
       setError(msg);
+      if (isRemoteError(msg)) {
+        setRemoteError(msg);
+        focusRemoteCapacity(idPrefix);
+      }
       if (isVideoError(msg)) {
         setVideoError(msg);
         focusVideoUrl(idPrefix);

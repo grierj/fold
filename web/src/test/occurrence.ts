@@ -1,0 +1,39 @@
+import type { EventOccurrence } from "../types";
+
+export function occurrence(over: Partial<EventOccurrence>): EventOccurrence {
+  return {
+    id: 1,
+    eventId: 7,
+    date: "2026-12-01",
+    startsAt: "2026-12-01T19:00:00Z",
+    endsAt: "2026-12-01T20:00:00Z",
+    startsLocal: "2026-12-01T19:00",
+    endsLocal: "2026-12-01T20:00",
+    tzid: "UTC",
+    durationMinutes: 60,
+    location: "Hall",
+    title: "Supper",
+    description: "",
+    recurrenceRule: "",
+    seriesStartsLocal: "2026-12-01T19:00",
+    seriesTitle: "Supper",
+    seriesLocation: "Hall",
+    seriesDurationMinutes: 60,
+    overridden: false,
+    registrations: { going: 0, maybe: 0, declined: 0, waitlisted: 0 },
+    myRegistration: null,
+    capacity: null,
+    seatsUsed: 0,
+    spotsLeft: null,
+    waitlistEnabled: false,
+    guestsAllowed: 0,
+    remoteAvailable: false,
+    remoteCapacity: null,
+    remoteSeatsUsed: 0,
+    remoteSpotsLeft: null,
+    videoProvider: "none",
+    videoReveal: "registered_only",
+    ...over,
+  };
+}
+

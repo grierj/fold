@@ -131,7 +131,7 @@ export function CalendarPage() {
             </Chip>
           )}
           <Chip selected={remote} onClick={() => go({ remote: remote ? null : "1" })}>
-            Remote available
+            Remote seats
           </Chip>
           {isAdmin && (
             <Chip selected={deleted} onClick={() => go({ deleted: deleted ? null : "1" })}>

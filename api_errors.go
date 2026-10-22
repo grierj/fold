@@ -86,7 +86,9 @@ var errorCodes = map[string]string{
 	"video link is too long":                                                             "too_long",
 	"remote attendance isn't available for this event":                                   "remote_not_available",
 	"attendanceMode must be in_person or remote":                                         "invalid_attendance_mode",
-	"remoteCapacity must be a whole number of 0 or more, or empty for no limit":          "invalid_remote_capacity",
+	"remote seat limit must be a whole number from 1 to 100000, or empty for no limit":   "invalid_remote_capacity",
+	"remote seat limit for this date must be a whole number from 0 to 100000, or empty":  "invalid_remote_capacity_override",
+	"Uncheck remote attendance instead of a 0 remote seat limit":                         "remote_capacity_zero",
 
 	// Calendar feeds
 	"scope must be mine or all": "invalid_feed_scope",
