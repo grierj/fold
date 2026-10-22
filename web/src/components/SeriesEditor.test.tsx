@@ -95,3 +95,23 @@ describe("SeriesEditor", () => {
     expect(capacity).toHaveAttribute("placeholder", "No limit");
   });
 });
+
+it("validates the childcare limit and saves the parent information", async () => {
+  vi.mocked(Events.update).mockClear();
+  render(<SeriesEditor series={{ eventId: 7, startsLocal: "2026-12-01T19:00", durationMinutes: 60, tzid: "UTC",
+    title: "Family night", description: "", location: "Hall", recurrenceRule: "", capacity: null,
+    waitlistEnabled: false, guestsAllowed: 0, childcareAvailable: true, childcareCapacity: 4, childcareAges: "2–5", childcareNotes: "Nursery",
+  }} idPrefix="childcare" onSaved={() => {}} />);
+  const cap = screen.getByLabelText(/^Childcare limit/);
+  expect(cap).toHaveValue("4");
+  await userEvent.clear(cap);
+  await userEvent.type(cap, "0");
+  await userEvent.click(screen.getByRole("button", { name: "Save series" }));
+  await waitFor(() => expect(cap).toHaveFocus());
+  expect(cap).toHaveAttribute("aria-invalid", "true");
+  expect(Events.update).not.toHaveBeenCalled();
+  await userEvent.clear(cap);
+  await userEvent.type(cap, "5");
+  await userEvent.click(screen.getByRole("button", { name: "Save series" }));
+  expect(Events.update).toHaveBeenCalledWith(7, expect.objectContaining({ childcareAvailable: true, childcareCapacity: 5, childcareAges: "2–5", childcareNotes: "Nursery" }));
+});

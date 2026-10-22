@@ -255,8 +255,12 @@ type Event struct {
 	// when RemoteAvailable is on. Remote seats count against
 	// RemoteCapacity (nil means unlimited; 0 means no remote seats),
 	// never against the in-person Capacity.
-	RemoteAvailable bool `gorm:"not null;default:false"`
-	RemoteCapacity  *int
+	RemoteAvailable    bool `gorm:"not null;default:false"`
+	RemoteCapacity     *int
+	ChildcareAvailable bool   `gorm:"not null;default:false"`
+	ChildcareNotes     string `gorm:"type:text;not null;default:''"`
+	ChildcareCapacity  *int
+	ChildcareAges      string `gorm:"type:text;not null;default:''"`
 	// Video is a link out to a call (5.8, M1.8, DEC-16): none, a pasted
 	// link, or a generated Jitsi room. VideoReveal decides who may see
 	// the URL; see policy.CanSeeVideoLink.
@@ -361,7 +365,9 @@ type Registration struct {
 	ManageTokenHash string `gorm:"not null;default:'';uniqueIndex:idx_registrations_manage_token,where:manage_token_hash <> ''"`
 	// GuestCount is the extra unnamed guests on this registration (0 to
 	// the event's guests_allowed). Seats used = 1 + guest_count.
-	GuestCount int `gorm:"not null;default:0"`
+	GuestCount        int    `gorm:"not null;default:0"`
+	ChildcareCount    int    `gorm:"not null;default:0"`
+	ChildcareAgesNote string `gorm:"type:text;not null;default:''"`
 	// WaitlistedAt is when the current wait began; kept as history after
 	// a promotion. PromotedAt is when the row last became going from the
 	// waitlist.

@@ -40,18 +40,20 @@ type FeedEvent struct {
 	VideoURL string
 	// RemoteAvailable adds "Remote attendance available" to the
 	// description (8.2, M1.8 slice 2).
-	RemoteAvailable bool
-	Location        string
-	TZID            string
-	StartsLocal     string // YYYY-MM-DDTHH:MM, the series wall clock
-	DurationMinutes int
-	RRule           string
-	RRuleUntil      string // YYYY-MM-DD inclusive, or ""
-	URL             string
-	UpdatedAt       time.Time
-	CancelledDates  []string
-	Overrides       []FeedOccurrence
-	Occurrences     []FeedOccurrence
+	ChildcareAvailable bool
+	ChildcareAges      string
+	RemoteAvailable    bool
+	Location           string
+	TZID               string
+	StartsLocal        string // YYYY-MM-DDTHH:MM, the series wall clock
+	DurationMinutes    int
+	RRule              string
+	RRuleUntil         string // YYYY-MM-DD inclusive, or ""
+	URL                string
+	UpdatedAt          time.Time
+	CancelledDates     []string
+	Overrides          []FeedOccurrence
+	Occurrences        []FeedOccurrence
 }
 
 // FeedSingle is one standalone date with no series entry in this feed:
@@ -67,14 +69,16 @@ type FeedSingle struct {
 	VideoURL string
 	// RemoteAvailable adds "Remote attendance available" to the
 	// description (8.2, M1.8 slice 2).
-	RemoteAvailable bool
-	Location        string
-	TZID            string
-	StartsAt        time.Time
-	EndsAt          time.Time
-	URL             string
-	UpdatedAt       time.Time
-	Status          string // CONFIRMED or TENTATIVE, or "" to omit
+	ChildcareAvailable bool
+	ChildcareAges      string
+	RemoteAvailable    bool
+	Location           string
+	TZID               string
+	StartsAt           time.Time
+	EndsAt             time.Time
+	URL                string
+	UpdatedAt          time.Time
+	Status             string // CONFIRMED or TENTATIVE, or "" to omit
 }
 
 type Feed struct {
@@ -227,7 +231,7 @@ func renderEvent(ev *FeedEvent, host string) ([][]string, *time.Location, time.T
 		}
 		lines = append(lines, "EXDATE;TZID="+ev.TZID+":"+strings.Join(walls, ","))
 	}
-	lines = append(lines, textLines(ev.Title, ev.Description, ev.URL, ev.Location, ev.VideoURL, ev.RemoteAvailable)...)
+	lines = append(lines, textLines(ev.Title, ev.Description, ev.URL, ev.Location, ev.VideoURL, ev.RemoteAvailable, ev.ChildcareAvailable, ev.ChildcareAges)...)
 	lines = append(lines, "END:VEVENT")
 
 	out := [][]string{lines}
@@ -241,7 +245,7 @@ func renderEvent(ev *FeedEvent, host string) ([][]string, *time.Location, time.T
 			"DTEND;TZID=" + ev.TZID + ":" + endsAt(&o, ev.DurationMinutes).In(loc).Format(icsWall),
 		}
 		b = append(b, textLines(orSeries(o.Title, ev.Title), ev.Description, ev.URL,
-			orSeries(o.Location, ev.Location), ev.VideoURL, ev.RemoteAvailable)...)
+			orSeries(o.Location, ev.Location), ev.VideoURL, ev.RemoteAvailable, ev.ChildcareAvailable, ev.ChildcareAges)...)
 		b = append(b, "END:VEVENT")
 		out = append(out, b)
 	}
@@ -261,7 +265,7 @@ func renderOneTime(ev *FeedEvent, loc *time.Location, start time.Time, host stri
 			"DTSTART;TZID=" + ev.TZID + ":" + start.Format(icsWall),
 			"DTEND;TZID=" + ev.TZID + ":" + start.Add(dur).Format(icsWall),
 		}
-		b = append(b, textLines(ev.Title, ev.Description, ev.URL, ev.Location, ev.VideoURL, ev.RemoteAvailable)...)
+		b = append(b, textLines(ev.Title, ev.Description, ev.URL, ev.Location, ev.VideoURL, ev.RemoteAvailable, ev.ChildcareAvailable, ev.ChildcareAges)...)
 		return append(b, "END:VEVENT"), true
 	}
 	o := sortedOccurrences(ev.Occurrences)[0]
@@ -291,7 +295,7 @@ func renderSingle(s *FeedSingle, host string) ([]string, *time.Location, bool) {
 	if s.Status != "" {
 		b = append(b, "STATUS:"+s.Status)
 	}
-	b = append(b, textLines(s.Title, s.Description, s.URL, s.Location, s.VideoURL, s.RemoteAvailable)...)
+	b = append(b, textLines(s.Title, s.Description, s.URL, s.Location, s.VideoURL, s.RemoteAvailable, s.ChildcareAvailable, s.ChildcareAges)...)
 	return append(b, "END:VEVENT"), loc, true
 }
 
@@ -307,11 +311,11 @@ func singleBlock(uid string, ev *FeedEvent, o *FeedOccurrence, loc *time.Locatio
 		b = append(b, "STATUS:"+status)
 	}
 	b = append(b, textLines(orSeries(o.Title, ev.Title), ev.Description, ev.URL,
-		orSeries(o.Location, ev.Location), ev.VideoURL, ev.RemoteAvailable)...)
+		orSeries(o.Location, ev.Location), ev.VideoURL, ev.RemoteAvailable, ev.ChildcareAvailable, ev.ChildcareAges)...)
 	return append(b, "END:VEVENT")
 }
 
-func textLines(title, description, url, location, videoURL string, remoteAvailable bool) []string {
+func textLines(title, description, url, location, videoURL string, remoteAvailable, childcareAvailable bool, childcareAges string) []string {
 	lines := []string{"SUMMARY:" + escapeText(title)}
 	desc := strings.TrimRight(description, " \t\r\n")
 	switch {
@@ -325,6 +329,15 @@ func textLines(title, description, url, location, videoURL string, remoteAvailab
 			desc += "\n\n"
 		}
 		desc += "Remote attendance available"
+	}
+	if childcareAvailable {
+		if desc != "" {
+			desc += "\n\n"
+		}
+		desc += "Childcare available"
+		if childcareAges != "" {
+			desc += " (" + childcareAges + ")"
+		}
 	}
 	if videoURL != "" {
 		if desc != "" {

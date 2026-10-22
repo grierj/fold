@@ -418,9 +418,10 @@ POST /api/v1/events/:id/cancel              → 200 {}        (leader, host, or 
      body: {date: "YYYY-MM-DD"} — cancels that stored date
 PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (leader, host, or admin)
      body: any of {startsLocal, durationMinutes, location, title} — this date only
-GET  /api/v1/calendar?from=&to=&tz=&mine=1&group=&deleted=1&remote=1
+GET  /api/v1/calendar?from=&to=&tz=&mine=1&group=&deleted=1&remote=1&childcare=1
   → {occurrences: [calendarOccurrence], truncated}   (slim rows, no attendance;
-     remote=1 keeps only events with remoteAvailable)
+     remote=1 keeps only events with remoteAvailable;
+     childcare=1 keeps only events with childcareAvailable)
 POST /api/v1/events/video/jitsi             → 200 {url}   (leader, host, or admin)
 ```
 
@@ -467,6 +468,50 @@ positive whole number or null (null clears to unlimited); `waitlistEnabled`
 holds overflow sign-ups on a waitlist when a capacity is set;
 `guestsAllowed` is 0–5 (null clears to 0), capping extra unnamed guests on
 one registration.
+
+Childcare (M1.8 slice 3): event create and series update accept
+`childcareAvailable` (default false), `childcareNotes` (up to 500
+characters), `childcareAges` (up to 100 characters), and
+`childcareCapacity` (1–100000 children per date, or null for unlimited).
+Omitting a field on update preserves it. A zero limit answers 400,
+`childcare_capacity_zero`: "Uncheck childcare instead of a 0 childcare
+limit". Turning childcare off keeps registration requests stored and
+ignores them until childcare is offered again.
+
+Event and occurrence JSON include these four public childcare fields.
+Only admins, the event's group leaders, and church-event hosts receive
+`childcareUsed`, `childcareSpotsLeft`, and each attendee's
+`childcareCount` and `childcareAgesNote` (`policy.CanSeeChildcare`).
+Totals are omitted when childcare is off. Unlimited childcare omits
+`childcareSpotsLeft`. A registrant sees their own `myChildcareCount`
+and `myChildcareAgesNote` regardless of manager permissions. The slim
+calendar row includes only `childcareAvailable`; `childcare=1` filters
+without changing visibility. ICS descriptions say "Childcare available",
+with the age range when set. Feeds never contain registration childcare
+requests or totals.
+
+`PUT /events/:id/registrations` and `POST /events/:id/registrations/add`
+accept optional `childcareCount` (0–20) and `childcareAgesNote` (up to
+200 characters). Omitted fields preserve an existing request. The PUT
+response's `registration` includes both fields. A positive explicit
+count when childcare is off answers 400, `childcare_not_available`:
+"This event doesn't offer childcare". Under the occurrence lock, only
+going requests use childcare places. Disabled accounts never count
+(DEC-38), and changing a request excludes its old count. A request that
+would exceed the childcare limit answers 409, `childcare_full`:
+"Childcare is full for this date". The transaction leaves the registration
+unchanged. Setting the count to 0 lets the person attend without childcare.
+An attendance over-capacity add cannot bypass the childcare limit.
+
+Maybe, declined, and waitlisted registrations can keep requests without
+using places. There is no childcare waitlist. Automatic and manual
+attendance promotions keep a request if it fits. Otherwise they promote
+with count 0, keep the age note, audit `registration.childcare_dropped`,
+and tell the person in their promotion notice and email. Batch promotions
+check each request against the places remaining after earlier promotions.
+On account re-enable, a going registration that would overfill childcare
+is dropped through the same DEC-47 audit and ask-a-leader notice as a full
+attendance pool, including when attendance seats are unlimited.
 
 Video (5.8, M1.8) is a link out, never an embed (DEC-16). `videoProvider`
 is `none`, `link`, or `jitsi` (default `none`, which clears the URL);

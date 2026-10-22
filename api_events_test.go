@@ -827,3 +827,121 @@ func TestDeclinedOnlyForLeadersAndAdmins(t *testing.T) {
 		}
 	}
 }
+
+func TestChildcareEventValidationAndNullCapacity(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ChildcareFields")
+	id, _ := seedChildcareEvent(t, app, admin, gid, nil, intPtr(5), false)
+	path := "/api/v1/events/" + itoa(id)
+	for _, fields := range []map[string]any{
+		{"childcareCapacity": 0}, {"childcareCapacity": -1}, {"childcareCapacity": 1.5}, {"childcareCapacity": "3"}, {"childcareCapacity": 100001},
+		{"childcareNotes": strings.Repeat("x", 501)}, {"childcareAges": strings.Repeat("x", 101)},
+	} {
+		apiDo(t, admin, "PUT", path, fields, http.StatusBadRequest)
+		fields["startsLocal"], fields["durationMinutes"], fields["tzid"] = videoEventStart().Format("2006-01-02T15:04"), 60, "UTC"
+		apiDo(t, admin, "POST", "/api/v1/groups/"+gid+"/events", fields, http.StatusBadRequest)
+		fields["title"] = "Church childcare"
+		apiDo(t, admin, "POST", "/api/v1/events", fields, http.StatusBadRequest)
+	}
+	ev := eventRow(t, app, id)
+	if ev.ChildcareCapacity == nil || *ev.ChildcareCapacity != 5 {
+		t.Fatal("bad update changed capacity")
+	}
+	// An unrelated edit preserves the limit. Explicit null clears it.
+	apiDo(t, admin, "PUT", path, map[string]any{"title": "With childcare"}, http.StatusOK)
+	if ev = eventRow(t, app, id); ev.ChildcareCapacity == nil || *ev.ChildcareCapacity != 5 {
+		t.Fatal("omitted limit cleared it")
+	}
+	apiDo(t, admin, "PUT", path, map[string]any{"childcareCapacity": nil}, http.StatusOK)
+	if ev = eventRow(t, app, id); ev.ChildcareCapacity != nil {
+		t.Fatal("null did not clear limit")
+	}
+	w := admin.do("POST", "/api/v1/events", map[string]any{"title": "Childcare church event", "startsLocal": videoEventStart().Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC", "childcareAvailable": true, "childcareCapacity": 3, "childcareAges": "2–5", "childcareNotes": "Nursery"}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("church create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	if !created.Event.ChildcareAvailable || created.Event.ChildcareCapacity == nil || *created.Event.ChildcareCapacity != 3 || created.Event.ChildcareNotes != "Nursery" {
+		t.Fatalf("childcare fields: %+v", created.Event)
+	}
+}
+
+func TestChildcareVisibilityAndOwnRequest(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ChildcarePrivacy")
+	id, date := seedChildcareEvent(t, app, admin, gid, nil, intPtr(5), false)
+	var group models.Group
+	if err := app.DB.First(&group, "id = ?", gid).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"parent", "member", "leader", "outsider"} {
+		u := newTestUser(t, app, name, "password1234", models.RoleMember)
+		if name != "outsider" {
+			role := models.MembershipMember
+			if name == "leader" {
+				role = models.MembershipLeader
+			}
+			addMember(t, app, u, &group, role)
+		}
+	}
+	parent := loginAPI(t, app, "parent", "password1234")
+	childcareAs(t, parent, id, date, "going", 2, http.StatusOK)
+	for _, name := range []string{"parent", "member", "leader", "outsider", "admin", "signed-out"} {
+		who := admin
+		if name == "signed-out" {
+			who = newAPIClient(t, app)
+		} else if name != "admin" {
+			who = loginAPI(t, app, name, "password1234")
+		}
+		page, raw := getEvent(t, who, id, http.StatusOK)
+		if len(page.Occurrences) == 0 {
+			t.Fatal("no event occurrences")
+		}
+		inst := page.Occurrences[0]
+		manager := name == "leader" || name == "admin"
+		if !manager {
+			for _, key := range []string{`"childcareUsed"`, `"childcareSpotsLeft"`, `"childcareCount"`, `"childcareAgesNote"`} {
+				if strings.Contains(raw, key) {
+					t.Fatalf("%s got private field %s: %s", name, key, raw)
+				}
+			}
+		}
+		if manager && len(inst.Attendees) == 0 {
+			t.Fatal("manager got no attendees")
+		}
+		if !inst.ChildcareAvailable || inst.ChildcareAges == "" || inst.ChildcareNotes == "" || inst.ChildcareCapacity == nil {
+			t.Fatalf("%s missing public childcare: %+v", name, inst)
+		}
+		if (inst.ChildcareUsed != nil) != manager || (inst.ChildcareSpotsLeft != nil) != manager {
+			t.Fatalf("%s totals visibility: %+v", name, inst)
+		}
+		for _, a := range inst.Attendees {
+			if (a.ChildcareCount != nil) != manager || (a.ChildcareAgesNote != nil) != manager {
+				t.Fatalf("%s attendee request visibility: %+v", name, a)
+			}
+		}
+		if name == "parent" {
+			if inst.MyChildcareCount == nil || *inst.MyChildcareCount != 2 || inst.MyChildcareAgesNote == nil || *inst.MyChildcareAgesNote != "3 and 5" {
+				t.Fatalf("own request missing: %+v", inst)
+			}
+		} else if inst.MyChildcareCount != nil || inst.MyChildcareAgesNote != nil {
+			t.Fatalf("%s got another person's own request", name)
+		}
+	}
+	// A church-event host has the same childcare access as group leaders.
+	w := admin.do("POST", "/api/v1/events", map[string]any{"title": "Church night", "startsLocal": videoEventStart().Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC", "hosts": []string{testEmail("outsider")}, "childcareAvailable": true}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("church event: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	host := eventOccurrence(t, loginAPI(t, app, "outsider", "password1234"), created.Event.ID)
+	if host.ChildcareUsed == nil || *host.ChildcareUsed != 0 {
+		t.Fatalf("host childcare access: %+v", host)
+	}
+}

@@ -205,6 +205,8 @@ function EventRow({
                 capacity: instance.capacity,
                 waitlistEnabled: instance.waitlistEnabled,
                 guestsAllowed: instance.guestsAllowed,
+                childcareAvailable: instance.childcareAvailable, childcareCapacity: instance.childcareCapacity,
+                childcareAges: instance.childcareAges, childcareNotes: instance.childcareNotes,
                 remoteAvailable: instance.remoteAvailable,
                 remoteCapacity: instance.remoteCapacity,
                 videoProvider: instance.videoProvider,
@@ -535,6 +537,7 @@ export function GroupDetail() {
             myGuestCount: reg.guestCount,
             myWaitlistPosition: reg.waitlistPosition ?? undefined,
             myAttendanceMode: reg.attendanceMode,
+            myChildcareCount: reg.childcareCount, myChildcareAgesNote: reg.childcareAgesNote,
             registrations,
           };
         }),

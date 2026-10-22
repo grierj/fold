@@ -1,3 +1,5 @@
+import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequestField";
+import { Button } from "./ui/Button";
 import { useId, useState } from "react";
 import { Events } from "../api";
 import type { AttendanceMode, EventOccurrence, RegistrationResponse, RegistrationStatus } from "../types";
@@ -34,6 +36,10 @@ export function RsvpButtons({
   const mode = offersRemote ? pickedMode : "in_person";
   const [statusMessage, setStatusMessage] = useState("");
   const modeName = useId();
+  const [answeringGoing, setAnsweringGoing] = useState(instance.myRegistration === "going");
+  const [children, setChildren] = useState(String(instance.myChildcareCount ?? 0));
+  const [ages, setAges] = useState(instance.myChildcareAgesNote ?? "");
+  const [childcareError, setChildcareError] = useState<string | null>(null);
 
   const mine = instance.myRegistration;
   const removed = mine === "removed";
@@ -58,7 +64,13 @@ export function RsvpButtons({
       ? "Remote seats are full. You can still come in person, or join the remote waitlist."
       : "Remote seats are full. You can still come in person.";
 
-  async function choose(status: RegistrationStatus, attendanceMode = mode, switching = false) {
+  async function choose(status: RegistrationStatus, attendanceMode = mode, switching = false, savingChildcare = false) {
+    if (status === "going" && instance.childcareAvailable) {
+      if (!answeringGoing && !savingChildcare) { setAnsweringGoing(true); return; }
+      const problem = childcareCountProblem(children);
+      setChildcareError(problem);
+      if (problem) return;
+    }
     setBusy(status);
     setError(null);
     setStatusMessage("");
@@ -69,9 +81,12 @@ export function RsvpButtons({
         status,
         instance.date,
         guestCount,
-        instance.remoteAvailable ? attendanceMode : undefined
+        instance.remoteAvailable ? attendanceMode : undefined,
+        instance.childcareAvailable && status === "going"
+          ? { childcareCount: Number(children), childcareAgesNote: ages.trim() } : undefined
       );
       onChange(registration);
+      setAnsweringGoing(status === "going");
       if (switching) {
         setStatusMessage(registration.status === "waitlisted"
           ? `You're on the ${attendanceMode === "remote" ? "remote" : "in-person"} waitlist.`
@@ -135,7 +150,7 @@ export function RsvpButtons({
         {/* Segmented control (DEC-63): one joined row, the chosen answer filled. */}
         <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
         {OPTIONS.map((o) => {
-          const active = mine === o.value;
+          const active = (answeringGoing && instance.childcareAvailable ? "going" : mine) === o.value;
           const disabled = busy !== null || (o.value === "going" && fullNoWaitlist);
           return (
             <button
@@ -164,6 +179,14 @@ export function RsvpButtons({
           </Field>
         )}
       </div>
+      {instance.childcareAvailable && answeringGoing && (
+        <div className="mt-3 space-y-3">
+          <ChildcareRequestField count={children} ages={ages} onCount={setChildren} onAges={setAges} error={childcareError} disabled={busy !== null} />
+          <Button variant="primary" disabled={busy !== null} onClick={() => void choose("going", mode, false, true)}>
+            {busy === "going" ? "Saving…" : "Save answer"}
+          </Button>
+        </div>
+      )}
       {error && <FormError layout="mt-1">{error}</FormError>}
     </div>
   );

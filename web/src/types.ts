@@ -127,6 +127,8 @@ export interface Attendee {
   status: RegistrationStatus;
   guestCount: number;
   attendanceMode: AttendanceMode;
+  childcareCount?: number;
+  childcareAgesNote?: string;
 }
 
 // One date of an event. date is the series date and stays put when a
@@ -175,6 +177,14 @@ export interface EventOccurrence {
   guestsAllowed: number;
   // Remote attendance (M1.8 slice 2): the second seat pool, mirroring
   // the in-person fields. remoteCapacity is this date's effective cap.
+  childcareAvailable: boolean;
+  childcareCapacity: number | null;
+  childcareAges: string;
+  childcareNotes: string;
+  childcareUsed?: number;
+  childcareSpotsLeft?: number;
+  myChildcareCount?: number;
+  myChildcareAgesNote?: string;
   remoteAvailable: boolean;
   remoteCapacity: number | null;
   remoteSeatsUsed: number;
@@ -231,6 +241,10 @@ export interface EventSeries {
   waitlistEnabled: boolean;
   guestsAllowed: number;
   // Remote attendance (M1.8 slice 2). remoteCapacity null is unlimited.
+  childcareAvailable: boolean;
+  childcareCapacity: number | null;
+  childcareAges: string;
+  childcareNotes: string;
   remoteAvailable: boolean;
   remoteCapacity: number | null;
   // Video link (M1.8). At series level it shows under "always" and to
@@ -250,6 +264,8 @@ export interface RegistrationResponse {
   date: string;
   status: RegistrationStatus;
   guestCount: number;
+  childcareCount: number;
+  childcareAgesNote: string;
   waitlistPosition: number | null;
   attendanceMode: AttendanceMode;
 }
@@ -346,6 +362,7 @@ export interface CalendarOccurrence {
   churchWide: boolean;
   // Offers remote seats on this date; false for a zero per-date limit.
   remoteAvailable: boolean;
+  childcareAvailable: boolean;
   hostedBy?: string;
   myStatus: "going" | "maybe" | "waitlisted" | null;
   // Set only for an admin who turned on "Show deleted events" (DEC-68).

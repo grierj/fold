@@ -18,17 +18,18 @@ import (
 // response is a slim row per occurrence — never attendees, counts, seats
 // or declined data — so DEC-64 can't leak in bulk.
 type calendarOccurrenceJSON struct {
-	EventID         uint      `json:"eventId"`
-	Date            string    `json:"date"`
-	StartsAt        time.Time `json:"startsAt"`
-	EndsAt          time.Time `json:"endsAt"`
-	Title           string    `json:"title"`
-	Location        string    `json:"location"`
-	GroupID         *uint     `json:"groupId,omitempty"`
-	GroupName       string    `json:"groupName,omitempty"`
-	ChurchWide      bool      `json:"churchWide"`
-	RemoteAvailable bool      `json:"remoteAvailable"`
-	HostedBy        string    `json:"hostedBy,omitempty"`
+	EventID            uint      `json:"eventId"`
+	Date               string    `json:"date"`
+	StartsAt           time.Time `json:"startsAt"`
+	EndsAt             time.Time `json:"endsAt"`
+	Title              string    `json:"title"`
+	Location           string    `json:"location"`
+	GroupID            *uint     `json:"groupId,omitempty"`
+	GroupName          string    `json:"groupName,omitempty"`
+	ChurchWide         bool      `json:"churchWide"`
+	RemoteAvailable    bool      `json:"remoteAvailable"`
+	ChildcareAvailable bool      `json:"childcareAvailable"`
+	HostedBy           string    `json:"hostedBy,omitempty"`
 	// MyStatus is the viewer's own answer for this date: going, maybe or
 	// waitlisted. Anything else (including "can't go") reads as null.
 	MyStatus *string `json:"myStatus"`
@@ -89,6 +90,9 @@ func (a *App) apiCalendar(c *gin.Context) {
 	// dropped by visibleEvents exactly as without the filter.
 	if c.Query("remote") == "1" {
 		q = q.Where("remote_available = ?", true)
+	}
+	if c.Query("childcare") == "1" {
+		q = q.Where("childcare_available = ?", true)
 	}
 	// deleted=1 lists deleted groups' events too, for admins only (DEC-68).
 	vs, err := a.visibleEventsWith(me, q, c.Query("deleted") == "1")
@@ -156,14 +160,15 @@ func (a *App) apiCalendar(c *gin.Context) {
 			break
 		}
 		row := calendarOccurrenceJSON{
-			EventID:         ev.ID,
-			Date:            occ.OriginalDate,
-			StartsAt:        full.StartsAt,
-			EndsAt:          full.EndsAt,
-			Title:           full.Title,
-			Location:        full.Location,
-			ChurchWide:      ev.GroupID == nil,
-			RemoteAvailable: remoteAvailable,
+			EventID:            ev.ID,
+			Date:               occ.OriginalDate,
+			StartsAt:           full.StartsAt,
+			EndsAt:             full.EndsAt,
+			Title:              full.Title,
+			Location:           full.Location,
+			ChurchWide:         ev.GroupID == nil,
+			RemoteAvailable:    remoteAvailable,
+			ChildcareAvailable: ev.ChildcareAvailable,
 		}
 		if shown != nil {
 			gid := shown.ID

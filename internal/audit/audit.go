@@ -84,6 +84,10 @@ const (
 	// Automatic promotions are not audited; the notification row exists.
 	RegistrationPromoted = "registration.promoted"
 
+	// RegistrationChildcareDropped records a promotion that could not keep
+	// its childcare request. Meta: userId, occurrenceId, childcareCount.
+	RegistrationChildcareDropped = "registration.childcare_dropped"
+
 	// RegistrationAddedOverCapacity: a leader, host, or admin added
 	// someone over the event capacity by explicit choice (M1.5, DEC-47).
 	// Target is the event. Meta: userId, occurrenceId, seats, capacity.

@@ -60,7 +60,7 @@ describe("RsvpButtons", () => {
     vi.mocked(Events.register).mockResolvedValue({
       registration: {
         userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01",
-        status: "going", guestCount: 0, waitlistPosition: null, attendanceMode: "remote",
+        status: "going", guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "remote",
       },
     });
     const onChange = vi.fn();
@@ -77,7 +77,7 @@ describe("RsvpButtons", () => {
     expect(screen.getByText("Tap Going to attend remotely.").parentElement).toBeInTheDocument();
     expect(screen.getByText("Tap Going to attend remotely.")).toHaveAttribute("aria-live", "polite");
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
-    expect(Events.register).toHaveBeenCalledWith(7, "going", "2026-12-01", 0, "remote");
+    expect(Events.register).toHaveBeenCalledWith(7, "going", "2026-12-01", 0, "remote", undefined);
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ attendanceMode: "remote" }));
   });
 
@@ -128,13 +128,13 @@ describe("remote attendance changes", () => {
     ["in_person", "remote", "Remote", "Switched to remote"],
     ["remote", "in_person", "In person", "Switched to in person"],
   ] as const)("saves a going person's switch from %s to %s immediately", async (before, after, label, message) => {
-    const registration = { userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going" as const, guestCount: 1, waitlistPosition: null, attendanceMode: after };
+    const registration = { userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going" as const, guestCount: 1, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: after };
     vi.mocked(Events.register).mockResolvedValue({ registration });
     const onChange = vi.fn();
     render(<RsvpButtons instance={occurrence({ remoteAvailable: true, myRegistration: "going", myAttendanceMode: before, myGuestCount: 1 })} onChange={onChange} />);
     expect(screen.getByRole("group", { name: "How you'll attend" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("radio", { name: label }));
-    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, "going", "2026-12-01", 1, after);
+    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, "going", "2026-12-01", 1, after, undefined);
     expect(onChange).toHaveBeenCalledWith(registration);
     expect(screen.getByRole("status")).toHaveTextContent(message);
   });
@@ -157,7 +157,7 @@ describe("remote attendance changes", () => {
   });
 
   it("announces waitlisting instead of claiming a seat after a switch", async () => {
-    vi.mocked(Events.register).mockResolvedValue({ registration: { userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "waitlisted", guestCount: 0, waitlistPosition: 2, attendanceMode: "remote" } });
+    vi.mocked(Events.register).mockResolvedValue({ registration: { userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "waitlisted", guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: 2, attendanceMode: "remote" } });
     render(<RsvpButtons instance={occurrence({ remoteAvailable: true, myRegistration: "going", waitlistEnabled: true })} onChange={() => {}} />);
     await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
     expect(screen.getByRole("status")).toHaveTextContent("You're on the remote waitlist.");
@@ -171,10 +171,55 @@ describe("remote attendance changes", () => {
   });
 
   it("hides Remote when this date has zero remote seats and registers in person", async () => {
-    vi.mocked(Events.register).mockResolvedValue({ registration: { userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going", guestCount: 0, waitlistPosition: null, attendanceMode: "in_person" } });
+    vi.mocked(Events.register).mockResolvedValue({ registration: { userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going", guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "in_person" } });
     render(<RsvpButtons instance={occurrence({ remoteAvailable: true, remoteCapacity: 0, remoteSpotsLeft: 0, myAttendanceMode: "remote" })} onChange={() => {}} />);
     expect(screen.queryByRole("radio", { name: "Remote" })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
-    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, "going", "2026-12-01", 0, "in_person");
+    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, "going", "2026-12-01", 0, "in_person", undefined);
+  });
+});
+
+describe("childcare RSVP", () => {
+  beforeEach(() => vi.resetAllMocks());
+  it("offers childcare on Going and lets you retry without it after a full response", async () => {
+    const registration = {
+      userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going", guestCount: 0,
+      waitlistPosition: null, attendanceMode: "in_person", childcareCount: 0, childcareAgesNote: "3 and 5",
+    } satisfies import("../types").RegistrationResponse;
+    vi.mocked(Events.register)
+      .mockRejectedValueOnce(new ApiError(409, "Childcare is full for this date", { code: "childcare_full" }))
+      .mockResolvedValueOnce({ registration });
+    const change = vi.fn();
+    render(<RsvpButtons instance={occurrence({ childcareAvailable: true })} onChange={change} />);
+    expect(screen.queryByLabelText(/^Children needing childcare/)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Going" }));
+    expect(Events.register).not.toHaveBeenCalled();
+    const count = screen.getByLabelText(/^Children needing childcare/);
+    await userEvent.clear(count);
+    await userEvent.type(count, "2");
+    await userEvent.type(screen.getByLabelText(/^Ages/), "3 and 5");
+    await userEvent.click(screen.getByRole("button", { name: "Save answer" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Childcare is full for this date. You can still come.");
+    expect(count).toHaveValue("2");
+    expect(screen.getByLabelText(/^Ages/)).toHaveValue("3 and 5");
+    expect(change).not.toHaveBeenCalled();
+    await userEvent.clear(count);
+    await userEvent.type(count, "0");
+    await userEvent.click(screen.getByRole("button", { name: "Save answer" }));
+    expect(Events.register).toHaveBeenLastCalledWith(7, "going", "2026-12-01", 0, undefined, { childcareCount: 0, childcareAgesNote: "3 and 5" });
+    expect(change).toHaveBeenCalledWith(registration);
+  });
+
+  it("prefills your childcare request, validates whole counts, and preserves it on Maybe", async () => {
+    render(<RsvpButtons instance={occurrence({ childcareAvailable: true, myRegistration: "going", myChildcareCount: 2, myChildcareAgesNote: "3 and 5" })} onChange={() => {}} />);
+    const count = screen.getByLabelText(/^Children needing childcare/);
+    expect(count).toHaveValue("2");
+    await userEvent.clear(count);
+    await userEvent.type(count, "1.5");
+    await userEvent.click(screen.getByRole("button", { name: "Save answer" }));
+    expect(count).toHaveAttribute("aria-invalid", "true");
+    expect(Events.register).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
+    expect(Events.register).toHaveBeenCalledWith(7, "maybe", "2026-12-01", 0, undefined, undefined);
   });
 });

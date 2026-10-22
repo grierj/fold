@@ -396,3 +396,49 @@ func TestManageTokenIndex(t *testing.T) {
 		t.Fatalf("index is not the partial unique one: %s", def)
 	}
 }
+
+func TestChildcareMigration23(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, false))
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err = p.UpTo(ctx, 23); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO users (id,email,name) VALUES (1,'parent@example.com','Parent')`,
+		`INSERT INTO events (id,title,starts_local,duration_minutes,tzid,rrule,location,description,visibility,created_by) VALUES (1,'Family Night','2026-12-01T19:00',60,'UTC','','','','public',1)`,
+		`INSERT INTO event_occurrences (id,event_id,original_date,starts_at,ends_at,status) VALUES (1,1,'2026-12-01','2026-12-01 19:00+00','2026-12-01 20:00+00','scheduled')`,
+		`INSERT INTO registrations (occurrence_id,user_id,status) VALUES (1,1,'going')`,
+	} {
+		if _, err = db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	var available bool
+	var notes, ages, ageNote string
+	var cap sql.NullInt64
+	var count int
+	if err = db.QueryRow(`SELECT childcare_available,childcare_notes,childcare_capacity,childcare_ages FROM events WHERE id=1`).Scan(&available, &notes, &cap, &ages); err != nil {
+		t.Fatal(err)
+	}
+	if available || notes != "" || cap.Valid || ages != "" {
+		t.Fatal("incorrect childcare defaults")
+	}
+	if err = db.QueryRow(`SELECT childcare_count,childcare_ages_note FROM registrations WHERE occurrence_id=1`).Scan(&count, &ageNote); err != nil || count != 0 || ageNote != "" {
+		t.Fatalf("registration defaults: %d %q %v", count, ageNote, err)
+	}
+	for _, q := range []string{`UPDATE events SET childcare_capacity=-1 WHERE id=1`, `UPDATE registrations SET childcare_count=-1 WHERE occurrence_id=1`} {
+		if _, err = db.Exec(q); err == nil {
+			t.Fatalf("accepted negative: %s", q)
+		}
+	}
+	if _, err = p.DownTo(ctx, 22); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = p.UpTo(ctx, 23); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -8,7 +8,7 @@ import { MonthView } from "./MonthView";
 
 const occs: CalendarOccurrence[] = [1, 2].map((n) => ({
   eventId: n, date: "2026-10-21", startsAt: "2026-10-21T18:00:00Z", endsAt: "2026-10-21T19:00:00Z",
-  title: `Event ${n}`, location: "", churchWide: true, remoteAvailable: false, myStatus: null,
+  title: `Event ${n}`, location: "", churchWide: true, remoteAvailable: false, childcareAvailable: false, myStatus: null,
 }));
 
 describe("MonthView", () => {

@@ -166,10 +166,18 @@ type occurrenceJSON struct {
 	// Remote attendance (M1.8 slice 2): a second seat pool. The remote
 	// fields mirror the in-person ones; remoteCapacity is the effective
 	// cap for this date (per-date override wins), null is unlimited.
-	RemoteAvailable bool `json:"remoteAvailable"`
-	RemoteCapacity  *int `json:"remoteCapacity"`
-	RemoteSeatsUsed int  `json:"remoteSeatsUsed"`
-	RemoteSpotsLeft *int `json:"remoteSpotsLeft"`
+	RemoteAvailable     bool    `json:"remoteAvailable"`
+	ChildcareAvailable  bool    `json:"childcareAvailable"`
+	ChildcareNotes      string  `json:"childcareNotes"`
+	ChildcareCapacity   *int    `json:"childcareCapacity"`
+	ChildcareAges       string  `json:"childcareAges"`
+	RemoteCapacity      *int    `json:"remoteCapacity"`
+	RemoteSeatsUsed     int     `json:"remoteSeatsUsed"`
+	ChildcareUsed       *int    `json:"childcareUsed,omitempty"`
+	ChildcareSpotsLeft  *int    `json:"childcareSpotsLeft,omitempty"`
+	MyChildcareCount    *int    `json:"myChildcareCount,omitempty"`
+	MyChildcareAgesNote *string `json:"myChildcareAgesNote,omitempty"`
+	RemoteSpotsLeft     *int    `json:"remoteSpotsLeft"`
 	// MyGuestCount and MyWaitlistPosition describe the signed-in
 	// viewer's own registration; both are absent without one. Position
 	// is set only when the viewer is waitlisted.
@@ -195,7 +203,9 @@ type attendeeJSON struct {
 	// GuestCount is the extra unnamed guests this party brings (M1.5).
 	GuestCount int `json:"guestCount"`
 	// AttendanceMode is in_person or remote (M1.8 slice 2).
-	AttendanceMode string `json:"attendanceMode"`
+	AttendanceMode    string  `json:"attendanceMode"`
+	ChildcareCount    *int    `json:"childcareCount,omitempty"`
+	ChildcareAgesNote *string `json:"childcareAgesNote,omitempty"`
 }
 
 type hostJSON struct {
@@ -231,8 +241,12 @@ type eventJSON struct {
 	GuestsAllowed   int  `json:"guestsAllowed"`
 	// Remote attendance (M1.8 slice 2). RemoteCapacity null means
 	// unlimited remote seats.
-	RemoteAvailable bool `json:"remoteAvailable"`
-	RemoteCapacity  *int `json:"remoteCapacity"`
+	RemoteAvailable    bool   `json:"remoteAvailable"`
+	ChildcareAvailable bool   `json:"childcareAvailable"`
+	ChildcareNotes     string `json:"childcareNotes"`
+	ChildcareCapacity  *int   `json:"childcareCapacity"`
+	ChildcareAges      string `json:"childcareAges"`
+	RemoteCapacity     *int   `json:"remoteCapacity"`
 	// Video link (5.8, M1.8). At series level the link shows under
 	// "always" and to the event's managers; a person going to one date
 	// gets it on that date's occurrence row instead.

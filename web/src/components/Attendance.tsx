@@ -30,6 +30,9 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
           ` · ${instance.remoteSpotsLeft} of ${instance.remoteCapacity} remote seats left`}
       </div>
       {instance.remoteAvailable && instance.remoteCapacity !== 0 && <div>Remote attendance available</div>}
+      {instance.childcareAvailable && instance.childcareUsed != null && (
+        <div>{instance.childcareUsed} of {instance.childcareCapacity ?? "unlimited"} childcare spots used</div>
+      )}
       {coming.length + cant.length > 0 && (
         <>
           <Button variant="link" aria-expanded={open} aria-controls={listId} onClick={() => setOpen((v) => !v)}>
@@ -43,6 +46,8 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
                   {a.status === "maybe" && " (maybe)"}
                   {a.attendanceMode === "remote" && <> <RemoteBadge /></>}
                   {a.guestCount > 0 && ` +${a.guestCount}`}
+                  {instance.childcareAvailable && (a.childcareCount ?? 0) > 0 && ` +${a.childcareCount} in childcare`}
+                  {instance.childcareAvailable && a.childcareAgesNote && ` · Ages: ${a.childcareAgesNote}`}
                 </li>
               ))}
               {cant.length > 0 && <li className="pt-1 font-medium">Can&apos;t go</li>}

@@ -23,3 +23,18 @@ describe("Attendance", () => {
     expect(screen.queryByText("Remote attendance available")).not.toBeInTheDocument();
   });
 });
+
+it("shows childcare totals and requests supplied to a manager", async () => {
+  render(<Attendance instance={occurrence({ childcareAvailable: true, childcareUsed: 2, childcareCapacity: 5,
+    attendeesVisible: true, attendees: [{ userId: 3, name: "Sam", status: "going", guestCount: 0,
+      attendanceMode: "in_person", childcareCount: 2, childcareAgesNote: "3 and 5" }],
+  })} />);
+  expect(screen.getByText("2 of 5 childcare spots used")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Show who's coming" }));
+  expect(screen.getByText(/Sam.*\+2 in childcare.*Ages: 3 and 5/)).toBeInTheDocument();
+});
+
+it("does not invent childcare totals when they are omitted", () => {
+  render(<Attendance instance={occurrence({ childcareAvailable: true, childcareCapacity: 5 })} />);
+  expect(screen.queryByText(/childcare spots used/)).not.toBeInTheDocument();
+});
