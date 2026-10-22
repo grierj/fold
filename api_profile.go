@@ -784,7 +784,15 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 		ids = append(ids, people[i].ID)
 	}
 	links := guardianLinksForPeople(a.DB, ids)
-	batch, err := a.loadConversionBatch(a.DB, viewer, household.ID, ids)
+	var accounts []models.HouseholdAccount
+	a.DB.Where("household_id = ?", household.ID).Order("id").Find(&accounts)
+	var rel policy.HouseholdRel
+	for _, acct := range accounts {
+		if viewer != nil && acct.UserID == viewer.ID {
+			rel = householdRelOf(acct, true)
+		}
+	}
+	batch, err := a.loadConversionBatchFor(a.DB, viewer, rel, ids)
 	if err != nil {
 		return out, err
 	}
@@ -815,11 +823,23 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 		}
 		out.People = append(out.People, row)
 	}
-	var accounts []models.HouseholdAccount
-	a.DB.Where("household_id = ?", household.ID).Order("id").Find(&accounts)
+	userIDs := make([]uint, 0, len(accounts))
 	for _, acct := range accounts {
-		var user models.User
-		if a.DB.First(&user, acct.UserID).Error != nil {
+		userIDs = append(userIDs, acct.UserID)
+	}
+	users := map[uint]models.User{}
+	if len(userIDs) > 0 {
+		var found []models.User
+		if err := a.DB.Where("id IN ?", userIDs).Find(&found).Error; err != nil {
+			return out, err
+		}
+		for _, u := range found {
+			users[u.ID] = u
+		}
+	}
+	for _, acct := range accounts {
+		user, ok := users[acct.UserID]
+		if !ok {
 			continue
 		}
 		out.Accounts = append(out.Accounts, householdAccountJSON{

@@ -188,6 +188,7 @@ it("explains why a teen cannot convert and hides the account button", async () =
   mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], kind: "adult", birthDate: "1990-01-01", linkStatus: "none", canConvert: true, conversion: { email: "new@example.com", expiresAt: "2026-12-01T12:00:00Z", state: "awaiting_approval" } }] } });
   render(<HouseholdCard />);
   expect(await screen.findByText("Account waiting for an admin")).toBeInTheDocument();
+  expect(screen.getByText("Your household keeps managing their sign-ups until then.")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Edit Kid Smith" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /Resend/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Create their own account" })).not.toBeInTheDocument();

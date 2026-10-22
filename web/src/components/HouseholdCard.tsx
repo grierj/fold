@@ -244,7 +244,7 @@ export function HouseholdCard() {
                     </div>
                   </div>
                 )}
-                {p.conversion?.state === "awaiting_approval" && <p className="mt-3 text-sm text-text-muted">Account waiting for an admin</p>}
+                {p.conversion?.state === "awaiting_approval" && <div className="mt-3 text-sm text-text-muted"><p>Account waiting for an admin</p><p>Your household keeps managing their sign-ups until then.</p></div>}
                 {p.conversion && p.conversion.state !== "awaiting_approval" && <div className="mt-3 space-y-2">
                   <p className="text-sm text-text-muted break-words">{p.conversion.state === "expired" ? "Invitation expired" : "Invitation pending"}: {p.conversion.email}. Expires {formatWhen(p.conversion.expiresAt)}.</p>
                   <p className="text-sm text-text-muted">Changing their name, type or birth date cancels this invitation. Your household keeps managing their sign-ups.</p>
@@ -291,10 +291,8 @@ function ConversionForm({ person, onCancel, onSent }: { person: HouseholdPerson;
     finally { setBusy(false); }
   }
   return <form ref={ref} onSubmit={submit} className="mt-3 space-y-3" aria-label={`Create an account for ${person.name}`}>
-    <p className="text-sm">Use their own email address. All past and upcoming sign-ups move to their new account {person.kind === "adult" ? "after an admin approves" : "when they accept"}. Group memberships do not move.</p>
-    {person.kind === "teen"
-      ? <p className="text-sm">A church admin will need to confirm you as their parent or guardian before they can sign in.</p>
-      : <p className="text-sm">A church admin will approve their account before they can sign in.</p>}
+    <p className="text-sm">Use their own email address. All past and upcoming sign-ups move to their new account after an admin approves. Group memberships do not move.</p>
+    <p className="text-sm">A church admin will approve their account before they can sign in.</p>
     <Field label="Their email address" hint="Required. Use an email that has no account or open invitation." error={error ?? undefined}><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="off" /></Field>
     <div className="flex flex-wrap gap-3"><Button variant="primary" type="submit" disabled={busy}>{busy ? "Sending…" : "Send account invitation"}</Button><Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button></div>
   </form>;

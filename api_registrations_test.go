@@ -1719,12 +1719,22 @@ func TestRegistrationReadBudget(t *testing.T) {
 	if n > 21 {
 		t.Fatalf("admin GET read %d times, budget 21", n)
 	}
-	// GET /me/household (Whittler, PR 111): canConvert is computed from one
-	// batch per request, not per person (18 before this fix, 9 before slice 3).
-	// One more read finds adults waiting for approval (DEC-82).
+	// GET /me/household (Whittler, PR 111): reads don't grow per person or
+	// per account (18 before batching, 9 before slice 3; the pending-approval
+	// lookup adds one, DEC-82). A six-person household reads the same.
 	n = 0
 	apiDo(t, c, "GET", "/api/v1/me/household", nil, http.StatusOK)
-	if n > 13 {
-		t.Fatalf("household GET read %d times, budget 13", n)
+	small := n
+	if n > 11 {
+		t.Fatalf("household GET read %d times, budget 11", n)
 	}
+	for i := 0; i < 6; i++ {
+		apiDo(t, c, "POST", "/api/v1/me/household/people", map[string]any{"firstName": "Extra" + itoa(uint(i)), "kind": "adult", "birthDate": "1990-01-01"}, http.StatusCreated)
+	}
+	n = 0
+	apiDo(t, c, "GET", "/api/v1/me/household", nil, http.StatusOK)
+	if n != small {
+		t.Fatalf("six-person household GET read %d times, want %d (no per-person reads)", n, small)
+	}
+	t.Logf("household GET reads: %d", small)
 }

@@ -543,7 +543,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		a.alreadyHandled(c, notify.AccountRequested, req.ID)
 		return
 	}
-	if errors.Is(err, errConversionPerson) || errors.Is(err, errConversionUnavailable) || errors.Is(err, errConversionHolder) || errors.Is(err, errConversionEmail) {
+	if err != nil && req.Source == models.RequestHouseholdConversion {
 		conversionError(c, err)
 		return
 	}

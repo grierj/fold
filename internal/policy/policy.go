@@ -550,10 +550,15 @@ func CanManageHousehold(p *Person, rel HouseholdRel) bool {
 // CanConvertHouseholdPerson requires current adult authority and birth-date
 // evidence. Teen conversion waits for parent consent in M1.10.
 func CanConvertHouseholdPerson(p *Person, rel HouseholdRel, person HouseholdPerson, active bool) bool {
-	if !active || p == nil || p.Teen || !CanManageHousehold(p, rel) || person.Deleted || person.Converted || person.AgeYears == nil {
+	if !active || p == nil || p.Teen || !CanManageHousehold(p, rel) || person.Deleted || person.Converted {
 		return false
 	}
-	return person.Kind == KindAdult && *person.AgeYears >= 18
+	return MeetsAdultAccountRules(person)
+}
+
+// MeetsAdultAccountRules requires an adult with a birth date proving age 18+.
+func MeetsAdultAccountRules(person HouseholdPerson) bool {
+	return person.Kind == KindAdult && person.AgeYears != nil && *person.AgeYears >= 18
 }
 
 // CanCancelHouseholdConversion remains available after eligibility changes.

@@ -29,6 +29,9 @@ var (
 	errConversionPerson      = errors.New("this household person was removed or already has an account; reject this request")
 	errConversionPending     = errors.New("this account is waiting for an admin; wait for their decision")
 	errConversionRetry       = errors.New("household changed while locking")
+	errConversionDetails     = errors.New("this person's details changed after they accepted; ask the household to send a new invitation")
+	errConversionAdult       = errors.New("this person no longer meets the adult account rules; check their birth date and account type before sending a new invitation")
+	errConversionInviter     = errors.New("the person who sent the invitation can no longer manage this household; ask an active household adult or admin to send a new invitation")
 )
 
 // conversionJSON has no id, so a suppressed send can't be told apart from
@@ -96,11 +99,19 @@ type conversionBatch struct {
 }
 
 func (a *App) loadConversionBatch(tx *gorm.DB, actor *models.User, householdID uint, personIDs []uint) (*conversionBatch, error) {
-	b := &conversionBatch{actor: actor, today: a.householdClock(time.Now().UTC()), blocked: map[uint]bool{}}
+	if actor == nil || len(personIDs) == 0 {
+		return a.loadConversionBatchFor(tx, actor, policy.HouseholdRel{}, personIDs)
+	}
+	return a.loadConversionBatchFor(tx, actor, conversionRelation(tx, actor.ID, householdID), personIDs)
+}
+
+// loadConversionBatchFor takes a relation the caller already knows, so
+// GET /me/household doesn't read the viewer's account twice (Whittler, PR 111).
+func (a *App) loadConversionBatchFor(tx *gorm.DB, actor *models.User, rel policy.HouseholdRel, personIDs []uint) (*conversionBatch, error) {
+	b := &conversionBatch{actor: actor, today: a.householdClock(time.Now().UTC()), blocked: map[uint]bool{}, rel: rel}
 	if actor == nil || len(personIDs) == 0 {
 		return b, nil
 	}
-	b.rel = conversionRelation(tx, actor.ID, householdID)
 	var blocked []uint
 	if err := tx.Model(&models.Registration{}).Joins("JOIN users ON users.id = registrations.registered_by").
 		Where("registrations.household_person_id IN ? AND (users.deleted_at IS NOT NULL OR users.status <> ?)", personIDs, models.UserActive).
@@ -157,7 +168,9 @@ func (a *App) loadConversionPerson(c *gin.Context) (*models.HouseholdPerson, boo
 
 func conversionError(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, errConversionTeen), errors.Is(err, errConversionPerson), errors.Is(err, errConversionPending), errors.Is(err, errConversionUnavailable), errors.Is(err, errConversionEmail), errors.Is(err, errConversionOpen), errors.Is(err, errConversionHolder):
+	case errors.Is(err, errConversionRetry):
+		jsonError(c, http.StatusConflict, "this household changed while approving; try again")
+	case errors.Is(err, errConversionDetails), errors.Is(err, errConversionAdult), errors.Is(err, errConversionInviter), errors.Is(err, errConversionTeen), errors.Is(err, errConversionPerson), errors.Is(err, errConversionPending), errors.Is(err, errConversionUnavailable), errors.Is(err, errConversionEmail), errors.Is(err, errConversionOpen), errors.Is(err, errConversionHolder):
 		jsonError(c, http.StatusConflict, err.Error())
 	case errors.Is(err, errTokenInvalid), errors.Is(err, gorm.ErrRecordNotFound):
 		jsonError(c, http.StatusBadRequest, "that invitation is invalid or has expired")
@@ -636,13 +649,23 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	if person.ConvertedUserID != nil {
 		return 0, errConversionPerson
 	}
+	if person.FullName() != req.Name || formatBirthDate(person.BirthDate) != formatBirthDate(req.BirthDate) {
+		return 0, errConversionDetails
+	}
+	if !policy.MeetsAdultAccountRules(householdFacts(&person, nil, a.householdClock(time.Now().UTC()))) {
+		return 0, errConversionAdult
+	}
+	inviter := locked[inv.InvitedBy]
+	if req.RequestedBy == nil || *req.RequestedBy != inv.InvitedBy || inviter == nil || inviter.Status != models.UserActive || inviter.DeletedAt.Valid {
+		return 0, errConversionInviter
+	}
 	fresh, err := conversionLockIDs(tx, &inv, &person)
 	if err != nil {
 		return 0, err
 	}
 	for _, id := range fresh {
 		if locked[id] == nil {
-			return 0, errConversionHolder
+			return 0, errConversionRetry
 		}
 	}
 	if err := lockInvitationEmail(tx, req.Email); err != nil {
@@ -650,9 +673,6 @@ func (a *App) approveHouseholdConversion(tx *gorm.DB, c *gin.Context, req *model
 	}
 	if err := conversionEmailAvailable(tx, req.Email, inv.ID, req.ID); err != nil {
 		return 0, err
-	}
-	if person.Kind != models.HouseholdAdult {
-		return 0, errConversionUnavailable
 	}
 	inv.Email = req.Email
 	var user models.User

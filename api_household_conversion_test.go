@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/gin-gonic/gin"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sort"
 	"strings"
@@ -830,5 +832,93 @@ func TestHouseholdConversionApprovalRefusesUnavailable(t *testing.T) {
 				t.Fatal("refused approval converted person")
 			}
 		})
+	}
+}
+
+func TestHouseholdConversionApprovalRechecksAcceptedFacts(t *testing.T) {
+	for _, change := range []string{"name", "birth date", "under 18", "inviter disabled", "inviter deleted"} {
+		t.Run(change, func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "ApprovalFacts")
+			holder, c, person, _ := householdFamily(t, app, admin, "approvalparent")
+			eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+			batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": person.ID, "status": "going"}}}, http.StatusOK)
+			var before []models.Registration
+			if err := app.DB.Where("household_person_id = ?", person.ID).Order("id").Find(&before).Error; err != nil {
+				t.Fatal(err)
+			}
+			token := inviteHouseholdPerson(t, app, c, person.ID, "approvalfacts@example.com")
+			acceptConversion(t, app, token, http.StatusOK)
+			var req models.AccountRequest
+			if err := app.DB.Where("email = ?", "approvalfacts@example.com").First(&req).Error; err != nil {
+				t.Fatal(err)
+			}
+			wantCode := "household_conversion_details"
+			var err error
+			switch change {
+			case "name":
+				err = app.DB.Model(&models.HouseholdPerson{}).Where("id = ?", person.ID).Update("first_name", "Changed").Error
+			case "birth date":
+				err = app.DB.Model(&models.HouseholdPerson{}).Where("id = ?", person.ID).Update("birth_date", "1980-01-01").Error
+			case "under 18":
+				// Keep the snapshot matching to exercise the approval-date age check independently.
+				birth := app.householdClock(time.Now().UTC()).AddDate(-18, 0, 1).Format("2006-01-02")
+				if err := app.DB.Model(&req).Update("birth_date", birth).Error; err != nil {
+					t.Fatal(err)
+				}
+				err = app.DB.Model(&models.HouseholdPerson{}).Where("id = ?", person.ID).Update("birth_date", birth).Error
+				wantCode = "household_conversion_adult"
+			case "inviter disabled":
+				err = app.DB.Model(&holder).Update("status", models.UserDisabled).Error
+				wantCode = "household_conversion_inviter"
+			case "inviter deleted":
+				err = app.DB.Delete(&holder).Error
+				wantCode = "household_conversion_inviter"
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw := apiDo(t, admin, "POST", "/api/v1/admin/account-requests/"+itoa(req.ID)+"/approve", map[string]any{}, http.StatusConflict)
+			var response struct{ Code string }
+			if err := json.Unmarshal([]byte(raw), &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Code != wantCode {
+				t.Fatalf("code = %q, want %q: %s", response.Code, wantCode, raw)
+			}
+			if err := app.DB.First(&req, req.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if req.Status != models.RequestPending || req.PasswordHash == nil || req.DecidedAt != nil {
+				t.Fatal("refused approval decided request or cleared credentials")
+			}
+			assertConversionUnmoved(t, app, person, req.Email, before)
+			if auditCount(t, app, audit.HouseholdPersonConverted) != 0 || auditCount(t, app, audit.AccountApproved) != 0 {
+				t.Fatal("refused approval left a decision or conversion audit")
+			}
+			var notices int64
+			if err := app.DB.Model(&models.Notification{}).Where("kind = ?", notify.HouseholdConverted).Count(&notices).Error; err != nil {
+				t.Fatal(err)
+			}
+			if notices != 0 {
+				t.Fatal("refused approval left conversion notices")
+			}
+		})
+	}
+}
+
+func TestConversionRetryErrorIsConflict(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	conversionError(c, fmt.Errorf("approval: %w", errConversionRetry))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response struct{ Error, Code string }
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != "household_conversion_retry" || !strings.Contains(response.Error, "try again") {
+		t.Fatalf("unexpected retry response: %+v", response)
 	}
 }

@@ -179,6 +179,20 @@ responsible account returns 409 and leaves the request pending. Rejection
 or 30-day expiry closes the request and clears the held password hash;
 nothing needs undoing, and the email can be invited again.
 
+Approval also returns 409 without moving anything or closing the request when:
+
+- The full name or birth date differs from the accepted request snapshot:
+  `household_conversion_details`.
+- The person is no longer an adult with a birth date proving age 18 or older
+  on the church-local date: `household_conversion_adult`.
+- The original inviter is disabled, deleted, or missing:
+  `household_conversion_inviter`.
+- The household's lock set changed during approval:
+  `household_conversion_retry`. Try approving again.
+
+For details, adult-rule, or inviter refusals, reject the stale request before
+asking an active household adult or admin to send a new invitation.
+
 A first send suppressed by the invitation limit saves no invitation row,
 but the response has the same keys as a normal send. Pending-consent teen
 accounts created through other paths retain their seats and the DEC-82
@@ -385,7 +399,7 @@ POST /api/v1/account-requests              → 200 {message} | 400 | 403  (publi
 POST /api/v1/account-requests/invite-friend → 200 {message} | 400 | 403 | 409  (auth)
 POST /api/v1/account-requests/confirm      {token, password} → 200 {user, pendingConsent?} | 400  (public)
 GET  /api/v1/admin/account-requests?status=pending → {requests: [accountRequest]}  (admin)
-POST /api/v1/admin/account-requests/:id/approve → 200 {request, userId}  (admin)
+POST /api/v1/admin/account-requests/:id/approve → 200 {request, userId} | 409  (admin)
      body: {note?, fromNotification?}
 POST /api/v1/admin/account-requests/:id/reject  → 200 {request, userId: 0}  (admin)
      body: {note?, fromNotification?} — rejection is never inline (403 with fromNotification)
