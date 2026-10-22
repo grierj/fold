@@ -1,7 +1,6 @@
-import { ManageRoster } from "../components/ManageRoster";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
-import { useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
 import { useAuth } from "../auth";
@@ -24,6 +23,8 @@ import { ErrorNotice } from "../components/ErrorNotice";
 import { Missing } from "./NotFound";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
+
+const ManageRoster = lazy(() => import("../components/ManageRoster").then((module) => ({ default: module.ManageRoster })));
 
 export function EventDetail() {
   const { id } = useParams<{ id: string }>();
@@ -270,7 +271,7 @@ function DateRow({
             onClose={() => setEditingDate(false)}
           />
         )}
-        {canManage && managing && <ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} />}
+        {canManage && managing && <Suspense fallback={<Skeleton kind="lines" />}><ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} /></Suspense>}
     </div>
     </div>
   );

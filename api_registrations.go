@@ -565,6 +565,15 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 		if res.RowsAffected == 0 {
 			continue // lost a race with another seat-changing write
 		}
+		next := r
+		next.Status = models.RegGoing
+		actorID := uint(0)
+		if actor != nil {
+			actorID = *actor
+		}
+		if err := auditRegistration(tx, actorID, audit.RegistrationChanged, ev.ID, r, next, ""); err != nil {
+			return nil, err
+		}
 		ids, err := notifyRegistrationPromoted(tx, ev, o, r, raw, actor, a)
 		if err != nil {
 			return nil, err
@@ -739,7 +748,11 @@ func auditRegistration(tx *gorm.DB, actor uint, action string, eventID uint, old
 	meta["oldGuestCount"], meta["guestCount"] = old.GuestCount, next.GuestCount
 	meta["oldChildcareCount"], meta["childcareCount"] = old.ChildcareCount, next.ChildcareCount
 	meta["oldChildcareRequested"], meta["childcareRequested"] = old.ChildcareRequested, next.ChildcareRequested
-	return audit.Write(tx, audit.Entry{Actor: &actor, Action: action, TargetType: "event", TargetID: eventID, Meta: meta, IP: ip})
+	var actorID *uint
+	if actor != 0 {
+		actorID = &actor
+	}
+	return audit.Write(tx, audit.Entry{Actor: actorID, Action: action, TargetType: "event", TargetID: eventID, Meta: meta, IP: ip})
 }
 
 func registrationMeta(r models.Registration) map[string]any {
@@ -748,7 +761,7 @@ func registrationMeta(r models.Registration) map[string]any {
 	if r.HouseholdPersonID != nil {
 		typ, id = "household_person", r.HouseholdPersonID
 	}
-	return map[string]any{"registrationId": r.ID, "subjectType": typ, "subjectId": id, "userId": r.UserID, "personId": r.HouseholdPersonID, "registeredBy": r.RegisteredBy, "occurrenceId": r.OccurrenceID, "attendanceMode": attendanceModeOf(r.AttendanceMode)}
+	return map[string]any{"registrationId": r.ID, "subjectType": typ, "subjectId": id, "userId": r.UserID, "personId": r.HouseholdPersonID, "registeredBy": r.RegisteredBy, "occurrenceId": r.OccurrenceID, "attendanceMode": attendanceModeOf(r.AttendanceMode), "status": r.Status, "guestCount": r.GuestCount, "childcareCount": r.ChildcareCount, "childcareRequested": r.ChildcareRequested}
 }
 
 // registrationJSON is the register endpoint's registration object
@@ -1122,9 +1135,13 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		}).Error; err != nil {
 			return err
 		}
+		meta := registrationMeta(r)
+		meta["note"] = note
+		meta["oldStatus"] = r.Status
+		meta["newStatus"] = models.RegRemoved
 		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RegistrationRemoved,
 			TargetType: "event", TargetID: ev.ID,
-			Meta: registrationMeta(r),
+			Meta: meta,
 			IP:   c.ClientIP(),
 		}); err != nil {
 			return err
@@ -1364,6 +1381,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		var r models.Registration
 		found := tx.Where("user_id = ? AND occurrence_id = ?", target.ID, locked.ID).
 			First(&r).RowsAffected == 1
+		before := r
 		count, ages := body.childcareRequest.values(r)
 		if err := checkChildcare(tx, ev, locked.ID, r.ID, count); err != nil {
 			return err
@@ -1410,7 +1428,15 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			}
 		}
 		action := audit.RegistrationAdded
-		meta := map[string]any{"userId": target.ID, "occurrenceId": locked.ID, "attendanceMode": mode}
+		after := r
+		after.Status = models.RegGoing
+		after.GuestCount = guestCount
+		after.AttendanceMode = mode
+		after.ChildcareCount = count
+		after.ChildcareAgesNote = ages
+		meta := registrationMeta(after)
+		meta["oldStatus"] = before.Status
+		meta["newStatus"] = models.RegGoing
 		if over {
 			action = audit.RegistrationAddedOverCapacity
 			meta["seats"] = used + seats
@@ -1486,13 +1512,10 @@ func (a *App) promoteOnDisable(tx *gorm.DB, userID uint) ([]uint, error) {
 	return emailed, nil
 }
 
-// restoreRegistrations runs when a disabled account is enabled again,
-// beside restoreMemberships. Only going rows on future scheduled
-// occurrences are checked, ordered by occurrence start then registration
-// id, locking one occurrence at a time. A row that fits stays going and
-// counts again once the account is enabled. A row that would overfill is
-// deleted, audited (registration.not_restored), and the person gets an
-// ask-a-leader notice. Waitlisted rows keep their place and need no check.
+// restoreRegistrations checks future answers in occurrence/registration ID
+// order while the holder is disabled. Accepted going rows accumulate usage
+// across both seat pools and care; ineligible or non-fitting rows are
+// audited and dropped. Eligible waiters retain their original place.
 func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, intendedStatus string) ([]uint, error) {
 	actor := apiUser(c)
 	now := time.Now().UTC()

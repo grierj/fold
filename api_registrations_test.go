@@ -1587,3 +1587,38 @@ func TestConcurrentHouseholdAndAccountSeats(t *testing.T) {
 		t.Fatal("lost waitlisted subjects")
 	}
 }
+
+func TestTwoHouseholdAdultsRaceForSamePerson(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "SamePersonRace")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+	holder, c, spouse, _ := householdFamily(t, app, admin, "firstadult")
+	second := newTestUser(t, app, "secondadult", "password1234", models.RoleMember)
+	h := getMyHousehold(t, c)
+	if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: h.ID, UserID: second.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
+		t.Fatal(err)
+	}
+	secondClient := loginAPI(t, app, "secondadult", "password1234")
+	var wg sync.WaitGroup
+	answers := make(chan int, 2)
+	for _, client := range []*apiClient{c, secondClient} {
+		wg.Add(1)
+		go func(client *apiClient) {
+			defer wg.Done()
+			w := client.do("PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", map[string]any{"date": date, "people": []map[string]any{{"personId": spouse.ID, "status": "going"}}}, true)
+			answers <- w.Code
+		}(client)
+	}
+	wg.Wait()
+	close(answers)
+	for code := range answers {
+		if code != 200 {
+			t.Fatalf("concurrent same-person RSVP: %d", code)
+		}
+	}
+	var rows []models.Registration
+	app.DB.Find(&rows)
+	if len(rows) != 1 || rows[0].Status != models.RegGoing || rows[0].RegisteredBy == nil || (*rows[0].RegisteredBy != holder.ID && *rows[0].RegisteredBy != second.ID) {
+		t.Fatalf("duplicate or transferred subject: %+v", rows)
+	}
+}

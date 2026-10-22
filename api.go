@@ -387,9 +387,8 @@ func membershipRel(m models.Membership) policy.Rel {
 // removed (DEC-35).
 const memberRemoved = "removed"
 
-// listedUsers joins memberships or registrations (the table name) to accounts
-// that are listed: not deleted and not disabled. A disabled account keeps its
-// memberships and registrations, but they are hidden and never counted (DEC-38).
+// listedUsers is the account-only membership join: not deleted or disabled.
+// Registration queries use listedRegistrations for their two subject types.
 func listedUsers(table string) string {
 	return "JOIN users ON users.id = " + table + ".user_id AND users.deleted_at IS NULL AND users.status <> 'disabled'"
 }

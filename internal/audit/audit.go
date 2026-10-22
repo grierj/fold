@@ -85,7 +85,7 @@ const (
 
 	// RegistrationPromoted: a leader or host promoted one waitlisted row
 	// by hand (M1.5). Target is the event. Meta: userId, occurrenceId.
-	// Automatic promotions are not audited; the notification row exists.
+	// Automatic transitions also record registration.changed.
 	RegistrationPromoted = "registration.promoted"
 
 	// RegistrationAddedOverCapacity: a leader, host, or admin added

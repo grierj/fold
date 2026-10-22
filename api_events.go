@@ -280,11 +280,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	return out
 }
 
-// attendeeNames loads listed registrants for the occurrences whose events
-// allow names. Disabled accounts stay out via listedUsers, and removed
-// registrations are never listed. Waitlisted names follow the same
-// CanSeeAttendeeNames rule as going names; they come back in promotion
-// (line) order so the UI can render the waitlist section.
+// occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.
 func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc string) occurrenceJSON {
 	loc, err := time.LoadLocation(ev.TZID)
 	if err != nil {

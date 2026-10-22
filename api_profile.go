@@ -994,7 +994,7 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 	if body.CareNotes != nil {
 		careNotes = strings.TrimSpace(*body.CareNotes)
 	}
-	if len(careNotes) > 5000 {
+	if utf8.RuneCountInString(careNotes) > 5000 {
 		jsonError(c, http.StatusBadRequest, "care notes are too long")
 		return
 	}
@@ -1125,7 +1125,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 	}
 	if body.CareNotes != nil {
 		careNotes := strings.TrimSpace(*body.CareNotes)
-		if len(careNotes) > 5000 {
+		if utf8.RuneCountInString(careNotes) > 5000 {
 			jsonError(c, http.StatusBadRequest, "care notes are too long")
 			return
 		}
