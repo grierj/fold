@@ -219,13 +219,13 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 	// active admin exists; a sole admin may, and the audit marks it.
 	selfConfirm := confirm && link.GuardianUserID == me.ID
 	if selfConfirm {
-		var admins int64
-		if err := a.DB.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).
-			Count(&admins).Error; err != nil {
+		var otherAdmins int64
+		if err := a.DB.Model(&models.User{}).Where("id <> ? AND role = ? AND status = ?", me.ID, models.RoleAdmin, models.UserActive).
+			Count(&otherAdmins).Error; err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not check admins")
 			return
 		}
-		if admins > 1 {
+		if otherAdmins > 0 {
 			jsonError(c, http.StatusForbidden, "another admin must confirm your own guardian link")
 			return
 		}
