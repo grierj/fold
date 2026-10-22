@@ -117,9 +117,9 @@ PUT    /api/v1/me/household                 → 200 {household}  {name?, address
 POST   /api/v1/me/household/people          → 201 {person}  {firstName, lastName, kind, birthDate?, careNotes?, photoConsent?}  (creates the household on first use)
 PUT    /api/v1/me/household/people/:id      → 200 {person}
 DELETE /api/v1/me/household/people/:id      → 200 {}
-GET    /api/v1/admin/guardian-links?status=pending  → 200 {links}   (admin)
-POST   /api/v1/admin/guardian-links/:id/confirm     → 200 {link}    {checkNote} (admin; note required)
-POST   /api/v1/admin/guardian-links/:id/reject      → 200 {link}    (admin)
+GET    /api/v1/admin/guardian-links?status=pending  → 200 {guardianLinks}   (admin)
+POST   /api/v1/admin/guardian-links/:id/confirm     → 200 {guardianLink}    {checkNote} (admin; note required)
+POST   /api/v1/admin/guardian-links/:id/reject      → 200 {guardianLink}    {note?} (admin)
 ```
 
 `GET /me/household` never writes (Warden, #106). The household is created by
