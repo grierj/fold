@@ -9,6 +9,7 @@ import { EventDetail } from "./EventDetail";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false }) }));
 vi.mock("../api", async (importActual) => ({
+  ...(await importActual<typeof import("../api")>()),
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
   Households: { mine: vi.fn().mockResolvedValue({ household: null }) },
   Events: { get: vi.fn(), updateOccurrence: vi.fn() },

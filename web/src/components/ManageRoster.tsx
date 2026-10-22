@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Events } from "../api";
+import { Events, attendeeSubject } from "../api";
 import type { Attendee, EventOccurrence } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { AttendeeDetails } from "./AttendeeDetails";
@@ -28,7 +28,8 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
       if (kind === "remove") await Events.removeRegistration(instance.eventId, instance.date, a.registrationId);
       else if (kind === "promote") await Events.promoteRegistration(instance.eventId, instance.date, a.registrationId);
       else {
-        const target = a.householdPerson ? { personId: a.householdPerson.personId, registeredBy: a.householdPerson.registeredBy.userId } : a.userId ? { userId: a.userId } : null;
+        const subject = attendeeSubject(a);
+        const target = subject?.kind === "household" ? { personId: subject.person.personId, registeredBy: subject.person.registeredBy.userId } : subject?.kind === "user" ? { userId: subject.userId } : null;
         if (!target) return;
         try { await Events.restoreRegistration(instance.eventId, instance.date, target, a.attendanceMode, full); }
         catch (e) {
@@ -60,13 +61,13 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
       <div className="min-w-0 flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} /><span className="text-sm text-text-muted">{a.status}</span></div>
       <div className="flex flex-wrap gap-2">
         {a.status === "waitlisted" && <Button variant="secondary" disabled={busy !== null} onClick={() => void action(a, "promote")}>Promote</Button>}
-        <Button variant="danger-outline" disabled={busy !== null} onClick={() => void action(a, "remove")}>Remove<span className="sr-only"> {a.name}</span></Button>
+        <Button variant="danger-outline" aria-label={`Remove ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "remove")}>Remove</Button>
       </div>
     </li>)}</ul>
     {(instance.removedRegistrations?.length ?? 0) > 0 && <section aria-label="Removed or left out" className="my-4">
       <h4 className="font-semibold">Removed or left out</h4>
       <ul className="space-y-3 mt-2">{instance.removedRegistrations?.map((a) => <li key={a.registrationId} className="flex flex-wrap items-start justify-between gap-3">
-        <AttendeeDetails attendee={a} childcare={false} /><Button variant="secondary" disabled={busy !== null} onClick={() => void action(a, "restore")}>Add back<span className="sr-only"> {a.name}</span></Button>
+        <AttendeeDetails attendee={a} childcare={false} /><Button variant="secondary" aria-label={`Add back ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "restore")}>Add back</Button>
       </li>)}</ul>
     </section>}
     <form onSubmit={add} className="space-y-2"><Field label="Add someone" hint="Their email address"><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></Field><Button type="submit" variant="secondary" disabled={busy !== null}>{busy === "add" ? "Adding…" : "Add"}</Button></form>

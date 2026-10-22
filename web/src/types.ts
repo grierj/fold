@@ -480,3 +480,20 @@ export interface MyHouseholdRegistration {
   childcareRequested: boolean;
   unavailable: boolean;
 }
+
+export interface RegistrationCommand {
+  date: string;
+  status?: RegistrationStatus;
+  guestCount?: number;
+  attendanceMode?: AttendanceMode;
+  childcareCount?: number;
+  childcareAgesNote?: string;
+  people?: HouseholdAnswer[];
+}
+
+export interface HouseholdAnswer {
+  personId: number;
+  status: "going" | "maybe" | "declined";
+  attendanceMode?: AttendanceMode;
+  childcareRequested?: boolean;
+}

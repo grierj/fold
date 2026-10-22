@@ -2,8 +2,8 @@ import { Link } from "react-router-dom";
 import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequestField";
 import { Button } from "./ui/Button";
 import { useId, useRef, useState } from "react";
-import { Events, type RegistrationCommand } from "../api";
-import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson } from "../types";
+import { Events } from "../api";
+import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors } from "./ui/Field";
 
@@ -285,7 +285,10 @@ function HouseholdRsvp({ instance, people, onChange }: { instance: EventOccurren
     } catch (e) {
       setError(errorText(e, "We couldn't save your answers."));
       const personId = e && typeof e === "object" && "data" in e && e.data && typeof e.data === "object" && "personId" in e.data ? e.data.personId : undefined;
-      if (typeof personId === "number") root.current?.querySelector<HTMLElement>(`[data-household-person="${personId}"] input`)?.focus();
+      if (typeof personId === "number") {
+        showFieldErrors(root.current, () => setBusy(false));
+        root.current?.querySelector<HTMLElement>(`[data-household-person="${personId}"] input`)?.focus();
+      }
     } finally { setBusy(false); }
   }
 

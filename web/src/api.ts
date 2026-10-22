@@ -84,6 +84,9 @@ import type {
   AccountRequest,
   AgeBand,
   AttendanceMode,
+  Attendee,
+  HouseholdAttendee,
+  RegistrationCommand,
   CalendarFeed,
   EventDetailResponse,
   EventHostRow,
@@ -270,16 +273,6 @@ export const Calendar = {
     return api<{ occurrences: CalendarOccurrence[]; truncated: boolean }>(`/calendar?${p}`);
   },
 };
-
-export interface RegistrationCommand {
-  date: string;
-  status?: RegistrationStatus;
-  guestCount?: number;
-  attendanceMode?: AttendanceMode;
-  childcareCount?: number;
-  childcareAgesNote?: string;
-  people?: { personId: number; status: "going" | "maybe" | "declined"; attendanceMode: AttendanceMode; childcareRequested: boolean }[];
-}
 
 export const Events = {
   listOpen: () => api<{ events: EventOccurrence[] }>("/events"),
@@ -601,3 +594,11 @@ export const AdminGuardianLinks = {
   reject: (id: number, note?: string) =>
     api<{ guardianLink: GuardianLink }>(`/admin/guardian-links/${id}/reject`, { method: "POST", body: { note: note || undefined } }),
 };
+
+// Mixed wire rows become an exclusive presentation identity at the API
+// boundary. Invalid both/neither identities never become action targets.
+export function attendeeSubject(row: Attendee): { kind: "user"; userId: number } | { kind: "household"; person: HouseholdAttendee } | null {
+  if (row.userId !== undefined && !row.householdPerson) return { kind: "user", userId: row.userId };
+  if (row.userId === undefined && row.householdPerson) return { kind: "household", person: row.householdPerson };
+  return null;
+}

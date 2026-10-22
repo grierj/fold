@@ -1,3 +1,4 @@
+import { attendeeSubject } from "../api";
 import { useEffect, useId, useState } from "react";
 import type { Attendee, HouseholdAttendee, RegisteredBy } from "../types";
 import { Button } from "./ui/Button";
@@ -8,7 +9,8 @@ import { ChildcareBadge } from "./ChildcareBadge";
 // The API has already authorized each field. Notes are also cleared locally
 // when time-limited access expires or the tab returns after that boundary.
 export function AttendeeDetails({ attendee: a, childcare = true }: { attendee: Attendee; childcare?: boolean }) {
-  const person: HouseholdAttendee | undefined = a.householdPerson;
+  const subject = attendeeSubject(a);
+  const person: HouseholdAttendee | undefined = subject?.kind === "household" ? subject.person : undefined;
   const holder: RegisteredBy | undefined = person?.registeredBy;
   const [clock, setClock] = useState(Date.now());
   useEffect(() => {
@@ -19,6 +21,7 @@ export function AttendeeDetails({ attendee: a, childcare = true }: { attendee: A
     return () => { window.removeEventListener("focus", update); if (timer !== undefined) window.clearTimeout(timer); };
   }, [person?.careNotesVisibleUntil]);
   const notes = person?.careNotesVisibleUntil && clock > new Date(person.careNotesVisibleUntil).getTime() ? undefined : person?.careNotes;
+  if (!subject) return null;
   return <div className="min-w-0 break-words">
     <span>{a.name}{person && <> · {person.householdName} (via {holder?.name})</>}</span>
     <span className="inline-flex flex-wrap items-center gap-1 ml-1">

@@ -533,6 +533,10 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 // that their registrations were cancelled. It names neither the group nor
 // the place and links nowhere private (PR #41).
 func notifyRegistrationCancelled(tx *gorm.DB, actor uint, ev *models.Event, userID uint) ([]uint, error) {
+	u := userIn(tx, userID)
+	if u == nil || u.Status == models.UserDisabled {
+		return nil, nil
+	}
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationCancelled, To: []uint{userID}, Actor: &actor,
 		SubjectType: "event", SubjectID: ev.ID, Link: "/", Vars: notify.Vars{Event: ev.Title},

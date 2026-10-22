@@ -88,6 +88,7 @@ var tsContracts = []struct {
 	{attendeeJSON{}, "Attendee"},
 	{registrationJSON{}, "RegistrationResponse"},
 	{registrationBatchJSON{}, "RegistrationBatch"},
+ {householdAnswer{}, "HouseholdAnswer"},
 	{householdRegistrationJSON{}, "HouseholdRegistration"},
 	{myHouseholdRegistrationJSON{}, "MyHouseholdRegistration"},
 	{registeredByJSON{}, "RegisteredBy"},

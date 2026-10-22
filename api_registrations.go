@@ -337,8 +337,10 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 	if reg.HouseholdPersonID != nil {
 		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
 	}
-	if actor!=nil && *actor==userID {actor=nil}
- vars.ManageURL = app.emailBaseURL() + "/guest/manage/" + manageRaw
+	if actor != nil && *actor == userID {
+		actor = nil
+	}
+	vars.ManageURL = app.emailBaseURL() + "/guest/manage/" + manageRaw
 	// A promoted person is going now, so a video link set to
 	// registered_only may reach them (5.8, M1.8); the email carries it,
 	// the bell doesn't.
@@ -433,6 +435,10 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
 	reg models.Registration, note string, actor uint) ([]uint, error) {
 	userID := registrationHolder(reg)
+	u := userIn(tx, userID)
+	if u == nil || u.Status == models.UserDisabled {
+		return nil, nil
+	}
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
 	if reg.HouseholdPersonID != nil {
 		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
@@ -1508,6 +1514,7 @@ func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, int
 				return nil, err
 			}
 			currentID = r.OccurrenceID
+			ev = models.Event{}
 			if err := tx.First(&ev, o.EventID).Error; err != nil {
 				return nil, err
 			}

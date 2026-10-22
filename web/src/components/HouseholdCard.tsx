@@ -236,8 +236,8 @@ export function HouseholdCard() {
                       {p.careNotes && <div className="text-sm text-text-muted">Care notes: {p.careNotes}</div>}
                     </div>
                     <div className="flex gap-2">
-                      <Button variant="secondary" onClick={() => { setMetadata(false); setEditing(p.id); }}>Edit<span className="sr-only"> {p.name}</span></Button>
-                      <Button variant="danger-outline" onClick={() => remove(p)}>Remove<span className="sr-only"> {p.name}</span></Button>
+                      <Button variant="secondary" aria-label={`Edit ${p.name}`} onClick={() => { setMetadata(false); setEditing(p.id); }}>Edit</Button>
+                      <Button variant="danger-outline" aria-label={`Remove ${p.name}`} onClick={() => remove(p)}>Remove</Button>
                     </div>
                   </div>
                 )}

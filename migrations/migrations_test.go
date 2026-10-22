@@ -462,7 +462,7 @@ func TestHouseholdRegistrationMigration24(t *testing.T) {
 	exec(`INSERT INTO users(id,email,status) VALUES(1,'holder@example.com','active'),(2,'other@example.com','active')`)
 	exec(`INSERT INTO households(id,name,created_by) VALUES(1,'Household',1)`)
 	exec(`INSERT INTO household_people(id,household_id,first_name,kind,created_by) VALUES(1,1,'Kit','child',1),(2,1,'Mary','adult',1)`)
-	exec(`INSERT INTO events(id,title,starts_local,duration_minutes,tzid,created_by) VALUES(1,'Event','2026-12-01T18:00',60,'UTC',1)`)
+	exec(`INSERT INTO events(id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by) VALUES(1,'Event','','2026-12-01T18:00',60,'UTC','','','public',1)`)
 	exec(`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at) VALUES(1,1,'2026-12-01','2026-12-01 18:00+00','2026-12-01 19:00+00')`)
 	exec(`INSERT INTO registrations(occurrence_id,user_id,status) VALUES(1,1,'going')`)
 	if _, err := p.UpTo(ctx, 24); err != nil {
