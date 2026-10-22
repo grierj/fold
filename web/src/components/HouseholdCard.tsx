@@ -233,7 +233,7 @@ export function HouseholdCard() {
                         )}
                       </div>
                       {p.birthDate && <div className="text-sm text-text-muted mt-1">Born {formatBirthDate(p.birthDate)}</div>}
-                      {p.careNotes && <div className="text-sm text-text-muted">Care notes: {p.careNotes}</div>}
+                      {p.careNotes && <div className="text-sm text-text-muted whitespace-pre-wrap wrap-anywhere min-w-0">Care notes: {p.careNotes}</div>}
                     </div>
                     <div className="flex gap-2">
                       <Button variant="secondary" aria-label={`Edit ${p.name}`} onClick={() => { setMetadata(false); setEditing(p.id); }}>Edit</Button>

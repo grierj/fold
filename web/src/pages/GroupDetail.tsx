@@ -883,7 +883,7 @@ export function GroupDetail() {
                     onRsvp={handleRsvp}
             people={people}
                     onCancelled={handleCancelled}
-                    onChanged={() => void load()}
+                    onChanged={() => void load(true)}
                   />
                 ))}
               </div>

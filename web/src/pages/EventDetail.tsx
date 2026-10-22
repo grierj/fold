@@ -153,7 +153,7 @@ export function EventDetail() {
             canManage={canManage}
             onRsvp={handleRsvp}
             people={people}
-            onChanged={() => void load()}
+            onChanged={() => void load(true)}
             onNeedLogin={() => navigate("/login", { state: { from: `/events/${id}` } })}
           />
         ))}

@@ -78,7 +78,9 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
 export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurrence; pointerOnly?: boolean; stacked?: boolean }) {
   const time = formatTime(occ.startsAt);
   const title = occ.title || occ.groupName || "";
-  const name = [`${time} ${title}`, occ.churchWide ? "Church-wide" : occ.groupName, occ.groupDeleted && "deleted group", occ.remoteAvailable && "Remote", occ.childcareAvailable && "Childcare", occ.myStatus && STATUS[occ.myStatus]]
+  // The name reads in the chip's visible order (time, title, badges) so the
+  // visible text is part of it (axe label-content-name-mismatch).
+  const name = [`${time} ${title}`, occ.remoteAvailable && "Remote", occ.childcareAvailable && "Childcare", occ.churchWide ? "Church-wide" : occ.groupName, occ.groupDeleted && "deleted group", occ.myStatus && STATUS[occ.myStatus]]
     .filter(Boolean)
     .join(", ");
   return (
@@ -98,7 +100,7 @@ export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurren
           <span className="flex items-center gap-1 text-xs text-text-muted tabular-nums">
             {occ.myStatus === "going" && <CheckIcon className="w-3 h-3 shrink-0" />}
             {time}
-          </span>
+          </span>{" "}
           <span className="line-clamp-2 text-sm">{title}</span>
         </>
       ) : (
@@ -109,8 +111,8 @@ export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurren
           </span>
         </>
       )}
-      {occ.remoteAvailable && <RemoteBadge />}
-      {occ.childcareAvailable && <ChildcareBadge />}
+      {occ.remoteAvailable && <> <RemoteBadge /></>}
+      {occ.childcareAvailable && <> <ChildcareBadge /></>}
     </Link>
   );
 }

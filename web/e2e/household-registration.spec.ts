@@ -59,4 +59,6 @@ test("household profile, pending link, independent answers, privacy and recovery
   await expect(page.getByRole("region", { name: "Removed or left out" })).toBeVisible();
   await page.getByRole("button", { name: "Add back Kit" }).click();
   await expect(page.getByRole("button", { name: "Remove Kit" })).toBeVisible();
+  // Leave the admin bell as later specs expect (notifications.spec.ts).
+  await (await apiAs(request, "grier"))("POST", "/notifications/read-all", {});
 });
