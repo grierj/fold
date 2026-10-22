@@ -58,7 +58,7 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
     {error && <FormError>{error}</FormError>}
     {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by email below." />}
     <ul className="space-y-3 my-3">{roster.map((a) => <li key={a.registrationId} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-      <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} /><div className="text-sm text-text-muted">{statusLabel(a, roster)}</div></div>
+      <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} status={statusLabel(a, roster)} /></div>
       <div className="flex flex-wrap gap-2">
         {a.status === "waitlisted" && <Button variant="secondary" disabled={busy !== null} onClick={() => void action(a, "promote")}>Promote</Button>}
         <Button variant="danger-outline" aria-label={`Remove ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "remove")}>Remove</Button>

@@ -26,6 +26,7 @@ export function Invite() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [waiting, setWaiting] = useState(false);
 
   useEffect(() => {
     if (!token) {
@@ -53,7 +54,9 @@ export function Invite() {
     setBusy(true);
     setError(null);
     try {
-      await InvitationsApi.accept({ token, name, password });
+      const result = await InvitationsApi.accept({ token, name, password });
+      setPassword("");
+      if (result.pendingConsent) { setWaiting(true); return; }
       await refresh();
       navigate("/", { replace: true });
     } catch (e) {
@@ -79,6 +82,11 @@ export function Invite() {
     );
   }
 
+  if (waiting) return <div className="max-w-md mx-auto px-4 py-12" role="status">
+    <h1 className="text-3xl font-bold mb-4">Your account is waiting for consent</h1>
+    <p>Your sign-ups have moved to your account. An admin must check your guardian link. You cannot sign in yet. Ask your church office about the next steps.</p>
+  </div>;
+
   if (!token || (!invitation && error)) {
     return (
       <div className="max-w-md mx-auto px-4 py-12">
@@ -100,6 +108,10 @@ export function Invite() {
   return (
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-2">You're invited to {site}</h1>
+      {invitation?.conversion && <div className="mb-4 space-y-2">
+        <p>Create your own account for {invitation.name}. Your past and upcoming sign-ups will move to your account when you accept. Group memberships do not move, so some private events may no longer be available.</p>
+        {invitation.accountType === "teen" && <p>Your account will wait for consent and an admin guardian check. You cannot sign in yet.</p>}
+      </div>}
       {invitation?.groupName && (
         <p className="text-text-muted mb-6">
           to join the group <span className="font-semibold">{invitation.groupName}</span>
@@ -113,6 +125,7 @@ export function Invite() {
             value={name}
             onChange={(e) => setName(e.target.value)}
             maxLength={100}
+            readOnly={invitation?.conversion}
             required
           />
         </Field>

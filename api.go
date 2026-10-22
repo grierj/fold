@@ -200,6 +200,7 @@ type occurrenceJSON struct {
 }
 
 type attendeeJSON struct {
+	AccountType        string                 `json:"accountType,omitempty"`
 	RegistrationID     uint                   `json:"registrationId"`
 	HouseholdPerson    *householdAttendeeJSON `json:"householdPerson,omitempty"`
 	ChildcareRequested *bool                  `json:"childcareRequested,omitempty"`

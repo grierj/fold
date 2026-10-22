@@ -83,6 +83,8 @@ var tsContracts = []struct {
 	{householdAccountJSON{}, "HouseholdAccount"},
 	{guardianLinkJSON{}, "GuardianLink"},
 	{invitationJSON{}, "Invitation"},
+	{conversionJSON{}, "HouseholdConversion"},
+	{invitationAcceptanceJSON{}, "InvitationAcceptance"},
 	{accountRequestJSON{}, "AccountRequest"},
 	{guestRegistrationJSON{}, "GuestRegistration"},
 	{attendeeJSON{}, "Attendee"},

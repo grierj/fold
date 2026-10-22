@@ -120,10 +120,11 @@ func (a *App) eligibleRegistrationForHolder(tx *gorm.DB, r models.Registration, 
 	if override != nil {
 		f.users[override.ID] = override
 	}
-	return f.eligible(a, tx, r, ev, a.householdClock(now), map[uint]bool{})
+	f.clock = func() time.Time { return a.householdClock(now) }
+	return f.eligible(a, tx, r, ev, map[uint]bool{})
 }
 
-func (f subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, today time.Time, access map[uint]bool) bool {
+func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *models.Event, access map[uint]bool) bool {
 	holder := f.users[registrationHolder(r)]
 	if holder == nil || holder.Status == models.UserDisabled {
 		return false
@@ -145,7 +146,7 @@ func (f subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *m
 	}
 	acct, found := f.accounts[holder.ID]
 	rel := householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID)
-	if policy.CanRegisterHouseholdPerson(asPerson(holder), asPerson(holder), rel, rel, householdFacts(person, f.links[person.ID], today), holder.Status == models.UserActive, allowed, allowed) != "" {
+	if policy.CanRegisterHouseholdPerson(asPerson(holder), asPerson(holder), rel, rel, householdFacts(person, f.links[person.ID], f.day()), holder.Status == models.UserActive, allowed, allowed) != "" {
 		return false
 	}
 	return !r.ChildcareRequested || (person.Kind == models.HouseholdChild && r.AttendanceMode != models.AttendanceRemote)
@@ -385,6 +386,7 @@ func (f *subjectFacts) attendee(r models.Registration, o models.EventOccurrence,
 		out.ChildcareAgesNote = &r.ChildcareAgesNote
 	}
 	if r.HouseholdPersonID == nil {
+		out.AccountType = holder.AccountType
 		return &out
 	}
 	person := f.people[*r.HouseholdPersonID]

@@ -12,6 +12,7 @@ import { errorText } from "../lib/errors";
 import { Choices, Field, FormError, Input, Radio, showFieldErrors } from "../components/ui/Field";
 import { Skeleton } from "../components/ui/Skeleton";
 import { ErrorNotice } from "../components/ErrorNotice";
+import { HouseholdSkeleton } from "../components/HouseholdSkeleton";
 
 // Only Profile shows the household card, so it loads on its own (bundle budget).
 const HouseholdCard = lazy(() => import("../components/HouseholdCard").then((m) => ({ default: m.HouseholdCard })));
@@ -321,7 +322,7 @@ export function ProfilePage() {
 
       <CalendarFeedCard />
 
-      {user.accountType !== "teen" && <Suspense fallback={<Skeleton kind="lines" />}><HouseholdCard /></Suspense>}
+      {user.accountType !== "teen" && <Suspense fallback={<HouseholdSkeleton />}><HouseholdCard /></Suspense>}
 
       {user.accountType !== "teen" && (
         <div className="mt-6">

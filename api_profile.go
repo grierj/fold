@@ -557,30 +557,30 @@ func (a *App) serveUpload(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 type householdPersonJSON struct {
-	Conversion *conversionJSON `json:"conversion,omitempty"`
-	CanConvert bool `json:"canConvert"`
-	ID                      uint    `json:"id"`
-	HouseholdID             uint    `json:"householdId"`
-	FirstName               string  `json:"firstName"`
-	LastName                string  `json:"lastName"`
-	Name                    string  `json:"name"`
-	Kind                    string  `json:"kind"` // child | teen | adult
-	BirthDate               string  `json:"birthDate,omitempty"`
-	CareNotes               *string `json:"careNotes,omitempty"`
-	RegistrationEligibility string  `json:"registrationEligibility"`
-	Age                     *int    `json:"age,omitempty"`
-	PhotoConsent            bool    `json:"photoConsent"`
-	LinkStatus              string  `json:"linkStatus"` // pending | confirmed | rejected | revoked | none
-	GuardianLinkID          *uint   `json:"guardianLinkId,omitempty"`
-	ConvertedUserID         *uint   `json:"convertedUserId,omitempty"`
-	CreatedBy               uint    `json:"createdBy"`
+	Conversion              *conversionJSON `json:"conversion,omitempty"`
+	CanConvert              bool            `json:"canConvert"`
+	ID                      uint            `json:"id"`
+	HouseholdID             uint            `json:"householdId"`
+	FirstName               string          `json:"firstName"`
+	LastName                string          `json:"lastName"`
+	Name                    string          `json:"name"`
+	Kind                    string          `json:"kind"` // child | teen | adult
+	BirthDate               string          `json:"birthDate,omitempty"`
+	CareNotes               *string         `json:"careNotes,omitempty"`
+	RegistrationEligibility string          `json:"registrationEligibility"`
+	Age                     *int            `json:"age,omitempty"`
+	PhotoConsent            bool            `json:"photoConsent"`
+	LinkStatus              string          `json:"linkStatus"` // pending | confirmed | rejected | revoked | none
+	GuardianLinkID          *uint           `json:"guardianLinkId,omitempty"`
+	ConvertedUserID         *uint           `json:"convertedUserId,omitempty"`
+	CreatedBy               uint            `json:"createdBy"`
 }
 
 type householdAccountJSON struct {
 	UserID   uint   `json:"userId"`
 	Name     string `json:"name"`
 	Relation string `json:"relation"` // guardian | adult | teen
-	Status string `json:"status"`
+	Status   string `json:"status"`
 }
 
 type householdJSON struct {
@@ -747,9 +747,11 @@ func (a *App) toHouseholdPersonJSON(person *models.HouseholdPerson, links []mode
 		eligibility = "converted"
 	}
 	canConvert := false
-	if viewer != nil { canConvert, _ = a.conversionAllowed(a.DB, viewer, person, a.householdClock(time.Now().UTC())) }
+	if viewer != nil {
+		canConvert, _ = a.conversionAllowed(a.DB, viewer, person, a.householdClock(time.Now().UTC()))
+	}
 	return householdPersonJSON{
-		CanConvert: canConvert,
+		CanConvert:              canConvert,
 		RegistrationEligibility: eligibility, Age: facts.AgeYears,
 		ID: person.ID, HouseholdID: person.HouseholdID,
 		FirstName: person.FirstName, LastName: person.LastName, Name: person.FullName(),
@@ -774,19 +776,27 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 	}
 	links := guardianLinksForPeople(a.DB, ids)
 	var invitations []models.Invitation
-	if len(ids) > 0 { a.DB.Where("household_person_id IN ? AND accepted_at IS NULL AND revoked_at IS NULL", ids).Find(&invitations) }
+	if len(ids) > 0 {
+		a.DB.Where("household_person_id IN ? AND accepted_at IS NULL AND revoked_at IS NULL", ids).Find(&invitations)
+	}
 	conversions := map[uint]conversionJSON{}
-	for i := range invitations { conversions[*invitations[i].HouseholdPersonID] = conversionMetadata(&invitations[i]) }
+	for i := range invitations {
+		conversions[*invitations[i].HouseholdPersonID] = conversionMetadata(&invitations[i])
+	}
 	for i := range people {
 		row := a.toHouseholdPersonJSON(&people[i], links[people[i].ID], viewer)
-		if conversion, ok := conversions[people[i].ID]; ok { row.Conversion = &conversion }
+		if conversion, ok := conversions[people[i].ID]; ok {
+			row.Conversion = &conversion
+		}
 		out.People = append(out.People, row)
 	}
 	var accounts []models.HouseholdAccount
 	a.DB.Where("household_id = ?", household.ID).Order("id").Find(&accounts)
 	for _, acct := range accounts {
 		var user models.User
-		if a.DB.First(&user, acct.UserID).Error != nil { continue }
+		if a.DB.First(&user, acct.UserID).Error != nil {
+			continue
+		}
 		out.Accounts = append(out.Accounts, householdAccountJSON{
 			UserID: acct.UserID, Name: user.PublicName(), Relation: acct.Relation, Status: user.Status,
 		})
@@ -1074,7 +1084,10 @@ func (a *App) loadMyHouseholdPerson(c *gin.Context) (*models.Household, *models.
 		jsonError(c, http.StatusNotFound, "household person not found")
 		return nil, nil, false
 	}
-	if person.ConvertedUserID != nil { jsonError(c, http.StatusConflict, "this person has their own account; use their account instead"); return nil, nil, false }
+	if person.ConvertedUserID != nil {
+		jsonError(c, http.StatusConflict, "this person has their own account; use their account instead")
+		return nil, nil, false
+	}
 	return &household, &person, true
 }
 
@@ -1157,12 +1170,18 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		if err := tx.First(person, person.ID).Error; err != nil {
 			return err
 		}
-		if person.ConvertedUserID != nil { return errConversionUnavailable }
+		if person.ConvertedUserID != nil {
+			return errConversionUnavailable
+		}
 		material := (body.FirstName != nil && strings.TrimSpace(*body.FirstName) != person.FirstName) ||
 			(body.LastName != nil && strings.TrimSpace(*body.LastName) != person.LastName) ||
 			(body.Kind != nil && newKind != person.Kind) ||
 			(body.BirthDate != nil && strings.TrimSpace(*body.BirthDate) != formatBirthDate(person.BirthDate))
-		if material { if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil { return err } }
+		if material {
+			if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil {
+				return err
+			}
+		}
 		oldKind := person.Kind
 		merged := *person
 		if body.Kind != nil {
@@ -1252,8 +1271,12 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		if err := tx.First(person, person.ID).Error; err != nil {
 			return err
 		}
-		if person.ConvertedUserID != nil { return errConversionUnavailable }
-		if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil { return err }
+		if person.ConvertedUserID != nil {
+			return errConversionUnavailable
+		}
+		if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil {
+			return err
+		}
 		ids, err := a.reconcileHouseholdPerson(tx, person, true, me.ID, c.ClientIP())
 		if err != nil {
 			return err

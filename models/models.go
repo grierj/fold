@@ -492,22 +492,22 @@ type AccountToken struct {
 // OverLimit records the inviting leader's or admin's explicit choice to
 // join over the group's member limit on acceptance (DEC-39, audited).
 type Invitation struct {
-	ID          uint      `gorm:"primaryKey"`
-	Email       string    `gorm:"type:citext;not null"`
-	Phone       string    `gorm:"not null;default:''"`
-	Name        string    `gorm:"not null;default:''"`
-	InvitedBy   uint      `gorm:"not null;index"`
-	Role        string    `gorm:"not null;default:member"` // member | leader (group role on accept)
-	AccountType string    `gorm:"not null;default:adult"`  // adult | teen (teens arrive in M1.10)
-	GroupID     *uint     `gorm:"index"`
-	Group       Group     `gorm:"foreignKey:GroupID"`
-	OverLimit   bool      `gorm:"not null;default:false"`
-	TokenHash   string    `gorm:"not null;uniqueIndex:idx_invitations_token_hash"`
-	ExpiresAt   time.Time `gorm:"not null"`
-	AcceptedAt  *time.Time
+	ID                uint      `gorm:"primaryKey"`
+	Email             string    `gorm:"type:citext;not null"`
+	Phone             string    `gorm:"not null;default:''"`
+	Name              string    `gorm:"not null;default:''"`
+	InvitedBy         uint      `gorm:"not null;index"`
+	Role              string    `gorm:"not null;default:member"` // member | leader (group role on accept)
+	AccountType       string    `gorm:"not null;default:adult"`  // adult | teen (teens arrive in M1.10)
+	GroupID           *uint     `gorm:"index"`
+	Group             Group     `gorm:"foreignKey:GroupID"`
+	OverLimit         bool      `gorm:"not null;default:false"`
+	TokenHash         string    `gorm:"not null;uniqueIndex:idx_invitations_token_hash"`
+	ExpiresAt         time.Time `gorm:"not null"`
+	AcceptedAt        *time.Time
 	HouseholdPersonID *uint `gorm:"uniqueIndex:idx_invitations_open_conversion,where:accepted_at IS NULL AND revoked_at IS NULL"`
-	RevokedAt *time.Time
-	CreatedAt   time.Time `gorm:"not null;default:now()"`
+	RevokedAt         *time.Time
+	CreatedAt         time.Time `gorm:"not null;default:now()"`
 }
 
 // MailOutbox is one email the devoutbox sender stored (5.6, M1.2): the

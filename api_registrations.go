@@ -515,10 +515,10 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 	}
 	facts := a.loadSubjectFacts(tx, wl, nil)
 	access := map[uint]bool{}
-	today := a.householdClock(now)
+	facts.clock = func() time.Time { return a.householdClock(now) }
 	entries := make([]events.WaitEntry, 0, len(wl))
 	for _, r := range wl {
-		if !facts.eligible(a, tx, r, ev, today, access) {
+		if !facts.eligible(a, tx, r, ev, access) {
 			continue
 		}
 		entries = append(entries, events.WaitEntry{ID: r.ID, Seats: 1 + r.GuestCount, Mode: attendanceModeOf(r.AttendanceMode), Childcare: effectiveChildcare(ev, r)})
@@ -1049,10 +1049,11 @@ func (a *App) apiRegister(c *gin.Context) {
 		var facts subjectFacts
 		if len(body.People) > 0 {
 			facts = a.loadSubjectFacts(tx, candidates, &holder)
+			facts.today = today
 		}
 		access := map[uint]bool{}
 		for _, r := range candidates {
-			if r.HouseholdPersonID != nil && !facts.eligible(a, tx, r, ev, today, access) {
+			if r.HouseholdPersonID != nil && !facts.eligible(a, tx, r, ev, access) {
 				return householdRegistrationError{code: "household_registration_holder_unavailable", personID: *r.HouseholdPersonID}
 			}
 		}
@@ -1586,12 +1587,13 @@ func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, int
 				}
 			}
 			facts = a.loadSubjectFacts(tx, currentRegs, nil)
+			facts.today = today
 			facts.users[holder.ID] = &holder
 			access = map[uint]bool{}
 		}
 		fits := true
 		if r.HouseholdPersonID != nil {
-			fits = facts.eligible(a, tx, r, &ev, today, access)
+			fits = facts.eligible(a, tx, r, &ev, access)
 		} else {
 			fits = a.canRegisterIn(tx, &holder, &ev)
 		}

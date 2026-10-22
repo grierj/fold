@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Households, type HouseholdPersonInput } from "../api";
 import type { Household, HouseholdAccount, HouseholdPerson } from "../types";
 import { errorText } from "../lib/errors";
-import { formatBirthDate } from "../lib/when";
+import { formatBirthDate, formatWhen } from "../lib/when";
 import { Button } from "./ui/Button";
 import { Checkbox, Choices, Field, FormError, Input, Radio, showFieldErrors, Textarea } from "./ui/Field";
 import { EmptyState } from "./ui/EmptyState";
 import { ErrorNotice } from "./ErrorNotice";
-import { Skeleton } from "./ui/Skeleton";
+import { HouseholdSkeleton } from "./HouseholdSkeleton";
 
 // "My household" on the Profile page (M1.9 slice 1). GET never creates the
 // household: it is null until the first person is added (Warden, PR 106).
@@ -118,6 +118,7 @@ export function HouseholdCard() {
   const [editing, setEditing] = useState<number | "new" | null>(null);
   const [status, setStatus] = useState("");
   const [metadata, setMetadata] = useState(false);
+  const [converting, setConverting] = useState<number | null>(null);
   const metadataInvoker = useRef<HTMLButtonElement | null>(null);
   // After a save or removal, where focus goes once the list re-renders (M1).
   const focusNext = useRef<number | "add" | "heading" | null>(null);
@@ -150,7 +151,7 @@ export function HouseholdCard() {
   }, [household, editing]);
 
   async function remove(p: HouseholdPerson) {
-    if (!confirm(`Remove ${p.name} from your household?`)) return;
+    if (!confirm(`Remove ${p.name} from your household?${p.conversion ? " This also cancels their account invitation." : ""}`)) return;
     setError(null);
     try {
       await Households.removePerson(p.id);
@@ -169,11 +170,13 @@ export function HouseholdCard() {
     </span>
   );
 
+  if (loading) return <HouseholdSkeleton />;
+
   return (
     <section ref={cardRef} className="mt-6" aria-labelledby="household-heading">
       <h2 id="household-heading" tabIndex={-1} className="text-xl font-bold mb-1 focus:outline-none">My household</h2>
+      <p className="text-sm mb-3"><a className="text-link underline" href="/help/members">Accounts and household help</a></p>
       <p role="status" aria-live="polite" className="sr-only">{status}</p>
-      {loading && <Skeleton kind="lines" />}
       {!loading && loadError && <ErrorNotice message={loadError} onRetry={() => { setLoading(true); load(); }} />}
       {!loading && !loadError && people.length === 0 && editing !== "new" && !metadata && (
         <EmptyState
@@ -198,11 +201,11 @@ export function HouseholdCard() {
           }} />}
         </div>
       )}
-      {household && people.length > 0 && (
+      {household && (
         <>
           {household.accounts.length > 1 && (
             <p className="text-sm text-text-muted mb-3">
-              Accounts: {household.accounts.map((a: HouseholdAccount) => a.name).join(", ")}
+              Accounts: {household.accounts.map((a: HouseholdAccount) => `${a.name}${a.status === "pending_consent" ? " (Teen, waiting for consent)" : ""}`).join(", ")}
             </p>
           )}
           <ul className="space-y-3">
@@ -235,12 +238,19 @@ export function HouseholdCard() {
                       {p.birthDate && <div className="text-sm text-text-muted mt-1">Born {formatBirthDate(p.birthDate)}</div>}
                       {p.careNotes && <div className="text-sm text-text-muted whitespace-pre-wrap wrap-anywhere min-w-0">Care notes: {p.careNotes}</div>}
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2">
                       <Button variant="secondary" aria-label={`Edit ${p.name}`} onClick={() => { setMetadata(false); setEditing(p.id); }}>Edit</Button>
                       <Button variant="danger-outline" aria-label={`Remove ${p.name}`} onClick={() => remove(p)}>Remove</Button>
                     </div>
                   </div>
                 )}
+                {p.conversion && <div className="mt-3 space-y-2">
+                  <p className="text-sm text-text-muted break-words">{p.conversion.state === "expired" ? "Invitation expired" : "Invitation pending"}: {p.conversion.email}. Expires {formatWhen(p.conversion.expiresAt)}.</p>
+                  <p className="text-sm text-text-muted">Changing their name, type or birth date cancels this invitation. Their sign-ups stay as they are until they accept.</p>
+                  <ConversionActions person={p} onChanged={async (message) => { setStatus(message); await load(); }} />
+                </div>}
+                {!p.conversion && p.canConvert && converting !== p.id && <Button variant="secondary" layout="mt-3" onClick={() => setConverting(p.id)}>Create their own account</Button>}
+                {!p.conversion && converting === p.id && <ConversionForm person={p} onCancel={() => setConverting(null)} onSent={async () => { setConverting(null); setStatus(`Invitation sent for ${p.name}. Their sign-ups will move when they accept.`); await load(); }} />}
               </li>
             ))}
           </ul>
@@ -264,6 +274,43 @@ export function HouseholdCard() {
       {!loading && !loadError && people.length > 0 && editing !== "new" && addButton}
     </section>
   );
+}
+
+function ConversionForm({ person, onCancel, onSent }: { person: HouseholdPerson; onCancel: () => void; onSent: () => Promise<void> }) {
+  const [email, setEmail] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLFormElement>(null);
+  useEffect(() => { ref.current?.querySelector("input")?.focus(); }, []);
+  async function submit(e: React.FormEvent) {
+    e.preventDefault(); setBusy(true); setError(null);
+    try { await Households.convert(person.id, email.trim()); await onSent(); }
+    catch (e) { showFieldErrors(ref.current, () => setError(errorText(e, "We couldn't send this invitation. Try again."))); }
+    finally { setBusy(false); }
+  }
+  return <form ref={ref} onSubmit={submit} className="mt-3 space-y-3" aria-label={`Create an account for ${person.name}`}>
+    <p className="text-sm">Use their own email address. All past and upcoming sign-ups move to their new account only when they accept. Group memberships do not move.</p>
+    {person.kind === "teen" && <p className="text-sm">Their account will wait for consent and a fresh guardian check. They cannot sign in yet.</p>}
+    <Field label="Their email address" hint="Required. Use an email that has no account or open invitation." error={error ?? undefined}><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="off" /></Field>
+    <div className="flex flex-wrap gap-3"><Button variant="primary" type="submit" disabled={busy}>{busy ? "Sending…" : "Send account invitation"}</Button><Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button></div>
+  </form>;
+}
+
+function ConversionActions({ person, onChanged }: { person: HouseholdPerson; onChanged: (message: string) => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function act(cancel: boolean) {
+    setBusy(true); setError(null);
+    try {
+      if (cancel) await Households.cancelConversion(person.id); else await Households.resendConversion(person.id);
+      await onChanged(cancel ? "Invitation cancelled. Their sign-ups are unchanged." : "Invitation resent. The previous link can no longer be used.");
+    } catch (e) { setError(errorText(e, "We couldn't update the invitation. Try again.")); }
+    finally { setBusy(false); }
+  }
+  return <div>
+    <div className="flex flex-wrap gap-3"><Button variant="secondary" disabled={busy || !person.canConvert} onClick={() => void act(false)}>Resend</Button><Button variant="danger-outline" disabled={busy} onClick={() => void act(true)}>Cancel invitation</Button></div>
+    {error && <ErrorNotice message={error} />}
+  </div>;
 }
 
 function HouseholdForm({ household, onSave, onCancel }: { household: Household; onSave: (name: string, address: string) => Promise<void>; onCancel: () => void }) {

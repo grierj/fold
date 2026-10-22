@@ -388,8 +388,8 @@ func notifyGuardianLinkPending(tx *gorm.DB, link *models.GuardianLink, person *m
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.HouseholdLinkPending, To: adminIDs(tx), Actor: &link.GuardianUserID,
 		SubjectType: "guardian_link", SubjectID: link.ID, Link: approvalsLink,
-		Vars: vars,
-		Data: data,
+		Vars:      vars,
+		Data:      data,
 		DedupeKey: fmt.Sprintf("household.link_pending:%d", link.ID),
 	})
 }

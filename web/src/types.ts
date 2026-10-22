@@ -122,6 +122,7 @@ export interface GuestRegistration {
 // One attendee entry on an occurrence (M1.5 adds guestCount).
 /** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface Attendee {
+  accountType?: "adult" | "teen";
   registrationId: number;
   userId?: number;
   householdPerson?: HouseholdAttendee;
@@ -313,6 +314,8 @@ export type OpenedDecision = "keep" | "tighten";
 // An invitation to join Fold (M1.2, 5.10). Admins and leaders invite; the
 // person sets a password on acceptance and gets an active account.
 export interface Invitation {
+  conversion: boolean;
+  accountType: "adult" | "teen";
   id: number;
   email: string;
   name: string;
@@ -322,6 +325,18 @@ export interface Invitation {
 }
 
 export type AgeBand = "adult" | "teen" | "under13";
+
+export interface InvitationAcceptance {
+  user?: User;
+  pendingConsent: boolean;
+}
+
+export interface HouseholdConversion {
+  id: number;
+  email: string;
+  expiresAt: string;
+  state: "pending" | "expired";
+}
 /** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export type AccountRequestStatus = "pending" | "approved" | "rejected" | "expired" | "withdrawn";
 
@@ -387,6 +402,8 @@ export interface CalendarFeed {
 
 // Households (M1.9). Mirrors householdJSON and friends in api_profile.go.
 export interface HouseholdPerson {
+  conversion?: HouseholdConversion;
+  canConvert: boolean;
   age?: number;
   id: number;
   householdId: number;
@@ -405,6 +422,7 @@ export interface HouseholdPerson {
 }
 
 export interface HouseholdAccount {
+  status: string;
   userId: number;
   name: string;
   relation: "guardian" | "adult" | "teen";

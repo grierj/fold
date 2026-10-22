@@ -37,19 +37,19 @@ var errEmailTaken = errors.New("email taken")
 var errGroupNotActive = errors.New("group not active")
 
 type invitationJSON struct {
-	ID        uint      `json:"id"`
-	Email     string    `json:"email"`
-	Name      string    `json:"name"`
-	GroupID   *uint     `json:"groupId,omitempty"`
-	GroupName string    `json:"groupName,omitempty"`
-	ExpiresAt time.Time `json:"expiresAt"`
-	Conversion bool `json:"conversion"`
-	AccountType string `json:"accountType"`
+	ID          uint      `json:"id"`
+	Email       string    `json:"email"`
+	Name        string    `json:"name"`
+	GroupID     *uint     `json:"groupId,omitempty"`
+	GroupName   string    `json:"groupName,omitempty"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+	Conversion  bool      `json:"conversion"`
+	AccountType string    `json:"accountType"`
 }
 
 type invitationAcceptanceJSON struct {
-	User *userJSON `json:"user,omitempty"`
-	PendingConsent bool `json:"pendingConsent"`
+	User           *userJSON `json:"user,omitempty"`
+	PendingConsent bool      `json:"pendingConsent"`
 }
 
 func (a *App) toInvitationJSON(inv *models.Invitation) invitationJSON {
@@ -165,13 +165,23 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		TokenHash: hash, ExpiresAt: time.Now().UTC().Add(tokenTTL),
 	}
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := lockInvitationEmail(tx, email); err != nil { return err }
+		if err := lockInvitationEmail(tx, email); err != nil {
+			return err
+		}
 		var existing models.User
-		if err := tx.Unscoped().Where("email = ?", email).Limit(1).Find(&existing).Error; err != nil { return err }
-		if existing.ID != 0 && (existing.Status != models.UserGuest || existing.DeletedAt.Valid) { return errEmailTaken }
+		if err := tx.Unscoped().Where("email = ?", email).Limit(1).Find(&existing).Error; err != nil {
+			return err
+		}
+		if existing.ID != 0 && (existing.Status != models.UserGuest || existing.DeletedAt.Valid) {
+			return errEmailTaken
+		}
 		var n int64
-		if err := tx.Model(&models.Invitation{}).Where("email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email).Count(&n).Error; err != nil { return err }
-		if n > 0 { return errConversionEmail }
+		if err := tx.Model(&models.Invitation{}).Where("email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email).Count(&n).Error; err != nil {
+			return err
+		}
+		if n > 0 {
+			return errConversionEmail
+		}
 		if err := tx.Create(&inv).Error; err != nil {
 			return err
 		}
@@ -183,7 +193,10 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 			TargetType: "invitation", TargetID: inv.ID, Meta: meta, IP: c.ClientIP()})
 	})
 	if err != nil {
-		if errors.Is(err, errEmailTaken) || errors.Is(err, errConversionEmail) { jsonError(c, http.StatusConflict, "that email was already invited"); return }
+		if errors.Is(err, errEmailTaken) || errors.Is(err, errConversionEmail) {
+			jsonError(c, http.StatusConflict, "that email was already invited")
+			return
+		}
 		jsonError(c, http.StatusInternalServerError, "could not create invitation")
 		return
 	}
@@ -231,7 +244,7 @@ func (a *App) apiGetInvitation(c *gin.Context) {
 		"invitation":  a.toInvitationJSON(inv),
 		"inviterName": nameIn(a.DB, inv.InvitedBy),
 		"siteName":    a.siteName(),
-		"site": a.siteName(),
+		"site":        a.siteName(),
 	})
 }
 
@@ -256,7 +269,10 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		return
 	}
 	initial, err := liveInvitation(a.DB, body.Token)
-	if err != nil { jsonError(c, http.StatusBadRequest, "that invitation is invalid or has expired"); return }
+	if err != nil {
+		jsonError(c, http.StatusBadRequest, "that invitation is invalid or has expired")
+		return
+	}
 	if initial.HouseholdPersonID != nil {
 		a.acceptHouseholdConversion(c, body.Token, body.Password, initial)
 		return
@@ -272,8 +288,12 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		if inv.HouseholdPersonID != nil { return errTokenInvalid }
-		if err := lockInvitationEmail(tx, inv.Email); err != nil { return err }
+		if inv.HouseholdPersonID != nil {
+			return errTokenInvalid
+		}
+		if err := lockInvitationEmail(tx, inv.Email); err != nil {
+			return err
+		}
 		if name == "" {
 			name = inv.Name
 		}
@@ -383,10 +403,10 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		return
 	}
 	if fresh.CanSignIn() {
-	if err := a.signInSession(c, &fresh); err != nil {
-		jsonError(c, http.StatusInternalServerError, "session error")
-		return
-	}
+		if err := a.signInSession(c, &fresh); err != nil {
+			jsonError(c, http.StatusInternalServerError, "session error")
+			return
+		}
 	}
 	c.JSON(http.StatusOK, invitationAcceptanceJSON{User: userJSONPtr(a.toUserJSON(&fresh)), PendingConsent: fresh.Status == models.UserPendingConsent})
 }
