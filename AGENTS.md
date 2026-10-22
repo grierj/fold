@@ -179,6 +179,21 @@ Postgres (`login_throttles`, see `api_auth.go`).
   directory as the named volume `uploads`. Do not drop the mount; an
   anonymous volume is discarded on `up --build`.
 
+## Phasing high-complexity work
+
+Grier's guidance (Oct 22, 2026). Low-complexity changes are exempt.
+
+- For a high-complexity milestone, decide early whether the work can be split.
+- Plan thin end-to-end slices. Build each slice in this order: database, then
+  API and internals, then UI. New logic can ship hidden until its UI lands.
+- Once fold is live, schema changes use expand and contract:
+  1. Expand: additive changes only, migrating data where needed.
+  2. Wait until the old columns have had zero reads and writes in production
+     for N days, and every running app version is past the expand step.
+  3. Contract: remove the old columns, with a check that fails loudly if
+     anything still writes to them.
+- Before go-live, the contract step can follow the expand step right away.
+
 ## Development
 
 ```bash
