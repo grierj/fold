@@ -1,3 +1,4 @@
+import { HouseholdCard } from "../components/HouseholdCard";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AccountRequests, CalendarFeeds, Profile as ProfileApi } from "../api";
@@ -317,6 +318,8 @@ export function ProfilePage() {
       </form>
 
       <CalendarFeedCard />
+
+      {user.accountType !== "teen" && <HouseholdCard />}
 
       {user.accountType !== "teen" && (
         <div className="mt-6">

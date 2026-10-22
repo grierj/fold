@@ -342,3 +342,54 @@ export interface CalendarFeed {
   scope: "mine" | "all";
   url?: string;
 }
+
+// Households (M1.9). Mirrors householdJSON and friends in api_profile.go.
+export interface HouseholdPerson {
+  id: number;
+  householdId: number;
+  firstName: string;
+  lastName: string;
+  name: string;
+  kind: "child" | "teen" | "adult";
+  birthDate?: string;
+  careNotes: string;
+  photoConsent: boolean;
+  linkStatus: "pending" | "confirmed" | "rejected" | "revoked" | "none";
+  guardianLinkId?: number;
+  convertedUserId?: number;
+  createdBy: number;
+}
+
+export interface HouseholdAccount {
+  userId: number;
+  name: string;
+  relation: "guardian" | "adult" | "teen";
+}
+
+export interface Household {
+  id: number;
+  name: string;
+  address: string;
+  createdBy: number;
+  people: HouseholdPerson[];
+  accounts: HouseholdAccount[];
+}
+
+// Mirrors guardianLinkJSON in api_admin.go.
+export interface GuardianLink {
+  id: number;
+  guardianUserId: number;
+  guardianName: string;
+  teenUserId?: number;
+  personId?: number;
+  personName: string;
+  personKind: "child" | "teen";
+  birthDate?: string;
+  householdId?: number;
+  householdName?: string;
+  status: "pending" | "confirmed" | "rejected" | "revoked";
+  checkNote: string;
+  confirmedBy?: number;
+  createdAt: string;
+  decidedAt?: string;
+}
