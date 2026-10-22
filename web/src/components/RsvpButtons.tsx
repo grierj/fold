@@ -3,7 +3,7 @@ import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequest
 import { Button } from "./ui/Button";
 import { useId, useRef, useState } from "react";
 import { Events } from "../api";
-import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson } from "../types";
+import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, HouseholdAnswer, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors } from "./ui/Field";
 
@@ -260,19 +260,19 @@ function HouseholdRsvp({ instance, people, onChange }: { instance: EventOccurren
     e.preventDefault(); setError(null); setMessage("");
     const problem = childcareCountProblem(children);
     if (problem) { setError(problem); return; }
-    const command: RegistrationCommand = { date: instance.date, people: [] };
+    const answers: HouseholdAnswer[] = [];
+    const command: RegistrationCommand = { date: instance.date, people: answers };
     if (instance.myRegistration !== "removed" && (me.selected || ["going", "waitlisted", "maybe"].includes(instance.myRegistration ?? ""))) {
       command.status = me.selected ? me.status : "declined";
       command.attendanceMode = me.mode;
       command.guestCount = guests;
-      command.childcareCount = Number(children);
-      command.childcareAgesNote = ages.trim();
+      if (instance.childcareAvailable) { command.childcareCount = Number(children); command.childcareAgesNote = ages.trim(); }
     }
     for (const person of people) {
       const d = drafts[person.id];
       const saved = own.find((r) => r.personId === person.id);
       if (person.registrationEligibility !== "eligible" || saved?.status === "removed" || saved?.unavailable) continue;
-      if (d.selected || ["going", "waitlisted", "maybe"].includes(saved?.status ?? "")) command.people?.push({ personId: person.id, status: d.selected ? d.status : "declined", attendanceMode: d.mode, childcareRequested: d.care });
+      if (d.selected || ["going", "waitlisted", "maybe"].includes(saved?.status ?? "")) answers.push({ personId: person.id, status: d.selected ? d.status : "declined", attendanceMode: d.mode, childcareRequested: d.care });
     }
     if (!command.status && !command.people?.length) { setError("Choose at least one person to save an answer."); return; }
     setBusy(true);

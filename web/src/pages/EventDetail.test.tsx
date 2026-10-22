@@ -12,7 +12,7 @@ vi.mock("../api", async (importActual) => ({
   ...(await importActual<typeof import("../api")>()),
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
   Households: { mine: vi.fn().mockResolvedValue({ household: null }) },
-  Events: { get: vi.fn(), updateOccurrence: vi.fn() },
+  Events: { get: vi.fn(), updateOccurrence: vi.fn(), register: vi.fn() },
 }));
 
 const page: EventDetailResponse = {
@@ -87,4 +87,17 @@ it("shows the public childcare ages and notes", async () => {
   renderPage();
   expect(await screen.findByText("Childcare available · 2–5")).toBeInTheDocument();
   expect(screen.getByText("Check in at the nursery.")).toBeInTheDocument();
+});
+
+it("shares one household fetch across dates and refreshes server state after child-only answers", async () => {
+  vi.mocked(Households.mine).mockResolvedValue({ household: { id: 1, name: "Family", address: "", createdBy: 2, accounts: [], people: [{ id: 3, householdId: 1, firstName: "Mary", lastName: "", name: "Mary", kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] } });
+  vi.mocked(Events.get).mockResolvedValue({ ...page, occurrences: [page.occurrences[0], { ...page.occurrences[0], id: 2, date: "2026-12-08" }] });
+  vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 12, personId: 3, registeredBy: 2, status: "going", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }] });
+  const before = vi.mocked(Events.get).mock.calls.length;
+  const householdBefore = vi.mocked(Households.mine).mock.calls.length;
+  renderPage(); const editors = await screen.findAllByRole("form", { name: "Household answers" });
+  await userEvent.click(within(editors[0]).getByRole("checkbox", { name: "Mary" }));
+  await userEvent.click(within(editors[0]).getByRole("button", { name: "Save answers" }));
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(before + 2));
+  expect(Households.mine).toHaveBeenCalledTimes(householdBefore + 1);
 });

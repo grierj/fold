@@ -32,7 +32,7 @@ test("household profile, pending link, independent answers, privacy and recovery
   await expect(page.getByRole("checkbox", { name: "Kit", exact: true })).toBeDisabled();
   await expect(page.getByText(/Waiting for an admin to confirm/)).toBeVisible();
   const adminAgain = await apiAs(request, "grier");
-  const { links } = await adminAgain("GET", "/admin/guardian-links?status=pending");
+  const { guardianLinks: links } = await adminAgain("GET", "/admin/guardian-links?status=pending");
   const link = links.find((l: { guardianUserId: number; personName: string }) => l.guardianUserId === user.id && l.personName === "Kit");
   expect(link).toBeTruthy();
   await adminAgain("POST", `/admin/guardian-links/${link.id}/confirm`, { checkNote: "Known family" });

@@ -1006,7 +1006,7 @@ func (a *App) apiRegister(c *gin.Context) {
 			if problem := policy.HouseholdRegistrationProblem(householdFacts(person, links[person.ID], today)); problem != "" {
 				return householdRegistrationError{code: problem, personID: person.ID}
 			}
-			if answer.ChildcareRequested != nil && *answer.ChildcareRequested && !ev.ChildcareAvailable {
+			if answer.ChildcareRequested != nil && *answer.ChildcareRequested && !ev.ChildcareAvailable && !ch.old.ChildcareRequested {
 				return errChildcareUnavailable
 			}
 			if ch.next.ChildcareRequested && person.Kind != models.HouseholdChild {
@@ -1679,7 +1679,7 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		if r.ChildcareRequested && person.Kind != models.HouseholdChild {
 			return householdRegistrationError{code: "household_age_mismatch", personID: personID}
 		}
-		if namedCare != nil && *namedCare && !ev.ChildcareAvailable {
+		if namedCare != nil && *namedCare && !ev.ChildcareAvailable && !old.ChildcareRequested {
 			return errChildcareUnavailable
 		}
 		if r.AttendanceMode == models.AttendanceRemote && !ev.RemoteAvailable {
