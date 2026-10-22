@@ -181,18 +181,26 @@ Postgres (`login_throttles`, see `api_auth.go`).
 
 ## Phasing high-complexity work
 
-Grier's guidance (Oct 22, 2026). Low-complexity changes are exempt.
+Grier's rule (Oct 22, 2026).
 
-- For a high-complexity milestone, decide early whether the work can be split.
-- Plan thin end-to-end slices. Build each slice in this order: database, then
-  API and internals, then UI. New logic can ship hidden until its UI lands.
-- Once fold is live, schema changes use expand and contract:
-  1. Expand: additive changes only, migrating data where needed.
-  2. Wait until the old columns have had zero reads and writes in production
-     for N days, and every running app version is past the expand step.
-  3. Contract: remove the old columns, with a check that fails loudly if
-     anything still writes to them.
-- Before go-live, the contract step can follow the expand step right away.
+- High-complexity means the change touches database, API and UI together, or
+  changes 3+ tables. Smaller work is exempt.
+- Split such milestones early into thin end-to-end slices. Build each slice
+  database, then API and internals, then UI. New logic can ship hidden until
+  its UI lands.
+- Once live, schema changes use expand and contract:
+  1. Expand: additive changes only, plus data migration. Add a trigger on the
+     old columns that logs any INSERT or UPDATE to an audit table.
+  2. Wait: at least 14 days, or two runs of the slowest job touching the
+     columns, whichever is longer. Reset `pg_stat_statements` at the start of
+     the wait.
+  3. Contract: the migration refuses to run if the audit table has any hits,
+     if any `pg_stat_statements` query mentions the old column, or if the
+     deployed build SHA (health endpoint) predates the expand commit. In CI,
+     each contract migration names its expand migration and fails if that one
+     is under 14 days old.
+- Don't rename columns at expand; it breaks old versions still running.
+- Before go-live, contract can follow right away.
 
 ## Development
 
