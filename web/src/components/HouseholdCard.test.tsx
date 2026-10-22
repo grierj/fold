@@ -13,7 +13,7 @@ import { HouseholdCard, personProblems } from "./HouseholdCard";
 
 const household = {
   id: 1, name: "Smith household", address: "", createdBy: 1,
-  accounts: [{ userId: 1, name: "Pat Smith", relation: "guardian" }],
+  accounts: [{ userId: 1, name: "Pat Smith", relation: "guardian", status: "active" }],
   people: [{ id: 5, householdId: 1, firstName: "Kid", lastName: "Smith", name: "Kid Smith", kind: "child", birthDate: "2020-05-01", careNotes: "", photoConsent: false, linkStatus: "pending", createdBy: 1 }],
 };
 

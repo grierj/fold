@@ -535,6 +535,10 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		a.alreadyHandled(c, notify.AccountRequested, req.ID)
 		return
 	}
+	if emailTaken(err) {
+		jsonError(c, http.StatusConflict, "that email is unavailable; use a different email")
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not decide that request")
 		return

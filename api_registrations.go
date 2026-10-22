@@ -815,6 +815,8 @@ func (e householdRegistrationError) Error() string { return e.code }
 func registrationError(c *gin.Context, err error) {
 	var own householdRegistrationError
 	switch {
+	case errors.Is(err, errConversionUnavailable):
+		conversionError(c, err)
 	case errors.As(err, &own):
 		body := errorBody(http.StatusConflict, householdRegistrationMessage(own.code))
 		body["code"] = own.code

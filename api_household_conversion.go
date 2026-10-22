@@ -85,6 +85,9 @@ func (a *App) conversionAllowed(tx *gorm.DB, actor *models.User, person *models.
 	if err != nil {
 		return false, err
 	}
+	var unavailable int64
+	if err := tx.Model(&models.Registration{}).Joins("JOIN users ON users.id = registrations.registered_by").Where("registrations.household_person_id = ? AND (users.deleted_at IS NOT NULL OR users.status <> ?)", person.ID, models.UserActive).Count(&unavailable).Error; err != nil { return false, err }
+	if unavailable > 0 { return false, nil }
 	return policy.CanConvertHouseholdPerson(asPerson(actor), conversionRelation(tx, actor.ID, person.HouseholdID), householdFacts(person, nil, today), actor.Status == models.UserActive && !actor.DeletedAt.Valid, len(guardians) > 0), nil
 }
 
@@ -238,7 +241,7 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		} else {
 			action = audit.InvitationResent
 			inv.TokenHash, inv.ExpiresAt, inv.InvitedBy = hash, time.Now().UTC().Add(tokenTTL), actor.ID
-			if err := tx.Model(&inv).Updates(map[string]any{"token_hash": hash, "expires_at": inv.ExpiresAt, "invited_by": actor.ID, "created_at": time.Now().UTC()}).Error; err != nil {
+			if err := tx.Model(&inv).Updates(map[string]any{"token_hash": hash, "expires_at": inv.ExpiresAt, "invited_by": actor.ID}).Error; err != nil {
 				return err
 			}
 		}
@@ -413,7 +416,7 @@ func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, in
 			}
 			// Re-enabling an inviter requires a fresh issue or resend.
 			var disabled int64
-			if err := tx.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'user' AND target_id = ? AND created_at >= ?", audit.UserDisabled, inviter.ID, inv.CreatedAt).Count(&disabled).Error; err != nil {
+			if err := tx.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'user' AND target_id = ? AND created_at >= COALESCE((SELECT max(created_at) FROM audit_logs WHERE target_type = 'invitation' AND target_id = ? AND action IN ?), ?)", audit.UserDisabled, inviter.ID, inv.ID, []string{audit.InvitationCreated, audit.InvitationResent}, inv.CreatedAt).Count(&disabled).Error; err != nil {
 				return err
 			}
 			if disabled > 0 {

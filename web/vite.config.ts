@@ -20,6 +20,7 @@ const keepDistReadme = {
 // Assets use absolute paths: the binary serves the SPA at /, and relative
 // paths broke deep links such as /groups/1 (assets resolved under /groups/).
 export default defineConfig({
+  cacheDir: process.env.FOLD_WEB_CACHE_DIR || "node_modules/.vite",
   plugins: [react(), tailwindcss(), keepDistReadme],
   base: "/",
   build: {

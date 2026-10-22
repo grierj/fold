@@ -314,7 +314,7 @@ describe("childcare RSVP", () => {
 
 describe("named household answers", () => {
   beforeEach(() => vi.resetAllMocks());
-  const kit: import("../types").HouseholdPerson = { id: 17, householdId: 1, firstName: "Kit", lastName: "", name: "Kit", kind: "child", age: 6, photoConsent: false, linkStatus: "confirmed", registrationEligibility: "eligible", createdBy: 3 };
+  const kit: import("../types").HouseholdPerson = { id: 17, householdId: 1, canConvert: false, firstName: "Kit", lastName: "", name: "Kit", kind: "child", age: 6, photoConsent: false, linkStatus: "confirmed", registrationEligibility: "eligible", createdBy: 3 };
   const mary: import("../types").HouseholdPerson = { ...kit, id: 18, firstName: "Mary", name: "Mary", kind: "adult", age: 35 };
   function family(instance = occurrence({ remoteAvailable: true, childcareAvailable: true })) {
     return render(<MemoryRouter><RsvpButtons people={[kit, mary]} instance={instance} onChange={() => {}} /></MemoryRouter>);
