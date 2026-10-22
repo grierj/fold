@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Invitations as InvitationsApi } from "../api";
 import { useAuth } from "../auth";
@@ -82,10 +82,7 @@ export function Invite() {
     );
   }
 
-  if (waiting) return <div className="max-w-md mx-auto px-4 py-12" role="status">
-    <h1 className="text-3xl font-bold mb-4">Your account is waiting for consent</h1>
-    <p>Your sign-ups have moved to your account. An admin must check your guardian link. You cannot sign in yet. Ask your church office about the next steps.</p>
-  </div>;
+  if (waiting) return <TeenWaiting />;
 
   if (!token || (!invitation && error)) {
     return (
@@ -111,7 +108,7 @@ export function Invite() {
       <h1 className="text-3xl font-bold mb-2">You're invited to {site}</h1>
       {invitation?.conversion && <div className="mb-4 space-y-2">
         <p>Create your own account for {invitation.name}. Your past and upcoming sign-ups will move to your account when you accept. Group memberships do not move, so some private events may no longer be available.</p>
-        {invitation.accountType === "teen" && <p>Your account will wait for consent and an admin guardian check. You cannot sign in yet.</p>}
+        {invitation.accountType === "teen" && <p>A church admin needs to confirm your parent or guardian before you can sign in.</p>}
       </div>}
       {invitation?.groupName && (
         <p className="text-text-muted mb-6">
@@ -130,7 +127,7 @@ export function Invite() {
             required
           />
         </Field>
-        <Field id="invite-email" label="Email (you'll sign in with it)">
+        <Field id="invite-email" label="Email (you'll sign in with it)" hint="Set by the person who invited you.">
           <Input type="email" value={invitation?.email ?? ""} readOnly />
         </Field>
         <Field id="inv-password" label="Choose a password" hint="Must be at least 10 characters.">
@@ -146,6 +143,19 @@ export function Invite() {
           {busy ? "Creating account…" : "Create my account"}
         </Button>
       </form>
+    </div>
+  );
+}
+
+// Shown after a teen accepts. Focus moves to the heading so screen readers
+// start here; no live region, because the whole page changed (PR 111 M1).
+function TeenWaiting() {
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => heading.current?.focus(), []);
+  return (
+    <div className="max-w-md mx-auto px-4 py-12">
+      <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold mb-4 focus:outline-none">Your account is almost ready</h1>
+      <p>Almost done. A church admin needs to confirm your parent or guardian before you can sign in. Your sign-ups are already on your account. Ask your church office if you have questions.</p>
     </div>
   );
 }

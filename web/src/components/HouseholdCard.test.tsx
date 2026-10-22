@@ -170,7 +170,7 @@ it("shows pending destination, resend and cancellation without editing it", asyn
   resend.mockResolvedValue({}); cancel.mockResolvedValue({});
   render(<HouseholdCard />);
   expect(await screen.findByText(/Invitation pending: new@example.com/)).toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Resend" }));
+  await userEvent.click(screen.getByRole("button", { name: "Resend invitation" }));
   expect(resend).toHaveBeenCalledWith(5);
   expect(await screen.findByText(/Invitation resent. The previous link/)).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Cancel invitation" }));
@@ -180,7 +180,7 @@ it("shows pending destination, resend and cancellation without editing it", asyn
 it("shows a converted teen once under accounts with no person controls", async () => {
   mine.mockResolvedValue({ household: { ...household, people: [], accounts: [...household.accounts, { userId: 2, name: "Taylor", relation: "teen", status: "pending_consent" }] } });
   render(<HouseholdCard />);
-  expect(await screen.findByText(/Taylor \(Teen, waiting for consent\)/)).toBeInTheDocument();
+  expect(await screen.findByText(/Taylor \(teen, waiting for an admin check\)/)).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Edit Taylor" })).not.toBeInTheDocument();
   expect(screen.queryByText("No one in your household yet")).not.toBeInTheDocument();
 });

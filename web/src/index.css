@@ -192,7 +192,7 @@
   .label         { @apply mb-1 block text-sm font-medium text-text; }
   /* The one form pattern (DEC-65): label, then hint, then the control. */
   .field-hint    { @apply mb-1 text-sm text-text-muted; }
-  .input[readonly] { @apply bg-page; }
+  .input[readonly] { @apply bg-sunken text-text-muted cursor-default; }
   /* A radio or checkbox row: the whole row is the label, 44px tall, with a
      20px control (PR 7). */
   .choice-row    { @apply flex min-h-11 cursor-pointer items-start gap-3 py-2.5 text-base text-text; }

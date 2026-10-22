@@ -54,7 +54,7 @@ for (const kind of ["adult", "teen"] as const) {
     await expect(page.getByText(`Invitation pending: ${destination}`, { exact: false })).toBeVisible();
     await shoot(page, `conversion-${kind}-pending`);
     const first = await latestInvite(page, destination);
-    await page.getByRole("button", { name: "Resend", exact: true }).click();
+    await page.getByRole("button", { name: "Resend invitation", exact: true }).click();
     await expect(page.getByRole("status")).toContainText("Invitation resent");
     const second = await latestInvite(page, destination);
     expect(second).not.toBe(first);
@@ -75,7 +75,7 @@ for (const kind of ["adult", "teen"] as const) {
     await page.getByLabel("Choose a password").fill(PASSWORD);
     await page.getByRole("button", { name: "Create my account" }).click();
     if (kind === "teen") {
-      await expect(page.getByRole("heading", { name: "Your account is waiting for consent" })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Your account is almost ready" })).toBeVisible();
       await shoot(page, "conversion-teen-waiting");
       expect((await page.request.get("/api/v1/auth/me")).status()).toBe(401);
     } else {
@@ -86,7 +86,7 @@ for (const kind of ["adult", "teen"] as const) {
     expect(updated.occurrences[0].attendees).toEqual(expect.arrayContaining([expect.objectContaining({ registrationId, name: `Conversion ${kind}`, accountType: kind })]));
     await signIn(page, account); await page.goto("/profile");
     await expect(page.getByRole("button", { name: `Edit Conversion ${kind}` })).toHaveCount(0);
-    if (kind === "teen") await expect(page.getByText(/Teen, waiting for consent/)).toBeVisible();
+    if (kind === "teen") await expect(page.getByText(/teen, waiting for an admin check/)).toBeVisible();
     await admin("POST", "/notifications/read-all", {});
   });
 }

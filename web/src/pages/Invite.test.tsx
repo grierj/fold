@@ -18,10 +18,12 @@ it("explains conversion and shows teen success without entering signed-in pages"
   expect(screen.getByLabelText("Your name")).toHaveAttribute("readonly");
   await userEvent.type(screen.getByLabelText("Choose a password"), "password1234");
   await userEvent.click(screen.getByRole("button", { name: "Create my account" }));
-  expect(await screen.findByRole("heading", { name: "Your account is waiting for consent" })).toBeInTheDocument();
+  const waiting = await screen.findByRole("heading", { name: "Your account is almost ready" });
+  expect(waiting).toHaveFocus();
+  expect(screen.queryByRole("status")).not.toBeInTheDocument();
   expect(refresh).not.toHaveBeenCalled();
   expect(screen.queryByLabelText("Choose a password")).not.toBeInTheDocument();
-  expect(screen.getByRole("status")).not.toHaveTextContent("password1234");
+  expect(document.body).not.toHaveTextContent("password1234");
 });
 
 it("signs in an adult conversion after acceptance", async () => {
