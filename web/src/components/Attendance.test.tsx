@@ -21,6 +21,8 @@ describe("Attendance", () => {
   it("does not advertise remote attendance on a date with zero remote seats", () => {
     render(<Attendance instance={occurrence({ remoteAvailable: true, remoteCapacity: 0, remoteSpotsLeft: 0 })} />);
     expect(screen.queryByText("Remote attendance available")).not.toBeInTheDocument();
+    expect(screen.getByText(/No remote seats on this date/)).toBeInTheDocument();
+    expect(screen.queryByText(/0 of 0/)).not.toBeInTheDocument();
   });
 });
 

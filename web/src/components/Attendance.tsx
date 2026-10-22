@@ -24,9 +24,11 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
       <div>
         {going === 0 && maybe === 0 ? "No one yet" : `${going} going${maybe ? ` · ${maybe} maybe` : ""}`}
         {declined ? ` · ${declined} can't go` : ""}
-        {instance.capacity !== null && ` · ${instance.spotsLeft} of ${instance.capacity} spots left`}
+        {instance.capacity !== null && ` · ${instance.spotsLeft} of ${instance.capacity} seats left`}
+        {instance.remoteAvailable && instance.remoteCapacity === 0 && " · No remote seats on this date"}
         {instance.remoteAvailable &&
           instance.remoteCapacity !== null &&
+          instance.remoteCapacity > 0 &&
           ` · ${instance.remoteSpotsLeft} of ${instance.remoteCapacity} remote seats left`}
       </div>
       {instance.remoteAvailable && instance.remoteCapacity !== 0 && <div>Remote attendance available</div>}
