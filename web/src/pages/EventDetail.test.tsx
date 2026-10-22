@@ -76,7 +76,7 @@ describe("EventDetail remote seats", () => {
     await userEvent.click(await screen.findByRole("button", { name: "More for 2026-12-01" }));
     await userEvent.click(screen.getByRole("menuitem", { name: "Manage sign-ups" }));
     const roster = within(screen.getByRole("region", { name: "Manage sign-ups" }));
-    expect(roster.getByText("Sam")).toBeInTheDocument();
+    expect(roster.getByText("Sam", { selector: "span:not(.sr-only)" })).toBeInTheDocument();
     expect(roster.getByText("Remote")).toHaveClass("bg-sunken", "text-text-muted");
   });
 });

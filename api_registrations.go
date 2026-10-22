@@ -336,9 +336,9 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
 	if reg.HouseholdPersonID != nil {
 		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
-		actor = nil
 	}
-	vars.ManageURL = app.emailBaseURL() + "/guest/manage/" + manageRaw
+	if actor!=nil && *actor==userID {actor=nil}
+ vars.ManageURL = app.emailBaseURL() + "/guest/manage/" + manageRaw
 	// A promoted person is going now, so a video link set to
 	// registered_only may reach them (5.8, M1.8); the email carries it,
 	// the bell doesn't.
@@ -572,12 +572,6 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 // Member registration (PUT /api/v1/events/:id/registrations), rewritten on
 // the locked path (M1.5).
 // ---------------------------------------------------------------------------
-
-// registrationOutcome is what one locked register call decided.
-type registrationOutcome struct {
-	reg      models.Registration
-	position *int // waitlist position; nil unless waitlisted
-}
 
 // registrationChange is prepared before the batch writes anything.
 type registrationChange struct {

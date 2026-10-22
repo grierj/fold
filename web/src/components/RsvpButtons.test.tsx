@@ -1,3 +1,4 @@
+import { MemoryRouter } from "react-router-dom";
 import { useState } from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -308,5 +309,62 @@ describe("childcare RSVP", () => {
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("You're on the in-person waitlist.");
+  });
+});
+
+describe("named household answers", () => {
+  beforeEach(() => vi.resetAllMocks());
+  const kit: import("../types").HouseholdPerson = { id: 17, householdId: 1, firstName: "Kit", lastName: "", name: "Kit", kind: "child", age: 6, photoConsent: false, linkStatus: "confirmed", registrationEligibility: "eligible", createdBy: 3 };
+  const mary: import("../types").HouseholdPerson = { ...kit, id: 18, firstName: "Mary", name: "Mary", kind: "adult", age: 35 };
+  function family(instance = occurrence({ remoteAvailable: true, childcareAvailable: true })) {
+    return render(<MemoryRouter><RsvpButtons people={[kit, mary]} instance={instance} onChange={() => {}} /></MemoryRouter>);
+  }
+
+  it("can save only a child without changing Me and explicitly clears remote childcare", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 9, personId: 17, registeredBy: 3, status: "going", attendanceMode: "remote", waitlistPosition: null, childcareRequested: false }] });
+    family();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Kit" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Childcare for Kit" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
+    expect(screen.queryByRole("checkbox", { name: "Childcare for Kit" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Save answers" }));
+    expect(Events.register).toHaveBeenCalledWith(7, { date: "2026-12-01", people: [{ personId: 17, status: "going", attendanceMode: "remote", childcareRequested: false }] });
+    expect(screen.getByRole("status")).toHaveTextContent("Kit: going remotely");
+  });
+
+  it("sends an explicit decline on unselection and keeps another person's mode independent", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 9, personId: 17, registeredBy: 3, status: "declined", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }, { registrationId: 10, personId: 18, registeredBy: 3, status: "waitlisted", attendanceMode: "remote", waitlistPosition: 2, childcareRequested: false }] });
+    family(occurrence({ remoteAvailable: true, myHouseholdRegistrations: [{ registrationId: 9, personId: 17, registeredBy: 3, holderName: "Holder", status: "going", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false, unavailable: false }] }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Kit" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Mary" }));
+    await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save answers" }));
+    expect(Events.register).toHaveBeenCalledWith(7, expect.objectContaining({ people: [{ personId: 17, status: "declined", attendanceMode: "in_person", childcareRequested: false }, { personId: 18, status: "going", attendanceMode: "remote", childcareRequested: false }] }));
+    expect(screen.getByRole("status")).toHaveTextContent("Mary: waitlist position 2");
+    expect(screen.getByRole("status")).not.toHaveTextContent("Mary: going");
+  });
+
+  it("keeps draft care and unnamed ages on failure without duplicating named children", async () => {
+    vi.mocked(Events.register).mockRejectedValue(new ApiError(409, "private", { code: "childcare_full", personId: 17 }));
+    family();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Me" }));
+    await userEvent.type(screen.getByRole("textbox", { name: /^Ages/ }), "3 and 7");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Kit" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Childcare for Kit" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save answers" }));
+    expect(Events.register).toHaveBeenCalledWith(7, expect.objectContaining({ childcareCount: 0, childcareAgesNote: "3 and 7", people: [expect.objectContaining({ childcareRequested: true })] }));
+    expect(screen.getByRole("textbox", { name: /^Ages/ })).toHaveValue("3 and 7");
+    expect(screen.getByRole("checkbox", { name: "Childcare for Kit" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Kit" })).toHaveFocus();
+    expect(screen.getByLabelText(/^Other children needing childcare/)).toHaveValue("0");
+  });
+
+  it("keeps pending and missing-age people visible but disabled even if Me was removed", () => {
+    render(<MemoryRouter><RsvpButtons instance={occurrence({ myRegistration: "removed" })} people={[{ ...kit, registrationEligibility: "link_pending", linkStatus: "pending" }, { ...mary, registrationEligibility: "birth_date_required" }]} onChange={() => {}} /></MemoryRouter>);
+    expect(screen.getByRole("checkbox", { name: "Kit" })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: "Mary" })).toBeDisabled();
+    expect(screen.getByText("Waiting for an admin to confirm", { exact: false })).toBeInTheDocument();
+    expect(screen.getByText(/Add a birth date in Profile/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save answers" })).toBeInTheDocument();
   });
 });
