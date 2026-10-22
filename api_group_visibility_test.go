@@ -197,7 +197,7 @@ func TestVisibilityImpactCountsHouseholdSubjectsAcrossDates(t *testing.T) {
 		t.Fatalf("subject impact %+v", impact)
 	}
 	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(holder.ID), map[string]any{"status": "disabled"}, http.StatusOK)
-	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(eventID), map[string]any{"visibility": "invite_only", "confirm": true}, http.StatusOK)
+	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(eventID)+"/visibility", map[string]any{"visibility": "invite_only", "confirm": true}, http.StatusOK)
 	var n int64
 	app.DB.Model(&models.Registration{}).Where("user_id = ? OR registered_by = ?", holder.ID, holder.ID).Count(&n)
 	if n != 0 {

@@ -1042,7 +1042,7 @@ func TestChildcareTotalsQueriedOnlyWhenNeeded(t *testing.T) {
 			queries := 0
 			const name = "test:count_childcare_totals"
 			if err := app.DB.Callback().Row().Before("gorm:row").Register(name, func(tx *gorm.DB) {
-				if strings.Contains(strings.Join(tx.Statement.Selects, " "), "SUM(registrations.childcare_count)") {
+				if strings.Contains(strings.Join(tx.Statement.Selects, " "), "SUM(registrations.childcare_count") {
 					queries++
 				}
 			}); err != nil {
@@ -1075,7 +1075,7 @@ func TestOccurrenceCountErrorsKeepDates(t *testing.T) {
 			const name = "test:fail_occurrence_totals"
 			if err := app.DB.Callback().Row().Before("gorm:row").Register(name, func(tx *gorm.DB) {
 				selection := strings.Join(tx.Statement.Selects, " ")
-				if (pool == "childcare" && strings.Contains(selection, "SUM(registrations.childcare_count)")) ||
+				if (pool == "childcare" && strings.Contains(selection, "SUM(registrations.childcare_count")) ||
 					(pool == "seats" && strings.Contains(selection, "SUM(1 + registrations.guest_count)")) {
 					failed++
 					_ = tx.AddError(errors.New("count unavailable"))

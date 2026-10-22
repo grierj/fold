@@ -771,7 +771,7 @@ func TestHouseholdManageTokenCancelsOnlyItsSubject(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.DB.Model(&models.Registration{}).Where("id = ?", result.People[1].RegistrationID).Update("manage_token_hash", hash)
-	anon := newAPIClient(t, app)
+	anon := anonClient(t, app, "10.9.0.1")
 	body := apiDo(t, anon, "GET", "/api/v1/guest-registrations/manage/"+raw, nil, http.StatusOK)
 	for _, secret := range []string{"Kit", "householdPerson", "Private allergy note", "personId"} {
 		if strings.Contains(body, secret) {
