@@ -353,9 +353,9 @@ type Membership struct {
 // without an account.
 type Registration struct {
 	ID                 uint            `gorm:"primaryKey"`
-	OccurrenceID       uint            `gorm:"not null;uniqueIndex:idx_registration,where:user_id IS NOT NULL;uniqueIndex:idx_household_registration,where:household_person_id IS NOT NULL"`
+	OccurrenceID       uint            `gorm:"not null;uniqueIndex:idx_registration;uniqueIndex:idx_household_registration,where:household_person_id IS NOT NULL"`
 	Occurrence         EventOccurrence `gorm:"foreignKey:OccurrenceID"`
-	UserID             *uint           `gorm:"uniqueIndex:idx_registration,where:user_id IS NOT NULL"`
+	UserID             *uint           `gorm:"uniqueIndex:idx_registration"`
 	HouseholdPersonID  *uint           `gorm:"uniqueIndex:idx_household_registration,where:household_person_id IS NOT NULL;index:idx_registrations_household_person_id,where:household_person_id IS NOT NULL"`
 	RegisteredBy       *uint           `gorm:"index:idx_registrations_registered_by,where:registered_by IS NOT NULL"`
 	ChildcareRequested bool            `gorm:"not null;default:false"`

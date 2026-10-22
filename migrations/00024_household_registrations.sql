@@ -8,8 +8,8 @@ ALTER TABLE registrations
     ADD CONSTRAINT registrations_holder CHECK ((household_person_id IS NOT NULL AND registered_by IS NOT NULL) OR (user_id IS NOT NULL AND registered_by IS NULL)),
     ADD CONSTRAINT registrations_named_party CHECK (household_person_id IS NULL OR (guest_count = 0 AND childcare_count = 0 AND childcare_ages_note = '')),
     ADD CONSTRAINT registrations_named_care CHECK (NOT childcare_requested OR (household_person_id IS NOT NULL AND attendance_mode = 'in_person'));
-DROP INDEX idx_registration;
-CREATE UNIQUE INDEX idx_registration ON registrations(occurrence_id, user_id) WHERE user_id IS NOT NULL;
+-- idx_registration (occurrence_id, user_id) stays a full unique index: NULL
+-- user_ids are distinct, and it also serves occurrence_id lookups (Whittler).
 CREATE UNIQUE INDEX idx_household_registration ON registrations(occurrence_id, household_person_id) WHERE household_person_id IS NOT NULL;
 CREATE INDEX idx_registrations_registered_by ON registrations(registered_by) WHERE registered_by IS NOT NULL;
 CREATE INDEX idx_registrations_household_person_id ON registrations(household_person_id) WHERE household_person_id IS NOT NULL;
@@ -22,7 +22,6 @@ DO $$ BEGIN
     END IF;
 END $$;
 -- +goose StatementEnd
-DROP INDEX idx_registration;
 DROP INDEX idx_household_registration;
 DROP INDEX idx_registrations_registered_by;
 DROP INDEX idx_registrations_household_person_id;
@@ -35,4 +34,3 @@ ALTER TABLE registrations
     DROP COLUMN registered_by,
     DROP COLUMN childcare_requested;
 ALTER TABLE registrations ALTER COLUMN user_id SET NOT NULL;
-CREATE UNIQUE INDEX idx_registration ON registrations(occurrence_id, user_id);

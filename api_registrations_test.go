@@ -1622,3 +1622,57 @@ func TestTwoHouseholdAdultsRaceForSamePerson(t *testing.T) {
 		t.Fatalf("duplicate or transferred subject: %+v", rows)
 	}
 }
+
+// Concurrent household declines on a full event must not deadlock. A
+// decline promotes another holder's waiter and notifies them, which takes a
+// KEY SHARE on that holder's user row; a FOR UPDATE holder lock conflicts
+// with it, FOR NO KEY UPDATE doesn't (Whittler, PR 110).
+func TestHouseholdDeclineStormDoesNotDeadlock(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "DeclineStorm")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(3), true)
+	type family struct {
+		clients     []*apiClient
+		spouse, kid uint
+	}
+	var families []family
+	for f := 0; f < 6; f++ {
+		name := "storm" + itoa(uint(f))
+		_, c, spouse, child := householdFamily(t, app, admin, name)
+		batchAnswer(t, c, eventID, date, map[string]any{"status": "going", "people": []map[string]any{{"personId": spouse.ID, "status": "going"}, {"personId": child.ID, "status": "going"}}}, http.StatusOK)
+		fam := family{clients: []*apiClient{c}, spouse: spouse.ID, kid: child.ID}
+		for i := 0; i < 4; i++ {
+			fam.clients = append(fam.clients, loginAPI(t, app, name, "password1234"))
+		}
+		families = append(families, fam)
+	}
+	const rounds = 10
+	codes := make(chan int, rounds*len(families))
+	var wg sync.WaitGroup
+	for r := 0; r < rounds; r++ {
+		for f, fam := range families {
+			wg.Add(1)
+			go func(r, f int, fam family) {
+				defer wg.Done()
+				status := "declined"
+				if (r+f)%2 == 1 {
+					status = "going"
+				}
+				body := map[string]any{"date": date, "status": status, "people": []map[string]any{{"personId": fam.spouse, "status": status}, {"personId": fam.kid, "status": status}}}
+				codes <- fam.clients[r%len(fam.clients)].do("PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", body, true).Code
+			}(r, f, fam)
+		}
+	}
+	wg.Wait()
+	close(codes)
+	failed, total := 0, 0
+	for code := range codes {
+		total++
+		if code != http.StatusOK {
+			failed++
+		}
+	}
+	if failed > 0 {
+		t.Fatalf("%d of %d concurrent household declines failed", failed, total)
+	}
+}

@@ -940,7 +940,7 @@ func (a *App) apiRegister(c *gin.Context) {
 				continue
 			}
 			var lockedHolder models.User
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&lockedHolder, id).Error; err != nil {
+			if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&lockedHolder, id).Error; err != nil {
 				return err
 			}
 			if id == u.ID {
@@ -1368,7 +1368,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var holder models.User
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&holder, target.ID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&holder, target.ID).Error; err != nil {
 			return err
 		}
 		if holder.Status != models.UserActive && holder.Status != models.UserGuest {
@@ -1615,7 +1615,7 @@ func lockRegistrationHolder(tx *gorm.DB, registrationID, occurrenceID uint) erro
 		return errRegNotFound
 	}
 	var holder models.User
-	return tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&holder, registrationHolder(r)).Error
+	return tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&holder, registrationHolder(r)).Error
 }
 
 func previouslyRegisteredPerson(tx *gorm.DB, eventID, occurrenceID, personID, holderID uint) bool {
@@ -1639,7 +1639,7 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 	var mailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var holder models.User
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&holder, holderID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&holder, holderID).Error; err != nil {
 			return errRegNotFound
 		}
 		subject, err := householdSubject(tx, personID, holderID)
