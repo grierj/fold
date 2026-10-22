@@ -96,6 +96,7 @@ func (r childcareRequest) values(old models.Registration) (int, string) {
 func childcareUsedFor(db *gorm.DB, occurrenceID, exceptRegistration uint) (int, error) {
 	var n int64
 	err := db.Model(&models.Registration{}).Joins(listedRegistrations()).
+		Joins("JOIN event_occurrences AS care_occurrence ON care_occurrence.id = registrations.occurrence_id JOIN events AS care_event ON care_event.id = care_occurrence.event_id AND care_event.childcare_available").
 		Where("registrations.occurrence_id = ? AND registrations.status = ? AND registrations.id <> ?", occurrenceID, models.RegGoing, exceptRegistration).
 		Select("COALESCE(SUM(registrations.childcare_count + CASE WHEN registrations.childcare_requested AND registrations.attendance_mode = 'in_person' THEN 1 ELSE 0 END), 0)").Scan(&n).Error
 	return int(n), err
@@ -111,6 +112,7 @@ func childcareUsedMap(db *gorm.DB, occurrenceIDs []uint) (map[uint]int, error) {
 		Children     int
 	}
 	err := db.Model(&models.Registration{}).Joins(listedRegistrations()).
+		Joins("JOIN event_occurrences AS care_occurrence ON care_occurrence.id = registrations.occurrence_id JOIN events AS care_event ON care_event.id = care_occurrence.event_id AND care_event.childcare_available").
 		Where("registrations.occurrence_id IN ? AND registrations.status = ?", occurrenceIDs, models.RegGoing).
 		Select("registrations.occurrence_id, COALESCE(SUM(registrations.childcare_count + CASE WHEN registrations.childcare_requested AND registrations.attendance_mode = 'in_person' THEN 1 ELSE 0 END), 0) AS children").
 		Group("registrations.occurrence_id").Scan(&rows).Error

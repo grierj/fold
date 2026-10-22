@@ -552,9 +552,13 @@ func CanManageHousehold(p *Person, rel HouseholdRel) bool {
 // or a child or teen with a confirmed guardian link. Until then leaders
 // and hosts see nothing about the person (5.3, DEC-32).
 func householdPersonConfirmed(person HouseholdPerson) bool {
-	if person.Deleted || person.Converted {return false}
- if person.Kind == KindAdult {return person.AgeYears!=nil && *person.AgeYears>=18}
- return person.LinkStatus == LinkConfirmed
+	if person.Deleted || person.Converted {
+		return false
+	}
+	if person.Kind == KindAdult {
+		return person.AgeYears != nil && *person.AgeYears >= 18
+	}
+	return person.LinkStatus == LinkConfirmed
 }
 
 // CanSeeHouseholdPerson decides who sees a household person's name and

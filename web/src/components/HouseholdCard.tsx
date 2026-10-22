@@ -165,7 +165,7 @@ export function HouseholdCard() {
   const people = household?.people ?? [];
   const addButton = (
     <span data-add>
-      <Button variant={people.length ? "secondary" : "primary"} layout="mt-3" onClick={() => setEditing("new")}>Add a household member</Button>
+      <Button variant={people.length ? "secondary" : "primary"} layout="mt-3" onClick={() => { setMetadata(false); setEditing("new"); }}>Add a household member</Button>
     </span>
   );
 
@@ -175,22 +175,22 @@ export function HouseholdCard() {
       <p role="status" aria-live="polite" className="sr-only">{status}</p>
       {loading && <Skeleton kind="lines" />}
       {!loading && loadError && <ErrorNotice message={loadError} onRetry={() => { setLoading(true); load(); }} />}
-      {!loading && !loadError && people.length === 0 && editing !== "new" && (
+      {!loading && !loadError && people.length === 0 && editing !== "new" && !metadata && (
         <EmptyState
           level={2}
           title="No one in your household yet"
           body="Add your children, teens or other family members so you can sign them up for events together."
-          action={<span data-add><Button variant="primary" onClick={() => setEditing("new")}>Add a household member</Button></span>}
+          action={<span data-add><Button variant="primary" onClick={() => { setMetadata(false); setEditing("new"); }}>Add a household member</Button></span>}
         />
       )}
       {household && (
         <div className="my-3">
           <div className="flex flex-wrap items-center gap-3">
             <h3 className="font-semibold break-words min-w-0">{household.name}</h3>
-            <Button variant="secondary" disabled={metadata} onClick={(e) => { metadataInvoker.current = e.currentTarget; setMetadata(true); }}>Rename</Button>
+            <Button variant="secondary" disabled={metadata} onClick={(e) => { metadataInvoker.current = e.currentTarget; setEditing(null); setMetadata(true); }}>Rename</Button>
           </div>
           <p className="text-sm text-text-muted whitespace-pre-wrap break-words mt-2">{household.address || "No household address yet."}</p>
-          <Button variant="secondary" layout="mt-2" disabled={metadata} onClick={(e) => { metadataInvoker.current = e.currentTarget; setMetadata(true); }}>Edit address</Button>
+          <Button variant="secondary" layout="mt-2" disabled={metadata} onClick={(e) => { metadataInvoker.current = e.currentTarget; setEditing(null); setMetadata(true); }}>Edit address</Button>
           {metadata && <HouseholdForm household={household} onCancel={() => { setMetadata(false); requestAnimationFrame(() => metadataInvoker.current?.focus()); }} onSave={async (name, address) => {
             const result = await Households.update({ name, address });
             setHousehold(result.household); setMetadata(false); setStatus("Saved your household name and address.");
@@ -236,7 +236,7 @@ export function HouseholdCard() {
                       {p.careNotes && <div className="text-sm text-text-muted">Care notes: {p.careNotes}</div>}
                     </div>
                     <div className="flex gap-2">
-                      <Button variant="secondary" onClick={() => setEditing(p.id)}>Edit<span className="sr-only"> {p.name}</span></Button>
+                      <Button variant="secondary" onClick={() => { setMetadata(false); setEditing(p.id); }}>Edit<span className="sr-only"> {p.name}</span></Button>
                       <Button variant="danger-outline" onClick={() => remove(p)}>Remove<span className="sr-only"> {p.name}</span></Button>
                     </div>
                   </div>

@@ -343,7 +343,7 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 	// registered_only may reach them (5.8, M1.8); the email carries it,
 	// the bell doesn't.
 	if video := videoLinkOf(ev); video != "" &&
-		policy.CanSeeVideoLink(videoRevealOf(ev), true, false) {
+		policy.CanSeeVideoLink(videoRevealOf(ev), true, false) && (reg.HouseholdPersonID == nil || reg.AttendanceMode == models.AttendanceRemote) {
 		vars.VideoURL = video
 	}
 	end := o.EndsAt
@@ -650,8 +650,8 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 		if r.ID != 0 && tx.First(&current, r.ID).Error == nil && current.Status == models.RegGoing && current.AttendanceMode == r.AttendanceMode {
 			used -= 1 + current.GuestCount
 		}
-		sameGoing:=current.Status==models.RegGoing && current.AttendanceMode==r.AttendanceMode
- if !(sameGoing && r.GuestCount<=current.GuestCount) && !events.Fits(capacityForMode(ev, o, r.AttendanceMode), used, 1+r.GuestCount) {
+		sameGoing := current.Status == models.RegGoing && current.AttendanceMode == r.AttendanceMode
+		if !(sameGoing && r.GuestCount <= current.GuestCount) && !events.Fits(capacityForMode(ev, o, r.AttendanceMode), used, 1+r.GuestCount) {
 			if ch.old.Status == models.RegGoing && ch.old.AttendanceMode == r.AttendanceMode {
 				return errEventFull
 			}
@@ -662,9 +662,11 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 			if r.WaitlistedAt == nil || ch.old.AttendanceMode != r.AttendanceMode {
 				r.WaitlistedAt = &now
 			}
-		} else if !(sameGoing && effectiveChildcare(ev,*r)<=effectiveChildcare(ev,current)) {
- if err:=checkChildcare(tx,ev,o.ID,r.ID,effectiveChildcare(ev,*r));err!=nil {return err}
- }
+		} else if !(sameGoing && effectiveChildcare(ev, *r) <= effectiveChildcare(ev, current)) {
+			if err := checkChildcare(tx, ev, o.ID, r.ID, effectiveChildcare(ev, *r)); err != nil {
+				return err
+			}
+		}
 	}
 	return saveRegistration(tx, r)
 }
@@ -680,6 +682,15 @@ func (a *App) applyRegistrationBatch(tx *gorm.DB, ev *models.Event, o *models.Ev
 				return nil, err
 			}
 			editedWaiter = true
+		}
+		if ch.old.Status == models.RegWaitlisted && ch.next.Status != models.RegWaitlisted {
+			interim := ch.next
+			if interim.Status == models.RegGoing {
+				interim.Status = models.RegDeclined
+			}
+			if err := saveRegistration(tx, &interim); err != nil {
+				return nil, err
+			}
 		}
 		if ch.old.Status != models.RegGoing {
 			continue
@@ -1048,8 +1059,10 @@ func (a *App) canRegisterIn(tx *gorm.DB, u *models.User, ev *models.Event) bool 
 	if f.group != nil {
 		gp = asGroup(f.group)
 	}
-	if u!=nil && u.Status==models.UserGuest {return policy.CanRegisterGuest(f.view,gp)}
- return policy.CanRegisterEvent(asPerson(u), f.view, gp, f.rel)
+	if u != nil && u.Status == models.UserGuest {
+		return policy.CanRegisterGuest(f.view, gp)
+	}
+	return policy.CanRegisterEvent(asPerson(u), f.view, gp, f.rel)
 }
 
 // ---------------------------------------------------------------------------
@@ -1106,7 +1119,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 		}
 		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RegistrationRemoved,
 			TargetType: "event", TargetID: ev.ID,
-			Meta: map[string]any{"userId": r.UserID, "occurrenceId": locked.ID, "note": note},
+			Meta: registrationMeta(r),
 			IP:   c.ClientIP(),
 		}); err != nil {
 			return err
@@ -1193,7 +1206,7 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		}
 		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RegistrationPromoted,
 			TargetType: "event", TargetID: ev.ID,
-			Meta: map[string]any{"userId": r.UserID, "occurrenceId": locked.ID},
+			Meta: registrationMeta(r),
 			IP:   c.ClientIP(),
 		}); err != nil {
 			return err
@@ -1526,7 +1539,7 @@ func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, int
 		mode := attendanceModeOf(r.AttendanceMode)
 		demand := effectiveChildcare(&ev, r)
 		if r.Status == models.RegGoing {
-			fits = fits && events.Fits(capacityForMode(&ev, o, mode), used[mode], 1+r.GuestCount) && events.Fits(ev.ChildcareCapacity, careUsed, demand)
+			fits = fits && events.Fits(capacityForMode(&ev, o, mode), used[mode], 1+r.GuestCount) && (demand == 0 || !ev.ChildcareAvailable || events.Fits(ev.ChildcareCapacity, careUsed, demand))
 		}
 		if fits {
 			if r.Status == models.RegGoing {

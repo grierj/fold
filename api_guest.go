@@ -480,7 +480,7 @@ func liveTokenManage(db *gorm.DB, raw string) (*models.Registration, *models.Eve
 		return nil, nil, nil, nil, errTokenInvalid
 	}
 	occ := reg.Occurrence
-	if occ.ID == 0 || time.Now().UTC().After(occ.EndsAt) {
+	if occ.ID == 0 || time.Now().UTC().After(occ.EndsAt) || (reg.HouseholdPersonID != nil && occ.Status != models.OccurrenceScheduled) {
 		return nil, nil, nil, nil, errTokenInvalid
 	}
 	ev := occ.Event
@@ -534,6 +534,12 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 		if err != nil {
 			return err
 		}
+		fresh, _, _, _, err := liveTokenManage(tx, c.Param("token"))
+		if err != nil {
+			return err
+		}
+		reg = fresh
+		before = reg.Status
 		res := tx.Model(&models.Registration{}).
 			Where("id = ? AND status IN ?", reg.ID,
 				[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).

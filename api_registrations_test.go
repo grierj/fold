@@ -1407,99 +1407,183 @@ func registrationIDFor(t *testing.T, app *App, userID, eventID uint, date string
 
 // householdFamily creates selectable adults and a child through Profile, then
 // confirms the child's person link through the ordinary admin action.
-func householdFamily(t *testing.T,app *App,admin *apiClient,name string) (*models.User,*apiClient,householdPersonJSON,householdPersonJSON) {
- t.Helper()
- user:=newTestUser(t,app,name,"password1234",models.RoleMember)
- client:=loginAPI(t,app,name,"password1234")
- spouse:=addMyPerson(t,client,map[string]any{"firstName":"Mary","kind":"adult","birthDate":"1990-01-01"})
- child:=addMyPerson(t,client,map[string]any{"firstName":"Kit","kind":"child","birthDate":"2020-05-01","careNotes":"Private allergy note"})
- if child.GuardianLinkID==nil {t.Fatal("missing guardian link")}
- apiDo(t,admin,"POST","/api/v1/admin/guardian-links/"+itoa(*child.GuardianLinkID)+"/confirm",map[string]any{"checkNote":"Known family"},http.StatusOK)
- return user,client,spouse,child
+func householdFamily(t *testing.T, app *App, admin *apiClient, name string) (*models.User, *apiClient, householdPersonJSON, householdPersonJSON) {
+	t.Helper()
+	user := newTestUser(t, app, name, "password1234", models.RoleMember)
+	client := loginAPI(t, app, name, "password1234")
+	spouse := addMyPerson(t, client, map[string]any{"firstName": "Mary", "kind": "adult", "birthDate": "1990-01-01"})
+	child := addMyPerson(t, client, map[string]any{"firstName": "Kit", "kind": "child", "birthDate": "2020-05-01", "careNotes": "Private allergy note"})
+	if child.GuardianLinkID == nil {
+		t.Fatal("missing guardian link")
+	}
+	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa(*child.GuardianLinkID)+"/confirm", map[string]any{"checkNote": "Known family"}, http.StatusOK)
+	return user, client, spouse, child
 }
 
-func batchAnswer(t *testing.T,c *apiClient,eventID uint,date string,body map[string]any,code int) registrationBatchJSON {
- t.Helper();body["date"]=date
- w:=c.do("PUT",fmt.Sprintf("/api/v1/events/%d/registrations",eventID),body,true)
- if w.Code!=code {t.Fatalf("batch: %d want %d: %s",w.Code,code,w.Body.String())}
- var result registrationBatchJSON;if code==http.StatusOK {decodeJSON(t,w,&result)}
- return result
+func batchAnswer(t *testing.T, c *apiClient, eventID uint, date string, body map[string]any, code int) registrationBatchJSON {
+	t.Helper()
+	body["date"] = date
+	w := c.do("PUT", fmt.Sprintf("/api/v1/events/%d/registrations", eventID), body, true)
+	if w.Code != code {
+		t.Fatalf("batch: %d want %d: %s", w.Code, code, w.Body.String())
+	}
+	var result registrationBatchJSON
+	if code == http.StatusOK {
+		decodeJSON(t, w, &result)
+	}
+	return result
 }
 
 func TestHouseholdBatchAnswersAndStableHolder(t *testing.T) {
- app:=testApp(t);admin,gid:=openGroup(t,app,"Family")
- eventID,date:=seedChildcareEvent(t,app,admin,gid,intPtr(2),intPtr(1),true)
- apiDo(t,admin,"PUT","/api/v1/events/"+itoa(eventID),map[string]any{"remoteAvailable":true,"remoteCapacity":1},http.StatusOK)
- holder,c,spouse,child:=householdFamily(t,app,admin,"family")
- result:=batchAnswer(t,c,eventID,date,map[string]any{"status":"going","attendanceMode":"remote","people":[]map[string]any{{"personId":spouse.ID,"status":"going","attendanceMode":"in_person"},{"personId":child.ID,"status":"going","attendanceMode":"in_person","childcareRequested":true}}},http.StatusOK)
- if result.Registration==nil || len(result.People)!=2 {t.Fatalf("batch shape: %+v",result)}
- ids:=map[uint]bool{result.Registration.RegistrationID:true}
- for _,r:=range result.People {if r.Status!=models.RegGoing || ids[r.RegistrationID] || r.RegisteredBy!=holder.ID {t.Fatalf("subject answer %+v",r)};ids[r.RegistrationID]=true}
- if used,err:=seatsUsed(app.DB,result.Registration.OccurrenceID);err!=nil || used!=2 {t.Fatalf("seats %d: %v",used,err)}
- if used,err:=childcareUsedFor(app.DB,result.Registration.OccurrenceID,0);err!=nil || used!=1 {t.Fatalf("care %d: %v",used,err)}
- // People-only edits preserve unnamed holder state and unmentioned people.
- result=batchAnswer(t,c,eventID,date,map[string]any{"people":[]map[string]any{{"personId":child.ID,"status":"maybe","childcareRequested":false}}},http.StatusOK)
- if result.Registration!=nil || len(result.People)!=1 || result.People[0].Status!=models.RegMaybe {t.Fatalf("people-only %+v",result)}
- second:=newTestUser(t,app,"second","password1234",models.RoleMember)
- household:=getMyHousehold(t,c)
- if err:=app.DB.Create(&models.HouseholdAccount{HouseholdID:household.ID,UserID:second.ID,Relation:models.HouseholdRelationAdult}).Error;err!=nil{t.Fatal(err)}
- secondClient:=loginAPI(t,app,"second","password1234")
- result=batchAnswer(t,secondClient,eventID,date,map[string]any{"people":[]map[string]any{{"personId":child.ID,"status":"going"}}},http.StatusOK)
- if result.People[0].RegisteredBy!=holder.ID {t.Fatal("edit transferred ownership")}
- registrationID:=result.People[0].RegistrationID
- apiDo(t,admin,"POST","/api/v1/events/"+itoa(eventID)+"/registrations/remove",map[string]any{"date":date,"registrationId":registrationID},http.StatusOK)
- batchAnswer(t,secondClient,eventID,date,map[string]any{"people":[]map[string]any{{"personId":child.ID,"status":"going","attendanceMode":"remote"}}},http.StatusConflict)
- apiDo(t,admin,"POST","/api/v1/events/"+itoa(eventID)+"/registrations/add",map[string]any{"date":date,"personId":child.ID,"registeredBy":holder.ID},http.StatusOK)
- var restored models.Registration;if err:=app.DB.First(&restored,registrationID).Error;err!=nil || restored.Status!=models.RegGoing {t.Fatalf("restore %+v %v",restored,err)}
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Family")
+	eventID, date := seedChildcareEvent(t, app, admin, gid, intPtr(2), intPtr(1), true)
+	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(eventID), map[string]any{"remoteAvailable": true, "remoteCapacity": 1}, http.StatusOK)
+	holder, c, spouse, child := householdFamily(t, app, admin, "family")
+	result := batchAnswer(t, c, eventID, date, map[string]any{"status": "going", "attendanceMode": "remote", "people": []map[string]any{{"personId": spouse.ID, "status": "going", "attendanceMode": "in_person"}, {"personId": child.ID, "status": "going", "attendanceMode": "in_person", "childcareRequested": true}}}, http.StatusOK)
+	if result.Registration == nil || len(result.People) != 2 {
+		t.Fatalf("batch shape: %+v", result)
+	}
+	ids := map[uint]bool{result.Registration.RegistrationID: true}
+	for _, r := range result.People {
+		if r.Status != models.RegGoing || ids[r.RegistrationID] || r.RegisteredBy != holder.ID {
+			t.Fatalf("subject answer %+v", r)
+		}
+		ids[r.RegistrationID] = true
+	}
+	if used, err := seatsUsed(app.DB, result.Registration.OccurrenceID); err != nil || used != 2 {
+		t.Fatalf("seats %d: %v", used, err)
+	}
+	if used, err := childcareUsedFor(app.DB, result.Registration.OccurrenceID, 0); err != nil || used != 1 {
+		t.Fatalf("care %d: %v", used, err)
+	}
+	// People-only edits preserve unnamed holder state and unmentioned people.
+	result = batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": child.ID, "status": "maybe", "childcareRequested": false}}}, http.StatusOK)
+	if result.Registration != nil || len(result.People) != 1 || result.People[0].Status != models.RegMaybe {
+		t.Fatalf("people-only %+v", result)
+	}
+	second := newTestUser(t, app, "second", "password1234", models.RoleMember)
+	household := getMyHousehold(t, c)
+	if err := app.DB.Create(&models.HouseholdAccount{HouseholdID: household.ID, UserID: second.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
+		t.Fatal(err)
+	}
+	secondClient := loginAPI(t, app, "second", "password1234")
+	result = batchAnswer(t, secondClient, eventID, date, map[string]any{"people": []map[string]any{{"personId": child.ID, "status": "going"}}}, http.StatusOK)
+	if result.People[0].RegisteredBy != holder.ID {
+		t.Fatal("edit transferred ownership")
+	}
+	registrationID := result.People[0].RegistrationID
+	apiDo(t, admin, "POST", "/api/v1/events/"+itoa(eventID)+"/registrations/remove", map[string]any{"date": date, "registrationId": registrationID}, http.StatusOK)
+	batchAnswer(t, secondClient, eventID, date, map[string]any{"people": []map[string]any{{"personId": child.ID, "status": "going", "attendanceMode": "remote"}}}, http.StatusConflict)
+	apiDo(t, admin, "POST", "/api/v1/events/"+itoa(eventID)+"/registrations/add", map[string]any{"date": date, "personId": child.ID, "registeredBy": holder.ID}, http.StatusOK)
+	var restored models.Registration
+	if err := app.DB.First(&restored, registrationID).Error; err != nil || restored.Status != models.RegGoing {
+		t.Fatalf("restore %+v %v", restored, err)
+	}
 }
 
 func TestHouseholdBatchValidationRollsBack(t *testing.T) {
- app:=testApp(t);admin,gid:=openGroup(t,app,"BatchValidation")
- eventID,date:=seedChildcareEvent(t,app,admin,gid,intPtr(1),intPtr(1),false)
- _,c,spouse,child:=householdFamily(t,app,admin,"validation")
- for _,tt:=range []struct{name string;body map[string]any;code int}{
-  {"cross household",map[string]any{"status":"going","people":[]map[string]any{{"personId":999999,"status":"going"}}},404},
-  {"duplicate",map[string]any{"status":"going","people":[]map[string]any{{"personId":child.ID,"status":"going"},{"personId":child.ID,"status":"going"}}},400},
-  {"not enough attendance",map[string]any{"status":"going","people":[]map[string]any{{"personId":spouse.ID,"status":"going"}}},409},
-  {"nested unnamed counts",map[string]any{"people":[]map[string]any{{"personId":child.ID,"status":"going","guestCount":1}}},400},
-  {"arbitrary holder",map[string]any{"registeredBy":9,"people":[]map[string]any{{"personId":child.ID,"status":"going"}}},400},
-  {"over capacity forbidden",map[string]any{"status":"going","overCapacity":true},400},
-  {"holder fields without status",map[string]any{"guestCount":0,"people":[]map[string]any{{"personId":child.ID,"status":"going"}}},400},
-  {"remote care",map[string]any{"people":[]map[string]any{{"personId":child.ID,"status":"going","attendanceMode":"remote","childcareRequested":true}}},409},
- } {t.Run(tt.name,func(t *testing.T){batchAnswer(t,c,eventID,date,tt.body,tt.code);var n int64;app.DB.Model(&models.Registration{}).Count(&n);if n!=0 {t.Fatalf("failed batch wrote %d rows",n)}})}
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "BatchValidation")
+	eventID, date := seedChildcareEvent(t, app, admin, gid, intPtr(1), intPtr(1), false)
+	_, c, spouse, child := householdFamily(t, app, admin, "validation")
+	for _, tt := range []struct {
+		name string
+		body map[string]any
+		code int
+	}{
+		{"cross household", map[string]any{"status": "going", "people": []map[string]any{{"personId": 999999, "status": "going"}}}, 404},
+		{"duplicate", map[string]any{"status": "going", "people": []map[string]any{{"personId": child.ID, "status": "going"}, {"personId": child.ID, "status": "going"}}}, 400},
+		{"not enough attendance", map[string]any{"status": "going", "people": []map[string]any{{"personId": spouse.ID, "status": "going"}}}, 409},
+		{"nested unnamed counts", map[string]any{"people": []map[string]any{{"personId": child.ID, "status": "going", "guestCount": 1}}}, 400},
+		{"arbitrary holder", map[string]any{"registeredBy": 9, "people": []map[string]any{{"personId": child.ID, "status": "going"}}}, 400},
+		{"over capacity forbidden", map[string]any{"status": "going", "overCapacity": true}, 400},
+		{"holder fields without status", map[string]any{"guestCount": 0, "people": []map[string]any{{"personId": child.ID, "status": "going"}}}, 400},
+		{"remote care", map[string]any{"people": []map[string]any{{"personId": child.ID, "status": "going", "attendanceMode": "remote", "childcareRequested": true}}}, 409},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			batchAnswer(t, c, eventID, date, tt.body, tt.code)
+			var n int64
+			app.DB.Model(&models.Registration{}).Count(&n)
+			if n != 0 {
+				t.Fatalf("failed batch wrote %d rows", n)
+			}
+		})
+	}
 }
 
 func TestHouseholdReleaseHonorsEarlierWaiter(t *testing.T) {
- app:=testApp(t);admin,gid:=openGroup(t,app,"FamilyQueue")
- eventID,date:=seedCappedEvent(t,app,admin,gid,intPtr(1),true)
- _,c,spouse,_:=householdFamily(t,app,admin,"queueholder")
- batchAnswer(t,c,eventID,date,map[string]any{"status":"going"},http.StatusOK)
- waiter:=newTestUser(t,app,"early","password1234",models.RoleMember)
- wc:=loginAPI(t,app,"early","password1234")
- code,raw:=registerAs(wc,eventID,date,"going",nil);if code!=200 {t.Fatal(raw)}
- result:=batchAnswer(t,c,eventID,date,map[string]any{"status":"declined","people":[]map[string]any{{"personId":spouse.ID,"status":"going"}}},http.StatusOK)
- if result.People[0].Status!=models.RegWaitlisted {t.Fatalf("new person jumped queue: %+v",result)}
- if got:=regStatus(t,app,waiter.ID,result.Registration.OccurrenceID);got!=models.RegGoing {t.Fatalf("earlier waiter %s",got)}
- same:=batchAnswer(t,c,eventID,date,map[string]any{"people":[]map[string]any{{"personId":spouse.ID,"status":"going"}}},http.StatusOK)
- if same.People[0].RegistrationID!=result.People[0].RegistrationID || same.People[0].WaitlistPosition==nil || *same.People[0].WaitlistPosition!=1 {t.Fatalf("idempotent wait %+v",same)}
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "FamilyQueue")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+	_, c, spouse, _ := householdFamily(t, app, admin, "queueholder")
+	batchAnswer(t, c, eventID, date, map[string]any{"status": "going"}, http.StatusOK)
+	waiter := newTestUser(t, app, "early", "password1234", models.RoleMember)
+	wc := loginAPI(t, app, "early", "password1234")
+	code, raw := registerAs(wc, eventID, date, "going", nil)
+	if code != 200 {
+		t.Fatal(raw)
+	}
+	result := batchAnswer(t, c, eventID, date, map[string]any{"status": "declined", "people": []map[string]any{{"personId": spouse.ID, "status": "going"}}}, http.StatusOK)
+	if result.People[0].Status != models.RegWaitlisted {
+		t.Fatalf("new person jumped queue: %+v", result)
+	}
+	if got := regStatus(t, app, waiter.ID, result.Registration.OccurrenceID); got != models.RegGoing {
+		t.Fatalf("earlier waiter %s", got)
+	}
+	same := batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going"}}}, http.StatusOK)
+	if same.People[0].RegistrationID != result.People[0].RegistrationID || same.People[0].WaitlistPosition == nil || *same.People[0].WaitlistPosition != 1 {
+		t.Fatalf("idempotent wait %+v", same)
+	}
 }
 
 func TestConcurrentHouseholdAndAccountSeats(t *testing.T) {
- app:=testApp(t);admin,gid:=openGroup(t,app,"MixedRace")
- eventID,date:=seedCappedEvent(t,app,admin,gid,intPtr(10),true)
- type request struct{client *apiClient;person uint}
- requests:=[]request{}
- for i:=0;i<20;i++ {
-  name:=fmt.Sprintf("mixed%d",i);newTestUser(t,app,name,"password1234",models.RoleMember);c:=loginAPI(t,app,name,"password1234")
-  id:=uint(0);if i%2==0 {p:=addMyPerson(t,c,map[string]any{"firstName":"Adult","kind":"adult","birthDate":"1990-01-01"});id=p.ID}
-  requests=append(requests,request{c,id})
- }
- var wg sync.WaitGroup;failures:=make(chan string,len(requests))
- for _,req:=range requests {wg.Add(1);go func(req request){defer wg.Done();body:=map[string]any{"date":date,"status":"going"};if req.person!=0 {body=map[string]any{"date":date,"people":[]map[string]any{{"personId":req.person,"status":"going"}}}}
-  w:=req.client.do("PUT","/api/v1/events/"+itoa(eventID)+"/registrations",body,true);if w.Code!=200 {failures<-w.Body.String()}
- }(req)}
- wg.Wait();close(failures);for failure:=range failures {t.Error(failure)}
- var o models.EventOccurrence;app.DB.Where("event_id = ?",eventID).First(&o)
- if got,err:=seatsUsed(app.DB,o.ID);err!=nil || got!=10 {t.Fatalf("seats %d: %v",got,err)}
- if countRegs(t,app,o.ID,models.RegWaitlisted)!=10 {t.Fatal("lost waitlisted subjects")}
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "MixedRace")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(10), true)
+	type request struct {
+		client *apiClient
+		person uint
+	}
+	requests := []request{}
+	for i := 0; i < 20; i++ {
+		name := fmt.Sprintf("mixed%d", i)
+		newTestUser(t, app, name, "password1234", models.RoleMember)
+		c := loginAPI(t, app, name, "password1234")
+		id := uint(0)
+		if i%2 == 0 {
+			p := addMyPerson(t, c, map[string]any{"firstName": "Adult", "kind": "adult", "birthDate": "1990-01-01"})
+			id = p.ID
+		}
+		requests = append(requests, request{c, id})
+	}
+	var wg sync.WaitGroup
+	failures := make(chan string, len(requests))
+	for _, req := range requests {
+		wg.Add(1)
+		go func(req request) {
+			defer wg.Done()
+			body := map[string]any{"date": date, "status": "going"}
+			if req.person != 0 {
+				body = map[string]any{"date": date, "people": []map[string]any{{"personId": req.person, "status": "going"}}}
+			}
+			w := req.client.do("PUT", "/api/v1/events/"+itoa(eventID)+"/registrations", body, true)
+			if w.Code != 200 {
+				failures <- w.Body.String()
+			}
+		}(req)
+	}
+	wg.Wait()
+	close(failures)
+	for failure := range failures {
+		t.Error(failure)
+	}
+	var o models.EventOccurrence
+	app.DB.Where("event_id = ?", eventID).First(&o)
+	if got, err := seatsUsed(app.DB, o.ID); err != nil || got != 10 {
+		t.Fatalf("seats %d: %v", got, err)
+	}
+	if countRegs(t, app, o.ID, models.RegWaitlisted) != 10 {
+		t.Fatal("lost waitlisted subjects")
+	}
 }

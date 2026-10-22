@@ -653,8 +653,8 @@ func TestCanSeeHouseholdPerson(t *testing.T) {
 	childConfirmed := HouseholdPerson{Kind: KindChild, LinkStatus: LinkConfirmed}
 	childRejected := HouseholdPerson{Kind: KindChild, LinkStatus: LinkRejected}
 	teenPending := HouseholdPerson{Kind: KindTeen, LinkStatus: LinkPending}
-	adultAge:=30
- adultPerson := HouseholdPerson{Kind: KindAdult,AgeYears:&adultAge}
+	adultAge := 30
+	adultPerson := HouseholdPerson{Kind: KindAdult, AgeYears: &adultAge}
 	holder := HouseholdRel{Account: true, Adult: true}
 	guardian := HouseholdRel{Guardian: true}
 	manager := HouseholdRel{EventManager: true}
@@ -779,39 +779,64 @@ func TestCanSeeChildcare(t *testing.T) {
 }
 
 func TestHouseholdRegistrationEligibility(t *testing.T) {
- age17,age18,age6,future:=17,18,6,-1
- adultRel:=HouseholdRel{Account:true,Adult:true}
- for _,tt:=range []struct{name string; person HouseholdPerson; want string}{
-  {"adult at eighteen",HouseholdPerson{Kind:KindAdult,AgeYears:&age18},""},
-  {"adult age unknown",HouseholdPerson{Kind:KindAdult},"household_birth_date_required"},
-  {"adult below eighteen even with old link",HouseholdPerson{Kind:KindAdult,AgeYears:&age17,LinkStatus:LinkConfirmed},"household_age_mismatch"},
-  {"future birth date",HouseholdPerson{Kind:KindChild,AgeYears:&future,LinkStatus:LinkConfirmed},"household_age_mismatch"},
-  {"confirmed child",HouseholdPerson{Kind:KindChild,AgeYears:&age6,LinkStatus:LinkConfirmed},""},
-  {"confirmed teen labelled conservatively",HouseholdPerson{Kind:KindTeen,AgeYears:&age18,LinkStatus:LinkConfirmed},""},
-  {"pending child",HouseholdPerson{Kind:KindChild,AgeYears:&age6,LinkStatus:LinkPending},"household_link_pending"},
-  {"rejected child",HouseholdPerson{Kind:KindChild,AgeYears:&age6,LinkStatus:LinkRejected},"household_link_unconfirmed"},
-  {"revoked child",HouseholdPerson{Kind:KindChild,AgeYears:&age6,LinkStatus:LinkRevoked},"household_link_unconfirmed"},
-  {"missing link",HouseholdPerson{Kind:KindChild,AgeYears:&age6},"household_link_unconfirmed"},
-  {"converted person",HouseholdPerson{Kind:KindAdult,AgeYears:&age18,Converted:true},"household_registration_holder_unavailable"},
-  {"deleted person",HouseholdPerson{Kind:KindAdult,AgeYears:&age18,Deleted:true},"household_registration_holder_unavailable"},
- } {
-  t.Run(tt.name,func(t *testing.T){
-   if got:=CanRegisterHouseholdPerson(adult,adult,adultRel,adultRel,tt.person,true,true,true);got!=tt.want {t.Fatalf("got %q want %q",got,tt.want)}
-   if got:=CanManageHouseholdRegistration(admin,adult,true,false,adultRel,tt.person,true,true);got!=tt.want {t.Fatalf("admin bypassed facts: %q",got)}
-  })
- }
- eligible:=HouseholdPerson{Kind:KindAdult,AgeYears:&age18}
- for _,tt:=range []struct{name string;actor,holder *Person;actorRel,holderRel HouseholdRel;active,actorAccess,holderAccess bool}{
-  {"unrelated leader",adult2,adult,HouseholdRel{},adultRel,true,true,true},
-  {"teen actor",teen,adult,adultRel,adultRel,true,true,true},
-  {"guest actor",nil,adult,adultRel,adultRel,true,true,true},
-  {"teen holder",adult,teen,adultRel,adultRel,true,true,true},
-  {"disabled holder",adult,adult,adultRel,adultRel,false,true,true},
-  {"actor cannot see event",adult2,adult,adultRel,adultRel,true,false,true},
-  {"holder cannot see event",admin,adult,adultRel,adultRel,true,true,false},
-  {"holder unrelated",adult,adult,adultRel,HouseholdRel{},true,true,true},
- } {t.Run(tt.name,func(t *testing.T){if CanRegisterHouseholdPerson(tt.actor,tt.holder,tt.actorRel,tt.holderRel,eligible,tt.active,tt.actorAccess,tt.holderAccess)=="" {t.Fatal("unauthorized registration allowed")}})}
- if CanRegisterHouseholdPerson(adult2,adult,adultRel,adultRel,eligible,true,true,true)!="" {t.Fatal("second household adult denied")}
- if CanManageHouseholdRegistration(adult2,adult,true,false,adultRel,eligible,true,true)=="" {t.Fatal("manager searched unrelated household")}
- if CanManageHouseholdRegistration(adult2,adult,true,true,adultRel,eligible,true,true)!="" {t.Fatal("own event recovery denied")}
+	age17, age18, age6, future := 17, 18, 6, -1
+	adultRel := HouseholdRel{Account: true, Adult: true}
+	for _, tt := range []struct {
+		name   string
+		person HouseholdPerson
+		want   string
+	}{
+		{"adult at eighteen", HouseholdPerson{Kind: KindAdult, AgeYears: &age18}, ""},
+		{"adult age unknown", HouseholdPerson{Kind: KindAdult}, "household_birth_date_required"},
+		{"adult below eighteen even with old link", HouseholdPerson{Kind: KindAdult, AgeYears: &age17, LinkStatus: LinkConfirmed}, "household_age_mismatch"},
+		{"future birth date", HouseholdPerson{Kind: KindChild, AgeYears: &future, LinkStatus: LinkConfirmed}, "household_age_mismatch"},
+		{"confirmed child", HouseholdPerson{Kind: KindChild, AgeYears: &age6, LinkStatus: LinkConfirmed}, ""},
+		{"confirmed teen labelled conservatively", HouseholdPerson{Kind: KindTeen, AgeYears: &age18, LinkStatus: LinkConfirmed}, ""},
+		{"pending child", HouseholdPerson{Kind: KindChild, AgeYears: &age6, LinkStatus: LinkPending}, "household_link_pending"},
+		{"rejected child", HouseholdPerson{Kind: KindChild, AgeYears: &age6, LinkStatus: LinkRejected}, "household_link_unconfirmed"},
+		{"revoked child", HouseholdPerson{Kind: KindChild, AgeYears: &age6, LinkStatus: LinkRevoked}, "household_link_unconfirmed"},
+		{"missing link", HouseholdPerson{Kind: KindChild, AgeYears: &age6}, "household_link_unconfirmed"},
+		{"converted person", HouseholdPerson{Kind: KindAdult, AgeYears: &age18, Converted: true}, "household_registration_holder_unavailable"},
+		{"deleted person", HouseholdPerson{Kind: KindAdult, AgeYears: &age18, Deleted: true}, "household_registration_holder_unavailable"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanRegisterHouseholdPerson(adult, adult, adultRel, adultRel, tt.person, true, true, true); got != tt.want {
+				t.Fatalf("got %q want %q", got, tt.want)
+			}
+			if got := CanManageHouseholdRegistration(admin, adult, true, false, adultRel, tt.person, true, true); got != tt.want {
+				t.Fatalf("admin bypassed facts: %q", got)
+			}
+		})
+	}
+	eligible := HouseholdPerson{Kind: KindAdult, AgeYears: &age18}
+	for _, tt := range []struct {
+		name                              string
+		actor, holder                     *Person
+		actorRel, holderRel               HouseholdRel
+		active, actorAccess, holderAccess bool
+	}{
+		{"unrelated leader", adult2, adult, HouseholdRel{}, adultRel, true, true, true},
+		{"teen actor", teen, adult, adultRel, adultRel, true, true, true},
+		{"guest actor", nil, adult, adultRel, adultRel, true, true, true},
+		{"teen holder", adult, teen, adultRel, adultRel, true, true, true},
+		{"disabled holder", adult, adult, adultRel, adultRel, false, true, true},
+		{"actor cannot see event", adult2, adult, adultRel, adultRel, true, false, true},
+		{"holder cannot see event", admin, adult, adultRel, adultRel, true, true, false},
+		{"holder unrelated", adult, adult, adultRel, HouseholdRel{}, true, true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if CanRegisterHouseholdPerson(tt.actor, tt.holder, tt.actorRel, tt.holderRel, eligible, tt.active, tt.actorAccess, tt.holderAccess) == "" {
+				t.Fatal("unauthorized registration allowed")
+			}
+		})
+	}
+	if CanRegisterHouseholdPerson(adult2, adult, adultRel, adultRel, eligible, true, true, true) != "" {
+		t.Fatal("second household adult denied")
+	}
+	if CanManageHouseholdRegistration(adult2, adult, true, false, adultRel, eligible, true, true) == "" {
+		t.Fatal("manager searched unrelated household")
+	}
+	if CanManageHouseholdRegistration(adult2, adult, true, true, adultRel, eligible, true, true) != "" {
+		t.Fatal("own event recovery denied")
+	}
 }

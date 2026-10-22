@@ -237,9 +237,14 @@ func TestPickPromotionsByPoolChildcare(t *testing.T) {
 }
 
 func TestPickPromotionsNamedAndUnnamedChildcare(t *testing.T) {
- line:=[]WaitEntry{{ID:1,Seats:1,Mode:"in_person",Childcare:1},{ID:2,Seats:1,Mode:"remote"},{ID:3,Seats:3,Mode:"in_person",Childcare:2},{ID:4,Seats:1,Mode:"in_person",Childcare:1}}
- pools:=map[string]Pool{"in_person":{Capacity:intp(5)},"remote":{Capacity:intp(1)}}
- for _,tt:=range []struct{care int;want []uint}{{0,[]uint{2}},{1,[]uint{1,2}},{2,[]uint{1,2,4}},{3,[]uint{1,2,3}}} {
-  if got:=ids(PickPromotionsByPool(line,pools,Pool{Capacity:&tt.care}));!reflect.DeepEqual(got,tt.want) {t.Fatalf("care %d: %v want %v",tt.care,got,tt.want)}
- }
+	line := []WaitEntry{{ID: 1, Seats: 1, Mode: "in_person", Childcare: 1}, {ID: 2, Seats: 1, Mode: "remote"}, {ID: 3, Seats: 3, Mode: "in_person", Childcare: 2}, {ID: 4, Seats: 1, Mode: "in_person", Childcare: 1}}
+	pools := map[string]Pool{"in_person": {Capacity: intp(5)}, "remote": {Capacity: intp(1)}}
+	for _, tt := range []struct {
+		care int
+		want []uint
+	}{{0, []uint{2}}, {1, []uint{1, 2}}, {2, []uint{1, 2, 4}}, {3, []uint{1, 2, 3}}} {
+		if got := ids(PickPromotionsByPool(line, pools, Pool{Capacity: &tt.care})); !reflect.DeepEqual(got, tt.want) {
+			t.Fatalf("care %d: %v want %v", tt.care, got, tt.want)
+		}
+	}
 }

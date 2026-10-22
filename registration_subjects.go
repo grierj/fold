@@ -358,7 +358,7 @@ func (f subjectFacts) attendee(r models.Registration, o models.EventOccurrence, 
 	careRel := rel
 	careRel.EventManager = manager && r.Status == models.RegGoing && o.Status == models.OccurrenceScheduled
 	window := &policy.EventWindow{StartsAt: o.StartsAt, EndsAt: o.EndsAt}
-	if r.Status==models.RegGoing && o.Status==models.OccurrenceScheduled && policy.CanSeeCareNotes(asPerson(me), facts, careRel, window, now) {
+	if r.Status == models.RegGoing && o.Status == models.OccurrenceScheduled && policy.CanSeeCareNotes(asPerson(me), facts, careRel, window, now) {
 		hp.CareNotes = &person.CareNotes
 		if !policy.IsAdmin(asPerson(me)) && !rel.Guardian {
 			until := o.EndsAt.Add(24 * time.Hour)
