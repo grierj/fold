@@ -68,15 +68,3 @@ func TestEveryKindConstIsRegistered(t *testing.T) {
 		t.Errorf("kinds.go declares %d kind keys, registry has %d", found, len(registry))
 	}
 }
-
-func TestPromotionMentionsDroppedChildcare(t *testing.T) {
-	k, _ := Lookup(RegistrationPromoted)
-	v := Vars{Event: "Family Night", Note: "Childcare is full for this date. You are going without childcare."}
-	_, bell := k.Render(v)
-	_, email := k.RenderForEmail(v)
-	for _, body := range []string{bell, email} {
-		if !strings.Contains(body, v.Note) {
-			t.Fatalf("lost childcare note: %q", body)
-		}
-	}
-}

@@ -1120,44 +1120,65 @@ func TestChildcareRegistrationValidationAndManagerAdd(t *testing.T) {
 	apiDo(t, admin, "POST", path+"/add", map[string]any{"date": date, "userId": other.ID, "childcareCount": 1}, http.StatusBadRequest)
 }
 
-func TestChildcarePromotionDropsRequestWhenFull(t *testing.T) {
-	for _, manual := range []bool{false, true} {
-		t.Run(fmt.Sprint("manual=", manual), func(t *testing.T) {
-			app := testApp(t)
-			admin, gid := openGroup(t, app, "ChildcarePromotion")
-			id, date := seedChildcareEvent(t, app, admin, gid, intPtr(1), intPtr(1), true)
-			// A remote parent fills childcare without using the in-person seat.
-			apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(id), map[string]any{"remoteAvailable": true}, http.StatusOK)
-			apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(id)+"/registrations", map[string]any{"date": date, "status": "going", "attendanceMode": "remote", "childcareCount": 1}, http.StatusOK)
-			seated := newTestUser(t, app, "seated", "password1234", models.RoleMember)
-			waiting := newTestUser(t, app, "waiting", "password1234", models.RoleMember)
-			c1, c2 := loginAPI(t, app, "seated", "password1234"), loginAPI(t, app, "waiting", "password1234")
-			childcareAs(t, c1, id, date, "going", 0, http.StatusOK)
-			r := childcareAs(t, c2, id, date, "going", 1, http.StatusOK)
-			if r.Status != models.RegWaitlisted || r.ChildcareCount != 1 {
-				t.Fatalf("waitlist lost request: %+v", r)
-			}
-			if manual {
-				apiDo(t, admin, "POST", "/api/v1/events/"+itoa(id)+"/registrations/remove", map[string]any{"date": date, "userId": seated.ID}, http.StatusOK)
-				apiDo(t, admin, "POST", "/api/v1/events/"+itoa(id)+"/registrations/promote", map[string]any{"date": date, "userId": waiting.ID}, http.StatusOK)
-			} else {
-				childcareAs(t, c1, id, date, "declined", 0, http.StatusOK)
-			}
-			var promoted models.Registration
-			if err := app.DB.First(&promoted, "user_id = ? AND occurrence_id = ?", waiting.ID, r.OccurrenceID).Error; err != nil {
-				t.Fatal(err)
-			}
-			if promoted.Status != models.RegGoing || promoted.ChildcareCount != 0 || promoted.ChildcareAgesNote != "3 and 5" {
-				t.Fatalf("promotion = %+v", promoted)
-			}
-			if auditCount(t, app, audit.RegistrationChildcareDropped) != 1 {
-				t.Fatal("missing dropped-childcare audit")
-			}
-			notice := findKind(feed(t, c2, ""), "registration.promoted")
-			if notice == nil || !strings.Contains(notice.Body, "without childcare") {
-				t.Fatalf("missing childcare notice: %+v", notice)
-			}
-		})
+func TestChildcarePromotionSkipsUntilRequestFits(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ChildcarePromotion")
+	id, date := seedChildcareEvent(t, app, admin, gid, intPtr(2), intPtr(2), true)
+	path := "/api/v1/events/" + itoa(id)
+	// A remote parent fills childcare without using any in-person seats.
+	apiDo(t, admin, "PUT", path, map[string]any{"remoteAvailable": true}, http.StatusOK)
+	apiDo(t, admin, "PUT", path+"/registrations", map[string]any{
+		"date": date, "status": "going", "attendanceMode": "remote", "childcareCount": 2,
+	}, http.StatusOK)
+	newTestUser(t, app, "seated", "password1234", models.RoleMember)
+	a := newTestUser(t, app, "waitera", "password1234", models.RoleMember)
+	b := newTestUser(t, app, "waiterb", "password1234", models.RoleMember)
+	seated := loginAPI(t, app, "seated", "password1234")
+	ca, cb := loginAPI(t, app, "waitera", "password1234"), loginAPI(t, app, "waiterb", "password1234")
+	apiDo(t, seated, "PUT", path+"/registrations", map[string]any{
+		"date": date, "status": "going", "guestCount": 1,
+	}, http.StatusOK)
+	r := childcareAs(t, ca, id, date, "going", 2, http.StatusOK)
+	childcareAs(t, cb, id, date, "going", 0, http.StatusOK)
+	var before models.Registration
+	if err := app.DB.First(&before, "user_id = ? AND occurrence_id = ?", a.ID, r.OccurrenceID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if before.Status != models.RegWaitlisted || before.WaitlistedAt == nil {
+		t.Fatalf("expected A waiting: %+v", before)
+	}
+	// Free one seat. A cannot get childcare, so B takes the seat.
+	childcareAs(t, seated, id, date, "going", 0, http.StatusOK)
+	var after models.Registration
+	if err := app.DB.First(&after, before.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != models.RegWaitlisted || after.ChildcareCount != 2 ||
+		after.WaitlistedAt == nil || !after.WaitlistedAt.Equal(*before.WaitlistedAt) || after.PromotedAt != nil {
+		t.Fatalf("skipping changed A: %+v", after)
+	}
+	if got := regStatus(t, app, b.ID, r.OccurrenceID); got != models.RegGoing {
+		t.Fatalf("B = %q, want going", got)
+	}
+	if findKind(feed(t, ca, ""), "registration.promoted") != nil {
+		t.Fatal("skipped A received a promotion notice")
+	}
+	// Leave one seat free, then free childcare without changing attendance.
+	childcareAs(t, seated, id, date, "declined", 0, http.StatusOK)
+	childcareAs(t, admin, id, date, "going", 1, http.StatusOK)
+	if got := regStatus(t, app, a.ID, r.OccurrenceID); got != models.RegWaitlisted {
+		t.Fatalf("A promoted with only one childcare spot free: %q", got)
+	}
+	childcareAs(t, admin, id, date, "going", 0, http.StatusOK)
+	if err := app.DB.First(&after, before.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != models.RegGoing || after.ChildcareCount != 2 || after.ChildcareAgesNote != "3 and 5" ||
+		after.PromotedAt == nil || after.WaitlistedAt == nil || !after.WaitlistedAt.Equal(*before.WaitlistedAt) {
+		t.Fatalf("promotion lost A's request or history: %+v", after)
+	}
+	if findKind(feed(t, ca, ""), "registration.promoted") == nil {
+		t.Fatal("A received no promotion notice")
 	}
 }
 
@@ -1185,13 +1206,150 @@ func TestChildcareBatchPromotionsShareRemainingPlaces(t *testing.T) {
 		if err := app.DB.First(&reg, "user_id = ? AND occurrence_id = ?", u.ID, occ.ID).Error; err != nil {
 			t.Fatal(err)
 		}
-		want := 1 - i
-		if reg.Status != models.RegGoing || reg.ChildcareCount != want {
+		want := models.RegGoing
+		if i == 1 {
+			want = models.RegWaitlisted
+		}
+		if reg.Status != want || reg.ChildcareCount != 1 {
 			t.Fatalf("promotion %d = %+v", i, reg)
 		}
 	}
 	if n, err := childcareUsedFor(app.DB, occ.ID, 0); err != nil || n != 1 {
 		t.Fatalf("promotions overfilled childcare: %d %v", n, err)
+	}
+}
+
+func TestChildcareFreedPromotesOnlyWithSeat(t *testing.T) {
+	for _, action := range []string{"lower count", "manager lowers count", "decline", "maybe", "remove", "disable", "manage cancel", "raise limit", "remove limit", "turn off childcare"} {
+		for _, seatFree := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/seatFree=%t", action, seatFree), func(t *testing.T) {
+				app := testApp(t)
+				admin, gid := openGroup(t, app, "FreeChildcare")
+				id, date := seedChildcareEvent(t, app, admin, gid, intPtr(1), intPtr(2), true)
+				path := "/api/v1/events/" + itoa(id)
+				apiDo(t, admin, "PUT", path, map[string]any{"remoteAvailable": true}, http.StatusOK)
+				parent := newTestUser(t, app, "parent", "password1234", models.RoleMember)
+				waiter := newTestUser(t, app, "waiter", "password1234", models.RoleMember)
+				pc, wc := loginAPI(t, app, "parent", "password1234"), loginAPI(t, app, "waiter", "password1234")
+				apiDo(t, pc, "PUT", path+"/registrations", map[string]any{
+					"date": date, "status": "going", "attendanceMode": "remote", "childcareCount": 2,
+				}, http.StatusOK)
+				childcareAs(t, admin, id, date, "going", 0, http.StatusOK)
+				r := childcareAs(t, wc, id, date, "going", 2, http.StatusOK)
+				var before models.Registration
+				if err := app.DB.First(&before, "user_id = ? AND occurrence_id = ?", waiter.ID, r.OccurrenceID).Error; err != nil {
+					t.Fatal(err)
+				}
+				if before.Status != models.RegWaitlisted || before.WaitlistedAt == nil {
+					t.Fatalf("expected waiter: %+v", before)
+				}
+				if seatFree {
+					childcareAs(t, admin, id, date, "declined", 0, http.StatusOK)
+					if got := regStatus(t, app, waiter.ID, r.OccurrenceID); got != models.RegWaitlisted {
+						t.Fatalf("promoted before childcare freed: %q", got)
+					}
+				}
+				switch action {
+				case "lower count":
+					childcareAs(t, pc, id, date, "going", 0, http.StatusOK)
+				case "manager lowers count":
+					apiDo(t, admin, "POST", path+"/registrations/add", map[string]any{
+						"date": date, "userId": parent.ID, "childcareCount": 0,
+					}, http.StatusOK)
+				case "decline", "maybe":
+					status := models.RegDeclined
+					if action == "maybe" {
+						status = models.RegMaybe
+					}
+					childcareAs(t, pc, id, date, status, 2, http.StatusOK)
+				case "remove":
+					apiDo(t, admin, "POST", path+"/registrations/remove", map[string]any{"date": date, "userId": parent.ID}, http.StatusOK)
+				case "disable":
+					apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(parent.ID), map[string]any{"status": "disabled"}, http.StatusOK)
+				case "manage cancel":
+					raw, hash, err := createInvitationToken()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := app.DB.Model(&models.Registration{}).
+						Where("user_id = ? AND occurrence_id = ?", parent.ID, r.OccurrenceID).
+						Update("manage_token_hash", hash).Error; err != nil {
+						t.Fatal(err)
+					}
+					apiDo(t, anonClient(t, app, "10.4.0.10"), "POST", "/api/v1/guest-registrations/manage/"+raw+"/cancel", nil, http.StatusOK)
+				case "raise limit":
+					apiDo(t, admin, "PUT", path, map[string]any{"childcareCapacity": 4}, http.StatusOK)
+				case "remove limit":
+					apiDo(t, admin, "PUT", path, map[string]any{"childcareCapacity": nil}, http.StatusOK)
+				case "turn off childcare":
+					apiDo(t, admin, "PUT", path, map[string]any{"childcareAvailable": false}, http.StatusOK)
+				}
+				var after models.Registration
+				if err := app.DB.First(&after, before.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+				want := models.RegWaitlisted
+				if seatFree {
+					want = models.RegGoing
+				}
+				if after.Status != want || after.ChildcareCount != 2 || after.ChildcareAgesNote != before.ChildcareAgesNote ||
+					after.WaitlistedAt == nil || !after.WaitlistedAt.Equal(*before.WaitlistedAt) || (after.PromotedAt != nil) != seatFree {
+					t.Fatalf("after freeing childcare, want %s with preserved request and wait time: %+v", want, after)
+				}
+			})
+		}
+	}
+}
+
+func TestManualChildcarePromotionRequiresRoom(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ManualChildcare")
+	id, date := seedChildcareEvent(t, app, admin, gid, intPtr(1), intPtr(2), true)
+	path := "/api/v1/events/" + itoa(id)
+	apiDo(t, admin, "PUT", path, map[string]any{"remoteAvailable": true}, http.StatusOK)
+	apiDo(t, admin, "PUT", path+"/registrations", map[string]any{
+		"date": date, "status": "going", "attendanceMode": "remote", "childcareCount": 2,
+	}, http.StatusOK)
+	seated := newTestUser(t, app, "seated", "password1234", models.RoleMember)
+	waiter := newTestUser(t, app, "waiter", "password1234", models.RoleMember)
+	childcareAs(t, loginAPI(t, app, "seated", "password1234"), id, date, "going", 0, http.StatusOK)
+	wc := loginAPI(t, app, "waiter", "password1234")
+	r := childcareAs(t, wc, id, date, "going", 2, http.StatusOK)
+	var before models.Registration
+	if err := app.DB.First(&before, "user_id = ? AND occurrence_id = ?", waiter.ID, r.OccurrenceID).Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, admin, "POST", path+"/registrations/remove", map[string]any{"date": date, "userId": seated.ID}, http.StatusOK)
+	response := apiDo(t, admin, "POST", path+"/registrations/promote", map[string]any{"date": date, "userId": waiter.ID}, http.StatusConflict)
+	if !strings.Contains(response, "childcare_full") {
+		t.Fatal(response)
+	}
+	var after models.Registration
+	if err := app.DB.First(&after, before.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != models.RegWaitlisted || after.ChildcareCount != 2 || after.PromotedAt != nil ||
+		after.WaitlistedAt == nil || before.WaitlistedAt == nil || !after.WaitlistedAt.Equal(*before.WaitlistedAt) {
+		t.Fatalf("refused promotion changed request: %+v", after)
+	}
+	if auditCount(t, app, audit.RegistrationPromoted) != 0 || findKind(feed(t, wc, ""), "registration.promoted") != nil {
+		t.Fatal("refused promotion wrote an audit or notice")
+	}
+	// In the cutoff, childcare becoming free leaves promotion to the leader.
+	if err := app.DB.Model(&models.EventOccurrence{}).Where("id = ?", r.OccurrenceID).
+		Update("starts_at", time.Now().UTC().Add(time.Hour)).Error; err != nil {
+		t.Fatal(err)
+	}
+	childcareAs(t, admin, id, date, "going", 0, http.StatusOK)
+	if got := regStatus(t, app, waiter.ID, r.OccurrenceID); got != models.RegWaitlisted {
+		t.Fatalf("auto-promoted in cutoff: %q", got)
+	}
+	apiDo(t, admin, "POST", path+"/registrations/promote", map[string]any{"date": date, "userId": waiter.ID}, http.StatusOK)
+	if err := app.DB.First(&after, before.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != models.RegGoing || after.ChildcareCount != 2 || after.ChildcareAgesNote != before.ChildcareAgesNote || after.PromotedAt == nil {
+		t.Fatalf("manual promotion lost request: %+v", after)
 	}
 }
 

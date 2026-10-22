@@ -504,11 +504,19 @@ unchanged. Setting the count to 0 lets the person attend without childcare.
 An attendance over-capacity add cannot bypass the childcare limit.
 
 Maybe, declined, and waitlisted registrations can keep requests without
-using places. There is no childcare waitlist. Automatic and manual
-attendance promotions keep a request if it fits. Otherwise they promote
-with count 0, keep the age note, audit `registration.childcare_dropped`,
-and tell the person in their promotion notice and email. Batch promotions
-check each request against the places remaining after earlier promotions.
+using places. There is no separate childcare waitlist. Promotion skips a
+waitlisted party whose childcare request exceeds the remaining spots when
+childcare is available and its capacity is set (DEC-80). The party keeps
+its request, age note, and `waitlisted_at`. The next party that fits its
+attendance pool and childcare promotes. Earlier picks in the same pass
+consume childcare spots. A party needing no childcare can still promote
+when childcare is full. Hand-promoting a specific person returns 409
+`childcare_full` if their childcare request does not fit.
+Promotion runs again when a going registration lowers its childcare count,
+cancels, declines, moves to maybe, is removed, or its account is disabled.
+Raising `childcareCapacity`, clearing its limit, or turning childcare off
+also retries promotion for future scheduled dates. Each promotion still
+requires attendance seats and follows the existing two-hour cutoff.
 On account re-enable, a going registration that would overfill childcare
 is dropped through the same DEC-47 audit and ask-a-leader notice as a full
 attendance pool, including when attendance seats are unlimited.

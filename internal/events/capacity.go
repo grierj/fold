@@ -37,17 +37,18 @@ func Fits(capacity *int, used, seats int) bool {
 }
 
 // WaitEntry is one waitlisted registration, reduced to what promotion
-// needs: its id, the seats its party takes (1 + guest_count), and the
+// needs: its id, the seats its party takes (1 + guest_count), childcare, and the
 // pool it waits in (its attendance mode; "" is the in-person pool for
 // callers that only have one).
 type WaitEntry struct {
-	ID    uint
-	Seats int
-	Mode  string
+	ID        uint
+	Seats     int
+	Mode      string
+	Childcare int
 }
 
-// Pool is one seat pool for promotion: a capacity (nil is unlimited)
-// and the seats already used in it.
+// Pool is an attendance or childcare pool for promotion: a capacity
+// (nil is unlimited) and the spots already used in it.
 type Pool struct {
 	Capacity *int
 	Used     int
@@ -58,8 +59,11 @@ type Pool struct {
 // occurrence; each entry keeps its mode, and promotion fills each pool
 // from entries of that mode in line order, skipping a party too big
 // for its pool's free seats without blocking the other pool. A mode
-// with no pool given is unlimited. The caller checks the cutoff.
-func PickPromotionsByPool(waitlist []WaitEntry, pools map[string]Pool) []WaitEntry {
+// with no pool given is unlimited. Childcare is shared across modes. A
+// request that does not fit is skipped without consuming attendance seats
+// or childcare spots (DEC-80). The caller checks the cutoff and supplies
+// an unlimited childcare pool when childcare is unavailable or has no limit.
+func PickPromotionsByPool(waitlist []WaitEntry, pools map[string]Pool, childcare Pool) []WaitEntry {
 	// Free seats per capped pool; a mode missing here is unlimited.
 	free := map[string]int{}
 	for mode, p := range pools {
@@ -73,10 +77,15 @@ func PickPromotionsByPool(waitlist []WaitEntry, pools map[string]Pool) []WaitEnt
 			continue
 		}
 		f, capped := free[e.Mode]
-		if !capped {
-			out = append(out, e)
-		} else if e.Seats <= f {
-			out = append(out, e)
+		if capped && e.Seats > f {
+			continue
+		}
+		if e.Childcare > 0 && !Fits(childcare.Capacity, childcare.Used, e.Childcare) {
+			continue
+		}
+		out = append(out, e)
+		childcare.Used += e.Childcare
+		if capped {
 			free[e.Mode] = f - e.Seats
 		}
 	}

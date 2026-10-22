@@ -330,11 +330,8 @@ func eventNoticeVarsIn(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
 // waitlist. The email carries the rotated manage link with the one-click
 // "I can't come" cancel; the bell never shows the token.
 func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
-	userID uint, manageRaw string, actor *uint, app *App, childcareDropped bool) ([]uint, error) {
+	userID uint, manageRaw string, actor *uint, app *App) ([]uint, error) {
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
-	if childcareDropped {
-		vars.Note = "Childcare is full for this date. You are going without childcare. Ask a leader or host about other arrangements."
-	}
 	vars.ManageURL = app.emailBaseURL() + "/guest/manage/" + manageRaw
 	// A promoted person is going now, so a video link set to
 	// registered_only may reach them (5.8, M1.8); the email carries it,
@@ -488,19 +485,27 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 		}
 		pools[mode] = events.Pool{Capacity: capacityForMode(ev, o, mode), Used: used}
 	}
+	childcare := events.Pool{}
+	if ev.ChildcareAvailable && ev.ChildcareCapacity != nil {
+		used, err := childcareUsedFor(tx, o.ID, 0)
+		if err != nil {
+			return nil, err
+		}
+		childcare = events.Pool{Capacity: ev.ChildcareCapacity, Used: used}
+	}
 	entries := make([]events.WaitEntry, len(wl))
 	for i, r := range wl {
-		entries[i] = events.WaitEntry{ID: r.ID, Seats: 1 + r.GuestCount, Mode: attendanceModeOf(r.AttendanceMode)}
+		entries[i] = events.WaitEntry{ID: r.ID, Seats: 1 + r.GuestCount, Mode: attendanceModeOf(r.AttendanceMode), Childcare: r.ChildcareCount}
 	}
 	if events.InCutoff(now, o.StartsAt) {
 		// Nobody is auto-promoted; the leaders or hosts are told only
 		// when someone in line could actually take a freed seat.
-		if len(events.PickPromotionsByPool(entries, pools)) > 0 {
+		if len(events.PickPromotionsByPool(entries, pools, childcare)) > 0 {
 			return notifyWaitlistCutoff(tx, ev, o, actor)
 		}
 		return nil, nil
 	}
-	picks := events.PickPromotionsByPool(entries, pools)
+	picks := events.PickPromotionsByPool(entries, pools, childcare)
 	if len(picks) == 0 {
 		return nil, nil
 	}
@@ -519,16 +524,8 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 	rows []models.Registration, now time.Time, actor *uint) ([]uint, error) {
 	var emailed []uint
 	for _, r := range rows {
-		childcareDropped := false
 		if err := checkChildcare(tx, ev, o.ID, r.ID, r.ChildcareCount); err != nil {
-			if !errors.Is(err, errChildcareFull) {
-				return nil, err
-			}
-			childcareDropped = true
-		}
-		count := r.ChildcareCount
-		if childcareDropped {
-			count = 0
+			return nil, err
 		}
 		raw, hash, err := createInvitationToken()
 		if err != nil {
@@ -537,7 +534,7 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 		res := tx.Model(&models.Registration{}).
 			Where("id = ? AND status = ?", r.ID, models.RegWaitlisted).
 			Updates(map[string]any{
-				"status": models.RegGoing, "promoted_at": now, "manage_token_hash": hash, "childcare_count": count,
+				"status": models.RegGoing, "promoted_at": now, "manage_token_hash": hash,
 			})
 		if res.Error != nil {
 			return nil, res.Error
@@ -545,15 +542,7 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 		if res.RowsAffected == 0 {
 			continue // lost a race with another seat-changing write
 		}
-		if childcareDropped {
-			if err := audit.Write(tx, audit.Entry{Actor: actor, Action: audit.RegistrationChildcareDropped,
-				TargetType: "event", TargetID: ev.ID,
-				Meta: map[string]any{"userId": r.UserID, "occurrenceId": o.ID, "childcareCount": r.ChildcareCount},
-			}); err != nil {
-				return nil, err
-			}
-		}
-		ids, err := notifyRegistrationPromoted(tx, ev, o, r.UserID, raw, actor, a, childcareDropped)
+		ids, err := notifyRegistrationPromoted(tx, ev, o, r.UserID, raw, actor, a)
 		if err != nil {
 			return nil, err
 		}
@@ -609,6 +598,7 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 	}
 	fits := func(seats int) bool { return events.Fits(poolCap, used, seats) }
 	count, ages := childcare.values(existing)
+	childcareFreed := found && existing.Status == models.RegGoing && count < existing.ChildcareCount
 	if childcare.ChildcareCount != nil && count > 0 && !ev.ChildcareAvailable {
 		return nil, nil, errChildcareUnavailable
 	}
@@ -781,7 +771,7 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 			}
 			existing.GuestCount = guestCount
 			out.reg = existing
-			if newSeats < oldSeats {
+			if newSeats < oldSeats || childcareFreed {
 				ids, err := a.promoteLocked(tx, ev, o, now, nil)
 				if err != nil {
 					return nil, nil, err
@@ -1020,8 +1010,15 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 			return err
 		}
 		emailed = append(emailed, ids...)
-		// No auto-promotion here: pruning is deliberate, and the leader
-		// may be freeing the seat for a specific add or hand promotion.
+		// DEC-80 retries the waitlist when pruning frees childcare.
+		// Seat-only pruning keeps the seat for a specific add or hand promotion.
+		if r.Status == models.RegGoing && r.ChildcareCount > 0 && ev.ChildcareAvailable {
+			ids, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
+			if err != nil {
+				return err
+			}
+			emailed = append(emailed, ids...)
+		}
 		return nil
 	})
 	if errors.Is(err, errRegNotFound) {
@@ -1097,6 +1094,9 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 		return
 	case errors.Is(err, errEventFull):
 		jsonError(c, http.StatusConflict, "that party doesn't fit in the seats left")
+		return
+	case errors.Is(err, errChildcareFull):
+		jsonError(c, http.StatusConflict, errChildcareFull.Error())
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not promote registration")
@@ -1255,6 +1255,13 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			TargetType: "event", TargetID: ev.ID, Meta: meta, IP: c.ClientIP(),
 		}); err != nil {
 			return err
+		}
+		if found && r.Status == models.RegGoing && count < r.ChildcareCount {
+			ids, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
+			if err != nil {
+				return err
+			}
+			emailed = append(emailed, ids...)
 		}
 		return nil
 	})

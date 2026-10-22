@@ -833,6 +833,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		}
 		oldCap, oldPlace := locked.Capacity, locked.Location
 		oldRemoteCap := locked.RemoteCapacity
+		oldChildcareCap, oldChildcareAvailable := locked.ChildcareCapacity, locked.ChildcareAvailable
 		applySpec(&locked, spec, body, ed, vid)
 		if err := tx.Save(&locked).Error; err != nil {
 			return err
@@ -921,13 +922,14 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				}
 			}
 		}
-		// Capacity change: promote per future occurrence where either
-		// pool's effective capacity changed (old vs new). Lowering
-		// promotes nobody new; the fits check inside promotion makes
-		// that a no-op, and nobody is ever removed (Decision 3).
+		// Capacity change: promote per future occurrence where an attendance
+		// pool or childcare limit changed (old vs new). Promotion checks
+		// the remaining room in every pool; nobody is removed (Decision 3).
 		capChanged := ed.capSet && !intPtrEqual(oldCap, ed.cap)
 		remoteCapChanged := ed.remoteCapSet && !intPtrEqual(oldRemoteCap, ed.remoteCap)
-		if capChanged || remoteCapChanged {
+		childcareChanged := !intPtrEqual(oldChildcareCap, locked.ChildcareCapacity) ||
+			oldChildcareAvailable != locked.ChildcareAvailable
+		if capChanged || remoteCapChanged || childcareChanged {
 			// The new series values, for dates a change doesn't cover.
 			newCap, newRemoteCap := oldCap, oldRemoteCap
 			if ed.capSet {
@@ -948,7 +950,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				sameRemote := intPtrEqual(
 					events.EffectiveRemoteCapacity(oldRemoteCap, occs[i].RemoteCapacityOverride),
 					events.EffectiveRemoteCapacity(newRemoteCap, occs[i].RemoteCapacityOverride))
-				if sameIn && sameRemote {
+				if sameIn && sameRemote && !childcareChanged {
 					continue
 				}
 				lockedOcc, err := lockOccurrence(tx, occs[i].ID)

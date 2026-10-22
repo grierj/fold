@@ -266,10 +266,10 @@ func init() {
 		// cancel; the bell never shows the token.
 		Key: RegistrationPromoted, Category: CatEvents, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
-			return "You're in: " + or(v.Event, "an event"), join(join(v.When, v.Place), v.Note)
+			return "You're in: " + or(v.Event, "an event"), join(v.When, v.Place)
 		},
 		RenderEmail: func(v Vars) (string, string) {
-			title, body := "You're in: "+or(v.Event, "an event"), join(join(v.When, v.Place), v.Note)
+			title, body := "You're in: "+or(v.Event, "an event"), join(v.When, v.Place)
 			if v.VideoURL != "" {
 				body += "\n\nJoin by video: " + v.VideoURL
 			}
