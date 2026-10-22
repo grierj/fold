@@ -151,11 +151,15 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 			mine[r.OccurrenceID] = r
 		}
 	}
-	// Seats used per occurrence, in one query (M1.5). The counts above
-	// count rows; this counts seats.
+	// Seats used per occurrence, in one query per pool (M1.5, M1.8
+	// slice 2). The counts above count rows; these count seats.
 	usedMap, err := seatsUsedMap(a.DB, ids)
 	if err != nil {
 		usedMap = map[uint]int{}
+	}
+	remoteUsedMap, err := seatsUsedMapForMode(a.DB, ids, models.AttendanceRemote)
+	if err != nil {
+		remoteUsedMap = map[uint]int{}
 	}
 
 	showNames := map[uint]bool{}
@@ -202,18 +206,17 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		}
 		used := usedMap[o.ID]
 		inst.SeatsUsed = used
-		if inst.Capacity != nil {
-			left := *inst.Capacity - used
-			if left < 0 {
-				left = 0
-			}
-			inst.SpotsLeft = &left
-		}
+		inst.SpotsLeft = spotsLeftFor(inst.Capacity, used)
+		remoteUsed := remoteUsedMap[o.ID]
+		inst.RemoteSeatsUsed = remoteUsed
+		inst.RemoteSpotsLeft = spotsLeftFor(inst.RemoteCapacity, remoteUsed)
 		if r, ok := mine[o.ID]; ok {
 			s := r.Status
 			inst.MyRegistration = &s
 			gc := r.GuestCount
 			inst.MyGuestCount = &gc
+			m := attendanceModeOf(r.AttendanceMode)
+			inst.MyAttendanceMode = &m
 			if r.Status == models.RegWaitlisted {
 				if pos, perr := waitlistPosition(a.DB, o.ID, r.ID); perr == nil {
 					inst.MyWaitlistPosition = &pos
@@ -261,17 +264,18 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show map[uint]bool) m
 		return out
 	}
 	type row struct {
-		OccurrenceID uint
-		UserID       uint
-		Name         string
-		DisplayName  string
-		Status       string
-		GuestCount   int
-		WaitlistedAt *time.Time
+		OccurrenceID   uint
+		UserID         uint
+		Name           string
+		DisplayName    string
+		Status         string
+		GuestCount     int
+		AttendanceMode string
+		WaitlistedAt   *time.Time
 	}
 	var rows []row
 	a.DB.Model(&models.Registration{}).Joins(listedUsers("registrations")).
-		Select("registrations.occurrence_id, registrations.user_id, users.name, users.display_name, registrations.status, registrations.guest_count, registrations.waitlisted_at").
+		Select("registrations.occurrence_id, registrations.user_id, users.name, users.display_name, registrations.status, registrations.guest_count, registrations.attendance_mode, registrations.waitlisted_at").
 		Where("registrations.occurrence_id IN ? AND registrations.status NOT IN ?",
 			ids, []string{models.RegCancelled, models.RegRemoved}).
 		Order("users.display_name, users.name, users.id").
@@ -309,6 +313,7 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show map[uint]bool) m
 			}
 			out[occID] = append(out[occID], attendeeJSON{
 				UserID: r.UserID, Name: name, Status: r.Status, GuestCount: r.GuestCount,
+				AttendanceMode: attendanceModeOf(r.AttendanceMode),
 			})
 		}
 	}
@@ -353,6 +358,8 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 		Capacity:        events.EffectiveCapacity(ev.Capacity, o.CapacityOverride),
 		WaitlistEnabled: ev.WaitlistEnabled,
 		GuestsAllowed:   ev.GuestsAllowed,
+		RemoteAvailable: ev.RemoteAvailable,
+		RemoteCapacity:  events.EffectiveRemoteCapacity(ev.RemoteCapacity, o.RemoteCapacityOverride),
 	}
 	// Fail closed: only an "always" link shows from here. Callers that
 	// know the viewer refine it with applyVideoReveal (api_video.go).
@@ -378,7 +385,8 @@ func toEventJSON(ev *models.Event) eventJSON {
 		Visibility: ev.Visibility, LeaderOpened: ev.LeaderOpened,
 		ChurchWide: ev.GroupID == nil,
 		Capacity:   ev.Capacity, WaitlistEnabled: ev.WaitlistEnabled,
-		GuestsAllowed: ev.GuestsAllowed,
+		GuestsAllowed:   ev.GuestsAllowed,
+		RemoteAvailable: ev.RemoteAvailable, RemoteCapacity: ev.RemoteCapacity,
 		VideoProvider: videoProviderOf(ev), VideoReveal: videoRevealOf(ev),
 	}
 	// Fail closed like occurrenceToJSON; presentEvent refines for the
@@ -448,6 +456,10 @@ type eventBody struct {
 	Capacity        *json.RawMessage `json:"capacity"`
 	WaitlistEnabled *bool            `json:"waitlistEnabled"`
 	GuestsAllowed   *json.RawMessage `json:"guestsAllowed"`
+	// Remote attendance (M1.8 slice 2). RemoteCapacity is raw JSON like
+	// Capacity: null clears to unlimited; a set limit must be positive.
+	RemoteAvailable *bool            `json:"remoteAvailable"`
+	RemoteCapacity  *json.RawMessage `json:"remoteCapacity"`
 	// Video link (5.8, M1.8); see parseVideoEdits in api_video.go.
 	VideoProvider *string `json:"videoProvider"`
 	VideoURL      *string `json:"videoUrl"`
@@ -525,6 +537,13 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 	}
 	if ed.guestsSet {
 		ev.GuestsAllowed = ed.guests
+	}
+	// Remote attendance (M1.8 slice 2).
+	if body.RemoteAvailable != nil {
+		ev.RemoteAvailable = *body.RemoteAvailable
+	}
+	if ed.remoteCapSet {
+		ev.RemoteCapacity = ed.remoteCap
 	}
 	// Video (M1.8): vid holds the effective, validated values.
 	ev.VideoProvider = vid.provider
@@ -760,6 +779,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			return err
 		}
 		oldCap, oldPlace := locked.Capacity, locked.Location
+		oldRemoteCap := locked.RemoteCapacity
 		applySpec(&locked, spec, body, ed, vid)
 		if err := tx.Save(&locked).Error; err != nil {
 			return err
@@ -848,20 +868,34 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				}
 			}
 		}
-		// Capacity change: promote per future occurrence where the
-		// effective capacity changed (old vs new). Lowering promotes
-		// nobody new; the fits check inside promotion makes that a
-		// no-op, and nobody is ever removed (Decision 3).
-		if ed.capSet && !intPtrEqual(oldCap, ed.cap) {
+		// Capacity change: promote per future occurrence where either
+		// pool's effective capacity changed (old vs new). Lowering
+		// promotes nobody new; the fits check inside promotion makes
+		// that a no-op, and nobody is ever removed (Decision 3).
+		capChanged := ed.capSet && !intPtrEqual(oldCap, ed.cap)
+		remoteCapChanged := ed.remoteCapSet && !intPtrEqual(oldRemoteCap, ed.remoteCap)
+		if capChanged || remoteCapChanged {
+			// The new series values, for dates a change doesn't cover.
+			newCap, newRemoteCap := oldCap, oldRemoteCap
+			if ed.capSet {
+				newCap = ed.cap
+			}
+			if ed.remoteCapSet {
+				newRemoteCap = ed.remoteCap
+			}
 			var occs []models.EventOccurrence
 			if err := tx.Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID,
 				models.OccurrenceScheduled, now).Find(&occs).Error; err != nil {
 				return err
 			}
 			for i := range occs {
-				oldEff := events.EffectiveCapacity(oldCap, occs[i].CapacityOverride)
-				newEff := events.EffectiveCapacity(ed.cap, occs[i].CapacityOverride)
-				if intPtrEqual(oldEff, newEff) {
+				sameIn := intPtrEqual(
+					events.EffectiveCapacity(oldCap, occs[i].CapacityOverride),
+					events.EffectiveCapacity(newCap, occs[i].CapacityOverride))
+				sameRemote := intPtrEqual(
+					events.EffectiveRemoteCapacity(oldRemoteCap, occs[i].RemoteCapacityOverride),
+					events.EffectiveRemoteCapacity(newRemoteCap, occs[i].RemoteCapacityOverride))
+				if sameIn && sameRemote {
 					continue
 				}
 				lockedOcc, err := lockOccurrence(tx, occs[i].ID)
@@ -982,12 +1016,20 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		Location         *string          `json:"location"`
 		Title            *string          `json:"title"`
 		CapacityOverride *json.RawMessage `json:"capacityOverride"`
+		// RemoteCapacityOverride mirrors CapacityOverride for the
+		// remote pool (M1.8 slice 2); null uses the event's cap.
+		RemoteCapacityOverride *json.RawMessage `json:"remoteCapacityOverride"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")
 		return
 	}
 	newOverride, overrideSet, capMsg := parseCapacity(body.CapacityOverride)
+	if capMsg != "" {
+		jsonError(c, http.StatusBadRequest, capMsg)
+		return
+	}
+	newRemoteOverride, remoteOverrideSet, capMsg := parseRemoteCapacity(body.RemoteCapacityOverride, true)
 	if capMsg != "" {
 		jsonError(c, http.StatusBadRequest, capMsg)
 		return
@@ -1038,6 +1080,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			oldPlace = *o.LocationOverride
 		}
 		oldOverride := o.CapacityOverride
+		oldRemoteOverride := o.RemoteCapacityOverride
 		dur := ev.DurationMinutes
 		if o.DurationOverride != nil {
 			dur = *o.DurationOverride
@@ -1064,6 +1107,9 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		if overrideSet {
 			o.CapacityOverride = newOverride
 		}
+		if remoteOverrideSet {
+			o.RemoteCapacityOverride = newRemoteOverride
+		}
 		o.StartsAt = start
 		o.EndsAt = start.Add(time.Duration(dur) * time.Minute)
 		if err := tx.Save(&o).Error; err != nil {
@@ -1089,16 +1135,19 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			}
 		}
 		// A raised per-date cap promotes into the new seats; a lowered
-		// one promotes nobody and removes nobody (Decision 3).
-		if overrideSet && !intPtrEqual(oldOverride, newOverride) {
-			oldEff := events.EffectiveCapacity(ev.Capacity, oldOverride)
-			newEff := events.EffectiveCapacity(ev.Capacity, newOverride)
-			if !intPtrEqual(oldEff, newEff) {
-				ids, err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
-				emailed = append(emailed, ids...)
-				if err != nil {
-					return err
-				}
+		// one promotes nobody and removes nobody (Decision 3). Either
+		// pool's override counts.
+		capMoved := overrideSet && !intPtrEqual(oldOverride, newOverride) &&
+			!intPtrEqual(events.EffectiveCapacity(ev.Capacity, oldOverride),
+				events.EffectiveCapacity(ev.Capacity, newOverride))
+		remoteCapMoved := remoteOverrideSet && !intPtrEqual(oldRemoteOverride, newRemoteOverride) &&
+			!intPtrEqual(events.EffectiveRemoteCapacity(ev.RemoteCapacity, oldRemoteOverride),
+				events.EffectiveRemoteCapacity(ev.RemoteCapacity, newRemoteOverride))
+		if capMoved || remoteCapMoved {
+			ids, err := a.promoteLocked(tx, ev, &o, time.Now().UTC(), &me.ID)
+			emailed = append(emailed, ids...)
+			if err != nil {
+				return err
 			}
 		}
 		inst = occurrenceToJSON(ev, &o, groupLoc)
@@ -1111,13 +1160,13 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			return err
 		}
 		inst.SeatsUsed = used
-		if inst.Capacity != nil {
-			left := *inst.Capacity - used
-			if left < 0 {
-				left = 0
-			}
-			inst.SpotsLeft = &left
+		inst.SpotsLeft = spotsLeftFor(inst.Capacity, used)
+		remoteUsed, err := remoteSeatsUsed(tx, o.ID)
+		if err != nil {
+			return err
 		}
+		inst.RemoteSeatsUsed = remoteUsed
+		inst.RemoteSpotsLeft = spotsLeftFor(inst.RemoteCapacity, remoteUsed)
 		var mineReg models.Registration
 		if tx.Where("user_id = ? AND occurrence_id = ? AND status <> ?",
 			me.ID, o.ID, models.RegCancelled).First(&mineReg).Error == nil {
@@ -1125,6 +1174,8 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			inst.MyRegistration = &s
 			gc := mineReg.GuestCount
 			inst.MyGuestCount = &gc
+			m := attendanceModeOf(mineReg.AttendanceMode)
+			inst.MyAttendanceMode = &m
 			if mineReg.Status == models.RegWaitlisted {
 				if pos, perr := waitlistPosition(tx, o.ID, mineReg.ID); perr == nil {
 					inst.MyWaitlistPosition = &pos

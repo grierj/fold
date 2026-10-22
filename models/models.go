@@ -59,6 +59,14 @@ const (
 	RegSourceGuestForm = "guest_form"
 )
 
+// Attendance modes (5.3, 5.4, M1.8 slice 2): a registration counts
+// against the in-person capacity or, when the event offers it, the
+// separate remote capacity.
+const (
+	AttendanceInPerson = "in_person"
+	AttendanceRemote   = "remote"
+)
+
 // Video providers and reveal settings (5.8, M1.8). The link is a plain
 // link out; there is no embedded video anywhere (DEC-16).
 const (
@@ -243,6 +251,12 @@ type Event struct {
 	// GuestsAllowed caps the extra unnamed guests one registration may
 	// bring (0-5, enforced by a CHECK).
 	GuestsAllowed int `gorm:"not null;default:0"`
+	// Remote attendance (M1.8 slice 2): people may register remote only
+	// when RemoteAvailable is on. Remote seats count against
+	// RemoteCapacity (nil means unlimited; 0 means no remote seats),
+	// never against the in-person Capacity.
+	RemoteAvailable bool `gorm:"not null;default:false"`
+	RemoteCapacity  *int
 	// Video is a link out to a call (5.8, M1.8, DEC-16): none, a pasted
 	// link, or a generated Jitsi room. VideoReveal decides who may see
 	// the URL; see policy.CanSeeVideoLink.
@@ -296,8 +310,11 @@ type EventOccurrence struct {
 	// CapacityOverride replaces the event's capacity for this date (M1.5);
 	// nil means the date uses the event's capacity.
 	CapacityOverride *int
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	// RemoteCapacityOverride replaces the event's remote capacity for
+	// this date (M1.8 slice 2); nil means the date uses the event's.
+	RemoteCapacityOverride *int
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 // TimeFrozen reports a per-date clock override. A series edit does not
@@ -331,14 +348,17 @@ type Membership struct {
 // token travels only in the confirmation email and lets the guest cancel
 // without an account.
 type Registration struct {
-	ID              uint            `gorm:"primaryKey"`
-	OccurrenceID    uint            `gorm:"not null;uniqueIndex:idx_registration"`
-	Occurrence      EventOccurrence `gorm:"foreignKey:OccurrenceID"`
-	UserID          uint            `gorm:"not null;uniqueIndex:idx_registration"`
-	User            User            `gorm:"foreignKey:UserID"`
-	Status          string          `gorm:"not null"`             // going | maybe | declined | cancelled | waitlisted | removed
-	Source          string          `gorm:"not null;default:web"` // web | admin | guest_form
-	ManageTokenHash string          `gorm:"not null;default:'';uniqueIndex:idx_registrations_manage_token,where:manage_token_hash <> ''"`
+	ID           uint            `gorm:"primaryKey"`
+	OccurrenceID uint            `gorm:"not null;uniqueIndex:idx_registration"`
+	Occurrence   EventOccurrence `gorm:"foreignKey:OccurrenceID"`
+	UserID       uint            `gorm:"not null;uniqueIndex:idx_registration"`
+	User         User            `gorm:"foreignKey:UserID"`
+	Status       string          `gorm:"not null"` // going | maybe | declined | cancelled | waitlisted | removed
+	// AttendanceMode is the pool this registration counts against (M1.8
+	// slice 2); a waitlisted entry keeps its mode in line.
+	AttendanceMode  string `gorm:"not null;default:in_person"` // in_person | remote
+	Source          string `gorm:"not null;default:web"`       // web | admin | guest_form
+	ManageTokenHash string `gorm:"not null;default:'';uniqueIndex:idx_registrations_manage_token,where:manage_token_hash <> ''"`
 	// GuestCount is the extra unnamed guests on this registration (0 to
 	// the event's guests_allowed). Seats used = 1 + guest_count.
 	GuestCount int `gorm:"not null;default:0"`

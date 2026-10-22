@@ -1,5 +1,6 @@
 import { useId, useState } from "react";
 import { Button } from "./ui/Button";
+import { RemoteBadge } from "./RemoteBadge";
 import type { EventOccurrence } from "../types";
 
 // Attendance for one date (UI makeover PR 6, DEC-63): counts first, then
@@ -24,7 +25,11 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
         {going === 0 && maybe === 0 ? "No one yet" : `${going} going${maybe ? ` · ${maybe} maybe` : ""}`}
         {declined ? ` · ${declined} can't go` : ""}
         {instance.capacity !== null && ` · ${instance.spotsLeft} of ${instance.capacity} spots left`}
+        {instance.remoteAvailable &&
+          instance.remoteCapacity !== null &&
+          ` · ${instance.remoteSpotsLeft} of ${instance.remoteCapacity} remote seats left`}
       </div>
+      {instance.remoteAvailable && instance.remoteCapacity !== 0 && <div>Remote attendance available</div>}
       {coming.length + cant.length > 0 && (
         <>
           <Button variant="link" aria-expanded={open} aria-controls={listId} onClick={() => setOpen((v) => !v)}>
@@ -36,6 +41,7 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
                 <li key={a.userId}>
                   {a.name}
                   {a.status === "maybe" && " (maybe)"}
+                  {a.attendanceMode === "remote" && <> <RemoteBadge /></>}
                   {a.guestCount > 0 && ` +${a.guestCount}`}
                 </li>
               ))}

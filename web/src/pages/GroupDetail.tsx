@@ -205,6 +205,8 @@ function EventRow({
                 capacity: instance.capacity,
                 waitlistEnabled: instance.waitlistEnabled,
                 guestsAllowed: instance.guestsAllowed,
+                remoteAvailable: instance.remoteAvailable,
+                remoteCapacity: instance.remoteCapacity,
                 videoProvider: instance.videoProvider,
                 videoUrl: instance.videoUrl,
                 videoReveal: instance.videoReveal,
@@ -532,6 +534,7 @@ export function GroupDetail() {
             myRegistration: reg.status,
             myGuestCount: reg.guestCount,
             myWaitlistPosition: reg.waitlistPosition ?? undefined,
+            myAttendanceMode: reg.attendanceMode,
             registrations,
           };
         }),

@@ -26,12 +26,15 @@ import (
 // (SELECT ... FOR UPDATE), recounts seats inside the lock, writes, runs
 // promotion when a seat freed or capacity grew, and writes audit and
 // notification rows. Email delivery runs after commit through
-// deliverNotificationEmails. Decision 1 (owner, Oct 15): one seat
-// bucket; remote capacity arrives with M1.8.
+// deliverNotificationEmails. M1.8 slice 2 adds the second seat pool:
+// remote registrations count against the remote capacity only.
 
 var (
 	// errEventFull: a going request on a full event with the waitlist off.
 	errEventFull = errors.New("this event is full")
+	// errRemoteNotAvailable: a remote request on an event that does
+	// not offer remote attendance.
+	errRemoteNotAvailable = errors.New("remote attendance isn't available for this event")
 	// errRemovedBlocked: a pruned registration blocks self-registration.
 	errRemovedBlocked = errors.New("a leader or host removed your registration for this date; ask them to add you back")
 	// errRegNotFound: no matching registration row.
@@ -58,14 +61,39 @@ func parseCapacity(raw *json.RawMessage) (cap *int, set bool, msg string) {
 	return &n, true, ""
 }
 
+// parseRemoteCapacity permits 0 only for a per-date override, to close
+// remote seats on that date. For an event, uncheck remote attendance.
+func parseRemoteCapacity(raw *json.RawMessage, allowZero bool) (cap *int, set bool, msg string) {
+	if raw == nil {
+		return nil, false, ""
+	}
+	if bytes.Equal(bytes.TrimSpace(*raw), []byte("null")) {
+		return nil, true, ""
+	}
+	var n int
+	if json.Unmarshal(*raw, &n) != nil || n < 0 || n > 100000 {
+		if allowZero {
+			return nil, false, "remote seat limit for this date must be a whole number from 0 to 100000, or empty"
+		}
+		return nil, false, "remote seat limit must be a whole number from 1 to 100000, or empty for no limit"
+	}
+	if n == 0 && !allowZero {
+		return nil, false, "Uncheck remote attendance instead of a 0 remote seat limit"
+	}
+	return &n, true, ""
+}
+
 // capacityEdits holds the parsed M1.5 capacity fields from an event
 // body: capacity (nil clears to unlimited), waitlistEnabled, and
-// guestsAllowed (0-5, null clears to 0).
+// guestsAllowed (0-5, null clears to 0), plus the remote pool's cap
+// (M1.8 slice 2; nil clears to unlimited).
 type capacityEdits struct {
-	cap       *int
-	capSet    bool
-	guests    int
-	guestsSet bool
+	cap          *int
+	capSet       bool
+	guests       int
+	guestsSet    bool
+	remoteCap    *int
+	remoteCapSet bool
 }
 
 // parseGuestsAllowed reads guestsAllowed from a body: null clears it to
@@ -100,7 +128,30 @@ func parseCapacityEdits(c *gin.Context, body eventBody) (capacityEdits, bool) {
 		jsonError(c, http.StatusBadRequest, msg)
 		return ed, false
 	}
+	ed.remoteCap, ed.remoteCapSet, msg = parseRemoteCapacity(body.RemoteCapacity, false)
+	if msg != "" {
+		jsonError(c, http.StatusBadRequest, msg)
+		return ed, false
+	}
 	return ed, true
+}
+
+// attendanceModeOf is a registration's pool: "" (a row written before
+// the column had a value in Go) reads as in_person, the DB default.
+func attendanceModeOf(mode string) string {
+	if mode == models.AttendanceRemote {
+		return models.AttendanceRemote
+	}
+	return models.AttendanceInPerson
+}
+
+// capacityForMode is the effective cap of one pool on one date: the
+// per-date override wins, nil is unlimited.
+func capacityForMode(ev *models.Event, o *models.EventOccurrence, mode string) *int {
+	if attendanceModeOf(mode) == models.AttendanceRemote {
+		return events.EffectiveRemoteCapacity(ev.RemoteCapacity, o.RemoteCapacityOverride)
+	}
+	return events.EffectiveCapacity(ev.Capacity, o.CapacityOverride)
 }
 
 // intPtrEqual reports whether two optional ints hold the same value.
@@ -111,24 +162,36 @@ func intPtrEqual(a, b *int) bool {
 	return *a == *b
 }
 
-// seatsUsed counts seats on an occurrence: one per going registration of
-// a listed account plus its guest_count. Disabled and deleted accounts
-// use no seats (DEC-38). This is the one counted query shape for the
-// lock path and the read path.
-func seatsUsed(db *gorm.DB, occurrenceID uint) (int, error) {
+// seatsUsedForMode counts seats in one pool on an occurrence: one per
+// going registration of that mode from a listed account plus its
+// guest_count. Disabled and deleted accounts use no seats in either
+// pool (DEC-38). This is the one counted query shape for the lock path
+// and the read path.
+func seatsUsedForMode(db *gorm.DB, occurrenceID uint, mode string) (int, error) {
 	var n int64
 	err := db.Model(&models.Registration{}).
 		Joins(listedUsers("registrations")).
-		Where("registrations.occurrence_id = ? AND registrations.status = ?",
-			occurrenceID, models.RegGoing).
+		Where("registrations.occurrence_id = ? AND registrations.status = ? AND registrations.attendance_mode = ?",
+			occurrenceID, models.RegGoing, attendanceModeOf(mode)).
 		Select("COALESCE(SUM(1 + registrations.guest_count), 0)").
 		Scan(&n).Error
 	return int(n), err
 }
 
-// seatsUsedMap counts seats for many occurrences with the same query
-// shape as seatsUsed (GROUP BY instead of one id).
-func seatsUsedMap(db *gorm.DB, occurrenceIDs []uint) (map[uint]int, error) {
+// seatsUsed counts in-person seats (the pool guests and every pre-remote
+// caller mean).
+func seatsUsed(db *gorm.DB, occurrenceID uint) (int, error) {
+	return seatsUsedForMode(db, occurrenceID, models.AttendanceInPerson)
+}
+
+// remoteSeatsUsed counts remote seats.
+func remoteSeatsUsed(db *gorm.DB, occurrenceID uint) (int, error) {
+	return seatsUsedForMode(db, occurrenceID, models.AttendanceRemote)
+}
+
+// seatsUsedMapForMode counts one pool's seats for many occurrences with
+// the same query shape as seatsUsedForMode (GROUP BY instead of one id).
+func seatsUsedMapForMode(db *gorm.DB, occurrenceIDs []uint, mode string) (map[uint]int, error) {
 	out := map[uint]int{}
 	if len(occurrenceIDs) == 0 {
 		return out, nil
@@ -140,8 +203,8 @@ func seatsUsedMap(db *gorm.DB, occurrenceIDs []uint) (map[uint]int, error) {
 	var rows []row
 	err := db.Model(&models.Registration{}).
 		Joins(listedUsers("registrations")).
-		Where("registrations.occurrence_id IN ? AND registrations.status = ?",
-			occurrenceIDs, models.RegGoing).
+		Where("registrations.occurrence_id IN ? AND registrations.status = ? AND registrations.attendance_mode = ?",
+			occurrenceIDs, models.RegGoing, attendanceModeOf(mode)).
 		Select("registrations.occurrence_id, COALESCE(SUM(1 + registrations.guest_count), 0) AS seats").
 		Group("registrations.occurrence_id").
 		Scan(&rows).Error
@@ -152,6 +215,24 @@ func seatsUsedMap(db *gorm.DB, occurrenceIDs []uint) (map[uint]int, error) {
 		out[r.OccurrenceID] = int(r.Seats)
 	}
 	return out, nil
+}
+
+// seatsUsedMap counts in-person seats for many occurrences.
+func seatsUsedMap(db *gorm.DB, occurrenceIDs []uint) (map[uint]int, error) {
+	return seatsUsedMapForMode(db, occurrenceIDs, models.AttendanceInPerson)
+}
+
+// spotsLeftFor is capacity minus used, never below 0; nil when the pool
+// is unlimited.
+func spotsLeftFor(cap *int, used int) *int {
+	if cap == nil {
+		return nil
+	}
+	left := *cap - used
+	if left < 0 {
+		left = 0
+	}
+	return &left
 }
 
 // loadWaitlist returns the waitlisted registrations of listed accounts in
@@ -382,7 +463,6 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 		// Nobody is promoted into a cancelled date.
 		return nil, nil
 	}
-	cap := events.EffectiveCapacity(ev.Capacity, o.CapacityOverride)
 	wl, err := loadWaitlist(tx, o.ID)
 	if err != nil {
 		return nil, err
@@ -390,25 +470,29 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 	if len(wl) == 0 {
 		return nil, nil
 	}
-	if cap == nil {
-		// Unlimited: everyone in line fits.
-		return a.promoteRows(tx, ev, o, wl, now, actor)
+	// One waitlist, two pools: each entry keeps its mode and is filled
+	// from its own pool in line order (M1.8 slice 2).
+	pools := map[string]events.Pool{}
+	for _, mode := range []string{models.AttendanceInPerson, models.AttendanceRemote} {
+		used, err := seatsUsedForMode(tx, o.ID, mode)
+		if err != nil {
+			return nil, err
+		}
+		pools[mode] = events.Pool{Capacity: capacityForMode(ev, o, mode), Used: used}
 	}
-	used, err := seatsUsed(tx, o.ID)
-	if err != nil {
-		return nil, err
+	entries := make([]events.WaitEntry, len(wl))
+	for i, r := range wl {
+		entries[i] = events.WaitEntry{ID: r.ID, Seats: 1 + r.GuestCount, Mode: attendanceModeOf(r.AttendanceMode)}
 	}
 	if events.InCutoff(now, o.StartsAt) {
-		if used < *cap {
+		// Nobody is auto-promoted; the leaders or hosts are told only
+		// when someone in line could actually take a freed seat.
+		if len(events.PickPromotionsByPool(entries, pools)) > 0 {
 			return notifyWaitlistCutoff(tx, ev, o, actor)
 		}
 		return nil, nil
 	}
-	entries := make([]events.WaitEntry, len(wl))
-	for i, r := range wl {
-		entries[i] = events.WaitEntry{ID: r.ID, Seats: 1 + r.GuestCount}
-	}
-	picks := events.PickPromotions(*cap, used, entries, false)
+	picks := events.PickPromotionsByPool(entries, pools)
 	if len(picks) == 0 {
 		return nil, nil
 	}
@@ -463,26 +547,45 @@ type registrationOutcome struct {
 }
 
 // registerLocked runs one member registration change under the
-// occurrence lock. want is going, maybe, or declined.
+// occurrence lock. want is going, maybe, or declined. requestedMode is
+// the attendanceMode from the body, or "" when absent: an absent mode
+// keeps an existing registration's pool and defaults a new one to
+// in_person. An explicit remote request is refused when the event does
+// not offer remote attendance. Switching mode on a going registration
+// is a re-register in the new pool and may waitlist (M1.8 slice 2).
 func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence,
-	userID uint, want string, guestCount int, now time.Time) (*registrationOutcome, []uint, error) {
+	userID uint, want string, guestCount int, requestedMode string, now time.Time) (*registrationOutcome, []uint, error) {
 	var existing models.Registration
 	found := tx.Where("user_id = ? AND occurrence_id = ?", userID, o.ID).
 		First(&existing).RowsAffected == 1
 	if found && existing.Status == models.RegRemoved {
 		return nil, nil, errRemovedBlocked
 	}
-	cap := events.EffectiveCapacity(ev.Capacity, o.CapacityOverride)
-	used, err := seatsUsed(tx, o.ID)
+	if requestedMode == models.AttendanceRemote && !ev.RemoteAvailable {
+		return nil, nil, errRemoteNotAvailable
+	}
+	mode := models.AttendanceInPerson
+	if found {
+		mode = attendanceModeOf(existing.AttendanceMode)
+	}
+	if requestedMode != "" {
+		mode = attendanceModeOf(requestedMode)
+	}
+	oldMode := mode
+	if found {
+		oldMode = attendanceModeOf(existing.AttendanceMode)
+	}
+	poolCap := capacityForMode(ev, o, mode)
+	used, err := seatsUsedForMode(tx, o.ID, mode)
 	if err != nil {
 		return nil, nil, err
 	}
-	fits := func(seats int) bool { return cap == nil || used+seats <= *cap }
+	fits := func(seats int) bool { return events.Fits(poolCap, used, seats) }
 
 	var emailed []uint
 	out := &registrationOutcome{}
 	setStatus := func(status string) error {
-		updates := map[string]any{"status": status, "guest_count": guestCount}
+		updates := map[string]any{"status": status, "guest_count": guestCount, "attendance_mode": mode}
 		if status == models.RegWaitlisted {
 			if existing.WaitlistedAt == nil {
 				updates["waitlisted_at"] = now
@@ -496,7 +599,11 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 				updates["manage_token_hash"] = ""
 			}
 		}
-		return tx.Model(&models.Registration{}).Where("id = ?", existing.ID).Updates(updates).Error
+		if err := tx.Model(&models.Registration{}).Where("id = ?", existing.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+		existing.AttendanceMode = mode
+		return nil
 	}
 
 	switch want {
@@ -512,6 +619,7 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 					existing = models.Registration{
 						UserID: userID, OccurrenceID: o.ID,
 						Status: models.RegGoing, GuestCount: guestCount, Source: models.RegSourceWeb,
+						AttendanceMode: mode,
 					}
 					if err := tx.Create(&existing).Error; err != nil {
 						return nil, nil, err
@@ -534,16 +642,20 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 					UserID: userID, OccurrenceID: o.ID,
 					Status: models.RegWaitlisted, GuestCount: guestCount,
 					Source:       models.RegSourceWeb,
-					WaitlistedAt: &now,
+					WaitlistedAt: &now, AttendanceMode: mode,
 				}
 				if err := tx.Create(&existing).Error; err != nil {
 					return nil, nil, err
 				}
 			} else {
 				updates := map[string]any{
-					"status": models.RegWaitlisted, "guest_count": guestCount,
+					"status": models.RegWaitlisted, "guest_count": guestCount, "attendance_mode": mode,
 				}
-				if existing.WaitlistedAt == nil {
+				// A waiter switching pools starts a fresh wait in the new
+				// pool, like the going-switch path below (Whittler, #105).
+				restamp := existing.WaitlistedAt == nil ||
+					(existing.Status == models.RegWaitlisted && oldMode != mode)
+				if restamp {
 					updates["waitlisted_at"] = now
 				}
 				if err := tx.Model(&models.Registration{}).Where("id = ?", existing.ID).
@@ -552,10 +664,59 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 				}
 				existing.Status = models.RegWaitlisted
 				existing.GuestCount = guestCount
-				if existing.WaitlistedAt == nil {
+				existing.AttendanceMode = mode
+				if restamp {
 					existing.WaitlistedAt = &now
 				}
 			}
+			pos, err := waitlistPosition(tx, o.ID, existing.ID)
+			if err != nil {
+				return nil, nil, err
+			}
+			out.reg, out.position = existing, &pos
+			return out, emailed, nil
+		case existing.Status == models.RegGoing && oldMode != mode:
+			// Switching pools while going is a re-register in the new
+			// pool (M1.8 slice 2): the new pool's used seats do not
+			// include this party, so it must fit whole. With no waitlist
+			// a full new pool refuses and the old seat stays, as with a
+			// guest-count increase.
+			seats := 1 + guestCount
+			if !fits(seats) && !ev.WaitlistEnabled {
+				return nil, nil, errEventFull
+			}
+			if fits(seats) {
+				if err := setStatus(models.RegGoing); err != nil {
+					return nil, nil, err
+				}
+				existing.Status = models.RegGoing
+				existing.GuestCount = guestCount
+				out.reg = existing
+				// The party freed a seat in its old pool.
+				ids, err := a.promoteLocked(tx, ev, o, now, nil)
+				if err != nil {
+					return nil, nil, err
+				}
+				emailed = append(emailed, ids...)
+				return out, emailed, nil
+			}
+			// A fresh wait in the new pool: drop any waitlisted_at kept
+			// as history from an earlier promotion so setStatus stamps
+			// the new wait's start.
+			existing.WaitlistedAt = nil
+			if err := setStatus(models.RegWaitlisted); err != nil {
+				return nil, nil, err
+			}
+			existing.Status = models.RegWaitlisted
+			existing.GuestCount = guestCount
+			existing.WaitlistedAt = &now
+			// The party freed a seat in its old pool; it cannot be
+			// re-promoted here because its new pool is the full one.
+			ids, err := a.promoteLocked(tx, ev, o, now, nil)
+			if err != nil {
+				return nil, nil, err
+			}
+			emailed = append(emailed, ids...)
 			pos, err := waitlistPosition(tx, o.ID, existing.ID)
 			if err != nil {
 				return nil, nil, err
@@ -591,6 +752,7 @@ func (a *App) registerLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccur
 			existing = models.Registration{
 				UserID: userID, OccurrenceID: o.ID,
 				Status: want, GuestCount: guestCount, Source: models.RegSourceWeb,
+				AttendanceMode: mode,
 			}
 			if err := tx.Create(&existing).Error; err != nil {
 				return nil, nil, err
@@ -627,6 +789,9 @@ type registrationJSON struct {
 	Status           string `json:"status"`
 	GuestCount       int    `json:"guestCount"`
 	WaitlistPosition *int   `json:"waitlistPosition"`
+	// AttendanceMode is the pool the registration landed in (M1.8
+	// slice 2): in_person or remote.
+	AttendanceMode string `json:"attendanceMode"`
 }
 
 func (a *App) apiRegister(c *gin.Context) {
@@ -650,10 +815,27 @@ func (a *App) apiRegister(c *gin.Context) {
 		Date         string `json:"date"`
 		GuestCount   *int   `json:"guestCount"`
 		OverCapacity *bool  `json:"overCapacity"`
+		// AttendanceMode is in_person or remote (M1.8 slice 2); absent
+		// keeps an existing registration's pool (in_person for a new one).
+		AttendanceMode *string `json:"attendanceMode"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "status and date are required")
 		return
+	}
+	requestedMode := ""
+	if body.AttendanceMode != nil {
+		requestedMode = strings.TrimSpace(*body.AttendanceMode)
+		switch requestedMode {
+		case models.AttendanceInPerson, models.AttendanceRemote:
+		default:
+			jsonError(c, http.StatusBadRequest, "attendanceMode must be in_person or remote")
+			return
+		}
+		if requestedMode == models.AttendanceRemote && !ev.RemoteAvailable {
+			jsonError(c, http.StatusBadRequest, "remote attendance isn't available for this event")
+			return
+		}
 	}
 	if body.OverCapacity != nil && *body.OverCapacity {
 		// overCapacity is a leader/host choice on the add action, never
@@ -690,7 +872,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		out, ids, err := a.registerLocked(tx, &ev, locked, u.ID, body.Status, guestCount, time.Now().UTC())
+		out, ids, err := a.registerLocked(tx, &ev, locked, u.ID, body.Status, guestCount, requestedMode, time.Now().UTC())
 		if err != nil {
 			return err
 		}
@@ -698,6 +880,9 @@ func (a *App) apiRegister(c *gin.Context) {
 		return nil
 	})
 	switch {
+	case errors.Is(err, errRemoteNotAvailable):
+		jsonError(c, http.StatusBadRequest, "remote attendance isn't available for this event")
+		return
 	case errors.Is(err, errEventFull):
 		jsonError(c, http.StatusConflict, "This event is full")
 		return
@@ -713,6 +898,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		UserID: u.ID, EventID: ev.ID, OccurrenceID: o.ID,
 		Date: body.Date, Status: outcome.reg.Status,
 		GuestCount: outcome.reg.GuestCount, WaitlistPosition: outcome.position,
+		AttendanceMode: attendanceModeOf(outcome.reg.AttendanceMode),
 	}
 	c.JSON(http.StatusOK, gin.H{"registration": resp})
 }
@@ -825,13 +1011,14 @@ func (a *App) apiPromoteRegistration(c *gin.Context) {
 			body.UserID, locked.ID, models.RegWaitlisted).First(&r).Error; err != nil {
 			return errRegNotFound
 		}
-		cap := events.EffectiveCapacity(ev.Capacity, locked.CapacityOverride)
-		used, err := seatsUsed(tx, locked.ID)
+		// A waitlisted entry promotes into its own pool (M1.8 slice 2).
+		cap := capacityForMode(ev, locked, r.AttendanceMode)
+		used, err := seatsUsedForMode(tx, locked.ID, r.AttendanceMode)
 		if err != nil {
 			return err
 		}
 		seats := 1 + r.GuestCount
-		if cap != nil && used+seats > *cap {
+		if !events.Fits(cap, used, seats) {
 			return errEventFull
 		}
 		raw, hash, err := createInvitationToken()
@@ -883,10 +1070,27 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		Date         string `json:"date"`
 		GuestCount   *int   `json:"guestCount"`
 		OverCapacity *bool  `json:"overCapacity"`
+		// AttendanceMode seats the person in that pool; absent keeps an
+		// existing registration's mode (in_person for a new one).
+		AttendanceMode *string `json:"attendanceMode"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Date == "" || (body.UserID == 0 && body.Email == "") {
 		jsonError(c, http.StatusBadRequest, "userId or email, and date, are required")
 		return
+	}
+	addMode := ""
+	if body.AttendanceMode != nil {
+		addMode = strings.TrimSpace(*body.AttendanceMode)
+		switch addMode {
+		case models.AttendanceInPerson, models.AttendanceRemote:
+		default:
+			jsonError(c, http.StatusBadRequest, "attendanceMode must be in_person or remote")
+			return
+		}
+		if addMode == models.AttendanceRemote && !ev.RemoteAvailable {
+			jsonError(c, http.StatusBadRequest, "remote attendance isn't available for this event")
+			return
+		}
 	}
 	guestCount := 0
 	if body.GuestCount != nil {
@@ -941,21 +1145,30 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		cap := events.EffectiveCapacity(ev.Capacity, locked.CapacityOverride)
-		used, err := seatsUsed(tx, locked.ID)
+		var r models.Registration
+		found := tx.Where("user_id = ? AND occurrence_id = ?", target.ID, locked.ID).
+			First(&r).RowsAffected == 1
+		mode := models.AttendanceInPerson
+		if found {
+			mode = attendanceModeOf(r.AttendanceMode)
+		}
+		if addMode != "" {
+			mode = addMode
+		}
+		// The add seats the person in their pool; over-capacity is
+		// judged against that pool only (M1.8 slice 2).
+		cap := capacityForMode(ev, locked, mode)
+		used, err := seatsUsedForMode(tx, locked.ID, mode)
 		if err != nil {
 			return err
 		}
 		seats := 1 + guestCount
-		over := cap != nil && used+seats > *cap
+		over := !events.Fits(cap, used, seats)
 		if over && !overCap {
 			return errEventFull
 		}
-		var r models.Registration
-		found := tx.Where("user_id = ? AND occurrence_id = ?", target.ID, locked.ID).
-			First(&r).RowsAffected == 1
 		updates := map[string]any{
-			"status": models.RegGoing, "guest_count": guestCount,
+			"status": models.RegGoing, "guest_count": guestCount, "attendance_mode": mode,
 			"removed_by": nil, "removal_note": "", "waitlisted_at": nil, "promoted_at": nil,
 		}
 		if found {
@@ -966,13 +1179,14 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			r = models.Registration{
 				UserID: target.ID, OccurrenceID: locked.ID,
 				Status: models.RegGoing, GuestCount: guestCount, Source: models.RegSourceAdmin,
+				AttendanceMode: mode,
 			}
 			if err := tx.Create(&r).Error; err != nil {
 				return err
 			}
 		}
 		action := audit.RegistrationAdded
-		meta := map[string]any{"userId": target.ID, "occurrenceId": locked.ID}
+		meta := map[string]any{"userId": target.ID, "occurrenceId": locked.ID, "attendanceMode": mode}
 		if over {
 			action = audit.RegistrationAddedOverCapacity
 			meta["seats"] = used + seats
@@ -1067,16 +1281,21 @@ func restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint) ([]uint, err
 		if err := tx.First(&ev, o.EventID).Error; err != nil {
 			return nil, err
 		}
-		cap := events.EffectiveCapacity(ev.Capacity, o.CapacityOverride)
+		// Left out when the restore would exceed its own mode's
+		// capacity (DEC-47, M1.8 slice 2): a remote row is judged
+		// against the remote pool only. The account is still disabled
+		// here, so its seats are not in used yet.
+		mode := attendanceModeOf(r.AttendanceMode)
+		cap := capacityForMode(&ev, o, mode)
 		if cap == nil {
 			continue // unlimited: every row fits
 		}
-		used, err := seatsUsed(tx, o.ID)
+		used, err := seatsUsedForMode(tx, o.ID, mode)
 		if err != nil {
 			return nil, err
 		}
 		seats := 1 + r.GuestCount
-		if used+seats <= *cap {
+		if events.Fits(cap, used, seats) {
 			continue // fits: stays going, counts again once enabled
 		}
 		if err := tx.Delete(&r).Error; err != nil {
@@ -1084,7 +1303,7 @@ func restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint) ([]uint, err
 		}
 		if err := audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.RegistrationNotRestored,
 			TargetType: "event", TargetID: ev.ID,
-			Meta: map[string]any{"userId": userID, "occurrenceId": o.ID, "seats": used, "capacity": *cap},
+			Meta: map[string]any{"userId": userID, "occurrenceId": o.ID, "seats": used, "capacity": *cap, "attendanceMode": mode},
 			IP:   c.ClientIP(),
 		}); err != nil {
 			return nil, err

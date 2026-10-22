@@ -1787,7 +1787,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] Recurring events appear as one VEVENT with RRULE, EXDATE, and RECURRENCE-ID
   - [x] A revoked or regenerated token returns 404
   - [x] Leaving an invite-only group removes its events from the personal feed on the next fetch
-  - [ ] Video links follow `video_reveal` (moved to M1.8: events have no video fields yet; M1.8 adds them and its `registered_only` check covers feeds)
+  - [x] Video links follow `video_reveal` (moved to M1.8: events have no video fields yet; M1.8 adds them and its `registered_only` check covers feeds)
 - Tests: golden files; permission tests; ETag test.
 
 **M1.8 Video, remote, childcare**
@@ -1795,11 +1795,11 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Scope: 5.8 video links (link and Jitsi), remote flag and remote capacity UI, childcare fields and counts on registration (F11–F13).
 - Acceptance:
   - [ ] Remote and childcare capacity follow DEC-38: a disabled account's registrations never count, and a restore that would exceed `remote_capacity` or `childcare_capacity` is left out with an "ask a leader" notice (DEC-47)
-  - [ ] "Generate Jitsi link" makes a new random URL on the configured domain
-  - [ ] `registered_only` hides the link from people not going, in the API, emails, and feeds
+  - [x] "Generate Jitsi link" makes a new random URL on the configured domain
+  - [x] `registered_only` hides the link from people not going, in the API, emails, and feeds
   - [ ] Events can be filtered by "remote available" and "childcare available"
   - [ ] Childcare counts and notes are visible only to admins and the event's leaders or hosts
-  - [ ] There is no video embed or iframe anywhere; the link opens in a new tab (DEC-16)
+  - [x] There is no video embed or iframe anywhere; the link opens in a new tab (DEC-16)
 - Tests: policy and API tests.
 
 **M1.9 Households and household people**

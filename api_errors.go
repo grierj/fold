@@ -84,6 +84,11 @@ var errorCodes = map[string]string{
 	"videoProvider must be none, link, or jitsi":                                         "invalid_video_provider",
 	"videoReveal must be always or registered_only":                                      "invalid_video_reveal",
 	"video link is too long":                                                             "too_long",
+	"remote attendance isn't available for this event":                                   "remote_not_available",
+	"attendanceMode must be in_person or remote":                                         "invalid_attendance_mode",
+	"remote seat limit must be a whole number from 1 to 100000, or empty for no limit":   "invalid_remote_capacity",
+	"remote seat limit for this date must be a whole number from 0 to 100000, or empty":  "invalid_remote_capacity_override",
+	"Uncheck remote attendance instead of a 0 remote seat limit":                         "remote_capacity_zero",
 
 	// Households and guardian links (M1.9, DEC-32)
 	"kind must be child, teen, or adult":                "invalid_kind",

@@ -13,13 +13,22 @@ const occ = (o: Partial<CalendarOccurrence>): CalendarOccurrence => ({
   location: "Room 201",
   groupId: 3,
   groupName: "Room 201 class",
-  churchWide: false,
+  churchWide: false, remoteAvailable: false,
   myStatus: null,
   ...o,
 });
 const wrap = (ui: React.ReactNode) => render(<MemoryRouter>{ui}</MemoryRouter>);
 
 describe("EventRow", () => {
+  it("marks events with remote seats using the neutral badge", () => {
+    wrap(<EventRow occ={occ({ remoteAvailable: true })} />);
+    expect(screen.getByText("Remote")).toHaveClass("bg-sunken", "text-text-muted");
+  });
+
+  it("does not offer a remote badge for an in-person-only date", () => {
+    wrap(<EventRow occ={occ({ remoteAvailable: false })} />);
+    expect(screen.queryByText("Remote")).not.toBeInTheDocument();
+  });
   it("links to the event and names its group and place", () => {
     wrap(<EventRow occ={occ({})} />);
     const link = screen.getByRole("link");
@@ -43,6 +52,11 @@ describe("EventRow", () => {
 });
 
 describe("EventChip", () => {
+  it("names remote attendance in compact calendar entries too", () => {
+    wrap(<EventChip occ={occ({ remoteAvailable: true })} />);
+    expect(screen.getByText("Remote")).toHaveClass("bg-sunken");
+    expect(screen.getByRole("link")).toHaveAccessibleName(/Remote/);
+  });
   it("spells out what the chip abbreviates", () => {
     wrap(<EventChip occ={occ({ myStatus: "going" })} />);
     expect(screen.getByRole("link").getAttribute("aria-label")).toMatch(/Thursday class, Room 201 class, Going$/);

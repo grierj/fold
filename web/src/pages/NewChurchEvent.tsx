@@ -11,6 +11,7 @@ import { weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
 import { errorText } from "../lib/errors";
 import { VideoField, focusVideoUrl, isVideoError, videoProblem, emptyVideo, type VideoValue } from "../components/VideoField";
+import { RemoteField, focusRemoteCapacity, isRemoteError, emptyRemote, remoteBody, remoteProblem, type RemoteValue } from "../components/RemoteField";
 import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
 import { Button } from "../components/ui/Button";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -28,11 +29,13 @@ export function NewChurchEvent() {
   const [visibility, setVisibility] = useState<Visibility>("public");
   const [hostEmail, setHostEmail] = useState("");
   const [video, setVideo] = useState<VideoValue>(emptyVideo);
+  const [remote, setRemote] = useState<RemoteValue>(emptyRemote);
   const [recurring, setRecurring] = useState(false);
   const [days, setDays] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
 
   function toggleDay(v: string) {
     setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
@@ -63,6 +66,13 @@ export function NewChurchEvent() {
       focusVideoUrl("church-event");
       return;
     }
+    const remoteMsg = remoteProblem(remote);
+    setRemoteError(remoteMsg);
+    if (remoteMsg) {
+      setError(remoteMsg);
+      focusRemoteCapacity("church-event");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -79,11 +89,16 @@ export function NewChurchEvent() {
         videoProvider: video.provider,
         videoUrl: video.provider === "none" ? "" : video.url.trim(),
         videoReveal: video.reveal,
+        ...remoteBody(remote),
       });
       navigate(`/events/${event.id}`);
     } catch (err) {
       const msg = errorText(err, "We couldn't schedule the event.");
       setError(msg);
+      if (isRemoteError(msg)) {
+        setRemoteError(msg);
+        focusRemoteCapacity("church-event");
+      }
       if (isVideoError(msg)) {
         setVideoError(msg);
         focusVideoUrl("church-event");
@@ -191,6 +206,9 @@ export function NewChurchEvent() {
         </Field>
         <div className="border-t border-border pt-4">
           <VideoField idPrefix="church-event" value={video} onChange={setVideo} error={videoError} />
+        </div>
+        <div className="border-t border-border pt-4">
+          <RemoteField idPrefix="church-event" value={remote} onChange={setRemote} error={remoteError} />
         </div>
         <div className="border-t border-border pt-4">
           <Checkbox

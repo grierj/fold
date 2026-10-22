@@ -489,6 +489,26 @@ func TestFeedVideoLinkReveal(t *testing.T) {
 	}
 }
 
+// A remote event's feed description says remote attendance is
+// available (8.2, M1.8 slice 2); an in-person-only event never does.
+func TestFeedMentionsRemoteAttendance(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	start := feedStart(7)
+	gid := createFeedGroup(t, admin, "Feed Remote Choir", models.VisibilityPublic, "Hall")
+	hybrid := createFeedEvent(t, admin, gid, "Hybrid Feed Night", start, "")
+	createFeedEvent(t, admin, gid, "Hall Only Night", start.AddDate(0, 0, 1), "")
+	if err := app.DB.Model(&models.Event{}).Where("id = ?", hybrid.ID).
+		Update("remote_available", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	body := unfoldFeed(feedBody(t, newAPIClient(t, app), "/cal/public.ics"))
+	if got := strings.Count(body, "Remote attendance available"); got != 1 {
+		t.Fatalf("remote mentions = %d, want 1 (only the hybrid event):\n%s", got, body)
+	}
+}
+
 // DEC-70: in a personal feed a registered_only link also reaches the
 // owner when they said maybe, or when they are in the event's group and
 // haven't answered. Declined, waitlisted, and outsiders who haven't

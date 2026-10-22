@@ -369,13 +369,15 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			return errRemovedBlocked
 		}
 		err = tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).
-			Attrs(models.Registration{Status: status, Source: models.RegSourceGuestForm}).
+			Attrs(models.Registration{Status: status, Source: models.RegSourceGuestForm, AttendanceMode: models.AttendanceInPerson}).
 			FirstOrCreate(&reg).Error
 		if err != nil {
 			return err
 		}
 		reg.Status = status
 		reg.Source = models.RegSourceGuestForm
+		// Guests register in person; the seat check above counted that pool.
+		reg.AttendanceMode = models.AttendanceInPerson
 		reg.ManageTokenHash = hash
 		reg.WaitlistedAt = wlAt
 		if err := tx.Save(&reg).Error; err != nil {
