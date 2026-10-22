@@ -86,7 +86,7 @@ var errorCodes = map[string]string{
 	"video link is too long":                                                             "too_long",
 	"this event doesn't offer childcare":                                                 "childcare_not_available",
 	"childcare is full for this date":                                                    "childcare_full",
-	"Uncheck childcare instead of a 0 childcare limit":                                   "childcare_capacity_zero",
+	"uncheck childcare instead of a 0 childcare limit":                                   "childcare_capacity_zero",
 	"childcare limit must be a whole number from 1 to 100000, or empty for no limit":     "invalid_childcare_capacity",
 	"childcare notes must be 500 characters or fewer":                                    "childcare_notes_too_long",
 	"childcare ages must be 100 characters or fewer":                                     "childcare_ages_too_long",

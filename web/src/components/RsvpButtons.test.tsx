@@ -1,4 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RsvpButtons } from "./RsvpButtons";
@@ -181,45 +182,134 @@ describe("remote attendance changes", () => {
 
 describe("childcare RSVP", () => {
   beforeEach(() => vi.resetAllMocks());
-  it("offers childcare on Going and lets you retry without it after a full response", async () => {
-    const registration = {
-      userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going", guestCount: 0,
-      waitlistPosition: null, attendanceMode: "in_person", childcareCount: 0, childcareAgesNote: "3 and 5",
-    } satisfies import("../types").RegistrationResponse;
-    vi.mocked(Events.register)
-      .mockRejectedValueOnce(new ApiError(409, "Childcare is full for this date", { code: "childcare_full" }))
-      .mockResolvedValueOnce({ registration });
-    const change = vi.fn();
-    render(<RsvpButtons instance={occurrence({ childcareAvailable: true })} onChange={change} />);
+  const registration = {
+    userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going", guestCount: 0,
+    waitlistPosition: null, attendanceMode: "in_person", childcareCount: 0, childcareAgesNote: "",
+  } satisfies import("../types").RegistrationResponse;
+
+  function SavedRsvp({ initial = occurrence({ childcareAvailable: true }) }) {
+    const [instance, setInstance] = useState(initial);
+    return <RsvpButtons instance={instance} onChange={(reg) => setInstance((old) => ({
+      ...old, myRegistration: reg.status, myChildcareCount: reg.childcareCount,
+      myChildcareAgesNote: reg.childcareAgesNote, myAttendanceMode: reg.attendanceMode,
+    }))} />;
+  }
+
+  it("saves Going with zero children before showing it as selected", async () => {
+    let complete = () => {};
+    vi.mocked(Events.register).mockImplementation(() => new Promise((resolve) => {
+      complete = () => resolve({ registration });
+    }));
+    render(<SavedRsvp />);
     expect(screen.queryByLabelText(/^Children needing childcare/)).not.toBeInTheDocument();
+    const going = screen.getByRole("button", { name: "Going" });
+    await userEvent.click(going);
+    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, "going", "2026-12-01", 0, undefined,
+      { childcareCount: 0, childcareAgesNote: "" });
+    expect(going).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByText("Add childcare")).not.toBeInTheDocument();
+    await act(async () => complete());
+    expect(going).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("Add childcare")).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Children needing childcare/)).toHaveValue("0");
+    expect(screen.getByRole("status")).toHaveTextContent("Saved: going, no childcare");
+    expect(screen.getByRole("status")).toHaveFocus();
+  });
+
+  it("leaves Going unselected when the first save fails", async () => {
+    vi.mocked(Events.register).mockRejectedValue(new Error("offline"));
+    render(<SavedRsvp />);
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
-    expect(Events.register).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByText("Add childcare")).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("We couldn't reach Fold.");
+  });
+
+  it.each([1, 2, 0])("saves %s children separately and announces the saved request", async (count) => {
+    vi.mocked(Events.register).mockResolvedValue({ registration: { ...registration, childcareCount: count, childcareAgesNote: "3 and 7" } });
+    render(<SavedRsvp initial={occurrence({ childcareAvailable: true, myRegistration: "going" })} />);
+    const input = screen.getByLabelText(/^Children needing childcare/);
+    await userEvent.clear(input);
+    await userEvent.type(input, String(count));
+    await userEvent.type(screen.getByLabelText(/^Ages/), " 3 and 7 ");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, "going", "2026-12-01", 0, undefined,
+      { childcareCount: count, childcareAgesNote: "3 and 7" });
+    expect(screen.getByRole("status")).toHaveTextContent(count === 0 ? "Saved: going, no childcare"
+      : count === 1 ? "Saved: going, 1 child in childcare" : "Saved: going, 2 children in childcare");
+    expect(screen.getByRole("status")).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("ties a full response to the count and offers Go without childcare", async () => {
+    vi.mocked(Events.register)
+      .mockRejectedValueOnce(new ApiError(409, "childcare is full for this date", { code: "childcare_full" }))
+      .mockResolvedValueOnce({ registration });
+    render(<SavedRsvp initial={occurrence({ childcareAvailable: true, myRegistration: "going" })} />);
     const count = screen.getByLabelText(/^Children needing childcare/);
     await userEvent.clear(count);
     await userEvent.type(count, "2");
-    await userEvent.type(screen.getByLabelText(/^Ages/), "3 and 5");
-    await userEvent.click(screen.getByRole("button", { name: "Save answer" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("Childcare is full for this date. You can still come.");
+    await userEvent.type(screen.getByLabelText(/^Ages/), "3 and 7");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(count).toHaveValue("2");
-    expect(screen.getByLabelText(/^Ages/)).toHaveValue("3 and 5");
-    expect(change).not.toHaveBeenCalled();
-    await userEvent.clear(count);
-    await userEvent.type(count, "0");
-    await userEvent.click(screen.getByRole("button", { name: "Save answer" }));
-    expect(Events.register).toHaveBeenLastCalledWith(7, "going", "2026-12-01", 0, undefined, { childcareCount: 0, childcareAgesNote: "3 and 5" });
-    expect(change).toHaveBeenCalledWith(registration);
+    expect(count).toHaveAttribute("aria-invalid", "true");
+    expect(count).toHaveAccessibleDescription(expect.stringContaining("Childcare is full for this date. You can still come."));
+    expect(count).toHaveFocus();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/^Ages/)).toHaveValue("3 and 7");
+    expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByRole("button", { name: "Go without childcare" }));
+    expect(Events.register).toHaveBeenLastCalledWith(7, "going", "2026-12-01", 0, undefined,
+      { childcareCount: 0, childcareAgesNote: "" });
+    expect(screen.getByRole("status")).toHaveTextContent("Saved: going, no childcare");
+    expect(screen.getByRole("status")).toHaveFocus();
+    expect(count).not.toHaveAttribute("aria-invalid");
+    expect(screen.queryByRole("button", { name: "Go without childcare" })).not.toBeInTheDocument();
   });
 
-  it("prefills your childcare request, validates whole counts, and preserves it on Maybe", async () => {
-    render(<RsvpButtons instance={occurrence({ childcareAvailable: true, myRegistration: "going", myChildcareCount: 2, myChildcareAgesNote: "3 and 5" })} onChange={() => {}} />);
+  it("prefills your request, focuses invalid counts, and leaves Maybe independent", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ registration: { ...registration, status: "maybe", childcareCount: 2, childcareAgesNote: "3 and 5" } });
+    render(<SavedRsvp initial={occurrence({ childcareAvailable: true, myRegistration: "going", myChildcareCount: 2, myChildcareAgesNote: "3 and 5" })} />);
     const count = screen.getByLabelText(/^Children needing childcare/);
     expect(count).toHaveValue("2");
     await userEvent.clear(count);
-    await userEvent.type(count, "1.5");
-    await userEvent.click(screen.getByRole("button", { name: "Save answer" }));
+    await userEvent.type(count, "abc");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(count).toHaveAttribute("aria-invalid", "true");
+    expect(count).toHaveFocus();
     expect(Events.register).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
     expect(Events.register).toHaveBeenCalledWith(7, "maybe", "2026-12-01", 0, undefined, undefined);
+    expect(screen.queryByText("Add childcare")).not.toBeInTheDocument();
+  });
+
+  it("disables a known full count while still saving Going without childcare", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ registration });
+    render(<SavedRsvp initial={occurrence({ childcareAvailable: true, childcareFull: true })} />);
+    await userEvent.click(screen.getByRole("button", { name: "Going" }));
+    const count = screen.getByLabelText(/^Children needing childcare/);
+    expect(count).toBeDisabled();
+    expect(count).toHaveAccessibleDescription("Childcare is full for this date");
+    expect(screen.getByRole("status")).toHaveTextContent("Saved: going, no childcare");
+  });
+
+  it("switches attendance using saved childcare rather than an unsaved draft", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ registration: { ...registration, attendanceMode: "remote", childcareCount: 2 } });
+    render(<SavedRsvp initial={occurrence({ childcareAvailable: true, remoteAvailable: true, myRegistration: "going", myChildcareCount: 2 })} />);
+    await userEvent.clear(screen.getByLabelText(/^Children needing childcare/));
+    await userEvent.type(screen.getByLabelText(/^Children needing childcare/), "abc");
+    await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
+    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, "going", "2026-12-01", 0, "remote", undefined);
+    expect(screen.getByRole("status")).toHaveTextContent("Switched to remote");
+  });
+
+  it("announces a waitlist response without claiming Going was saved", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ registration: { ...registration, status: "waitlisted", waitlistPosition: 1 } });
+    render(<SavedRsvp initial={occurrence({ childcareAvailable: true, waitlistEnabled: true })} />);
+    await userEvent.click(screen.getByRole("button", { name: "Going" }));
+    expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.queryByText("Add childcare")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("You're on the in-person waitlist.");
   });
 });

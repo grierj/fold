@@ -162,10 +162,6 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		remoteUsedMap = map[uint]int{}
 	}
 
-	childcareUsed, err := childcareUsedMap(a.DB, ids)
-	if err != nil {
-		return out
-	}
 	showChildcare := map[uint]bool{}
 	showNames := map[uint]bool{}
 	// Who said "can't go" (count and names) is only for the people who run
@@ -183,6 +179,19 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		showChildcare[ev.ID] = policy.CanSeeChildcare(p, viewOf(ev, hosted[ev.ID]), rel)
 		showNames[ev.ID] = policy.CanSeeAttendeeNames(p, viewOf(ev, hosted[ev.ID]), gp, rel)
 		showDeclined[ev.ID] = policy.CanManageEvent(p, viewOf(ev, hosted[ev.ID]), rel)
+	}
+	// Managers need totals; everyone else only needs to know if a
+	// limited childcare pool is full. Skip dates that need neither.
+	childcareIDs := []uint{}
+	for _, o := range kept {
+		ev := byID[o.EventID]
+		if ev.ChildcareAvailable && (showChildcare[ev.ID] || ev.ChildcareCapacity != nil) {
+			childcareIDs = append(childcareIDs, o.ID)
+		}
+	}
+	childcareUsed, err := childcareUsedMap(a.DB, childcareIDs)
+	if err != nil {
+		childcareUsed = map[uint]int{}
 	}
 	names := a.attendeeNames(kept, showNames, showChildcare)
 
@@ -214,6 +223,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		inst.SeatsUsed = used
 		inst.SpotsLeft = spotsLeftFor(inst.Capacity, used)
 		remoteUsed := remoteUsedMap[o.ID]
+		inst.ChildcareFull = ev.ChildcareAvailable && ev.ChildcareCapacity != nil && childcareUsed[o.ID] >= *ev.ChildcareCapacity
 		if showChildcare[ev.ID] && ev.ChildcareAvailable {
 			n := childcareUsed[o.ID]
 			inst.ChildcareUsed = &n

@@ -77,7 +77,7 @@ describe("EventRow deleted group (DEC-68)", () => {
   });
 });
 
-it("marks childcare availability with a neutral row badge", () => {
-  wrap(<EventRow occ={occ({ childcareAvailable: true })} />);
+it.each([EventRow, EventChip])("marks childcare availability with a neutral calendar badge", (Component) => {
+  wrap(<Component occ={occ({ childcareAvailable: true })} />);
   expect(screen.getByText("Childcare")).toHaveClass("bg-sunken", "text-text-muted");
 });

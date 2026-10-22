@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"fold/internal/audit"
 	"fold/internal/events"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestMeetingInstancesAreChronological(t *testing.T) {
@@ -915,6 +918,9 @@ func TestChildcareVisibilityAndOwnRequest(t *testing.T) {
 		if !inst.ChildcareAvailable || inst.ChildcareAges == "" || inst.ChildcareNotes == "" || inst.ChildcareCapacity == nil {
 			t.Fatalf("%s missing public childcare: %+v", name, inst)
 		}
+		if inst.ChildcareFull || !strings.Contains(raw, `"childcareFull":false`) {
+			t.Fatalf("%s missing public not-full flag: %s", name, raw)
+		}
 		if (inst.ChildcareUsed != nil) != manager || (inst.ChildcareSpotsLeft != nil) != manager {
 			t.Fatalf("%s totals visibility: %+v", name, inst)
 		}
@@ -943,5 +949,160 @@ func TestChildcareVisibilityAndOwnRequest(t *testing.T) {
 	host := eventOccurrence(t, loginAPI(t, app, "outsider", "password1234"), created.Event.ID)
 	if host.ChildcareUsed == nil || *host.ChildcareUsed != 0 {
 		t.Fatalf("host childcare access: %+v", host)
+	}
+}
+
+func TestChildcareFullForEveryViewer(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ChildcareFull")
+	id, date := seedChildcareEvent(t, app, admin, gid, nil, intPtr(2), false)
+	parent := newTestUser(t, app, "parent", "password1234", models.RoleMember)
+	childcareAs(t, loginAPI(t, app, "parent", "password1234"), id, date, "going", 2, http.StatusOK)
+	var group models.Group
+	if err := app.DB.First(&group, "id = ?", gid).Error; err != nil {
+		t.Fatal(err)
+	}
+	viewers := map[string]*apiClient{"signed-out": newAPIClient(t, app), "admin": admin}
+	for _, role := range []string{models.MembershipMember, models.MembershipLeader} {
+		u := newTestUser(t, app, role, "password1234", models.RoleMember)
+		addMember(t, app, u, &group, role)
+		viewers[role] = loginAPI(t, app, role, "password1234")
+	}
+	for _, tt := range []struct {
+		name       string
+		available  bool
+		capacity   *int
+		status     string
+		userStatus string
+		full       bool
+	}{
+		{"at capacity", true, intPtr(2), models.RegGoing, models.UserActive, true},
+		{"over capacity", true, intPtr(1), models.RegGoing, models.UserActive, true},
+		{"space left", true, intPtr(3), models.RegGoing, models.UserActive, false},
+		{"unlimited", true, nil, models.RegGoing, models.UserActive, false},
+		{"not offered", false, intPtr(2), models.RegGoing, models.UserActive, false},
+		{"maybe does not count", true, intPtr(2), models.RegMaybe, models.UserActive, false},
+		{"waitlisted does not count", true, intPtr(2), models.RegWaitlisted, models.UserActive, false},
+		{"disabled does not count", true, intPtr(2), models.RegGoing, models.UserDisabled, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := app.DB.Model(&models.Event{}).Where("id = ?", id).Updates(map[string]any{
+				"childcare_available": tt.available, "childcare_capacity": tt.capacity,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := app.DB.Model(&models.Registration{}).Where("user_id = ?", parent.ID).Update("status", tt.status).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := app.DB.Model(&models.User{}).Where("id = ?", parent.ID).Update("status", tt.userStatus).Error; err != nil {
+				t.Fatal(err)
+			}
+			for name, viewer := range viewers {
+				page, raw := getEvent(t, viewer, id, http.StatusOK)
+				if len(page.Occurrences) != 1 || page.Occurrences[0].ChildcareFull != tt.full ||
+					!strings.Contains(raw, fmt.Sprintf(`"childcareFull":%t`, tt.full)) {
+					t.Fatalf("%s full=%t: %s", name, tt.full, raw)
+				}
+				if name == "signed-out" || name == models.MembershipMember {
+					for _, key := range []string{`"childcareUsed"`, `"childcareSpotsLeft"`, `"childcareCount"`, `"childcareAgesNote"`} {
+						if strings.Contains(raw, key) {
+							t.Fatalf("%s got private field %s: %s", name, key, raw)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestChildcareTotalsQueriedOnlyWhenNeeded(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "ChildcareQueries")
+	id, _ := seedChildcareEvent(t, app, admin, gid, nil, nil, false)
+	for _, tt := range []struct {
+		name      string
+		available bool
+		capacity  *int
+		manager   bool
+		queries   int
+	}{
+		{"off for public", false, intPtr(2), false, 0},
+		{"off for manager", false, intPtr(2), true, 0},
+		{"unlimited for public", true, nil, false, 0},
+		{"unlimited for manager", true, nil, true, 1},
+		{"limited for public", true, intPtr(2), false, 1},
+		{"limited for manager", true, intPtr(2), true, 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := app.DB.Model(&models.Event{}).Where("id = ?", id).Updates(map[string]any{
+				"childcare_available": tt.available, "childcare_capacity": tt.capacity,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			queries := 0
+			const name = "test:count_childcare_totals"
+			if err := app.DB.Callback().Row().Before("gorm:row").Register(name, func(tx *gorm.DB) {
+				if strings.Contains(strings.Join(tx.Statement.Selects, " "), "SUM(registrations.childcare_count)") {
+					queries++
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = app.DB.Callback().Row().Remove(name) })
+			viewer := newAPIClient(t, app)
+			if tt.manager {
+				viewer = admin
+			}
+			getEvent(t, viewer, id, http.StatusOK)
+			if queries != tt.queries {
+				t.Fatalf("childcare total queries=%d, want %d", queries, tt.queries)
+			}
+		})
+	}
+}
+
+func TestOccurrenceCountErrorsKeepDates(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "CountFallbacks")
+	id, date := seedChildcareEvent(t, app, admin, gid, nil, intPtr(2), false)
+	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(id), map[string]any{"remoteAvailable": true, "remoteCapacity": 3}, http.StatusOK)
+	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(id)+"/registrations", map[string]any{
+		"date": date, "status": "going", "attendanceMode": "remote", "childcareCount": 2,
+	}, http.StatusOK)
+	for _, pool := range []string{"childcare", "seats"} {
+		t.Run(pool, func(t *testing.T) {
+			failed := 0
+			const name = "test:fail_occurrence_totals"
+			if err := app.DB.Callback().Row().Before("gorm:row").Register(name, func(tx *gorm.DB) {
+				selection := strings.Join(tx.Statement.Selects, " ")
+				if (pool == "childcare" && strings.Contains(selection, "SUM(registrations.childcare_count)")) ||
+					(pool == "seats" && strings.Contains(selection, "SUM(1 + registrations.guest_count)")) {
+					failed++
+					_ = tx.AddError(errors.New("count unavailable"))
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = app.DB.Callback().Row().Remove(name) })
+			for _, viewer := range []*apiClient{admin, newAPIClient(t, app)} {
+				page, raw := getEvent(t, viewer, id, http.StatusOK)
+				if len(page.Occurrences) != 1 {
+					t.Fatalf("count error lost the date: %s", raw)
+				}
+				inst := page.Occurrences[0]
+				if inst.Date != date || inst.MyRegistration != nil && *inst.MyRegistration != models.RegGoing {
+					t.Fatalf("count error lost registration details: %+v", inst)
+				}
+				if pool == "childcare" && (inst.ChildcareFull || inst.ChildcareUsed != nil && *inst.ChildcareUsed != 0) {
+					t.Fatalf("childcare did not fall back to zero: %+v", inst)
+				}
+				if pool == "seats" && (inst.SeatsUsed != 0 || inst.RemoteSeatsUsed != 0 || !inst.ChildcareFull) {
+					t.Fatalf("seat counts did not fall back independently: %+v", inst)
+				}
+			}
+			if failed == 0 {
+				t.Fatal("count failure was not exercised")
+			}
+		})
 	}
 }

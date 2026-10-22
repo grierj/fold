@@ -168,6 +168,7 @@ type occurrenceJSON struct {
 	// cap for this date (per-date override wins), null is unlimited.
 	RemoteAvailable     bool    `json:"remoteAvailable"`
 	ChildcareAvailable  bool    `json:"childcareAvailable"`
+	ChildcareFull       bool    `json:"childcareFull"`
 	ChildcareNotes      string  `json:"childcareNotes"`
 	ChildcareCapacity   *int    `json:"childcareCapacity"`
 	ChildcareAges       string  `json:"childcareAges"`

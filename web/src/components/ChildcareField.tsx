@@ -46,6 +46,7 @@ export function ChildcareField({ idPrefix, value, onChange, error }: {
   return (
     <div className="space-y-3">
       <Checkbox label="Childcare available" checked={value.available}
+        description="Parents can ask for childcare when they register. Children are counted separately from seats."
         onChange={(e) => onChange({ ...value, available: e.target.checked })} />
       {value.available && <>
         <Field id={`childcare-capacity-${idPrefix}`} label="Childcare limit" optional
@@ -53,7 +54,7 @@ export function ChildcareField({ idPrefix, value, onChange, error }: {
           <Input type="text" inputMode="numeric" placeholder="No limit" value={value.capacity}
             onChange={(e) => onChange({ ...value, capacity: e.target.value })} />
         </Field>
-        <Field id={`childcare-ages-${idPrefix}`} label="Ages" optional hint="Ages you can care for. Up to 100 characters.">
+        <Field id={`childcare-ages-${idPrefix}`} label="Ages you can care for" optional hint="For example: 2 to 10. Up to 100 characters.">
           <Input value={value.ages} maxLength={100} onChange={(e) => onChange({ ...value, ages: e.target.value })} />
         </Field>
         <Field id={`childcare-notes-${idPrefix}`} label="Notes for parents" optional hint="Up to 500 characters. These notes are public to anyone who can see the event.">

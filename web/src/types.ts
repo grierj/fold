@@ -178,6 +178,7 @@ export interface EventOccurrence {
   // Remote attendance (M1.8 slice 2): the second seat pool, mirroring
   // the in-person fields. remoteCapacity is this date's effective cap.
   childcareAvailable: boolean;
+  childcareFull: boolean;
   childcareCapacity: number | null;
   childcareAges: string;
   childcareNotes: string;

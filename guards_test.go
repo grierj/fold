@@ -72,7 +72,7 @@ var tsContracts = []struct {
 	{memberJSON{}, "Member"},
 	{notificationJSON{}, "Notification"},
 	{resolutionJSON{}, "NotificationResolution"},
-	{occurrenceJSON{}, "EventOccurrence"},
+	{occurrenceJSON{}, "EventOccurrence"}, // Includes the public childcareFull flag; totals stay optional.
 	{calendarOccurrenceJSON{}, "CalendarOccurrence"},
 	{eventJSON{}, "EventSeries"},
 	{hostJSON{}, "EventHostRow"},

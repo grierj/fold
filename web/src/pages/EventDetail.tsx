@@ -7,6 +7,7 @@ import { DateBadge } from "../components/DateBadge";
 import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
 import { RemoteBadge } from "../components/RemoteBadge";
+import { ChildcareBadge } from "../components/ChildcareBadge";
 import { focusRemoteCapacity, isRemoteError, remoteProblem } from "../components/RemoteField";
 import { Menu } from "../components/ui/Menu";
 import { Field, FormError, Input } from "../components/ui/Field";
@@ -125,7 +126,7 @@ export function EventDetail() {
       <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} />
       {event.location && <p className="text-text-muted mt-1">{event.location}</p>}
       {event.childcareAvailable && <div className="mt-3 text-text-muted">
-        <p className="font-semibold">Childcare available{event.childcareAges && ` · ${event.childcareAges}`}</p>
+        <p>Childcare available{event.childcareAges && ` · ${event.childcareAges}`}</p>
         {event.childcareNotes && <p className="whitespace-pre-wrap">{event.childcareNotes}</p>}
       </div>}
       {event.description && <p className="text-text-muted whitespace-pre-wrap mt-3">{event.description}</p>}
@@ -373,8 +374,8 @@ function ManageRoster({ instance, onChanged, onClose }: { instance: EventOccurre
             <span>
               {a.name} <span className="text-text-muted">· {a.status}</span>
               {a.attendanceMode === "remote" && <> <RemoteBadge /></>}
-              {instance.childcareAvailable && (a.childcareCount ?? 0) > 0 && ` +${a.childcareCount} in childcare`}
-              {instance.childcareAvailable && a.childcareAgesNote && ` · Ages: ${a.childcareAgesNote}`}
+              {instance.childcareAvailable && (a.childcareCount ?? 0) > 0 && <> <ChildcareBadge count={a.childcareCount} /></>}
+              {instance.childcareAvailable && a.childcareAgesNote && <span className="block text-sm text-text-muted">Ages: {a.childcareAgesNote}</span>}
             </span>
             <span className="flex gap-2">
               {a.status === "waitlisted" && (

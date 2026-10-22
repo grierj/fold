@@ -8,11 +8,12 @@ describe("ChildcareField", () => {
     const change = vi.fn();
     const { rerender } = render(<ChildcareField idPrefix="test" value={emptyChildcare} onChange={change} />);
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("checkbox", { name: "Childcare available" }));
+    expect(screen.getByText("Parents can ask for childcare when they register. Children are counted separately from seats.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox", { name: /^Childcare available/ }));
     expect(change).toHaveBeenCalledWith({ ...emptyChildcare, available: true });
     rerender(<ChildcareField idPrefix="test" value={childcareFrom(true, 5, "2–5", "Nursery")} onChange={change} />);
     expect(screen.getByLabelText(/^Childcare limit/)).toHaveValue("5");
-    expect(screen.getByLabelText(/^Ages/)).toHaveValue("2–5");
+    expect(screen.getByLabelText(/^Ages you can care for/)).toHaveValue("2–5");
     expect(screen.getByLabelText(/^Notes for parents/)).toHaveValue("Nursery");
     expect(screen.getByLabelText(/^Ages/)).toHaveAttribute("maxlength", "100");
     expect(screen.getByLabelText(/^Notes for parents/)).toHaveAttribute("maxlength", "500");

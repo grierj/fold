@@ -27,7 +27,7 @@ export function occurrence(over: Partial<EventOccurrence>): EventOccurrence {
     spotsLeft: null,
     waitlistEnabled: false,
     guestsAllowed: 0,
-    childcareAvailable: false, childcareCapacity: null, childcareAges: "", childcareNotes: "",
+    childcareAvailable: false, childcareFull: false, childcareCapacity: null, childcareAges: "", childcareNotes: "",
     remoteAvailable: false,
     remoteCapacity: null,
     remoteSeatsUsed: 0,

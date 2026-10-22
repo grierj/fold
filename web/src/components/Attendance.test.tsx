@@ -31,12 +31,32 @@ it("shows childcare totals and requests supplied to a manager", async () => {
     attendeesVisible: true, attendees: [{ userId: 3, name: "Sam", status: "going", guestCount: 0,
       attendanceMode: "in_person", childcareCount: 2, childcareAgesNote: "3 and 5" }],
   })} />);
-  expect(screen.getByText("2 of 5 childcare spots used")).toBeInTheDocument();
+  expect(screen.getByText("3 of 5 childcare spots left")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Show who's coming" }));
-  expect(screen.getByText(/Sam.*\+2 in childcare.*Ages: 3 and 5/)).toBeInTheDocument();
+  expect(screen.getByText("Sam")).toBeInTheDocument();
+  expect(screen.getByText("+2 childcare")).toHaveClass("bg-sunken", "text-text-muted");
+  expect(screen.getByText("Ages: 3 and 5")).toHaveClass("block", "text-text-muted");
 });
 
 it("does not invent childcare totals when they are omitted", () => {
   render(<Attendance instance={occurrence({ childcareAvailable: true, childcareCapacity: 5 })} />);
-  expect(screen.queryByText(/childcare spots used/)).not.toBeInTheDocument();
+  expect(screen.queryByText(/childcare spots left|children in childcare/)).not.toBeInTheDocument();
+});
+
+it("shows full childcare to a viewer without private totals or names", () => {
+  render(<Attendance instance={occurrence({ childcareAvailable: true, childcareCapacity: 2, childcareFull: true })} />);
+  expect(screen.getByText("Childcare is full for this date")).toBeInTheDocument();
+  expect(screen.queryByText(/childcare spots left/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button")).not.toBeInTheDocument();
+});
+
+it("shows an unlimited childcare total as children", () => {
+  render(<Attendance instance={occurrence({ childcareAvailable: true, childcareUsed: 4 })} />);
+  expect(screen.getByText("4 children in childcare")).toBeInTheDocument();
+  expect(screen.queryByText(/unlimited|childcare spots/)).not.toBeInTheDocument();
+});
+
+it("never shows a negative number of childcare spots left", () => {
+  render(<Attendance instance={occurrence({ childcareAvailable: true, childcareUsed: 4, childcareCapacity: 2, childcareFull: true })} />);
+  expect(screen.getByText("0 of 2 childcare spots left")).toBeInTheDocument();
 });

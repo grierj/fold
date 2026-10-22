@@ -32,7 +32,7 @@ func parseChildcareCapacity(raw json.RawMessage) (*int, bool, string) {
 		return nil, false, "childcare limit must be a whole number from 1 to 100000, or empty for no limit"
 	}
 	if n == 0 {
-		return nil, false, "Uncheck childcare instead of a 0 childcare limit"
+		return nil, false, "uncheck childcare instead of a 0 childcare limit"
 	}
 	return &n, true, ""
 }

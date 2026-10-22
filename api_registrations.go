@@ -1358,13 +1358,16 @@ func restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint) ([]uint, err
 			return nil, err
 		}
 		seats := 1 + r.GuestCount
+		childcareErr := checkChildcare(tx, &ev, o.ID, r.ID, r.ChildcareCount)
+		if childcareErr != nil && !errors.Is(childcareErr, errChildcareFull) {
+			return nil, childcareErr
+		}
+		if events.Fits(cap, used, seats) && childcareErr == nil {
+			continue // fits: stays going, counts again once enabled
+		}
 		childcareUsed, err := childcareUsedFor(tx, o.ID, r.ID)
 		if err != nil {
 			return nil, err
-		}
-		childcareFits := !ev.ChildcareAvailable || r.ChildcareCount == 0 || events.Fits(ev.ChildcareCapacity, childcareUsed, r.ChildcareCount)
-		if events.Fits(cap, used, seats) && childcareFits {
-			continue // fits: stays going, counts again once enabled
 		}
 		if err := tx.Delete(&r).Error; err != nil {
 			return nil, err

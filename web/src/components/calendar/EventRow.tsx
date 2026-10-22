@@ -3,6 +3,7 @@ import type { CalendarOccurrence } from "../../types";
 import { formatTime } from "../../lib/when";
 import { CheckIcon, ClockIcon } from "../icons";
 import { RemoteBadge } from "../RemoteBadge";
+import { ChildcareBadge } from "../ChildcareBadge";
 
 const STATUS = { going: "Going", maybe: "Maybe", waitlisted: "Waitlisted" } as const;
 
@@ -45,7 +46,7 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
         </span>
         <StatusBadge status={occ.myStatus} />
         {occ.remoteAvailable && <RemoteBadge />}
-        {occ.childcareAvailable && <span className="rounded-sm bg-sunken px-2 text-xs font-semibold text-text-muted">Childcare</span>}
+        {occ.childcareAvailable && <ChildcareBadge />}
       </span>
       <span className="mt-1 block font-semibold text-text">{occ.title || occ.groupName}</span>
       <span className="mt-1 flex min-w-0 items-center gap-1 text-sm text-text-muted">
@@ -109,7 +110,7 @@ export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurren
         </>
       )}
       {occ.remoteAvailable && <RemoteBadge />}
-        {occ.childcareAvailable && <span className="rounded-sm bg-sunken px-2 text-xs font-semibold text-text-muted">Childcare</span>}
+      {occ.childcareAvailable && <ChildcareBadge />}
     </Link>
   );
 }
