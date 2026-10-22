@@ -759,3 +759,30 @@ func TestGuestEmailsUseTheFormZone(t *testing.T) {
 		t.Fatalf("no-zone verification email: %q", m.Body)
 	}
 }
+
+func TestHouseholdManageTokenCancelsOnlyItsSubject(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HouseholdTokens")
+	eventID, date := seedCappedEvent(t, app, admin, gid, nil, true)
+	_, c, spouse, child := householdFamily(t, app, admin, "tokenholder")
+	result := batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going"}, {"personId": child.ID, "status": "going"}}}, http.StatusOK)
+	raw, hash, err := createInvitationToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.DB.Model(&models.Registration{}).Where("id = ?", result.People[1].RegistrationID).Update("manage_token_hash", hash)
+	anon := newAPIClient(t, app)
+	body := apiDo(t, anon, "GET", "/api/v1/guest-registrations/manage/"+raw, nil, http.StatusOK)
+	for _, secret := range []string{"Kit", "householdPerson", "Private allergy note", "personId"} {
+		if strings.Contains(body, secret) {
+			t.Fatalf("public identity leak %s", body)
+		}
+	}
+	apiDo(t, anon, "POST", "/api/v1/guest-registrations/manage/"+raw+"/cancel", map[string]any{}, http.StatusOK)
+	var rows []models.Registration
+	app.DB.Order("id").Find(&rows)
+	if len(rows) != 2 || rows[0].Status != models.RegGoing || rows[1].Status != models.RegCancelled || rows[1].ManageTokenHash != "" {
+		t.Fatalf("token changed other answer %+v", rows)
+	}
+	apiDo(t, anon, "GET", "/api/v1/guest-registrations/manage/"+raw, nil, http.StatusNotFound)
+}

@@ -372,3 +372,20 @@ func TestCalendarChildcareFilter(t *testing.T) {
 		}
 	}
 }
+
+func TestHouseholdOnlyCalendarDoesNotOverwriteOwnStatus(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HouseholdCalendar")
+	eventID, date := seedCappedEvent(t, app, admin, gid, nil, true)
+	_, c, spouse, _ := householdFamily(t, app, admin, "calendarholder")
+	batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going"}}}, http.StatusOK)
+	page, raw := getCalendar(t, c, "from="+date+"&to="+date+"&tz=UTC&mine=1", http.StatusOK)
+	if len(page.Occurrences) != 1 || page.Occurrences[0].EventID != eventID || page.Occurrences[0].MyStatus != nil {
+		t.Fatalf("household-only calendar %s", raw)
+	}
+	for _, secret := range []string{"Mary", "householdPerson", "careNotes", "birthDate"} {
+		if strings.Contains(raw, secret) {
+			t.Fatalf("calendar leak %s", raw)
+		}
+	}
+}

@@ -1723,13 +1723,20 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 }
 
 func householdRegistrationMessage(code string) string {
- switch code {
- case "household_link_pending": return "waiting for an admin to confirm; ask your church office to check the household link"
- case "household_link_unconfirmed": return "this household link is not confirmed; ask your church office to check it"
- case "household_birth_date_required": return "add a birth date in profile before signing this person up"
- case "household_age_mismatch": return "the birth date does not match an adult; correct it or choose child or teen in profile"
- case "household_remote_childcare": return "remote attendees cannot request childcare; clear the childcare choice first"
- case "household_registration_holder_unavailable": return "the responsible account cannot register this person; ask your church office to check their account and household"
- default: return "household registration needs review"
- }
+	switch code {
+	case "household_link_pending":
+		return "waiting for an admin to confirm; ask your church office to check the household link"
+	case "household_link_unconfirmed":
+		return "this household link is not confirmed; ask your church office to check it"
+	case "household_birth_date_required":
+		return "add a birth date in profile before signing this person up"
+	case "household_age_mismatch":
+		return "the birth date does not match an adult; correct it or choose child or teen in profile"
+	case "household_remote_childcare":
+		return "remote attendees cannot request childcare; clear the childcare choice first"
+	case "household_registration_holder_unavailable":
+		return "the responsible account cannot register this person; ask your church office to check their account and household"
+	default:
+		return "household registration needs review"
+	}
 }

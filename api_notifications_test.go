@@ -732,3 +732,23 @@ func TestEventItemsArchiveAfterOccurrenceEnds(t *testing.T) {
 		t.Fatal("expired item was deleted, want archived")
 	}
 }
+
+func TestHouseholdEventNoticesDeduplicateByHolder(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "FamilyNotices")
+	eventID, date := seedCappedEvent(t, app, admin, gid, nil, true)
+	holder, c, spouse, child := householdFamily(t, app, admin, "noticeholder")
+	batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going"}, {"personId": child.ID, "status": "going"}}}, http.StatusOK)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", eventID, date), map[string]any{"location": "New place"}, http.StatusOK)
+	var notices []models.Notification
+	app.DB.Where("kind = ?", notify.EventChanged).Find(&notices)
+	if len(notices) != 1 || notices[0].UserID != holder.ID {
+		t.Fatalf("event notices %+v", notices)
+	}
+	apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/events/%d/cancel", eventID), map[string]any{"date": date}, http.StatusOK)
+	notices = nil
+	app.DB.Where("kind = ?", notify.OccurrenceCancelled).Find(&notices)
+	if len(notices) != 1 || notices[0].UserID != holder.ID {
+		t.Fatalf("cancellation notices %+v", notices)
+	}
+}

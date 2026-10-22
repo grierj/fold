@@ -168,3 +168,39 @@ func TestLeaderOpenedEventsAskBeforeTightening(t *testing.T) {
 		t.Fatalf("kept event for an outsider: %s", raw)
 	}
 }
+
+func TestVisibilityImpactCountsHouseholdSubjectsAcrossDates(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HouseholdVisibility")
+	eventID, date := seedCappedEvent(t, app, admin, gid, nil, true)
+	holder, c, spouse, child := householdFamily(t, app, admin, "visibilityholder")
+	answer := func(date string) {
+		batchAnswer(t, c, eventID, date, map[string]any{"status": "going", "people": []map[string]any{{"personId": spouse.ID, "status": "going"}, {"personId": child.ID, "status": "going"}}}, http.StatusOK)
+	}
+	answer(date)
+	var o models.EventOccurrence
+	if err := app.DB.Where("event_id = ?", eventID).First(&o).Error; err != nil {
+		t.Fatal(err)
+	}
+	o.ID = 0
+	o.StartsAt = o.StartsAt.AddDate(0, 0, 7)
+	o.EndsAt = o.EndsAt.AddDate(0, 0, 7)
+	o.OriginalDate = o.StartsAt.Format("2006-01-02")
+	if err := app.DB.Omit("Event").Create(&o).Error; err != nil {
+		t.Fatal(err)
+	}
+	answer(o.OriginalDate)
+	var ev models.Event
+	app.DB.First(&ev, eventID)
+	impact := eventImpactOf(app.DB, &ev, models.VisibilityInviteOnly)
+	if len(impact.Tightened) != 1 || impact.Tightened[0].Registrants != 3 {
+		t.Fatalf("subject impact %+v", impact)
+	}
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(holder.ID), map[string]any{"status": "disabled"}, http.StatusOK)
+	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(eventID), map[string]any{"visibility": "invite_only", "confirm": true}, http.StatusOK)
+	var n int64
+	app.DB.Model(&models.Registration{}).Where("user_id = ? OR registered_by = ?", holder.ID, holder.ID).Count(&n)
+	if n != 0 {
+		t.Fatalf("disabled answers can resurface: %d", n)
+	}
+}

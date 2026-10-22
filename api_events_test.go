@@ -1106,3 +1106,51 @@ func TestOccurrenceCountErrorsKeepDates(t *testing.T) {
 		})
 	}
 }
+
+func TestHouseholdAttendeesArePrivateToHouseholdAndManagers(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HouseholdPrivacy")
+	eventID, date := seedChildcareEvent(t, app, admin, gid, nil, intPtr(1), true)
+	_, c, spouse, child := householdFamily(t, app, admin, "privacyholder")
+	apiDo(t, c, "PUT", "/api/v1/me/household", map[string]any{"address": "Private household address"}, http.StatusOK)
+	batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": child.ID, "status": "going", "childcareRequested": true}, {"personId": spouse.ID, "status": "going"}}}, http.StatusOK)
+	newTestUser(t, app, "unrelated", "password1234", models.RoleMember)
+	ordinary := loginAPI(t, app, "unrelated", "password1234")
+	for _, viewer := range []*apiClient{ordinary, newAPIClient(t, app)} {
+		page, raw := getEvent(t, viewer, eventID, http.StatusOK)
+		if page.Occurrences[0].Registrations[models.RegGoing] != 2 {
+			t.Fatalf("counts %s", raw)
+		}
+		for _, secret := range []string{`"householdPerson"`, "Kit", "Mary", "Private allergy note", "Private household address", "2020-05-01"} {
+			if strings.Contains(raw, secret) {
+				t.Fatalf("private data %q: %s", secret, raw)
+			}
+		}
+	}
+	// Admin gets names and integer ages, with no date/address; a manager's
+	// care notes are separately bounded to this going occurrence.
+	page, raw := getEvent(t, admin, eventID, http.StatusOK)
+	if len(page.Occurrences[0].Attendees) != 2 {
+		t.Fatalf("mixed subjects %s", raw)
+	}
+	for _, secret := range []string{"Private household address", "2020-05-01", `"userId":0`} {
+		if strings.Contains(raw, secret) {
+			t.Fatalf("bad projection %s", raw)
+		}
+	}
+	var group models.Group
+	app.DB.Where("id = ?", gid).First(&group)
+	leader := newTestUser(t, app, "eventleader", "password1234", models.RoleMember)
+	addMember(t, app, leader, &group, models.MembershipLeader)
+	lc := loginAPI(t, app, "eventleader", "password1234")
+	_, raw = getEvent(t, lc, eventID, http.StatusOK)
+	if strings.Contains(raw, "Private allergy note") {
+		t.Fatal("care before window")
+	}
+	now := time.Now().UTC()
+	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", eventID).Updates(map[string]any{"starts_at": now.Add(time.Hour), "ends_at": now.Add(2 * time.Hour)})
+	_, raw = getEvent(t, lc, eventID, http.StatusOK)
+	if !strings.Contains(raw, "Private allergy note") || !strings.Contains(raw, "careNotesVisibleUntil") {
+		t.Fatalf("missing windowed care %s", raw)
+	}
+}
