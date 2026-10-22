@@ -1,7 +1,10 @@
 name: test
 
+# Branch work runs CI through its pull request; push runs only on master
+# (Grier, Oct 22, 2026).
 on:
   push:
+    branches: [master]
   pull_request:
 
 # Least privilege: the jobs only read the repo (#95).
