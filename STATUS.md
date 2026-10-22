@@ -21,7 +21,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.6 Calendar views | done (merged, #73) | Wright | `calendar` |
 | M1.7 ICS feeds | done (landed on master without a PR; reviewed and fixed in the m17-fixes PR; video_reveal moves to M1.8) | Muse, Wright | `m1.7-ics-feeds`, `m17-fixes` |
 | M1.8 Video, remote, childcare | done (video #102, remote #105, childcare #109 merged) | Wright | `m1.8-remote-capacity` |
-| M1.9 Households and household people | in progress: slice 1 merged (#106, #107); slice 2 (registering household people) in review (#110); then slice 3 (docs/plan/M1.9-BRIEF.md) | Wright | `m1.9-household-rsvp` |
+| M1.9 Households and household people | in progress: slices 1 and 2 merged (#106, #107, #110); slice 3 (conversion, docs/MEMBERS.md) in progress (docs/plan/M1.9-BRIEF.md) | Wright | `m1.9-household-convert` |
 | M1.10 Teen accounts, consent, badges | unclaimed | | |
 | M1.11 Contact privacy and direct-contact requests | unclaimed | | |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
@@ -59,6 +59,12 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 - (Whittler, #105) An admin re-adding someone who is already going in the same pool counts their seats twice (api_registrations.go admin add path, ~1150-1157). Fix: subtract the existing going party from used seats before the fit check.
 - (Illuminator, PR 110 N5) Use the Going/Maybe/Can't go radios for each household person instead of the "Answer for X" select (judgment call 38).
 - (M1.9 slice 2, judgment call 34) Seat-only manager removal still doesn't auto-promote; making every removal promote (5.4) is deferred.
+- (Warden, PR 110) Solo RSVP membership race: a solo answer no longer re-checks `canRegisterIn` under the locks. Either re-check it after `lockOccurrence`, or have membership removal take the occurrence lock.
+- (Warden, PR 110) `loadSubjectFacts` seeds its clock with UTC instead of `householdClock`, so callers that don't set `today` compute ages on the UTC date (DEC-81 says church-local).
+- (Whittler, PR 110) Select attendee names in the attendee query so the account load can be skipped (GET /events/:id to about 18 reads).
+- (Whittler, PR 110) Assert that a solo going PUT stays at or under 12 reads in `TestRegistrationReadBudget` (it measures the maybe path now).
+- (Illuminator, PR 110 N8) On roster rows, show the status ("Going") under "Signed up by", above the notes.
+- (Illuminator, PR 110 N9) Give Profile's lazy-loaded household card a placeholder of about its real height, so the page doesn't jump.
 - CI hardening (Warden review of #83, Oct 20, 2026; issue #95): claimed by Wright, in review. Actions pinned to full SHAs and a top-level `permissions: contents: read`, enforced by `TestWorkflowActionsPinnedAndReadOnly`.
 - VideoField polish (Illuminator, optional, from the #102 review): N7, clear the field's error when the link or the video option changes; N8, add a little space between the event page's time line and the "Join by video" button.
 - Terminology (Grier, Oct 20, 2026; DEC-78): rethink the name "private" for groups. The word is overloaded, because private groups are visible to every signed-in member.
