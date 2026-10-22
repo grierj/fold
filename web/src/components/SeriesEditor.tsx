@@ -265,7 +265,7 @@ export function SeriesEditor({
       </div>
       <Checkbox
         label="Waitlist when full"
-        description="When the waitlist is off, a full date refuses new registrations. When it is on, extra people join the waitlist in order and move up automatically as spots open."
+        description="When the waitlist is off, a full date refuses new registrations. When it is on, extra people join the waitlist in order and move up automatically as seats open."
         checked={waitlistEnabled}
         onChange={(e) => setWaitlistEnabled(e.target.checked)}
       />
