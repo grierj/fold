@@ -179,6 +179,29 @@ Postgres (`login_throttles`, see `api_auth.go`).
   directory as the named volume `uploads`. Do not drop the mount; an
   anonymous volume is discarded on `up --build`.
 
+## Phasing high-complexity work
+
+Grier's rule (Oct 22, 2026).
+
+- High-complexity means the change touches database, API and UI together, or
+  changes 3+ tables. Smaller work is exempt.
+- Split such milestones early into thin end-to-end slices. Build each slice
+  database, then API and internals, then UI. New logic can ship hidden until
+  its UI lands.
+- Once live, schema changes use expand and contract:
+  1. Expand: additive changes only, plus data migration. Add a trigger on the
+     old columns that logs any INSERT or UPDATE to an audit table.
+  2. Wait: at least 14 days, or two runs of the slowest job touching the
+     columns, whichever is longer. Reset `pg_stat_statements` at the start of
+     the wait.
+  3. Contract: the migration refuses to run if the audit table has any hits,
+     if any `pg_stat_statements` query mentions the old column, or if the
+     deployed build SHA (health endpoint) predates the expand commit. In CI,
+     each contract migration names its expand migration and fails if that one
+     is under 14 days old.
+- Don't rename columns at expand; it breaks old versions still running.
+- Before go-live, contract can follow right away.
+
 ## Development
 
 ```bash
