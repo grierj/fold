@@ -540,3 +540,12 @@ func (a *App) appendRecoverableRegistrations(occs []models.EventOccurrence, mana
 		}
 	}
 }
+
+// householdSubjectFrom validates a pair already loaded in the household batch.
+func householdSubjectFrom(person *models.HouseholdPerson, acct models.HouseholdAccount) (registrationSubject, error) {
+	if person == nil || person.ID == 0 || person.DeletedAt.Valid || person.ConvertedUserID != nil || acct.UserID == 0 || acct.HouseholdID != person.HouseholdID {
+		return registrationSubject{}, errRegNotFound
+	}
+	id := person.ID
+	return registrationSubject{personID: &id, holderID: acct.UserID}, nil
+}

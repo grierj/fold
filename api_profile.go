@@ -987,7 +987,7 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 		birth = parsed
 	}
 	if birth != nil && (accounts.AgeOn(*birth, a.householdClock(time.Now().UTC())) < 0 || (kind == models.HouseholdAdult && accounts.AgeOn(*birth, a.householdClock(time.Now().UTC())) < 18)) {
-		jsonErrorCode(c, 409, "household_age_mismatch", "household_age_mismatch")
+		registrationError(c, householdRegistrationError{code:"household_age_mismatch"})
 		return
 	}
 	careNotes := ""

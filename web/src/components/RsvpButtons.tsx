@@ -318,6 +318,7 @@ function HouseholdRsvp({ instance, people, onChange }: { instance: EventOccurren
       return <div key={p.id} data-household-person={p.id} className="rounded-lg border border-border p-3">
         <Checkbox label={p.name} checked={d.selected} disabled={busy || !!reason} onChange={(e) => patch(p.id, { selected: e.target.checked })} />
         <p className="text-sm text-text-muted">{p.kind === "child" ? "Child" : p.kind === "teen" ? "Teen" : "Adult"}{p.age !== undefined ? " · Age " + p.age : ""}{saved ? " (via " + saved.holderName + ")" : ""}</p>
+        {saved && !saved.unavailable && <p className="text-sm text-text-muted">{saved.status === "waitlisted" ? `Waitlist position ${saved.waitlistPosition}` : saved.status === "going" ? `Going ${saved.attendanceMode === "remote" ? "remotely" : "in person"}` : saved.status === "maybe" ? "Maybe" : saved.status === "declined" ? "Can’t go" : "Removed"}</p>}
         {reason && <p className="text-sm text-text-muted">{reason} <Link className="inline-flex min-h-11 items-center text-primary underline" to="/profile">Edit household in Profile</Link></p>}
         {!reason && d.selected && controls(p.name, d, (values) => patch(p.id, values), p.kind === "child")}
       </div>;

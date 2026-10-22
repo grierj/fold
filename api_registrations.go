@@ -581,19 +581,13 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 
 // registrationChange is prepared before the batch writes anything.
 type registrationChange struct {
-	subject registrationSubject
-	old     models.Registration
-	next    models.Registration
-	found   bool
+	old   models.Registration
+	next  models.Registration
+	found bool
 }
 
-func prepareRegistration(tx *gorm.DB, o *models.EventOccurrence, subject registrationSubject, want string, guests int, mode string, care childcareRequest, namedCare *bool, now time.Time) (registrationChange, error) {
-	ch := registrationChange{subject: subject}
-	result := subject.query(tx, o.ID).First(&ch.old)
-	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
-		return ch, result.Error
-	}
-	ch.found = result.Error == nil
+func prepareRegistration(old models.Registration, o *models.EventOccurrence, subject registrationSubject, want string, guests int, mode string, care childcareRequest, namedCare *bool, now time.Time) (registrationChange, error) {
+	ch := registrationChange{old: old, found: old.ID != 0}
 	if ch.found && ch.old.Status == models.RegRemoved {
 		return ch, errRemovedBlocked
 	}
@@ -809,7 +803,7 @@ func registrationError(c *gin.Context, err error) {
 	var own householdRegistrationError
 	switch {
 	case errors.As(err, &own):
-		body := errorBody(http.StatusConflict, own.code)
+		body := errorBody(http.StatusConflict, householdRegistrationMessage(own.code))
 		body["code"] = own.code
 		if own.personID != 0 {
 			body["personId"] = own.personID
@@ -842,13 +836,13 @@ func validMode(mode string) bool {
 }
 
 type registrationBatchInput struct {
- Date string `json:"date"`
- Status string `json:"status"`
- GuestCount *int `json:"guestCount"`
- AttendanceMode *string `json:"attendanceMode"`
- ChildcareCount *int `json:"childcareCount"`
- ChildcareAgesNote *string `json:"childcareAgesNote"`
- People []householdAnswer `json:"people"`
+	Date              string            `json:"date"`
+	Status            string            `json:"status"`
+	GuestCount        *int              `json:"guestCount"`
+	AttendanceMode    *string           `json:"attendanceMode"`
+	ChildcareCount    *int              `json:"childcareCount"`
+	ChildcareAgesNote *string           `json:"childcareAgesNote"`
+	People            []householdAnswer `json:"people"`
 }
 
 func (a *App) apiRegister(c *gin.Context) {
@@ -872,8 +866,8 @@ func (a *App) apiRegister(c *gin.Context) {
 		jsonError(c, 400, "holder fields need status")
 		return
 	}
-	care:=childcareRequest{ChildcareCount:body.ChildcareCount,ChildcareAgesNote:body.ChildcareAgesNote}
- if !care.validate(c, ev) {
+	care := childcareRequest{ChildcareCount: body.ChildcareCount, ChildcareAgesNote: body.ChildcareAgesNote}
+	if !care.validate(c, ev) {
 		return
 	}
 	mode := ""
@@ -958,17 +952,31 @@ func (a *App) apiRegister(c *gin.Context) {
 		if locked.Status != models.OccurrenceScheduled || !a.canRegisterIn(tx, &holder, ev) {
 			return errOccurrenceNotFound
 		}
+		today := a.householdClock(now)
+		personIDs := make([]uint, 0, len(body.People))
+		for _, answer := range body.People {
+			personIDs = append(personIDs, answer.PersonID)
+		}
+		var existingRows []models.Registration
+		if err := tx.Where("occurrence_id = ? AND (user_id = ? OR household_person_id IN ?)", o.ID, holder.ID, personIDs).Find(&existingRows).Error; err != nil {
+			return err
+		}
+		var ownRow models.Registration
+		personRows := map[uint]models.Registration{}
+		for _, r := range existingRows {
+			if r.UserID != nil && *r.UserID == holder.ID {
+				ownRow = r
+			} else if r.HouseholdPersonID != nil {
+				personRows[*r.HouseholdPersonID] = r
+			}
+		}
 		changes := []registrationChange{}
 		if body.Status != "" {
-			ch, err := prepareRegistration(tx, locked, userSubject(holder.ID), body.Status, guests, mode, care, nil, now)
+			ch, err := prepareRegistration(ownRow, locked, userSubject(holder.ID), body.Status, guests, mode, care, nil, now)
 			if err != nil {
 				return err
 			}
 			changes = append(changes, ch)
-		}
-		personIDs := make([]uint, 0, len(body.People))
-		for _, answer := range body.People {
-			personIDs = append(personIDs, answer.PersonID)
 		}
 		var people []models.HouseholdPerson
 		if len(personIDs) > 0 {
@@ -986,23 +994,16 @@ func (a *App) apiRegister(c *gin.Context) {
 			if person == nil {
 				return errRegNotFound
 			}
-			subject, err := householdSubject(tx, person.ID, holder.ID)
+			subject, err := householdSubjectFrom(person, acct)
 			if err != nil {
 				return err
 			}
-			ch, err := prepareRegistration(tx, locked, subject, answer.Status, 0, answer.AttendanceMode, childcareRequest{}, answer.ChildcareRequested, now)
+			ch, err := prepareRegistration(personRows[person.ID], locked, subject, answer.Status, 0, answer.AttendanceMode, childcareRequest{}, answer.ChildcareRequested, now)
 			if err != nil {
 				return err
 			}
-			// A second adult may edit the answer, but never takes ownership.
-			if ch.found {
-				subject, err = householdSubject(tx, person.ID, registrationHolder(ch.old))
-				if err != nil {
-					return err
-				}
-				ch.subject = subject
-			}
-			if problem := policy.HouseholdRegistrationProblem(householdFacts(person, links[person.ID], a.householdClock(now))); problem != "" {
+			// Existing answers retain their original responsible holder.
+			if problem := policy.HouseholdRegistrationProblem(householdFacts(person, links[person.ID], today)); problem != "" {
 				return householdRegistrationError{code: problem, personID: person.ID}
 			}
 			if answer.ChildcareRequested != nil && *answer.ChildcareRequested && !ev.ChildcareAvailable {
@@ -1020,7 +1021,7 @@ func (a *App) apiRegister(c *gin.Context) {
 		facts := loadSubjectFacts(tx, candidates, &holder)
 		access := map[uint]bool{}
 		for _, r := range candidates {
-			if r.HouseholdPersonID != nil && !facts.eligible(a, tx, r, ev, a.householdClock(now), access) {
+			if r.HouseholdPersonID != nil && !facts.eligible(a, tx, r, ev, today, access) {
 				return householdRegistrationError{code: "household_registration_holder_unavailable", personID: *r.HouseholdPersonID}
 			}
 		}
@@ -1510,6 +1511,9 @@ func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, int
 	var ev models.Event
 	used := map[string]int{}
 	careUsed := 0
+	var facts subjectFacts
+	var access map[uint]bool
+	today := a.householdClock(now)
 	for _, r := range regs {
 		if currentID != r.OccurrenceID {
 			var err error
@@ -1534,10 +1538,19 @@ func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, int
 				return nil, err
 			}
 			careUsed = n
+			currentRegs := []models.Registration{}
+			for _, candidate := range regs {
+				if candidate.OccurrenceID == o.ID {
+					currentRegs = append(currentRegs, candidate)
+				}
+			}
+			facts = loadSubjectFacts(tx, currentRegs, nil)
+			facts.users[holder.ID] = &holder
+			access = map[uint]bool{}
 		}
 		fits := true
 		if r.HouseholdPersonID != nil {
-			fits = a.eligibleRegistrationForHolder(tx, r, &ev, now, &holder)
+			fits = facts.eligible(a, tx, r, &ev, today, access)
 		} else {
 			fits = a.canRegisterIn(tx, &holder, &ev)
 		}
@@ -1707,4 +1720,16 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 	}
 	a.deliverNotificationEmails(mailed)
 	c.JSON(http.StatusOK, gin.H{})
+}
+
+func householdRegistrationMessage(code string) string {
+ switch code {
+ case "household_link_pending": return "waiting for an admin to confirm; ask your church office to check the household link"
+ case "household_link_unconfirmed": return "this household link is not confirmed; ask your church office to check it"
+ case "household_birth_date_required": return "add a birth date in profile before signing this person up"
+ case "household_age_mismatch": return "the birth date does not match an adult; correct it or choose child or teen in profile"
+ case "household_remote_childcare": return "remote attendees cannot request childcare; clear the childcare choice first"
+ case "household_registration_holder_unavailable": return "the responsible account cannot register this person; ask your church office to check their account and household"
+ default: return "household registration needs review"
+ }
 }
