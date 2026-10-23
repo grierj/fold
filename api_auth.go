@@ -61,7 +61,7 @@ func (a *App) apiLogin(c *gin.Context) {
 	} else if res.RowsAffected == 1 {
 		user = &found
 	}
-	if !user.CheckPassword(body.Password) || !user.CanSignIn() {
+	if !user.CheckPassword(body.Password) || !user.CanAuthenticate() {
 		if err := a.lockLoginKeysAtLimit(ctx, keys); err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not sign in")
 			return

@@ -353,9 +353,15 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		Name        string `json:"name"`
 		DisplayName string `json:"displayName"`
 		Phone       string `json:"phone"`
+		AgeBand     string `json:"ageBand"`
+		BirthDate   string `json:"birthDate"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	kind, birth, ok := a.classifyAccountInput(c, body.AgeBand, body.BirthDate)
+	if !ok {
 		return
 	}
 	email := normalizeEmail(body.Email)
@@ -381,8 +387,12 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "role must be admin or member")
 		return
 	}
+	if kind == models.AccountTeen && role == models.RoleAdmin {
+		jsonError(c, http.StatusBadRequest, "a teen account can't be an admin")
+		return
+	}
 	u := models.User{
-		Email: email, Role: role, Status: models.UserInvited,
+		Email: email, Role: role, Status: models.UserInvited, AccountType: kind, BirthDate: birth,
 		Name: name, DisplayName: strings.TrimSpace(body.DisplayName), Phone: strings.TrimSpace(body.Phone),
 	}
 	if body.Password != "" {
@@ -391,6 +401,9 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 			return
 		}
 		u.Status = models.UserActive
+	}
+	if kind == models.AccountTeen {
+		u.Status = models.UserPendingConsent
 	}
 	if err := a.DB.Create(&u).Error; err != nil {
 		if emailTaken(err) {

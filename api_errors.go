@@ -22,6 +22,8 @@ var errorCodes = map[string]string{
 	"record the consent evidence before granting consent":                                                                                     "consent_evidence_required",
 	"choose account, sms or photos and granted or revoked":                                                                                    "consent_invalid",
 	"consent evidence must be at most 1000 characters":                                                                                        "consent_evidence_long",
+	"teen accounts cannot have a public profile picture":                                                                                      "teen_avatar",
+	"your account is waiting for consent":                                                                                                     "consent_required",
 	"this person's details changed after they accepted; ask the household to send a new invitation":                                           "household_conversion_details",
 	"this person no longer meets the adult account rules; check their birth date and account type before sending a new invitation":            "household_conversion_adult",
 	"the person who sent the invitation can no longer manage this household; ask an active household adult or admin to send a new invitation": "household_conversion_inviter",

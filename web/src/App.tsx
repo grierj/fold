@@ -10,7 +10,7 @@ import { NewChurchEvent } from "./pages/NewChurchEvent";
 import { EventDetail } from "./pages/EventDetail";
 import { MyGroups } from "./pages/MyGroups";
 import { ProfilePage } from "./pages/Profile";
-import { AdminPage } from "./pages/Admin";
+import { Skeleton } from "./components/ui/Skeleton";
 import { NotificationsPage } from "./pages/Notifications";
 import { ForgotPassword } from "./pages/ForgotPassword";
 import { ResetPassword } from "./pages/ResetPassword";
@@ -26,6 +26,8 @@ import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 
 const GuardianConsentPage = lazy(() => import("./pages/GuardianConsent").then((m) => ({ default: m.GuardianConsentPage })));
+const AdminPage = lazy(() => import("./pages/Admin").then((module) => ({ default: module.AdminPage })));
+const WaitingForConsent = lazy(() => import("./pages/WaitingForConsent"));
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -43,11 +45,14 @@ export default function App() {
     return () => setOnUnauthorized(null);
   }, [navigate, location.pathname]);
 
+  if (loading) return null;
+  if (user?.status === "pending_consent") return <Suspense fallback={null}><WaitingForConsent key={`${user.id}:${user.status}`} /></Suspense>;
+
   return (
     // Keyed by user: signing in as someone else remounts every page and the
     // header, so nothing fetched for the previous user (or while signed out)
     // survives. Routes wait for the session check so pages fetch once.
-    <Layout key={user?.id ?? "anon"}>
+    <Layout key={user ? `${user.id}:${user.status}` : "anon"}>
       {loading ? null : (
       <Routes>
         <Route path="/" element={<Home />} />
@@ -69,7 +74,7 @@ export default function App() {
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/my-groups" element={<MyGroups />} />
         <Route path="/profile" element={<ProfilePage />} />
-        <Route path="/admin" element={<AdminPage />} />
+        <Route path="/admin" element={<Suspense fallback={<div className="max-w-6xl mx-auto px-4 py-8"><Skeleton kind="page" label="Loading admin…" /></div>}><AdminPage /></Suspense>} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>

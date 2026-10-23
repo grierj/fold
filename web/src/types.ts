@@ -63,6 +63,7 @@ export type VideoProvider = "none" | "link" | "jitsi";
 export type VideoReveal = "always" | "registered_only";
 
 export interface Member {
+  accountType?: "teen";
   id: number;
   name: string;
   avatarUrl: string;

@@ -410,7 +410,7 @@ export const Invitations = {
   }) => api<{ invitation: Invitation }>("/invitations", { method: "POST", body: data }),
   get: (token: string) =>
     api<InvitationContext>(`/invitations/${encodeURIComponent(token)}`),
-  accept: (data: { token: string; name: string; password: string }) =>
+  accept: (data: { token: string; name: string; password: string; ageBand: AgeBand; birthDate?: string }) =>
     api<InvitationAcceptance>(`/invitations/accept`, { method: "POST", body: data }),
 };
 
@@ -530,6 +530,8 @@ export const Notifications = {
 };
 
 export interface AdminUserInput {
+  ageBand: AgeBand;
+  birthDate?: string;
   email: string;
   name: string;
   // Optional: without one the account is invited and can't sign in yet.

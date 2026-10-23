@@ -55,7 +55,7 @@ func TestInvitationAcceptance(t *testing.T) {
 
 	// Accept: an active account, signed in.
 	w = anon.do("POST", "/api/v1/invitations/accept",
-		map[string]string{"token": token, "name": "New Person", "password": "password1234"}, true)
+		map[string]string{"ageBand": "adult", "token": token, "name": "New Person", "password": "password1234"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("accept: %d %s", w.Code, w.Body.String())
 	}
@@ -72,7 +72,7 @@ func TestInvitationAcceptance(t *testing.T) {
 
 	// Single use: the same token fails now.
 	w = anon.do("POST", "/api/v1/invitations/accept",
-		map[string]string{"token": token, "name": "New Person", "password": "password1234"}, true)
+		map[string]string{"ageBand": "adult", "token": token, "name": "New Person", "password": "password1234"}, true)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("reuse: %d %s", w.Code, w.Body.String())
 	}
@@ -147,7 +147,7 @@ func TestInvitationPolicy(t *testing.T) {
 	// Accepting the leader's group invitation creates the membership.
 	token := tokenInEmail(t, latestEmail(t, app, "l1@example.com"))
 	w := anon.do("POST", "/api/v1/invitations/accept",
-		map[string]string{"token": token, "name": "L One", "password": "password1234"}, true)
+		map[string]string{"ageBand": "adult", "token": token, "name": "L One", "password": "password1234"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("accept: %d %s", w.Code, w.Body.String())
 	}
@@ -211,7 +211,7 @@ func TestInvitationIntoFullGroup(t *testing.T) {
 
 	accept := func(email, token string) *httptest.ResponseRecorder {
 		return anon.do("POST", "/api/v1/invitations/accept",
-			map[string]string{"token": token, "name": "Full", "password": "password1234"}, true)
+			map[string]string{"ageBand": "adult", "token": token, "name": "Full", "password": "password1234"}, true)
 	}
 
 	// Without the over-limit choice: 409, no account, token stays live.

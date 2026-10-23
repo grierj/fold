@@ -208,13 +208,11 @@ func TestTeenSignupPendingConsent(t *testing.T) {
 		t.Fatal("teen confirm did not report pendingConsent")
 	}
 	w = fresh.do("GET", "/api/v1/auth/me", nil, false)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("teen signed in before consent: %d", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("teen missing restricted session: %d", w.Code)
 	}
-	w = fresh.do("POST", "/api/v1/auth/login",
-		map[string]string{"email": "tess@example.com", "password": "longenoughpassword"}, true)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("teen login before consent: %d", w.Code)
+	if w := fresh.do("GET", "/api/v1/groups", nil, false); w.Code != http.StatusForbidden {
+		t.Fatalf("pending teen got ordinary access: %d", w.Code)
 	}
 }
 
