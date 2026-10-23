@@ -871,6 +871,8 @@ func TestCanConvertHouseholdPerson(t *testing.T) {
 		{"unknown date", admin, own, HouseholdPerson{Kind: KindAdult}, true, false},
 		{"adult mismatch", admin, own, HouseholdPerson{Kind: KindAdult, AgeYears: age(17)}, true, false},
 		{"teen 12", adult, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(12)}, true, false},
+		{"confirmed teen 13", adult, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(13), LinkStatus: LinkConfirmed}, true, true},
+		{"confirmed teen 17", admin, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(17), LinkStatus: LinkConfirmed}, true, true},
 		{"teen 13", adult, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(13)}, true, false},
 		{"teen 17", adult, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(17)}, true, false},
 		{"teen 18", adult, own, HouseholdPerson{Kind: KindTeen, AgeYears: age(18)}, true, false},

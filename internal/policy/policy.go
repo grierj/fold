@@ -548,17 +548,22 @@ func CanManageHousehold(p *Person, rel HouseholdRel) bool {
 }
 
 // CanConvertHouseholdPerson requires current adult authority and birth-date
-// evidence. Teen conversion waits for parent consent in M1.10.
+// evidence. Teens also need a confirmed household guardian link.
 func CanConvertHouseholdPerson(p *Person, rel HouseholdRel, person HouseholdPerson, active bool) bool {
 	if !active || p == nil || p.Teen || !CanManageHousehold(p, rel) || person.Deleted || person.Converted {
 		return false
 	}
-	return MeetsAdultAccountRules(person)
+	return MeetsAdultAccountRules(person) || MeetsTeenAccountRules(person)
 }
 
 // MeetsAdultAccountRules requires an adult with a birth date proving age 18+.
 func MeetsAdultAccountRules(person HouseholdPerson) bool {
 	return person.Kind == KindAdult && person.AgeYears != nil && *person.AgeYears >= 18
+}
+
+// MeetsTeenAccountRules requires a teen aged 13-17 and a confirmed household link.
+func MeetsTeenAccountRules(person HouseholdPerson) bool {
+	return person.Kind == KindTeen && person.AgeYears != nil && *person.AgeYears >= 13 && *person.AgeYears < 18 && person.LinkStatus == LinkConfirmed
 }
 
 // CanCancelHouseholdConversion remains available after eligibility changes.
@@ -657,6 +662,7 @@ func CanSeeCareNotes(p *Person, person HouseholdPerson, rel HouseholdRel, window
 func CanConfirmGuardianLink(p *Person) bool { return IsAdmin(p) }
 
 func CanRequestGuardianLink(p *Person) bool { return p != nil && !p.Teen }
+
 // CanChangeTeenConsent never gives a leader consent powers. A confirmed
 // guardian may act regardless of any group role. Only adults grant consent.
 func CanChangeTeenConsent(p *Person, confirmedGuardian bool) bool {

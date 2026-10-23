@@ -458,7 +458,32 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	var mailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var consentActor *models.User
-		if consentEvidence != nil {
+		var conversionLocked map[uint]*models.User
+		if approve && req.Source == models.RequestHouseholdConversion && req.HouseholdPersonID != nil && req.InvitationID != nil {
+			var person models.HouseholdPerson
+			var inv models.Invitation
+			if err := tx.First(&person, *req.HouseholdPersonID).Error; err != nil {
+				return errConversionPerson
+			}
+			if err := tx.First(&inv, *req.InvitationID).Error; err != nil {
+				return errConversionUnavailable
+			}
+			var err error
+			conversionLocked, _, err = lockConversionParticipants(tx, &inv, &person, me.ID)
+			if err != nil {
+				return err
+			}
+			actor := conversionLocked[me.ID]
+			if actor == nil || !policy.IsAdmin(asPerson(actor)) || actor.Status != models.UserActive || actor.SessionVersion != me.SessionVersion {
+				return errConsentForbidden
+			}
+		}
+		if consentEvidence != nil && req.AccountType != models.AccountTeen {
+			return errConsentTeen
+		}
+		if consentEvidence != nil && conversionLocked != nil {
+			consentActor = conversionLocked[me.ID]
+		} else if consentEvidence != nil {
 			if req.AccountType != models.AccountTeen {
 				return errConsentTeen
 			}
@@ -507,7 +532,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		meta := map[string]any{"accountType": req.AccountType}
 		if approve && req.Source == models.RequestHouseholdConversion {
 			var err error
-			userID, err = a.approveHouseholdConversion(tx, c, req, &mailed)
+			userID, err = a.approveHouseholdConversion(tx, c, req, conversionLocked, &mailed)
 			if err != nil {
 				return err
 			}
