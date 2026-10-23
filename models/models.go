@@ -192,6 +192,11 @@ func (u *User) CanSignIn() bool {
 	return u.Status == UserActive && u.PasswordHash != nil
 }
 
+// CanAuthenticate includes a restricted session while a teen waits for consent.
+func (u *User) CanAuthenticate() bool {
+	return u != nil && u.PasswordHash != nil && (u.Status == UserActive || (u.Status == UserPendingConsent && u.AccountType == AccountTeen))
+}
+
 // Group is an ongoing entity (a small group, ministry, or activity) —
 // not a single event. Events are its instances.
 type Group struct {

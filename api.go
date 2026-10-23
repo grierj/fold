@@ -92,6 +92,7 @@ type groupSummaryJSON struct {
 }
 
 type memberJSON struct {
+	AccountType  string  `json:"accountType,omitempty"`
 	ID           uint    `json:"id"`
 	Name         string  `json:"name"`
 	AvatarURL    string  `json:"avatarUrl"`
@@ -107,14 +108,14 @@ type memberJSON struct {
 // toMemberJSON renders a membership's user for the roster.
 func (a *App) toMemberJSON(m *models.Membership) memberJSON {
 	avatarURL := ""
-	if m.User.AvatarKey != "" {
+	if m.User.AvatarKey != "" && m.User.AccountType != models.AccountTeen {
 		avatarURL = a.Uploads.URL(m.User.AvatarKey)
 	}
 	return memberJSON{
 		ID: m.User.ID, Name: m.User.PublicName(), AvatarURL: avatarURL,
 		AvatarFocalX: m.User.AvatarFocalX, AvatarFocalY: m.User.AvatarFocalY,
 		Role: m.Role, JoinedAt: m.JoinedAt.Format(time.RFC3339),
-		Admin: asPerson(&m.User).Admin,
+		Admin: asPerson(&m.User).Admin, AccountType: m.User.AccountType,
 	}
 }
 
@@ -283,7 +284,12 @@ func sessionVersion(s *sessions.Session) int {
 }
 
 // userFromSession loads the logged-in user when the cookie is still current.
-func (a *App) userFromSession(c *gin.Context) (*models.User, bool) {
+func (a *App) authenticatedSessionUser(c *gin.Context) (*models.User, bool) {
+	if value, cached := c.Get("sessionUser"); cached {
+		user, ok := value.(*models.User)
+		return user, ok
+	}
+	c.Set("sessionUser", nil)
 	session, err := a.Store.Get(c.Request, sessionName)
 	if err != nil {
 		return nil, false
@@ -296,10 +302,46 @@ func (a *App) userFromSession(c *gin.Context) (*models.User, bool) {
 	if err := a.DB.First(&user, uid).Error; err != nil {
 		return nil, false
 	}
-	if sessionVersion(session) != user.SessionVersion || user.Status != models.UserActive {
+	if sessionVersion(session) != user.SessionVersion || !user.CanAuthenticate() {
 		return nil, false
 	}
+	c.Set("sessionUser", &user)
 	return &user, true
+}
+
+func (a *App) userFromSession(c *gin.Context) (*models.User, bool) {
+	user, ok := a.authenticatedSessionUser(c)
+	return user, ok && user.Status == models.UserActive
+}
+
+func (a *App) sessionAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user, ok := a.authenticatedSessionUser(c)
+		if !ok {
+			jsonError(c, http.StatusUnauthorized, "unauthorized")
+			c.Abort()
+			return
+		}
+		c.Set("apiUser", user)
+		c.Next()
+	}
+}
+
+// restrictedSession keeps pending teens outside every ordinary API, including public reads.
+func (a *App) restrictedSession() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user, ok := a.authenticatedSessionUser(c)
+		if ok && user.Status == models.UserPendingConsent {
+			switch c.FullPath() {
+			case "/api/v1/auth/csrf", "/api/v1/auth/me", "/api/v1/auth/logout":
+			default:
+				jsonError(c, http.StatusForbidden, "your account is waiting for consent")
+				c.Abort()
+				return
+			}
+		}
+		c.Next()
+	}
 }
 
 // apiAuth requires a logged-in user; 401 JSON otherwise.
@@ -470,12 +512,13 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// API responses carry per-user data: never store them in the HTTP cache
 	// or let back/forward replay them after logout.
 	v1.Use(func(c *gin.Context) { c.Header("Cache-Control", "no-store") })
+	v1.Use(a.restrictedSession())
 
 	// Auth (csrf token endpoint is public; login/logout need the token).
 	v1.GET("/auth/csrf", a.apiGetCSRF)
 	v1.POST("/auth/login", a.apiLogin)
 	v1.POST("/auth/logout", a.apiLogout)
-	v1.GET("/auth/me", a.apiAuth(), a.apiMe)
+	v1.GET("/auth/me", a.sessionAuth(), a.apiMe)
 	// Password reset (M1.2): uniform response, single-use expiring tokens.
 	v1.POST("/auth/password-reset", a.apiRequestPasswordReset)
 	v1.POST("/auth/password-reset/confirm", a.apiConfirmPasswordReset)

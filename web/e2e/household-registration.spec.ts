@@ -5,7 +5,7 @@ import { apiAs, email, PASSWORD, signIn } from "./helpers";
 // fixtures and the existing account-only waitlist specs remain independent.
 test("household profile, pending link, independent answers, privacy and recovery", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
-  const { user } = await admin("POST", "/admin/users", { name: "Flow Parent", email: email("household-flow"), password: PASSWORD, role: "member" });
+  const { user } = await admin("POST", "/admin/users", { ageBand: "adult", name: "Flow Parent", email: email("household-flow"), password: PASSWORD, role: "member" });
   const { group } = await admin("POST", "/groups", { name: "Household flow", visibility: "public", description: "Family dates", tags: [], location: "Hall" });
   const start = new Date(Date.now() + 6 * 3600_000).toISOString().slice(0, 16);
   const { event } = await admin("POST", `/groups/${group.id}/events`, { title: "Family gathering", startsLocal: start, durationMinutes: 60, tzid: "UTC", capacity: 2, waitlistEnabled: true, remoteAvailable: true, remoteCapacity: 1, childcareAvailable: true, childcareCapacity: 1 });

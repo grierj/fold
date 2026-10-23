@@ -911,3 +911,26 @@ func TestCanSeePendingTeenAttendee(t *testing.T) {
 		})
 	}
 }
+
+func TestMinorRosterAndAvatarPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name                   string
+		p                      *Person
+		manager, names, avatar bool
+	}{
+		{"signed out", nil, false, false, false},
+		{"member", adult, false, false, true},
+		{"leader", adult, true, true, true},
+		{"admin", admin, false, true, true},
+		{"teen", teen, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanSeeMinorRosterIdentity(tc.p, tc.manager); got != tc.names {
+				t.Errorf("identity=%v", got)
+			}
+			if got := CanUploadAvatar(tc.p); got != tc.avatar {
+				t.Errorf("avatar=%v", got)
+			}
+		})
+	}
+}

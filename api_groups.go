@@ -142,7 +142,7 @@ func (a *App) apiGetGroup(c *gin.Context) {
 
 	memberList := []memberJSON{}
 	if policy.CanSeeRoster(p, asGroup(g), rel) {
-		memberList = a.roster(g.ID)
+		memberList = a.rosterFor(g.ID, apiUser(c), policy.CanManageGroup(asPerson(apiUser(c)), rel))
 	}
 
 	now := time.Now().UTC()
@@ -157,19 +157,22 @@ func (a *App) apiGetGroup(c *gin.Context) {
 	})
 }
 
-// roster lists a group's active members whose accounts are listed.
-func (a *App) roster(groupID uint) []memberJSON { return a.membersWith(groupID, "active") }
-
-// membersWith lists a group's memberships in one status, listed accounts only.
-func (a *App) membersWith(groupID uint, status string) []memberJSON {
+// rosterFor exposes minor identities and badges only to the group's managers.
+func (a *App) rosterFor(groupID uint, viewer *models.User, manager bool) []memberJSON {
 	var members []models.Membership
-	a.DB.Preload("User").
-		Joins(listedUsers("memberships")).
-		Where("memberships.group_id = ? AND memberships.status = ?", groupID, status).
+	a.DB.Preload("User").Joins(listedUsers("memberships")).
+		Where("memberships.group_id = ? AND memberships.status = 'active'", groupID).
 		Order("memberships.joined_at").Find(&members)
 	out := make([]memberJSON, 0, len(members))
 	for i := range members {
-		out = append(out, a.toMemberJSON(&members[i]))
+		if members[i].User.AccountType == models.AccountTeen && !policy.CanSeeMinorRosterIdentity(asPerson(viewer), manager) {
+			continue
+		}
+		item := a.toMemberJSON(&members[i])
+		if item.AccountType != models.AccountTeen {
+			item.AccountType = ""
+		}
+		out = append(out, item)
 	}
 	return out
 }
@@ -412,7 +415,7 @@ func (a *App) apiGroupMembers(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, "only members can see who is in this group")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"members": a.roster(g.ID)})
+	c.JSON(http.StatusOK, gin.H{"members": a.rosterFor(g.ID, apiUser(c), policy.CanManageGroup(asPerson(apiUser(c)), rel))})
 }
 
 func validGroupStatus(s string) bool {
@@ -525,7 +528,7 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not change role")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"members": a.roster(g.ID)})
+	c.JSON(http.StatusOK, gin.H{"members": a.rosterFor(g.ID, apiUser(c), true)})
 }
 
 // errRoleRefused means policy said no once the group row was locked.
@@ -897,5 +900,5 @@ func (a *App) removeMember(c *gin.Context, g *models.Group) {
 		jsonError(c, http.StatusInternalServerError, "could not remove member")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"members": a.roster(g.ID)})
+	c.JSON(http.StatusOK, gin.H{"members": a.rosterFor(g.ID, apiUser(c), true)})
 }

@@ -709,3 +709,11 @@ func CanManageHouseholdRegistration(actor, holder *Person, managesEvent, previou
 	}
 	return CanRegisterHouseholdPerson(holder, holder, rel, rel, person, holderActive, holderAccess, holderAccess)
 }
+
+// CanSeeMinorRosterIdentity limits minor roster names and badges to managers.
+func CanSeeMinorRosterIdentity(p *Person, manager bool) bool {
+	return p != nil && (p.Admin || manager)
+}
+
+// CanUploadAvatar: teens have no public avatar (DEC-8).
+func CanUploadAvatar(p *Person) bool { return p != nil && !p.Teen }

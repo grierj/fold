@@ -959,6 +959,7 @@ export function GroupDetail() {
                             />
                             <div className="grow min-w-0">
                               <div className="font-semibold">{m.name}
+                                {canManage && m.accountType === "teen" && <span className="ml-2 chip">Teen</span>}
                                 {m.admin && (
                                   <span className="ml-2 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
                                     Admin
@@ -972,7 +973,7 @@ export function GroupDetail() {
                                 tone="quiet"
                                 label={`More for ${m.name}`}
                                 items={[
-                                  ...(m.role !== "leader"
+                                  ...(m.role !== "leader" && m.accountType !== "teen"
                                     ? [{ label: "Make leader", onSelect: () => void setRole(m.id, m.name, "leader"), disabled: memberBusy }]
                                     : []),
                                   ...(m.role === "leader" && leaderCount > 1 && (!m.admin || isAdmin)

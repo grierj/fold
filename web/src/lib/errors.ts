@@ -11,6 +11,8 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
+  teen_avatar: "Teen accounts do not have a public profile picture. You can still update your name and other profile details.",
+  consent_required: "Your account is waiting for a parent or guardian's consent. Sign in to see the next steps.",
   household_conversion_details: "This person's details changed after they accepted. Reject this request and ask the household to send a new invitation.",
   household_conversion_adult: "This person no longer meets the adult account rules. Check their birth date and account type. Reject this request before asking for a new invitation.",
   household_conversion_inviter: "The person who sent the invitation can no longer manage this household. Reject this request and ask an active household adult or admin to send a new invitation.",

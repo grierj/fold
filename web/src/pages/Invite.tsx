@@ -10,7 +10,8 @@ import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 
 const INVITE_EXPIRED = "This invitation has expired or was already used. Ask the person who invited you for a new one.";
-import type { Invitation } from "../types";
+import { AccountAgeFields } from "../components/AccountAgeFields";
+import type { AgeBand, Invitation } from "../types";
 
 // Accept a single-use invitation and choose a password. Household adults
 // wait for admin approval.
@@ -22,6 +23,8 @@ export function Invite() {
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [site, setSite] = useState("");
   const [name, setName] = useState("");
+  const [ageBand, setAgeBand] = useState<AgeBand>("adult");
+  const [birthDate, setBirthDate] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -51,10 +54,11 @@ export function Invite() {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (!invitation?.conversion && ageBand === "under13") return;
     setBusy(true);
     setError(null);
     try {
-      const result = await InvitationsApi.accept({ token, name, password });
+      const result = await InvitationsApi.accept({ token, name, password, ageBand, birthDate: ageBand === "teen" ? birthDate : undefined });
       setPassword("");
       if (result.pendingApproval) { setWaiting(true); return; }
       await refresh();
@@ -130,6 +134,7 @@ export function Invite() {
         <Field id="invite-email" label="Email (you'll sign in with it)" hint="Set by the person who invited you.">
           <Input type="email" value={invitation?.email ?? ""} readOnly />
         </Field>
+        {!invitation?.conversion && <AccountAgeFields id="invite" ageBand={ageBand} birthDate={birthDate} onAgeBand={setAgeBand} onBirthDate={setBirthDate} />}
         <Field id="inv-password" label="Choose a password" hint="Must be at least 10 characters.">
           <Input
             type="password"
@@ -139,7 +144,7 @@ export function Invite() {
             required
           />
         </Field>
-        <Button variant="primary" layout="w-full" type="submit" disabled={busy}>
+        <Button variant="primary" layout="w-full" type="submit" disabled={busy || (!invitation?.conversion && ageBand === "under13")}>
           {busy ? "Creating account…" : "Create my account"}
         </Button>
       </form>

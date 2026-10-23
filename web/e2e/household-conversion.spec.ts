@@ -32,7 +32,7 @@ test("household adult invitation transfers sign-ups when the account is ready", 
   test.skip((await request.get("/dev/outbox")).status() !== 200, "Requires E2E_APP_ENV=dev for the mail outbox");
   const admin = await apiAs(request, "grier");
   const account = `conversion-${kind}-parent`;
-  await admin("POST", "/admin/users", { name: `Conversion ${kind} parent`, email: email(account), password: PASSWORD, role: "member" });
+  await admin("POST", "/admin/users", { ageBand: "adult", name: `Conversion ${kind} parent`, email: email(account), password: PASSWORD, role: "member" });
   const { group } = await admin("POST", "/groups", { name: `Conversion ${kind} group`, description: "Household conversion", visibility: "public", tags: [] });
   const startsLocal = new Date(Date.now() + 7 * 86400_000).toISOString().slice(0, 16);
   const { event } = await admin("POST", `/groups/${group.id}/events`, { title: `Conversion ${kind} event`, startsLocal, durationMinutes: 60, tzid: "UTC", capacity: 1, waitlistEnabled: true });

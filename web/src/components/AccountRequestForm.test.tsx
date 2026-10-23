@@ -9,7 +9,7 @@ describe("AccountRequestForm age gate (M1.3, DEC-8)", () => {
     render(<AccountRequestForm submitLabel="Request an account" onSubmit={onSubmit} />);
     await userEvent.click(screen.getByLabelText("Under 13"));
     expect(screen.getByText(/accounts start at 13/i)).toBeInTheDocument();
-    expect(screen.getByText(/add you to their household/i)).toBeInTheDocument();
+    expect(screen.getByText(/add a younger child to their household/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /request an account/i })).not.toBeInTheDocument();
     expect(onSubmit).not.toHaveBeenCalled();
   });

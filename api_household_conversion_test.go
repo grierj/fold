@@ -31,7 +31,7 @@ func acceptConversion(t *testing.T, app *App, token string, status int) *apiClie
 	t.Helper()
 	anon := newAPIClient(t, app)
 	anon.fetchCSRF()
-	apiDo(t, anon, "POST", "/api/v1/invitations/accept", map[string]any{"token": token, "password": "password1234"}, status)
+	apiDo(t, anon, "POST", "/api/v1/invitations/accept", map[string]any{"ageBand": "adult", "token": token, "password": "password1234"}, status)
 	return anon
 }
 
@@ -286,7 +286,7 @@ func TestTeenHouseholdConversionRefused(t *testing.T) {
 	checkRefusal(apiDo(t, c, "POST", conversionPath(teen.ID)+"/resend", nil, http.StatusConflict))
 	anon := newAPIClient(t, app)
 	anon.fetchCSRF()
-	checkRefusal(apiDo(t, anon, "POST", "/api/v1/invitations/accept", map[string]any{"token": raw, "password": "password1234"}, http.StatusConflict))
+	checkRefusal(apiDo(t, anon, "POST", "/api/v1/invitations/accept", map[string]any{"ageBand": "adult", "token": raw, "password": "password1234"}, http.StatusConflict))
 	apiDo(t, anon, "GET", "/api/v1/auth/me", nil, http.StatusUnauthorized)
 	var afterPerson models.HouseholdPerson
 	var afterRegs []models.Registration
@@ -405,7 +405,7 @@ func TestHouseholdConversionConcurrentDoubleAccept(t *testing.T) {
 		wg.Add(1)
 		go func(i int, c *apiClient) {
 			defer wg.Done()
-			codes[i] = c.do("POST", "/api/v1/invitations/accept", map[string]any{"token": token, "password": "password1234"}, true).Code
+			codes[i] = c.do("POST", "/api/v1/invitations/accept", map[string]any{"ageBand": "adult", "token": token, "password": "password1234"}, true).Code
 		}(i, client)
 	}
 	wg.Wait()
@@ -571,7 +571,7 @@ func TestHouseholdConversionCompetesWithHouseholdMutations(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				codes[0] = anon.do("POST", "/api/v1/invitations/accept", map[string]any{"token": token, "password": "password1234"}, true).Code
+				codes[0] = anon.do("POST", "/api/v1/invitations/accept", map[string]any{"ageBand": "adult", "token": token, "password": "password1234"}, true).Code
 			}()
 			go func() {
 				defer wg.Done()

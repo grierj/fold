@@ -285,9 +285,11 @@ func (a *App) apiGetInvitation(c *gin.Context) {
 // (409) without consuming the token, so it can be retried.
 func (a *App) apiAcceptInvitation(c *gin.Context) {
 	var body struct {
-		Token    string `json:"token"`
-		Name     string `json:"name"`
-		Password string `json:"password"`
+		Token     string `json:"token"`
+		Name      string `json:"name"`
+		Password  string `json:"password"`
+		AgeBand   string `json:"ageBand"`
+		BirthDate string `json:"birthDate"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Token == "" || body.Password == "" {
 		jsonError(c, http.StatusBadRequest, "token, name, and password are required")
@@ -304,6 +306,10 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 	}
 	if initial.HouseholdPersonID != nil {
 		a.acceptHouseholdConversion(c, body.Token, body.Password, initial)
+		return
+	}
+	kind, birth, ok := a.classifyAccountInput(c, body.AgeBand, body.BirthDate)
+	if !ok {
 		return
 	}
 	name := strings.TrimSpace(body.Name)
@@ -358,6 +364,10 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			u = existing
 			u.Name = name
 			u.Status = models.UserActive
+		}
+		u.AccountType, u.BirthDate = kind, birth
+		if kind == models.AccountTeen {
+			u.Status = models.UserPendingConsent
 		}
 		if err := u.SetPassword(body.Password); err != nil {
 			return err
@@ -431,7 +441,7 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not accept invitation")
 		return
 	}
-	if fresh.CanSignIn() {
+	if fresh.CanAuthenticate() {
 		if err := a.signInSession(c, &fresh); err != nil {
 			jsonError(c, http.StatusInternalServerError, "session error")
 			return

@@ -495,7 +495,11 @@ func (a *App) handleSetup(c *gin.Context) {
 		return
 	}
 
-	admin := models.User{Email: email, Name: name, Role: models.RoleAdmin, Status: models.UserActive}
+	if c.PostForm("age_band") != "adult" {
+		fail("The first administrator must confirm they are 18 or older.")
+		return
+	}
+	admin := models.User{AccountType: models.AccountAdult, Email: email, Name: name, Role: models.RoleAdmin, Status: models.UserActive}
 	err := admin.SetPassword(password)
 	if err == nil {
 		err = a.DB.Create(&admin).Error

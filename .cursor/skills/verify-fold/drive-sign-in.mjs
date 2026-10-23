@@ -29,6 +29,7 @@ try {
   await page.locator("[name=email]").fill(email);
   await page.locator("[name=password]").fill(password);
   await page.locator("[name=password_confirm]").fill(password);
+  await page.locator("[name=age_band]").check();
   await page.getByRole("button", { name: "Create site" }).click();
   await page.waitForURL((u) => u.pathname === "/login");
   await page.getByRole("heading", { name: "Log in to Fold" }).waitFor();
