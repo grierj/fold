@@ -404,8 +404,20 @@ func TestAgeRolloverUnavailableStageDoesNotBlockOtherBirthdays(t *testing.T) {
 	now := setStagedBirthdayToday(t, app, f)
 	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.holder.ID), map[string]string{"status": "disabled"}, 200)
 	other := rolloverTeenUser(t, app, "later-birthday", now.AddDate(-18, 0, 0).Format("2006-01-02"), models.UserActive, false, true)
+	var adminUser models.User
+	app.DB.Where("email = ?", "admin@example.com").First(&adminUser)
+	var stagePerson models.HouseholdPerson
+	app.DB.First(&stagePerson, f.person.ID)
+	childBirth := now.AddDate(-13, 0, 0)
+	child := models.HouseholdPerson{HouseholdID: stagePerson.HouseholdID, FirstName: "Later child birthday", Kind: models.HouseholdChild, BirthDate: &childBirth, CreatedBy: adminUser.ID}
+	if err := app.DB.Create(&child).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Create(&models.GuardianLink{GuardianUserID: adminUser.ID, PersonID: &child.ID, Status: models.GuardianConfirmed}).Error; err != nil {
+		t.Fatal(err)
+	}
 	n, err := app.rolloverAges(now)
-	if n != 1 || err == nil || !strings.Contains(err.Error(), fmt.Sprintf("user %d:", f.user.ID)) {
+	if n != 2 || err == nil || !strings.Contains(err.Error(), fmt.Sprintf("user %d:", f.user.ID)) {
 		t.Fatalf("isolated blocked stage: %d %v", n, err)
 	}
 	f.unchanged(t, app)
@@ -430,6 +442,11 @@ func TestAgeRolloverUnavailableStageDoesNotBlockOtherBirthdays(t *testing.T) {
 	if other.AccountType != models.AccountAdult {
 		t.Fatal("blocked stage starved later birthday")
 	}
+	var childNotices int64
+	app.DB.Model(&models.Notification{}).Where("kind = ? AND subject_id = ?", notify.HouseholdChildTurned13, child.ID).Count(&childNotices)
+	if childNotices != 1 {
+		t.Fatal("blocked stage starved child birthday notice")
+	}
 	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.holder.ID), map[string]string{"status": "active"}, 200)
 	if n, err := app.rolloverAges(now); err != nil || n != 1 {
 		t.Fatalf("retry birthday %d %v", n, err)
@@ -446,6 +463,9 @@ func TestAgeRolloverUnavailableStageDoesNotBlockOtherBirthdays(t *testing.T) {
 
 func TestAgeRolloverClosesOnlyPendingGuardianTasks(t *testing.T) {
 	app, _, teen, confirmed, _, _ := guardianEmailSetup(t)
+	if err := app.DB.First(confirmed, confirmed.ID).Error; err != nil {
+		t.Fatal(err)
+	}
 	admin := loginAPI(t, app, "admin", "pw")
 	other := newTestUser(t, app, "another-guardian", "pw", models.RoleMember)
 	claimant := loginAPI(t, app, "another-guardian", "pw")
