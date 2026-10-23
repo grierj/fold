@@ -759,9 +759,6 @@ func (a *App) toHouseholdPersonJSON(person *models.HouseholdPerson, links []mode
 		return householdPersonJSON{}, err
 	}
 	blocked := ""
-	if person.Kind == models.HouseholdTeen {
-		blocked = "teen"
-	}
 	return householdPersonJSON{
 		ConvertBlocked:          blocked,
 		CanConvert:              canConvert,
@@ -796,7 +793,7 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 			rel = householdRelOf(acct, true)
 		}
 	}
-	batch, err := a.loadConversionBatchFor(a.DB, viewer, rel, ids)
+	batch, err := a.loadConversionBatchFor(a.DB, viewer, rel, ids, links)
 	if err != nil {
 		return out, err
 	}
@@ -810,11 +807,15 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 	}
 	if len(ids) > 0 {
 		var requests []models.AccountRequest
-		if err := a.DB.Where("household_person_id IN ? AND source = ? AND status = ?", ids, models.RequestHouseholdConversion, models.RequestPending).Find(&requests).Error; err != nil {
+		if err := a.DB.Where("household_person_id IN ? AND source = ? AND (status = ? OR (status = ? AND approved_user_id IS NOT NULL))", ids, models.RequestHouseholdConversion, models.RequestPending, models.RequestApproved).Find(&requests).Error; err != nil {
 			return out, err
 		}
 		for _, req := range requests {
-			conversions[*req.HouseholdPersonID] = conversionJSON{Email: req.Email, ExpiresAt: req.ExpiresAt, State: "awaiting_approval"}
+			state := "awaiting_approval"
+			if req.Status == models.RequestApproved {
+				state = "awaiting_consent"
+			}
+			conversions[*req.HouseholdPersonID] = conversionJSON{Email: req.Email, ExpiresAt: req.ExpiresAt, State: state}
 		}
 	}
 	for i := range people {
@@ -1246,6 +1247,13 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 			(body.Kind != nil && newKind != person.Kind) ||
 			(body.BirthDate != nil && strings.TrimSpace(*body.BirthDate) != formatBirthDate(person.BirthDate))
 		if material {
+			staged, err := approvedConversionForPerson(tx, person.ID)
+			if err != nil {
+				return err
+			}
+			if staged {
+				return errConversionConsent
+			}
 			if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil {
 				return err
 			}
@@ -1309,6 +1317,10 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.HouseholdPersonUpdated, TargetType: "household", TargetID: person.HouseholdID, Meta: map[string]any{"personId": person.ID, "fields": fields}, IP: c.ClientIP()})
 	})
 	if err != nil {
+		if errors.Is(err, errConversionConsent) {
+			conversionError(c, err)
+			return
+		}
 		registrationError(c, err)
 		return
 	}
@@ -1351,6 +1363,13 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		if person.ConvertedUserID != nil {
 			return errConversionUnavailable
 		}
+		staged, err := approvedConversionForPerson(tx, person.ID)
+		if err != nil {
+			return err
+		}
+		if staged {
+			return errConversionConsent
+		}
 		if err := revokePersonConversion(tx, person.ID, me.ID, c.ClientIP()); err != nil {
 			return err
 		}
@@ -1370,7 +1389,7 @@ func (a *App) apiDeleteHouseholdPerson(c *gin.Context) {
 		return tx.Delete(person).Error
 	})
 	if err != nil {
-		if errors.Is(err, errConversionUnavailable) {
+		if errors.Is(err, errConversionUnavailable) || errors.Is(err, errConversionConsent) {
 			conversionError(c, err)
 			return
 		}

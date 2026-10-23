@@ -177,10 +177,10 @@ it("shows pending destination, resend and cancellation without editing it", asyn
   expect(cancel).toHaveBeenCalledWith(5);
 });
 
-it("explains why a teen cannot convert and hides the account button", async () => {
-  mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], kind: "teen", canConvert: false, convertBlocked: "teen" }] } });
+it("keeps the account button hidden until a household teen is eligible", async () => {
+  mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], kind: "teen", canConvert: false, linkStatus: "pending" }] } });
   render(<HouseholdCard />);
-  expect(await screen.findByText("Teens can get their own account once parent consent is available.")).toBeInTheDocument();
+  expect(await screen.findByText("Waiting for an admin to check")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Create their own account" })).not.toBeInTheDocument();
 });
 
@@ -192,4 +192,27 @@ it("explains why a teen cannot convert and hides the account button", async () =
   expect(screen.getByRole("button", { name: "Edit Kid Smith" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /Resend/ })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Create their own account" })).not.toBeInTheDocument();
+});
+
+
+it("offers a confirmed teen an invitation with the consent and guardian checks explained", async () => {
+  mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], kind: "teen", birthDate: "2011-05-01", linkStatus: "confirmed", canConvert: true }] } });
+  render(<HouseholdCard />);
+  await userEvent.click(await screen.findByRole("button", { name: "Create their own account" }));
+  expect(screen.getByText(/consent is granted, and an admin confirms the new guardian link/)).toBeInTheDocument();
+  expect(screen.getByText(/Your household keeps managing their sign-ups until all checks are complete/)).toBeInTheDocument();
+});
+
+it("keeps care and photo controls available while a staged teen's identity is fixed", async () => {
+  mine.mockResolvedValue({ household: { ...household, people: [{ ...household.people[0], kind: "teen", birthDate: "2011-05-01", linkStatus: "confirmed", canConvert: false, conversion: { email: "teen@example.com", expiresAt: "2026-12-01T12:00:00Z", state: "awaiting_consent" } }] } });
+  render(<HouseholdCard />);
+  expect(await screen.findByText("Account waiting for consent and guardian confirmation")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Resend invitation" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Remove Kid Smith" })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Edit Kid Smith" }));
+  expect(screen.getByLabelText("First name")).toHaveAttribute("readonly");
+  expect(screen.getByLabelText("Birth date")).toHaveAttribute("readonly");
+  expect(screen.getByRole("radio", { name: "Teen" })).toBeDisabled();
+  expect(screen.getByLabelText(/^Care notes/)).toBeEnabled();
+  expect(screen.getByRole("checkbox", { name: "OK to appear in church photos" })).toBeEnabled();
 });

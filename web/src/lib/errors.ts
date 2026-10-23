@@ -11,7 +11,6 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
-  invalid_guardian_email: "Enter a parent or guardian's email address, different from your own.",
   consent_existing_account: "This email already has an account. Approve without granting consent, then review the account in Users.",
   consent_teen_only: "This account is no longer a teen account. Refresh the user list.",
   consent_evidence_required: "Record how you received consent before granting it.",
@@ -19,11 +18,12 @@ export const ERROR_COPY = {
   consent_evidence_long: "Keep the consent evidence to 1,000 characters or fewer.",
   teen_avatar: "Teen accounts do not have a public profile picture. You can still update your name and other profile details.",
   consent_required: "Your account is waiting for a parent or guardian's consent. Sign in to see the next steps.",
+  invalid_guardian_email: "Enter a parent or guardian's email address, different from your own.",
   household_conversion_details: "This person's details changed after they accepted. Reject this request and ask the household to send a new invitation.",
-  household_conversion_adult: "This person no longer meets the adult account rules. Check their birth date and account type. Reject this request before asking for a new invitation.",
+  household_conversion_adult: "This person no longer meets the account age and guardian rules. Check their birth date, account type, and guardian link. Reject this request before asking for a new invitation.",
   household_conversion_inviter: "The person who sent the invitation can no longer manage this household. Reject this request and ask an active household adult or admin to send a new invitation.",
   household_conversion_retry: "This household changed while you were approving the account. Try approving it again.",
-  household_conversion_teen: "Teens can get their own account once parent consent is available.",
+  household_conversion_consent: "This account is waiting for consent and guardian confirmation. You can still manage sign-ups, care notes, and photo settings. Ask your church office for help with identity changes or removal.",
   household_conversion_unavailable: "This person can't create an account yet. Check their birth date and account type, or ask your church office for help.",
   household_conversion_email: "That email isn't available. Use a different email address.",
   household_conversion_person: "This household person was removed or already has an account. Reject this request; their household can ask for help if needed.",

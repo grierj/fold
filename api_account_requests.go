@@ -196,6 +196,7 @@ func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (
 			return validatedRequest{}, false
 		}
 	}
+
 	return validatedRequest{
 		guardianEmail: guardianEmail,
 		name:          name, email: email, phone: phone, message: message,
@@ -457,7 +458,32 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	var mailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var consentActor *models.User
-		if consentEvidence != nil {
+		var conversionLocked map[uint]*models.User
+		if approve && req.Source == models.RequestHouseholdConversion && req.HouseholdPersonID != nil && req.InvitationID != nil {
+			var person models.HouseholdPerson
+			var inv models.Invitation
+			if err := tx.First(&person, *req.HouseholdPersonID).Error; err != nil {
+				return errConversionPerson
+			}
+			if err := tx.First(&inv, *req.InvitationID).Error; err != nil {
+				return errConversionUnavailable
+			}
+			var err error
+			conversionLocked, _, err = lockConversionParticipants(tx, &inv, &person, me.ID)
+			if err != nil {
+				return err
+			}
+			actor := conversionLocked[me.ID]
+			if actor == nil || !policy.IsAdmin(asPerson(actor)) || actor.Status != models.UserActive || actor.SessionVersion != me.SessionVersion {
+				return errConsentForbidden
+			}
+		}
+		if consentEvidence != nil && req.AccountType != models.AccountTeen {
+			return errConsentTeen
+		}
+		if consentEvidence != nil && conversionLocked != nil {
+			consentActor = conversionLocked[me.ID]
+		} else if consentEvidence != nil {
 			if req.AccountType != models.AccountTeen {
 				return errConsentTeen
 			}
@@ -506,7 +532,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 		meta := map[string]any{"accountType": req.AccountType}
 		if approve && req.Source == models.RequestHouseholdConversion {
 			var err error
-			userID, err = a.approveHouseholdConversion(tx, c, req, &mailed)
+			userID, err = a.approveHouseholdConversion(tx, c, req, conversionLocked, &mailed)
 			if err != nil {
 				return err
 			}
@@ -851,12 +877,16 @@ After that you can sign in with this email address.`, a.siteName(), link, extra)
 }
 
 func (a *App) sendConversionApprovedEmail(req *models.AccountRequest) error {
+	extra := ""
+	if req.AccountType == models.AccountTeen {
+		extra = "\n\nYour account is waiting for consent and a fresh guardian-link check. You can sign in to check its status. Your household keeps managing your sign-ups until those checks are complete."
+	}
 	return a.Mailer.Send(context.Background(), foldmail.Message{
 		To:      req.Email,
 		Subject: fmt.Sprintf("Your %s account is approved", a.siteName()),
 		Text: fmt.Sprintf(`Good news — your account at %s is approved.
 
-You can now sign in at %s/login with this email address and the password you chose.`, a.siteName(), a.emailBaseURL()),
+You can now sign in at %s/login with this email address and the password you chose.%s`, a.siteName(), a.emailBaseURL(), extra),
 	})
 }
 

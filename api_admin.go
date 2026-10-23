@@ -231,15 +231,15 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 	}
 	errHandled := errors.New("already handled")
 	errSelfConfirm := errors.New("another admin must confirm your own guardian link")
+	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if link.TeenUserID != nil {
-			var users []models.User
-			if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id IN ?", []uint{me.ID, link.GuardianUserID, *link.TeenUserID}).Order("id").Find(&users).Error; err != nil {
+			users, err := lockTeenLifecycleUsers(tx, *link.TeenUserID, me.ID, link.GuardianUserID)
+			if err != nil {
 				return err
 			}
 			var validAdmin, validGuardian, validTeen bool
-			for i := range users {
-				u := &users[i]
+			for _, u := range users {
 				if u.ID == me.ID {
 					validAdmin = policy.CanConfirmGuardianLink(asPerson(u)) && u.Status == models.UserActive && u.SessionVersion == me.SessionVersion
 				}
@@ -304,6 +304,15 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		if link.TeenUserID != nil {
 			meta["teenUserId"] = *link.TeenUserID
 		}
+		if confirm && link.TeenUserID != nil {
+			var teen models.User
+			if err := tx.First(&teen, *link.TeenUserID).Error; err != nil {
+				return err
+			}
+			if err := a.completeTeenConversionIfReady(tx, &teen, a.householdClock(time.Now().UTC()), c.ClientIP(), &emailed); err != nil {
+				return err
+			}
+		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction,
 			TargetType: "guardian_link", TargetID: link.ID, Meta: meta, IP: c.ClientIP()})
 	})
@@ -315,10 +324,15 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		jsonError(c, http.StatusForbidden, err.Error())
 		return
 	}
+	if errors.Is(err, errConversionRetry) || errors.Is(err, errConversionHolder) || errors.Is(err, errConversionDetails) {
+		conversionError(c, err)
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not decide that link")
 		return
 	}
+	a.deliverNotificationEmails(emailed)
 	var fresh models.GuardianLink
 	a.DB.First(&fresh, link.ID)
 	if confirm && fresh.TeenUserID != nil {
@@ -634,7 +648,10 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 					return err
 				}
 			}
-			return tx.Model(u).Updates(updates).Error
+			if err := tx.Model(u).Updates(updates).Error; err != nil {
+				return err
+			}
+			return a.completeTeenConversionIfReady(tx, u, a.householdClock(time.Now().UTC()), c.ClientIP(), &emailed)
 		})
 		if needSuccessors(c, err) {
 			return
@@ -642,6 +659,10 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 		if err != nil {
 			if errors.Is(err, errTeenActivation) {
 				jsonError(c, http.StatusBadRequest, err.Error())
+				return
+			}
+			if errors.Is(err, errConversionRetry) || errors.Is(err, errConversionHolder) || errors.Is(err, errConversionDetails) {
+				conversionError(c, err)
 				return
 			}
 			if errors.Is(err, errConsentForbidden) || errors.Is(err, errConsentTeen) {

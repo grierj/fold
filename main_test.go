@@ -187,7 +187,7 @@ func TestMemberHelpIsEmbedded(t *testing.T) {
 	if err != nil || !bytes.Equal(source, w.Body.Bytes()) {
 		t.Fatalf("help differs from canonical document: %v", err)
 	}
-	if !strings.Contains(w.Body.String(), "My household") || !strings.Contains(w.Body.String(), "Teens can get their own account once parent consent is available.") {
+	if !strings.Contains(w.Body.String(), "My household") || !strings.Contains(w.Body.String(), "a newly confirmed guardian link") {
 		t.Fatal("missing member guidance")
 	}
 }
