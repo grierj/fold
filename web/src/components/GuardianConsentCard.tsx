@@ -4,6 +4,7 @@ import type { GuardianTeen } from "../types";
 import { errorText } from "../lib/errors";
 import { Button } from "./ui/Button";
 import { Field, FormError, Input, Select } from "./ui/Field";
+import { ErrorNotice } from "./ErrorNotice";
 
 function TeenConsentControls({ teen, onChanged }: { teen: GuardianTeen; onChanged: () => Promise<void> }) {
   const [scope, setScope] = useState<GuardianConsentScope>("account");
@@ -47,8 +48,8 @@ function TeenConsentControls({ teen, onChanged }: { teen: GuardianTeen; onChange
     {error && <FormError layout="mt-2">{error}</FormError>}
     {message && <p role="status" className="text-sm mt-2">{message}</p>}
     <div className="flex flex-wrap gap-3 mt-3">
-      {granted ? <Button key="revoke" variant="danger-outline" disabled={busy} onClick={() => change("revoked")}>Revoke consent</Button> : <Button key="grant" variant="primary" disabled={busy} onClick={() => change("granted")}>Grant consent</Button>}
-      {scope === "account" && <Button variant="secondary" disabled={busy} onClick={email}>Email me a consent link</Button>}
+      {granted ? <Button key="revoke" variant="danger-outline" layout="w-full sm:w-auto" disabled={busy} onClick={() => change("revoked")}>Revoke consent</Button> : <Button key="grant" variant="primary" layout="w-full sm:w-auto" disabled={busy} onClick={() => change("granted")}>Grant consent</Button>}
+      {scope === "account" && <Button variant="secondary" layout="w-full sm:w-auto" disabled={busy} onClick={email}>Email me a consent link</Button>}
     </div>
   </div>;
 }
@@ -59,9 +60,11 @@ export function GuardianConsentCard() {
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState(false);
-  async function load() { setTeens((await Guardians.teens()).teens); }
-  useEffect(() => { load().catch((e: unknown) => setError(errorText(e))).finally(() => setLoaded(true)); }, []);
+  async function load() { setTeens((await Guardians.teens()).teens); setLoaded(true); }
+  useEffect(() => { load().catch((e: unknown) => setLoadError(errorText(e))); }, []);
+  function retry() { setLoadError(""); void load().catch((e: unknown) => setLoadError(errorText(e))); }
 
   async function claim(e: React.FormEvent) {
     e.preventDefault();
@@ -75,15 +78,16 @@ export function GuardianConsentCard() {
   return <section className="bg-surface rounded-lg border border-border p-6 mb-6" aria-label="Teen consent">
     <h2 className="text-xl font-bold">Teen consent</h2>
     <p className="text-sm text-text-muted mt-2">You can manage consent after an admin confirms your guardian link.</p>
+    {!loaded && loadError && <ErrorNotice message={loadError} onRetry={retry} />}
     {error && <FormError layout="mt-3">{error}</FormError>}
-    {!loaded && <p className="text-sm mt-3">Loading your guardian links…</p>}
+    {!loaded && !loadError && <p className="text-sm mt-3">Loading your guardian links…</p>}
     {teens.map((teen) => <TeenConsentControls key={teen.linkId} teen={teen} onChanged={load} />)}
     <form onSubmit={claim} className="border-t border-border pt-4 mt-4 space-y-3">
       <h3 className="font-semibold">Request a guardian link</h3>
       <Field id="guardian-claim-email" label="Teen's email" hint="Use the email on their Fold account. An admin checks every request before you can give consent.">
         <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={254} required />
       </Field>
-      <Button variant="secondary" type="submit" disabled={busy}>{busy ? "Sending…" : "Request guardian link"}</Button>
+      <Button variant="secondary" layout="w-full sm:w-auto" type="submit" disabled={busy}>{busy ? "Sending…" : "Request guardian link"}</Button>
       {message && <p role="status" className="text-sm">{message}</p>}
     </form>
   </section>;
