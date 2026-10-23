@@ -30,11 +30,30 @@ func TestSetupWizardCreatesAdmin(t *testing.T) {
 	}
 
 	form := url.Values{
-		"csrf_token": {m[1]},
-		"site_name":  {"Fold Test"}, "timezone": {"America/Denver"},
+		"csrf_token": {m[1]}, "age_band": {"adult"},
+		"site_name": {"Fold Test"}, "timezone": {"America/Denver"},
 		"name": {"Root"}, "email": {"Root@Example.com"},
 		"password": {"pw12345678"}, "password_confirm": {"pw12345678"},
 	}
+	for _, band := range []string{"", "teen", "under13"} {
+		form.Set("age_band", band)
+		rejected := httptest.NewRecorder()
+		request := httptest.NewRequest("POST", "/setup", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for _, cookie := range getW.Result().Cookies() {
+			request.AddCookie(cookie)
+		}
+		r.ServeHTTP(rejected, request)
+		if rejected.Code != http.StatusBadRequest {
+			t.Fatalf("setup age %q: %d", band, rejected.Code)
+		}
+		var stored int64
+		app.DB.Model(&models.User{}).Count(&stored)
+		if stored != 0 {
+			t.Fatal("setup stored a non-adult account")
+		}
+	}
+	form.Set("age_band", "adult")
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/setup", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

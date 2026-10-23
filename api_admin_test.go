@@ -23,7 +23,7 @@ func TestAdminUserCRUD(t *testing.T) {
 	}
 
 	// Create.
-	w = admin.do("POST", "/api/v1/admin/users", map[string]string{
+	w = admin.do("POST", "/api/v1/admin/users", map[string]string{"ageBand": "adult",
 		"email": "Newbie@Example.com", "name": "Newbie", "password": "password1234", "role": "member",
 		"displayName": "Newbie",
 	}, true)
@@ -39,7 +39,7 @@ func TestAdminUserCRUD(t *testing.T) {
 	}
 
 	// Duplicate email (any case) conflicts.
-	w = admin.do("POST", "/api/v1/admin/users", map[string]string{
+	w = admin.do("POST", "/api/v1/admin/users", map[string]string{"ageBand": "adult",
 		"email": "NEWBIE@example.com", "name": "Again", "password": "password1234",
 	}, true)
 	if w.Code != http.StatusConflict {
@@ -47,7 +47,7 @@ func TestAdminUserCRUD(t *testing.T) {
 	}
 
 	// Short password rejected.
-	w = admin.do("POST", "/api/v1/admin/users", map[string]string{
+	w = admin.do("POST", "/api/v1/admin/users", map[string]string{"ageBand": "adult",
 		"email": "shorty@example.com", "name": "Shorty", "password": "short",
 	}, true)
 	if w.Code != http.StatusBadRequest {
@@ -542,8 +542,12 @@ func TestAdminEditCannotBypassTeenConsent(t *testing.T) {
 	if u := reload(); u.Status != models.UserPendingConsent {
 		t.Fatalf("re-enabled teen: %s, want pending_consent", u.Status)
 	}
-	if code, _ := tryLogin(t, app, "", teen.Email, "password1234"); code == http.StatusOK {
-		t.Fatal("teen waiting for consent signed in")
+	if code, _ := tryLogin(t, app, "", teen.Email, "password1234"); code != http.StatusOK {
+		t.Fatalf("teen restricted sign-in: %d", code)
+	}
+	pending := loginAPI(t, app, teen.Email, "password1234")
+	if w := pending.do("GET", "/api/v1/groups", nil, false); w.Code != http.StatusForbidden {
+		t.Fatalf("pending teen got ordinary access: %d", w.Code)
 	}
 
 	// An adult member can still be promoted and re-enabled as before.

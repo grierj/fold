@@ -240,8 +240,8 @@ func TestTeenAccountTypeOnlyForLeadersAndAdmins(t *testing.T) {
 	f := newSubjectFacts(time.Now())
 	f.users[teen.ID] = &teen
 	row := models.Registration{ID: 5, UserID: &teen.ID, Status: models.RegGoing}
-	if dto := f.attendee(row, models.EventOccurrence{}, &member, false, false, time.Now()); dto == nil || dto.AccountType != "" {
-		t.Fatalf("ordinary attendee got the badge: %+v", dto)
+	if dto := f.attendee(row, models.EventOccurrence{}, &member, false, false, time.Now()); dto != nil {
+		t.Fatalf("ordinary attendee got the minor identity: %+v", dto)
 	}
 	if dto := f.attendee(row, models.EventOccurrence{}, &member, true, false, time.Now()); dto == nil || dto.AccountType != models.AccountTeen {
 		t.Fatal("leader lost the badge")

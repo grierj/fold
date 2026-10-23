@@ -195,7 +195,7 @@ export function ProfilePage() {
         </Link>
       )}
 
-      <div className="bg-surface rounded-lg border border-border p-6 mb-6">
+      {user.accountType !== "teen" && <div className="bg-surface rounded-lg border border-border p-6 mb-6">
         <ImageUpload
           key={user.avatarUrl || "none"}
           label="Profile picture"
@@ -216,7 +216,7 @@ export function ProfilePage() {
             Remove picture
           </Button>
         )}
-      </div>
+      </div>}
 
       <form onSubmit={save} className="space-y-6">
         {error && <FormError>{error}</FormError>}

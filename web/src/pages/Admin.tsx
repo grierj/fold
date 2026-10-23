@@ -1,9 +1,11 @@
+import { Badge } from "../components/ui/Badge";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
-import type { AccountRequest, GuardianLink, GroupSummary, Member, User } from "../types";
+import { AccountAgeFields } from "../components/AccountAgeFields";
+import type { AgeBand, AccountRequest, GuardianLink, GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
@@ -402,6 +404,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
             />
             <div className="grow min-w-0">
               <span className="font-medium">{m.name}</span>{" "}
+              {m.accountType === "teen" && <Badge>Teen</Badge>}
               {m.admin && (
                 <span className="mr-1 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
                   Admin
@@ -428,7 +431,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
             <option value="">Select…</option>
             {candidates.map((u) => (
               <option key={u.id} value={u.id}>
-                {u.displayName || u.name} ({u.email})
+                {u.displayName || u.name}{u.accountType === "teen" ? " (Teen)" : ""} ({u.email})
               </option>
             ))}
           </Select>
@@ -577,6 +580,8 @@ function UserForm({
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ageBand, setAgeBand] = useState<AgeBand>("adult");
+  const [birthDate, setBirthDate] = useState("");
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
@@ -586,7 +591,8 @@ function UserForm({
     setError(null);
     try {
       if (creating) {
-        await AdminUsers.create({ ...form, password: form.password || undefined });
+        if (ageBand === "under13") return;
+        await AdminUsers.create({ ...form, ageBand, birthDate: ageBand === "teen" ? birthDate : undefined, password: form.password || undefined });
       } else if (initial) {
         const { password: _password, ...rest } = form;
         await AdminUsers.update(initial.id, rest);
@@ -614,7 +620,7 @@ function UserForm({
         </Field>
         <Choices legend="Role">
           <Radio name="admin-user-role" label="Member" value="member" checked={form.role === "member"} onChange={set("role")} />
-          <Radio name="admin-user-role" label="Admin" value="admin" checked={form.role === "admin"} onChange={set("role")} />
+          <Radio name="admin-user-role" label="Admin" value="admin" checked={form.role === "admin"} onChange={set("role")} disabled={initial?.accountType === "teen" || (creating && ageBand === "teen")} />
         </Choices>
         {creating && (
           <div className="sm:col-span-2">
@@ -638,8 +644,9 @@ function UserForm({
           <Input type="tel" value={form.phone} onChange={set("phone")} maxLength={30} />
         </Field>
       </div>
+      {creating && <AccountAgeFields id="admin-user" label="Their age" ageBand={ageBand} birthDate={birthDate} onAgeBand={(band) => { setAgeBand(band); if (band === "teen") setForm((value) => ({ ...value, role: "member" })); }} onBirthDate={setBirthDate} />}
       <FormActions>
-        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
+        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy || (creating && ageBand === "under13")}>
           {busy ? "Saving…" : creating ? "Create user" : "Save user"}
         </Button>
         <Button variant="secondary" layout="w-full sm:w-auto" onClick={onCancel}>

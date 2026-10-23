@@ -386,7 +386,7 @@ func (f *subjectFacts) attendee(r models.Registration, o models.EventOccurrence,
 		out.ChildcareAgesNote = &r.ChildcareAgesNote
 	}
 	if r.HouseholdPersonID == nil {
-		if holder.Status == models.UserPendingConsent && holder.AccountType == models.AccountTeen {
+		if holder.AccountType == models.AccountTeen {
 			viewerAccount, viewerFound := models.HouseholdAccount{}, false
 			if me != nil {
 				viewerAccount, viewerFound = f.accounts[me.ID]

@@ -25,13 +25,14 @@ setup("first-run setup and seed data", async ({ page, request }) => {
   await page.locator("[name=email]").fill(email("grier"));
   await page.locator("[name=password]").fill(PASSWORD);
   await page.locator("[name=password_confirm]").fill(PASSWORD);
+  await page.locator("[name=age_band]").check();
   await page.getByRole("button").click();
   await expect(page).not.toHaveURL(/\/setup/);
 
   const admin = await apiAs(request, "grier");
   const ids: Record<string, number> = {};
   for (const [name, full] of [["lee", "Lee Leader"], ["sam", "Sam Member"], ["pat", "Pat Returner"], ["quinn", "Quinn Returner"]]) {
-    const { user } = await admin("POST", "/admin/users", { email: email(name), name: full, password: PASSWORD, role: "member" });
+    const { user } = await admin("POST", "/admin/users", { ageBand: "adult", email: email(name), name: full, password: PASSWORD, role: "member" });
     ids[name] = user.id;
   }
   const { group } = await admin("POST", "/groups", {
@@ -56,7 +57,7 @@ setup("first-run setup and seed data", async ({ page, request }) => {
     await admin("POST", `/admin/groups/${g.id}/members`, { userId: ids.sam, role: "member" });
   }
   // Dedicated household fixtures leave the existing account-only flows intact.
-  await admin("POST", "/admin/users", { name: "Household Parent", email: email("household-parent"), password: PASSWORD, role: "member" });
+  await admin("POST", "/admin/users", { ageBand: "adult", name: "Household Parent", email: email("household-parent"), password: PASSWORD, role: "member" });
   const parent = await apiAs(request, "household-parent");
   const { person: mary } = await parent("POST", "/me/household/people", { firstName: "Mary", kind: "adult", birthDate: "1990-01-01" });
   const { person: kit } = await parent("POST", "/me/household/people", { firstName: "Kit", kind: "child", birthDate: "2020-05-01", careNotes: "Allergy: follow the care plan.\n" + "LongCareNote".repeat(120) });

@@ -559,7 +559,7 @@ func TestGuestInvitationUpgradeAndNoMembership(t *testing.T) {
 	token := tokenInEmail(t, latestEmail(t, app, "gail@example.com"))
 	fresh := anonClient(t, app, "10.4.6.2")
 	w = fresh.do("POST", "/api/v1/invitations/accept",
-		map[string]string{"token": token, "name": "Gail Guest", "password": "longenoughpassword"}, true)
+		map[string]string{"ageBand": "adult", "token": token, "name": "Gail Guest", "password": "longenoughpassword"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("accept invitation: %d %s", w.Code, w.Body.String())
 	}

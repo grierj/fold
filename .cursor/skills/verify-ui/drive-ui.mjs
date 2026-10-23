@@ -55,6 +55,7 @@ if (new URL(seedPage.url()).pathname === "/setup") {
   await seedPage.locator("[name=email]").fill(people.admin[0]);
   await seedPage.locator("[name=password]").fill(PASSWORD);
   await seedPage.locator("[name=password_confirm]").fill(PASSWORD);
+  await seedPage.locator("[name=age_band]").check();
   await seedPage.getByRole("button", { name: "Create site" }).click();
   await seedPage.waitForURL((u) => u.pathname === "/login");
 }
@@ -65,7 +66,7 @@ await signIn(seedPage, "admin");
   if (!group) {
     const ids = {};
     for (const who of ["leader", "member"]) {
-      ids[who] = (await api(seedPage, "POST", "/admin/users", { email: people[who][0], name: people[who][1], password: PASSWORD, role: "member" })).user.id;
+      ids[who] = (await api(seedPage, "POST", "/admin/users", { ageBand: "adult", email: people[who][0], name: people[who][1], password: PASSWORD, role: "member" })).user.id;
     }
     group = (await api(seedPage, "POST", "/groups", { name: "Tuesday Bible Study", description: "Weekly study of Romans.", tags: ["bible-study", "adults"], imageUrl: "", location: "Fellowship Hall", visibility: "public", memberLimit: 12 })).group;
     await api(seedPage, "POST", `/admin/groups/${group.id}/members`, { userId: ids.leader, role: "leader" });

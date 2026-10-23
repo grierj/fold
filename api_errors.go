@@ -18,6 +18,8 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	"teen accounts cannot have a public profile picture":                                                                                      "teen_avatar",
+	"your account is waiting for consent":                                                                                                     "consent_required",
 	"this person's details changed after they accepted; ask the household to send a new invitation":                                           "household_conversion_details",
 	"this person no longer meets the adult account rules; check their birth date and account type before sending a new invitation":            "household_conversion_adult",
 	"the person who sent the invitation can no longer manage this household; ask an active household adult or admin to send a new invitation": "household_conversion_inviter",

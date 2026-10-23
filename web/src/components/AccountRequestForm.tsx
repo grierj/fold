@@ -2,7 +2,8 @@ import { useState } from "react";
 import { type AccountRequestInput } from "../api";
 import type { AgeBand } from "../types";
 import { errorText } from "../lib/errors";
-import { Choices, Field, FormError, Honeypot, Input, Radio, Textarea } from "./ui/Field";
+import { Field, FormError, Honeypot, Input, Textarea } from "./ui/Field";
+import { AccountAgeFields } from "./AccountAgeFields";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
 import { Illustration } from "./ui/Illustration";
@@ -38,6 +39,7 @@ export function AccountRequestForm({
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (ageBand === "under13") return;
     setBusy(true);
     setError(null);
     try {
@@ -76,23 +78,7 @@ export function AccountRequestForm({
       <Field id="arq-phone" label="Phone" optional>
         <Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={30} autoComplete="tel" />
       </Field>
-      <Choices legend={friend ? "Their age" : "Your age"}>
-        <Radio name="ageBand" label="18 or older" checked={ageBand === "adult"} onChange={() => setAgeBand("adult")} />
-        <Radio name="ageBand" label="13 to 17" checked={ageBand === "teen"} onChange={() => setAgeBand("teen")} />
-        <Radio name="ageBand" label="Under 13" checked={ageBand === "under13"} onChange={() => setAgeBand("under13")} />
-      </Choices>
-      {ageBand === "teen" && (
-        <Field id="arq-birth" label="Birth date" hint="Needed so Fold knows when you turn 18. A teen account also needs a parent or guardian’s consent before it can sign in.">
-          <Input type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required />
-        </Field>
-      )}
-      {ageBand === "under13" && (
-        <div className="rounded-md bg-warning-subtle border border-warning-border p-4 text-sm text-text-muted">
-          Fold accounts start at 13, so there is nothing to submit here. Ask a parent or
-          guardian to add you to their household instead — they can sign you up for events
-          there. If you are 13 to 17 and have your own email, pick “13 to 17” above.
-        </div>
-      )}
+      <AccountAgeFields id="arq" label={friend ? "Their age" : "Your age"} ageBand={ageBand} birthDate={birthDate} onAgeBand={setAgeBand} onBirthDate={setBirthDate} />
       <Field id="arq-message" label="Note for the admins" optional>
         <Textarea rows={3} value={message} onChange={(e) => setMessage(e.target.value)} maxLength={1000} />
       </Field>

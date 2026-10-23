@@ -21,8 +21,8 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.6 Calendar views | done (merged, #73) | Wright | `calendar` |
 | M1.7 ICS feeds | done (landed on master without a PR; reviewed and fixed in the m17-fixes PR; video_reveal moves to M1.8) | Muse, Wright | `m1.7-ics-feeds`, `m17-fixes` |
 | M1.8 Video, remote, childcare | done (video #102, remote #105, childcare #109 merged) | Wright | `m1.8-remote-capacity` |
-| M1.9 Households and household people | in progress: slices 1 and 2 merged (#106, #107, #110); slice 3 (conversion, docs/MEMBERS.md) in progress (docs/plan/M1.9-BRIEF.md) | Wright | `m1.9-household-convert` |
-| M1.10 Teen accounts, consent, badges | unclaimed | | |
+| M1.9 Households and household people | done (merged, #106, #107, #110, #111) | Wright | `m1.9-household-convert` |
+| M1.10 Teen accounts, consent, badges | claimed: slice 1 in progress (docs/plan/M1.10-BRIEF.md) | Wright | `m1.10-age-access` |
 | M1.11 Contact privacy and direct-contact requests | unclaimed | | |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
 | M1.13 Per-date event visibility (DEC-46) | unclaimed | | |
@@ -70,7 +70,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 - CI hardening (Warden review of #83, Oct 20, 2026; issue #95): claimed by Wright, in review. Actions pinned to full SHAs and a top-level `permissions: contents: read`, enforced by `TestWorkflowActionsPinnedAndReadOnly`.
 - VideoField polish (Illuminator, optional, from the #102 review): N7, clear the field's error when the link or the video option changes; N8, add a little space between the event page's time line and the "Join by video" button.
 - Terminology (Grier, Oct 20, 2026; DEC-78): rethink the name "private" for groups. The word is overloaded, because private groups are visible to every signed-in member.
-- M1.8/M1.9 progress (Oct 22, 2026). M1.8 remote (#105) and childcare are merged. M1.9 slice 1 (households, #106 and UI) and slice 2 (registering household people, #110, DEC-81) are merged. M1.9 slice 3 (turning a household person into their own account by invitation, plus docs/MEMBERS.md) is in review in #111. Judgment calls are logged in docs/plan/M1.9-JUDGMENT-CALLS.md.
+- M1.8/M1.9 progress (Oct 22, 2026). M1.8 remote (#105) and childcare are merged. M1.9 slice 1 (households, #106 and UI) and slice 2 (registering household people, #110, DEC-81) are merged. M1.9 slice 3 (turning a household person into their own account by invitation, plus docs/MEMBERS.md) is merged in #111. Judgment calls are logged in docs/plan/M1.9-JUDGMENT-CALLS.md.
 - Warden follow-ups from the #106 review (Oct 21, 2026):
   1. An admin confirming their own guardian link: decided by Grier as DEC-79 and done in #106. Blocked while another active admin exists; a sole admin may, audited as `selfConfirm`.
   2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind. Done in #110.

@@ -102,6 +102,8 @@ is present for teens. `displayName` falls back to name in the UI. `avatarUrl` is
 `/uploads/...` URL, or empty when no avatar is set. `avatarFocalX/Y` are
 0-100 percentages for CSS `object-position`.
 
+Teen accounts cannot upload public avatars (`403 teen_avatar`), and group roster responses never expose a teen avatar URL.
+
 Avatar uploads must be JPEG, PNG, GIF, or WebP (content-sniffed, not by
 extension), ≤ 5MB. Uploading replaces the old avatar; the old blob is
 deleted. Pictures are upload-only; the server never fetches a URL (Oct 14
@@ -265,7 +267,7 @@ displayed primary contact only (one of the leaders); they grant nothing.
 upcomingEvents: [occurrence], canManage: bool, isMember: bool}`.
 `members` is filled only for the group's members and admins (people see each
 other only inside groups they share); otherwise it is `[]`. `canManage` is
-true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, role,
+true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, accountType?, role,
 joinedAt, admin}` — `name` is the member's display name; `admin` marks church admins (DEC-38).
 
 Create/update body: `{name, description, tags[], location,
@@ -371,16 +373,14 @@ POST /api/v1/invitations/accept   → 200 {user?, pendingConsent, pendingApprova
 Invitations (M1.2, 5.10, DEC-4): admins invite into any group or none;
 leaders invite only into groups they lead or none (403 otherwise); members,
 teens, and guests get 403, signed-out visitors 401. There is no approval
-step: the person sets a password on acceptance and gets an active account.
-Create body: `{email, name?, phone?, groupId?, role? ("member"|"leader"),
-accountType? ("adult"|"teen"), overLimit?}`. 409 when the email already has
+step for adults: the person confirms their age and sets a password on acceptance. Teens start `pending_consent`.
+Create body: `{email, name?, phone?, groupId?, overLimit?}`. The invitee chooses their age when accepting; the inviter cannot activate a teen. 409 when the email already has
 an account or a pending invitation. Leaders are limited to 20 invitations
 per rolling day; the 21st gets 429 and is audited
 (`invitation.rate_limited`).
 
 Tokens are 32 random bytes, stored as SHA-256, single use, and expire after
-24 hours. Accept body: `{token, name, password}` (password ≥ 10 chars);
-accepting signs the browser in. Accepting into a full group joins over
+24 hours. Ordinary accept body: `{token, name, password, ageBand: "adult"|"teen"|"under13", birthDate?}` (password ≥ 10 chars). A teen needs a real birth date aged 13 to 17 on the church-local date. Missing or inconsistent ages answer 400. Under-13 input is not stored and the token remains usable. Adults start active; teens start pending consent with a restricted session. Household conversion acceptance still uses its saved adult birth date. Accepting into a full group joins over
 `member_limit` only when the inviter set `overLimit` (an explicit, audited
 choice, DEC-39); otherwise it answers `409 {"error":"This group is
 full","full":true}` without consuming the token. The over-limit join is
@@ -390,7 +390,7 @@ audited as `membership.added_over_limit`.
 Ordinary invitations have `conversion: false`. Conversion invitations have
 no group and explain the transfer on the accept page. Household adult
 acceptance waits for approval without a session; teen conversion is refused.
-Ordinary acceptance creates a session when the resulting account can sign in.
+Ordinary acceptance creates a full adult session or a restricted pending-teen session.
 
 ### Account requests
 
@@ -421,7 +421,7 @@ account (`invited` for adults, `pending_consent` for teens until M1.10
 consent) and emails a single-use set-password link (24 hours) to
 `/set-password`; approval creates the account only, never a group
 membership. Confirming sets the password: adults sign in, teens stay
-`pending_consent` (`pendingConsent: true`, no session). Rejection emails
+`pending_consent` (`pendingConsent: true`, restricted waiting session). Rejection emails
 the person too, with the admin's optional note. Requests expire after
 30 days (checked lazily in the queue and daily); deciding an expired
 request answers 409.
@@ -864,3 +864,11 @@ fetch time; a disabled or deleted owner's token answers the same plain
   same-origin`, `X-Frame-Options: SAMEORIGIN`, and `Permissions-Policy:
   camera=(), microphone=(), geolocation=()`. `Strict-Transport-Security` is
   added when `COOKIE_SECURE` is on.
+
+### Teen age and restricted-session boundaries (M1.10 slice 1)
+
+Initial setup requires `age_band=adult` to confirm the first administrator is 18 or older. Admin `POST /admin/users` additionally requires `ageBand` and accepts `birthDate` as on ordinary invitation acceptance. Under-13 or inconsistent ages create no account. Teen accounts cannot be admins, and always start `pending_consent`, even when the admin supplies a password. Adults keep the active-with-password or invited-without-password behavior.
+
+A pending-consent teen with a password can authenticate. Its cookie is accepted only at `GET /auth/me`, `GET /auth/csrf`, and `POST /auth/logout`. Every other `/api/v1` route answers `403 consent_required`, including otherwise public group, event, calendar, guest, and site routes. Signed-out visitors keep their normal public access. Responses use `Cache-Control: no-store`. The SPA displays only Waiting for consent, Check account status, and Log out, including on direct navigation and reload. Consent granting arrives in the next slice.
+
+Group rosters omit teen names and IDs for ordinary viewers while retaining the total member count. Group leaders and admins receive `member.accountType: "teen"` and a Teen badge. Event leaders, hosts, and admins receive minor identities and Teen/Child badges. Other ordinary attendees receive counts only for minors. Existing household adults retain access to their own household attendees under DEC-82; this does not grant a teen account badge. No roster response exposes minor contact details or a teen's public avatar.
