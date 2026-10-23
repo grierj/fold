@@ -14,7 +14,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 var (
@@ -55,19 +54,11 @@ func latestTeenConsentIn(tx *gorm.DB, teenID uint, scope string) (bool, error) {
 // lockConsentUsers follows the registration/conversion lifecycle lock order:
 // users by ID first, then guardian/household rows, groups, and occurrences.
 func lockConsentUsers(tx *gorm.DB, actorID, teenID uint) (*models.User, *models.User, error) {
-	var users []models.User
-	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id IN ?", []uint{actorID, teenID}).Order("id").Find(&users).Error; err != nil {
+	users, err := lockTeenLifecycleUsers(tx, teenID, actorID)
+	if err != nil {
 		return nil, nil, err
 	}
-	var actor, teen *models.User
-	for i := range users {
-		if users[i].ID == actorID {
-			actor = &users[i]
-		}
-		if users[i].ID == teenID {
-			teen = &users[i]
-		}
-	}
+	actor, teen := users[actorID], users[teenID]
 	if actor == nil {
 		return nil, nil, errConsentForbidden
 	}
@@ -159,6 +150,11 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 			teen.Status = status
 		}
 	}
+	if change.Scope == models.TeenConsentAccount {
+		if err := a.completeTeenConversionIfReady(tx, teen, a.householdClock(time.Now().UTC()), c.ClientIP(), &mailed); err != nil {
+			return nil, err
+		}
+	}
 	action := audit.TeenConsentGranted
 	if change.Status == models.ConsentRevoked {
 		action = audit.TeenConsentRevoked
@@ -209,6 +205,8 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 
 func consentError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, errConversionRetry), errors.Is(err, errConversionHolder), errors.Is(err, errConversionDetails):
+		conversionError(c, err)
 	case errors.Is(err, errConsentForbidden):
 		jsonError(c, http.StatusForbidden, err.Error())
 	case errors.Is(err, gorm.ErrRecordNotFound):
