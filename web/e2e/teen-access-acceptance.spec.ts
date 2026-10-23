@@ -96,6 +96,7 @@ test("a consented teen joins general events with restricted roles, private ident
       if (role === "member") {
         await expect(viewer.getByText(teenName, { exact: true })).toHaveCount(0);
         await expect(viewer.getByText("Teen", { exact: true })).toHaveCount(0);
+        await expect(viewer.getByText("Some attendees appear only in the count.", { exact: true })).toBeVisible();
       } else {
         await fromMore(viewer, "Manage sign-ups", /^More for \d{4}-/);
         const roster = viewer.getByRole("region", { name: "Manage sign-ups", exact: true });
