@@ -230,8 +230,11 @@ func demoteEverywhere(c *gin.Context, tx *gorm.DB, userID uint, reason string) (
 // membership.restored audit row each. A group at its member limit leaves
 // them out instead: the membership is dropped, a membership.not_restored
 // row is written, and they get a notice to ask a leader (DEC-47).
-func restoreMemberships(c *gin.Context, tx *gorm.DB, userID uint) ([]uint, error) {
-	actor := apiUser(c)
+func restoreMemberships(tx *gorm.DB, userID, actor uint, ip string) ([]uint, error) {
+	var actorID *uint
+	if actor != 0 {
+		actorID = &actor
+	}
 	var kept []models.Membership
 	// Stable order (by group) so concurrent restores lock groups the same way.
 	if err := tx.Where("user_id = ? AND status = 'active'", userID).Order("group_id").Find(&kept).Error; err != nil {
@@ -252,12 +255,12 @@ func restoreMemberships(c *gin.Context, tx *gorm.DB, userID uint) ([]uint, error
 			}
 			meta := map[string]any{"userId": userID, "count": memberCount(tx, g.ID), "limit": *g.MemberLimit}
 			if err := audit.Write(tx, audit.Entry{
-				Actor: &actor.ID, Action: audit.MemberNotRestored, TargetType: "group", TargetID: m.GroupID,
-				Meta: meta, IP: c.ClientIP(),
+				Actor: actorID, Action: audit.MemberNotRestored, TargetType: "group", TargetID: m.GroupID,
+				Meta: meta, IP: ip,
 			}); err != nil {
 				return nil, err
 			}
-			ids, err := notifyNotRestored(tx, actor.ID, &g, userID)
+			ids, err := notifyNotRestored(tx, actorID, &g, userID)
 			emailed = append(emailed, ids...)
 			if err != nil {
 				return nil, err
@@ -268,8 +271,8 @@ func restoreMemberships(c *gin.Context, tx *gorm.DB, userID uint) ([]uint, error
 			return nil, err
 		}
 		if err := audit.Write(tx, audit.Entry{
-			Actor: &actor.ID, Action: audit.MemberRestored, TargetType: "group", TargetID: m.GroupID,
-			Meta: map[string]any{"userId": userID, "status": "active"}, IP: c.ClientIP(),
+			Actor: actorID, Action: audit.MemberRestored, TargetType: "group", TargetID: m.GroupID,
+			Meta: map[string]any{"userId": userID, "status": "active"}, IP: ip,
 		}); err != nil {
 			return nil, err
 		}

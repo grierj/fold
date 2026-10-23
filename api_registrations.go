@@ -458,7 +458,7 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 
 // notifyRegistrationNotRestored tells a re-enabled person their
 // registration was dropped from a full occurrence (DEC-47).
-func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, reg models.Registration, actor uint) ([]uint, error) {
+func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence, reg models.Registration, actor *uint) ([]uint, error) {
 	userID := registrationHolder(reg)
 	vars, link := eventNoticeVarsIn(tx, ev, o, userID)
 	if reg.HouseholdPersonID != nil {
@@ -469,7 +469,7 @@ func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.Even
 		end = o.StartsAt
 	}
 	return notify.Send(tx, notify.Msg{
-		Kind: notify.RegistrationNotRestored, To: []uint{userID}, Actor: &actor,
+		Kind: notify.RegistrationNotRestored, To: []uint{userID}, Actor: actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
 		Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
 		ExpiresAt: &end,
@@ -1537,9 +1537,11 @@ func (a *App) promoteOnDisable(tx *gorm.DB, userID uint) ([]uint, error) {
 // order while the holder is disabled. Accepted going rows accumulate usage
 // across both seat pools and care; ineligible or non-fitting rows are
 // audited and dropped. Eligible waiters retain their original place.
-func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, intendedStatus string) ([]uint, error) {
-	actor := apiUser(c)
-	now := time.Now().UTC()
+func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus string, actor uint, ip string, now time.Time) ([]uint, error) {
+	var actorID *uint
+	if actor != 0 {
+		actorID = &actor
+	}
 	var holder models.User
 	if err := tx.First(&holder, userID).Error; err != nil {
 		return nil, err
@@ -1608,7 +1610,7 @@ func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, int
 				used[mode] += 1 + r.GuestCount
 				careUsed += demand
 			}
-			if err := auditRegistration(tx, actor.ID, audit.RegistrationRestored, ev.ID, r, r, c.ClientIP()); err != nil {
+			if err := auditRegistration(tx, actor, audit.RegistrationRestored, ev.ID, r, r, ip); err != nil {
 				return nil, err
 			}
 			continue
@@ -1616,10 +1618,10 @@ func (a *App) restoreRegistrations(c *gin.Context, tx *gorm.DB, userID uint, int
 		if err := tx.Delete(&r).Error; err != nil {
 			return nil, err
 		}
-		if err := auditRegistration(tx, actor.ID, audit.RegistrationNotRestored, ev.ID, r, r, c.ClientIP()); err != nil {
+		if err := auditRegistration(tx, actor, audit.RegistrationNotRestored, ev.ID, r, r, ip); err != nil {
 			return nil, err
 		}
-		ids, err := notifyRegistrationNotRestored(tx, &ev, o, r, actor.ID)
+		ids, err := notifyRegistrationNotRestored(tx, &ev, o, r, actorID)
 		if err != nil {
 			return nil, err
 		}
