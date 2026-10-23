@@ -154,16 +154,26 @@ func (a *App) apiMyGuardianTeens(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, "forbidden")
 		return
 	}
-	var links []models.GuardianLink
-	if err := a.DB.Joins("JOIN users t ON t.id = guardian_links.teen_user_id AND t.deleted_at IS NULL AND t.account_type = ?", models.AccountTeen).
-		Where("guardian_user_id = ? AND guardian_links.status = ?", me.ID, models.GuardianConfirmed).Order("guardian_links.id").Find(&links).Error; err != nil {
+	var rows []struct {
+		LinkID      uint
+		TeenUserID  uint
+		Name        string
+		DisplayName string
+	}
+	if err := a.DB.Table("guardian_links l").Select("l.id AS link_id, t.id AS teen_user_id, t.name, t.display_name").
+		Joins("JOIN users t ON t.id = l.teen_user_id AND t.deleted_at IS NULL AND t.account_type = ?", models.AccountTeen).
+		Where("l.guardian_user_id = ? AND l.status = ?", me.ID, models.GuardianConfirmed).Order("l.id").Scan(&rows).Error; err != nil {
 		consentError(c, err)
 		return
 	}
-	out := make([]guardianTeenJSON, 0, len(links))
-	ids := make([]uint, 0, len(links))
-	for _, link := range links {
-		ids = append(ids, *link.TeenUserID)
+	out := make([]guardianTeenJSON, len(rows))
+	ids := make([]uint, 0, len(rows))
+	byTeen := make(map[uint]*guardianTeenJSON, len(rows))
+	for i, row := range rows {
+		person := models.User{Name: row.Name, DisplayName: row.DisplayName}
+		out[i] = guardianTeenJSON{LinkID: row.LinkID, TeenUserID: row.TeenUserID, TeenName: person.PublicName()}
+		byTeen[row.TeenUserID] = &out[i]
+		ids = append(ids, row.TeenUserID)
 	}
 	var latest []models.TeenConsent
 	if len(ids) > 0 {
@@ -172,23 +182,17 @@ func (a *App) apiMyGuardianTeens(c *gin.Context) {
 			return
 		}
 	}
-	for _, link := range links {
-		row := guardianTeenJSON{LinkID: link.ID, TeenUserID: *link.TeenUserID, TeenName: nameIn(a.DB, *link.TeenUserID)}
-		for _, consent := range latest {
-			if consent.TeenUserID != row.TeenUserID {
-				continue
-			}
-			granted := consent.Status == models.ConsentGranted
-			switch consent.Scope {
-			case models.TeenConsentAccount:
-				row.AccountConsent = granted
-			case models.TeenConsentSMS:
-				row.SMSConsent = granted
-			case models.TeenConsentPhotos:
-				row.PhotosConsent = granted
-			}
+	for _, consent := range latest {
+		row := byTeen[consent.TeenUserID]
+		granted := consent.Status == models.ConsentGranted
+		switch consent.Scope {
+		case models.TeenConsentAccount:
+			row.AccountConsent = granted
+		case models.TeenConsentSMS:
+			row.SMSConsent = granted
+		case models.TeenConsentPhotos:
+			row.PhotosConsent = granted
 		}
-		out = append(out, row)
 	}
 	c.JSON(http.StatusOK, gin.H{"teens": out})
 }

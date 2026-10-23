@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminTeenConsents } from "../api";
 import type { TeenConsent, User } from "../types";
 import { errorText } from "../lib/errors";
+import { formatWhen } from "../lib/when";
 import { Button } from "./ui/Button";
 import { Choices, Field, FormError, Radio, showFieldErrors, Textarea } from "./ui/Field";
 
@@ -73,7 +74,7 @@ export default function TeenConsentPanel({ user, onUpdated, onClose }: { user: U
             {scopes.map((item) => <Radio key={item.value} name={`consent-scope-${user.id}`} label={item.label} checked={scope === item.value} onChange={() => setScope(item.value)} />)}
           </Choices>
           <Field label="Consent evidence" hint="Required to grant. For example: paper form signed by a parent on October 22. Maximum 1,000 characters. You can add a reason when revoking." error={evidenceError ?? undefined}>
-            <Textarea value={evidence} onChange={(event) => setEvidence(event.target.value)} maxLength={1000} rows={3} />
+            <Textarea value={evidence} onChange={(event) => { setEvidence(event.target.value); setEvidenceError(null); }} maxLength={1000} rows={3} />
           </Field>
           <p className="text-sm text-text-muted">SMS consent also needs their own SMS opt-in before any texts can be sent. Photo consent applies to galleries.</p>
           <div className="flex flex-wrap gap-2">
@@ -86,7 +87,7 @@ export default function TeenConsentPanel({ user, onUpdated, onClose }: { user: U
           {history.length ? <ol className="space-y-3 mt-2">
             {history.map((row) => <li key={row.id} className="border-l-2 border-border pl-3 break-words">
               <div>{scopes.find((item) => item.value === row.scope)?.label}: {row.status}</div>
-              <div className="text-xs text-text-muted">{new Date(row.at).toLocaleString()} · {row.granterRole}</div>
+              <div className="text-xs text-text-muted">{formatWhen(row.at)} · {row.granterRole}</div>
               {row.evidenceText && <p className="mt-1 whitespace-pre-wrap">{row.evidenceText}</p>}
             </li>)}
           </ol> : <p>No consent has been recorded. Choose a scope and record evidence to grant consent.</p>}

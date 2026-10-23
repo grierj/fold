@@ -5,6 +5,26 @@ import (
 	"time"
 )
 
+func TestCanRequestGuardianLink(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		actor *Person
+		want  bool
+	}{
+		{"signed out", nil, false},
+		{"adult", &Person{ID: 1}, true},
+		{"admin", &Person{ID: 2, Admin: true}, true},
+		{"teen", &Person{ID: 3, Teen: true}, false},
+		{"teen admin", &Person{ID: 4, Teen: true, Admin: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanRequestGuardianLink(tc.actor); got != tc.want {
+				t.Fatalf("CanRequestGuardianLink=%t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 // People used across the tables. A nil *Person is a signed-out guest.
 var (
 	admin  = &Person{ID: 1, Admin: true}
@@ -932,6 +952,28 @@ func TestMinorRosterAndAvatarPolicy(t *testing.T) {
 			}
 			if got := CanUploadAvatar(tc.p); got != tc.avatar {
 				t.Errorf("avatar=%v", got)
+			}
+		})
+	}
+}
+
+func TestCanChangeTeenConsent(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		actor          *Person
+		guardian, want bool
+	}{
+		{"signed out", nil, false, false},
+		{"admin", admin, false, true},
+		{"adult without link", adult, false, false},
+		{"confirmed guardian", adult, true, true},
+		{"teen without link", teen, false, false},
+		{"teen cannot be guardian", teen, true, false},
+		{"teen cannot be admin", &Person{Admin: true, Teen: true}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanChangeTeenConsent(tc.actor, tc.guardian); got != tc.want {
+				t.Fatalf("got %t, want %t", got, tc.want)
 			}
 		})
 	}
