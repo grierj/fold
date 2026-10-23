@@ -134,6 +134,9 @@ type User struct {
 	// Status is active, invited, guest, pending_consent or disabled (a CHECK
 	// enforces it).
 	Status string `gorm:"not null;default:active"`
+	// Consent revocation and an admin's suspension are independent. A new
+	// consent grant must never undo the admin's suspension.
+	AdministrativelyDisabled bool `gorm:"not null;default:false"`
 	// AccountType is adult or teen (DEC-8). BirthDate is required for teens
 	// (so Fold knows when they turn 18) and optional for adults, who only
 	// confirm they are 18 or older (5.3).
@@ -695,6 +698,29 @@ type GuardianLink struct {
 	DecidedAt      *time.Time
 }
 
+const (
+	TeenConsentAccount = "account"
+	TeenConsentSMS     = "sms"
+	TeenConsentPhotos  = "photos"
+	ConsentGranted     = "granted"
+	ConsentRevoked     = "revoked"
+	ConsentAdmin       = "admin"
+	ConsentGuardian    = "guardian"
+)
+
+// TeenConsent is immutable history. The latest (At, ID) per teen and scope
+// wins. The database rejects updates and deletes, including hard deletes.
+type TeenConsent struct {
+	ID           uint      `gorm:"primaryKey"`
+	TeenUserID   uint      `gorm:"not null"`
+	Scope        string    `gorm:"not null"`
+	Status       string    `gorm:"not null"`
+	GrantedBy    uint      `gorm:"not null"`
+	GranterRole  string    `gorm:"not null"`
+	EvidenceText string    `gorm:"not null;default:''"`
+	At           time.Time `gorm:"not null;default:clock_timestamp()"`
+}
+
 // All lists every model, in dependency order. The drift check and the test
 // helpers use it; a new model must be added here and to a migration.
 func All() []any {
@@ -703,7 +729,7 @@ func All() []any {
 		&Membership{}, &Registration{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
-		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{},
+		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
 	}
 }
 

@@ -1,5 +1,16 @@
 // TypeScript mirrors of the /api/v1 JSON contract (docs/API.md + api.go).
 
+export interface TeenConsent {
+  id: number;
+  teenUserId: number;
+  scope: "account" | "sms" | "photos";
+  status: "granted" | "revoked";
+  grantedBy: number;
+  granterRole: "guardian" | "admin";
+  evidenceText: string;
+  at: string;
+}
+
 export interface User {
   id: number;
   name: string;
@@ -14,6 +25,7 @@ export interface User {
   hasPassword: boolean;
   accountType: "adult" | "teen";
   birthDate?: string;
+  hasTeenConsentHistory?: boolean;
   // "" until the browser fills it in; then the person's zone for emails (DEC-58).
   timezone: string;
 }

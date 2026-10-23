@@ -46,6 +46,8 @@ type userJSON struct {
 	HasPassword  bool    `json:"hasPassword"`
 	AccountType  string  `json:"accountType"`
 	BirthDate    string  `json:"birthDate,omitempty"`
+	// Admin list only. Kept after age rollover so consent history is reachable.
+	HasTeenConsentHistory bool `json:"hasTeenConsentHistory,omitempty"`
 	// Timezone is the person's own zone for emails (DEC-58); "" means
 	// the church's, until the browser fills it in.
 	Timezone string `json:"timezone"`
@@ -548,6 +550,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/me/household/people/:id/convert/resend", a.apiAuth(), a.apiResendHouseholdConversion)
 	v1.DELETE("/me/household/people/:id/convert", a.apiAuth(), a.apiCancelHouseholdConversion)
 	v1.GET("/admin/guardian-links", a.apiAuth(), a.apiAdmin(), a.apiListGuardianLinks)
+	v1.GET("/admin/users/:id/teen-consents", a.apiAuth(), a.apiAdmin(), a.apiListTeenConsents)
+	v1.POST("/admin/users/:id/teen-consents", a.apiAuth(), a.apiAdmin(), a.apiChangeTeenConsent)
 	v1.POST("/admin/guardian-links/:id/confirm", a.apiAuth(), a.apiAdmin(), a.apiConfirmGuardianLink)
 	v1.POST("/admin/guardian-links/:id/reject", a.apiAuth(), a.apiAdmin(), a.apiRejectGuardianLink)
 

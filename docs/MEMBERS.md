@@ -6,6 +6,13 @@ Only the person whose account it is gets the emails. If you'd like your own remi
 
 Parents: add children under 13 to your household. Teens aged 13 to 17 cannot get their own account from the household yet. This arrives with parent consent. Add your teen to your household and sign them up yourself while the church office checks the guardian link.
 
+Teens with their own account need account consent before using Fold. An
+admin can record a parent or guardian's consent with evidence from a signed
+form or another checked source. Account, SMS, and photo consent are
+separate. Revoking account consent signs the teen out and keeps the account
+history. An admin's suspension stays in place even if consent is granted
+again.
+
 ## Share an email
 
 One email address belongs to one account with one person's name and password. Add everyone else who shares it to My household on your Profile page. Choose Child, Teen, or Adult, and add their birth date. An adult needs a birth date before you can sign them up. An admin must check the guardian link for a child or teen before you can sign them up.

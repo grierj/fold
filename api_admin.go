@@ -298,9 +298,20 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 func (a *App) apiAdminListUsers(c *gin.Context) {
 	var users []models.User
 	a.DB.Order("lower(name), email").Find(&users)
+	var historyIDs []uint
+	if err := a.DB.Model(&models.TeenConsent{}).Distinct().Pluck("teen_user_id", &historyIDs).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list users")
+		return
+	}
+	history := make(map[uint]bool, len(historyIDs))
+	for _, id := range historyIDs {
+		history[id] = true
+	}
 	out := make([]userJSON, 0, len(users))
 	for i := range users {
-		out = append(out, a.toUserJSON(&users[i]))
+		row := a.toUserJSON(&users[i])
+		row.HasTeenConsentHistory = history[users[i].ID]
+		out = append(out, row)
 	}
 	c.JSON(http.StatusOK, gin.H{"users": out})
 }
@@ -494,37 +505,55 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, msg)
 			return
 		}
-		// A teen becomes active only through account consent (#94, DEC-8,
-		// PLAN TeenConsent), never by an admin edit: not from
-		// pending_consent, and not by re-enabling a disabled teen, which
-		// goes back to waiting for consent (DEC-69: once TeenConsent exists
-		// in M1.10, restore active when the latest account consent is granted).
-		if status == models.UserActive && u.Status == models.UserPendingConsent {
-			jsonError(c, http.StatusBadRequest, "a teen account waiting for consent becomes active only when consent is granted")
-			return
-		}
-		if status == models.UserActive && u.AccountType == models.AccountTeen && u.Status == models.UserDisabled {
-			status = models.UserPendingConsent
-		} else if status == models.UserActive && u.PasswordHash == nil {
-			status = models.UserInvited // re-enabled, but still needs a password
-		}
-		if status != u.Status {
-			updates["status"] = status
-			bump = true
-		}
 	}
-	// Changing the email, role or status ends the person's sessions (10.1).
-	if bump {
-		updates["session_version"] = gorm.Expr("session_version + 1")
-	}
-	if len(updates) > 0 {
-		disabling := updates["status"] == models.UserDisabled
+	if len(updates) > 0 || body.Status != nil {
 		var emailed []uint
+		errTeenActivation := errors.New("a teen account waiting for consent becomes active only when consent is granted")
 		err := a.DB.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(u, u.ID).Error; err != nil {
+			actor, target, err := lockConsentUsers(tx, me.ID, u.ID)
+			if err != nil {
 				return err
 			}
-			if disabling {
+			if !policy.IsAdmin(asPerson(actor)) || actor.SessionVersion != me.SessionVersion {
+				return errConsentForbidden
+			}
+			u = target
+			if body.Role != nil && *body.Role == models.RoleAdmin && u.AccountType == models.AccountTeen {
+				return errConsentTeen
+			}
+			if body.Status != nil {
+				status := strings.TrimSpace(*body.Status)
+				if status == models.UserActive && u.Status == models.UserPendingConsent {
+					return errTeenActivation
+				}
+				adminDisabled := status == models.UserDisabled
+				updates["administratively_disabled"] = adminDisabled
+				if status == models.UserActive && u.AccountType == models.AccountTeen {
+					granted, err := latestTeenConsentIn(tx, u.ID, models.TeenConsentAccount)
+					if err != nil {
+						return err
+					}
+					if !granted {
+						status = models.UserPendingConsent
+					}
+				} else if status == models.UserActive && u.PasswordHash == nil {
+					status = models.UserInvited
+				}
+				if status != u.Status || adminDisabled != u.AdministrativelyDisabled {
+					updates["status"] = status
+					bump = true
+				}
+			}
+			if bump {
+				updates["session_version"] = gorm.Expr("session_version + 1")
+			}
+			if updates["status"] == models.UserDisabled {
+				if u.Status == models.UserDisabled {
+					if err := tx.Model(u).Updates(updates).Error; err != nil {
+						return err
+					}
+					return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserDisabled, TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
+				}
 				ids, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_disabled")
 				emailed = append(emailed, ids...)
 				if err != nil {
@@ -573,6 +602,14 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 			return
 		}
 		if err != nil {
+			if errors.Is(err, errTeenActivation) {
+				jsonError(c, http.StatusBadRequest, err.Error())
+				return
+			}
+			if errors.Is(err, errConsentForbidden) || errors.Is(err, errConsentTeen) {
+				consentError(c, err)
+				return
+			}
 			if emailTaken(err) {
 				jsonError(c, http.StatusConflict, "an account with that email already exists")
 				return

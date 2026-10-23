@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Notification } from "../types";
-import { NotificationBell } from "./Notifications";
+import { NotificationBell, NotificationTab } from "./Notifications";
 
 const api = vi.hoisted(() => ({
   list: vi.fn(),
@@ -55,6 +55,12 @@ beforeEach(() => {
   localStorage.clear();
 });
 afterEach(() => vi.useRealTimers());
+
+it("includes the phone tab's visible count and caption in its accessible name", async () => {
+  render(<MemoryRouter><NotificationTab className={() => ""} /></MemoryRouter>);
+  const tab = await screen.findByRole("link", { name: "2 Alerts: Notifications, 1 unread, 1 waiting on you" });
+  expect(tab.textContent).toBe("2 Alerts");
+});
 
 describe("NotificationBell", () => {
   it("shows one plain count and names both numbers", async () => {

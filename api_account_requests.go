@@ -19,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ---------------------------------------------------------------------------
@@ -382,8 +383,9 @@ func (a *App) apiApproveAccountRequest(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Note             string `json:"note"`
-		FromNotification *uint  `json:"fromNotification"`
+		Note                       string  `json:"note"`
+		FromNotification           *uint   `json:"fromNotification"`
+		AccountConsentEvidenceText *string `json:"accountConsentEvidenceText"`
 	}
 	_ = c.ShouldBindJSON(&body)
 	if !a.fromNotification(c, body.FromNotification, notify.ActionApproveAccount, req.ID) {
@@ -394,7 +396,7 @@ func (a *App) apiApproveAccountRequest(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, "that request needs review in the admin queue")
 		return
 	}
-	a.decideAccountRequest(c, req, true, strings.TrimSpace(body.Note))
+	a.decideAccountRequest(c, req, true, strings.TrimSpace(body.Note), body.AccountConsentEvidenceText)
 }
 
 // apiRejectAccountRequest turns a request down. Rejection is never an
@@ -412,12 +414,13 @@ func (a *App) apiRejectAccountRequest(c *gin.Context) {
 	if !a.fromNotification(c, body.FromNotification, "reject", req.ID) {
 		return
 	}
-	a.decideAccountRequest(c, req, false, strings.TrimSpace(body.Note))
+	a.decideAccountRequest(c, req, false, strings.TrimSpace(body.Note), nil)
 }
 
 var errRequestHandled = errors.New("account request already decided")
+var errConsentExistingAccount = errors.New("that email already has an account; approve without consent and review the account separately")
 
-func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, approve bool, note string) {
+func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, approve bool, note string, consentEvidence *string) {
 	if len(note) > 500 {
 		jsonError(c, http.StatusBadRequest, "note must be at most 500 characters")
 		return
@@ -439,6 +442,37 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	var raw string
 	var mailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		var consentActor *models.User
+		if consentEvidence != nil {
+			if req.AccountType != models.AccountTeen {
+				return errConsentTeen
+			}
+			// An existing guest can be upgraded on the same row. No other
+			// existing account receives consent as a side effect of approval.
+			var existing models.User
+			if err := tx.Where("email = ?", req.Email).Limit(1).Find(&existing).Error; err != nil {
+				return err
+			}
+			var target *models.User
+			var err error
+			if existing.ID != 0 {
+				consentActor, target, err = lockConsentUsers(tx, me.ID, existing.ID)
+				if err != nil {
+					return err
+				}
+				if target.Status != models.UserGuest || normalizeEmail(target.Email) != normalizeEmail(req.Email) {
+					return errConsentExistingAccount
+				}
+			} else {
+				consentActor = &models.User{}
+				if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(consentActor, me.ID).Error; err != nil {
+					return err
+				}
+			}
+			if !policy.IsAdmin(asPerson(consentActor)) || consentActor.SessionVersion != me.SessionVersion {
+				return errConsentForbidden
+			}
+		}
 		now := time.Now().UTC()
 		status := models.RequestRejected
 		if approve {
@@ -488,6 +522,9 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 					return err
 				}
 			} else if found {
+				if consentEvidence != nil {
+					return errConsentExistingAccount
+				}
 				userID = existing.ID
 			} else {
 				status := models.UserInvited
@@ -517,6 +554,19 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				meta["upgradedGuest"] = true
 			}
 		}
+		if consentEvidence != nil {
+			var teen models.User
+			if err := tx.First(&teen, userID).Error; err != nil {
+				return err
+			}
+			ids, err := a.changeTeenConsent(tx, c, &teen, consentActor, teenConsentChange{
+				Scope: models.TeenConsentAccount, Status: models.ConsentGranted, EvidenceText: *consentEvidence,
+			})
+			if err != nil {
+				return err
+			}
+			mailed = append(mailed, ids...)
+		}
 		if _, err := notify.Resolve(tx, notify.AccountRequested, req.ID, &me.ID, outcome); err != nil {
 			return err
 		}
@@ -529,6 +579,14 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	}
 	if err != nil && req.Source == models.RequestHouseholdConversion {
 		conversionError(c, err)
+		return
+	}
+	if errors.Is(err, errConsentExistingAccount) {
+		jsonError(c, http.StatusConflict, err.Error())
+		return
+	}
+	if errors.Is(err, errConsentForbidden) || errors.Is(err, errConsentTeen) || errors.Is(err, errConsentEvidence) || errors.Is(err, errConsentEvidenceLong) {
+		consentError(c, err)
 		return
 	}
 	if emailTaken(err) {
@@ -548,7 +606,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 				log.Printf("account approved email to %s: %v", req.Email, err)
 			}
 		} else if created || upgraded {
-			if err := a.sendAccountApprovedEmail(req, raw); err != nil {
+			if err := a.sendAccountApprovedEmail(req, raw, consentEvidence == nil); err != nil {
 				log.Printf("account approved email to %s: %v", req.Email, err)
 			}
 		} else if err := a.sendAlreadyHaveAccountEmail(req.Email); err != nil {
@@ -580,12 +638,21 @@ func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 	var userID uint
 	var pendingConsent bool
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		// Discover the holder before taking locks. Consent changes acquire
+		// user locks before tokens, so setup uses that order too.
+		var initial models.AccountToken
+		if err := tx.Where("kind = ? AND token_hash = ?", models.TokenAccountSetup, hashToken(body.Token)).First(&initial).Error; err != nil {
+			return errTokenInvalid
+		}
+		var u models.User
+		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&u, initial.UserID).Error; err != nil || u.Status == models.UserDisabled {
+			return errTokenInvalid
+		}
 		tok, err := consumeAccountToken(tx, models.TokenAccountSetup, body.Token)
 		if err != nil {
 			return err
 		}
-		var u models.User
-		if err := tx.First(&u, tok.UserID).Error; err != nil || u.Status == models.UserDisabled {
+		if tok.UserID != u.ID {
 			return errTokenInvalid
 		}
 		if err := u.SetPassword(body.Password); err != nil {
@@ -741,10 +808,10 @@ Forgot your password? Reset it here:
 	})
 }
 
-func (a *App) sendAccountApprovedEmail(req *models.AccountRequest, raw string) error {
+func (a *App) sendAccountApprovedEmail(req *models.AccountRequest, raw string, needsConsent bool) error {
 	link := a.emailBaseURL() + "/set-password?token=" + raw
 	extra := ""
-	if req.AccountType == models.AccountTeen {
+	if req.AccountType == models.AccountTeen && needsConsent {
 		extra = "\n\nBecause you're 13 to 17, your account also needs a parent or guardian's consent before you can use groups and events. Setting your password now is still the right first step."
 	}
 	return a.Mailer.Send(context.Background(), foldmail.Message{
