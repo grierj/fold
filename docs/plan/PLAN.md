@@ -1815,6 +1815,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Tests: policy table for the household rows in section 6; API tests.
 
 **M1.10 Teen accounts, consent, badges**
+- Delivery: five approved end-to-end slices in `docs/plan/M1.10-BRIEF.md`: age gates and restricted access; consent lifecycle; guardian links and email consent; approval-first household teen conversion; daily church-local age rollover and final acceptance.
 - Re-enable household teen conversion with parent consent. Move the teen's sign-ups only once consent is granted, approval-first like adults in DEC-82; until then the household keeps managing them. Teen conversion is off in M1.9 to prevent lockout.
 - Depends on: M1.9, M1.3
 - Scope: teen accounts, `TeenConsent`, guardian links to teen accounts, consent emails with a signed link, the daily age rollover, Teen and Child badges (DEC-8, DEC-18, DEC-20).
