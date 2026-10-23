@@ -103,6 +103,10 @@ func lockTeenLifecycleUsers(tx *gorm.DB, userID uint, extraIDs ...uint) (map[uin
 		locked, _, err := lockConversionParticipants(tx, &stage.invitation, &stage.person, ids...)
 		return locked, err
 	}
+	var household models.HouseholdAccount
+	if err := tx.Where("user_id = ?", userID).Limit(1).Find(&household).Error; err != nil {
+		return nil, err
+	}
 	var users []models.User
 	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id IN ?", ids).Order("id").Find(&users).Error; err != nil {
 		return nil, err
@@ -110,6 +114,18 @@ func lockTeenLifecycleUsers(tx *gorm.DB, userID uint, extraIDs ...uint) (map[uin
 	locked := make(map[uint]*models.User, len(users))
 	for i := range users {
 		locked[users[i].ID] = &users[i]
+	}
+	if household.ID != 0 {
+		if err := lockHousehold(tx, household.HouseholdID); err != nil {
+			return nil, err
+		}
+	}
+	var fresh models.HouseholdAccount
+	if err := tx.Where("user_id = ?", userID).Limit(1).Find(&fresh).Error; err != nil {
+		return nil, err
+	}
+	if fresh.ID != household.ID || fresh.HouseholdID != household.HouseholdID {
+		return nil, errConversionRetry
 	}
 	return locked, nil
 }

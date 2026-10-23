@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"fold/models"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // rolloverAges takes an instant, then uses the church's calendar date for
@@ -27,20 +27,25 @@ func (a *App) rolloverAges(now time.Time) (int, error) {
 		return 0, err
 	}
 	changed := 0
+	var failures []error
 	for _, id := range userIDs {
 		var mailed []uint
 		var done bool
 		err := a.DB.Transaction(func(tx *gorm.DB) error {
-			var user models.User
-			if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&user, id).Error; err != nil {
+			users, err := lockTeenLifecycleUsers(tx, id)
+			if err != nil {
 				return err
 			}
-			var err error
-			done, mailed, err = a.rolloverTeen(tx, &user, today, now)
+			user := users[id]
+			if user == nil || user.DeletedAt.Valid {
+				return nil
+			}
+			done, mailed, err = a.rolloverTeen(tx, user, today, now)
 			return err
 		})
 		if err != nil {
-			return changed, err
+			failures = append(failures, fmt.Errorf("user %d: %w", id, err))
+			continue
 		}
 		if done {
 			changed++
@@ -62,6 +67,9 @@ func (a *App) rolloverAges(now time.Time) (int, error) {
 				return err
 			}
 			if err := tx.First(&person, person.ID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil
+				}
 				return err
 			}
 			var err error
@@ -69,14 +77,15 @@ func (a *App) rolloverAges(now time.Time) (int, error) {
 			return err
 		})
 		if err != nil {
-			return changed, err
+			failures = append(failures, fmt.Errorf("household person %d: %w", person.ID, err))
+			continue
 		}
 		if done {
 			changed++
 		}
 		a.deliverNotificationEmails(mailed)
 	}
-	return changed, nil
+	return changed, errors.Join(failures...)
 }
 
 func (a *App) rolloverTeen(tx *gorm.DB, user *models.User, today, now time.Time) (bool, []uint, error) {
@@ -95,6 +104,35 @@ func (a *App) rolloverTeen(tx *gorm.DB, user *models.User, today, now time.Time)
 	// disabled, so it can check access without counting their places twice.
 	if err := tx.Model(user).Update("account_type", models.AccountAdult).Error; err != nil {
 		return false, nil, err
+	}
+	stage, err := stagedTeenConversionIn(tx, user.ID)
+	if err != nil {
+		return false, nil, err
+	}
+	if stage != nil && stage.person.Kind == models.HouseholdTeen {
+		// While independently suspended, this person's registrations stay
+		// household-owned. Reflect their actual age so DEC-81 still allows
+		// the household to manage them until admin Enable completes transfer.
+		if err := tx.Model(&stage.person).Update("kind", models.HouseholdAdult).Error; err != nil {
+			return false, nil, err
+		}
+		if err := audit.Write(tx, audit.Entry{Action: audit.HouseholdPersonUpdated, TargetType: "household_person", TargetID: stage.person.ID,
+			Meta: map[string]any{"reason": "age_rollover", "previousKind": models.HouseholdTeen, "kind": models.HouseholdAdult}}); err != nil {
+			return false, nil, err
+		}
+	}
+	var householdAccount models.HouseholdAccount
+	if err := tx.Where("user_id = ? AND relation = ?", user.ID, models.HouseholdRelationTeen).Limit(1).Find(&householdAccount).Error; err != nil {
+		return false, nil, err
+	}
+	if householdAccount.ID != 0 {
+		if err := tx.Model(&householdAccount).Update("relation", models.HouseholdRelationAdult).Error; err != nil {
+			return false, nil, err
+		}
+		if err := audit.Write(tx, audit.Entry{Action: audit.HouseholdAccountTurnedAdult, TargetType: "household_account", TargetID: householdAccount.ID,
+			Meta: map[string]any{"userId": user.ID, "householdId": householdAccount.HouseholdID, "previousRelation": models.HouseholdRelationTeen, "relation": models.HouseholdRelationAdult}}); err != nil {
+			return false, nil, err
+		}
 	}
 	var mailed []uint
 	if oldStatus == models.UserDisabled && status != models.UserDisabled {
@@ -118,8 +156,11 @@ func (a *App) rolloverTeen(tx *gorm.DB, user *models.User, today, now time.Time)
 			return false, nil, err
 		}
 	}
+	if err := a.completeTeenConversionIfReady(tx, user, today, "", &mailed); err != nil {
+		return false, nil, err
+	}
 	if err := audit.Write(tx, audit.Entry{Action: audit.UserTurned18, TargetType: "user", TargetID: user.ID,
-		Meta: map[string]any{"previousStatus": oldStatus, "status": status, "churchDate": today.Format("2006-01-02")}}); err != nil {
+		Meta: map[string]any{"previousStatus": oldStatus, "status": user.Status, "churchDate": today.Format("2006-01-02")}}); err != nil {
 		return false, nil, err
 	}
 	ids, err := notify.Send(tx, notify.Msg{Kind: notify.AccountTurned18, To: []uint{user.ID}, SubjectType: "user", SubjectID: user.ID,

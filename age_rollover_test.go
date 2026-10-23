@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,7 +49,7 @@ func TestAgeRolloverStatusesAndConsentHistory(t *testing.T) {
 	admin := newTestUser(t, app, "admin", "pw", models.RoleAdmin)
 	now := rolloverInstant(t, "2026-10-22T12:00:00Z")
 	var users []*models.User
-	for _, tc := range []struct {
+	cases := []struct {
 		name, status, want  string
 		suspended, password bool
 	}{
@@ -56,21 +58,21 @@ func TestAgeRolloverStatusesAndConsentHistory(t *testing.T) {
 		{"revoked", models.UserDisabled, models.UserActive, false, true},
 		{"suspended", models.UserDisabled, models.UserDisabled, true, true},
 		{"no-password", models.UserPendingConsent, models.UserInvited, false, false},
-	} {
+	}
+	for _, tc := range cases {
 		u := rolloverTeenUser(t, app, tc.name, "2008-10-22", tc.status, tc.suspended, tc.password)
 		users = append(users, u)
 		if err := app.DB.Create(&models.TeenConsent{TeenUserID: u.ID, Scope: "account", Status: models.ConsentRevoked, GrantedBy: admin.ID, GranterRole: models.ConsentAdmin}).Error; err != nil {
 			t.Fatal(err)
 		}
-		_ = tc.want
 	}
 	if n, err := app.rolloverAges(now); err != nil || n != 5 {
 		t.Fatalf("rollover %d %v", n, err)
 	}
-	for i, want := range []string{models.UserActive, models.UserActive, models.UserActive, models.UserDisabled, models.UserInvited} {
+	for i, tc := range cases {
 		var got models.User
 		app.DB.First(&got, users[i].ID)
-		if got.AccountType != models.AccountAdult || got.Status != want || got.AdministrativelyDisabled != users[i].AdministrativelyDisabled {
+		if got.AccountType != models.AccountAdult || got.Status != tc.want || got.AdministrativelyDisabled != users[i].AdministrativelyDisabled {
 			t.Fatalf("rollover %s: %+v", users[i].Name, got)
 		}
 	}
@@ -207,5 +209,225 @@ func TestAgeRolloverConcurrentRunsWriteOnce(t *testing.T) {
 	app.DB.Model(&models.Notification{}).Where("kind = ? AND user_id = ?", notify.AccountTurned18, u.ID).Count(&count)
 	if count != 1 {
 		t.Fatalf("concurrent notice count %d", count)
+	}
+}
+
+func TestAgeRolloverChild13NoticeIsDurableAndKeepsRegistration(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Household birthday")
+	eventID, date := seedCappedEvent(t, app, admin, gid, intPtr(5), true)
+	holder := newTestUser(t, app, "birthday-parent", "pw", models.RoleMember)
+	parent := loginAPI(t, app, "birthday-parent", "pw")
+	person := addMyPerson(t, parent, map[string]any{"firstName": "Birthday Child", "kind": "child", "birthDate": "2013-10-22"})
+	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa2(*person.GuardianLinkID)+"/confirm", map[string]string{"checkNote": "Known family"}, 200)
+	path := "/api/v1/events/" + itoa2(eventID) + "/registrations"
+	apiDo(t, parent, "PUT", path, map[string]any{"date": date, "people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
+	if n, err := app.rolloverAges(rolloverInstant(t, "2026-10-21T12:00:00Z")); err != nil || n != 0 {
+		t.Fatalf("early child notice %d %v", n, err)
+	}
+	if n, err := app.rolloverAges(rolloverInstant(t, "2026-10-22T12:00:00Z")); err != nil || n != 1 {
+		t.Fatalf("child birthday %d %v", n, err)
+	}
+	var notice models.Notification
+	if err := app.DB.Where("kind = ? AND user_id = ?", notify.HouseholdChildTurned13, holder.ID).First(&notice).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(notice.Body, "age group") || strings.Contains(notice.EmailBody, person.Name) || notice.ActorID != nil {
+		t.Fatalf("child notice %+v", notice)
+	}
+	var saved models.HouseholdPerson
+	app.DB.First(&saved, person.ID)
+	if saved.Kind != models.HouseholdChild || saved.ConvertedUserID != nil {
+		t.Fatal("child13 notice changed identity or created a login")
+	}
+	apiDo(t, parent, "PUT", path, map[string]any{"date": date, "people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
+	// Retention can delete bell rows. The permanent audit prevents a new
+	// notice every day after that deletion.
+	if err := app.DB.Delete(&notice).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n, err := app.rolloverAges(rolloverInstant(t, "2026-10-23T12:00:00Z")); err != nil || n != 0 {
+		t.Fatalf("repeat notice %d %v", n, err)
+	}
+	var count int64
+	app.DB.Model(&models.Notification{}).Where("kind = ?", notify.HouseholdChildTurned13).Count(&count)
+	if count != 0 {
+		t.Fatal("deleted notice was recreated")
+	}
+}
+
+func TestAgeRolloverChildCatchUpNeverSuggestsWrongAgeGroup(t *testing.T) {
+	app := testApp(t)
+	parent := newTestUser(t, app, "catch-up-parent", "pw", models.RoleMember)
+	household := models.Household{Name: "Catch-up family", CreatedBy: parent.ID}
+	if err := app.DB.Create(&household).Error; err != nil {
+		t.Fatal(err)
+	}
+	birth := rolloverDate(t, "2005-10-22")
+	person := models.HouseholdPerson{HouseholdID: household.ID, FirstName: "Old child row", Kind: models.HouseholdChild, BirthDate: &birth, CreatedBy: parent.ID}
+	if err := app.DB.Create(&person).Error; err != nil {
+		t.Fatal(err)
+	}
+	link := models.GuardianLink{GuardianUserID: parent.ID, PersonID: &person.ID, Status: models.GuardianPending}
+	if err := app.DB.Create(&link).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n, err := app.rolloverAges(rolloverInstant(t, "2026-10-22T12:00:00Z")); err != nil || n != 0 {
+		t.Fatalf("unconfirmed guardian got notice %d %v", n, err)
+	}
+	if err := app.DB.Model(&link).Update("status", models.GuardianConfirmed).Error; err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Go(func() { _, err := app.rolloverAges(rolloverInstant(t, "2026-10-22T12:00:00Z")); errs <- err })
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var notices []models.Notification
+	app.DB.Where("kind = ?", notify.HouseholdChildTurned13).Find(&notices)
+	if len(notices) != 1 || notices[0].UserID != parent.ID || strings.Contains(notices[0].Body, "type to Teen") {
+		t.Fatalf("catch-up notice %+v", notices)
+	}
+	var count int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", audit.HouseholdChildTurned13, person.ID).Count(&count)
+	if count != 1 {
+		t.Fatalf("concurrent milestone audit %d", count)
+	}
+}
+
+func TestAgeRolloverPromotesHouseholdRelationWithoutGuardianship(t *testing.T) {
+	app := testApp(t)
+	user := rolloverTeenUser(t, app, "household-adult", "2008-10-22", models.UserActive, false, true)
+	household := models.Household{Name: "Family", CreatedBy: user.ID}
+	if err := app.DB.Create(&household).Error; err != nil {
+		t.Fatal(err)
+	}
+	account := models.HouseholdAccount{HouseholdID: household.ID, UserID: user.ID, Relation: models.HouseholdRelationTeen}
+	if err := app.DB.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := loginAPI(t, app, "household-adult", "password1234")
+	apiDo(t, client, "PUT", "/api/v1/me/household", map[string]string{"name": "Renamed"}, 403)
+	if n, err := app.rolloverAges(rolloverInstant(t, "2026-10-22T12:00:00Z")); err != nil || n != 1 {
+		t.Fatalf("rollover %d %v", n, err)
+	}
+	apiDo(t, client, "PUT", "/api/v1/me/household", map[string]string{"name": "Renamed"}, 200)
+	app.DB.First(&account, account.ID)
+	if account.Relation != models.HouseholdRelationAdult {
+		t.Fatalf("household relation %s", account.Relation)
+	}
+	child := addMyPerson(t, client, map[string]any{"firstName": "New child", "kind": "child", "birthDate": "2020-01-01"})
+	if child.LinkStatus != models.GuardianPending {
+		t.Fatal("birthday granted automatic guardian authority")
+	}
+	var count int64
+	app.DB.Model(&models.GuardianLink{}).Where("guardian_user_id = ? AND status = ?", user.ID, models.GuardianConfirmed).Count(&count)
+	if count != 0 {
+		t.Fatal("birthday auto-confirmed a guardian link")
+	}
+	if auditCount(t, app, audit.HouseholdAccountTurnedAdult) != 1 {
+		t.Fatal("missing household relation rollover audit")
+	}
+}
+
+func setStagedBirthdayToday(t *testing.T, app *App, f teenConversionFixture) time.Time {
+	t.Helper()
+	today := app.householdClock(time.Now().UTC())
+	birth := today.AddDate(-18, 0, 0).Format("2006-01-02")
+	for _, entry := range []struct {
+		model any
+		id    uint
+	}{{&models.User{}, f.user.ID}, {&models.HouseholdPerson{}, f.person.ID}, {&models.AccountRequest{}, f.request.ID}} {
+		if err := app.DB.Model(entry.model).Where("id = ?", entry.id).Update("birth_date", birth).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	return today
+}
+
+func TestAgeRolloverSuspendedStageKeepsHouseholdUntilEnable(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Suspended birthday")
+	f := pendingTeenConversion(t, app, admin, gid, "birthday-stage", true)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.user.ID), map[string]string{"status": "disabled"}, 200)
+	now := setStagedBirthdayToday(t, app, f)
+	if n, err := app.rolloverAges(now); err != nil || n != 1 {
+		t.Fatalf("suspended stage rollover %d %v", n, err)
+	}
+	f.unchanged(t, app)
+	var person models.HouseholdPerson
+	app.DB.First(&person, f.person.ID)
+	app.DB.First(&f.user, f.user.ID)
+	if person.Kind != models.HouseholdAdult || f.user.AccountType != models.AccountAdult || f.user.Status != models.UserDisabled || !f.user.AdministrativelyDisabled {
+		t.Fatalf("suspended adulthood: %+v %+v", person, f.user)
+	}
+	if loginAPIExpectFail(t, app, "birthday-stage-own", "password1234") {
+		t.Fatal("suspended adult signed in")
+	}
+	var occurrence models.EventOccurrence
+	app.DB.First(&occurrence, f.rows[0].OccurrenceID)
+	var event models.Event
+	app.DB.First(&event, occurrence.EventID)
+	apiDo(t, f.parent, "PUT", "/api/v1/events/"+itoa2(event.ID)+"/registrations", map[string]any{"date": occurrence.OriginalDate, "people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.user.ID), map[string]string{"status": "active"}, 200)
+	app.DB.First(&person, person.ID)
+	if person.ConvertedUserID == nil || *person.ConvertedUserID != f.user.ID {
+		t.Fatal("admin Enable did not finish adult transfer")
+	}
+	for _, before := range f.rows {
+		var after models.Registration
+		app.DB.First(&after, before.ID)
+		if after.UserID == nil || *after.UserID != f.user.ID || after.HouseholdPersonID != nil || after.Status != before.Status {
+			t.Fatalf("birthday transfer changed registration %d: %+v", before.ID, after)
+		}
+	}
+	if n, err := app.rolloverAges(now); err != nil || n != 0 {
+		t.Fatalf("repeat birthday %d %v", n, err)
+	}
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.user.ID), map[string]string{"status": "active"}, 200)
+	if auditCount(t, app, audit.HouseholdPersonConverted) != 1 {
+		t.Fatal("adult transferred more than once")
+	}
+}
+
+func TestAgeRolloverUnavailableStageDoesNotBlockOtherBirthdays(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Blocked birthday")
+	f := pendingTeenConversion(t, app, admin, gid, "blocked-birthday", true)
+	now := setStagedBirthdayToday(t, app, f)
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.holder.ID), map[string]string{"status": "disabled"}, 200)
+	other := rolloverTeenUser(t, app, "later-birthday", now.AddDate(-18, 0, 0).Format("2006-01-02"), models.UserActive, false, true)
+	n, err := app.rolloverAges(now)
+	if n != 1 || err == nil || !strings.Contains(err.Error(), fmt.Sprintf("user %d:", f.user.ID)) {
+		t.Fatalf("isolated blocked stage: %d %v", n, err)
+	}
+	f.unchanged(t, app)
+	var stillTeen models.User
+	app.DB.First(&stillTeen, f.user.ID)
+	if stillTeen.AccountType != models.AccountTeen || stillTeen.Status != models.UserPendingConsent {
+		t.Fatal("blocked stage partially committed birthday")
+	}
+	app.DB.First(other, other.ID)
+	if other.AccountType != models.AccountAdult {
+		t.Fatal("blocked stage starved later birthday")
+	}
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa2(f.holder.ID), map[string]string{"status": "active"}, 200)
+	if n, err := app.rolloverAges(now); err != nil || n != 1 {
+		t.Fatalf("retry birthday %d %v", n, err)
+	}
+	var person models.HouseholdPerson
+	app.DB.First(&person, f.person.ID)
+	if person.ConvertedUserID == nil || *person.ConvertedUserID != f.user.ID {
+		t.Fatal("retry did not transfer")
+	}
+	if auditCount(t, app, audit.HouseholdPersonConverted) != 1 {
+		t.Fatal("retry transferred more than once")
 	}
 }

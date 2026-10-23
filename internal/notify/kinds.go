@@ -181,7 +181,7 @@ func init() {
 	})
 	register(Kind{Key: HouseholdChildTurned13, Category: CatSafety, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
-			return or(v.Person, "A child in your household") + " is now 13 or older", "Review their details in My household. You can change their type to Teen or help them request their own account. Their sign-ups stay with your household."
+			return or(v.Person, "A child in your household") + " is now 13 or older", "Review their birth date and age group in My household. They can also request their own account. Their sign-ups stay with your household."
 		},
 		RenderEmailSafe: func(Vars) (string, string) {
 			return "Review a household member's age in Fold", "Sign in to Fold to review your household."
