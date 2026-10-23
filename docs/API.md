@@ -959,7 +959,8 @@ registrations until admin Enable completes the transfer. The automatic kind
 and relation changes are audited.
 
 An inactive original registration holder still prevents transfer. The entire
-person's rollover transaction rolls back, preserving the staged account,
+person's rollover transaction rolls back, including the account-type change,
+preserving the staged account,
 guardian tasks, and registrations. Other birthdays and child-age notices
 continue. Startup and the next midnight retry after the holder is enabled.
 The job logs the affected user ID and the existing unavailable-holder error.

@@ -26,8 +26,8 @@ import (
 // Account requests (M1.3, 5.10, DEC-4, DEC-8): self-signup and member
 // invite-a-friend create a pending AccountRequest an admin decides.
 // Nobody signs in until an admin approves; approval creates the account
-// and emails a set-password link. Teens start pending_consent (consent
-// itself arrives in M1.10). Public answers never reveal whether an
+// and emails a set-password link. Teens need separate account consent.
+// Public answers never reveal whether an
 // email already has an account (10.1).
 // ---------------------------------------------------------------------------
 
@@ -568,8 +568,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			} else {
 				status := models.UserInvited
 				if req.AccountType == models.AccountTeen {
-					// Consent finishes in M1.10; until then the teen
-					// cannot sign in (CanSignIn needs active).
+					// Ordinary access waits for account consent.
 					status = models.UserPendingConsent
 				}
 				u := models.User{

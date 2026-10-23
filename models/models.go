@@ -84,8 +84,9 @@ const (
 	OccurrenceCancelled = "cancelled"
 )
 
-// Account statuses (5.3). Only active accounts with a password sign in.
-// Guests and teens waiting for consent arrive in M1.4 and M1.10.
+// Account statuses (5.3). Active accounts with passwords get ordinary
+// access; pending-consent teens can authenticate only to the waiting page.
+// Account lifecycle states.
 const (
 	UserActive         = "active"
 	UserInvited        = "invited" // no password yet
@@ -510,7 +511,7 @@ type Invitation struct {
 	Name              string    `gorm:"not null;default:''"`
 	InvitedBy         uint      `gorm:"not null;index"`
 	Role              string    `gorm:"not null;default:member"` // member | leader (group role on accept)
-	AccountType       string    `gorm:"not null;default:adult"`  // adult | teen (teens arrive in M1.10)
+	AccountType       string    `gorm:"not null;default:adult"`  // adult | teen
 	GroupID           *uint     `gorm:"index"`
 	Group             Group     `gorm:"foreignKey:GroupID"`
 	OverLimit         bool      `gorm:"not null;default:false"`

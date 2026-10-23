@@ -22,7 +22,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.7 ICS feeds | done (landed on master without a PR; reviewed and fixed in the m17-fixes PR; video_reveal moves to M1.8) | Muse, Wright | `m1.7-ics-feeds`, `m17-fixes` |
 | M1.8 Video, remote, childcare | done (video #102, remote #105, childcare #109 merged) | Wright | `m1.8-remote-capacity` |
 | M1.9 Households and household people | done (merged, #106, #107, #110, #111) | Wright | `m1.9-household-convert` |
-| M1.10 Teen accounts, consent, badges | claimed: slice 1 in progress (docs/plan/M1.10-BRIEF.md) | Wright | `m1.10-age-access` |
+| M1.10 Teen accounts, consent, badges | slices 1–3 merged (#114–#116); slices 4–5 integrated, final verification and review pending (docs/plan/M1.10-BRIEF.md) | Wright | `m1.10-age-rollover` |
 | M1.11 Contact privacy and direct-contact requests | unclaimed | | |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
 | M1.13 Per-date event visibility (DEC-46) | unclaimed | | |
@@ -55,7 +55,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 
 ## Follow-ups (not yet claimed)
 
-- M1.10: re-enable household teen conversion with parent consent. Move sign-ups only once consent is granted, approval-first like adults in DEC-82; until then the household keeps managing them. Teen conversion is off in M1.9 to prevent lockout.
+- M1.10 delivery: age gates/restricted sessions, admin consent, and guardian links/email consent merged in #114–#116. Staged teen household conversion, church-local birthdays, and final active-teen acceptance are integrated for final verification. Consent and fresh guardian confirmation precede household transfer; age-18 suspension/holder exceptions are recorded in DEC-83. Recipient-list composition, SMS sending, and galleries remain future milestones.
 
 - (Illuminator, #105 N10) Watch that a stray arrow key in the "How you'll attend" radio group can't change a Going answer by accident (switching mode saves immediately).
 - (Whittler, #105) An admin re-adding someone who is already going in the same pool counts their seats twice (api_registrations.go admin add path, ~1150-1157). Fix: subtract the existing going party from used seats before the fit check.
