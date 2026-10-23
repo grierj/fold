@@ -10,7 +10,7 @@ test("a waiting group approval is counted and approved from the bell", async ({ 
   await sam("POST", "/groups", { name: "Bell study", description: "", tags: [], imageUrl: "", location: "", visibility: "private", memberLimit: null });
 
   await signIn(page, "grier");
-  const bell = page.getByRole("button", { name: /^Notifications/ });
+  const bell = page.getByRole("button", { name: /Notifications/ });
   await expect(bell).toHaveAccessibleName(/1 waiting on you/);
   await bell.click();
   const panel = page.locator("#notif-panel");
@@ -39,7 +39,7 @@ test("archive survives signing out, and Undo or the Archived filter restores it"
   await (await apiAs(request, "lee"))("PUT", `/groups/${group.id}/members/${id("sam")}/role`, { role: "leader" });
 
   await signIn(page, "grier");
-  const bell = page.getByRole("button", { name: /^Notifications/ });
+  const bell = page.getByRole("button", { name: /Notifications/ });
   await expect(bell).toHaveAccessibleName(/unread/);
   await bell.click();
   const panel = page.locator("#notif-panel");
@@ -75,7 +75,7 @@ test.describe("on a phone", () => {
   test.use({ viewport: { width: 390, height: 800 } });
   test("the Alerts tab opens the notifications page", async ({ page }) => {
     await signIn(page, "grier");
-    await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: /^Alerts/ }).click();
+    await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: /Alerts:/ }).click();
     await expect(page).toHaveURL(/\/notifications$/);
     await expect(page.getByRole("button", { name: "All", pressed: true })).toBeVisible();
   });

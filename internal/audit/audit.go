@@ -13,12 +13,15 @@ import (
 
 // Actions. Add new ones here so they are easy to find and query.
 const (
-	TeenConsentGranted     = "teen_consent.granted"
-	TeenConsentRevoked     = "teen_consent.revoked"
-	RegistrationChanged    = "registration.changed"
-	RegistrationRestored   = "registration.restored"
-	HouseholdUpdated       = "household.updated"
-	HouseholdPersonUpdated = "household.person_updated"
+	UserTurned18                = "user.turned_18"
+	HouseholdChildTurned13      = "household.child_turned_13"
+	HouseholdAccountTurnedAdult = "household.account_turned_adult"
+	TeenConsentGranted          = "teen_consent.granted"
+	TeenConsentRevoked          = "teen_consent.revoked"
+	RegistrationChanged         = "registration.changed"
+	RegistrationRestored        = "registration.restored"
+	HouseholdUpdated            = "household.updated"
+	HouseholdPersonUpdated      = "household.person_updated"
 	// RoleChanged: someone was made a group leader, or stopped being one.
 	// Target is the group; meta has userId, oldRole and newRole ("leader",
 	// "member", or "none" when they left or were removed).

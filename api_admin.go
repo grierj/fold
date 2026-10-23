@@ -630,7 +630,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 					TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
 			}
 			if s, ok := updates["status"].(string); ok && u.Status == models.UserDisabled && s != models.UserDisabled {
-				ids, err := restoreMemberships(c, tx, u.ID)
+				ids, err := restoreMemberships(tx, u.ID, me.ID, c.ClientIP())
 				emailed = append(emailed, ids...)
 				if err != nil {
 					return err
@@ -638,7 +638,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				// Registrations come back as they were when they fit;
 				// a row that would overfill is dropped and the person
 				// is told to ask a leader or host (DEC-38, DEC-47, M1.5).
-				ids, err = a.restoreRegistrations(c, tx, u.ID, s)
+				ids, err = a.restoreRegistrations(tx, u.ID, s, me.ID, c.ClientIP(), time.Now().UTC())
 				emailed = append(emailed, ids...)
 				if err != nil {
 					return err

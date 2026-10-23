@@ -452,13 +452,13 @@ func notifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
 // notifyNotRestored tells a re-enabled person they were left out of a full
 // group (DEC-47). Their membership is already gone in tx, so an
 // invite-only group's name and link are left out.
-func notifyNotRestored(tx *gorm.DB, actor uint, g *models.Group, userID uint) ([]uint, error) {
+func notifyNotRestored(tx *gorm.DB, actor *uint, g *models.Group, userID uint) ([]uint, error) {
 	vars, link := notify.Vars{}, "/"
 	if canSeeGroupIn(tx, userIn(tx, userID), g) {
 		vars.Group, link = g.Name, fmt.Sprintf("/groups/%d", g.ID) // group-ok: only when canSeeGroupIn says the person may see it
 	}
 	return notify.Send(tx, notify.Msg{
-		Kind: notify.MemberNotRestored, To: []uint{userID}, Actor: &actor,
+		Kind: notify.MemberNotRestored, To: []uint{userID}, Actor: actor,
 		SubjectType: "group", SubjectID: g.ID, Link: link, Vars: vars,
 	})
 }

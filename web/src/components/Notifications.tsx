@@ -358,7 +358,7 @@ export function NotificationBell() {
         ref={bellRef}
         onClick={() => (isMobile() ? navigate("/notifications") : setOpen((o) => !o))}
         className="relative flex items-center justify-center min-h-11 min-w-11 text-text-muted hover:text-primary rounded-full"
-        aria-label={badgeLabel(badge)}
+        aria-label={`${count > 0 ? `${badgeText(badge)} ` : ""}${badgeLabel(badge)}`}
         aria-expanded={open}
         aria-controls="notif-panel"
         title="Notifications"

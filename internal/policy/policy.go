@@ -30,8 +30,7 @@ func ValidVisibility(v string) bool {
 type Person struct {
 	ID    uint
 	Admin bool
-	// Teen is a 13-17 account (DEC-8). Teen accounts arrive in M1.10; until
-	// then nobody is a teen, but the rules below already treat them right.
+	// Teen is a 13-17 account (DEC-8).
 	Teen bool
 }
 
@@ -294,7 +293,7 @@ func CanAssignHost(p, target *Person) bool {
 // and a church-wide event's hosts do. When the group is invite-only and the
 // event isn't, people outside the group see a count only; members of the
 // group see names (DEC-48). Anyone else who can see the event
-// sees names. Teen and Child badges arrive in M1.10.
+// sees names. Teen and Child badges are limited to roster managers.
 func CanSeeAttendeeNames(p *Person, ev EventView, g Group, r Rel) bool {
 	if p == nil || !CanSeeEvent(p, ev, g, r) {
 		return false

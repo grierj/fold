@@ -120,12 +120,12 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 			// memberships and seats are not counted twice. Pending teens are
 			// already listed, so their initial grant needs no restore.
 			if teen.Status == models.UserDisabled && status != models.UserDisabled {
-				ids, err := restoreMemberships(c, tx, teen.ID)
+				ids, err := restoreMemberships(tx, teen.ID, actor.ID, c.ClientIP())
 				if err != nil {
 					return nil, err
 				}
 				mailed = append(mailed, ids...)
-				ids, err = a.restoreRegistrations(c, tx, teen.ID, status)
+				ids, err = a.restoreRegistrations(tx, teen.ID, status, actor.ID, c.ClientIP(), time.Now().UTC())
 				if err != nil {
 					return nil, err
 				}

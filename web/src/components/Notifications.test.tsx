@@ -63,16 +63,17 @@ it("includes the phone tab's visible count and caption in its accessible name", 
 });
 
 describe("NotificationBell", () => {
-  it("shows one plain count and names both numbers", async () => {
+  it("includes its visible summed count and describes both numbers", async () => {
     renderBell();
-    const bell = await screen.findByRole("button", { name: "Notifications, 1 unread, 1 waiting on you" });
+    const bell = await screen.findByRole("button", { name: "2 Notifications, 1 unread, 1 waiting on you" });
     expect(within(bell).getByText("2")).toBeInTheDocument();
   });
 
   it("caps the badge at 9+ and shows nothing at zero", async () => {
     api.badge.mockResolvedValue({ badge: { unread: 8, waiting: 3 }, etag: "x" });
     const { unmount } = renderBell();
-    expect(await screen.findByText("9+")).toBeInTheDocument();
+    const bell = await screen.findByRole("button", { name: "9+ Notifications, 8 unread, 3 waiting on you" });
+    expect(within(bell).getByText("9+")).toBeInTheDocument();
     unmount();
     api.badge.mockResolvedValue({ badge: { unread: 0, waiting: 0 }, etag: "y" });
     renderBell();
@@ -116,7 +117,7 @@ describe("NotificationBell", () => {
       return {};
     });
     renderBell();
-    await userEvent.click(await screen.findByRole("button", { name: /^Notifications/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Notifications/ }));
     expect(await screen.findByText("Waiting on you", { selector: "h3" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(api.approveGroup).toHaveBeenCalledWith(9, 2);
@@ -133,7 +134,7 @@ describe("NotificationBell", () => {
       throw new ApiError(409, "handled", { resolvedBy: "Kim", resolution: "approved" });
     });
     renderBell();
-    await userEvent.click(await screen.findByRole("button", { name: /^Notifications/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Notifications/ }));
     await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
     expect(await screen.findByText("Already approved by Kim")).toBeInTheDocument();
   });
@@ -141,7 +142,7 @@ describe("NotificationBell", () => {
   it("archives with × and offers Undo", async () => {
     api.archive.mockResolvedValue({});
     renderBell();
-    await userEvent.click(await screen.findByRole("button", { name: /^Notifications/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Notifications/ }));
     await userEvent.click(await screen.findByRole("button", { name: "Archive: Pat made Sam a leader" }));
     expect(api.archive).toHaveBeenCalledWith(1, true);
     await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
@@ -150,7 +151,7 @@ describe("NotificationBell", () => {
 
   it("Escape closes the panel and returns focus to the bell", async () => {
     renderBell();
-    const bell = await screen.findByRole("button", { name: /^Notifications/ });
+    const bell = await screen.findByRole("button", { name: /Notifications/ });
     await userEvent.click(bell);
     expect(bell).toHaveAttribute("aria-expanded", "true");
     await userEvent.keyboard("{Escape}");

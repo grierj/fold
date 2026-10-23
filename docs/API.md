@@ -442,12 +442,17 @@ keeps this nomination attached when the teen later changes their email.
 The age gate is on every door (DEC-8): `under13` stores nothing and
 answers 400 with the household explanation; `teen` needs a `birthDate`
 aged 13–17 and creates a teen request; `adult` needs no date (adults
-only confirm 18+, and any date sent is dropped). Approval creates the
-account (`invited` for adults, `pending_consent` for teens until M1.10
-consent) and emails a single-use set-password link (24 hours) to
+only confirm 18+, and any date sent is dropped). For ordinary requests, approval creates the
+account (`invited` for adults, `pending_consent` for teens unless account
+consent is granted with approval). A staged household conversion also waits for
+its fresh original-household guardian link. Ordinary approval emails a single-use
+set-password link (24 hours) to
 `/set-password`; approval creates the account only, never a group
-membership. Confirming sets the password: adults sign in, teens stay
-`pending_consent` (`pendingConsent: true`, restricted waiting session). Rejection emails
+membership. Confirming sets the password and preserves consent or suspension
+decisions made since approval. Adults and active teens sign in; teens still
+awaiting consent or household conversion prerequisites enter a restricted
+waiting session (`pendingConsent: true`).
+Disabled accounts cannot complete setup. Rejection emails
 the person too, with the admin's optional note. Requests expire after
 30 days (checked lazily in the queue and daily); deciding an expired
 request answers 409.
@@ -926,11 +931,53 @@ fetch time; a disabled or deleted owner's token answers the same plain
   camera=(), microphone=(), geolocation=()`. `Strict-Transport-Security` is
   added when `COOKIE_SECURE` is on.
 
-### Teen age and restricted-session boundaries (M1.10 slice 1)
+### Teen age and restricted-session boundaries (M1.10)
 
 Initial setup requires `age_band=adult` to confirm the first administrator is 18 or older. Admin `POST /admin/users` additionally requires `ageBand` and accepts `birthDate` as on ordinary invitation acceptance. Under-13 or inconsistent ages create no account. Teen accounts cannot be admins, and always start `pending_consent`, even when the admin supplies a password. Adults keep the active-with-password or invited-without-password behavior.
 
-A pending-consent teen with a password can authenticate. Its cookie is accepted only at `GET /auth/me`, `GET /auth/csrf`, and `POST /auth/logout`. Every other `/api/v1` route answers `403 consent_required`, including otherwise public group, event, calendar, guest, and site routes. Signed-out visitors keep their normal public access. Responses use `Cache-Control: no-store`. The SPA displays only Waiting for consent, Check account status, and Log out, including on direct navigation and reload. Consent granting arrives in the next slice.
+A pending-consent teen with a password can authenticate. Its cookie is accepted only at `GET /auth/me`, `GET /auth/csrf`, and `POST /auth/logout`. Every other `/api/v1` route answers `403 consent_required`, including otherwise public group, event, calendar, guest, and site routes. Signed-out visitors keep their normal public access. Responses use `Cache-Control: no-store`. The SPA displays only Waiting for consent, Check account status, and Log out, including on direct navigation and reload. Account consent activates an approved teen account. A staged household conversion also needs its confirmed household guardian relationship before activation and transfer.
+
+### Church-local age rollover
+
+The birthday job runs at startup and each church-local midnight. The next
+midnight uses the church's IANA time zone, including daylight saving changes.
+A February 29 birthday reaches the next whole year on March 1 in a non-leap
+year, matching the shared age gate.
+
+At 18, a teen becomes an adult and retains all consent and guardian history.
+Pending accounts with a password become active. Passwordless accounts still
+need setup. An independent administrator suspension remains in force. A
+consent-disabled account restores memberships and registrations through the
+existing capacity checks, with an ask-a-leader notice for places that cannot
+fit. Already listed accounts keep their places without restoration.
+
+An existing household account's `teen` relation becomes `adult`, which allows
+the new adult to manage the household. This grants no confirmed guardianship.
+Pending links to the former teen account are rejected as no longer needed,
+their admin tasks close as withdrawn, and system audit records retain the
+reason `turned_18`. Confirmed links remain unchanged.
+
+At 18, an approved household conversion can finish without teen consent or
+guardian requirements. While independently suspended, its original household
+person becomes an adult household person and keeps all household-owned
+registrations until admin Enable completes the transfer. The automatic kind
+and relation changes are audited.
+
+An inactive original registration holder still prevents transfer. The entire
+person's rollover transaction rolls back, including the account-type change,
+preserving the staged account,
+guardian tasks, and registrations. Other birthdays and child-age notices
+continue. Startup and the next midnight retry after the holder is enabled.
+The job logs the affected user ID and the existing unavailable-holder error.
+This refusal prevents hidden seats from becoming active without capacity
+checks.
+
+Confirmed, active guardians receive one notice when a household child is 13
+or older. The notice asks them to review the birth date and age group. The
+person keeps their kind and sign-ups until the household edits them. No login
+is created. A permanent audit record prevents duplicate notices after bell
+notification retention runs. Catch-up notices also use this age-neutral
+guidance for older child records.
 
 Group rosters omit teen names and IDs for ordinary viewers while retaining the total member count. Group leaders and admins receive `member.accountType: "teen"` and a Teen badge. Event leaders, hosts, and admins receive minor identities and Teen/Child badges. Other ordinary attendees receive counts only for minors. Existing household adults retain access to their own household attendees under DEC-82; this does not grant a teen account badge. No roster response exposes minor contact details or a teen's public avatar.
 
