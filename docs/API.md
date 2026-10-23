@@ -442,12 +442,17 @@ keeps this nomination attached when the teen later changes their email.
 The age gate is on every door (DEC-8): `under13` stores nothing and
 answers 400 with the household explanation; `teen` needs a `birthDate`
 aged 13–17 and creates a teen request; `adult` needs no date (adults
-only confirm 18+, and any date sent is dropped). Approval creates the
-account (`invited` for adults, `pending_consent` for teens until M1.10
-consent) and emails a single-use set-password link (24 hours) to
+only confirm 18+, and any date sent is dropped). For ordinary requests, approval creates the
+account (`invited` for adults, `pending_consent` for teens unless account
+consent is granted with approval). A staged household conversion also waits for
+its fresh original-household guardian link. Ordinary approval emails a single-use
+set-password link (24 hours) to
 `/set-password`; approval creates the account only, never a group
-membership. Confirming sets the password: adults sign in, teens stay
-`pending_consent` (`pendingConsent: true`, restricted waiting session). Rejection emails
+membership. Confirming sets the password and preserves consent or suspension
+decisions made since approval. Adults and active teens sign in; teens still
+awaiting consent or household conversion prerequisites enter a restricted
+waiting session (`pendingConsent: true`).
+Disabled accounts cannot complete setup. Rejection emails
 the person too, with the admin's optional note. Requests expire after
 30 days (checked lazily in the queue and daily); deciding an expired
 request answers 409.
