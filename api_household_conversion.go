@@ -100,15 +100,15 @@ type conversionBatch struct {
 
 func (a *App) loadConversionBatch(tx *gorm.DB, actor *models.User, householdID uint, personIDs []uint) (*conversionBatch, error) {
 	if actor == nil || len(personIDs) == 0 {
-		return a.loadConversionBatchFor(tx, actor, policy.HouseholdRel{}, personIDs)
+		return a.loadConversionBatchFor(tx, actor, policy.HouseholdRel{}, personIDs, nil)
 	}
-	return a.loadConversionBatchFor(tx, actor, conversionRelation(tx, actor.ID, householdID), personIDs)
+	return a.loadConversionBatchFor(tx, actor, conversionRelation(tx, actor.ID, householdID), personIDs, guardianLinksForPeople(tx, personIDs))
 }
 
 // loadConversionBatchFor takes a relation the caller already knows, so
 // GET /me/household doesn't read the viewer's account twice (Whittler, PR 111).
-func (a *App) loadConversionBatchFor(tx *gorm.DB, actor *models.User, rel policy.HouseholdRel, personIDs []uint) (*conversionBatch, error) {
-	b := &conversionBatch{links: guardianLinksForPeople(tx, personIDs), actor: actor, today: a.householdClock(time.Now().UTC()), blocked: map[uint]bool{}, rel: rel}
+func (a *App) loadConversionBatchFor(tx *gorm.DB, actor *models.User, rel policy.HouseholdRel, personIDs []uint, links map[uint][]models.GuardianLink) (*conversionBatch, error) {
+	b := &conversionBatch{links: links, actor: actor, today: a.householdClock(time.Now().UTC()), blocked: map[uint]bool{}, rel: rel}
 	if actor == nil || len(personIDs) == 0 {
 		return b, nil
 	}
@@ -399,6 +399,9 @@ func (a *App) apiCancelHouseholdConversion(c *gin.Context) {
 
 func (a *App) sendConversionEmail(inv *models.Invitation, actor *models.User, raw string) error {
 	timing := "Your past and upcoming event sign-ups will move to your account after an admin approves. Until then, your household keeps managing them."
+	if inv.AccountType == models.AccountTeen {
+		timing = "Your account needs admin approval, consent, and a fresh check of your guardian link. Your household keeps managing your event sign-ups until all three are complete."
+	}
 	text := fmt.Sprintf("%s invited you to create an account for %s. %s\n\nChoose your password: %s/invite?token=%s\n\nThis link expires in 24 hours. If this invitation is not for you, ignore it.", actor.PublicName(), inv.Name, timing, a.emailBaseURL(), raw)
 	return a.Mailer.Send(context.Background(), mail.Message{To: inv.Email, Subject: "Create your own account at " + a.siteName(), Text: text})
 }

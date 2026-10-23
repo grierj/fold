@@ -355,7 +355,7 @@ export interface InvitationContext {
 export interface HouseholdConversion {
   email: string;
   expiresAt: string;
-  state: "pending" | "expired" | "awaiting_approval";
+  state: "pending" | "expired" | "awaiting_approval" | "awaiting_consent";
 }
 /** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export type AccountRequestStatus = "pending" | "approved" | "rejected" | "expired" | "withdrawn";

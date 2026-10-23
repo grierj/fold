@@ -793,7 +793,7 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 			rel = householdRelOf(acct, true)
 		}
 	}
-	batch, err := a.loadConversionBatchFor(a.DB, viewer, rel, ids)
+	batch, err := a.loadConversionBatchFor(a.DB, viewer, rel, ids, links)
 	if err != nil {
 		return out, err
 	}
