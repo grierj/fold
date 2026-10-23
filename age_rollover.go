@@ -13,6 +13,7 @@ import (
 	"fold/models"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // rolloverAges takes an instant, then uses the church's calendar date for
@@ -53,7 +54,7 @@ func (a *App) rolloverAges(now time.Time) (int, error) {
 		a.deliverNotificationEmails(mailed)
 	}
 	var people []models.HouseholdPerson
-	if err := a.DB.Where("kind = ? AND converted_user_id IS NULL AND birth_date IS NOT NULL AND birth_date <= ?", models.HouseholdChild,
+	if err := a.DB.Select("id", "household_id").Where("kind = ? AND converted_user_id IS NULL AND birth_date IS NOT NULL AND birth_date <= ?", models.HouseholdChild,
 		today.AddDate(-13, 0, 0).Format("2006-01-02")).
 		Where("NOT EXISTS (SELECT 1 FROM audit_logs WHERE action = ? AND target_type = 'household_person' AND target_id = household_people.id)", audit.HouseholdChildTurned13).
 		Order("household_id, id").Find(&people).Error; err != nil {
@@ -131,6 +132,23 @@ func (a *App) rolloverTeen(tx *gorm.DB, user *models.User, today, now time.Time)
 		}
 		if err := audit.Write(tx, audit.Entry{Action: audit.HouseholdAccountTurnedAdult, TargetType: "household_account", TargetID: householdAccount.ID,
 			Meta: map[string]any{"userId": user.ID, "householdId": householdAccount.HouseholdID, "previousRelation": models.HouseholdRelationTeen, "relation": models.HouseholdRelationAdult}}); err != nil {
+			return false, nil, err
+		}
+	}
+	// Link decisions take the teen lock before the link lock. Close these
+	// tasks before any group/date locks, in the same order as confirmation.
+	var pendingLinks []models.GuardianLink
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("teen_user_id = ? AND status = ?", user.ID, models.GuardianPending).Order("id").Find(&pendingLinks).Error; err != nil {
+		return false, nil, err
+	}
+	for _, link := range pendingLinks {
+		if err := tx.Model(&link).Updates(map[string]any{"status": models.GuardianRejected, "decided_at": now, "check_note": "This account is now an adult account. Guardian confirmation is no longer needed."}).Error; err != nil {
+			return false, nil, err
+		}
+		if _, err := notify.Resolve(tx, notify.HouseholdLinkPending, link.ID, nil, "withdrawn"); err != nil {
+			return false, nil, err
+		}
+		if err := audit.Write(tx, audit.Entry{Action: audit.GuardianLinkRejected, TargetType: "guardian_link", TargetID: link.ID, Meta: map[string]any{"reason": "turned_18", "teenUserId": user.ID}}); err != nil {
 			return false, nil, err
 		}
 	}

@@ -409,6 +409,18 @@ func TestAgeRolloverUnavailableStageDoesNotBlockOtherBirthdays(t *testing.T) {
 		t.Fatalf("isolated blocked stage: %d %v", n, err)
 	}
 	f.unchanged(t, app)
+	var pendingLink models.GuardianLink
+	app.DB.First(&pendingLink, f.link.ID)
+	if pendingLink.Status != models.GuardianPending {
+		t.Fatal("blocked birthday closed guardian history")
+	}
+	var pendingTask models.Notification
+	if err := app.DB.Where("kind = ? AND subject_id = ?", notify.HouseholdLinkPending, f.link.ID).First(&pendingTask).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pendingTask.ResolvedAt != nil {
+		t.Fatal("blocked birthday resolved guardian task")
+	}
 	var stillTeen models.User
 	app.DB.First(&stillTeen, f.user.ID)
 	if stillTeen.AccountType != models.AccountTeen || stillTeen.Status != models.UserPendingConsent {
@@ -429,5 +441,47 @@ func TestAgeRolloverUnavailableStageDoesNotBlockOtherBirthdays(t *testing.T) {
 	}
 	if auditCount(t, app, audit.HouseholdPersonConverted) != 1 {
 		t.Fatal("retry transferred more than once")
+	}
+}
+
+func TestAgeRolloverClosesOnlyPendingGuardianTasks(t *testing.T) {
+	app, _, teen, confirmed, _, _ := guardianEmailSetup(t)
+	admin := loginAPI(t, app, "admin", "pw")
+	other := newTestUser(t, app, "another-guardian", "pw", models.RoleMember)
+	claimant := loginAPI(t, app, "another-guardian", "pw")
+	apiDo(t, claimant, "POST", "/api/v1/me/guardian-claims", map[string]string{"email": teen.Email}, 200)
+	var pending models.GuardianLink
+	if err := app.DB.Where("teen_user_id = ? AND guardian_user_id = ?", teen.ID, other.ID).First(&pending).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Model(teen).Update("birth_date", "2008-10-22").Error; err != nil {
+		t.Fatal(err)
+	}
+	if n, err := app.rolloverAges(rolloverInstant(t, "2026-10-22T12:00:00Z")); err != nil || n != 1 {
+		t.Fatalf("rollover %d %v", n, err)
+	}
+	var after models.GuardianLink
+	app.DB.First(&after, confirmed.ID)
+	if after.Status != models.GuardianConfirmed || after.ConfirmedBy == nil || *after.ConfirmedBy != *confirmed.ConfirmedBy || after.CheckNote != confirmed.CheckNote {
+		t.Fatal("birthday changed confirmed guardian history")
+	}
+	app.DB.First(&pending, pending.ID)
+	if pending.Status != models.GuardianRejected || pending.DecidedAt == nil || !strings.Contains(pending.CheckNote, "no longer needed") {
+		t.Fatalf("pending link not closed: %+v", pending)
+	}
+	var task models.Notification
+	if err := app.DB.Where("kind = ? AND subject_id = ?", notify.HouseholdLinkPending, pending.ID).First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	if task.ResolvedAt == nil || task.Resolution != "withdrawn" || task.ResolvedByID != nil {
+		t.Fatalf("pending task not resolved by system: %+v", task)
+	}
+	apiDo(t, admin, "POST", "/api/v1/admin/guardian-links/"+itoa2(pending.ID)+"/confirm", map[string]string{"checkNote": "Checked identity"}, 403)
+	var row models.AuditLog
+	if err := app.DB.Where("action = ? AND target_id = ?", audit.GuardianLinkRejected, pending.ID).First(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row.ActorID != nil || !strings.Contains(row.MetaJSON, "turned_18") {
+		t.Fatalf("missing system age reason: %+v", row)
 	}
 }
