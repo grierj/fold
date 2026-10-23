@@ -656,6 +656,12 @@ func CanSeeCareNotes(p *Person, person HouseholdPerson, rel HouseholdRel, window
 // There is no auto-confirm path, and a leader role never grants this.
 func CanConfirmGuardianLink(p *Person) bool { return IsAdmin(p) }
 
+// CanChangeTeenConsent never gives a leader consent powers. A confirmed
+// guardian may act regardless of any group role. Only adults grant consent.
+func CanChangeTeenConsent(p *Person, confirmedGuardian bool) bool {
+	return p != nil && !p.Teen && (p.Admin || confirmedGuardian)
+}
+
 // HouseholdRegistrationProblem validates saved age and person-link facts.
 func HouseholdRegistrationProblem(person HouseholdPerson) string {
 	if person.Deleted || person.Converted {

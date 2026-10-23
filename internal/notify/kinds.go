@@ -39,6 +39,7 @@ const (
 	WaitlistCutoff          = "waitlist.cutoff"
 	HouseholdLinkPending    = "household.link_pending"
 	HouseholdConverted      = "household.converted"
+	TeenConsentChanged      = "teen_consent.changed"
 )
 
 // Action is an inline button. Only allow-listed kinds carry one (6.6).
@@ -168,6 +169,15 @@ func join(parts ...string) string {
 }
 
 func init() {
+	register(Kind{
+		Key: TeenConsentChanged, Category: CatSafety, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return "Teen consent changed", or(v.Person, "A teen") + ": " + v.Change + "."
+		},
+		RenderEmailSafe: func(Vars) (string, string) {
+			return "Consent changed in Fold", "Sign in to Fold to review a consent change."
+		},
+	})
 	register(Kind{
 		Key: GroupPending, Category: CatAdmin, Waiting: true, AllowEmail: true,
 		Actions: []Action{{Key: ActionApproveGroup, Label: "Approve"}},

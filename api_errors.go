@@ -18,6 +18,10 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	"consent is only available for teen accounts; refresh the user list": "consent_teen_only",
+	"record the consent evidence before granting consent": "consent_evidence_required",
+	"choose account, sms or photos and granted or revoked": "consent_invalid",
+	"consent evidence must be at most 1000 characters": "consent_evidence_long",
 	"this person's details changed after they accepted; ask the household to send a new invitation":                                           "household_conversion_details",
 	"this person no longer meets the adult account rules; check their birth date and account type before sending a new invitation":            "household_conversion_adult",
 	"the person who sent the invitation can no longer manage this household; ask an active household adult or admin to send a new invitation": "household_conversion_inviter",
