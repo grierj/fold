@@ -479,6 +479,7 @@ const (
 	TokenPasswordReset = "password_reset"
 	TokenEmailVerify   = "email_verify"
 	TokenAccountSetup  = "account_setup"
+	TokenTeenConsent   = "teen_consent"
 )
 
 // AccountToken is a single-use hashed token for a password reset or an
@@ -581,6 +582,8 @@ func (f RequestFlags) HasWarnings() bool { return f.Duplicate || f.Honeypot || f
 // GroupID is reserved for the guest-upgrade door (M1.4); M1.3 approvals
 // create the account only and never join a group.
 type AccountRequest struct {
+	ApprovedUserID    *uint
+	GuardianEmail     string  `gorm:"not null;default:''"`
 	PasswordHash      *string `json:"-"`
 	HouseholdPersonID *uint
 	InvitationID      *uint

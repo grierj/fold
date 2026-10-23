@@ -194,6 +194,7 @@ const (
 	// when a sole admin confirmed their own link (DEC-79). The admins'
 	// notification tasks are resolved in the same transaction.
 	GuardianLinkConfirmed = "guardian_link.confirmed"
+	GuardianLinkRequested = "guardian_link.requested"
 	GuardianLinkRejected  = "guardian_link.rejected"
 
 	// GuardianLinkRevoked: a live guardian link ended because the

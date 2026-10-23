@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -176,7 +177,12 @@ func (a *App) apiListGuardianLinks(c *gin.Context) {
 	for i := range rows {
 		out = append(out, a.toGuardianLinkJSON(&rows[i]))
 	}
-	c.JSON(http.StatusOK, gin.H{"guardianLinks": out})
+	nominations, err := unresolvedGuardianNominations(a.DB)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load guardian nominations")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"guardianLinks": out, "nominations": nominations})
 }
 
 func (a *App) apiConfirmGuardianLink(c *gin.Context) { a.decideGuardianLink(c, true) }
@@ -219,24 +225,35 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 	// DEC-79: an admin cannot confirm their own guardian link while another
 	// active admin exists; a sole admin may, and the audit marks it.
 	selfConfirm := confirm && link.GuardianUserID == me.ID
-	if selfConfirm {
-		var otherAdmins int64
-		if err := a.DB.Model(&models.User{}).Where("id <> ? AND role = ? AND status = ?", me.ID, models.RoleAdmin, models.UserActive).
-			Count(&otherAdmins).Error; err != nil {
-			jsonError(c, http.StatusInternalServerError, "could not check admins")
-			return
-		}
-		if otherAdmins > 0 {
-			jsonError(c, http.StatusForbidden, "another admin must confirm your own guardian link")
-			return
-		}
-	}
 	status, outcome, auditAction := models.GuardianRejected, "rejected", audit.GuardianLinkRejected
 	if confirm {
 		status, outcome, auditAction = models.GuardianConfirmed, "approved", audit.GuardianLinkConfirmed
 	}
 	errHandled := errors.New("already handled")
+	errSelfConfirm := errors.New("another admin must confirm your own guardian link")
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if link.TeenUserID != nil {
+			var users []models.User
+			if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id IN ?", []uint{me.ID, link.GuardianUserID, *link.TeenUserID}).Order("id").Find(&users).Error; err != nil {
+				return err
+			}
+			var validAdmin, validGuardian, validTeen bool
+			for i := range users {
+				u := &users[i]
+				if u.ID == me.ID {
+					validAdmin = policy.CanConfirmGuardianLink(asPerson(u)) && u.Status == models.UserActive && u.SessionVersion == me.SessionVersion
+				}
+				if u.ID == link.GuardianUserID {
+					validGuardian = u.Status == models.UserActive && policy.CanRequestGuardianLink(asPerson(u))
+				}
+				if u.ID == *link.TeenUserID {
+					validTeen = u.AccountType == models.AccountTeen
+				}
+			}
+			if !validAdmin || (confirm && (!validGuardian || !validTeen)) {
+				return errConsentForbidden
+			}
+		}
 		if link.PersonID != nil {
 			var person models.HouseholdPerson
 			if err := tx.First(&person, *link.PersonID).Error; err != nil {
@@ -247,6 +264,18 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 			}
 			if err := tx.First(&person, *link.PersonID).Error; err != nil {
 				return err
+			}
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&link, link.ID).Error; err != nil {
+			return err
+		}
+		if selfConfirm {
+			var otherAdmins int64
+			if err := tx.Model(&models.User{}).Where("id <> ? AND role = ? AND status = ?", me.ID, models.RoleAdmin, models.UserActive).Count(&otherAdmins).Error; err != nil {
+				return err
+			}
+			if otherAdmins > 0 {
+				return errSelfConfirm
 			}
 		}
 		now := time.Now().UTC()
@@ -282,12 +311,21 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 		a.alreadyHandled(c, notify.HouseholdLinkPending, link.ID)
 		return
 	}
+	if errors.Is(err, errSelfConfirm) || errors.Is(err, errConsentForbidden) {
+		jsonError(c, http.StatusForbidden, err.Error())
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not decide that link")
 		return
 	}
 	var fresh models.GuardianLink
 	a.DB.First(&fresh, link.ID)
+	if confirm && fresh.TeenUserID != nil {
+		if err := a.sendGuardianConsentEmail(fresh.ID); err != nil {
+			log.Printf("guardian consent email: link=%d err=%v", fresh.ID, err)
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"guardianLink": a.toGuardianLinkJSON(&fresh)})
 }
 

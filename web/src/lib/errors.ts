@@ -11,6 +11,7 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
+  invalid_guardian_email: "Enter a parent or guardian's email address, different from your own.",
   consent_existing_account: "This email already has an account. Approve without granting consent, then review the account in Users.",
   consent_teen_only: "This account is no longer a teen account. Refresh the user list.",
   consent_evidence_required: "Record how you received consent before granting it.",
@@ -95,7 +96,7 @@ export const ERROR_COPY = {
   invalid_feed_scope: "That feed choice isn't available. Pick My events or Everything I can see.",
   invalid_kind: "Pick who this person is: a child, a teen, or an adult.",
   check_note_required: "Write how you checked this link first. A short note is fine, like “Known family; parent came to the office.”",
-  self_confirm_blocked: "Another admin needs to confirm your own household link.",
+  self_confirm_blocked: "Another active admin needs to check your own guardian link. Ask them to review it.",
   invalid_video_url: "That video link needs to be a full address starting with https://. Paste the whole link and try again.",
   invalid_video_provider: "Pick no video link, paste a link, or a Jitsi link.",
   invalid_video_reveal: "Pick who sees the video link: registered people only, or everyone who can see the event.",

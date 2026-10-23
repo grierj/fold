@@ -25,6 +25,7 @@ import { NotFound } from "./pages/NotFound";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 
+const GuardianConsentPage = lazy(() => import("./pages/GuardianConsent").then((m) => ({ default: m.GuardianConsentPage })));
 const AdminPage = lazy(() => import("./pages/Admin").then((module) => ({ default: module.AdminPage })));
 const WaitingForConsent = lazy(() => import("./pages/WaitingForConsent"));
 
@@ -62,6 +63,7 @@ export default function App() {
         <Route path="/join" element={<Join />} />
         <Route path="/set-password" element={<SetPassword />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
+        <Route path="/guardian-consent" element={<Suspense fallback={null}><GuardianConsentPage /></Suspense>} />
         <Route path="/guest/confirm" element={<GuestConfirm />} />
         <Route path="/guest/manage/:token" element={<GuestManage />} />
         <Route path="/groups/new" element={<NewGroup />} />

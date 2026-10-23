@@ -122,9 +122,15 @@ DELETE /api/v1/me/household/people/:id      → 200 {}
 POST   /api/v1/me/household/people/:id/convert → 201 {conversion}  {email}
 POST   /api/v1/me/household/people/:id/convert/resend → 200 {conversion}
 DELETE /api/v1/me/household/people/:id/convert → 200 {}
-GET    /api/v1/admin/guardian-links?status=pending  → 200 {guardianLinks}   (admin)
+GET    /api/v1/admin/guardian-links?status=pending  → 200 {guardianLinks, nominations}   (admin)
 POST   /api/v1/admin/guardian-links/:id/confirm     → 200 {guardianLink}    {checkNote} (admin; note required; not your own link while another active admin exists, DEC-79)
 POST   /api/v1/admin/guardian-links/:id/reject      → 200 {guardianLink}    {note?} (admin)
+POST   /api/v1/me/guardian-claims                   → 200 {message}        {email} (active adult)
+GET    /api/v1/me/guardian-teens                    → 200 {teens}          (confirmed guardian)
+POST   /api/v1/me/guardian-links/:id/consents        → 200 {}               {scope, status} (confirmed guardian)
+POST   /api/v1/me/guardian-links/:id/consent-email   → 200 {message}        (confirmed guardian)
+GET    /api/v1/guardian-consent?token=...           → 200 {teenName, scope, status, expiresAt} | 400 (public preview)
+POST   /api/v1/guardian-consent                     → 200 {} | 400          {token} (public, CSRF required)
 ```
 
 `GET /me/household` never writes (Warden, #106). The household is created by
@@ -133,6 +139,24 @@ the account's last name. Any adult account in the household manages it; teen
 accounts get `null` from GET and 403 from the writes. Adding a `child` or
 `teen` person opens a pending guardian link that only an admin can confirm,
 with a note on how it was checked (DEC-32); an `adult` needs no approval.
+
+Guardian claims return the same message for unknown addresses, adults,
+duplicates, and throttled submissions. The IP cap is 10/hour; the target
+address cap is 3/hour and 10/day. Pending links grant no access and do not
+appear in the adult's teen list. Only an admin confirms them, including
+the DEC-79 self-confirmation rule. The guardian endpoints require the
+adult's own confirmed link. Scopes are `account`, `sms`, and `photos`;
+statuses are `granted` and `revoked`.
+
+Confirming a teen account link emails the adult an account-consent link.
+The link lasts 24 hours, is signed, and can be used once. GET previews the
+teen's name and the account grant without changing consent. The explicit
+POST needs CSRF. Redemption rechecks the adult's active status, email,
+session version, confirmed link, teen account, and latest account-consent
+revision under transaction locks. A subsequent consent decision invalidates
+older emails. A resend replaces emails for that link only. Token URLs use
+a query parameter, which the access logger drops, and the database stores
+only the token hash. Notification and audit rows contain no token.
 
 An active adult in the household or an active adult admin can invite an
 eligible household person to their own account. Admins may act across
@@ -411,7 +435,14 @@ Self-signup and invite-a-friend (M1.3, 5.10, DEC-4) create a pending
 `self_signup` setting is `request` (default) or `off`, and `off` refuses
 the public door with 403 (the member door still works). Create body:
 `{name, email, phone?, ageBand: "adult"|"teen"|"under13", birthDate?,
-message?, website?}`. `website` is a honeypot people never fill in.
+message?, website?, guardianEmail?}`. `website` is a honeypot people never fill in.
+
+For a teen, `guardianEmail` nominates an adult. The request retains it for
+admin review. Public submission creates neither a guardian link nor a User.
+Approval creates a pending link if the nominated adult has an active account.
+Otherwise, the nomination stays in the admin queue with instructions to help
+the adult join and request a guardian link from Profile. `approved_user_id`
+keeps this nomination attached when the teen later changes their email.
 
 The age gate is on every door (DEC-8): `under13` stores nothing and
 answers 400 with the household explanation; `teen` needs a `birthDate`

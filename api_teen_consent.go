@@ -105,7 +105,7 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 		return nil, errConsentEvidenceLong
 	}
 	role := models.ConsentGuardian
-	if policy.IsAdmin(asPerson(actor)) {
+	if policy.IsAdmin(asPerson(actor)) && !change.ConfirmedGuardian {
 		role = models.ConsentAdmin
 		if change.Status == models.ConsentGranted && evidence == "" {
 			return nil, errConsentEvidence
