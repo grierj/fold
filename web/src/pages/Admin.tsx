@@ -230,7 +230,7 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
       {request.accountType === "teen" && <div className="mt-4 space-y-3">
         <Checkbox label="Grant account consent with approval" description="Only choose this if you have a parent or guardian's consent on file." checked={grantConsent} onChange={(event) => setGrantConsent(event.target.checked)} />
         {grantConsent && <Field label="Consent evidence" hint="Describe how you received consent. Maximum 1,000 characters. This stays in the admin record." error={evidenceError ?? undefined}>
-          <Textarea value={evidence} onChange={(event) => setEvidence(event.target.value)} maxLength={1000} rows={2} />
+          <Textarea value={evidence} onChange={(event) => { setEvidence(event.target.value); setEvidenceError(null); }} maxLength={1000} rows={2} />
         </Field>}
       </div>}
       {error && <FormError layout="mt-2">{error}</FormError>}

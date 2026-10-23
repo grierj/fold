@@ -419,7 +419,7 @@ export function NotificationTab({ className }: { className: (a: { isActive: bool
   const badge = useBadge(pathname + search);
   const count = badge.unread + badge.waiting;
   return (
-    <NavLink to="/notifications" className={className} aria-label={`Alerts: ${badgeLabel(badge)}`}>
+    <NavLink to="/notifications" className={className} aria-label={`${count > 0 ? `${badgeText(badge)} ` : ""}Alerts: ${badgeLabel(badge)}`}>
       <span className="relative">
         <BellIcon />
         {count > 0 && (
@@ -427,7 +427,7 @@ export function NotificationTab({ className }: { className: (a: { isActive: bool
             {badgeText(badge)}
           </span>
         )}
-      </span>
+      </span>{" "}
       {/* "Alerts" so five tabs fit at 390 without wrapping (DEC-67). */}
       <span aria-hidden="true">Alerts</span>
     </NavLink>

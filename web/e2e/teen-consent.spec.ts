@@ -1,10 +1,20 @@
 import { expect, test, type Page } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 import { apiAs, fromMore, PASSWORD, signIn } from "./helpers";
+// @ts-expect-error shared browser measurement is plain JavaScript
+import { measure } from "./ui-measure.mjs";
 
 async function shoot(page: Page, name: string) {
   if (!process.env.SCREENS_DIR) return;
-  for (const width of [390, 1280]) {
+  for (const width of [390, 768, 1280]) {
     await page.setViewportSize({ width, height: 900 });
+    const result = await page.evaluate(measure);
+    expect(result.overflow, `${name}@${width} overflow`).toBeLessThanOrEqual(1);
+    expect(result.cutOff, `${name}@${width} cut off`).toEqual([]);
+    expect(result.clipped, `${name}@${width} clipped`).toEqual([]);
+    expect(result.under24, `${name}@${width} small targets`).toEqual([]);
+    const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
+    expect(violations.filter((item) => item.impact === "serious" || item.impact === "critical"), `${name}@${width} axe`).toEqual([]);
     await page.screenshot({ path: `${process.env.SCREENS_DIR}/${name}-${width}.png`, fullPage: true });
   }
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -13,6 +23,7 @@ async function shoot(page: Page, name: string) {
 const birthDate = `${new Date().getUTCFullYear() - 15}-01-01`;
 
 test("admin scoped consent activates a waiting session, revokes it, and keeps history", async ({ page, request, browser }) => {
+  test.setTimeout(process.env.SCREENS_DIR ? 90_000 : 30_000);
   const admin = await apiAs(request, "grier");
   const { user } = await admin("POST", "/admin/users", { name: "Consent Casey", email: "consent-casey@example.com", password: PASSWORD, ageBand: "teen", birthDate });
   const teenContext = await browser.newContext();
@@ -58,6 +69,7 @@ test("admin scoped consent activates a waiting session, revokes it, and keeps hi
 });
 
 test("admin approves a teen request and records account consent together", async ({ page }) => {
+  test.setTimeout(process.env.SCREENS_DIR ? 90_000 : 30_000);
   await page.goto("/join");
   await page.getByLabel("13 to 17", { exact: true }).click();
   await page.getByLabel("Birth date").fill(birthDate);
