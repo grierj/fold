@@ -82,6 +82,9 @@ var tsContracts = []struct {
 	{householdPersonJSON{}, "HouseholdPerson"}, // Includes the teen conversion block reason.
 	{householdAccountJSON{}, "HouseholdAccount"},
 	{guardianLinkJSON{}, "GuardianLink"},
+	{guardianNominationJSON{}, "GuardianNomination"},
+	{guardianTeenJSON{}, "GuardianTeen"},
+	{guardianEmailPreviewJSON{}, "GuardianEmailPreview"},
 	{teenConsentJSON{}, "TeenConsent"},
 	{invitationJSON{}, "Invitation"},
 	{conversionJSON{}, "HouseholdConversion"}, // Includes pending adult approval metadata.

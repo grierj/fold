@@ -76,6 +76,7 @@ func formatBirthDate(t *time.Time) string {
 }
 
 type accountRequestJSON struct {
+	GuardianEmail   string              `json:"guardianEmail,omitempty"`
 	ID              uint                `json:"id"`
 	Name            string              `json:"name"`
 	Email           string              `json:"email"`
@@ -99,7 +100,8 @@ type accountRequestJSON struct {
 func (a *App) toAccountRequestJSON(r *models.AccountRequest) accountRequestJSON {
 	flags := parseRequestFlags(r.Flags)
 	out := accountRequestJSON{
-		ID: r.ID, Name: r.Name, Email: r.Email, Phone: r.Phone,
+		GuardianEmail: r.GuardianEmail,
+		ID:            r.ID, Name: r.Name, Email: r.Email, Phone: r.Phone,
 		AccountType: r.AccountType, BirthDate: formatBirthDate(r.BirthDate),
 		Message: r.Message, Source: r.Source, RequestedBy: r.RequestedBy,
 		GroupID: r.GroupID, Status: r.Status, HasWarnings: flags.HasWarnings() || r.AccountType == models.AccountTeen,
@@ -139,17 +141,19 @@ RETURNING failures`, key, windowArg, windowArg).Scan(&failures).Error
 }
 
 type accountRequestInput struct {
-	Name      string `json:"name"`
-	Email     string `json:"email"`
-	Phone     string `json:"phone"`
-	AgeBand   string `json:"ageBand"`
-	BirthDate string `json:"birthDate"`
-	Message   string `json:"message"`
-	Website   string `json:"website"` // honeypot: people never fill this in
+	GuardianEmail string `json:"guardianEmail"`
+	Name          string `json:"name"`
+	Email         string `json:"email"`
+	Phone         string `json:"phone"`
+	AgeBand       string `json:"ageBand"`
+	BirthDate     string `json:"birthDate"`
+	Message       string `json:"message"`
+	Website       string `json:"website"` // honeypot: people never fill this in
 }
 
 // validated is the cleaned input plus the age gate's verdict.
 type validatedRequest struct {
+	guardianEmail               string
 	name, email, phone, message string
 	accountType                 string
 	birthDate                   *time.Time
@@ -184,8 +188,17 @@ func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (
 	if !ok {
 		return validatedRequest{}, false
 	}
+	guardianEmail := ""
+	if accountType == models.AccountTeen {
+		guardianEmail = normalizeEmail(body.GuardianEmail)
+		if guardianEmail != "" && (!validEmail(guardianEmail) || guardianEmail == email) {
+			jsonError(c, http.StatusBadRequest, "enter a different valid email for the guardian")
+			return validatedRequest{}, false
+		}
+	}
 	return validatedRequest{
-		name: name, email: email, phone: phone, message: message,
+		guardianEmail: guardianEmail,
+		name:          name, email: email, phone: phone, message: message,
 		accountType: accountType, birthDate: birth,
 		honeypot: strings.TrimSpace(body.Website) != "",
 	}, true
@@ -249,7 +262,8 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 	}
 	flagsJSON, _ := json.Marshal(flags)
 	req := models.AccountRequest{
-		Name: v.name, Email: v.email, Phone: v.phone,
+		GuardianEmail: v.guardianEmail,
+		Name:          v.name, Email: v.email, Phone: v.phone,
 		AccountType: v.accountType, BirthDate: v.birthDate, Message: v.message,
 		Source: source, RequestedBy: requestedBy, Status: models.RequestPending,
 		Flags: string(flagsJSON), IP: c.ClientIP(),
@@ -552,6 +566,16 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			meta["created"] = created
 			if upgraded {
 				meta["upgradedGuest"] = true
+			}
+			ids, err := nominateTeenGuardian(tx, req, userID)
+			if err != nil {
+				return err
+			}
+			mailed = append(mailed, ids...)
+		}
+		if approve && userID != 0 {
+			if err := tx.Model(&models.AccountRequest{}).Where("id = ?", req.ID).Update("approved_user_id", userID).Error; err != nil {
+				return err
 			}
 		}
 		if consentEvidence != nil {
