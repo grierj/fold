@@ -40,3 +40,16 @@ it.each([
   expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
   expect(screen.queryByText("private server text")).not.toBeInTheDocument();
 });
+
+it("requires evidence for approval with account consent and sends both in one decision", async () => {
+  vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [{ ...request, accountType: "teen" }] });
+  vi.mocked(AdminAccountRequests.approve).mockResolvedValue({ request, userId: 8 });
+  render(<MemoryRouter><AdminPage /></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("checkbox", { name: /Grant account consent with approval/ }));
+  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+  expect(AdminAccountRequests.approve).not.toHaveBeenCalled();
+  expect(screen.getByLabelText("Consent evidence")).toHaveFocus();
+  await userEvent.type(screen.getByLabelText("Consent evidence"), "Parent signed paper form");
+  await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+  expect(AdminAccountRequests.approve).toHaveBeenCalledWith(7, undefined, undefined, "Parent signed paper form");
+});

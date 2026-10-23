@@ -140,7 +140,13 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 				}
 				mailed = append(mailed, ids...)
 			}
-			if err := tx.Model(teen).Updates(map[string]any{"status": status, "session_version": gorm.Expr("session_version + 1")}).Error; err != nil {
+			updates := map[string]any{"status": status}
+			// A restricted waiting session becomes usable when consent is
+			// granted. Revocation and returns from disabled rotate sessions.
+			if teen.Status != models.UserPendingConsent || status != models.UserActive {
+				updates["session_version"] = gorm.Expr("session_version + 1")
+			}
+			if err := tx.Model(teen).Updates(updates).Error; err != nil {
 				return nil, err
 			}
 			if status == models.UserDisabled {
@@ -184,7 +190,17 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 	if teen.Status == models.UserActive {
 		family = append(family, teen.ID)
 	}
-	ids, err = notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: family, Actor: &actor.ID,
+	adminSet := make(map[uint]bool, len(admins))
+	for _, id := range admins {
+		adminSet[id] = true
+	}
+	familyOnly := family[:0]
+	for _, id := range family {
+		if !adminSet[id] {
+			familyOnly = append(familyOnly, id)
+		}
+	}
+	ids, err = notify.Send(tx, notify.Msg{Kind: notify.TeenConsentChanged, To: familyOnly, Actor: &actor.ID,
 		SubjectType: "teen_consent", SubjectID: row.ID, Link: "/profile",
 		Vars: notify.Vars{Person: teen.PublicName(), Teen: true, Change: change.Scope + " consent " + change.Status}})
 	mailed = append(mailed, ids...)
@@ -209,10 +225,6 @@ func consentError(c *gin.Context, err error) {
 func (a *App) apiListTeenConsents(c *gin.Context) {
 	u, ok := a.adminTargetUser(c)
 	if !ok {
-		return
-	}
-	if u.AccountType != models.AccountTeen {
-		consentError(c, errConsentTeen)
 		return
 	}
 	var rows []models.TeenConsent

@@ -12,6 +12,7 @@ import { ApiError } from "../api";
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
   invalid_guardian_email: "Enter a parent or guardian's email address, different from your own.",
+  consent_existing_account: "This email already has an account. Approve without granting consent, then review the account in Users.",
   consent_teen_only: "This account is no longer a teen account. Refresh the user list.",
   consent_evidence_required: "Record how you received consent before granting it.",
   consent_invalid: "Choose account, SMS or photos, then choose grant or revoke.",

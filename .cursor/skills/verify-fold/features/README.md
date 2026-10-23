@@ -53,3 +53,4 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Event page](./event-page.md) covers the segmented RSVP, attendance counts with the names expand, a series as its next date plus `N more dates in the next 90 days`, and the leader's More menus.
 - [Guest registration](./guest-registration.md) covers the signed-out guest form on a public event, its age gate, and the unverified-signup boundary in the database.
 - [Household registration](./household-registration.md) covers Profile household name/address, both RSVP entry points, independent named care/modes, mixed outcomes, manager recovery and care-note privacy.
+- [Teen consent](./teen-consent.md) covers admin scoped grant/revoke, consent with approval, waiting-session activation, suspension, and retained history.

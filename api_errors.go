@@ -18,6 +18,7 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	"that email already has an account; approve without consent and review the account separately":                                            "consent_existing_account",
 	"consent is only available for teen accounts; refresh the user list":                                                                      "consent_teen_only",
 	"record the consent evidence before granting consent":                                                                                     "consent_evidence_required",
 	"choose account, sms or photos and granted or revoked":                                                                                    "consent_invalid",

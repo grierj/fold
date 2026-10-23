@@ -336,9 +336,20 @@ func (a *App) decideGuardianLink(c *gin.Context, confirm bool) {
 func (a *App) apiAdminListUsers(c *gin.Context) {
 	var users []models.User
 	a.DB.Order("lower(name), email").Find(&users)
+	var historyIDs []uint
+	if err := a.DB.Model(&models.TeenConsent{}).Distinct().Pluck("teen_user_id", &historyIDs).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list users")
+		return
+	}
+	history := make(map[uint]bool, len(historyIDs))
+	for _, id := range historyIDs {
+		history[id] = true
+	}
 	out := make([]userJSON, 0, len(users))
 	for i := range users {
-		out = append(out, a.toUserJSON(&users[i]))
+		row := a.toUserJSON(&users[i])
+		row.HasTeenConsentHistory = history[users[i].ID]
+		out = append(out, row)
 	}
 	c.JSON(http.StatusOK, gin.H{"users": out})
 }

@@ -1,5 +1,5 @@
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
-import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
 import { ZonePicker } from "../components/ui/ZonePicker";
@@ -13,13 +13,15 @@ import { DeleteUserPanel } from "../components/DeleteUserPanel";
 import { GuardianLinkCard } from "../components/GuardianLinkCard";
 import { Button } from "../components/ui/Button";
 import { errorText } from "../lib/errors";
-import { Choices, Field, FormError, Input, Radio, Select } from "../components/ui/Field";
+import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors, Textarea } from "../components/ui/Field";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 
 type AdminTab = "approvals" | "groups" | "users" | "invite";
+
+const TeenConsentPanel = lazy(() => import("../components/TeenConsentPanel"));
 
 // ---------------------------------------------------------------------------
 // Approvals
@@ -153,16 +155,24 @@ function DeletionCard({ group, onDone }: { group: GroupSummary; onDone: () => vo
 
 function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDone: () => void }) {
   const [note, setNote] = useState("");
+  const [grantConsent, setGrantConsent] = useState(false);
+  const [evidence, setEvidence] = useState("");
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function decide(approve: boolean) {
+    if (approve && grantConsent && !evidence.trim()) {
+      showFieldErrors(ref.current, () => setEvidenceError("Write how you received consent first."));
+      return;
+    }
     if (!approve && !confirm(`Reject the account request from ${request.name}? They'll be emailed.`)) return;
     setBusy(true);
     setError(null);
     try {
       if (approve) {
-        await AdminAccountRequests.approve(request.id, note || undefined);
+        await AdminAccountRequests.approve(request.id, note || undefined, undefined, grantConsent ? evidence.trim() : undefined);
       } else {
         await AdminAccountRequests.reject(request.id, note || undefined);
       }
@@ -175,13 +185,13 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
   }
 
   const warnings: string[] = [];
-  if (request.accountType === "teen") warnings.push("Teen — needs consent after approval");
+  if (request.accountType === "teen") warnings.push("Teen: account consent required");
   if (request.warnings.duplicate) warnings.push("Duplicate pending request");
   if (request.warnings.honeypot) warnings.push("Honeypot filled");
   if (request.warnings.rateLimited) warnings.push("Many requests from one connection");
 
   return (
-    <div className="bg-surface rounded-lg border border-border p-6">
+    <div ref={ref} className="bg-surface rounded-lg border border-border p-6">
       <div className="flex items-start gap-3 flex-wrap">
         <div className="grow min-w-0">
           <span className="text-xl font-bold">{request.name}</span>
@@ -217,6 +227,12 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
           <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} />
         </Field>
       </div>
+      {request.accountType === "teen" && <div className="mt-4 space-y-3">
+        <Checkbox label="Grant account consent with approval" description="Only choose this if you have a parent or guardian's consent on file." checked={grantConsent} onChange={(event) => setGrantConsent(event.target.checked)} />
+        {grantConsent && <Field label="Consent evidence" hint="Describe how you received consent. Maximum 1,000 characters. This stays in the admin record." error={evidenceError ?? undefined}>
+          <Textarea value={evidence} onChange={(event) => setEvidence(event.target.value)} maxLength={1000} rows={2} />
+        </Field>}
+      </div>}
       {error && <FormError layout="mt-2">{error}</FormError>}
       <div className="flex gap-3 mt-4">
         <Button variant="primary" onClick={() => decide(true)} disabled={busy}>{busy ? "…" : "Approve"}</Button>
@@ -725,6 +741,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [resetId, setResetId] = useState<number | null>(null);
+  const [consentId, setConsentId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [feedStatus, setFeedStatus] = useState("");
@@ -824,6 +841,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                   {resetId === u.id && (
                     <PasswordReset user={u} onDone={() => setResetId(null)} />
                   )}
+                  {consentId === u.id && <Suspense fallback={<p role="status">Loading consent…</p>}><TeenConsentPanel user={u} onUpdated={reload} onClose={() => setConsentId(null)} /></Suspense>}
                   {leaving?.id === u.id && (
                     <DeleteUserPanel
                       target={u}
@@ -865,6 +883,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     tone="quiet"
                     label={`More for ${u.displayName || u.name}`}
                     items={[
+                      ...(u.accountType === "teen" || u.hasTeenConsentHistory ? [{ label: u.accountType === "teen" ? "Manage consent" : "Consent history", onSelect: () => { setConsentId(u.id); setEditingId(null); setResetId(null); setCreating(false); } }] : []),
                       { label: "Reset password", onSelect: () => { setResetId(u.id); setEditingId(null); setCreating(false); } },
                       { label: "Revoke calendar link", onSelect: () => void revokeCalendarLink(u), danger: true, disabled: busy },
                       ...(u.id === me?.id ? [] : [
