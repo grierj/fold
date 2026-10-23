@@ -111,6 +111,7 @@ import type {
   RegistrationBatch,
   SoleLedGroup,
   User,
+  TeenConsent,
   VideoProvider,
   VideoReveal,
   Visibility,
@@ -250,10 +251,10 @@ export const AccountRequests = {
 export const AdminAccountRequests = {
   list: (status = "pending") =>
     api<{ requests: AccountRequest[] }>(`/admin/account-requests?status=${encodeURIComponent(status)}`),
-  approve: (id: number, note?: string, fromNotification?: number) =>
+  approve: (id: number, note?: string, fromNotification?: number, accountConsentEvidenceText?: string) =>
     api<{ request: AccountRequest; userId: number }>(`/admin/account-requests/${id}/approve`, {
       method: "POST",
-      body: { note: note || undefined, fromNotification },
+      body: { note: note || undefined, fromNotification, accountConsentEvidenceText },
     }),
   reject: (id: number, note?: string) =>
     api<{ request: AccountRequest; userId: number }>(`/admin/account-requests/${id}/reject`, {
@@ -556,6 +557,12 @@ export const AdminUsers = {
     }),
   revokeCalendarFeed: (id: number) =>
     api<{ hadLink: boolean }>(`/admin/users/${id}/calendar-feed`, { method: "DELETE" }),
+};
+
+export const AdminTeenConsents = {
+  list: (userId: number) => api<{ consents: TeenConsent[]; administrativelyDisabled: boolean }>(`/admin/users/${userId}/teen-consents`),
+  change: (userId: number, data: Pick<TeenConsent, "scope" | "status" | "evidenceText">) =>
+    api<Record<string, never>>(`/admin/users/${userId}/teen-consents`, { method: "POST", body: data }),
 };
 
 export const AdminGroups = {

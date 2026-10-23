@@ -400,7 +400,7 @@ POST /api/v1/account-requests/invite-friend → 200 {message} | 400 | 403 | 409 
 POST /api/v1/account-requests/confirm      {token, password} → 200 {user, pendingConsent?} | 400  (public)
 GET  /api/v1/admin/account-requests?status=pending → {requests: [accountRequest]}  (admin)
 POST /api/v1/admin/account-requests/:id/approve → 200 {request, userId} | 409  (admin)
-     body: {note?, fromNotification?}
+     body: {note?, fromNotification?, accountConsentEvidenceText?}
 POST /api/v1/admin/account-requests/:id/reject  → 200 {request, userId: 0}  (admin)
      body: {note?, fromNotification?} — rejection is never inline (403 with fromNotification)
 PUT  /api/v1/admin/self-signup             {mode: "request"|"off"} → 200 {selfSignup}  (admin)
@@ -438,6 +438,14 @@ Admins get a waiting bell item per request. Only a clean adult request
 carries inline Approve (DEC-44): a teen or flagged request shows Review
 only, and approving it with `fromNotification` answers 403 whatever the
 client sends. A lost inline race answers 409 with `resolvedBy`.
+
+For a teen request, `accountConsentEvidenceText` grants account consent in
+the approval transaction. The evidence must be nonblank and at most 1,000
+characters. Invalid consent rolls back the approval, user creation, audit,
+and notifications. A guest can become the teen account on the same user
+row. An email belonging to another existing account answers 409 without
+granting consent. Without this field, approval leaves the teen waiting for
+consent. Granting consent does not set a password.
 
 `accountRequest`: `{id, name, email, phone, accountType, birthDate?,
 message, source, requestedBy?, requestedByName?, groupId?, status,
@@ -778,6 +786,9 @@ POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
      a full group needs overLimit (audited as membership.added_over_limit)
 DELETE /api/v1/admin/groups/:id/members/:userId → 200 {members}      (admin; same rules as the leader route)
 GET  /api/v1/admin/users                   → {users: [user]}           (admin)
+GET  /api/v1/admin/users/:id/teen-consents  → {consents: [teenConsent], administrativelyDisabled} (admin)
+POST /api/v1/admin/users/:id/teen-consents → 200 {} | 400 | 403 | 409  (admin)
+     body: {scope: "account"|"sms"|"photos", status: "granted"|"revoked", evidenceText?}
 GET  /api/v1/admin/users/:id/sole-leader-groups → {groups: [{id, name, status, candidates: [{id, name, admin}]}]}  (admin; DEC-36)
 POST /api/v1/admin/users                    → 201 {user}                (admin)
      body: {email, name, password? (≥10 chars), role, displayName?, phone?}
@@ -793,6 +804,30 @@ DELETE /api/v1/admin/users/:id             → 200 {}                    (admin;
 Guards: cannot demote, disable or delete the last active admin, or
 yourself. Changing someone's password, email, role, or status ends all of
 their sessions (`session_version`). A disabled admin has no admin powers. `PUT /api/v1/groups/:id` already allows admins to edit any group.
+
+Teen consent history is append-only. The latest row per teen and scope
+wins, ordered by `at` and then `id`. An admin grant requires evidence.
+Revocation may include a reason. Both write consent history, audit, and
+notifications in one transaction. Sensitive notification emails name nobody
+and link into Fold. Evidence appears only in the admin history and audit.
+`teenConsent` is `{id, teenUserId, scope, status, grantedBy, granterRole,
+evidenceText, at}`. The admin user list includes `hasTeenConsentHistory:
+true` when history exists, including after the person becomes an adult.
+The history remains readable then. New consent changes require a teen.
+
+Account revocation disables the teen and ends their sessions. Their kept
+memberships and registrations stop counting, and freed event seats promote
+waiters. A later grant restores places only when they fit. Initial
+`pending_consent` teens already count on rosters, so their first grant does
+not restore or recount their places. It preserves their restricted session
+so **Check account status** can enter the app.
+
+An administrator's suspension is separate from revoked consent. Granting
+consent keeps an independently suspended account disabled. Admin **Enable**
+clears that suspension. A teen becomes `active` only when the latest account
+consent is granted, otherwise `pending_consent`, following DEC-69. SMS and
+photo consent do not activate an account. SMS also requires the teen's own
+opt-in before any texts can be sent.
 
 
 Rosters (`members` in group detail, `GET /groups/:id/members`, admin rosters) include `admin: true` for church admins, so the SPA can label them and hide Remove (DEC-38).

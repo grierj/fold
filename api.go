@@ -46,6 +46,8 @@ type userJSON struct {
 	HasPassword  bool    `json:"hasPassword"`
 	AccountType  string  `json:"accountType"`
 	BirthDate    string  `json:"birthDate,omitempty"`
+	// Admin list only. Kept after age rollover so consent history is reachable.
+	HasTeenConsentHistory bool `json:"hasTeenConsentHistory,omitempty"`
 	// Timezone is the person's own zone for emails (DEC-58); "" means
 	// the church's, until the browser fills it in.
 	Timezone string `json:"timezone"`

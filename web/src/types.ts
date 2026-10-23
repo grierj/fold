@@ -25,6 +25,7 @@ export interface User {
   hasPassword: boolean;
   accountType: "adult" | "teen";
   birthDate?: string;
+  hasTeenConsentHistory?: boolean;
   // "" until the browser fills it in; then the person's zone for emails (DEC-58).
   timezone: string;
 }

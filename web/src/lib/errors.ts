@@ -11,10 +11,11 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
-	consent_teen_only: "This account is no longer a teen account. Refresh the user list.",
-	consent_evidence_required: "Record how you received consent before granting it.",
-	consent_invalid: "Choose account, SMS or photos, then choose grant or revoke.",
-	consent_evidence_long: "Keep the consent evidence to 1,000 characters or fewer.",
+  consent_existing_account: "This email already has an account. Approve without granting consent, then review the account in Users.",
+  consent_teen_only: "This account is no longer a teen account. Refresh the user list.",
+  consent_evidence_required: "Record how you received consent before granting it.",
+  consent_invalid: "Choose account, SMS or photos, then choose grant or revoke.",
+  consent_evidence_long: "Keep the consent evidence to 1,000 characters or fewer.",
   household_conversion_details: "This person's details changed after they accepted. Reject this request and ask the household to send a new invitation.",
   household_conversion_adult: "This person no longer meets the adult account rules. Check their birth date and account type. Reject this request before asking for a new invitation.",
   household_conversion_inviter: "The person who sent the invitation can no longer manage this household. Reject this request and ask an active household adult or admin to send a new invitation.",
