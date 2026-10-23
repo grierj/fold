@@ -4,6 +4,7 @@ import { Guardians } from "../guardian-api";
 import type { GuardianEmailPreview } from "../types";
 import { Button } from "../components/ui/Button";
 import { FormError } from "../components/ui/Field";
+import { formatWhen } from "../lib/when";
 
 type Review = { kind: "loading" } | { kind: "ready"; preview: GuardianEmailPreview } | { kind: "done" } | { kind: "expired" };
 
@@ -34,7 +35,8 @@ export function GuardianConsentPage() {
       {review.kind === "ready" && <>
         <p>Give account consent for <strong>{review.preview.teenName}</strong>?</p>
         <p className="text-sm text-text-muted">This lets your teen sign in and use Fold. It does not give SMS or photo consent. You can revoke consent from your profile at any time.</p>
-        <p className="text-sm text-text-muted">Opening this page has not given consent. This link expires {new Date(review.preview.expiresAt).toLocaleString()}.</p>
+        <p className="text-sm text-text-muted">Opening this page has not given consent.</p>
+        <p className="text-sm text-text-muted">Link expires: {formatWhen(review.preview.expiresAt)}.</p>
         <Button variant="primary" disabled={busy} onClick={grant}>{busy ? "Saving…" : "Grant account consent"}</Button>
       </>}
       {review.kind === "done" && <p role="status">Account consent granted. Your teen can now sign in unless the church has separately disabled their account.</p>}

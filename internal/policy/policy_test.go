@@ -5,6 +5,26 @@ import (
 	"time"
 )
 
+func TestCanRequestGuardianLink(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		actor *Person
+		want  bool
+	}{
+		{"signed out", nil, false},
+		{"adult", &Person{ID: 1}, true},
+		{"admin", &Person{ID: 2, Admin: true}, true},
+		{"teen", &Person{ID: 3, Teen: true}, false},
+		{"teen admin", &Person{ID: 4, Teen: true, Admin: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanRequestGuardianLink(tc.actor); got != tc.want {
+				t.Fatalf("CanRequestGuardianLink=%t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
 // People used across the tables. A nil *Person is a signed-out guest.
 var (
 	admin  = &Person{ID: 1, Admin: true}

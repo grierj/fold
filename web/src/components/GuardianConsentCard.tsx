@@ -47,7 +47,7 @@ function TeenConsentControls({ teen, onChanged }: { teen: GuardianTeen; onChange
     {error && <FormError layout="mt-2">{error}</FormError>}
     {message && <p role="status" className="text-sm mt-2">{message}</p>}
     <div className="flex flex-wrap gap-3 mt-3">
-      {granted ? <Button variant="danger-outline" disabled={busy} onClick={() => change("revoked")}>Revoke consent</Button> : <Button variant="primary" disabled={busy} onClick={() => change("granted")}>Grant consent</Button>}
+      {granted ? <Button key="revoke" variant="danger-outline" disabled={busy} onClick={() => change("revoked")}>Revoke consent</Button> : <Button key="grant" variant="primary" disabled={busy} onClick={() => change("granted")}>Grant consent</Button>}
       {scope === "account" && <Button variant="secondary" disabled={busy} onClick={email}>Email me a consent link</Button>}
     </div>
   </div>;

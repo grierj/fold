@@ -657,6 +657,7 @@ func CanSeeCareNotes(p *Person, person HouseholdPerson, rel HouseholdRel, window
 func CanConfirmGuardianLink(p *Person) bool { return IsAdmin(p) }
 
 func CanRequestGuardianLink(p *Person) bool { return p != nil && !p.Teen }
+
 // CanChangeTeenConsent never gives a leader consent powers. A confirmed
 // guardian may act regardless of any group role. Only adults grant consent.
 func CanChangeTeenConsent(p *Person, confirmedGuardian bool) bool {
