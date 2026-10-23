@@ -47,7 +47,6 @@ test("household adult invitation transfers sign-ups when the account is ready", 
   await expect(page.getByRole("link", { name: "Accounts and household help" })).toHaveAttribute("href", "/help/members");
   const help = await page.request.get("/help/members");
   expect(await help.text()).toContain("Create a separate account");
-  await expect(page.getByText("Teens can get their own account once parent consent is available.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Create their own account" })).toHaveCount(1);
   await page.getByRole("button", { name: "Create their own account" }).click();
   const destination = email(`conversion-${kind}-own`);

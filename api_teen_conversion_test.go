@@ -87,6 +87,11 @@ func TestTeenConversionApprovalConsentAndFreshLink(t *testing.T) {
 			admin, gid := openGroup(t, app, "Teen conversion")
 			f := pendingTeenConversion(t, app, admin, gid, "stage-"+first, true)
 			f.unchanged(t, app)
+			var occurrence models.EventOccurrence
+			app.DB.First(&occurrence, f.rows[0].OccurrenceID)
+			if err := app.DB.Model(&models.Event{}).Where("id = ?", occurrence.EventID).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+				t.Fatal(err)
+			}
 			// The stored association survives an account email change.
 			apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(f.user.ID), map[string]string{"email": first + "-changed@example.com"}, 200)
 			grant := func() {
@@ -123,6 +128,8 @@ func TestTeenConversionApprovalConsentAndFreshLink(t *testing.T) {
 			if user.Status != models.UserActive || user.Email != first+"-changed@example.com" {
 				t.Fatalf("completed account: %+v", user)
 			}
+			client := loginAPI(t, app, user.Email, "password1234")
+			apiDo(t, client, "GET", "/api/v1/events/"+itoa(occurrence.EventID), nil, http.StatusNotFound)
 			for _, before := range f.rows {
 				var after models.Registration
 				app.DB.First(&after, before.ID)

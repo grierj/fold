@@ -35,8 +35,9 @@ export function personProblems(d: Draft, today: string): { firstName?: string; b
   return out;
 }
 
-function PersonForm({ initial, onSave, onCancel, heading, careVisible = true }: {
+function PersonForm({ initial, onSave, onCancel, heading, careVisible = true, identityLocked = false }: {
   careVisible?: boolean;
+  identityLocked?: boolean;
   initial: Draft;
   onSave: (input: HouseholdPersonInput) => Promise<void>;
   onCancel: () => void;
@@ -79,19 +80,20 @@ function PersonForm({ initial, onSave, onCancel, heading, careVisible = true }: 
   return (
     <form ref={formRef} onSubmit={submit} noValidate aria-label={heading} className="space-y-4 mt-4 rounded-lg border border-border p-4">
       <h3 className="font-semibold">{heading}</h3>
+      {identityLocked && <p className="text-sm text-text-muted">The account is waiting for consent and guardian confirmation. You can update care notes and photo settings here. Ask your church office for help with identity changes.</p>}
       <Field label="First name" error={shown.firstName}>
-        <Input value={d.firstName} onChange={(e) => set({ firstName: e.target.value })} autoComplete="off" />
+        <Input readOnly={identityLocked} value={d.firstName} onChange={(e) => set({ firstName: e.target.value })} autoComplete="off" />
       </Field>
       <Field label="Last name" optional hint="Optional. Leave empty if they go by one name.">
-        <Input value={d.lastName} onChange={(e) => set({ lastName: e.target.value })} autoComplete="off" />
+        <Input readOnly={identityLocked} value={d.lastName} onChange={(e) => set({ lastName: e.target.value })} autoComplete="off" />
       </Field>
       <Choices legend="Who are they?" hint="Children and teens are checked by an admin before the link is confirmed.">
         {(["child", "teen", "adult"] as const).map((k) => (
-          <Radio key={k} name="household-kind" label={KIND_LABEL[k]} checked={d.kind === k} onChange={() => set({ kind: k })} />
+          <Radio disabled={identityLocked} key={k} name="household-kind" label={KIND_LABEL[k]} checked={d.kind === k} onChange={() => set({ kind: k })} />
         ))}
       </Choices>
       <Field label="Birth date" optional={d.kind === "adult"} hint={d.kind === "adult" ? "A birth date is needed before you can sign this adult up for an event." : undefined} error={shown.birthDate}>
-        <Input type="date" value={d.birthDate} onChange={(e) => set({ birthDate: e.target.value })} layout="w-48" />
+        <Input readOnly={identityLocked} type="date" value={d.birthDate} onChange={(e) => set({ birthDate: e.target.value })} layout="w-48" />
       </Field>
       <Field label="Care notes" optional hint="Admins and confirmed guardians can read these notes. Their event’s leaders and hosts can read them from 24 hours before it starts until 24 hours after it ends, while they are going.">
         <Textarea value={d.careNotes} onChange={(e) => { setCareTouched(true); set({ careNotes: e.target.value }); }} rows={3} maxLength={5000} />
@@ -215,6 +217,7 @@ export function HouseholdCard() {
                   <PersonForm
                     initial={toDraft(p)}
                     careVisible={p.careNotes !== undefined}
+                    identityLocked={p.conversion?.state === "awaiting_consent"}
                     heading={`Edit ${p.name}`}
                     onCancel={() => { focusNext.current = p.id; setEditing(null); }}
                     onSave={async (input) => {
@@ -240,19 +243,19 @@ export function HouseholdCard() {
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button variant="secondary" aria-label={`Edit ${p.name}`} onClick={() => { setMetadata(false); setEditing(p.id); }}>Edit</Button>
-                      <Button variant="danger-outline" aria-label={`Remove ${p.name}`} onClick={() => remove(p)}>Remove</Button>
+                      <Button disabled={p.conversion?.state === "awaiting_consent"} variant="danger-outline" aria-label={`Remove ${p.name}`} onClick={() => remove(p)}>Remove</Button>
                     </div>
                   </div>
                 )}
                 {p.conversion?.state === "awaiting_approval" && <div className="mt-3 text-sm text-text-muted"><p>Account waiting for an admin</p><p>Your household keeps managing their sign-ups until then.</p></div>}
-                {p.conversion && p.conversion.state !== "awaiting_approval" && <div className="mt-3 space-y-2">
+                {p.conversion?.state === "awaiting_consent" && <div className="mt-3 text-sm text-text-muted"><p>Account waiting for consent and guardian confirmation</p><p>Your household keeps managing their sign-ups. Their name and birth date stay fixed while the church office finishes these checks. Care notes and photo settings can still be updated.</p></div>}
+                {p.conversion && (p.conversion.state === "pending" || p.conversion.state === "expired") && <div className="mt-3 space-y-2">
                   <p className="text-sm text-text-muted break-words">{p.conversion.state === "expired" ? "Invitation expired" : "Invitation pending"}: {p.conversion.email}. Expires {formatWhen(p.conversion.expiresAt)}.</p>
                   <p className="text-sm text-text-muted">Changing their name, type or birth date cancels this invitation. Your household keeps managing their sign-ups.</p>
                   <ConversionActions person={p} onChanged={async (message) => { setStatus(message); focusNext.current = p.id; await load(); }} />
                 </div>}
-                {p.kind === "teen" && <p className="mt-3 text-sm text-text-muted">Teens can get their own account once parent consent is available.</p>}
-                {!p.conversion && p.kind !== "teen" && p.canConvert && converting !== p.id && <Button variant="secondary" layout="mt-3" onClick={() => setConverting(p.id)}>Create their own account</Button>}
-                {!p.conversion && p.kind !== "teen" && converting === p.id && <ConversionForm person={p} onCancel={() => { focusNext.current = p.id; setConverting(null); }} onSent={async () => { focusNext.current = p.id; setConverting(null); setStatus(`Invitation sent for ${p.name}. Their sign-ups will move after an admin approves.`); await load(); }} />}
+                {!p.conversion && p.canConvert && converting !== p.id && <Button variant="secondary" layout="mt-3" onClick={() => setConverting(p.id)}>Create their own account</Button>}
+                {!p.conversion && converting === p.id && <ConversionForm person={p} onCancel={() => { focusNext.current = p.id; setConverting(null); }} onSent={async () => { focusNext.current = p.id; setConverting(null); setStatus(`Invitation sent for ${p.name}. Their sign-ups will move after approval and any required consent and guardian checks.`); await load(); }} />}
               </li>
             ))}
           </ul>
@@ -291,10 +294,10 @@ function ConversionForm({ person, onCancel, onSent }: { person: HouseholdPerson;
     finally { setBusy(false); }
   }
   return <form ref={ref} onSubmit={submit} className="mt-3 space-y-3" aria-label={`Create an account for ${person.name}`}>
-    <p className="text-sm">Use their own email address. All past and upcoming sign-ups move to their new account after an admin approves. Group memberships do not move.</p>
-    <p className="text-sm">A church admin will approve their account before they can sign in.</p>
+    <p className="text-sm">Use their own email address. All past and upcoming sign-ups move after {person.kind === "teen" ? "an admin approves the account, consent is granted, and an admin confirms the new guardian link" : "an admin approves"}. Group memberships do not move.</p>
+    <p className="text-sm">{person.kind === "teen" ? "Your household keeps managing their sign-ups until all checks are complete. The guardian link for the new account needs a fresh admin check." : "A church admin will approve their account before they can sign in."}</p>
     <Field label="Their email address" hint="Required. Use an email that has no account or open invitation." error={error ?? undefined}><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="off" /></Field>
-    <div className="flex flex-wrap gap-3"><Button variant="primary" type="submit" disabled={busy}>{busy ? "Sending…" : "Send account invitation"}</Button><Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button></div>
+    <div className="flex flex-wrap gap-3"><Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>{busy ? "Sending…" : "Send account invitation"}</Button><Button variant="secondary" layout="w-full sm:w-auto" onClick={onCancel} disabled={busy}>Cancel</Button></div>
   </form>;
 }
 

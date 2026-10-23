@@ -162,17 +162,13 @@ An active adult in the household or an active adult admin can invite an
 eligible household person to their own account. Admins may act across
 households; unrelated members receive 404. A real birth date must prove
 an adult is 18 or older on the church-local day. Children cannot convert.
-Teen conversion is off until parent consent arrives in M1.10, under
-DEC-82's no-lockout rule. Create, resend, and acceptance of an existing open
-teen invitation return 409 `household_conversion_teen` with
-"teens can get their own account once parent consent is available". Nothing
-changes; the household keeps managing the teen and their sign-ups.
-Disabled responsible accounts block conversion.
+Teen household conversion is enabled for ages 13 to 17 with a confirmed household guardian link. Acceptance stores a pending account request and no User. Admin approval creates a `pending_consent` account and records `AccountRequest.approved_user_id`, while keeping the household person and registrations unchanged. Fresh teen-account guardian links start pending. Account consent and a newly confirmed teen-account link to an original confirmed household guardian are both required before transfer. Admin evidence can grant consent but cannot replace this guardian check.
 
-`conversion` is `{email, expiresAt, state: "pending"|"expired"|"awaiting_approval"}`.
+The household response uses `conversion.state: "awaiting_consent"` for approved staging. It has no invitation resend or cancel action and does not expire as an unanswered request. Another invitation or different-email attempt gets 409. Identity edits (name, kind, birth date) and removal get `409 household_conversion_consent`; care notes, photo settings, and household RSVP remain available. Registration transfer retains IDs, answers, timestamps, and waitlist places, without event-access or capacity rechecks. Independent admin suspension delays transfer; enabling a ready account completes it.
+
+`conversion` is `{email, expiresAt, state: "pending"|"expired"|"awaiting_approval"|"awaiting_consent"}`.
 Household people include `canConvert` and optional `conversion` metadata.
-Teens have `canConvert: false` and `convertBlocked: "teen"`. These expose
-no token or hash. Household accounts include `status`; converted people
+Teens become eligible after the household guardian link is confirmed and their birth date proves age 13 to 17. Metadata exposes no token or hash. Household accounts include `status`; converted people
 appear only under accounts and cannot be edited or removed as household people.
 
 Issuing twice to the same pending destination returns its state without
@@ -183,8 +179,8 @@ remains available after eligibility changes. Name, kind, or birth-date edits
 and deletion revoke the invitation in the same transaction. Care notes,
 photo consent, and household name or address changes keep it open.
 
-Conversion uses the existing invitation endpoints below. For an adult,
-acceptance returns `{pendingApproval: true}` without a session. It stores a
+Conversion uses the existing invitation endpoints below. Adult and teen
+acceptance return `{pendingApproval: true}` without a session. It stores a
 pending `household_conversion` account request with the chosen password's
 bcrypt hash and the household person and invitation IDs, and marks the
 invitation accepted. It creates no user or household account and changes no
@@ -194,7 +190,7 @@ conversion invitations for that person return 409 with
 `household_conversion_approval`. The household person remains in `people`
 with `conversion.state: "awaiting_approval"`.
 
-Approval creates an active member account using the held password hash,
+Adult approval creates an active member account using the held password hash,
 transfers every registration in place, marks the person converted, and adds
 an adult account to the same household, all in the decision transaction.
 IDs, answers, attendance mode, queue order, and timestamps stay unchanged;
@@ -209,7 +205,7 @@ Approval also returns 409 without moving anything or closing the request when:
 
 - The full name or birth date differs from the accepted request snapshot:
   `household_conversion_details`.
-- The person is no longer an adult with a birth date proving age 18 or older
+- The person no longer meets the selected adult or teen age and guardian rules
   on the church-local date: `household_conversion_adult`.
 - The original inviter is disabled, deleted, or missing:
   `household_conversion_inviter`.
@@ -412,8 +408,7 @@ audited as `membership.added_over_limit`.
 
 `invitation`: `{id, email, name, groupId?, groupName?, expiresAt, conversion, accountType}`.
 Ordinary invitations have `conversion: false`. Conversion invitations have
-no group and explain the transfer on the accept page. Household adult
-acceptance waits for approval without a session; teen conversion is refused.
+no group and explain the transfer on the accept page. Household adult or teen acceptance waits for approval without a session. Teen transfer also waits for consent and a fresh guardian check.
 Ordinary acceptance creates a full adult session or a restricted pending-teen session.
 
 ### Account requests
@@ -979,3 +974,6 @@ notification retention runs. Catch-up notices also use this age-neutral
 guidance for older child records.
 
 Group rosters omit teen names and IDs for ordinary viewers while retaining the total member count. Group leaders and admins receive `member.accountType: "teen"` and a Teen badge. Event leaders, hosts, and admins receive minor identities and Teen/Child badges. Other ordinary attendees receive counts only for minors. Existing household adults retain access to their own household attendees under DEC-82; this does not grant a teen account badge. No roster response exposes minor contact details or a teen's public avatar.
+
+
+For staged teen conversion, `approved_user_id` is the authoritative account association; changing an email never changes it. `converted_user_id` and the household-account row are set only when the transfer completes. User locks are acquired in ID order before the household and affected occurrences. Consent grants, teen-account guardian confirmation, and admin enable all run the same completion operation when the last prerequisite is ready. At eighteen an unsuspended account completes as an adult without teen-consent or guardian requirements; a suspended account stays with its household until enabled.

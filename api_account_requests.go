@@ -876,12 +876,16 @@ After that you can sign in with this email address.`, a.siteName(), link, extra)
 }
 
 func (a *App) sendConversionApprovedEmail(req *models.AccountRequest) error {
+	extra := ""
+	if req.AccountType == models.AccountTeen {
+		extra = "\n\nYour account is waiting for consent and a fresh guardian-link check. You can sign in to check its status. Your household keeps managing your sign-ups until those checks are complete."
+	}
 	return a.Mailer.Send(context.Background(), foldmail.Message{
 		To:      req.Email,
 		Subject: fmt.Sprintf("Your %s account is approved", a.siteName()),
 		Text: fmt.Sprintf(`Good news — your account at %s is approved.
 
-You can now sign in at %s/login with this email address and the password you chose.`, a.siteName(), a.emailBaseURL()),
+You can now sign in at %s/login with this email address and the password you chose.%s`, a.siteName(), a.emailBaseURL(), extra),
 	})
 }
 

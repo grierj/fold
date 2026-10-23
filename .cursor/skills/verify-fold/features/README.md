@@ -56,3 +56,4 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Guardian consent](./guardian-consent.md) covers guardian claims, admin confirmation, scope grants and revocation, and signed email preview and redemption.
 - [Teen consent](./teen-consent.md) covers admin scoped grant/revoke, consent with approval, waiting-session activation, suspension, and retained history.
 - [Birthday rollover](./age-rollover.md) covers church-local adulthood, guardian age notices, household access, retained history, and staged transfer retries.
+- [Teen household conversion](./teen-conversion.md) covers approval before account creation, continued household management, consent plus a fresh guardian check, and the atomic sign-up transfer.
