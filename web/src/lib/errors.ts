@@ -20,7 +20,7 @@ export const ERROR_COPY = {
   teen_avatar: "Teen accounts do not have a public profile picture. You can still update your name and other profile details.",
   consent_required: "Your account is waiting for a parent or guardian's consent. Sign in to see the next steps.",
   household_conversion_details: "This person's details changed after they accepted. Reject this request and ask the household to send a new invitation.",
-  household_conversion_adult: "This person no longer meets the adult account rules. Check their birth date and account type. Reject this request before asking for a new invitation.",
+  household_conversion_adult: "This person no longer meets the account age and guardian rules. Check their birth date, account type, and guardian link. Reject this request before asking for a new invitation.",
   household_conversion_inviter: "The person who sent the invitation can no longer manage this household. Reject this request and ask an active household adult or admin to send a new invitation.",
   household_conversion_retry: "This household changed while you were approving the account. Try approving it again.",
   household_conversion_consent: "This account is waiting for consent and guardian confirmation. You can still manage sign-ups, care notes, and photo settings. Ask your church office for help with identity changes or removal.",
