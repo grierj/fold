@@ -1,3 +1,4 @@
+import { Badge } from "../components/ui/Badge";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -959,7 +960,7 @@ export function GroupDetail() {
                             />
                             <div className="grow min-w-0">
                               <div className="font-semibold">{m.name}
-                                {canManage && m.accountType === "teen" && <span className="ml-2 chip">Teen</span>}
+                                {canManage && m.accountType === "teen" && <Badge>Teen</Badge>}
                                 {m.admin && (
                                   <span className="ml-2 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
                                     Admin

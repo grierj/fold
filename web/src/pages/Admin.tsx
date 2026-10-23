@@ -1,3 +1,4 @@
+import { Badge } from "../components/ui/Badge";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
@@ -403,7 +404,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
             />
             <div className="grow min-w-0">
               <span className="font-medium">{m.name}</span>{" "}
-              {m.accountType === "teen" && <span className="mr-1 chip">Teen</span>}
+              {m.accountType === "teen" && <Badge>Teen</Badge>}
               {m.admin && (
                 <span className="mr-1 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
                   Admin
