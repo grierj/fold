@@ -31,6 +31,7 @@ export function AccountRequestForm({
   const [phone, setPhone] = useState("");
   const [ageBand, setAgeBand] = useState<AgeBand>("adult");
   const [birthDate, setBirthDate] = useState("");
+  const [guardianEmail, setGuardianEmail] = useState("");
   const [message, setMessage] = useState("");
   const [website, setWebsite] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +47,7 @@ export function AccountRequestForm({
       const res = await onSubmit({
         name, email, phone: phone || undefined,
         ageBand, birthDate: ageBand === "teen" ? birthDate : undefined,
+        guardianEmail: ageBand === "teen" && !friend ? guardianEmail || undefined : undefined,
         message: message || undefined, website: website || undefined,
       });
       setDone(res.message);
@@ -79,6 +81,9 @@ export function AccountRequestForm({
         <Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={30} autoComplete="tel" />
       </Field>
       <AccountAgeFields id="arq" label={friend ? "Their age" : "Your age"} ageBand={ageBand} birthDate={birthDate} onAgeBand={setAgeBand} onBirthDate={setBirthDate} />
+      {ageBand === "teen" && !friend && <Field id="arq-guardian" label="Parent or guardian's email" optional hint="An admin checks every guardian link. Your guardian needs their own adult account before they can give consent.">
+        <Input type="email" value={guardianEmail} onChange={(e) => setGuardianEmail(e.target.value)} maxLength={254} />
+      </Field>}
       <Field id="arq-message" label="Note for the admins" optional>
         <Textarea rows={3} value={message} onChange={(e) => setMessage(e.target.value)} maxLength={1000} />
       </Field>

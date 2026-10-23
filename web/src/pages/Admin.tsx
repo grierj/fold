@@ -5,7 +5,7 @@ import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUser
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
-import type { AgeBand, AccountRequest, GuardianLink, GroupSummary, Member, User } from "../types";
+import type { AgeBand, AccountRequest, GuardianLink, GuardianNomination, GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
@@ -212,6 +212,7 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
             · asked {new Date(request.createdAt).toLocaleDateString()}
           </div>
           {request.message && <p className="text-text-muted mt-3 whitespace-pre-wrap">{request.message}</p>}
+          {request.guardianEmail && <p className="text-sm text-text-muted mt-3 break-words">Nominated guardian: {request.guardianEmail}. Approval asks an admin to check the link if this adult has an active account. Otherwise, help the adult join, then ask them to claim the teen from their profile.</p>}
           {warnings.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
               {warnings.map((w) => (
@@ -246,6 +247,7 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
   const [deletions, setDeletions] = useState<GroupSummary[]>([]);
   const [requests, setRequests] = useState<AccountRequest[]>([]);
   const [links, setLinks] = useState<GuardianLink[]>([]);
+  const [nominations, setNominations] = useState<GuardianNomination[]>([]);
   const [announce, setAnnounce] = useState("");
   const focusLinks = useRef(false);
   const [loading, setLoading] = useState(true);
@@ -259,6 +261,7 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
         Admin.pending(), Admin.deletions(), AdminAccountRequests.list(), AdminGuardianLinks.list(),
       ]);
       setLinks(guardian.guardianLinks);
+      setNominations(guardian.nominations);
       setGroups(pending.groups);
       setDeletions(requested.groups);
       setRequests(accounts.requests);
@@ -290,7 +293,7 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
       <p role="status" aria-live="polite" className="sr-only">{announce}</p>
       {loading && <Skeleton kind="lines" />}
       {!loading && error && <ErrorNotice message={error} onRetry={load} />}
-      {!loading && !error && groups.length === 0 && deletions.length === 0 && requests.length === 0 && links.length === 0 && (
+      {!loading && !error && groups.length === 0 && deletions.length === 0 && requests.length === 0 && links.length === 0 && nominations.length === 0 && (
         <EmptyState
           illustration={<Illustration name="all-caught-up" />}
           title="All caught up"
@@ -321,6 +324,15 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
           ))}
         </div>
       )}
+      {nominations.length > 0 && <section className="space-y-4 mb-8" aria-label="Guardians who need an account">
+        <h2 className="text-xl font-bold">Guardians who need an account</h2>
+        {nominations.map((n) => <div key={n.requestId} className="bg-surface rounded-lg border border-border p-6 text-sm">
+          <p className="font-semibold">{n.teenName}</p>
+          <p className="mt-2 break-words">Nominated guardian: {n.guardianEmail}</p>
+          <p className="text-text-muted mt-2">Help this adult get an active account. Then ask them to open Profile and request a guardian link using the teen's email. You will still need to confirm that link.</p>
+          <Link to="/admin?tab=users" className="inline-block text-primary font-semibold py-3">Manage accounts</Link>
+        </div>)}
+      </section>}
       {groups.length > 0 && (
         <div className="space-y-4">
           <h2 className="text-xl font-bold">New groups</h2>

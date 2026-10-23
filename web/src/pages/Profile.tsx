@@ -16,6 +16,7 @@ import { HouseholdSkeleton } from "../components/HouseholdSkeleton";
 
 // Only Profile shows the household card, so it loads on its own (bundle budget).
 const HouseholdCard = lazy(() => import("../components/HouseholdCard").then((m) => ({ default: m.HouseholdCard })));
+const GuardianConsentCard = lazy(() => import("../components/GuardianConsentCard").then((m) => ({ default: m.GuardianConsentCard })));
 
 export function ProfilePage() {
   const { user, loading, refresh, logout, isAdmin } = useAuth();
@@ -323,6 +324,7 @@ export function ProfilePage() {
       <CalendarFeedCard />
 
       {user.accountType !== "teen" && <Suspense fallback={<HouseholdSkeleton />}><HouseholdCard /></Suspense>}
+      {user.accountType !== "teen" && <Suspense fallback={null}><GuardianConsentCard /></Suspense>}
 
       {user.accountType !== "teen" && (
         <div className="mt-6">
