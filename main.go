@@ -102,6 +102,7 @@ func serve(stderr io.Writer) int {
 	app.startOccurrenceTicker(ctx)
 	app.startNotificationPruning(ctx)
 	app.startAccountRequestExpiry(ctx)
+	app.startAgeRollover(ctx)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 	go func() {

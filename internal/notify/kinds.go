@@ -40,6 +40,8 @@ const (
 	HouseholdLinkPending    = "household.link_pending"
 	HouseholdConverted      = "household.converted"
 	TeenConsentChanged      = "teen_consent.changed"
+	AccountTurned18         = "account.turned_18"
+	HouseholdChildTurned13  = "household.child_turned_13"
 )
 
 // Action is an inline button. Only allow-listed kinds carry one (6.6).
@@ -169,6 +171,22 @@ func join(parts ...string) string {
 }
 
 func init() {
+	register(Kind{Key: AccountTurned18, Category: CatSafety, AllowEmail: true,
+		Render: func(Vars) (string, string) {
+			return "Your account is now an adult account", "Teen consent is no longer required. Your consent history stays on file. An admin's suspension, if any, still applies."
+		},
+		RenderEmailSafe: func(Vars) (string, string) {
+			return "Your Fold account was updated", "Sign in to Fold to review your account."
+		},
+	})
+	register(Kind{Key: HouseholdChildTurned13, Category: CatSafety, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return or(v.Person, "A child in your household") + " is now 13 or older", "Review their details in My household. You can change their type to Teen or help them request their own account. Their sign-ups stay with your household."
+		},
+		RenderEmailSafe: func(Vars) (string, string) {
+			return "Review a household member's age in Fold", "Sign in to Fold to review your household."
+		},
+	})
 	register(Kind{
 		Key: TeenConsentChanged, Category: CatSafety, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
