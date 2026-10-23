@@ -13,6 +13,8 @@ import (
 
 // Actions. Add new ones here so they are easy to find and query.
 const (
+	TeenConsentGranted     = "teen_consent.granted"
+	TeenConsentRevoked     = "teen_consent.revoked"
 	RegistrationChanged    = "registration.changed"
 	RegistrationRestored   = "registration.restored"
 	HouseholdUpdated       = "household.updated"

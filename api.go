@@ -506,6 +506,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.DELETE("/me/household/people/:id/convert", a.apiAuth(), a.apiCancelHouseholdConversion)
 	v1.GET("/admin/guardian-links", a.apiAuth(), a.apiAdmin(), a.apiListGuardianLinks)
 	v1.POST("/me/guardian-claims", a.apiAuth(), a.apiClaimTeenGuardian)
+	v1.GET("/admin/users/:id/teen-consents", a.apiAuth(), a.apiAdmin(), a.apiListTeenConsents)
+	v1.POST("/admin/users/:id/teen-consents", a.apiAuth(), a.apiAdmin(), a.apiChangeTeenConsent)
 	v1.POST("/admin/guardian-links/:id/confirm", a.apiAuth(), a.apiAdmin(), a.apiConfirmGuardianLink)
 	v1.POST("/admin/guardian-links/:id/reject", a.apiAuth(), a.apiAdmin(), a.apiRejectGuardianLink)
 

@@ -83,6 +83,7 @@ var tsContracts = []struct {
 	{householdAccountJSON{}, "HouseholdAccount"},
 	{guardianLinkJSON{}, "GuardianLink"},
 	{guardianNominationJSON{}, "GuardianNomination"},
+	{teenConsentJSON{}, "TeenConsent"},
 	{invitationJSON{}, "Invitation"},
 	{conversionJSON{}, "HouseholdConversion"}, // Includes pending adult approval metadata.
 	{invitationAcceptanceJSON{}, "InvitationAcceptance"},
