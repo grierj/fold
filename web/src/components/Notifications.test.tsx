@@ -117,7 +117,7 @@ describe("NotificationBell", () => {
       return {};
     });
     renderBell();
-    await userEvent.click(await screen.findByRole("button", { name: /^Notifications/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Notifications/ }));
     expect(await screen.findByText("Waiting on you", { selector: "h3" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Approve" }));
     expect(api.approveGroup).toHaveBeenCalledWith(9, 2);
@@ -134,7 +134,7 @@ describe("NotificationBell", () => {
       throw new ApiError(409, "handled", { resolvedBy: "Kim", resolution: "approved" });
     });
     renderBell();
-    await userEvent.click(await screen.findByRole("button", { name: /^Notifications/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Notifications/ }));
     await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
     expect(await screen.findByText("Already approved by Kim")).toBeInTheDocument();
   });
@@ -142,7 +142,7 @@ describe("NotificationBell", () => {
   it("archives with × and offers Undo", async () => {
     api.archive.mockResolvedValue({});
     renderBell();
-    await userEvent.click(await screen.findByRole("button", { name: /^Notifications/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Notifications/ }));
     await userEvent.click(await screen.findByRole("button", { name: "Archive: Pat made Sam a leader" }));
     expect(api.archive).toHaveBeenCalledWith(1, true);
     await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
@@ -151,7 +151,7 @@ describe("NotificationBell", () => {
 
   it("Escape closes the panel and returns focus to the bell", async () => {
     renderBell();
-    const bell = await screen.findByRole("button", { name: /^Notifications/ });
+    const bell = await screen.findByRole("button", { name: /Notifications/ });
     await userEvent.click(bell);
     expect(bell).toHaveAttribute("aria-expanded", "true");
     await userEvent.keyboard("{Escape}");
