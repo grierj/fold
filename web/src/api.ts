@@ -97,6 +97,7 @@ import type {
   GuestRegistration,
   GroupSummary,
   GuardianLink,
+  GuardianNomination,
   Household,
   HouseholdPerson,
   Invitation,
@@ -224,6 +225,7 @@ export const Site = {
 };
 
 export interface AccountRequestInput {
+  guardianEmail?: string;
   name: string;
   email: string;
   phone?: string;
@@ -593,7 +595,7 @@ export const Households = {
 
 export const AdminGuardianLinks = {
   list: (status = "pending") =>
-    api<{ guardianLinks: GuardianLink[] }>(`/admin/guardian-links?status=${encodeURIComponent(status)}`),
+    api<{ guardianLinks: GuardianLink[]; nominations: GuardianNomination[] }>(`/admin/guardian-links?status=${encodeURIComponent(status)}`),
   confirm: (id: number, checkNote: string) =>
     api<{ guardianLink: GuardianLink }>(`/admin/guardian-links/${id}/confirm`, { method: "POST", body: { checkNote } }),
   reject: (id: number, note?: string) =>

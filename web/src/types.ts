@@ -357,6 +357,7 @@ export interface RequestWarnings {
 // One account request in the admin queue (M1.3, DEC-4). Warnings decide
 // whether the bell may approve it inline (DEC-44); the queue always can.
 export interface AccountRequest {
+  guardianEmail?: string;
   id: number;
   name: string;
   email: string;
@@ -462,6 +463,13 @@ export interface GuardianLink {
   confirmedBy?: number;
   createdAt: string;
   decidedAt?: string;
+}
+
+export interface GuardianNomination {
+  requestId: number;
+  teenUserId: number;
+  teenName: string;
+  guardianEmail: string;
 }
 
 export interface HouseholdRegistration {

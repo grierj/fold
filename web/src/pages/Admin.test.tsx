@@ -12,7 +12,7 @@ vi.mock("../api", async (actual) => ({
   ...(await actual<typeof import("../api")>()),
   Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }) },
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }) },
-  AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [] }) },
+  AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
   AdminAccountRequests: { list: vi.fn(), approve: vi.fn() },
   Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Boise", selfSignup: "request" }) },
 }));

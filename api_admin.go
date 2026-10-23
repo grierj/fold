@@ -176,7 +176,12 @@ func (a *App) apiListGuardianLinks(c *gin.Context) {
 	for i := range rows {
 		out = append(out, a.toGuardianLinkJSON(&rows[i]))
 	}
-	c.JSON(http.StatusOK, gin.H{"guardianLinks": out})
+	nominations, err := unresolvedGuardianNominations(a.DB)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load guardian nominations")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"guardianLinks": out, "nominations": nominations})
 }
 
 func (a *App) apiConfirmGuardianLink(c *gin.Context) { a.decideGuardianLink(c, true) }

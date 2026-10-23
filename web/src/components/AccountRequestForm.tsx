@@ -30,6 +30,7 @@ export function AccountRequestForm({
   const [phone, setPhone] = useState("");
   const [ageBand, setAgeBand] = useState<AgeBand>("adult");
   const [birthDate, setBirthDate] = useState("");
+  const [guardianEmail, setGuardianEmail] = useState("");
   const [message, setMessage] = useState("");
   const [website, setWebsite] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +45,7 @@ export function AccountRequestForm({
       const res = await onSubmit({
         name, email, phone: phone || undefined,
         ageBand, birthDate: ageBand === "teen" ? birthDate : undefined,
+        guardianEmail: ageBand === "teen" && !friend ? guardianEmail || undefined : undefined,
         message: message || undefined, website: website || undefined,
       });
       setDone(res.message);
@@ -82,9 +84,14 @@ export function AccountRequestForm({
         <Radio name="ageBand" label="Under 13" checked={ageBand === "under13"} onChange={() => setAgeBand("under13")} />
       </Choices>
       {ageBand === "teen" && (
+        <>
         <Field id="arq-birth" label="Birth date" hint="Needed so Fold knows when you turn 18. A teen account also needs a parent or guardian’s consent before it can sign in.">
           <Input type="date" value={birthDate} onChange={(e) => setBirthDate(e.target.value)} required />
         </Field>
+        {!friend && <Field id="arq-guardian" label="Parent or guardian's email" optional hint="An admin checks every guardian link. Your guardian needs their own adult account before they can give consent.">
+          <Input type="email" value={guardianEmail} onChange={(e) => setGuardianEmail(e.target.value)} maxLength={254} />
+        </Field>}
+        </>
       )}
       {ageBand === "under13" && (
         <div className="rounded-md bg-warning-subtle border border-warning-border p-4 text-sm text-text-muted">
