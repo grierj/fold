@@ -63,16 +63,17 @@ it("includes the phone tab's visible count and caption in its accessible name", 
 });
 
 describe("NotificationBell", () => {
-  it("shows one plain count and names both numbers", async () => {
+  it("includes its visible summed count and describes both numbers", async () => {
     renderBell();
-    const bell = await screen.findByRole("button", { name: "Notifications, 1 unread, 1 waiting on you" });
+    const bell = await screen.findByRole("button", { name: "2 Notifications, 1 unread, 1 waiting on you" });
     expect(within(bell).getByText("2")).toBeInTheDocument();
   });
 
   it("caps the badge at 9+ and shows nothing at zero", async () => {
     api.badge.mockResolvedValue({ badge: { unread: 8, waiting: 3 }, etag: "x" });
     const { unmount } = renderBell();
-    expect(await screen.findByText("9+")).toBeInTheDocument();
+    const bell = await screen.findByRole("button", { name: "9+ Notifications, 8 unread, 3 waiting on you" });
+    expect(within(bell).getByText("9+")).toBeInTheDocument();
     unmount();
     api.badge.mockResolvedValue({ badge: { unread: 0, waiting: 0 }, etag: "y" });
     renderBell();
