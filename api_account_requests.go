@@ -552,6 +552,11 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 			}
 			mailed = append(mailed, ids...)
 		}
+		if approve && userID != 0 {
+			if err := tx.Model(&models.AccountRequest{}).Where("id = ?", req.ID).Update("approved_user_id", userID).Error; err != nil {
+				return err
+			}
+		}
 		if _, err := notify.Resolve(tx, notify.AccountRequested, req.ID, &me.ID, outcome); err != nil {
 			return err
 		}

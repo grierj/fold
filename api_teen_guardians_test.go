@@ -72,6 +72,11 @@ func TestTeenGuardianNominationWaitsForAccountApproval(t *testing.T) {
 				if err != nil || len(nominations) != 1 || nominations[0].GuardianEmail != req.GuardianEmail {
 					t.Fatalf("retained nomination: %+v %v", nominations, err)
 				}
+				app.DB.Model(&models.User{}).Where("id = ?", nominations[0].TeenUserID).Update("email", "teen-renamed@example.com")
+				nominations, err = unresolvedGuardianNominations(app.DB)
+				if err != nil || len(nominations) != 1 {
+					t.Fatalf("email change lost nomination: %+v %v", nominations, err)
+				}
 			}
 		})
 	}

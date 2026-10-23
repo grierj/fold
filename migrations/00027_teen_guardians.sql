@@ -1,5 +1,7 @@
 -- +goose Up
 ALTER TABLE account_requests ADD COLUMN guardian_email text NOT NULL DEFAULT '';
+ALTER TABLE account_requests ADD COLUMN approved_user_id bigint REFERENCES users(id) ON DELETE SET NULL;
+UPDATE account_requests r SET approved_user_id = u.id FROM users u WHERE r.status = 'approved' AND r.email = u.email;
 ALTER TABLE account_tokens DROP CONSTRAINT account_tokens_kind_check;
 ALTER TABLE account_tokens ADD CONSTRAINT account_tokens_kind_check
     CHECK (kind IN ('password_reset', 'email_verify', 'account_setup', 'teen_consent'));
@@ -13,3 +15,4 @@ ALTER TABLE account_tokens DROP CONSTRAINT account_tokens_kind_check;
 ALTER TABLE account_tokens ADD CONSTRAINT account_tokens_kind_check
     CHECK (kind IN ('password_reset', 'email_verify', 'account_setup'));
 ALTER TABLE account_requests DROP COLUMN guardian_email;
+ALTER TABLE account_requests DROP COLUMN approved_user_id;

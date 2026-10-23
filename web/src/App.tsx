@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { Home } from "./pages/Home";
@@ -24,6 +24,8 @@ import { CalendarPage } from "./pages/Calendar";
 import { NotFound } from "./pages/NotFound";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
+
+const GuardianConsentPage = lazy(() => import("./pages/GuardianConsent").then((m) => ({ default: m.GuardianConsentPage })));
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -56,6 +58,7 @@ export default function App() {
         <Route path="/join" element={<Join />} />
         <Route path="/set-password" element={<SetPassword />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
+        <Route path="/guardian-consent" element={<Suspense fallback={null}><GuardianConsentPage /></Suspense>} />
         <Route path="/guest/confirm" element={<GuestConfirm />} />
         <Route path="/guest/manage/:token" element={<GuestManage />} />
         <Route path="/groups/new" element={<NewGroup />} />

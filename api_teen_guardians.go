@@ -4,7 +4,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"sort"
+	"strconv"
 	"time"
 
 	"fold/internal/audit"
@@ -31,7 +31,7 @@ func unresolvedGuardianNominations(db *gorm.DB) ([]guardianNominationJSON, error
 	rows := make([]guardianNominationJSON, 0)
 	err := db.Raw(`SELECT r.id AS request_id, u.id AS teen_user_id,
 	COALESCE(NULLIF(u.display_name, ''), NULLIF(u.name, ''), 'Member') AS teen_name, r.guardian_email
-	FROM account_requests r JOIN users u ON u.email = r.email AND u.deleted_at IS NULL
+	FROM account_requests r JOIN users u ON u.id = r.approved_user_id AND u.deleted_at IS NULL
 	WHERE r.status = 'approved' AND r.guardian_email <> '' AND u.account_type = 'teen'
 	AND NOT EXISTS (SELECT 1 FROM guardian_links l JOIN users g ON g.id = l.guardian_user_id
 	WHERE l.teen_user_id = u.id AND g.email = r.guardian_email::citext)
@@ -103,7 +103,7 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 	var mailed []uint
 	if res.Error == nil && res.RowsAffected == 1 && teen.ID != me.ID {
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
-			guardian, target, err := lockGuardianUsers(tx, me.ID, teen.ID)
+			guardian, target, err := lockConsentUsers(tx, me.ID, teen.ID)
 			if err != nil {
 				return err
 			}
@@ -124,30 +124,8 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 }
 
 // Consent and link changes share this order: both users by ID, then link.
-func lockGuardianUsers(tx *gorm.DB, guardianID, teenID uint) (*models.User, *models.User, error) {
-	ids := []uint{guardianID, teenID}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	var users []models.User
-	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id IN ?", ids).Order("id").Find(&users).Error; err != nil {
-		return nil, nil, err
-	}
-	var guardian, teen *models.User
-	for i := range users {
-		if users[i].ID == guardianID {
-			guardian = &users[i]
-		}
-		if users[i].ID == teenID {
-			teen = &users[i]
-		}
-	}
-	if guardian == nil || teen == nil || guardianID == teenID {
-		return nil, nil, errGuardianUnavailable
-	}
-	return guardian, teen, nil
-}
-
 func lockedTeenGuardian(tx *gorm.DB, guardianID, teenID, linkID uint) (*models.User, *models.User, *models.GuardianLink, error) {
-	guardian, teen, err := lockGuardianUsers(tx, guardianID, teenID)
+	guardian, teen, err := lockConsentUsers(tx, guardianID, teenID)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -159,4 +137,100 @@ func lockedTeenGuardian(tx *gorm.DB, guardianID, teenID, linkID uint) (*models.U
 		return nil, nil, nil, errGuardianUnavailable
 	}
 	return guardian, teen, &link, nil
+}
+
+type guardianTeenJSON struct {
+	LinkID         uint   `json:"linkId"`
+	TeenUserID     uint   `json:"teenUserId"`
+	TeenName       string `json:"teenName"`
+	AccountConsent bool   `json:"accountConsent"`
+	SMSConsent     bool   `json:"smsConsent"`
+	PhotosConsent  bool   `json:"photosConsent"`
+}
+
+func (a *App) apiMyGuardianTeens(c *gin.Context) {
+	me := apiUser(c)
+	if !policy.CanRequestGuardianLink(asPerson(me)) {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return
+	}
+	var links []models.GuardianLink
+	if err := a.DB.Joins("JOIN users t ON t.id = guardian_links.teen_user_id AND t.deleted_at IS NULL AND t.account_type = ?", models.AccountTeen).
+		Where("guardian_user_id = ? AND guardian_links.status = ?", me.ID, models.GuardianConfirmed).Order("guardian_links.id").Find(&links).Error; err != nil {
+		consentError(c, err)
+		return
+	}
+	out := make([]guardianTeenJSON, 0, len(links))
+	ids := make([]uint, 0, len(links))
+	for _, link := range links {
+		ids = append(ids, *link.TeenUserID)
+	}
+	var latest []models.TeenConsent
+	if len(ids) > 0 {
+		if err := a.DB.Raw("SELECT DISTINCT ON (teen_user_id, scope) * FROM teen_consents WHERE teen_user_id IN ? ORDER BY teen_user_id, scope, at DESC, id DESC", ids).Scan(&latest).Error; err != nil {
+			consentError(c, err)
+			return
+		}
+	}
+	for _, link := range links {
+		row := guardianTeenJSON{LinkID: link.ID, TeenUserID: *link.TeenUserID, TeenName: nameIn(a.DB, *link.TeenUserID)}
+		for _, consent := range latest {
+			if consent.TeenUserID != row.TeenUserID {
+				continue
+			}
+			granted := consent.Status == models.ConsentGranted
+			switch consent.Scope {
+			case models.TeenConsentAccount:
+				row.AccountConsent = granted
+			case models.TeenConsentSMS:
+				row.SMSConsent = granted
+			case models.TeenConsentPhotos:
+				row.PhotosConsent = granted
+			}
+		}
+		out = append(out, row)
+	}
+	c.JSON(http.StatusOK, gin.H{"teens": out})
+}
+
+func ownTeenLink(db *gorm.DB, c *gin.Context) (*models.GuardianLink, error) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		return nil, errGuardianUnavailable
+	}
+	var link models.GuardianLink
+	err = db.Where("id = ? AND guardian_user_id = ? AND teen_user_id IS NOT NULL", id, apiUser(c).ID).First(&link).Error
+	return &link, err
+}
+
+func (a *App) apiGuardianChangeConsent(c *gin.Context) {
+	link, err := ownTeenLink(a.DB, c)
+	if err != nil {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return
+	}
+	var body struct {
+		Scope  string `json:"scope"`
+		Status string `json:"status"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		jsonError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	me := apiUser(c)
+	var mailed []uint
+	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		guardian, teen, _, err := lockedTeenGuardian(tx, me.ID, *link.TeenUserID, link.ID)
+		if err != nil || guardian.SessionVersion != me.SessionVersion {
+			return errConsentForbidden
+		}
+		mailed, err = a.changeTeenConsent(tx, c, teen, guardian, teenConsentChange{Scope: body.Scope, Status: body.Status, ConfirmedGuardian: true})
+		return err
+	})
+	if err != nil {
+		consentError(c, err)
+		return
+	}
+	a.deliverNotificationEmails(mailed)
+	c.JSON(http.StatusOK, gin.H{})
 }

@@ -483,6 +483,22 @@ export interface GuardianNomination {
   guardianEmail: string;
 }
 
+export interface GuardianTeen {
+  linkId: number;
+  teenUserId: number;
+  teenName: string;
+  accountConsent: boolean;
+  smsConsent: boolean;
+  photosConsent: boolean;
+}
+
+export interface GuardianEmailPreview {
+  teenName: string;
+  scope: "account";
+  status: "granted";
+  expiresAt: string;
+}
+
 export interface HouseholdRegistration {
   registrationId: number;
   personId: number;
