@@ -372,6 +372,10 @@ func randomHex(n int) (string, error) {
 // apiUploadAvatar replaces the current user's avatar.
 func (a *App) apiUploadAvatar(c *gin.Context) {
 	u := apiUser(c)
+	if !policy.CanUploadAvatar(asPerson(u)) {
+		jsonError(c, http.StatusForbidden, "teen accounts cannot have a public profile picture")
+		return
+	}
 	tmp, _, mime, err := readImageUpload(c, "avatar")
 	if err != nil {
 		jsonError(c, http.StatusBadRequest, err.Error())

@@ -37,3 +37,21 @@ it("shows an adult the admin-approval wait (Warden, PR 111 F1)", async () => {
   expect(screen.getByText(/your household keeps managing your sign-ups as before/)).toBeInTheDocument();
   expect(screen.getByText(/password you chose/)).toBeInTheDocument();
 });
+
+it("requires a teen birth date and prevents under-13 invitation acceptance", async () => {
+  vi.mocked(Invitations.get).mockResolvedValue({ site: "Our church", siteName: "Our church", inviterName: "Pat", invitation: { id: 1, name: "Taylor", email: "taylor@example.com", conversion: false, accountType: "adult", expiresAt: "2026-12-01T00:00:00Z" } });
+  vi.mocked(Invitations.accept).mockResolvedValue({ pendingConsent: true, pendingApproval: false });
+  render(<MemoryRouter initialEntries={["/invite?token=secret"]}><Invite /></MemoryRouter>);
+  await screen.findByLabelText("Your name");
+  await userEvent.type(screen.getByLabelText("Choose a password"), "password1234");
+  await userEvent.click(screen.getByLabelText("Under 13"));
+  expect(screen.getByRole("button", { name: "Create my account" })).toBeDisabled();
+  expect(screen.getByText(/Nothing you enter here will be submitted/)).toBeInTheDocument();
+  expect(Invitations.accept).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByLabelText("13 to 17"));
+  expect(screen.getByLabelText("Birth date")).toBeRequired();
+  await userEvent.type(screen.getByLabelText("Birth date"), "2011-01-01");
+  await userEvent.click(screen.getByRole("button", { name: "Create my account" }));
+  expect(Invitations.accept).toHaveBeenCalledWith({ token: "secret", name: "Taylor", password: "password1234", ageBand: "teen", birthDate: "2011-01-01" });
+  expect(refresh).toHaveBeenCalledOnce();
+});

@@ -35,7 +35,7 @@ const AuthContext = createContext<AuthState>({
 // it's empty (DEC-58), so their emails read in their own time. After that
 // only the profile page changes it. A failure keeps the church's zone.
 async function withZone(user: User): Promise<User> {
-  if (user.timezone) return user;
+  if (user.timezone || user.status === "pending_consent") return user;
   try {
     return (await Profile.update({ timezone: browserTimeZone() })).user;
   } catch {

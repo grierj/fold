@@ -37,3 +37,11 @@ Group memberships do not move to the new account. Some private or invite-only ev
 You can resend an invitation to give it a fresh 24 hours; the old link then stops working. Cancel it before choosing a different email. Changing the person's name, type, or birth date cancels their invitation. Removing them cancels it too. Editing care notes, photo permission, or the household's name or address keeps it open.
 
 If a responsible account is disabled, ask your church office to check it before moving the sign-ups. If the invitation sender's account was disabled, ask for a fresh invitation after it is turned back on.
+
+## Teen accounts and consent
+
+Teens aged 13 to 17 need their own email and birth date to request an account or accept an ordinary account invitation. Children under 13 cannot create accounts. A parent or guardian can add them to My household instead.
+
+A teen account starts waiting for consent. After you choose a password, you can sign in to see Waiting for consent, check your account status, or log out. Your church office can help with consent. Groups and events become available after consent is granted. Household teen conversion still waits for the upcoming consent flow, so keep managing existing household sign-ups there.
+
+Group leaders, event hosts, and admins see Teen and Child badges on the rosters they manage. Other members see minors in attendance and membership counts rather than as named roster entries. Teen accounts have no public profile picture.

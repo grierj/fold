@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"fold/internal/accounts"
 	"fold/internal/audit"
 	foldmail "fold/internal/mail"
 	"fold/internal/notify"
@@ -160,7 +159,7 @@ type validatedRequest struct {
 // validateAccountRequest cleans one door's input and runs the age gate
 // (DEC-8). Under 13 answers 400 with the household explanation and the
 // caller stores nothing.
-func validateAccountRequest(c *gin.Context, body accountRequestInput) (validatedRequest, bool) {
+func (a *App) validateAccountRequest(c *gin.Context, body accountRequestInput) (validatedRequest, bool) {
 	name := strings.TrimSpace(body.Name)
 	if name == "" || len(name) > 100 {
 		jsonError(c, http.StatusBadRequest, "name is required (at most 100 characters)")
@@ -181,24 +180,9 @@ func validateAccountRequest(c *gin.Context, body accountRequestInput) (validated
 		jsonError(c, http.StatusBadRequest, "message must be at most 1000 characters")
 		return validatedRequest{}, false
 	}
-	birth, err := accounts.ParseBirthDate(strings.TrimSpace(body.BirthDate))
-	if err != nil {
-		jsonError(c, http.StatusBadRequest, "birth date must be a real date (YYYY-MM-DD)")
+	accountType, birth, ok := a.classifyAccountInput(c, body.AgeBand, body.BirthDate)
+	if !ok {
 		return validatedRequest{}, false
-	}
-	accountType, err := accounts.Classify(strings.TrimSpace(body.AgeBand), birth, time.Now().UTC())
-	if errors.Is(err, accounts.ErrUnder13) {
-		jsonError(c, http.StatusBadRequest,
-			"Fold accounts start at 13. A parent or guardian can add a younger child to their household and sign them up for events.")
-		return validatedRequest{}, false
-	}
-	if err != nil {
-		jsonError(c, http.StatusBadRequest,
-			"pick 18 or older, or 13 to 17 with a birth date that matches")
-		return validatedRequest{}, false
-	}
-	if accountType == models.AccountAdult {
-		birth = nil // adults only confirm 18+; no date is kept (5.3)
 	}
 	return validatedRequest{
 		name: name, email: email, phone: phone, message: message,
@@ -326,7 +310,7 @@ func (a *App) apiCreateAccountRequest(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	v, ok := validateAccountRequest(c, body)
+	v, ok := a.validateAccountRequest(c, body)
 	if !ok {
 		return
 	}
@@ -346,7 +330,7 @@ func (a *App) apiInviteFriend(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	v, ok := validateAccountRequest(c, body)
+	v, ok := a.validateAccountRequest(c, body)
 	if !ok {
 		return
 	}
@@ -637,8 +621,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 }
 
 // apiConfirmAccountSetup redeems the emailed set-password link. An
-// adult signs in at once; a teen keeps pending_consent and is not
-// signed in until consent is granted (M1.10).
+// adult gets a full session; a teen gets the restricted waiting session.
 func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 	var body struct {
 		Token    string `json:"token"`
@@ -703,15 +686,11 @@ func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not set your password")
 		return
 	}
-	if pendingConsent {
-		c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh), "pendingConsent": true})
-		return
-	}
 	if err := a.signInSession(c, &fresh); err != nil {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh)})
+	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh), "pendingConsent": pendingConsent})
 }
 
 // apiSetSelfSignup turns self-signup between request (default) and off
@@ -833,7 +812,7 @@ func (a *App) sendAccountApprovedEmail(req *models.AccountRequest, raw string, n
 	link := a.emailBaseURL() + "/set-password?token=" + raw
 	extra := ""
 	if req.AccountType == models.AccountTeen && needsConsent {
-		extra = "\n\nBecause you're 13 to 17, your account also needs a parent or guardian's consent before you can sign in. Setting your password now is still the right first step."
+		extra = "\n\nBecause you're 13 to 17, your account also needs a parent or guardian's consent before you can use groups and events. Setting your password now is still the right first step."
 	}
 	return a.Mailer.Send(context.Background(), foldmail.Message{
 		To:      req.Email,

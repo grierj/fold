@@ -117,7 +117,7 @@ func TestEmailLoginAnyCaseAndOnlyWithPassword(t *testing.T) {
 	}
 
 	// An account created without a password is invited and can't sign in.
-	w := admin.do("POST", "/api/v1/admin/users", map[string]string{"email": "bob@example.com", "name": "Bob"}, true)
+	w := admin.do("POST", "/api/v1/admin/users", map[string]string{"ageBand": "adult", "email": "bob@example.com", "name": "Bob"}, true)
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create invited user: %d %s", w.Code, w.Body.String())
 	}
@@ -144,7 +144,7 @@ func TestEmailLoginAnyCaseAndOnlyWithPassword(t *testing.T) {
 
 	// A second account with the same email in another case is refused,
 	// by the API and by the database.
-	w = admin.do("POST", "/api/v1/admin/users", map[string]string{"email": "Alice@EXAMPLE.com", "name": "Alice 2"}, true)
+	w = admin.do("POST", "/api/v1/admin/users", map[string]string{"ageBand": "adult", "email": "Alice@EXAMPLE.com", "name": "Alice 2"}, true)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("duplicate email: got %d, want 409", w.Code)
 	}
@@ -160,7 +160,7 @@ func TestEmailLoginAnyCaseAndOnlyWithPassword(t *testing.T) {
 	if w := admin.do("DELETE", "/api/v1/admin/users/"+itoa2(created.User.ID), nil, true); w.Code != http.StatusOK {
 		t.Fatalf("delete: %d", w.Code)
 	}
-	if w := admin.do("POST", "/api/v1/admin/users", map[string]string{"email": "bob@example.com", "name": "Bob"}, true); w.Code != http.StatusCreated {
+	if w := admin.do("POST", "/api/v1/admin/users", map[string]string{"ageBand": "adult", "email": "bob@example.com", "name": "Bob"}, true); w.Code != http.StatusCreated {
 		t.Fatalf("reuse deleted email: %d %s", w.Code, w.Body.String())
 	}
 }
