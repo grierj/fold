@@ -1,4 +1,6 @@
 {
+  "preApproveImplementation": true,
+  "preApproveMerge": true,
   "checks": {
     "go-build": {
       "id": "go-build",
