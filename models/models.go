@@ -727,6 +727,51 @@ type TeenConsent struct {
 	At           time.Time `gorm:"not null;default:clock_timestamp()"`
 }
 
+// ContactRequest stores the direct-contact outcome, not attempt history (AuditLog
+// owns that). Positive actor/context IDs are deliberately not foreign keys, so
+// safeguarding facts survive deletion. The next ask-to-add slice must introduce
+// an explicit request purpose before extending this contact-only contract.
+// Policy owns lifecycle values; migrations own database constraints.
+type ContactRequest struct {
+	ID               uint   `gorm:"primaryKey"`
+	RequesterID      uint   `gorm:"not null"`
+	SubjectUserID    uint   `gorm:"not null"`
+	ContextType      string `gorm:"not null"`
+	ContextID        uint   `gorm:"not null"`
+	Fields           string `gorm:"not null"`
+	Reason           string `gorm:"not null;default:''"`
+	NeedsAdmin       bool   `gorm:"not null"`
+	SubjectDecision  string `gorm:"not null;default:pending"`
+	SubjectDecidedBy *uint
+	SubjectDecidedAt *time.Time
+	AdminDecision    string `gorm:"not null"`
+	AdminDecidedBy   *uint
+	AdminDecidedAt   *time.Time
+	Status           string    `gorm:"not null;default:pending"`
+	CreatedAt        time.Time `gorm:"not null;default:now()"`
+	ExpiresAt        time.Time `gorm:"not null"`
+	CompletedAt      *time.Time
+	WithdrawnByID    *uint
+	EndReason        string `gorm:"not null;default:''"`
+}
+
+// ContactGrant has immutable request provenance, unique per successful request.
+// Ending it never changes the request's historic granted outcome. NeedsAdmin is
+// loaded from RequestID for policy; it is not a second mutable snapshot here.
+type ContactGrant struct {
+	ID            uint      `gorm:"primaryKey"`
+	RequestID     uint      `gorm:"not null;unique"`
+	LeaderID      uint      `gorm:"not null"`
+	SubjectUserID uint      `gorm:"not null"`
+	ContextType   string    `gorm:"not null"`
+	ContextID     uint      `gorm:"not null"`
+	Fields        string    `gorm:"not null"`
+	GrantedAt     time.Time `gorm:"not null"`
+	EndedAt       *time.Time
+	EndReason     string `gorm:"not null;default:''"`
+	EndedBy       *uint
+}
+
 // All lists every model, in dependency order. The drift check and the test
 // helpers use it; a new model must be added here and to a migration.
 func All() []any {
@@ -736,6 +781,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
+		&ContactRequest{}, &ContactGrant{},
 	}
 }
 

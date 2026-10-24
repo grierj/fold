@@ -25,6 +25,153 @@ func openSQL(t *testing.T, name string) *sql.DB {
 	return db
 }
 
+// TestContactRequestsConstraints checks 00030 on real Postgres, including the
+// retained safeguarding identity and exact successful-grant provenance.
+func TestContactRequestsConstraints(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, true))
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	insertRequest := func() int {
+		t.Helper()
+		var id int
+		err := db.QueryRow(`INSERT INTO contact_requests (requester_id, subject_user_id, context_type, context_id, fields, needs_admin, admin_decision, created_at, expires_at)
+			VALUES (101, 102, 'group', 103, 'email', true, 'pending', '2026-10-24 12:00Z', '2026-11-07 12:00Z') RETURNING id`).Scan(&id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	for _, tt := range []struct{ name, mutation string }{
+		{"invalid requester", "requester_id = 0"},
+		{"self request", "subject_user_id = requester_id"},
+		{"invalid context", "context_type = 'occurrence'"},
+		{"zero context", "context_id = 0"},
+		{"invalid fields", "fields = 'address'"},
+		{"long reason", "reason = repeat('x', 1001)"},
+		{"unknown status", "status = 'approved'"},
+		{"unknown decision", "subject_decision = 'yes'"},
+		{"teen skips admin", "admin_decision = 'not_needed'"},
+		{"adult requires admin", "needs_admin = false"},
+		{"decision missing actor and time", "subject_decision = 'approved'"},
+		{"pending carries decision facts", "subject_decided_by = 102, subject_decided_at = '2026-10-25 12:00Z'"},
+		{"wrong subject actor", "subject_decision = 'approved', subject_decided_by = 101, subject_decided_at = '2026-10-25 12:00Z'"},
+		{"admin missing actor", "admin_decision = 'approved', admin_decided_at = '2026-10-25 12:00Z'"},
+		{"admin zero actor", "admin_decision = 'approved', admin_decided_by = 0, admin_decided_at = '2026-10-25 12:00Z'"},
+		{"decision before creation", "subject_decision = 'approved', subject_decided_by = 102, subject_decided_at = '2026-10-23 12:00Z'"},
+		{"decision at expiry", "subject_decision = 'approved', subject_decided_by = 102, subject_decided_at = expires_at"},
+		{"reversed lifetime", "expires_at = created_at"},
+		{"completion on pending", "completed_at = created_at"},
+		{"granted missing approvals", "status = 'granted', completed_at = '2026-10-25 12:00Z'"},
+		{"denied missing denial", "status = 'denied', completed_at = '2026-10-25 12:00Z'"},
+		{"withdraw missing actor", "status = 'withdrawn', completed_at = '2026-10-25 12:00Z'"},
+		{"wrong withdrawal actor", "status = 'withdrawn', completed_at = '2026-10-25 12:00Z', withdrawn_by_id = 102"},
+		{"premature expiry", "status = 'expired', completed_at = '2026-10-25 12:00Z'"},
+		{"ended missing reason", "status = 'ended', completed_at = '2026-10-25 12:00Z'"},
+		{"unknown end reason", "status = 'ended', completed_at = '2026-10-25 12:00Z', end_reason = 'other'"},
+		{"nonterminal denial", "subject_decision = 'denied', subject_decided_by = 102, subject_decided_at = '2026-10-25 12:00Z'"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := insertRequest()
+			if _, err := db.Exec("UPDATE contact_requests SET "+tt.mutation+" WHERE id = $1", id); err == nil {
+				t.Fatal("malformed request accepted")
+			}
+		})
+	}
+	// Unicode limit is characters, not bytes; both contexts and all field sets work.
+	for _, fields := range []string{"email", "phone", "both"} {
+		id := insertRequest()
+		exec(`UPDATE contact_requests SET reason = repeat('é', 1000), fields = $1, context_type = 'event', needs_admin = false, admin_decision = 'not_needed' WHERE id = $2`, fields, id)
+	}
+	for _, state := range []string{"withdrawn", "expired", "ended", "denied"} {
+		id := insertRequest()
+		q := "status = '" + state + "', completed_at = '2026-10-25 12:00Z'"
+		switch state {
+		case "withdrawn":
+			q += ", withdrawn_by_id = 101"
+		case "expired":
+			q = "status = 'expired', completed_at = expires_at"
+		case "ended":
+			q += ", end_reason = 'left_context'"
+		case "denied":
+			q += ", admin_decision = 'denied', admin_decided_by = 104, admin_decided_at = '2026-10-25 12:00Z'"
+		}
+		exec("UPDATE contact_requests SET "+q+" WHERE id = $1", id)
+	}
+
+	grantSQL := `INSERT INTO contact_grants (request_id, leader_id, subject_user_id, context_type, context_id, fields, granted_at)
+		VALUES ($1, 101, 102, 'group', 103, 'email', '2026-10-25 12:00Z')`
+	pending := insertRequest()
+	if _, err := db.Exec(grantSQL, pending); err == nil {
+		t.Fatal("grant from pending request accepted")
+	}
+	successfulRequest := func() int {
+		id := insertRequest()
+		exec(`UPDATE contact_requests SET subject_decision = 'approved', subject_decided_by = 102, subject_decided_at = '2026-10-25 12:00Z',
+			admin_decision = 'approved', admin_decided_by = 104, admin_decided_at = '2026-10-25 12:00Z', status = 'granted', completed_at = '2026-10-25 12:00Z' WHERE id = $1`, id)
+		return id
+	}
+	id := successfulRequest()
+	if _, err := db.Exec(`INSERT INTO contact_grants (request_id, leader_id, subject_user_id, context_type, context_id, fields, granted_at)
+		VALUES ($1, 101, 102, 'group', 103, 'email', '2026-10-25 11:59Z')`, id); err == nil {
+		t.Fatal("grant predating approval accepted")
+	}
+	for _, mutation := range []string{
+		"leader_id = 105", "subject_user_id = 105", "context_type = 'event'", "context_id = 105", "fields = 'both'",
+	} {
+		// Seed exactly once, then test composite provenance on updates.
+		exec(grantSQL, id)
+		if _, err := db.Exec("UPDATE contact_grants SET "+mutation+" WHERE request_id = $1", id); err == nil {
+			t.Fatalf("mismatched grant accepted: %s", mutation)
+		}
+		exec("DELETE FROM contact_grants WHERE request_id = $1", id)
+	}
+	exec(grantSQL, id)
+	if _, err := db.Exec(`UPDATE contact_grants SET request_id = $1 WHERE request_id = $2`, pending, id); err == nil {
+		t.Fatal("grant retargeted to pending request")
+	}
+	if _, err := db.Exec(grantSQL, id); err == nil {
+		t.Fatal("duplicate grant accepted")
+	}
+	if _, err := db.Exec("DELETE FROM contact_requests WHERE id = $1", id); err == nil {
+		t.Fatal("grant provenance can be deleted")
+	}
+	for _, mutation := range []string{
+		"end_reason = 'left_role'", "ended_at = '2026-10-24 12:00Z', end_reason = 'left_role'",
+		"ended_at = '2026-10-26 12:00Z', end_reason = 'unknown'",
+		"ended_at = '2026-10-26 12:00Z', end_reason = 'revoked_by_admin'",
+		"ended_at = '2026-10-26 12:00Z', end_reason = 'revoked_by_subject', ended_by = 101",
+		"ended_at = '2026-10-26 12:00Z', end_reason = 'left_role', ended_by = 101",
+	} {
+		if _, err := db.Exec("UPDATE contact_grants SET "+mutation+" WHERE request_id = $1", id); err == nil {
+			t.Fatalf("malformed end accepted: %s", mutation)
+		}
+	}
+	exec(`UPDATE contact_grants SET ended_at = '2026-10-26 12:00Z', end_reason = 'revoked_by_subject', ended_by = 102 WHERE request_id = $1`, id)
+	// No user/group/event row was needed for retained IDs. Deleting live records
+	// with those IDs must likewise leave both history rows untouched.
+	exec(`INSERT INTO users (id, email) VALUES (101, 'requester@example.com'), (102, 'subject@example.com')`)
+	exec(`DELETE FROM users WHERE id IN (101, 102)`)
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM contact_grants g JOIN contact_requests r ON r.id = g.request_id WHERE r.id = $1 AND r.status = 'granted'`, id).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("retained history = %d, %v", count, err)
+	}
+	// Down/up removes only this component and leaves the preceding schema valid.
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DownTo(context.Background(), 29); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMigrateEmptyDatabase(t *testing.T) {
 	db := openSQL(t, testdb.Fresh(t, false))
 	p, err := migrations.NewProvider(db)
