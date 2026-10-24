@@ -1,0 +1,102 @@
+{
+  "checks": {
+    "go-build": {
+      "id": "go-build",
+      "executable": "go",
+      "argv": ["build", "./..."],
+      "cwd": "task",
+      "timeoutMs": 300000
+    },
+    "go-vet": {
+      "id": "go-vet",
+      "executable": "go",
+      "argv": ["vet", "./..."],
+      "cwd": "task",
+      "timeoutMs": 300000
+    },
+    "lint-go": {
+      "id": "lint-go",
+      "executable": "make",
+      "argv": ["lint-go"],
+      "cwd": "task",
+      "timeoutMs": 900000
+    },
+    "web-typecheck": {
+      "id": "web-typecheck",
+      "executable": "bash",
+      "argv": ["-c", "cd web && npx --no-install tsc --noEmit"],
+      "cwd": "task",
+      "timeoutMs": 300000
+    },
+    "lint-web": {
+      "id": "lint-web",
+      "executable": "make",
+      "argv": ["lint-web"],
+      "cwd": "task",
+      "timeoutMs": 300000
+    },
+    "lint-sh": {
+      "id": "lint-sh",
+      "executable": "make",
+      "argv": ["lint-sh"],
+      "cwd": "task",
+      "timeoutMs": 300000
+    },
+    "go-test": {
+      "id": "go-test",
+      "executable": "make",
+      "argv": ["test"],
+      "cwd": "task",
+      "timeoutMs": 900000
+    },
+    "web-test": {
+      "id": "web-test",
+      "executable": "npm",
+      "argv": ["--prefix", "web", "test"],
+      "cwd": "task",
+      "timeoutMs": 900000
+    },
+    "web-build": {
+      "id": "web-build",
+      "executable": "npm",
+      "argv": ["--prefix", "web", "run", "build"],
+      "cwd": "task",
+      "timeoutMs": 300000
+    },
+    "web-contrast": {
+      "id": "web-contrast",
+      "executable": "npm",
+      "argv": ["--prefix", "web", "run", "contrast"],
+      "cwd": "task",
+      "timeoutMs": 300000
+    },
+    "web-bundle-size": {
+      "id": "web-bundle-size",
+      "executable": "bash",
+      "argv": ["-c", "npm --prefix web run build && npm --prefix web run bundle-size"],
+      "cwd": "task",
+      "timeoutMs": 300000
+    },
+    "e2e": {
+      "id": "e2e",
+      "executable": "make",
+      "argv": ["e2e"],
+      "cwd": "task",
+      "timeoutMs": 1800000
+    }
+  },
+  "requiredCheckIds": [
+    "go-build",
+    "go-vet",
+    "lint-go",
+    "web-typecheck",
+    "lint-web",
+    "lint-sh",
+    "go-test",
+    "web-test",
+    "web-build",
+    "web-contrast",
+    "web-bundle-size",
+    "e2e"
+  ]
+}
