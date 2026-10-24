@@ -104,7 +104,9 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
   await expect(show).toHaveAttribute("aria-expanded", "false");
   await show.click();
   await expect(first.getByRole("button", { name: "Hide names" })).toHaveAttribute("aria-expanded", "true");
-  await expect(first.getByRole("listitem").filter({ hasText: "Sam Member (maybe)" })).toBeVisible();
+  const attendee = first.getByRole("listitem").filter({ hasText: "Sam Member" });
+  await expect(attendee).toBeVisible();
+  await expect(attendee).toContainText("(maybe)");
 
   await answer.getByRole("button", { name: "Can't go" }).click();
   await expect(answer.getByRole("button", { name: "Can't go" })).toHaveAttribute("aria-pressed", "true");

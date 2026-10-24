@@ -1,3 +1,4 @@
+import { ContactDetails } from "../components/ContactDetails";
 import { Badge } from "../components/ui/Badge";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
@@ -968,6 +969,7 @@ export function GroupDetail() {
                                 )}
                               </div>
                               <div className="text-sm text-text-muted capitalize">{m.role}</div>
+                              <ContactDetails email={m.email} phone={m.phone} />
                             </div>
                             {canManage && (
                               <Menu

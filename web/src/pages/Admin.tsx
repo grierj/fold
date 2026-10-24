@@ -1,3 +1,4 @@
+import { ContactDetails } from "../components/ContactDetails";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
 import { Link, useSearchParams } from "react-router-dom";
@@ -439,6 +440,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
                 </span>
               )}
               <span className="text-xs text-text-muted capitalize">· {m.role}</span>
+              <ContactDetails email={m.email} phone={m.phone} />
             </div>
             <button
               onClick={() => remove(m)}

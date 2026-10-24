@@ -1832,6 +1832,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Tests: policy table for every row in section 6 on teens; API tests; fake-clock tests.
 
 **M1.11 Contact privacy and direct-contact requests**
+- Operator scope (Oct 24, 2026): implement only cross-milestone dependencies necessary to complete M1.11 safely. The DEC-75 one-occurrence access dependency belongs to a later M1.11 slice with its complete read filtering and lifecycle protections; the rest of M1.14 remains deferred. Work starts with s1 contact privacy (backend, then UI); no milestone acceptance is claimed by a partial handoff.
 - Depends on: M1.10, M1.2
 - Scope: 5.11 (DEC-31): leaders and hosts never get teen contact details; the adult setting "Hide my contact info from group leaders" (off by default); `ContactRequest` and `ContactGrant`; approval rules (a hidden adult decides alone; for a teen, an admin and the teen must both approve); revocation by the person, an admin, or a teen's confirmed guardian; automatic end of grants; audit rows for every attempt; the admin contact-access history and CSV export.
 - **Add people by name (DEC-78).** Leaders and hosts add people to their groups and events by searching names, with no email needed, because teens' and hidden adults' emails are never shown to them (5.11), so today's add-by-email (`POST /groups/:id/members` takes an `email`) can't reach exactly the people who most need adding (teens joining an invite-only youth group, adults who hide their contact info).

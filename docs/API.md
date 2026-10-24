@@ -75,7 +75,12 @@ from POST; POST also remakes the link, which revokes the old one.
 dates I'm going or waitlisted for) or `"all"` (everything I can see).
 Revoking a link that is already off still answers 200.
 
-Profile update body: any of `{name, displayName, phone, email, timezone, avatarFocal: {x, y}}`.
+Profile update body: any of `{name, displayName, phone, email, timezone, hideContactFromLeaders, avatarFocal: {x, y}}`.
+`hideContactFromLeaders` is a boolean preference for the signed-in adult only,
+off by default. A teen's submitted preference is ignored: their contact is
+always hidden from leaders and hosts. Changing the adult preference writes
+`contact.privacy_changed` in the same transaction (target: user; metadata:
+`{hideContactFromLeaders: boolean}`). Repeating the current value is a no-op.
 Limits: names ≤ 100 chars, phone ≤ 30 chars, focal clamped to 0-100,
 `timezone` an IANA name (DEC-58; "" and "Local" are refused). The
 email is the login: sending a different `email` starts a verified change
@@ -93,7 +98,11 @@ sessions, including the one that requested it.
 
 `user`: `{id, name, displayName, email, phone, avatarUrl,
 avatarFocalX, avatarFocalY, role, status, hasPassword, accountType, timezone,
-birthDate?}`. `status` is
+hideContactFromLeaders, birthDate?, hasTeenConsentHistory?}`.
+`hideContactFromLeaders` is always present and is the effective setting
+(always true for teens, regardless of the stored preference). The full `user`
+shape is restricted to self/session and admin account endpoints; it is never
+a roster or attendee DTO. `hasTeenConsentHistory` is admin-list-only. `status` is
 `active`, `invited` (no password yet), `pending_consent` (a teen waiting
 for consent, M1.10), `guest` (a verified guest registrant with no
 password and no sign-in, M1.4), or `disabled`.
@@ -288,7 +297,9 @@ upcomingEvents: [occurrence], canManage: bool, isMember: bool}`.
 `members` is filled only for the group's members and admins (people see each
 other only inside groups they share); otherwise it is `[]`. `canManage` is
 true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, accountType?, role,
-joinedAt, admin}` — `name` is the member's display name; `admin` marks church admins (DEC-38).
+joinedAt, admin, email?, phone?}` (also `avatarFocalX/Y`) — `name` is the member's display name; `admin` marks church admins (DEC-38).
+Contact fields follow the context-specific rules below; unauthorized keys are
+omitted entirely, not returned as null or empty strings.
 
 Create/update body: `{name, description, tags[], location,
 coverFocal: {x, y}, visibility, memberLimit}`. Covers are upload-only: set
@@ -746,6 +757,26 @@ Childcare with household people: `childcareRequested` is an explicit
 per-child choice for an in-person named child, one childcare spot each.
 Remote people never use childcare. `childcareCount` stays the holder's
 count of unnamed children. DEC-80 promotion applies to both.
+
+Account attendee rows may include `email` and `phone`, under the same contact
+rules as roster rows below. A removed registration alone gives an event
+manager no contact right. Attendee contact never comes from a household
+person's account holder.
+
+**Contact fields (M1.11 s1 backend).** In an otherwise authorized roster or
+attendee response, self, active admins, and a teen's currently confirmed
+guardians retain contact access. Pending, rejected and revoked guardian links
+confer none. Otherwise only the presented group's leaders see unhidden adult
+members' contact, and only the presented event's managers (group leaders or
+church-wide hosts) see unhidden adult registrants' contact. Leadership or
+hosting elsewhere confers nothing here. Teens are always hidden from those
+management roles; adults can opt out using `hideContactFromLeaders`.
+Unauthorized `email` and `phone` keys are absent; authorized keys are strings,
+including an empty string if the person has no phone. These rights never
+widen roster/attendee identity visibility. Host-management rows (including
+host email) remain admin-only; public event output has no host-management
+rows. Teen avatars remain absent from rosters. No directory, recipient-list
+messaging, contact requests or grant-based reveal endpoint ships in s1.
 
 Attendee lists give each row a `registrationId`. A household row has no
 `userId` and carries `householdPerson: {personId, name, householdName, kind,

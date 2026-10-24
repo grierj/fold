@@ -17,6 +17,7 @@ export interface User {
   displayName: string;
   email: string;
   phone: string;
+  hideContactFromLeaders: boolean;
   avatarUrl: string;
   avatarFocalX: number;
   avatarFocalY: number;
@@ -64,6 +65,8 @@ export type VideoProvider = "none" | "link" | "jitsi";
 export type VideoReveal = "always" | "registered_only";
 
 export interface Member {
+  email?: string;
+  phone?: string;
   accountType?: "teen";
   id: number;
   name: string;
@@ -135,6 +138,8 @@ export interface GuestRegistration {
 // One attendee entry on an occurrence (M1.5 adds guestCount).
 /** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface Attendee {
+  email?: string;
+  phone?: string;
   accountType?: "adult" | "teen";
   registrationId: number;
   userId?: number;

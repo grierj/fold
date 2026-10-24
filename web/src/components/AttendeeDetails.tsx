@@ -1,3 +1,4 @@
+import { ContactDetails } from "./ContactDetails";
 import { attendeeSubject } from "../api";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { Attendee, HouseholdAttendee, RegisteredBy } from "../types";
@@ -36,6 +37,7 @@ export function AttendeeDetails({ attendee: a, childcare = true, status, showAcc
     </span>
     {person && holder && <div className="text-sm text-text-muted">Signed up by {holder.name}</div>}
     {status && <div className="text-sm text-text-muted">{status}</div>}
+    <ContactDetails email={a.email} phone={a.phone} />
     {childcare && a.childcareAgesNote && <Note text={a.childcareAgesNote} label="Ages" name={a.name} />}
     {notes && <Note text={notes} label="Care notes" name={a.name} />}
   </div>;

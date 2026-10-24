@@ -452,6 +452,7 @@ async function apiUpload<T>(path: string, field: string, file: File): Promise<T>
 }
 
 export interface ProfileUpdate {
+  hideContactFromLeaders?: boolean;
   name?: string;
   displayName?: string;
   email?: string;

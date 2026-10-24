@@ -126,7 +126,9 @@ type User struct {
 	Name         string // full name
 	DisplayName  string // shown in the UI; falls back to Name
 	Phone        string // first-class: SMS is a required channel
-	AvatarKey    string // blob-store key for the avatar image ("" = none)
+	// Teens' contact is always hidden from leaders, independently of this preference.
+	HideContactFromLeaders bool   `gorm:"not null;default:false"`
+	AvatarKey              string // blob-store key for the avatar image ("" = none)
 	// AvatarFocalX/Y is the focal point as a 0-100 percentage, used for
 	// CSS object-position so faces stay centered in cropped avatars.
 	AvatarFocalX float64 `gorm:"default:50"`

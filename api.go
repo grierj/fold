@@ -48,11 +48,15 @@ type userJSON struct {
 	BirthDate    string  `json:"birthDate,omitempty"`
 	// Admin list only. Kept after age rollover so consent history is reachable.
 	HasTeenConsentHistory bool `json:"hasTeenConsentHistory,omitempty"`
+	// Effective preference: always true for a teen, regardless of stored value.
+	HideContactFromLeaders bool `json:"hideContactFromLeaders"`
 	// Timezone is the person's own zone for emails (DEC-58); "" means
 	// the church's, until the browser fills it in.
 	Timezone string `json:"timezone"`
 }
 
+// toUserJSON is unrestricted: only self/session and admin account endpoints
+// may use it. Rosters and attendees use context-filtered contact presentation.
 func (a *App) toUserJSON(u *models.User) userJSON {
 	avatarURL := ""
 	if u.AvatarKey != "" {
@@ -69,7 +73,8 @@ func (a *App) toUserJSON(u *models.User) userJSON {
 		AvatarFocalX: u.AvatarFocalX, AvatarFocalY: u.AvatarFocalY,
 		Role: u.Role, Status: u.Status, HasPassword: u.PasswordHash != nil,
 		AccountType: accountType, BirthDate: formatBirthDate(u.BirthDate),
-		Timezone: u.Timezone,
+		Timezone:               u.Timezone,
+		HideContactFromLeaders: u.AccountType == models.AccountTeen || u.HideContactFromLeaders,
 	}
 }
 
@@ -94,6 +99,8 @@ type groupSummaryJSON struct {
 }
 
 type memberJSON struct {
+	Email        *string `json:"email,omitempty"`
+	Phone        *string `json:"phone,omitempty"`
 	AccountType  string  `json:"accountType,omitempty"`
 	ID           uint    `json:"id"`
 	Name         string  `json:"name"`
@@ -203,6 +210,8 @@ type occurrenceJSON struct {
 }
 
 type attendeeJSON struct {
+	Email              *string                `json:"email,omitempty"`
+	Phone              *string                `json:"phone,omitempty"`
 	AccountType        string                 `json:"accountType,omitempty"`
 	RegistrationID     uint                   `json:"registrationId"`
 	HouseholdPerson    *householdAttendeeJSON `json:"householdPerson,omitempty"`

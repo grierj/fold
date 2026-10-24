@@ -197,6 +197,11 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	// One set of household facts and one church-local clock per request.
 	facts := a.requestFacts()
 	names, removed := a.attendeeNames(kept, showNames, showChildcare, showDeclined, me, facts)
+	guardians := a.confirmedContactGuardians(me, facts.users)
+	for _, o := range kept {
+		presentAttendeeContacts(names[o.ID], me, facts.users, guardians, showDeclined[o.EventID])
+		presentAttendeeContacts(removed[o.ID], me, facts.users, guardians, showDeclined[o.EventID])
+	}
 	ownHousehold := a.myHouseholdAnswers(ids, me, facts)
 	// Only a household account can have registered someone by name.
 	householdVideo := map[uint]bool{}

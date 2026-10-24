@@ -9,7 +9,7 @@ import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { errorText } from "../lib/errors";
-import { Choices, Field, FormError, Input, Radio, showFieldErrors } from "../components/ui/Field";
+import { Checkbox, Choices, Field, FormError, Input, Radio, showFieldErrors } from "../components/ui/Field";
 import { Skeleton } from "../components/ui/Skeleton";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { HouseholdSkeleton } from "../components/HouseholdSkeleton";
@@ -23,6 +23,7 @@ export function ProfilePage() {
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [phone, setPhone] = useState<string | null>(null);
+  const [hideContactFromLeaders, setHideContactFromLeaders] = useState<boolean | null>(null);
   const [zone, setZone] = useState<string | null>(null);
   const [pictureBusy, setPictureBusy] = useState(false);
   const [pictureStatus, setPictureStatus] = useState<string | null>(null);
@@ -64,6 +65,7 @@ export function ProfilePage() {
   const fullName = name ?? user.name;
   const ph = phone ?? user.phone;
   const tz = zone ?? user.timezone;
+  const hideContact = hideContactFromLeaders ?? user.hideContactFromLeaders;
   const focalX = user.avatarFocalX;
   const focalY = user.avatarFocalY;
 
@@ -73,7 +75,7 @@ export function ProfilePage() {
     setError(null);
     setSaved(false);
     try {
-      await ProfileApi.update({ displayName: dn, name: fullName, phone: ph, ...(tz ? { timezone: tz } : {}) });
+      await ProfileApi.update({ displayName: dn, name: fullName, phone: ph, ...(tz ? { timezone: tz } : {}), ...(user?.accountType === "adult" ? { hideContactFromLeaders: hideContact } : {}) });
       await refresh();
       setSaved(true);
     } catch (err) {
@@ -256,6 +258,21 @@ export function ProfilePage() {
           >
             <ZonePicker value={tz} onChange={setZone} />
           </Field>
+          <section aria-labelledby="profile-contact-privacy">
+            <h2 id="profile-contact-privacy" className="font-semibold">Contact privacy</h2>
+            {user.accountType === "teen" ? (
+              <p className="mt-2 text-sm text-text-muted">
+                Your email and phone are always hidden from group leaders and event hosts. You, admins, and your confirmed guardians can still see them.
+              </p>
+            ) : (
+              <Checkbox
+                label="Hide my contact info from group leaders"
+                description="Hide your email and phone from group leaders and event hosts. Admins can still see them. Save your profile to apply this choice."
+                checked={hideContact}
+                onChange={(e) => setHideContactFromLeaders(e.target.checked)}
+              />
+            )}
+          </section>
           <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={saving}>
             {saving ? "Saving…" : "Save profile"}
           </Button>

@@ -290,14 +290,25 @@ func TestCanSeeContact(t *testing.T) {
 	}{
 		{"admin sees a teen", admin, false, Contact{Teen: true}, true},
 		{"teen sees own", teen, true, Contact{Teen: true}, true},
-		{"leader never sees a teen", adult, false, Contact{Teen: true, Shares: true}, false},
-		{"co-leader never sees a teen", adult2, false, Contact{Teen: true, Shares: true}, false},
-		{"leader sees a teen only with a grant", adult, false, Contact{Teen: true, Shares: true, Grant: true}, true},
-		{"leader sees an adult member", adult, false, Contact{Shares: true}, true},
-		{"leader doesn't see a hidden adult", adult, false, Contact{Shares: true, HideFromLeaders: true}, false},
-		{"leader sees a hidden adult with a grant", adult, false, Contact{Shares: true, HideFromLeaders: true, Grant: true}, true},
+		{"leader never sees a teen", adult, false, Contact{Teen: true, GroupLeader: true, GroupMember: true}, false},
+		{"co-leader never sees a teen", adult2, false, Contact{Teen: true, GroupLeader: true, GroupMember: true}, false},
+		{"leader sees an adult member", adult, false, Contact{GroupLeader: true, GroupMember: true}, true},
+		{"leader doesn't see a hidden adult", adult, false, Contact{GroupLeader: true, GroupMember: true, HideFromLeaders: true}, false},
 		{"no shared group, no details", adult, false, Contact{}, false},
-		{"guest sees nothing", guest, false, Contact{Shares: true}, false},
+		{"unrelated leader", adult, false, Contact{GroupLeader: true}, false},
+		{"ordinary group member", adult, false, Contact{GroupMember: true}, false},
+		{"own host", adult, false, Contact{EventManager: true, EventRegistrant: true}, true},
+		{"unrelated host", adult, false, Contact{EventManager: true}, false},
+		{"ordinary registrant", adult, false, Contact{EventRegistrant: true}, false},
+		{"host hidden adult", adult, false, Contact{EventManager: true, EventRegistrant: true, HideFromLeaders: true}, false},
+		{"host teen", adult, false, Contact{EventManager: true, EventRegistrant: true, Teen: true}, false},
+		{"confirmed guardian", adult, false, Contact{Teen: true, ConfirmedGuardian: true}, true},
+		{"pending guardian", adult, false, Contact{Teen: true}, false},
+		{"guardian flag doesn't authorize an adult", adult, false, Contact{HideFromLeaders: true, ConfirmedGuardian: true}, false},
+		{"hidden self", adult, true, Contact{HideFromLeaders: true}, true},
+		{"hidden admin", admin, false, Contact{HideFromLeaders: true}, true},
+		{"teen cannot manage contact", teen, false, Contact{GroupLeader: true, GroupMember: true}, false},
+		{"signed out sees nothing", guest, false, Contact{GroupLeader: true, GroupMember: true, ConfirmedGuardian: true}, false},
 	}
 	for _, c := range cases {
 		if got := CanSeeContact(c.p, c.self, c.c); got != c.want {
@@ -976,5 +987,16 @@ func TestCanChangeTeenConsent(t *testing.T) {
 				t.Fatalf("got %t, want %t", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCanEditOwnContactPrivacy(t *testing.T) {
+	for _, tc := range []struct {
+		p    *Person
+		want bool
+	}{{nil, false}, {adult, true}, {admin, true}, {teen, false}} {
+		if got := CanEditOwnContactPrivacy(tc.p); got != tc.want {
+			t.Errorf("%+v: got %v want %v", tc.p, got, tc.want)
+		}
 	}
 }

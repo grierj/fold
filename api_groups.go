@@ -163,12 +163,21 @@ func (a *App) rosterFor(groupID uint, viewer *models.User, manager bool) []membe
 	a.DB.Preload("User").Joins(listedUsers("memberships")).
 		Where("memberships.group_id = ? AND memberships.status = 'active'", groupID).
 		Order("memberships.joined_at").Find(&members)
+	users := make(map[uint]*models.User, len(members))
+	for i := range members {
+		users[members[i].User.ID] = &members[i].User
+	}
+	guardians := a.confirmedContactGuardians(viewer, users)
 	out := make([]memberJSON, 0, len(members))
 	for i := range members {
 		if members[i].User.AccountType == models.AccountTeen && !policy.CanSeeMinorRosterIdentity(asPerson(viewer), manager) {
 			continue
 		}
 		item := a.toMemberJSON(&members[i])
+		item.Email, item.Phone = contactDetails(viewer, &members[i].User, policy.Contact{
+			GroupLeader: manager, GroupMember: true,
+			ConfirmedGuardian: guardians[members[i].User.ID],
+		})
 		if item.AccountType != models.AccountTeen {
 			item.AccountType = ""
 		}
