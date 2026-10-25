@@ -84,9 +84,9 @@ function EventRow({
 
   return (
     <div className="bg-surface rounded-lg border border-border p-4 flex gap-4">
-      {canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
       <DateBadge at={instance.startsAt} />
       <div className="grow min-w-0">
+        {canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
         <div className="font-bold text-lg">{name}</div>
         {showDescription && instance.description && (
           <p className="text-sm text-text-muted whitespace-pre-wrap mt-1">{instance.description}</p>

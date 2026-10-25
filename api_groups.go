@@ -296,7 +296,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		if body.Visibility != nil {
 			var err error
 			var ids []uint
-			if impact, ids, err = applyGroupTightening(c, tx, g, oldVis, g.Visibility, body.OpenedEvents); err != nil {
+			if impact, ids, err = a.applyGroupTightening(c, tx, g, oldVis, g.Visibility, body.OpenedEvents); err != nil {
 				return err
 			}
 			emailed = append(emailed, ids...)

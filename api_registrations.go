@@ -293,6 +293,13 @@ func hostIDs(tx *gorm.DB, eventID uint) []uint {
 // cannot see the group gets no group name, place, or group link
 // (PR #41). It reads nothing; loadNoticeFacts did the reading once for
 // every recipient.
+func effectiveOccurrenceTitle(ev *models.Event, o *models.EventOccurrence) string {
+	if o.TitleOverride != nil {
+		return *o.TitleOverride
+	}
+	return ev.Title
+}
+
 func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, facts *noticeFacts) (notify.Vars, string) {
 	var g *models.Group
 	if ev.GroupID != nil {
@@ -307,10 +314,10 @@ func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, f
 	if o.LocationOverride != nil {
 		place = *o.LocationOverride
 	}
-	vars := notify.Vars{Event: ev.Title, When: formatWhen(o.StartsAt, facts.zone(userID)), Place: place}
+	vars := notify.Vars{Event: effectiveOccurrenceTitle(ev, o), When: formatWhen(o.StartsAt, facts.zone(userID)), Place: place}
 	link := fmt.Sprintf("/events/%d", ev.ID)
 	if g != nil {
-		vars.Event = firstNonEmpty(ev.Title, g.Name) // group-ok: g is set only when facts.canSeeGroup is true
+		vars.Event = firstNonEmpty(effectiveOccurrenceTitle(ev, o), g.Name) // group-ok: g is set only when facts.canSeeGroup is true
 		if o.LocationOverride == nil {
 			vars.Place = firstNonEmpty(ev.Location, g.Location) // group-ok: g is set only when facts.canSeeGroup is true
 		}

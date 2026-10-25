@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -215,7 +216,7 @@ func (a *App) apiGroupVisibilityImpact(c *gin.Context) {
 // group row is locked and before it is saved. oldVis is the stored value.
 // decisions maps event id to keep or tighten; a leader-opened event without
 // one returns errNeedDecision and impact, and nothing is written.
-func applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group, oldVis, newVis string, decisions map[string]string) (visibilityImpactJSON, []uint, error) {
+func (a *App) applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group, oldVis, newVis string, decisions map[string]string) (visibilityImpactJSON, []uint, error) {
 	before := *g
 	before.Visibility = oldVis
 	impact, auto, opened, err := impactOf(tx, &before, newVis, true)
@@ -235,13 +236,13 @@ func applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group, oldVis, 
 	now := time.Now().UTC()
 	var emailed []uint
 	tighten := func(ev *models.Event, reason string) error {
-		ids, err := cancelLosers(c, tx, ev, newVis, now)
-		emailed = append(emailed, ids...)
-		if err != nil {
-			return err
-		}
 		old := ev.Visibility
 		if err := tx.Model(ev).Updates(map[string]any{"visibility": newVis, "leader_opened": false}).Error; err != nil {
+			return err
+		}
+		ids, err := a.cancelLosers(c, tx, ev, newVis, now)
+		emailed = append(emailed, ids...)
+		if err != nil {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.VisibilityChanged, TargetType: "event", TargetID: ev.ID,
@@ -289,7 +290,7 @@ func applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group, oldVis, 
 		if !keep {
 			value = &newVis
 		}
-		ids, err := changeDateVisibility(c, tx, evs[date.EventID], date, value, "group_more_private", keep, newVis)
+		ids, err := a.changeDateVisibility(c, tx, evs[date.EventID], date, value, "group_more_private", keep, newVis)
 		if err != nil {
 			return impact, nil, err
 		}
@@ -298,15 +299,15 @@ func applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group, oldVis, 
 	return impact, emailed, nil
 }
 
-// cancelLosers deletes upcoming registrations of people who could not see
+// cancelLosers cancels upcoming registrations of people who could not see
 // ev at newVis, writing one registration.cancelled audit row per person;
 // the person gets a stored notification. It returns the notification IDs
 // for post-commit email delivery.
-func cancelLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time) ([]uint, error) {
-	return cancelDateLosers(c, tx, ev, newVis, now, 0)
+func (a *App) cancelLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time) ([]uint, error) {
+	return a.cancelDateLosers(c, tx, ev, newVis, now, 0)
 }
 
-func cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time, occurrenceID uint) ([]uint, error) {
+func (a *App) cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, now time.Time, occurrenceID uint) ([]uint, error) {
 	// Lock all affected occurrences before re-reading losers, so a concurrent
 	// batch either sees the tightened visibility or is included here.
 	var occIDs []uint
@@ -317,20 +318,25 @@ func cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis stri
 	if err := q.Order("id").Pluck("id", &occIDs).Error; err != nil {
 		return nil, err
 	}
+	dates := map[uint]*models.EventOccurrence{}
 	for _, id := range occIDs {
-		if _, err := lockOccurrence(tx, id); err != nil {
+		o, err := lockOccurrence(tx, id)
+		if err != nil {
 			return nil, err
 		}
+		dates[id] = o
 	}
 	var rows []models.Registration
 	if err := losersForDate(tx, ev, newVis, now, occurrenceID).Select("registrations.*").Order("registrations.id").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	actor := apiUser(c)
-	holders := map[uint]bool{}
+	holders := map[string]bool{}
 	var mailed []uint
+	affected := map[uint]bool{}
 	for _, r := range rows {
-		if err := tx.Delete(&r).Error; err != nil {
+		affected[r.OccurrenceID] = true
+		if err := tx.Model(&r).Updates(map[string]any{"status": models.RegCancelled, "waitlisted_at": nil, "promoted_at": nil}).Error; err != nil {
 			return nil, err
 		}
 		meta := registrationMeta(r)
@@ -340,19 +346,30 @@ func cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis stri
 			return nil, err
 		}
 		holder := registrationHolder(r)
-		if holders[holder] {
+		title := effectiveOccurrenceTitle(ev, dates[r.OccurrenceID])
+		key := fmt.Sprintf("%d:%s", holder, title)
+		if holders[key] {
 			continue
 		}
-		holders[holder] = true
+		holders[key] = true
 		noticeEvent := *ev
+		noticeEvent.Title = title
 		if occurrenceID != 0 {
-			var date models.EventOccurrence
-			if err := tx.First(&date, occurrenceID).Error; err != nil {
-				return nil, err
-			}
-			noticeEvent.Title = ev.Title + " · " + date.OriginalDate
+			date := dates[occurrenceID]
+			noticeEvent.Title = effectiveOccurrenceTitle(ev, date) + " · " + date.OriginalDate
 		}
 		ids, err := notifyRegistrationCancelled(tx, actor.ID, &noticeEvent, holder)
+		if err != nil {
+			return nil, err
+		}
+		mailed = append(mailed, ids...)
+	}
+	// All losers are cancelled before any survivor competes for the freed seats.
+	for _, id := range occIDs {
+		if !affected[id] {
+			continue
+		}
+		ids, err := a.promoteLocked(tx, ev, dates[id], now, &actor.ID)
 		if err != nil {
 			return nil, err
 		}

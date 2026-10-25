@@ -98,20 +98,14 @@ func dateImpactOf(tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, ne
 
 // Caller holds the contact gate, event and occurrence locks. Cancellation,
 // audit and stored notices share the same transaction as the date edit.
-func changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, value *string, reason string, keep bool, groupVisibility ...string) ([]uint, error) {
+func (a *App) changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, value *string, reason string, keep bool, groupVisibility ...string) ([]uint, error) {
 	old := occ.VisibilityOverride
 	if !keep && ((old == nil && value == nil) || (old != nil && value != nil && *old == *value)) {
 		return nil, nil
 	}
 	before, after := policy.EffectiveVisibility(ev.Visibility, old), policy.EffectiveVisibility(ev.Visibility, value)
 	var mailed []uint
-	if policy.MoreOpen(before, after) && !keep {
-		ids, err := cancelDateLosers(c, tx, ev, after, time.Now().UTC(), occ.ID)
-		if err != nil {
-			return nil, err
-		}
-		mailed = append(mailed, ids...)
-	}
+
 	f := eventFactsIn(tx, apiUser(c), ev)
 	if f.group != nil && len(groupVisibility) > 0 {
 		f.group.Visibility = groupVisibility[0]
@@ -130,6 +124,13 @@ func changeDateVisibility(c *gin.Context, tx *gorm.DB, ev *models.Event, occ *mo
 	occ.VisibilityOverride = value
 	if err := tx.Model(occ).Update("visibility_override", value).Error; err != nil {
 		return nil, err
+	}
+	if policy.MoreOpen(before, after) && !keep {
+		ids, err := a.cancelDateLosers(c, tx, ev, after, time.Now().UTC(), occ.ID)
+		if err != nil {
+			return nil, err
+		}
+		mailed = append(mailed, ids...)
 	}
 	if action == audit.VisibilityOverride && f.group != nil {
 		date := *ev

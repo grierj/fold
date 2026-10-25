@@ -316,7 +316,7 @@ func (a *App) apiGetOccurrenceDate(c *gin.Context) {
 		manager = policy.CanManageEvent(asPerson(me), viewOf(ev, vs.Hosted[ev.ID]), rel)
 		attendees = policy.CanSeeAttendeeNames(asPerson(me), viewOf(ev, vs.Hosted[ev.ID]), gp, rel)
 		if me != nil {
-			a.DB.Where("user_id = ? AND occurrence_id = ? AND status <> ?", me.ID, occ.ID, models.RegCancelled).Find(&reg)
+			a.DB.Where("user_id = ? AND occurrence_id = ?", me.ID, occ.ID).Find(&reg)
 		}
 	} else {
 		ev = &invited.Event

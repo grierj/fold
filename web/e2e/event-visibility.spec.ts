@@ -46,7 +46,7 @@ test("a private series can open one date without opening its siblings", async ({
   const admin = await apiAs(request, "grier");
   const { group } = await admin("POST", "/groups", { name: "Date-only welcome", visibility: "invite_only", location: "Hidden meeting room" }) as { group: { id: number } };
   const date = futureDate(14);
-  const { event } = await admin("POST", `/groups/${group.id}/events`, { title: "Welcome evening", startsLocal: `${date}T18:00`, durationMinutes: 60, tzid: "UTC", recurrenceRule: "FREQ=WEEKLY;COUNT=3" }) as { event: { id: number } };
+  const { event } = await admin("POST", `/groups/${group.id}/events`, { title: "Welcome evening", startsLocal: `${date}T18:00`, durationMinutes: 60, tzid: "UTC", recurrenceRule: "FREQ=WEEKLY;COUNT=3", remoteAvailable: true, guestsAllowed: 3 }) as { event: { id: number } };
   await signIn(page, "grier");
   await page.goto(`/events/${event.id}`);
   await fromMore(page, "Edit this date");
@@ -61,6 +61,16 @@ test("a private series can open one date without opening its siblings", async ({
   await expect(page.getByText("Date-only welcome")).toHaveCount(0);
   await page.getByRole("button", { name: "Register as a guest" }).click();
   await expect(page.getByLabel("Full name")).toBeVisible();
+  await signIn(page, "quinn");
+  await page.goto(`/events/${event.id}/dates/${date}`);
+  await page.getByLabel("Remote", { exact: true }).check();
+  await page.getByLabel("Guests", { exact: true }).fill("2");
+  await page.getByRole("button", { name: "Going", exact: true }).click();
+  await expect(page.getByText("Your answer: Going")).toBeVisible();
+  await page.getByRole("button", { name: "Can't go", exact: true }).click();
+  await expect(page.getByText("Your answer: Can't go")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Don't add me again" })).toHaveCount(0);
+  await page.context().clearCookies();
   const sibling = futureDate(21);
   await page.goto(`/events/${event.id}/dates/${sibling}`);
   await expect(page.getByText("This date is not available")).toBeVisible();

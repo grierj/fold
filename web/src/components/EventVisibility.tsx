@@ -155,7 +155,7 @@ export function VisibilityField({
   const choices = churchWide ? CHOICES.filter((c) => c.value !== "invite_only") : CHOICES;
   return (
     <div className="space-y-3">
-      <Choices legend="Who can see this event">
+      <Choices legend={seriesVisibility ? "Who can see this date" : "Who can see this event"}>
         {seriesVisibility && <Radio name={id} label={`Same as series (${seriesVisibility === "invite_only" ? "invite only" : seriesVisibility})`} checked={inheritSelected} onChange={onInherit} />}
         {choices.map((c) => (
           <Radio

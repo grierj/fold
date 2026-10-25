@@ -133,10 +133,21 @@ func TestDateTighteningCancelsOnlyThatDateAndRechecksGuestRedemption(t *testing.
 		apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[i].OriginalDate), map[string]any{"visibility": "public"}, 200)
 	}
 	email := "date-guest@example.com"
+	var manageToken string
 	for i := 0; i < 2; i++ {
 		guestSubmit(t, anon, ev.ID, map[string]any{"name": "Guest", "email": email, "date": dates[i].OriginalDate, "over18": true}, 200)
 		token := tokenInEmail(t, latestEmail(t, app, email))
-		apiDo(t, anon, "POST", "/api/v1/guest-registrations/confirm", map[string]any{"token": token}, 200)
+		w := anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]any{"token": token}, true)
+		if w.Code != 200 {
+			t.Fatal(w.Body.String())
+		}
+		if i == 0 {
+			var result struct {
+				ManageToken string `json:"manageToken"`
+			}
+			decodeJSON(t, w, &result)
+			manageToken = result.ManageToken
+		}
 	}
 	pending := "pending-date@example.com"
 	guestSubmit(t, anon, ev.ID, map[string]any{"name": "Waiting Guest", "email": pending, "date": dates[0].OriginalDate, "over18": true}, 200)
@@ -153,9 +164,24 @@ func TestDateTighteningCancelsOnlyThatDateAndRechecksGuestRedemption(t *testing.
 	if n != 1 {
 		t.Fatal("sibling registration cancelled")
 	}
-	app.DB.Model(&models.Registration{}).Where("occurrence_id = ?", dates[0].ID).Count(&n)
+	app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND status <> ?", dates[0].ID, models.RegCancelled).Count(&n)
 	if n != 0 {
-		t.Fatal("closed-date guest retained")
+		t.Fatal("closed-date guest still active")
+	}
+	var cancelled models.Registration
+	app.DB.Where("occurrence_id = ?", dates[0].ID).First(&cancelled)
+	if cancelled.Status != models.RegCancelled {
+		t.Fatalf("history lost: %+v", cancelled)
+	}
+	for _, method := range []string{"GET", "POST"} {
+		path := "/api/v1/guest-registrations/manage/" + manageToken
+		if method == "POST" {
+			path += "/cancel"
+		}
+		raw := apiDo(t, anon, method, path, nil, 200)
+		if !strings.Contains(raw, `"status":"cancelled"`) || strings.Contains(raw, "Hidden fellowship") || strings.Contains(raw, "SECRET GROUP PLACE") {
+			t.Fatalf("cancelled manage: %s", raw)
+		}
 	}
 	w := anon.do("POST", "/api/v1/guest-registrations/confirm", map[string]any{"token": token}, true)
 	if w.Code == 200 {
@@ -209,7 +235,7 @@ func TestConcurrentRegistrationVersusDateTightening(t *testing.T) {
 		}
 	}
 	var n int64
-	app.DB.Model(&models.Registration{}).Where("occurrence_id = ?", dates[0].ID).Count(&n)
+	app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND status <> ?", dates[0].ID, models.RegCancelled).Count(&n)
 	if n != 0 {
 		t.Fatalf("%d inaccessible registrations survived tightening", n)
 	}
@@ -271,6 +297,116 @@ func TestDateVisibilityFeedsUseStandaloneEntriesAndInvalidateETags(t *testing.T)
 		feed := events.RenderFeed(app.buildFeed(nil, opts, time.Now().UTC()))
 		if strings.Contains(string(feed), "RRULE") || strings.Count(string(feed), "BEGIN:VEVENT") != 3 {
 			t.Fatalf("feed leaks hidden date: %s", feed)
+		}
+	}
+}
+
+func TestOpenedDateOrdinaryRSVPAndWithdrawal(t *testing.T) {
+	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityInviteOnly)
+	app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{"remote_available": true, "guests_allowed": 3})
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"visibility": "public"}, 200)
+	u := newTestUser(t, app, "ordinary-date", "password1234", models.RoleMember)
+	client := loginAPI(t, app, "ordinary-date", "password1234")
+	exact := fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, dates[0].OriginalDate)
+	var read struct {
+		Occurrence dateOccurrenceJSON `json:"occurrence"`
+	}
+	decodeJSON(t, client.do("GET", exact, nil, false), &read)
+	if !read.Occurrence.CanRegister || read.Occurrence.CanDecline || read.Occurrence.CanBlock || !read.Occurrence.RemoteAvailable || read.Occurrence.GuestsAllowed != 3 {
+		t.Fatalf("ordinary authority/options: %+v", read)
+	}
+	for _, status := range []string{"going", "declined"} {
+		apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"date": dates[0].OriginalDate, "status": status, "attendanceMode": "remote", "guestCount": 2}, 200)
+		decodeJSON(t, client.do("GET", exact, nil, false), &read)
+		if read.Occurrence.MyRegistration == nil || *read.Occurrence.MyRegistration != status {
+			t.Fatalf("answer: %+v", read)
+		}
+	}
+	var reg models.Registration
+	app.DB.Where("user_id = ? AND occurrence_id = ?", u.ID, dates[0].ID).First(&reg)
+	if reg.AttendanceMode != "remote" || reg.GuestCount != 2 {
+		t.Fatalf("options: %+v", reg)
+	}
+	apiDo(t, client, "GET", fmt.Sprintf("/api/v1/events/%d", ev.ID), nil, 404)
+}
+
+func TestVisibilityCancellationPromotesSurvivors(t *testing.T) {
+	for _, scope := range []string{"date", "reset", "group_date", "group_series", "cutoff", "childcare", "combined_capacity"} {
+		t.Run(scope, func(t *testing.T) {
+			app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityPublic)
+			capacity := 1
+			if scope == "combined_capacity" {
+				capacity = 2
+			}
+			app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{"capacity": capacity, "waitlist_enabled": true, "guests_allowed": 1})
+			path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+			if scope != "group_series" {
+				apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public"}, 200)
+			}
+			loser := newTestUser(t, app, "losing-date", "password1234", models.RoleMember)
+			client := loginAPI(t, app, "losing-date", "password1234")
+			answer := map[string]any{"date": dates[0].OriginalDate, "status": "going"}
+			apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), answer, 200)
+			if scope == "combined_capacity" {
+				answer["guestCount"] = 1
+			}
+			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), answer, 200)
+			var survivor models.Registration
+			app.DB.Where("occurrence_id = ? AND user_id <> ?", dates[0].ID, loser.ID).First(&survivor)
+			if survivor.Status != models.RegWaitlisted {
+				t.Fatalf("not waitlisted: %+v", survivor)
+			}
+			if scope == "cutoff" {
+				start := time.Now().UTC().Add(time.Hour)
+				app.DB.Model(&models.EventOccurrence{}).Where("id = ?", dates[0].ID).Updates(map[string]any{"starts_at": start, "ends_at": start.Add(time.Hour)})
+			}
+			if scope == "childcare" {
+				app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{"childcare_available": true, "childcare_capacity": 1})
+				app.DB.Model(&survivor).Update("childcare_count", 2)
+			}
+			switch scope {
+			case "combined_capacity":
+				apiDo(t, admin, "PUT", path, map[string]any{"visibility": "invite_only", "confirm": true, "capacityOverride": 1}, 200)
+			case "date", "cutoff", "childcare":
+				apiDo(t, admin, "PUT", path, map[string]any{"visibility": "invite_only", "confirm": true}, 200)
+			case "reset":
+				apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID), map[string]any{"visibility": "invite_only", "confirm": true, "resetOverrides": true}, 200)
+			default:
+				apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/groups/%d", *ev.GroupID), map[string]any{"visibility": "invite_only", "openedEvents": map[string]string{dateDecisionKey(dates[0].ID): "tighten"}}, 200)
+			}
+			app.DB.First(&survivor, survivor.ID)
+			var cancelled models.Registration
+			app.DB.Where("occurrence_id = ? AND user_id = ?", dates[0].ID, loser.ID).First(&cancelled)
+			want := models.RegGoing
+			if scope == "cutoff" || scope == "childcare" || scope == "combined_capacity" {
+				want = models.RegWaitlisted
+			}
+			if survivor.Status != want || cancelled.Status != models.RegCancelled {
+				t.Fatalf("survivor=%s loser=%s", survivor.Status, cancelled.Status)
+			}
+		})
+	}
+}
+
+func TestOpenedDateNoticesUseEffectiveTitle(t *testing.T) {
+	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityInviteOnly)
+	app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Update("title", "CONFIDENTIAL PARENT")
+	path := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public", "title": "Community supper"}, 200)
+	u := newTestUser(t, app, "notice-date", "password1234", models.RoleMember)
+	client := loginAPI(t, app, "notice-date", "password1234")
+	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"date": dates[0].OriginalDate, "status": "going"}, 200)
+	apiDo(t, admin, "PUT", path, map[string]any{"location": "New room", "startsLocal": dates[0].StartsAt.Add(time.Hour).Format("2006-01-02T15:04")}, 200)
+	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "series", "confirm": true}, 200)
+	var notices []models.Notification
+	app.DB.Where("user_id = ? AND kind IN ?", u.ID, []string{"event.changed", "registration.cancelled"}).Find(&notices)
+	if len(notices) != 2 {
+		t.Fatalf("notices: %+v", notices)
+	}
+	for _, n := range notices {
+		raw, _ := json.Marshal(n)
+		if strings.Contains(string(raw), "CONFIDENTIAL") || !strings.Contains(n.Title+n.Body, "Community supper") || !strings.Contains(n.EmailTitle+n.EmailBody, "Community supper") {
+			t.Fatalf("unsafe notice/email: %s", raw)
 		}
 	}
 }

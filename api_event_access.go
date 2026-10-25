@@ -430,25 +430,25 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		if !body.Confirm && impactHasLosers(impact) {
 			return errNeedDecision
 		}
+		if err := tx.Model(&locked).Updates(map[string]any{"visibility": vis, "leader_opened": opened}).Error; err != nil {
+			return err
+		}
+		locked.Visibility, locked.LeaderOpened = vis, opened
 		// More private: the same cancel-and-notify as a group tightening (DEC-48).
-		if policy.Openness(vis) < policy.Openness(locked.Visibility) {
-			ids, err := cancelLosers(c, tx, &locked, vis, time.Now().UTC())
+		if policy.Openness(vis) < policy.Openness(oldVis) {
+			ids, err := a.cancelLosers(c, tx, &locked, vis, time.Now().UTC())
 			emailed = append(emailed, ids...)
 			if err != nil {
 				return err
 			}
 		}
-		if err := tx.Model(&locked).Updates(map[string]any{"visibility": vis, "leader_opened": opened}).Error; err != nil {
-			return err
-		}
-		locked.Visibility, locked.LeaderOpened = vis, opened
 		if body.ResetOverrides {
 			var dates []models.EventOccurrence
 			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("event_id = ? AND starts_at > ? AND visibility_override IS NOT NULL", locked.ID, time.Now().UTC()).Order("id").Find(&dates).Error; err != nil {
 				return err
 			}
 			for i := range dates {
-				ids, err := changeDateVisibility(c, tx, &locked, &dates[i], nil, "series_reset", false)
+				ids, err := a.changeDateVisibility(c, tx, &locked, &dates[i], nil, "series_reset", false)
 				if err != nil {
 					return err
 				}

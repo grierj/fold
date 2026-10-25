@@ -1115,11 +1115,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			if !body.Confirm && impactHasLosers(impact) {
 				return errNeedDecision
 			}
-			ids, err := changeDateVisibility(c, tx, ev, &o, visibility, body.Reason, false)
-			if err != nil {
-				return err
-			}
-			emailed = append(emailed, ids...)
+
 		}
 		oldStart, oldEnd := o.StartsAt, o.EndsAt
 		oldPlace := ev.Location
@@ -1161,6 +1157,15 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		o.EndsAt = start.Add(time.Duration(dur) * time.Minute)
 		if err := tx.Save(&o).Error; err != nil {
 			return err
+		}
+		// Cancellation and promotion use the final title, time and seat pools
+		// even when this request edits visibility and capacity together.
+		if visibilitySet {
+			ids, err := a.changeDateVisibility(c, tx, ev, &o, visibility, body.Reason, false)
+			if err != nil {
+				return err
+			}
+			emailed = append(emailed, ids...)
 		}
 		// event.changed fans out when the date's time or place actually
 		// changed: one item per going or waitlisted person, with the
