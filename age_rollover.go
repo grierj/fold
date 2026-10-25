@@ -21,6 +21,10 @@ import (
 // unfinished work. User type and the durable child milestone audit prevent
 // repeated changes and notices, even after notification retention runs.
 func (a *App) rolloverAges(now time.Time) (int, error) {
+	// DEC-83 conversion can roll back; actual-age contact ends must not.
+	if err := a.sweepContacts(context.Background(), now); err != nil {
+		return 0, err
+	}
 	today := now.In(churchZone(a.DB))
 	var userIDs []uint
 	if err := a.DB.Model(&models.User{}).Where("account_type = ? AND birth_date IS NOT NULL AND birth_date <= ?", models.AccountTeen,
@@ -42,6 +46,13 @@ func (a *App) rolloverAges(now time.Time) (int, error) {
 				return nil
 			}
 			done, mailed, err = a.rolloverTeen(tx, user, today, now)
+			if err != nil {
+				return err
+			}
+			// Keep contact endings in the committed birthday mutation too,
+			// even when the preliminary try-locked sweep was busy.
+			ids, err := a.reconcileContacts(tx, now, contactChange{UserID: id})
+			mailed = append(mailed, ids...)
 			return err
 		})
 		if err != nil {

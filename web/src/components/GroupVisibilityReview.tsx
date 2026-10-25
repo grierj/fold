@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { OpenedDecision, Visibility, VisibilityImpact } from "../types";
+import { formatDayLong } from "../lib/when";
 import { Button } from "./ui/Button";
 import { Choices, Radio } from "./ui/Field";
 
@@ -35,7 +36,7 @@ export function GroupVisibilityReview({
 }) {
   const [decisions, setDecisions] = useState<Record<string, OpenedDecision>>({});
   const next = WORD[impact.visibility];
-  const ready = impact.leaderOpened.every((e) => decisions[String(e.id)]);
+  const ready = impact.leaderOpened.every((e) => decisions[(e.decisionKey || String(e.id))]);
   const label = (title: string) => title || "Untitled event";
   const who = subject === "group" ? "the group" : "this event";
 
@@ -56,8 +57,8 @@ export function GroupVisibilityReview({
             aria-label={subject === "group" ? "Events that will match the group" : "Event that will change"}
           >
             {impact.tightened.map((e) => (
-              <li key={e.id}>
-                {label(e.title)} <span className="text-text-muted">(now {WORD[e.visibility]})</span>
+              <li key={e.decisionKey || `${e.id}-${e.title}`}>
+                {label(e.title)}{e.date ? ` · ${formatDayLong(e.date)}` : ""} <span className="text-text-muted">(now {WORD[e.visibility]})</span>
                 {e.registrants > 0 && (
                   <span className="text-danger"> · {people(e.registrants)} registered will be cancelled and notified</span>
                 )}
@@ -71,13 +72,13 @@ export function GroupVisibilityReview({
           <legend className="font-semibold text-sm">A leader opened these events up. Choose for each one.</legend>
           <ul className="mt-2 space-y-3">
             {impact.leaderOpened.map((e) => {
-              const key = String(e.id);
+              const key = (e.decisionKey || String(e.id));
               return (
-                <li key={e.id} data-testid={`opened-${e.id}`}>
+                <li key={e.decisionKey || e.id} data-testid={`opened-${e.id}`}>
                   <Choices
                     legend={
                       <>
-                        {label(e.title)} <span className="text-text-muted font-normal">(now {WORD[e.visibility]})</span>
+                        {label(e.title)}{e.date ? ` · ${formatDayLong(e.date)}` : ""} <span className="text-text-muted font-normal">(now {WORD[e.visibility]})</span>
                       </>
                     }
                   >

@@ -6,6 +6,7 @@ import (
 	"fold/internal/audit"
 	"gorm.io/gorm"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -1737,4 +1738,206 @@ func TestRegistrationReadBudget(t *testing.T) {
 		t.Fatalf("six-person household GET read %d times, want %d (no per-person reads)", n, small)
 	}
 	t.Logf("household GET reads: %d", small)
+}
+
+func TestSelectionRegistrationCapacityVisibilityAndTeenGate(t *testing.T) {
+	app, actor, client := peopleTestApp(t)
+	g := newTestGroup(t, app, actor, "Event selection", models.GroupActive)
+	adult := newTestUser(t, app, "event chosen", "pw", models.RoleMember)
+	ev, date := seedCappedEvent(t, app, client, itoa2(g.ID), intPtr(1), false)
+	path := "/api/v1/events/" + itoa2(ev) + "/registrations/add"
+	token, _ := app.newPeopleSelection(actor.ID, adult.ID, time.Now())
+	w := client.do("POST", path, map[string]any{"selectionId": token, "date": date}, true)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	other := newTestUser(t, app, "event second", "pw", models.RoleMember)
+	second, _ := app.newPeopleSelection(actor.ID, other.ID, time.Now())
+	w = client.do("POST", path, map[string]any{"selectionId": second, "date": date}, true)
+	if w.Code != 409 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	w = client.do("POST", path, map[string]any{"selectionId": second, "date": date, "overCapacity": true}, true)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var n int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ?", audit.RegistrationAddedOverCapacity).Count(&n)
+	if n != 1 {
+		t.Fatal(n)
+	}
+	app.DB.Model(&models.Event{}).Where("id = ?", ev).Update("visibility", "invite_only")
+	w = client.do("POST", path, map[string]any{"selectionId": second, "date": date, "overCapacity": true}, true)
+	if w.Code != 409 {
+		t.Fatal("selection overrode visibility", w.Code, w.Body.String())
+	}
+	teen := newTestUser(t, app, "event teen", "pw", models.RoleMember)
+	birth := time.Now().AddDate(-15, 0, 0)
+	app.DB.Model(teen).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth})
+	teenToken, _ := app.newPeopleSelection(actor.ID, teen.ID, time.Now())
+	for _, body := range []map[string]any{{"selectionId": teenToken, "date": date}, {"userId": teen.ID, "date": date}, {"email": teen.Email, "date": date}} {
+		w = client.do("POST", path, body, true)
+		if w.Code != 409 || !strings.Contains(w.Body.String(), "date_add_approval_required") {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestManagerRegistrationAddRefreshesActorAfterContactGate(t *testing.T) {
+	for _, targetKind := range []string{"selection", "email", "userId"} {
+		for change, revocation := range peopleAddActorRevocations(&models.User{}) {
+			t.Run(targetKind+"/"+revocation.name, func(t *testing.T) {
+				app, actor, client := peopleTestApp(t)
+				leader := newTestUser(t, app, "event destination leader", "pw", models.RoleMember)
+				g := newTestGroup(t, app, leader, "Event authority", models.GroupActive)
+				target := newTestUser(t, app, "private registration target", "pw", models.RoleMember)
+				ev, date := seedCappedEvent(t, app, client, itoa2(g.ID), intPtr(1), false)
+				body := map[string]any{"date": date, "userId": target.ID}
+				switch targetKind {
+				case "selection":
+					token, err := app.newPeopleSelection(actor.ID, target.ID, time.Now())
+					if err != nil {
+						t.Fatal(err)
+					}
+					body = map[string]any{"date": date, "selectionId": token}
+				case "email":
+					body = map[string]any{"date": date, "email": target.Email}
+				}
+				gate := holdContactGate(t, app)
+				response := queueContact(func() *httptest.ResponseRecorder {
+					return client.do("POST", "/api/v1/events/"+itoa2(ev)+"/registrations/add", body, true)
+				})
+				waitContactWaiters(t, app, 1)
+				// Prove gate-FIRST ordering: the waiting add holds neither the
+				// target nor occurrence lock needed by account revocation.
+				if err := gate.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE NOWAIT", target.ID).Error; err != nil {
+					t.Fatal("target locked before gate:", err)
+				}
+				if err := gate.Exec("SELECT id FROM event_occurrences WHERE event_id = ? FOR UPDATE NOWAIT", ev).Error; err != nil {
+					t.Fatal("occurrence locked before gate:", err)
+				}
+				revocation := peopleAddActorRevocations(actor)[change]
+				if err := gate.Model(actor).Updates(revocation.updates).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := gate.Commit().Error; err != nil {
+					t.Fatal(err)
+				}
+				w := awaitContactResponse(t, response)
+				if w.Code != 403 || strings.Contains(w.Body.String(), target.Email) {
+					t.Fatalf("%s: %d %s", revocation.name, w.Code, w.Body.String())
+				}
+				if contactCount(t, app, &models.Registration{}, "user_id = ?", target.ID) != 0 || contactCount(t, app, &models.AuditLog{}, "action IN ?", []string{audit.RegistrationAdded, audit.RegistrationAddedOverCapacity}) != 0 {
+					t.Fatal("revoked actor committed registration or add audit")
+				}
+			})
+		}
+	}
+}
+
+func TestManagerRegistrationAddRechecksScopeAfterContactGate(t *testing.T) {
+	for _, scope := range []string{"group leader", "church host"} {
+		for _, targetKind := range []string{"selection", "email", "userId"} {
+			t.Run(scope+"/"+targetKind, func(t *testing.T) {
+				app, admin, adminClient := peopleTestApp(t)
+				actor := newTestUser(t, app, "queued event manager", "pw", models.RoleMember)
+				g := newTestGroup(t, app, actor, "Revoked scope", models.GroupActive)
+				addMember(t, app, admin, g, models.MembershipLeader)
+				ev, date := seedCappedEvent(t, app, adminClient, itoa2(g.ID), intPtr(1), false)
+				if scope == "church host" {
+					if err := app.DB.Model(&models.Event{}).Where("id = ?", ev).Update("group_id", nil).Error; err != nil {
+						t.Fatal(err)
+					}
+					for _, user := range []*models.User{actor, admin} {
+						if err := app.DB.Create(&models.EventHost{EventID: ev, UserID: user.ID, AddedBy: admin.ID}).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				target := newTestUser(t, app, "private scope target", "pw", models.RoleMember)
+				client := loginAPI(t, app, "queued event manager", "pw")
+				body := map[string]any{"date": date, "userId": target.ID}
+				switch targetKind {
+				case "selection":
+					token, err := app.newPeopleSelection(actor.ID, target.ID, time.Now())
+					if err != nil {
+						t.Fatal(err)
+					}
+					body = map[string]any{"date": date, "selectionId": token}
+				case "email":
+					body = map[string]any{"date": date, "email": target.Email}
+				}
+				gate := holdContactGate(t, app)
+				response := queueContact(func() *httptest.ResponseRecorder {
+					return client.do("POST", "/api/v1/events/"+itoa2(ev)+"/registrations/add", body, true)
+				})
+				waitContactWaiters(t, app, 1)
+				if scope == "church host" {
+					if err := gate.Where("event_id = ? AND user_id = ?", ev, actor.ID).Delete(&models.EventHost{}).Error; err != nil {
+						t.Fatal(err)
+					}
+				} else if err := gate.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, actor.ID).Update("status", memberRemoved).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := gate.Commit().Error; err != nil {
+					t.Fatal(err)
+				}
+				w := awaitContactResponse(t, response)
+				if w.Code != 403 || strings.Contains(w.Body.String(), target.Email) {
+					t.Fatal(w.Code, w.Body.String())
+				}
+				if contactCount(t, app, &models.Registration{}, "user_id = ?", target.ID) != 0 || contactCount(t, app, &models.AuditLog{}, "action IN ?", []string{audit.RegistrationAdded, audit.RegistrationAddedOverCapacity}) != 0 {
+					t.Fatal("former manager committed registration or add audit")
+				}
+			})
+		}
+	}
+}
+
+func TestHouseholdPromotionDoesNotUseHoldersInvitation(t *testing.T) {
+	for _, route := range []string{"automatic", "manual"} {
+		t.Run(route, func(t *testing.T) {
+			f := newOccurrenceReadFixture(t)
+			if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Updates(map[string]any{"visibility": models.VisibilityPublic, "capacity": 1, "waitlist_enabled": true}).Error; err != nil {
+				t.Fatal(err)
+			}
+			person := addMyPerson(t, f.client, map[string]any{"firstName": "Mary", "kind": "adult", "birthDate": "1990-01-01"})
+			answer := batchAnswer(t, f.client, f.event.ID, f.dates[1].OriginalDate, map[string]any{"people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
+			if len(answer.People) != 1 || answer.People[0].Status != models.RegWaitlisted {
+				t.Fatal("household not waitlisted", answer)
+			}
+			if route == "automatic" {
+				apiDo(t, f.admin, "PUT", "/api/v1/events/"+itoa(f.event.ID), map[string]any{"capacity": 2}, 200)
+			} else {
+				// Make room without invoking the automatic promotion owner.
+				if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Update("capacity", 2).Error; err != nil {
+					t.Fatal(err)
+				}
+				apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/promote", map[string]any{"date": f.dates[1].OriginalDate, "registrationId": answer.People[0].RegistrationID}, 200)
+			}
+			var reg models.Registration
+			if err := f.app.DB.First(&reg, answer.People[0].RegistrationID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if reg.Status != models.RegGoing || reg.ManageTokenHash == "" {
+				t.Fatal("household promotion lost attendance/token", reg)
+			}
+			var notices []models.Notification
+			if err := f.app.DB.Where("user_id = ? AND kind = ?", f.recipient.ID, "registration.promoted").Find(&notices).Error; err != nil {
+				t.Fatal(err)
+			}
+			if len(notices) != 1 || !strings.Contains(notices[0].Title+notices[0].Body, "Mary") || !strings.Contains(notices[0].EmailTitle+notices[0].EmailBody, "Mary") {
+				t.Fatal("person-specific ordinary notice missing", notices)
+			}
+			if contactCount(t, f.app, &models.Notification{}, "user_id = ? AND kind = ?", f.recipient.ID, "occurrence.changed") != 0 {
+				t.Fatal("household promotion notified own invitation")
+			}
+			// The ordinary household manage credential still controls only Mary.
+			raw := manageTokenInEmail(t, latestEmail(t, f.app, f.recipient.Email))
+			apiDo(t, anonClient(t, f.app, "10.3.8.2"), "POST", "/api/v1/guest-registrations/manage/"+raw+"/cancel", nil, 200)
+			if savedOccurrenceAccess(t, f).Status != "active" || regStatus(t, f.app, f.recipient.ID, f.dates[1].ID) != models.RegGoing {
+				t.Fatal("household cancel affected own invitation")
+			}
+		})
+	}
 }

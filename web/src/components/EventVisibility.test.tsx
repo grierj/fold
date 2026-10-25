@@ -23,7 +23,7 @@ describe("event tightening", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("2 people registered will be cancelled and notified");
     expect(setVisibility).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Make this event invite-only" }));
-    expect(setVisibility).toHaveBeenCalledWith(7, { visibility: "invite_only", reason: undefined, confirm: true });
+    expect(setVisibility).toHaveBeenCalledWith(7, { visibility: "invite_only", reason: undefined, confirm: true, resetOverrides: false });
     expect(onSaved).toHaveBeenCalled();
   });
 
@@ -33,7 +33,17 @@ describe("event tightening", () => {
     render(<EventVisibilityControl eventId={8} groupName="Garden" groupVisibility="private" visibility="private" onSaved={() => {}} />);
     await userEvent.click(screen.getByRole("radio", { name: /^Public/ }));
     await userEvent.click(screen.getByRole("button", { name: "Save visibility" }));
-    expect(visibilityImpact).not.toHaveBeenCalled();
-    expect(setVisibility).toHaveBeenCalledWith(8, { visibility: "public", reason: undefined, confirm: false });
+    expect(visibilityImpact).toHaveBeenCalledTimes(1);
+    expect(setVisibility).toHaveBeenCalledWith(8, { visibility: "public", reason: undefined, confirm: false, resetOverrides: false });
   });
+});
+
+it("shows the authoritative future-date count and resets only on explicit choice", async () => {
+  visibilityImpact.mockResolvedValue({ visibility: "private", futureOverrides: 2, tightened: [], leaderOpened: [] });
+  setVisibility.mockResolvedValue({});
+  render(<EventVisibilityControl eventId={19} visibility="private" groupVisibility="private" onSaved={() => {}} />);
+  expect(await screen.findByText("2 dates have their own visibility and won't change.")).toBeInTheDocument();
+  await userEvent.click(screen.getByLabelText("Also reset those dates to the series setting"));
+  await userEvent.click(screen.getByRole("button", { name: "Save visibility" }));
+  expect(setVisibility).toHaveBeenCalledWith(19, { visibility: "private", reason: undefined, confirm: false, resetOverrides: true });
 });

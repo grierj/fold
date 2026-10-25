@@ -30,3 +30,12 @@ describe("GroupVisibilityReview", () => {
     expect(onConfirm).toHaveBeenCalledWith({});
   });
 });
+
+it("keys date decisions separately from their series and formats the date", () => {
+  const onConfirm = vi.fn();
+  render(<GroupVisibilityReview impact={{ visibility: "invite_only", tightened: [], leaderOpened: [{ id: 7, title: "Welcome evening", visibility: "public", registrants: 0, date: "2026-12-01", occurrenceId: 51, decisionKey: "date:51" }] }} busy={false} onConfirm={onConfirm} onCancel={() => {}} />);
+  expect(screen.getByText(/Tuesday, December 1/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("radio", { name: /^Keep it public/ }));
+  fireEvent.click(screen.getByRole("button", { name: "Make the group invite-only" }));
+  expect(onConfirm).toHaveBeenCalledWith({ "date:51": "keep" });
+});

@@ -7,16 +7,15 @@ import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
-import { focusRemoteCapacity, isRemoteError, remoteProblem } from "../components/RemoteField";
+import { DateEditor } from "../components/DateEditor";
 import { Menu } from "../components/ui/Menu";
 import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { ExternalLinkIcon } from "../components/icons";
-import { FormActions } from "../components/ui/FormActions";
 import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
-import { formatTime, heldIn, zoneNote } from "../lib/when";
+import { formatTime, heldIn } from "../lib/when";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, HouseholdPerson } from "../types";
 import { errorText } from "../lib/errors";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -202,6 +201,7 @@ function DateRow({
     // Badge, details and More on top; the answer and any open panel span the
     // card below, so the RSVP is full width on phones (PR #66 review N1).
     <div className="bg-surface rounded-lg border border-border p-4">
+      {canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
     <div className="flex gap-4">
       <DateBadge at={instance.startsAt} />
       <div className="grow min-w-0">
@@ -274,150 +274,6 @@ function DateRow({
         {canManage && managing && <Suspense fallback={<Skeleton kind="lines" />}><ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} /></Suspense>}
     </div>
     </div>
-  );
-}
-
-// DateEditor changes one occurrence only (time, duration, title,
-// location). It mirrors the group page's editor: later series changes
-// leave an edited date alone.
-function DateEditor({
-  instance,
-  onSaved,
-  onClose,
-}: {
-  instance: EventOccurrence;
-  onSaved: () => void;
-  onClose: () => void;
-}) {
-  const [date, setDate] = useState(instance.startsLocal.slice(0, 10));
-  const [time, setTime] = useState(instance.startsLocal.slice(11, 16));
-  const [duration, setDuration] = useState(instance.durationMinutes);
-  const [title, setTitle] = useState(instance.title);
-  const [location, setLocation] = useState(instance.location);
-  const [capacity, setCapacity] = useState(instance.capacity === null ? "" : String(instance.capacity));
-  const [remoteCapacity, setRemoteCapacity] = useState(
-    instance.remoteCapacity === null ? "" : String(instance.remoteCapacity)
-  );
-  const [remoteError, setRemoteError] = useState<string | null>(null);
-  const remotePrefix = `date-${instance.id}`;
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
-    const remoteMsg = remoteProblem({ available: instance.remoteAvailable, capacity: remoteCapacity }, true);
-    setRemoteError(remoteMsg);
-    if (remoteMsg) {
-      focusRemoteCapacity(remotePrefix);
-      return;
-    }
-    const body: {
-      startsLocal?: string;
-      durationMinutes?: number;
-      location?: string;
-      title?: string;
-      capacityOverride?: number | null;
-      remoteCapacityOverride?: number | null;
-    } = {};
-    const startsLocal = `${date}T${time}`;
-    if (startsLocal !== instance.startsLocal) body.startsLocal = startsLocal;
-    if (duration !== instance.durationMinutes) body.durationMinutes = duration;
-    if (title !== instance.title) body.title = title;
-    if (location !== instance.location) body.location = location;
-    const capTrimmed = capacity.trim();
-    const capCurrent = instance.capacity === null ? "" : String(instance.capacity);
-    if (capTrimmed !== capCurrent) body.capacityOverride = capTrimmed === "" ? null : Number(capTrimmed);
-    if (instance.remoteAvailable) {
-      const rcTrimmed = remoteCapacity.trim();
-      const rcCurrent = instance.remoteCapacity === null ? "" : String(instance.remoteCapacity);
-      if (rcTrimmed !== rcCurrent) body.remoteCapacityOverride = rcTrimmed === "" ? null : Number(rcTrimmed);
-    }
-    if (Object.keys(body).length === 0) {
-      onClose();
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await Events.updateOccurrence(instance.eventId, instance.date, body);
-      onSaved();
-    } catch (err) {
-      const msg = errorText(err, "We couldn't update this date.");
-      setError(msg);
-      if (isRemoteError(msg)) {
-        setRemoteError(msg);
-        focusRemoteCapacity(remotePrefix);
-      }
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
-      <p className="text-sm text-text-muted">
-        This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
-      </p>
-      {error && <FormError>{error}</FormError>}
-      <div className="grid sm:grid-cols-3 gap-3">
-        <Field id={`cev-date-${instance.id}`} label="Date">
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
-        </Field>
-        <Field id={`cev-time-${instance.id}`} label="Start time">
-          <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
-        </Field>
-        <Field id={`cev-dur-${instance.id}`} label="Minutes">
-          <Input
-            type="number"
-            min={1}
-            max={10080}
-            value={duration}
-            onChange={(e) => setDuration(Number(e.target.value))}
-          />
-        </Field>
-      </div>
-      <div className="grid sm:grid-cols-2 gap-3">
-        <Field id={`cev-title-${instance.id}`} label="Title">
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} />
-        </Field>
-        <Field id={`cev-loc-${instance.id}`} label="Location" optional>
-          <Input value={location} onChange={(e) => setLocation(e.target.value)} />
-        </Field>
-      </div>
-      <Field id={`cev-cap-${instance.id}`} label="Capacity for this date" optional hint="Leave it blank to use the event’s capacity.">
-        <Input
-          type="number"
-          min={1}
-          placeholder="Same as the event"
-          value={capacity}
-          onChange={(e) => setCapacity(e.target.value)}
-        />
-      </Field>
-      {instance.remoteAvailable && (
-        <Field
-          id={`remote-capacity-${remotePrefix}`}
-          label="Remote seat limit for this date"
-          optional
-          hint="Enter a whole number from 0 to 100,000. Leave it blank to use the event’s remote seat limit, or 0 to close remote seats for this date."
-          error={remoteError}
-        >
-          <Input
-            type="text"
-            inputMode="numeric"
-            placeholder="Same as the event"
-            value={remoteCapacity}
-            onChange={(e) => setRemoteCapacity(e.target.value)}
-          />
-        </Field>
-      )}
-      <FormActions>
-        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
-          {busy ? "Saving…" : "Save this date"}
-        </Button>
-        <Button variant="secondary" layout="w-full sm:w-auto" onClick={onClose}>
-          Close
-        </Button>
-      </FormActions>
-    </form>
   );
 }
 

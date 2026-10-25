@@ -617,3 +617,38 @@ func TestHouseholdOnlyPersonalFeedKeepsDetailsPrivate(t *testing.T) {
 		}
 	}
 }
+
+func TestPersonalFeedScopedInvitationAlwaysStandalone(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	seedReadInvitation(t, f.app, f.issuer, f.other, f.event, f.dates[2])
+	for _, scope := range []string{models.CalendarFeedMine, models.CalendarFeedAll} {
+		path := createFeedLink(t, f.client, scope)
+		raw := unfoldFeed(feedBody(t, f.client, path))
+		if strings.Count(raw, "BEGIN:VEVENT") != 1 || !strings.Contains(raw, "SUMMARY:Invited date title") || !strings.Contains(raw, "LOCATION:Invited date place") || !strings.Contains(raw, occurrenceDatePath(f.event.ID, f.dates[1].OriginalDate)) || !strings.Contains(raw, "private-video") {
+			t.Fatalf("wrong scoped feed (%s): %s", scope, raw)
+		}
+		for _, forbidden := range []string{"RRULE:", "EXDATE", "RECURRENCE-ID", "Hidden series", "Hidden group", f.issuer.Email, strings.ReplaceAll(f.dates[0].OriginalDate, "-", ""), strings.ReplaceAll(f.dates[2].OriginalDate, "-", "")} {
+			if strings.Contains(raw, forbidden) {
+				t.Fatalf("scope=%s feed leaked %q: %s", scope, forbidden, raw)
+			}
+		}
+	}
+	if err := f.app.DB.Model(&f.access).Updates(map[string]any{"status": "ended", "ended_at": time.Now().UTC(), "end_reason": "removed", "ended_by": f.issuer.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	gone := feedBody(t, f.client, createFeedLink(t, f.client, models.CalendarFeedAll))
+	if strings.Contains(gone, "BEGIN:VEVENT") {
+		t.Fatal("revoked invitation still exported", gone)
+	}
+	raw := feedBody(t, f.stranger, createFeedLink(t, f.stranger, models.CalendarFeedAll))
+	if strings.Count(raw, "BEGIN:VEVENT") != 1 || !strings.Contains(raw, occurrenceDatePath(f.event.ID, f.dates[2].OriginalDate)) || strings.Contains(raw, "Invited date title") {
+		t.Fatal("cross-recipient feed", raw)
+	}
+	public := feedBody(t, newAPIClient(t, f.app), "/cal/public.ics")
+	if strings.Contains(public, "BEGIN:VEVENT") {
+		t.Fatal("public invitation leak", public)
+	}
+	if w := fetchFeed(t, f.client, fmt.Sprintf("/cal/groups/%d.ics", f.group)); w.Code != 404 {
+		t.Fatal("hidden group feed", w.Code, w.Body.String())
+	}
+}

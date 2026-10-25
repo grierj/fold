@@ -126,7 +126,9 @@ type User struct {
 	Name         string // full name
 	DisplayName  string // shown in the UI; falls back to Name
 	Phone        string // first-class: SMS is a required channel
-	AvatarKey    string // blob-store key for the avatar image ("" = none)
+	// Teens' contact is always hidden from leaders, independently of this preference.
+	HideContactFromLeaders bool   `gorm:"not null;default:false"`
+	AvatarKey              string // blob-store key for the avatar image ("" = none)
 	// AvatarFocalX/Y is the focal point as a 0-100 percentage, used for
 	// CSS object-position so faces stay centered in cropped avatars.
 	AvatarFocalX float64 `gorm:"default:50"`
@@ -312,17 +314,18 @@ type EventHost struct {
 // change when a per-date override moves the clock time. Registrations hang
 // off this row, so a series edit can move the time without losing them.
 type EventOccurrence struct {
-	ID               uint      `gorm:"primaryKey"`
-	EventID          uint      `gorm:"not null;uniqueIndex:idx_event_original_date"`
-	Event            Event     `gorm:"foreignKey:EventID"`
-	OriginalDate     string    `gorm:"not null;uniqueIndex:idx_event_original_date"` // YYYY-MM-DD
-	StartsAt         time.Time `gorm:"not null;index"`
-	EndsAt           time.Time `gorm:"not null"`
-	Status           string    `gorm:"not null;default:scheduled"` // scheduled | cancelled
-	TitleOverride    *string
-	LocationOverride *string
-	StartsAtOverride *time.Time
-	DurationOverride *int
+	ID                 uint      `gorm:"primaryKey"`
+	EventID            uint      `gorm:"not null;uniqueIndex:idx_event_original_date"`
+	Event              Event     `gorm:"foreignKey:EventID"`
+	OriginalDate       string    `gorm:"not null;uniqueIndex:idx_event_original_date"` // YYYY-MM-DD
+	StartsAt           time.Time `gorm:"not null;index"`
+	EndsAt             time.Time `gorm:"not null"`
+	Status             string    `gorm:"not null;default:scheduled"` // scheduled | cancelled
+	VisibilityOverride *string
+	TitleOverride      *string
+	LocationOverride   *string
+	StartsAtOverride   *time.Time
+	DurationOverride   *int
 	// CapacityOverride replaces the event's capacity for this date (M1.5);
 	// nil means the date uses the event's capacity.
 	CapacityOverride *int
@@ -342,7 +345,7 @@ func (o EventOccurrence) TimeFrozen() bool {
 // Customized reports a per-date override or a cancellation. A series edit
 // leaves the row alone: it does not move the clock and does not drop the date.
 func (o EventOccurrence) Customized() bool {
-	return o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil || o.Status == OccurrenceCancelled
+	return o.VisibilityOverride != nil || o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil || o.Status == OccurrenceCancelled
 }
 
 // Membership is a user's roster entry in a group.
@@ -725,6 +728,101 @@ type TeenConsent struct {
 	At           time.Time `gorm:"not null;default:clock_timestamp()"`
 }
 
+// ContactRequest stores contact/group_add/occurrence_add outcomes, not attempt
+// history (AuditLog owns that). Retained IDs have no live-domain foreign keys.
+// Dispatch by Purpose BEFORE constructing contact-only policy or presentation
+// adapters. Add approvals never create ContactGrant. Policy owns lifecycle values;
+// migrations own constraints. A granted add requires a completed target row.
+type ContactRequest struct {
+	ID            uint   `gorm:"primaryKey"`
+	RequesterID   uint   `gorm:"not null"`
+	SubjectUserID uint   `gorm:"not null"`
+	ContextType   string `gorm:"not null"`
+	ContextID     uint   `gorm:"not null"`
+	Fields        string `gorm:"not null"` // contact only; empty for adds
+	Purpose       string `gorm:"not null;default:contact"`
+	OccurrenceID  *uint
+	// Add options are resolved final values, immutable from creation. Resolve
+	// absent legacy input against the existing registration first; never infer
+	// an over-limit override at approval. Revalidate mode, guests, childcare and
+	// current capacity through the original locked helper at finalization.
+	// Group adds preserve existing roles and otherwise add only as member.
+	AddOverLimit         bool   `gorm:"not null;default:false"` // group only
+	AddOverCapacity      bool   `gorm:"not null;default:false"` // occurrence only
+	AddAttendanceMode    string `gorm:"not null;default:''"`
+	AddGuestCount        int    `gorm:"not null;default:0"`
+	AddChildcareCount    int    `gorm:"not null;default:0"`
+	AddChildcareAgesNote string `gorm:"not null;default:''"`
+	CompletedTargetID    *uint  // membership ID for group, registration ID for date
+	Reason               string `gorm:"not null;default:''"`
+	NeedsAdmin           bool   `gorm:"not null"`
+	SubjectDecision      string `gorm:"not null;default:pending"`
+	SubjectDecidedBy     *uint
+	SubjectDecidedAt     *time.Time
+	AdminDecision        string `gorm:"not null"`
+	AdminDecidedBy       *uint
+	AdminDecidedAt       *time.Time
+	Status               string    `gorm:"not null;default:pending"`
+	CreatedAt            time.Time `gorm:"not null;default:now()"`
+	ExpiresAt            time.Time `gorm:"not null"`
+	CompletedAt          *time.Time
+	WithdrawnByID        *uint
+	EndReason            string `gorm:"not null;default:''"`
+}
+
+// ContactGrant has immutable request provenance, unique per successful request.
+// Ending it never changes the request's historic granted outcome. NeedsAdmin is
+// loaded from RequestID for policy; it is not a second mutable snapshot here.
+type ContactGrant struct {
+	ID            uint      `gorm:"primaryKey"`
+	RequestID     uint      `gorm:"not null;unique"`
+	LeaderID      uint      `gorm:"not null"`
+	SubjectUserID uint      `gorm:"not null"`
+	ContextType   string    `gorm:"not null"`
+	ContextID     uint      `gorm:"not null"`
+	Fields        string    `gorm:"not null"`
+	GrantedAt     time.Time `gorm:"not null"`
+	EndedAt       *time.Time
+	EndReason     string `gorm:"not null;default:''"`
+	EndedBy       *uint
+}
+
+// OccurrenceAccess is exact-date invitation AND provenance for every manager
+// account add (including ordinary visible dates). Source on Registration remains
+// web/admin/guest_form; it is not authority. No live-domain FK may cascade this
+// record away. Ending is irreversible; partial uniqueness permits only one
+// active subject/date. A new approved ask may create fresh access after an end,
+// but replay, direct re-add and ordinary RSVP cannot reopen the ended record.
+// Current read authorization reloads subject, occurrence and organizer; issuer
+// role loss ends pending requests, NOT accepted attendance.
+type OccurrenceAccess struct {
+	ID             uint      `gorm:"primaryKey"`
+	SubjectUserID  uint      `gorm:"not null"`
+	OccurrenceID   uint      `gorm:"not null"`
+	EventID        uint      `gorm:"not null"`
+	OrganizerType  string    `gorm:"not null"`
+	OrganizerID    uint      `gorm:"not null"`
+	IssuerID       uint      `gorm:"not null"`
+	RequestID      *uint     `gorm:"unique"`
+	RegistrationID uint      `gorm:"not null"`
+	Status         string    `gorm:"not null;default:active"`
+	GrantedAt      time.Time `gorm:"not null;default:now()"`
+	EndedAt        *time.Time
+	EndReason      string `gorm:"not null;default:''"`
+	EndedBy        *uint
+}
+
+// ManagerAddBlock prevents NEW manager date adds/completions in one organizer
+// scope, never self-RSVP, membership, or other already accepted invitations.
+// Recipient APIs must not disclose a hidden organizing group's ID or name.
+type ManagerAddBlock struct {
+	ID            uint      `gorm:"primaryKey"`
+	SubjectUserID uint      `gorm:"not null"`
+	OrganizerType string    `gorm:"not null"`
+	OrganizerID   uint      `gorm:"not null"`
+	CreatedAt     time.Time `gorm:"not null;default:now()"`
+}
+
 // All lists every model, in dependency order. The drift check and the test
 // helpers use it; a new model must be added here and to a migration.
 func All() []any {
@@ -734,6 +832,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
+		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{},
 	}
 }
 

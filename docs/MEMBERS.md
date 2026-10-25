@@ -121,3 +121,154 @@ person becomes an adult household person and keeps household-managed
 sign-ups until an admin enables the account. If the original responsible
 account is disabled, the move waits for that account to be enabled. Fold
 retries at startup and the next church-local midnight.
+
+## Choose who sees your contact details
+
+If you are an adult, open Profile and select **Hide my contact info from group
+leaders**, then save your profile. This choice is off by default: leaders of
+your groups and hosts of events you attend can otherwise see your email and
+phone. Turning it on hides both from those leaders and hosts, not from admins.
+It does not hide your name from the name picker. Teens' contact details are
+always hidden from leaders and hosts unless a specific direct-contact request
+is approved. A teen, their confirmed guardians and admins keep their ordinary
+contact-detail rights.
+
+To ask for hidden details as a leader or host:
+
+1. Open the person's card in a group or event you manage and choose **Request
+   direct contact**. You can ask only within your own group or event context.
+2. Choose Email, Phone, or Email and phone. A reason is optional, with a maximum
+   of **1000 Unicode characters**, including spaces before trimming.
+3. Choose **Send request**. A hidden adult decides alone. A teen and an admin
+   must both approve; either can deny. A guardian cannot approve for the teen.
+
+Open **Direct contact requests and access** on Profile, or follow your notice,
+to review a request. Opening an email link does not approve anything: sign in,
+review it, then choose **Approve sharing** or **Deny request**. The requester can
+choose **Withdraw request** while it is pending. Requests expire after **14
+days**. You can have **10 open requests** across direct contact and Ask to add,
+including approved asks that have not yet added anyone.
+
+Approval shares only the selected fields with that requester for that group or
+event. The requester must choose **Reveal contact details** to open them; every
+reveal is recorded. If both fields were granted, they can reveal either or both.
+Use **Close contact details** when finished. Details are not added to rosters or
+stored in your browser's saved app data.
+
+The person, any admin, or a teen's confirmed guardian can choose **Revoke
+access** and confirm. This stops future reveals, but cannot recall details
+someone already copied. Access also ends when the requester loses that group
+leadership or event-host role, 30 days after the event's last date, when the
+teen turns 18, or when either account is disabled or deleted. Leaving the
+relevant group/event relationship can end it too. Restoring a role, account or
+consent does not restore an ended grant; hidden details need a new request.
+At 18, your adult contact setting applies; the old teen approval does not carry
+over into a new grant.
+
+Your request history and grants are on the same Profile link. A guardian sees
+only their teen's active grants, not pending requests or ended-grant history.
+A guardian notice may open an unavailable request review; an active grant may
+still be available to revoke through the authorized grants list. A notice is
+not permission to see a request's reason or decisions.
+
+## Add someone by name, without asking for their email
+
+As a leader, host or admin, use the name picker in the group or event date you
+manage. Type at least **2 letters**; it shows up to **10 matches**. Use the arrow
+keys and Enter, or choose a result. Teens have a Teen badge, never a public
+photo. Shared groups and other groups you can already see help distinguish
+names. If you still cannot tell, ask an admin. This is not a browsable directory.
+
+Contact-hidden adults and active teens can appear by name. No email, phone or
+birth date is shown. A missing result does not tell you why someone is absent.
+If you search too quickly, wait a minute before trying again.
+
+An eligible adult can be added directly. A hidden adult's contact preference
+alone does not require Ask to add. **Every teen add** needs **Ask to add**, even
+when an admin sends it. An adult who cannot be added directly to a date also
+needs an ask. Select the person, choose **Ask to add**, review the group or
+single-date options and send it. A reason is optional, at most **1000 Unicode
+characters**. Known-email adding remains available, but cannot bypass approval
+or a recipient's block.
+
+Open **Add request history** on Profile or follow your notice. Choose **Approve
+adding** or **Deny ask**. Teens and admins decide separately; both approvals
+are needed, and either denial ends the ask. A guardian cannot decide in place
+of the teen. The sender can withdraw a pending ask. Group previews may withhold
+the group's details; date previews show only the title and requested time.
+Reviewing a preview does not open the group, event series or other dates.
+
+**Approval is not always a completed add.** If seats or childcare are full, the
+ask stays **Not added yet**, with the decisions saved. The sender can choose
+**Retry adding** when space is available. Retrying keeps the original options
+and deadline; it does not silently add over capacity. An explicit over-limit
+choice made when sending the ask is different from approval. Changed attendance
+options may require withdrawing the ask and sending a new one. Pending asks
+still count toward the 10-open limit and expire after 14 days.
+
+Group and date asks never share contact details. Direct contact needs its own
+separate request and grant.
+
+## When you are added to one date
+
+Follow the added-person notice or open the date in **Calendar → Just mine**.
+Your personal calendar feed also links to that exact date, even if your feed
+includes all dates. An invitation gives you only that date, not the group page,
+roster, event series or other dates. A pending ask gives no date access.
+
+On **Event date**, check your answer and choose **Going** or **Maybe**. Where
+shown, choose in person or remote and enter a whole-number guest count within
+the stated limit. Space is checked when you save; you may be waitlisted. The
+video link appears only when your current answer and the event rules allow it.
+This page has no childcare editor: saves preserve existing care options. Ask
+an organizer about care changes; ordinary event pages keep their usual care
+controls when you have ordinary access. This page does not show available-seat
+counts or a waitlist position.
+
+- **Can't go** asks you to confirm, then ends your invitation and access to this
+  date. Other accepted dates stay yours.
+- **Don't add me again** also stops future manager adds by that organizer: the
+  group's leaders, or this event's hosts for a church-wide event. It does not
+  remove other accepted dates or group membership, and does not stop you signing
+  up voluntarily where you are eligible. Remove other dates individually.
+
+Ended invitations cannot be reopened by replaying an old approval or changing
+an answer. A fresh approved ask may be needed. Cancellation, account disable,
+consent loss or deletion can end access permanently; re-enabling does not bring
+it back. Moving the same date preserves the invitation, but new dates are not
+included. Leaders see **Added by a leader** only on their managed attendee list.
+
+A confirmed guardian receives a safe notice when their teen is added. Following
+it may show **This date is not available** (an opaque 404): the notice does not
+give the guardian their teen's invitation, group access or read permission.
+Ask the organizer or church office if you need help.
+
+## Church admins: review retained contact-access history
+
+As an active adult admin, open **Admin → Users**, open the person's **More** menu
+and choose **Contact access history**. For a deleted account, use **Contact
+access history by ID** above the user list. Enter the retained person ID using
+digits only, from **1 to 9223372036854775807**. Keep IDs as written; do not round
+them. A missing/deleted account can have retained history, or no matching entries.
+
+Choose a purpose or action to filter. Optional **From** is inclusive; **Until**
+is exclusive and must be later. Both require a timestamp with a timezone, such
+as `2026-10-01T09:00:00+02:00` or `2026-10-01T07:00:00Z`. Choose **Apply filters**.
+**Load older entries** shows earlier activity; **Refresh history** gets a fresh
+view. Editing fields alone does not change the applied filters.
+
+Choose **Export all matching CSV** to download every matching entry, not just
+the loaded page. The export uses the applied filters. History shows actions,
+outcomes, times and retained IDs, not names, email/phone values, private request
+reasons or secret notes. IDs record provenance; they are not links or permission
+to open a hidden group, event or request. The audit records that an authorized
+export was prepared, not that its download was received.
+
+The server rechecks current admin eligibility before releasing an export. If
+your authority changes or an export fails, refresh or ask another active adult
+admin; do not treat an earlier open page as continuing permission. Keep any
+download private. Account deletion does not purge safeguarding audit history.
+The retained regular audit is not a tamper-evident or hash-chained log.
+
+Fold does not yet provide relayed one-to-one messaging or SMS sending. Those
+future features are not a way to contact someone from these screens today.

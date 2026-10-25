@@ -75,7 +75,12 @@ from POST; POST also remakes the link, which revokes the old one.
 dates I'm going or waitlisted for) or `"all"` (everything I can see).
 Revoking a link that is already off still answers 200.
 
-Profile update body: any of `{name, displayName, phone, email, timezone, avatarFocal: {x, y}}`.
+Profile update body: any of `{name, displayName, phone, email, timezone, hideContactFromLeaders, avatarFocal: {x, y}}`.
+`hideContactFromLeaders` is a boolean preference for the signed-in adult only,
+off by default. A teen's submitted preference is ignored: their contact is
+always hidden from leaders and hosts. Changing the adult preference writes
+`contact.privacy_changed` in the same transaction (target: user; metadata:
+`{hideContactFromLeaders: boolean}`). Repeating the current value is a no-op.
 Limits: names ≤ 100 chars, phone ≤ 30 chars, focal clamped to 0-100,
 `timezone` an IANA name (DEC-58; "" and "Local" are refused). The
 email is the login: sending a different `email` starts a verified change
@@ -93,7 +98,11 @@ sessions, including the one that requested it.
 
 `user`: `{id, name, displayName, email, phone, avatarUrl,
 avatarFocalX, avatarFocalY, role, status, hasPassword, accountType, timezone,
-birthDate?}`. `status` is
+hideContactFromLeaders, birthDate?, hasTeenConsentHistory?}`.
+`hideContactFromLeaders` is always present and is the effective setting
+(always true for teens, regardless of the stored preference). The full `user`
+shape is restricted to self/session and admin account endpoints; it is never
+a roster or attendee DTO. `hasTeenConsentHistory` is admin-list-only. `status` is
 `active`, `invited` (no password yet), `pending_consent` (a teen waiting
 for consent, M1.10), `guest` (a verified guest registrant with no
 password and no sign-in, M1.4), or `disabled`.
@@ -288,7 +297,9 @@ upcomingEvents: [occurrence], canManage: bool, isMember: bool}`.
 `members` is filled only for the group's members and admins (people see each
 other only inside groups they share); otherwise it is `[]`. `canManage` is
 true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, accountType?, role,
-joinedAt, admin}` — `name` is the member's display name; `admin` marks church admins (DEC-38).
+joinedAt, admin, email?, phone?}` (also `avatarFocalX/Y`) — `name` is the member's display name; `admin` marks church admins (DEC-38).
+Contact fields follow the context-specific rules below; unauthorized keys are
+omitted entirely, not returned as null or empty strings.
 
 Create/update body: `{name, description, tags[], location,
 coverFocal: {x, y}, visibility, memberLimit}`. Covers are upload-only: set
@@ -747,6 +758,26 @@ per-child choice for an in-person named child, one childcare spot each.
 Remote people never use childcare. `childcareCount` stays the holder's
 count of unnamed children. DEC-80 promotion applies to both.
 
+Account attendee rows may include `email` and `phone`, under the same contact
+rules as roster rows below. A removed registration alone gives an event
+manager no contact right. Attendee contact never comes from a household
+person's account holder.
+
+**Contact fields (M1.11 s1 backend).** In an otherwise authorized roster or
+attendee response, self, active admins, and a teen's currently confirmed
+guardians retain contact access. Pending, rejected and revoked guardian links
+confer none. Otherwise only the presented group's leaders see unhidden adult
+members' contact, and only the presented event's managers (group leaders or
+church-wide hosts) see unhidden adult registrants' contact. Leadership or
+hosting elsewhere confers nothing here. Teens are always hidden from those
+management roles; adults can opt out using `hideContactFromLeaders`.
+Unauthorized `email` and `phone` keys are absent; authorized keys are strings,
+including an empty string if the person has no phone. These rights never
+widen roster/attendee identity visibility. Host-management rows (including
+host email) remain admin-only; public event output has no host-management
+rows. Teen avatars remain absent from rosters. No directory, recipient-list
+messaging, contact requests or grant-based reveal endpoint ships in s1.
+
 Attendee lists give each row a `registrationId`. A household row has no
 `userId` and carries `householdPerson: {personId, name, householdName, kind,
 age?, registeredBy: {userId, name}}`; the UI shows "Kit · Leader household
@@ -983,3 +1014,797 @@ Group rosters omit teen names and IDs for ordinary viewers while retaining the t
 
 
 For staged teen conversion, `approved_user_id` is the authoritative account association; changing an email never changes it. `converted_user_id` and the household-account row are set only when the transfer completes. User locks are acquired in ID order before the household and affected occurrences. Consent grants, teen-account guardian confirmation, and admin enable all run the same completion operation when the last prerequisite is ready. At eighteen an unsuspended account completes as an adult without teen-consent or guardian requirements; a suspended account stays with its household until enabled.
+
+### Direct-contact requests and grants (M1.11 s2 backend)
+
+These authenticated endpoints use the normal cookie session, CSRF header for
+POSTs, and `Cache-Control: no-store`. They do not grant membership, registration,
+series visibility, or permission to add a person. Ask to add and one-date access
+use the separate purpose-safe group/occurrence APIs documented below. GET never approves or reveals a contact field.
+
+```
+POST /api/v1/contact-requests
+  {subjectUserId, contextType: "group"|"event", contextId,
+   fields: "email"|"phone"|"both", reason?: string}
+  → 201 {request: ContactRequest}
+GET /api/v1/contact-requests?before=<requestId>
+  → 200 {requests: ContactRequest[]}
+GET /api/v1/contact-requests/:id
+  → 200 {request: ContactRequest} | 404
+POST /api/v1/contact-requests/:id/decision
+  {party: "subject"|"admin", decision: "approved"|"denied"}
+  → 200 {request: ContactRequest}
+POST /api/v1/contact-requests/:id/withdraw
+  → 200 {}
+GET /api/v1/contact-grants?before=<grantId>
+  → 200 {grants: ContactGrant[]}
+POST /api/v1/contact-grants/:id/revoke
+  → 200 {}
+POST /api/v1/contact-grants/:id/reveal
+  {subjectUserId, contextType: "group"|"event", contextId,
+   fields: "email"|"phone"|"both"}
+  → 200 ContactReveal
+```
+
+Lists return at most 100 rows, newest ID first; `before` is an exclusive numeric
+cursor. Requester, subject and current adult admin can review request history.
+A currently confirmed active adult guardian can see only active teen-approved
+grants (not the pending request or ended grant history), and can revoke, never
+approve. Requester/subject/admin can also review their authorized ended grants.
+`contextId` is omitted if the viewer cannot currently see that context. No group
+name, place, contact value, birth date or avatar is included in these DTOs.
+
+`ContactRequest` (all fields required except those marked `?`):
+
+```
+id: number
+requesterId: number
+requesterName: string
+subjectUserId: number
+subjectName: string
+contextType: "group" | "event"
+contextId?: number
+fields: "email" | "phone" | "both"
+reason: string
+needsAdmin: boolean
+subjectDecision: "pending" | "approved" | "denied"
+subjectDecidedBy?: number
+subjectDecidedAt?: string
+adminDecision: "pending" | "approved" | "denied" | "not_needed"
+adminDecidedBy?: number
+adminDecidedAt?: string
+status: "pending" | "granted" | "denied" | "withdrawn" | "expired" | "ended"
+createdAt: string
+expiresAt: string
+completedAt?: string
+endReason: "" | "left_role" | "left_context" | "context_ended" |
+           "turned_18" | "account_disabled" | "event_ended"
+canSubjectDecide: boolean
+canAdminDecide: boolean
+canWithdraw: boolean
+```
+
+`ContactGrant`:
+
+```
+id: number
+requestId: number
+requesterId: number
+requesterName: string
+subjectUserId: number
+subjectName: string
+contextType: "group" | "event"
+contextId?: number
+fields: "email" | "phone" | "both"
+needsAdmin: boolean
+grantedAt: string
+endedAt?: string
+endReason: "" | "revoked_by_subject" | "revoked_by_admin" |
+           "revoked_by_guardian" | "left_role" | "left_context" |
+           "context_ended" | "turned_18" | "account_disabled" | "event_ended"
+endedBy?: number
+canReveal: boolean
+canRevoke: boolean
+```
+
+`ContactReveal` is `{email?: string, phone?: string}`. A successful reveal
+contains exactly the selected authorized fields, including an empty string if
+that authorized value is empty; an unselected field is omitted, not null. The
+requester must echo the exact subject/context and a field selection within the
+grant. A `both` grant can reveal either field separately. Even admins do not use
+someone else's grant. Every successful reveal commits `contact.reveal` before
+writing the response. Grants never make roster/list contact fields visible;
+ordinary self/admin/guardian contact presentation remains independent.
+
+An optional reason is at most **1000 Unicode characters**, validated before
+trimming; blank means no reason. Reasons stay on authorized request reviews,
+never in audit metadata, notification text/data or email. There are at most ten
+pending requests per requester, serialized transactionally. Expired/invalid
+pending requests are closed before enforcing the cap. The fixed expiry is 14
+24-hour days from creation; exact expiry is too late. An adult subject decides
+alone. Teen requests need independent subject and admin approvals in either
+order; an admin requester cannot skip the teen. Either denial terminates.
+
+Rejected contact operations commit a `contact.refused` audit even though no
+business change succeeds. A failed audit fails closed and returns 500 with no
+contact fields. Common actionable error codes (no 429):
+
+- `contact_reason_long` (400): shorten the reason to 1000 characters.
+- `request_open_limit` (409): withdraw an open request or wait for a decision.
+  The ten-open cap includes contact and add requests.
+- `contact_unavailable` (403): refresh the request; it may have ended, changed or
+  no longer be available to you. Unauthorized request reviews answer 404.
+
+Mutations end pending requests (`status=ended` with a reason) and active grants
+inside the same transaction when role, current subject relationship, context or
+either active account is lost. This includes group leadership changes/handoffs,
+host removal, registration pruning, visibility cancellations, group/event
+removal, admin disable/deletion and teen-consent disable. A successful request
+stays historically `granted` after its grant ends. Regaining a role, re-enabling
+an account or rejoining a context never clears an end. Actual church-local
+adulthood ends teen-approved access even if staged DEC-83 account conversion is
+still waiting; it never becomes an adult approval automatically. Event grants
+end at the exact final stored occurrence end plus 30 24-hour days. Current
+eligibility is checked again under the gate before decision/reveal. The existing
+startup/daily scheduler runs an idempotent advisory-locked expiry/end sweep;
+the existing birthday scheduler also ends actual-age access independently of
+staged conversion rollback.
+
+Audit actions are `contact.requested`, `contact.decision` (party and outcome),
+`contact.withdrawn`, `contact.expired`, `contact.granted`, `contact.reveal`,
+`contact.refused`, `contact.revoked` and `contact.ended`. Metadata holds numeric
+party/context IDs, validated context/field vocabulary and machine outcomes,
+never contact values or the free-text reason. These retained rows and outcome
+records survive live account/context deletion. Admin CSV export is not part of
+this backend component.
+
+Notifications are navigation-only, unbatched safety kinds:
+`contact.subject_review`, `contact.admin_review` (separate waiting tasks), and
+`contact.updated`. Each party's decision resolves only that party's task; a
+terminal outcome resolves both. Confirmed active guardians get grant/end
+updates for teen-approved grants. Email names nobody and links to the same
+sign-in-protected `/contact-requests/:id` review path; a guardian opens that path
+using active grant facts, not permission to read the request reason/decisions.
+The client must use the grants endpoint for the guardian view. Email links
+never approve or reveal by themselves.
+
+**Lock protocol:** one transaction-scoped PostgreSQL advisory gate serializes
+contact operations. Contact-affecting domain transactions acquire it at entry,
+before their existing user-first or group-first locks and before notification
+writes. New contact operations/sweeps acquire it before loading current facts
+and locking outcome rows. Lifecycle cleanup is a tail step in the original
+mutation transaction, not a nested transaction. The gate remains held through
+audit, task resolution, notification inserts and commit. This intentionally
+coarse protocol avoids inverting the existing domain prefixes. Ordinary RSVP
+answers (`going`, `maybe`, `declined`) retain an actual registration relationship
+and do not take the contact gate; registration pruning/cancellation does.
+
+Pre-domain refusals on the exact POST routes above are also audited once:
+CSRF failure, missing/invalid authentication, and a restricted pending-consent
+session. The existing abort sites call a narrow hook **before** writing their
+401/403 response. No CSRF exemption or auth bypass is added. These rows use
+`target_type=contact_endpoint`, no claimed target ID, and only generic reason,
+HTTP method and route template metadata. The actor is nil unless established
+by the trusted session. Body, query, token and claimed URL IDs are never parsed
+or retained by this hook. Its audit failure returns generic 500 without running
+the handler or disclosing fields. Ordinary list omissions, unrelated endpoints
+and generic auth failures elsewhere do not create contact audit rows.
+
+### Name picker (M1.11, DEC-78)
+
+`GET /api/v1/people/search?q=` requires an authenticated active adult admin,
+current group leader, or host of an undeleted church-wide event. Ordinary
+members and teens cannot search. Search matches name/display name only, with
+literal SQL wildcard characters, not email. Active teens and contact-hidden
+adults are included; guests, invited, disabled, deleted and pending-consent
+accounts are not. No per-keystroke audit is written.
+
+Response: `{state, people}`. `state` is `short_query` (fewer than two Unicode
+characters after trimming), `throttled`, `no_results`, or `results`. `people` is
+always an array, at most ten results. Queries longer than 100 characters return
+`no_results`. Throttling is 30 qualifying searches per actor per minute, persisted
+in the existing `login_throttles` table with a separate key namespace. Throttling
+is a successful **200** response with an empty array, not a 429 error.
+
+Each result has exactly `selectionId` (opaque string), `displayName` (public-name
+fallback), `teen` (boolean), `sharedGroups` and `otherGroups` (arrays of labels).
+Adults with a profile image additionally have `avatarUrl`, `avatarFocalX`,
+`avatarFocalY`. Teens never have any of these image fields. There are no user IDs,
+email, phone, birth date or group IDs. At most ten visible group labels per
+person are returned, shared groups first, then other groups, ordered by name.
+Labels use current group visibility policy; hidden invite-only groups never
+appear. Related labels are loaded in one bounded batch, not per result. Search database
+work shares a two-second request deadline.
+
+`selectionId` uses authenticated encryption with a domain-separated key derived
+from `SESSION_SECRET`, expires after ten minutes, and is bound to the searching
+actor and ordinary add purpose. It is not authority, a contact grant, or an event
+visibility override. The add rechecks current actor/subject and scope facts.
+Malformed, expired, wrong-actor or unavailable selections fail with 400 code
+`people_selection_unavailable`; the response does not explain account state.
+
+Existing add endpoints accept `selectionId` in place of the legacy target:
+
+- `POST /groups/:id/members`: exactly one of `selectionId`, `email`; retain
+  `overLimit` and existing group management/capacity rules.
+- `POST /admin/groups/:id/members`: exactly one of `selectionId`, `userId`;
+  retain `role`, `overLimit` and admin authorization.
+- `POST /events/:id/registrations/add`: `selectionId` instead of `userId`,
+  `email` or `personId`; retain `date`, attendance, childcare, guests and explicit
+  `overCapacity`. The selected adult must already be eligible to see/register
+  for the event. No one-date visibility override is implemented here.
+
+Actual manager-initiated ordinary membership additions write `membership.added`
+in the locked membership transaction (including email/admin siblings). Existing
+leadership/over-limit and registration audit rows remain; no-op adds do not log a
+new addition. Audit failure rolls back the membership change.
+
+Every ordinary direct manager-initiated teen account add through these
+endpoints (including email, raw-ID and admin paths) fails closed with 409 code
+`teen_add_approval_required`. Use a separate Ask to add; direct endpoints do not
+auto-create asks. Teen self-RSVP, household, proxy, consent conversion and
+invitation flows retain their own rules.
+
+Picker copy (client-owned):
+
+- short query: “Type at least 2 letters”
+- throttled: “Too many searches. Try again in a minute.”
+- no results: “No one found. An admin can add people who aren't listed.”
+- indistinguishable same names: “More than one match? Ask an admin.”
+
+The UI must omit teen direct-add, use an accessible debounced combobox, announce
+result count and discard stale responses. Group Ask-to-add has the API below;
+occurrence Ask-to-add and its UI use the final s4 Add contract further below.
+New error-copy entries: `people_selection_unavailable`: “That selection is no
+longer available. Search for the person again.”; `teen_add_approval_required`:
+“Adding a teen needs their approval and an admin's approval. Ask your church
+office for help.”
+
+### Group Ask to add (M1.11 s4)
+
+All routes require the normal current cookie session, CSRF on POST and no-store.
+This section describes `group_add`; the same routes also dispatch
+`occurrence_add` as documented below, never contact authority.
+The contact endpoints above now explicitly filter persisted `purpose=contact`
+before adaptation, decisions, withdrawal, grants and reveals. These add rows
+never appear in a contact DTO, contact reason, contact grant or contact lifecycle.
+
+```
+POST /api/v1/add-requests
+  {selectionId: string, contextType: "group", contextId: number,
+   reason?: string, overLimit?: boolean}
+  → 201 {request: AddRequest}
+GET /api/v1/add-requests?before=<requestId>
+  → 200 {requests: AddRequest[]}
+GET /api/v1/add-requests/:id
+  → 200 {request: AddRequest} | 404
+POST /api/v1/add-requests/:id/decision
+  {party: "subject"|"admin", decision: "approved"|"denied"}
+  → 200 {request: AddRequest}
+POST /api/v1/add-requests/:id/withdraw
+  → 200 {request: AddRequest}
+POST /api/v1/add-requests/:id/complete
+  → 200 {request: AddRequest}
+```
+
+Creation accepts only the opaque, actor-bound, unexpired search `selectionId`,
+not a target email or raw subject ID. It reloads current requester and subject,
+current age, active account and group, and group management authority under the
+shared transaction gate. A teen **always** needs their own approval and an adult
+admin's approval, including when the requester is an admin. Guardians never
+approve for the teen. The typed policy also handles subject-only adult asks when
+ordinary addition is unavailable; currently all active eligible adult group
+accounts use the existing direct-add route, not an unnecessary ask. Contact
+hiding is not a membership restriction. Occurrence creation/finalization and
+the out-of-visibility date contract are documented separately below.
+
+The optional reason is limited to 1000 Unicode characters before trimming. The
+explicit `overLimit` choice defaults false, is immutable and never inferred from
+approval. Ten open requests per requester **across all purposes** and a fixed
+14-day expiry are serialized by the shared gate.
+
+Group-purpose `AddRequest` projection (optional fields marked `?`; the
+occurrence-purpose additions are documented below):
+
+```
+id: number
+purpose: "group_add"
+requesterName?: string
+subjectName?: string
+contextId?: number
+groupName?: string
+reason: string
+overLimit: boolean
+needsAdmin: boolean
+subjectDecision: "pending"|"approved"|"denied"
+adminDecision: "pending"|"approved"|"denied"|"not_needed"
+status: "pending"|"granted"|"denied"|"withdrawn"|"expired"|"ended"
+createdAt: string
+expiresAt: string
+completedAt?: string
+endReason: string
+canSubjectDecide: boolean
+canAdminDecide: boolean
+canWithdraw: boolean
+canComplete: boolean
+```
+
+Lists return at most 100 rows in descending ID order with an exclusive `before`
+cursor. Only the requester, subject and current active adult admins can review or
+retry; a guardian alone has no request-history access. Group identity and both
+preview names are omitted unless the viewer may already see the group. There
+are no raw person IDs, membership IDs, email, phone, fields, avatars, birth dates,
+rosters or locations in this DTO. Reviewing or approving a pending ask grants no
+ordinary group read/roster permission. Free-text reason stays within this
+purpose-specific review, never contact review, audit metadata or notices.
+
+Either party declining ends the request. Each valid decision is audited and its
+own waiting task resolved in the same commit. When all approvals are present,
+completion calls the original group-first locked membership helper within that
+same transaction. The membership retains an existing role; otherwise it is added
+as member. `granted` is written only after the live active membership effect,
+with `completed_target_id` and `completed_at` committed atomically. No
+`ContactGrant` is created. Ordinary self-join, consent and household flows are
+unchanged; email/raw-ID/admin/direct selection teen-add paths stay closed.
+
+**Capacity is not denial:** when the group filled after the ask, a valid final
+approval returns **200, `pending`, both approvals retained**, no completion time
+or membership. `canComplete=true` means completion is authorized, not that room
+is available. Display that the approvals are recorded but the group needs space;
+retry `/complete` after space is available. A retry never repeats either party's
+decision audit or extends expiry. An explicit original `overLimit=true` follows
+the existing over-limit audit path. All completion attempts refresh current
+actor/session, requester/subject eligibility, age, authority, context and expiry;
+no stale approval or terminal request can be replayed.
+
+Role loss, account disable/deletion, adulthood and context loss end pending group
+asks in the affecting gated domain transaction; expiry uses the daily sweep and
+mutation reconciliation. Repeated sweeps do not repeat terminal audit/notices.
+Historic `granted` asks stay granted after later membership removal or role loss.
+Contact grants retain their existing, separate automatic-end rules. The sweep
+now dispatches occurrence-add rows through their own current-facts lifecycle;
+it never guesses from contact registration or last-date facts. Occurrence create,
+review, decision and completion use the separate occurrence-purpose checks below.
+
+Audit actions: `add.requested`, `add.decision` (including either denial),
+`add.withdrawn`, `add.expired`, `add.ended`, `add.completed`, `add.refused`;
+`target_type=add_request`. Current group/member IDs and outcomes are audited,
+never contact values or free-text reason. A capacity refusal is audited as
+`group_full` while the valid decision remains committed. CSRF/session refusals
+use `add.refused`, `target_type=add_endpoint` and no claimed IDs/body. Audit or
+notification failure rolls back decisions, membership and task changes together.
+
+Notices: `add.subject_review` and `add.admin_review` are **separate waiting
+kinds**; `add.updated` is not waiting. Terminal transitions resolve both task
+kinds; approvals resolve only the deciding party's task. All are safety-category,
+unbatched, navigation-only (`/add-requests/:id`) and names/contact/reason-free in
+both feed and email. Confirmed active adult guardians receive a safe completion
+notice for a teen, not pending-request approval authority.
+
+Actionable errors (no 429):
+
+- `add_request_unavailable` (403): “This ask to add is no longer available to you.
+  Refresh the page to see its current status.” Invalid/wrong-purpose selections,
+  current authority loss, invalid/replayed decisions and terminal retries fail
+  uniformly, without explaining account state.
+- `add_reason_long` (400): “Your reason is too long. Use 1000 characters or fewer,
+  then try again.”
+- `request_open_limit` (409): “You have 10 open requests. Withdraw one or wait for
+  a decision before sending another.”
+
+Profile's Add request history opens the purpose-aware review UI; group and
+single-date Ask controls use the shared name picker and separate add client.
+
+### Exact-date invitation reads (M1.11 s4)
+
+`GET /api/v1/events/:id/dates/:date` permits ordinary effective-date visibility
+(including signed-out public dates in M1.13), or a current authenticated
+account with a live exact-date invitation.
+`:date` is the occurrence's original `YYYY-MM-DD` key, not its rescheduled
+start day. It returns `{occurrence: EventDate}` for ordinary event visibility
+or a current explicit invitation to **that stable occurrence only**. Missing,
+invalid, cancelled, deleted, or unauthorized dates return 404; signed-out
+requests for nonpublic dates return 404. GET has no side effects and does not approve an ask.
+Pending asks and ordinary registration rows alone confer no extra visibility.
+
+`EventDate` has exactly these fields (optional keys marked `?`):
+
+```text
+id, eventId, date, dateUrl, title, location,
+startsAt, endsAt, startsLocal, endsLocal, tzid, durationMinutes,
+remoteAvailable, guestsAllowed,
+myRegistration, myAttendanceMode?, myGuestCount?,
+videoProvider, videoUrl?, videoHidden,
+canSeeVideo, canSeeAttendees, canDecline, canBlock,
+visibility?, hostedBy?, canRegister?
+```
+
+Times/title/place are effective for that date. An invitation-only response
+never falls back to a hidden group's place. There are no group IDs/names,
+host identities, attendee/contact details, counts, capacities, series title,
+series start, RRULE/until, sibling dates, or management controls. `myRegistration`
+is the viewer's own status or null. Video is gated by that date's own RSVP and
+current policy; an invitation does not inherit manager video authority.
+`canSeeAttendees` is always false for invitation-only access, and this endpoint
+never includes attendees even for ordinary viewers. `canDecline`/`canBlock`
+describe current recipient invitation policy for the mutations below. Ordinary
+voluntary RSVP continues to use its existing authority.
+
+Calendar rows for invitation-only dates retain the slim `CalendarOccurrence`
+shape, with `dateUrl` set to `/events/:id/dates/:date`, the recipient's own Going
+status, and no hidden group/host fields or attendance counts. They appear in
+Just mine. Group filters still require visibility of the named group and cannot
+be bypassed by an invitation. Remote/childcare/window filters still apply.
+Personal feeds, including `scope=all`, export such dates as standalone VEVENTs
+with an absolute exact-date URL: never RRULE, sibling EXDATEs, series metadata,
+or a bare series URL. Public and group feeds remain ordinary-visibility only.
+The UI owner must follow `dateUrl` for scoped rows rather than synthesizing a
+parent-event link. The exact-date SPA page uses this sanitized contract.
+
+`CanSeeEvent`, `loadVisibleEvent`, ordinary `/events` discovery, and rich
+occurrence lists retain their existing series-only semantics. Explicit
+invitation parent event IDs are never added to their visible event sets. Scoped
+access is reachable through exact-date/calendar/personal-feed/notice links,
+not an expansion of ordinary discovery. Group pages/rosters,
+sibling dates, series detail, contact and management remain separately gated.
+
+Invitation reads reload current account/teen account consent, active invitation,
+matching registration provenance, scheduled occurrence, live event and active
+organizing group. Disable/consent loss, cancellation/deletion, removal/revocation,
+or organizer mismatch fails closed before cleanup. Rescheduling the same
+occurrence preserves its original exact-date link; a new occurrence never
+copies access. Accepted invitations do not depend on the issuer retaining a
+role, and a new organizer block does not revoke other accepted dates. Mutation/lifecycle hooks persist irreversible ends on disable, consent loss,
+cancellation and deletion: a read alone cannot detect a historical disable
+followed by re-enable if no end was recorded.
+Downloaded calendar data cannot be recalled from another application.
+
+### Occurrence recipient controls and lifecycle (M1.11 s4)
+
+Occurrence Ask creation/review/completion and ordinary adult manager-add
+provenance are enabled as described in the final Add contract below.
+
+Authenticated exact-date mutations use normal CSRF and API no-store:
+
+- `POST /events/:id/dates/:date/decline`: no body. Ends your selected invitation
+  and declines its registration, releasing/promoting seats.
+- `POST /events/:id/dates/:date/block`: no body. Also blocks future manager
+  account adds by the organizing group, or that event when church-wide. Hidden
+  organizer IDs are never inputs or outputs. Conflicting pending occurrence asks
+  end and their tasks resolve; other accepted dates and memberships stay intact.
+- `PUT /events/:id/dates/:date/registration`: `{status, guestCount?,
+  attendanceMode?, childcareCount?, childcareAgesNote?}`. Status is going,
+  maybe or declined; omitted options preserve your registration. No household,
+  proxy, other-person or management options are accepted. Declined ends access
+  immediately. Maybe retains only this date and uses per-date video policy.
+  Going uses original capacity/childcare/waitlist rules, never an override.
+
+POST success is `{}`. PUT success is `{registration: Registration}`; no hidden
+organizer, host, series or contact data. Invalid, ended, unrelated, stale-session
+or currently ineligible invitations return opaque 404. Existing capacity and
+childcare errors retain their codes. Recipient refusals are audited, including
+rolled-back domain errors; an audit failure fails closed. Replay cannot reopen
+retained access.
+
+Recipient mutations take the contact gate FIRST, then account/occurrence locks,
+reloading current session, consent, exact provenance and live context through
+that transaction. Current-manager removal uses `registrations/remove` with fresh
+session/management checks. Explicit invitation removal ends access and releases/
+promotes seats; its notice and audit omit private management notes. Ordinary
+legacy pruning keeps its existing seat reservation. Legacy account-add selection,
+email and ID siblings honor blocks and retained endings; eligible direct adult
+adds mint explicit provenance as described below.
+
+Ordinary RSVP detects active provenance in its existing registration row query.
+If present, it rolls back before any writes and retries with the gate FIRST;
+unrelated ordinary/household RSVP takes no extra query or gate. Ordinary decline
+therefore immediately ends the invitation too. Independently eligible voluntary
+RSVP remains possible, but never writes or reopens invitation access.
+
+Visibility previews and committed cancellations share the same current explicit
+invitation test. A live invitation preserves exactly its date while ordinary-
+ineligible siblings are cancelled. Pending requests, ended/invalid-consent or
+cancelled/deleted/mismatched provenance cannot preserve dates. Preview fact
+loading errors fail closed, not as a zero impact.
+
+Shared gated lifecycle/sweep dispatch separately handles pending occurrence asks
+and accepted access. Disable/deletion/consent loss, date/event/group deletion or
+cancellation, and registration cancellation/removal persist irreversible endings.
+Re-enable, consent regrant and restoring dates never revive access. Issuer role
+loss ends pending asks, not accepted attendance; later blocks preserve other
+accepted dates; stable occurrence rescheduling preserves access.
+
+`occurrence_access.ended` audit retains subject/event/occurrence IDs and outcome,
+not contact values or internal end reasons. Navigation-only, unbatched
+`occurrence.updated` notices use exact-date links without personal, hidden
+organizer or series values, and names-free email. Deleted dates receive no new
+invalid navigation notice. Effects, audit, tasks and notices commit together;
+mail runs only after commit.
+
+### Final s4 Add contract
+
+Occurrence requests are enabled on the same authenticated `/add-requests`
+routes as group asks. The UI and focused browser proof are implemented; final
+M1.11 acceptance remains pending (see `plan/M1.11-BRIEF.md`).
+
+`POST /add-requests` takes an actor-bound `selectionId`, `contextType` (`group`
+or `event`), `contextId`, optional `reason` (1000 characters). Group accepts
+`overLimit`. Event requires exact stable `occurrenceId` and accepts
+`overCapacity`, `attendanceMode`, `guestCount`, `childcareCount`,
+`childcareAgesNote`; omitted options resolve from the current registration, or
+in-person/zero for a new registration. Resolved final options are immutable.
+Raw person IDs/emails cannot replace the selection on Ask creation.
+
+Existing `GET /add-requests[/:id]`, `POST /:id/decision` with
+`{party:"subject"|"admin",decision:"approved"|"denied"}`, `POST /:id/withdraw`
+and `POST /:id/complete` now dispatch both Add purposes, never contact authority.
+Lists retain exclusive `before` pagination and limit 100. Actors are requester,
+subject or current adult admin; a guardian is not an approver. Shared cap remains
+10 pending requests across all purposes and expiry remains 14 days.
+
+Every teen requires both subject and admin decisions, including admin requesters.
+Adults need subject approval when ordinarily ineligible or after a retained end.
+Direct selection/email/raw-ID siblings return 409 `date_add_approval_required`
+instead of auto-creating requests or bypassing approval. Blocks refuse additions.
+The UI must explicitly create an Ask; contact grants never authorize these adds.
+
+Occurrence `AddRequest` previews omit names, context/group IDs, group name,
+submitted reason, location, hosts, siblings, recurrence and contact data. They add
+only optional `eventTitle`, `date`, `startsAt`, `endsAt`, `tzid` to the checked
+shared request/decision/status/capability envelope. Pending request possession
+confers no read authority. No parent-event link is returned by the preview.
+
+A valid final decision commits its own audit and resolves its waiting task even
+when capacity/childcare/current capabilities prevent completion. Response stays
+200 with `status=pending`, `canComplete=true`, no completed target, and optional
+`completionProblem` (`capacity`, `childcare`, `options`, `throttled`). Retry with
+`/complete`; no retry extends expiry or infers an override. `options` requires a
+new Ask with currently valid options. A read may omit this transient problem;
+readiness flags never promise room. Group pending-capacity behavior is unchanged.
+
+Completion reloads current facts under gate FIRST and original holder/occurrence
+locks. The real registration, granted request/completed target, new exact access,
+audit, task resolution and safe notices commit atomically. Capacity/childcare
+checks are before registration writes. New approved requests after an ending
+append provenance; old approvals and direct additions cannot reopen old records.
+
+Ordinary eligible adult direct account adds now create the same immutable
+exact-date provenance and notice atomically. Duplicate active invitations may
+update ordinarily permitted registration options without duplicate notices/access
+or rewriting original issuer/request provenance. Guest/household/proxy paths keep
+their existing rules and gain no override.
+
+A shared persisted per-requester limit of 30 qualifying single-person date-add
+attempts per minute covers account-add selection/email/ID, occurrence Ask create
+and completion attempts. Decisions are still recorded if completion is throttled.
+Direct/create throttling returns 409 `date_add_throttled`, never a new public 429:
+“You have made several date additions. Wait a minute, then try again.” Approval
+needed copy is “This date needs their approval. Send an ask to add instead.”
+
+The added person and a teen's currently confirmed active guardians receive a
+names-free, navigation-only, unbatched `occurrence.added` notice to the exact date.
+Invitation changes/promotions/cancellations also use names-free exact-date links,
+not hidden group or series links. Managers alone receive optional
+`Attendee.addedByLeader`, computed from current explicit access, never inferred
+from Registration source; other viewers have no such key.
+
+Manual promotion services existing voluntary waitlist responses, teen included;
+it is not a new invitation and mints no access. Fresh manager/session/destination
+checks apply, but organizer add-blocks and previous special-access endings do
+not obstruct an independently eligible voluntary waiter. Invitation-only waiters
+need current exact access; stale/ended access never promotes. Automatic and
+household/proxy promotion rules otherwise remain unchanged. Manager removal also
+ends conflicting pending exact-date asks, preventing stale approvals after prune.
+
+### Administrative contact/access history (M1.11 s5; final acceptance pending)
+
+```
+GET /api/v1/admin/users/:id/contact-history
+  → 200 {entries: ContactHistoryEntry[], nextBefore?: string}
+GET /api/v1/admin/users/:id/contact-history.csv
+  → 200 text/csv; charset=utf-8
+```
+
+Both require a current active adult admin session. A requester, subject,
+guardian, leader or host has no administrative history/export right, including
+for their own ID. Existing private `/contact-requests`, `/contact-grants` and
+`/add-requests` review/list permissions are unchanged. Session version, current
+role and disabled/deleted state are checked on each request. Adult eligibility
+uses the church-local calendar day, never the UTC day; teen accounts never
+qualify. Responses use `Cache-Control: no-store`. GET export follows ordinary authenticated read
+routing; it adds an audit row, not a new CSRF exemption.
+
+`:id` is a positive retained account ID (up to signed bigint), not a live user
+lookup. A deleted requester, deleted subject or absent history returns 200;
+absent records give `entries: []` or a header-only CSV, not 404. History uses
+retained AuditLog and request/occurrence-access provenance, independent of live
+accounts, groups, events, registrations and notification cleanup.
+
+JSON pagination is descending **audit ID**, regardless of timestamp. Optional
+`limit` is 1–100 (default 50); `before` is an exclusive positive audit ID. When
+`nextBefore` exists, pass it as `before` with the same filters to continue.
+Timestamp ties cannot duplicate or skip IDs. JSON pages are fresh reads, not a
+cross-request snapshot; newly committed higher IDs appear on a fresh first page.
+
+Shared optional filters (ANDed with the person's actor/requester/subject
+involvement):
+
+- `purpose=contact|group_add|occurrence_add`
+- `action`: one exact listed action below, not a prefix or arbitrary audit action
+- `contextType=group|event`, optionally `contextId=<positive ID>`; an ID needs a type
+- `occurrenceId=<positive ID>`
+- `from=<RFC3339 timestamp>` inclusive, `until=<RFC3339 timestamp>` exclusive;
+  when both are given, `from` must be earlier. Explicit Go zero timestamps
+  (`0001-01-01T00:00:00Z`, including equivalent offset representations) are
+  rejected, not interpreted as absent bounds. URL-encode offsets containing `+`.
+
+Unknown, repeated, empty, malformed or overlong parameters return 400
+`contact_history_filters`. Each value is at most 64 bytes; the total query is
+at most 1024 bytes. CSV accepts these same shared filters but **rejects**
+`before` and `limit`: it exports **all** matching retained entries, not a JSON
+page and not a silently capped result.
+
+`ContactHistoryEntry` is a closed projection:
+
+```
+{id, at, action, actorId?, requesterId?, subjectUserId?, purpose?,
+ requestId?, accessId?, contextType?, contextId?, occurrenceId?, fields?,
+ outcome, party?, decision?}
+```
+
+Every JSON ID is an exact **decimal string**, not a JavaScript number:
+`id`, `actorId`, `requesterId`, `subjectUserId`, `requestId`, `accessId`,
+`contextId`, `occurrenceId`, and page `nextBefore`. Optional IDs are omitted,
+never null. `entries` is always an array. Positive IDs through
+`"9223372036854775807"` round-trip exactly, including distinct values
+`"9007199254740992"` and `"9007199254740993"`. Keep these as strings in
+frontend state, URLSearchParams, cursors, comparisons and download paths;
+**never use Number(), parseInt(), unary + or numeric sorting on history IDs**.
+This does not change numeric IDs in other APIs or database/internal ID types.
+`at` is RFC3339; actor absence denotes a system action. IDs denote retained
+provenance, not permission to open a current context. Requester and subject are
+loaded from the known retained request/access relation. Ordinary group/date add
+and removal audits use only their typed numeric `userId` (and date
+`occurrenceId`) metadata. No substring matching or live-person joins occur.
+Malformed/missing metadata omits the unproven fields; it does not fail open or
+panic. Generic endpoint refusals and request refusals without retained request
+provenance remain actor-only rows. Submitted hidden person/context IDs,
+selections or guessed request IDs are **not** recovered to invent a subject or
+improve filtering. Such rows therefore do not appear under an alleged subject
+or a purpose/context filter they cannot establish.
+
+Included action families:
+
+- `contact.requested`, `.decision`, `.withdrawn`, `.expired`, `.granted`,
+  `.reveal`, `.refused`, `.revoked`, `.ended`
+- `add.requested`, `.decision`, `.withdrawn`, `.expired`, `.completed`,
+  `.refused`, `.ended`
+- `occurrence_access.added`, `.ended`, `occurrence.blocked`, `.refused`
+- `membership.added`, `.added_over_limit`, `.removed`
+- `registration.added`, `.added_over_capacity`, `.removed`
+
+This is not an unrestricted general audit viewer. Every action must also match
+its known target shape. `outcome` is `requested`, `decision`, `approved`,
+`denied`, `withdrawn`, `expired`, `granted`, `revealed`, `refused`, `revoked`,
+`ended`, `added`, `removed` or `blocked`. For a valid decision audit only,
+`party=subject|admin` and `decision=approved|denied` preserve the historical
+party decision rather than the request's current final status. `fields` is the
+contact field **selection** (`email|phone|both`), never its value; add rows have
+no contact fields or grants. There are no names, email/phone values, submitted
+reasons/notes, IPs, arbitrary metadata, request bodies, tokens, or video URLs.
+
+CSV filename is deterministic: `contact-history-<personId>.csv`. Its fixed
+column order is:
+
+```
+auditId,at,action,actorId,requesterId,subjectUserId,purpose,requestId,accessId,contextType,contextId,occurrenceId,fields,outcome,party,decision
+```
+
+Absent values are empty cells; timestamps are UTC RFC3339 with fractional
+precision when present. The Go CSV encoder handles Unicode, commas, double
+quotes and CRLF record endings. Every cell is spreadsheet-escaped: a leading
+formula operator (`=`, `+`, `-`, `@`), including after whitespace, or a leading
+control/format character gets a literal apostrophe prefix. Quoting alone is not
+treated as formula protection.
+
+Export reads a repeatable-read snapshot in internal pages of 100 into a private
+0600 temporary file, then flushes/syncs/rewinds/stats it. Immediately before
+the export audit, a `FOR SHARE` locking read rechecks the current actor, session
+version, active/deleted state, admin role and church-local adult eligibility.
+Under PostgreSQL REPEATABLE READ, an actor changed after the snapshot causes
+this locking read to fail serialization; it is not trusted as stale authority.
+No actor lock is held during lengthy page materialization. The checked row lock
+is held through audit commit, the authorization linearization point. Revocation
+after that point cannot retract a prepared export. The transaction commits
+`contact_history.exported` (target type `user`, retained person ID; actor admin;
+metadata contains count and the explicit safe filters). Only after that commit
+are CSV headers/body emitted. Auth, query, disk or audit failures return an error
+without partial CSV masquerading as a complete export. Temporary files are
+closed and removed on normal success/error returns (not process crashes); no
+blob service or persistent export store is introduced. Network interruption can
+still interrupt a download; Content-Length
+allows a client to detect it. The audit denotes a prepared authorized export,
+not confirmed network receipt. Go memory is page-bounded, but aggregate temporary
+disk, concurrent export count and transaction duration have no added budget.
+The export audit is retained but is not itself an entry in this contact/add
+action projection. History reads do not take the
+contact mutation gate and do not reconcile lifecycle state. Existing lifecycle
+mutations/sweeps own their actual audit entries. DEC-33 hash chaining, write-once
+offsite storage and retention hardening remain deferred.
+
+The admin history UI/client and focused browser/mobile/accessibility proof are
+implemented and independently reviewed. Local M1.11 acceptance and final
+integrated verification are recorded in `docs/plan/M1.11-BRIEF.md`; publication,
+merge and production deployment are separate.
+
+### Per-date visibility (M1.13)
+
+A date inherits `Event.visibility` unless its nullable `visibility_override`
+column is set. `visibility` on occurrence lists is the effective value;
+`visibilityOverride` is present for explicit date values. Managers also get
+`seriesVisibility` (the parent value, not the date value) and, when the group
+is visible, `groupVisibility` for the shared visibility editor.
+
+```
+PUT /api/v1/events/:id/occurrences/:date
+    {visibility?: "public"|"private"|"invite_only"|"series"|null,
+     reason?: string, confirm?: boolean, ...existing date edits}
+GET /api/v1/events/:id/occurrences/:date/visibility-impact?visibility=series
+GET /api/v1/events/:id/dates/:date
+```
+
+Omitting `visibility` leaves it unchanged. JSON null and `"series"` clear
+only the visibility override. Explicit equal-to-series values remain explicit.
+The usual event visibility policy applies: group leaders/admins may set any
+value; church-wide hosts/admins may use public/private only. Reasons are
+optional, at most 500 characters. Tightening, including clearing an open date,
+previews newly inaccessible registrations on that date. PUT returns 409 with
+`needsDecision` and `impact` until `confirm:true` acknowledges cancellation.
+Active explicit exact-date invitations preserve their own registrations and
+never grant series or group authority.
+
+The exact-date GET permits signed-out readers only when the effective date
+is public. It uses the restricted date projection, not an event/series DTO.
+An opened hidden-series date is discoverable with a `dateUrl`; the unauthorized
+series and sibling dates remain 404. Hidden group names, IDs, places, leaders,
+attendee names, and recurrence metadata are not included. Public exact-date
+pages use the ordinary verified guest form; verification rechecks current
+visibility and cancellation under the occurrence lock.
+
+Series visibility PUT accepts `resetOverrides?:boolean` (default false).
+Its visibility-impact GET accepts `resetOverrides=1` and returns
+`futureOverrides`, counted across all future stored dates, not the list limit.
+Without reset, explicit dates keep their visibility and are excluded from the
+series cancellations. With reset, each future override is cleared and audited
+atomically, including when the series value itself stays the same. Past dates
+and unrelated date customizations are unchanged.
+
+Group visibility review includes explicit dates wider than the new group value
+in `leaderOpened`, independently of the event's `leaderOpened` marker. Date
+rows include `{id: eventId, occurrenceId, date, decisionKey: "date:<occurrenceId>",
+visibility, title, registrants}`. Send keep/tighten decisions in `openedEvents`
+using `decisionKey` for dates and the existing numeric event-ID keys for series.
+All required decisions are rechecked under locks; missing ones roll back the
+whole change, including inherited-series tightening.
+
+Each actual date change/clear writes an audit row with `original_date`, old/new
+values, group visibility when applicable and optional reason. A wider-than-group
+date uses `event.visibility_override` and notifies other leaders/admins, naming
+the date; unchanged saves do neither. Keeping an opened date during a group
+review is audited and notified too. Registrations, audit and stored notices are
+transactional; email delivery follows commit. Tightening notices identify the
+affected date and never include hidden group details.
+
+Date lists and calendar candidates are filtered per occurrence before limits.
+Feeds with any visibility-customized dates use authorized standalone entries
+with exact-date URLs, rather than an RRULE that could regenerate hidden dates.
+Ordinary unchanged full-series feed behavior remains intact. Visibility changes
+therefore alter feed bodies/ETags as well as API output.
+
+Implemented consumers: group/upcoming/open-event lists, event/date details,
+calendar, public/group/personal feeds, account/household RSVP, guest submission
+and redemption, manager-add eligibility and waitlist promotion. Dedicated event
+search, reminder scheduling and room-suggestion infrastructure do not exist at
+this base. Their future consumers must resolve `policy.EffectiveVisibility`
+per date and apply the same ordinary policy separately from exact-date grants;
+no reminder/room/search integration pass is claimed by M1.13's current tests.

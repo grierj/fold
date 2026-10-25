@@ -170,7 +170,7 @@ func TestUsersTableIsEmailFirst(t *testing.T) {
 	var cols []string
 	app.DB.Raw(`SELECT column_name FROM information_schema.columns
 		WHERE table_name = 'users' ORDER BY column_name`).Scan(&cols)
-	want := "account_type administratively_disabled avatar_focal_x avatar_focal_y avatar_key birth_date created_at deleted_at display_name email id " +
+	want := "account_type administratively_disabled avatar_focal_x avatar_focal_y avatar_key birth_date created_at deleted_at display_name email hide_contact_from_leaders id " +
 		"name password_hash phone role session_version status timezone updated_at"
 	if got := strings.Join(cols, " "); got != want {
 		t.Fatalf("users columns:\n got %s\nwant %s", got, want)
@@ -180,6 +180,14 @@ func TestUsersTableIsEmailFirst(t *testing.T) {
 		WHERE table_name = 'users' AND column_name = 'email' AND is_nullable = 'NO'`).Scan(&typ)
 	if typ != "USER-DEFINED:citext" {
 		t.Fatalf("users.email: got %q, want NOT NULL citext", typ)
+	}
+	var privacy string
+	if err := app.DB.Raw(`SELECT data_type || ':' || is_nullable || ':' || column_default
+		FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'hide_contact_from_leaders'`).Scan(&privacy).Error; err != nil {
+		t.Fatal(err)
+	}
+	if privacy != "boolean:NO:false" {
+		t.Fatalf("users.hide_contact_from_leaders: got %q, want NOT NULL boolean DEFAULT false", privacy)
 	}
 }
 

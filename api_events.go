@@ -89,7 +89,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	}
 	// The one place event dates are listed: drop every event this viewer
 	// can't see, so no caller has to remember to (hardening review).
-	vs, err := a.visibleEvents(me, a.DB.Where("id IN ?", eventIDs))
+	vs, err := a.dateCandidates(me, a.DB.Where("id IN ?", eventIDs))
 	if err != nil || len(vs.IDs) == 0 {
 		return out
 	}
@@ -107,6 +107,9 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	perEvent := map[uint]int{}
 	kept := make([]models.EventOccurrence, 0, len(occs))
 	for _, o := range occs {
+		if !vs.canSeeDate(me, byID[o.EventID], &o) {
+			continue
+		}
 		if perEvent[o.EventID] >= maxOccurrencesListed {
 			continue
 		}
@@ -197,6 +200,11 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	// One set of household facts and one church-local clock per request.
 	facts := a.requestFacts()
 	names, removed := a.attendeeNames(kept, showNames, showChildcare, showDeclined, me, facts)
+	guardians := a.confirmedContactGuardians(me, facts.users)
+	for _, o := range kept {
+		presentAttendeeContacts(names[o.ID], me, facts.users, guardians, showDeclined[o.EventID])
+		presentAttendeeContacts(removed[o.ID], me, facts.users, guardians, showDeclined[o.EventID])
+	}
 	ownHousehold := a.myHouseholdAnswers(ids, me, facts)
 	// Only a household account can have registered someone by name.
 	householdVideo := map[uint]bool{}
@@ -227,7 +235,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		if showDeclined[ev.ID] {
 			inst.RemovedRegistrations = removed[o.ID]
 		}
-		inst.Visibility = ev.Visibility
+		inst.Visibility = policy.EffectiveVisibility(ev.Visibility, o.VisibilityOverride)
 		inst.LeaderOpened = ev.LeaderOpened
 		inst.ChurchWide = ev.GroupID == nil
 		inst.Registrations = map[string]int64{"going": 0, "maybe": 0, "declined": 0, "waitlisted": 0}
@@ -282,6 +290,17 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 			}
 		}
 		a.presentGroup(&inst, ev, g, me, rel)
+		if !vs.canSeeSeries(me, ev) {
+			inst.hideSeries = true
+			inst.DateURL = occurrenceDatePath(ev.ID, o.OriginalDate)
+			inst.RecurrenceRule = ""
+			inst.RRuleUntil = ""
+			inst.SeriesStartsLocal = ""
+			inst.SeriesTitle = ""
+			inst.SeriesLocation = ""
+			inst.SeriesDurationMinutes = 0
+			inst.SeriesVisibility = ""
+		}
 		out = append(out, inst)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartsAt.Before(out[j].StartsAt) })
@@ -316,12 +335,13 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 	}
 	inst := occurrenceJSON{
 		ID: o.ID, EventID: ev.ID, Date: o.OriginalDate,
+		VisibilityOverride: o.VisibilityOverride, SeriesVisibility: ev.Visibility,
 		StartsAt: start.UTC(), EndsAt: end.UTC(),
 		StartsLocal: events.FormatWall(start, loc), EndsLocal: events.FormatWall(end, loc),
 		TZID: ev.TZID, DurationMinutes: dur, Location: location, Title: title,
 		Description:    ev.Description,
 		RecurrenceRule: ev.RRule, RRuleUntil: until, SeriesStartsLocal: ev.StartsLocal,
-		Overridden:  o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil,
+		Overridden:  o.Customized(),
 		SeriesTitle: ev.Title, SeriesLocation: ev.Location, SeriesDurationMinutes: ev.DurationMinutes,
 		Registrations:      map[string]int64{"going": 0, "maybe": 0, "waitlisted": 0},
 		Capacity:           events.EffectiveCapacity(ev.Capacity, o.CapacityOverride),
@@ -739,19 +759,6 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	var occs []models.EventOccurrence
-	if err := a.DB.Where("event_id = ?", ev.ID).Find(&occs).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not update event")
-		return
-	}
-	existing := make([]events.Existing, len(occs))
-	for i, o := range occs {
-		existing[i] = events.Existing{
-			ID: o.ID, OriginalDate: o.OriginalDate, StartsAt: o.StartsAt, EndsAt: o.EndsAt,
-			TimeFrozen: o.TimeFrozen(), Keep: o.Customized(),
-		}
-	}
-	actions := events.ApplySeries(existing, whens, now)
 	ed, ok := parseCapacityEdits(c, body)
 	if !ok {
 		return
@@ -762,11 +769,23 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	}
 	me := apiUser(c)
 	var emailed []uint
-	err = a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
+		var occs []models.EventOccurrence
+		if err := tx.Where("event_id = ?", ev.ID).Find(&occs).Error; err != nil {
+			return err
+		}
+		existing := make([]events.Existing, len(occs))
+		for i, o := range occs {
+			existing[i] = events.Existing{
+				ID: o.ID, OriginalDate: o.OriginalDate, StartsAt: o.StartsAt, EndsAt: o.EndsAt,
+				TimeFrozen: o.TimeFrozen(), Keep: o.Customized(),
+			}
+		}
+		actions := events.ApplySeries(existing, whens, now)
 		oldCap, oldPlace := locked.Capacity, locked.Location
 		oldRemoteCap := locked.RemoteCapacity
 		oldChildcareCap, oldChildcareAvailable := locked.ChildcareCapacity, locked.ChildcareAvailable
@@ -917,7 +936,7 @@ func (a *App) apiDeleteEvent(c *gin.Context) {
 	if !ok {
 		return
 	}
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		return deleteEventRows(tx, []uint{ev.ID})
 	})
 	if err != nil {
@@ -973,7 +992,7 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		return
 	}
 	var emailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		res := tx.Model(&models.EventOccurrence{}).Where("id = ? AND status <> ?", occ.ID, models.OccurrenceCancelled).
 			Update("status", models.OccurrenceCancelled)
 		if res.Error != nil || res.RowsAffected == 0 {
@@ -1010,9 +1029,17 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		// RemoteCapacityOverride mirrors CapacityOverride for the
 		// remote pool (M1.8 slice 2); null uses the event's cap.
 		RemoteCapacityOverride *json.RawMessage `json:"remoteCapacityOverride"`
+		Visibility             json.RawMessage  `json:"visibility"`
+		Reason                 string           `json:"reason"`
+		Confirm                bool             `json:"confirm"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")
+		return
+	}
+	visibility, visibilitySet, visErr := parseDateVisibility(body.Visibility)
+	if visErr != nil || len(body.Reason) > 500 {
+		jsonError(c, 400, "that visibility isn't allowed on this event")
 		return
 	}
 	newOverride, overrideSet, capMsg := parseCapacity(body.CapacityOverride)
@@ -1059,11 +1086,36 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 	}
 	var emailed []uint
 	var inst occurrenceJSON
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	var impact visibilityImpactJSON
+	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
+		var current models.Event
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&current, ev.ID).Error; err != nil {
+			return err
+		}
+		ev = &current
+		f := a.factsForIn(tx, me, ev)
+		if !policy.CanManageEvent(asPerson(me), f.view, f.rel) {
+			return errOccurrenceNotFound
+		}
 		var o models.EventOccurrence
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("event_id = ? AND original_date = ?", ev.ID, date).First(&o).Error; err != nil {
 			return errOccurrenceNotFound
+		}
+		if visibilitySet {
+			next := policy.EffectiveVisibility(ev.Visibility, visibility)
+			if !policy.CanSetEventVisibility(asPerson(me), f.view, f.rel, next) {
+				return errDateVisibility
+			}
+			var err error
+			impact, err = dateImpactOf(tx, ev, &o, next)
+			if err != nil {
+				return err
+			}
+			if !body.Confirm && impactHasLosers(impact) {
+				return errNeedDecision
+			}
+
 		}
 		oldStart, oldEnd := o.StartsAt, o.EndsAt
 		oldPlace := ev.Location
@@ -1106,6 +1158,15 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		if err := tx.Save(&o).Error; err != nil {
 			return err
 		}
+		// Cancellation and promotion use the final title, time and seat pools
+		// even when this request edits visibility and capacity together.
+		if visibilitySet {
+			ids, err := a.changeDateVisibility(c, tx, ev, &o, visibility, body.Reason, false)
+			if err != nil {
+				return err
+			}
+			emailed = append(emailed, ids...)
+		}
 		// event.changed fans out when the date's time or place actually
 		// changed: one item per going or waitlisted person, with the
 		// combined variant when both changed.
@@ -1143,7 +1204,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		}
 		inst = occurrenceToJSON(ev, &o, groupLoc)
 		applyVideoReveal(&inst, ev, false, true) // managers see the link
-		inst.Visibility = ev.Visibility
+		inst.Visibility = policy.EffectiveVisibility(ev.Visibility, o.VisibilityOverride)
 		inst.LeaderOpened = ev.LeaderOpened
 		inst.ChurchWide = ev.GroupID == nil
 		used, err := seatsUsed(tx, o.ID)
@@ -1186,6 +1247,12 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		return nil
 	})
 	switch {
+	case errors.Is(err, errNeedDecision):
+		c.JSON(409, gin.H{"needsDecision": true, "impact": impact})
+		return
+	case errors.Is(err, errDateVisibility):
+		jsonError(c, 400, "that visibility isn't allowed on this event")
+		return
 	case errors.Is(err, errOccurrenceNotFound):
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return

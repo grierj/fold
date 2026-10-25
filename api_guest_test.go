@@ -1,14 +1,19 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"fold/internal/audit"
 	"fold/internal/notify"
+	"fold/internal/policy"
 	"fold/models"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // guestDate is the one date scheduleGroupEvent creates.
@@ -331,11 +336,11 @@ func TestGuestVisibilityAndTightening(t *testing.T) {
 	}
 
 	// A private event also refuses new guests, and tightening to
-	// private removes the guest who can no longer see it.
+	// private cancels the guest who can no longer see it, retaining history.
 	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID),
 		map[string]any{"visibility": models.VisibilityPrivate, "confirm": true}, http.StatusOK)
 	guestSubmit(t, anon, ev.ID, guestBody("Late", "late@example.com", true), http.StatusNotFound)
-	if regCount(app, &u, ev.ID) != 0 || regCount(app, mem, ev.ID) != 1 {
+	if regCount(app, &u, ev.ID) != 1 || regCount(app, mem, ev.ID) != 1 {
 		t.Fatalf("after tightening: guest %d, member %d", regCount(app, &u, ev.ID), regCount(app, mem, ev.ID))
 	}
 }
@@ -372,7 +377,7 @@ func TestTighteningCancelsWaitlistedGuest(t *testing.T) {
 	// tells them; the member's seat is untouched.
 	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID),
 		map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, http.StatusOK)
-	if regCount(app, &u, ev.ID) != 0 || regCount(app, mem, ev.ID) != 1 {
+	if regCount(app, &u, ev.ID) != 1 || regCount(app, mem, ev.ID) != 1 {
 		t.Fatalf("after tightening: guest %d, member %d", regCount(app, &u, ev.ID), regCount(app, mem, ev.ID))
 	}
 	var n int64
@@ -785,4 +790,202 @@ func TestHouseholdManageTokenCancelsOnlyItsSubject(t *testing.T) {
 		t.Fatalf("token changed other answer %+v", rows)
 	}
 	apiDo(t, anon, "GET", "/api/v1/guest-registrations/manage/"+raw, nil, http.StatusNotFound)
+}
+
+// A real waitlist promotion gives an active, hidden member the same bearer
+// manage link as a guest. Contact authority depends on their last registration.
+type promotedContactCancellationFixture struct {
+	*contactAPIFixture
+	eventID uint
+	date    string
+	occ     models.EventOccurrence
+	grant   models.ContactGrant
+	pending contactRequestJSON
+	token   string
+	anon    *apiClient
+}
+
+func newPromotedContactCancellationFixture(t *testing.T) *promotedContactCancellationFixture {
+	t.Helper()
+	f := &promotedContactCancellationFixture{contactAPIFixture: newContactAPIFixture(t, false)}
+	f.eventID, f.date = seedCappedEvent(t, f.app, f.lc, itoa(f.group.ID), intPtr(1), true)
+	for _, client := range []*apiClient{f.lc, f.sc} {
+		if code, _ := registerAs(client, f.eventID, f.date, models.RegGoing, nil); code != http.StatusOK {
+			t.Fatal("could not fill seat and waitlist")
+		}
+	}
+	if code, _ := registerAs(f.lc, f.eventID, f.date, models.RegDeclined, nil); code != http.StatusOK {
+		t.Fatal("could not release seat for promotion")
+	}
+	if err := f.app.DB.Where("event_id = ?", f.eventID).First(&f.occ).Error; err != nil {
+		t.Fatal(err)
+	}
+	if regStatus(t, f.app, f.subject.ID, f.occ.ID) != models.RegGoing {
+		t.Fatal("subject was not promoted")
+	}
+	f.token = manageTokenInEmail(t, latestEmail(t, f.app, f.subject.Email))
+	f.anon = anonClient(t, f.app, "10.4.0.19")
+	create := func(fields string) contactRequestJSON {
+		w := f.lc.do("POST", "/api/v1/contact-requests", map[string]any{"subjectUserId": f.subject.ID, "contextType": "event", "contextId": f.eventID, "fields": fields}, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("event contact request: %d", w.Code)
+		}
+		var body struct {
+			Request contactRequestJSON `json:"request"`
+		}
+		decodeJSON(t, w, &body)
+		return body.Request
+	}
+	f.grant = f.contactAPIFixture.grant(t, create("email"))
+	f.pending = create("phone")
+	// The cancellation must also retain ordinary capacity promotion and mail.
+	if code, _ := registerAs(f.oc, f.eventID, f.date, models.RegGoing, nil); code != http.StatusOK {
+		t.Fatal("could not queue next waiter")
+	}
+	return f
+}
+
+func (f *promotedContactCancellationFixture) cancel() *httptest.ResponseRecorder {
+	return f.anon.do("POST", "/api/v1/guest-registrations/manage/"+f.token+"/cancel", nil, true)
+}
+
+func (f *promotedContactCancellationFixture) assertContactsEnded(t *testing.T) {
+	t.Helper()
+	var pending models.ContactRequest
+	var grant models.ContactGrant
+	if err := f.app.DB.First(&pending, f.pending.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.First(&grant, f.grant.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if pending.Status != policy.ContactEnded || pending.EndReason != policy.ContactLeftContext || pending.CompletedAt == nil || grant.EndedAt == nil || grant.EndReason != policy.ContactLeftContext {
+		t.Fatal("cancellation did not immediately end pending request and grant")
+	}
+	if contactCount(t, f.app, &models.Notification{}, "subject_type = ? AND subject_id = ? AND waiting AND resolved_at IS NULL", "contact_request", pending.ID) != 0 {
+		t.Fatal("cancellation left a pending review task")
+	}
+	if contactCount(t, f.app, &models.ContactRequest{}, "id = ? AND status = ?", grant.RequestID, policy.ContactGranted) != 1 {
+		t.Fatal("cancellation lost successful request history")
+	}
+}
+
+func TestGuestManageCancellationEndsMemberContacts(t *testing.T) {
+	f := newPromotedContactCancellationFixture(t)
+	reg := guestRegistrationRow(t, f.app, f.subject.ID)
+	for i := 0; i < 2; i++ {
+		if w := f.cancel(); w.Code != http.StatusOK {
+			t.Fatalf("cancel/replay: %d", w.Code)
+		}
+		f.assertContactsEnded(t)
+	}
+	if regStatus(t, f.app, f.subject.ID, f.occ.ID) != models.RegCancelled || regStatus(t, f.app, f.outsider.ID, f.occ.ID) != models.RegGoing {
+		t.Fatal("cancellation failed to free and promote exactly one seat")
+	}
+	if mail := latestEmail(t, f.app, f.outsider.Email); !strings.Contains(mail.Subject, "You're in") {
+		t.Fatal("next waiter did not receive post-commit promotion mail")
+	}
+	if contactCount(t, f.app, &models.AuditLog{}, "action = ?", audit.ContactEnded) != 2 || contactCount(t, f.app, &models.AuditLog{}, "action = ?", audit.RegistrationCancelled) != 1 {
+		t.Fatal("cancellation replay duplicated terminal audits")
+	}
+	if code, _ := registerAs(f.sc, f.eventID, f.date, models.RegGoing, nil); code != http.StatusOK {
+		t.Fatal("could not RSVP again")
+	}
+	if restored := guestRegistrationRow(t, f.app, f.subject.ID); restored.ID != reg.ID || restored.Status == models.RegCancelled {
+		t.Fatal("RSVP did not reuse the cancelled registration")
+	}
+	f.assertContactsEnded(t)
+	if w := f.reveal(f.lc, f.grant, "email"); w.Code != http.StatusForbidden {
+		t.Fatalf("re-RSVP resurrected old grant: %d", w.Code)
+	}
+}
+
+func TestGuestManageCancellationWinsContactReveal(t *testing.T) {
+	f := newPromotedContactCancellationFixture(t)
+	gate := holdContactGate(t, f.app)
+	cancel := queueContact(f.cancel)
+	waitContactWaiters(t, f.app, 1)
+	reveal := queueContact(func() *httptest.ResponseRecorder { return f.reveal(f.lc, f.grant, "email") })
+	waitContactWaiters(t, f.app, 2)
+	if regStatus(t, f.app, f.subject.ID, f.occ.ID) != models.RegGoing {
+		t.Fatal("cancellation mutated registration before acquiring contact gate")
+	}
+	gate.Rollback()
+	if w := awaitContactResponse(t, cancel); w.Code != http.StatusOK {
+		t.Fatalf("cancel: %d", w.Code)
+	}
+	if w := awaitContactResponse(t, reveal); w.Code != http.StatusForbidden || strings.Contains(w.Body.String(), f.subject.Email) {
+		t.Fatalf("reveal after cancellation: %d", w.Code)
+	}
+	f.assertContactsEnded(t)
+	if contactCount(t, f.app, &models.AuditLog{}, "action = ?", audit.ContactReveal) != 0 {
+		t.Fatal("cancelled contact authority revealed")
+	}
+}
+
+func TestGuestManageCancellationContactAuditFailureRollsBack(t *testing.T) {
+	for _, failPending := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending=%t", failPending), func(t *testing.T) {
+			f := newPromotedContactCancellationFixture(t)
+			target := f.grant.RequestID
+			if failPending {
+				target = f.pending.ID
+			}
+			name := "guest:test_contact_ending_audit_failure"
+			if err := f.app.DB.Callback().Create().Before("gorm:create").Register(name, func(db *gorm.DB) {
+				if row, ok := db.Statement.Dest.(*models.AuditLog); ok && row.Action == audit.ContactEnded && row.TargetID == target {
+					db.AddError(errors.New("injected contact ending audit failure"))
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			defer f.app.DB.Callback().Create().Remove(name)
+			mails := contactCount(t, f.app, &models.MailOutbox{}, "1 = 1")
+			if w := f.cancel(); w.Code != http.StatusNotFound {
+				t.Fatalf("failed cancellation: %d", w.Code)
+			}
+			if regStatus(t, f.app, f.subject.ID, f.occ.ID) != models.RegGoing || regStatus(t, f.app, f.outsider.ID, f.occ.ID) != models.RegWaitlisted {
+				t.Fatal("failed contact audit committed cancellation or capacity promotion")
+			}
+			if contactCount(t, f.app, &models.ContactRequest{}, "id = ? AND status = ?", f.pending.ID, policy.ContactPending) != 1 || contactCount(t, f.app, &models.ContactGrant{}, "id = ? AND ended_at IS NULL", f.grant.ID) != 1 {
+				t.Fatal("failed contact audit committed request/grant ending")
+			}
+			if contactCount(t, f.app, &models.Notification{}, "subject_id = ? AND kind = ? AND resolved_at IS NULL", f.pending.ID, notify.ContactSubjectReview) != 1 {
+				t.Fatal("failed contact audit resolved pending review")
+			}
+			if contactCount(t, f.app, &models.AuditLog{}, "action IN ?", []string{audit.ContactEnded, audit.RegistrationCancelled}) != 0 || contactCount(t, f.app, &models.MailOutbox{}, "1 = 1") != mails {
+				t.Fatal("failed cancellation left terminal audits or delivered mail")
+			}
+		})
+	}
+}
+
+func TestGuestManageCancellationRechecksTokenAndScopeUnderGate(t *testing.T) {
+	for _, change := range []string{"token-rotation", "event-mismatch"} {
+		t.Run(change, func(t *testing.T) {
+			f := newPromotedContactCancellationFixture(t)
+			gate := holdContactGate(t, f.app)
+			cancel := queueContact(f.cancel)
+			waitContactWaiters(t, f.app, 1) // preflight finished; authoritative lookup still waiting
+			if change == "token-rotation" {
+				if err := gate.Model(&models.Registration{}).Where("user_id = ? AND occurrence_id = ?", f.subject.ID, f.occ.ID).Update("manage_token_hash", hashToken("rotated-test-token")).Error; err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				other, _ := seedEvent(t, f.app, f.group, f.leader.ID, f.occ.StartsAt.Add(24*time.Hour))
+				if err := gate.Model(&f.occ).Update("event_id", other.ID).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := gate.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			if w := awaitContactResponse(t, cancel); w.Code != http.StatusNotFound {
+				t.Fatalf("stale preflight authorized cancellation: %d", w.Code)
+			}
+			if regStatus(t, f.app, f.subject.ID, f.occ.ID) != models.RegGoing {
+				t.Fatal("stale preflight mutated a registration")
+			}
+		})
+	}
 }

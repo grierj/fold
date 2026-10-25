@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { Guests } from "../api";
 import { formatWhen } from "../lib/when";
 import type { GuestRegistration } from "../types";
 import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
-import { Button } from "../components/ui/Button";
+import { Button, ButtonLink } from "../components/ui/Button";
 import { FormError } from "../components/ui/Field";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
@@ -77,9 +77,9 @@ export function GuestManage() {
               <>
                 <p className="text-sm mt-4">Your registration is cancelled.</p>
                 <p className="mt-4">
-                  <Link to={`/events/${reg.eventId}`} className="text-primary font-semibold text-sm">
+                  <ButtonLink variant="link" layout="w-full" to={`/events/${reg.eventId}/dates/${reg.date}`}>
                     Changed your mind? Register again
-                  </Link>
+                  </ButtonLink>
                 </p>
               </>
             ) : (
@@ -96,9 +96,9 @@ export function GuestManage() {
                   {busy ? "Cancelling…" : "Cancel my registration"}
                 </Button>
                 <p className="mt-4">
-                  <Link to={`/events/${reg.eventId}`} className="text-primary font-semibold text-sm">
+                  <ButtonLink variant="link" layout="w-full" to={`/events/${reg.eventId}/dates/${reg.date}`}>
                     View the event
-                  </Link>
+                  </ButtonLink>
                 </p>
               </>
             )}

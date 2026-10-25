@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,7 @@ import (
 type calendarOccurrenceJSON struct {
 	EventID            uint      `json:"eventId"`
 	Date               string    `json:"date"`
+	DateURL            string    `json:"dateUrl,omitempty"`
 	StartsAt           time.Time `json:"startsAt"`
 	EndsAt             time.Time `json:"endsAt"`
 	Title              string    `json:"title"`
@@ -95,22 +97,36 @@ func (a *App) apiCalendar(c *gin.Context) {
 		q = q.Where("childcare_available = ?", true)
 	}
 	// deleted=1 lists deleted groups' events too, for admins only (DEC-68).
-	vs, err := a.visibleEventsWith(me, q, c.Query("deleted") == "1")
+	vs, err := a.eventCandidates(me, q, c.Query("deleted") == "1", true)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
 		return
 	}
 	out := []calendarOccurrenceJSON{}
 	byID, groups, rels, hosted, visibleIDs := vs.ByID, vs.Groups, vs.Rels, vs.Hosted, vs.IDs
-	if len(visibleIDs) == 0 {
-		c.JSON(http.StatusOK, gin.H{"occurrences": out, "truncated": false})
+	now := time.Now().UTC()
+	scoped, err := a.scopedOccurrenceReads(me, a.DB.Where("starts_at >= ? AND starts_at < ? AND event_id IN (?)",
+		windowStart.UTC(), windowEnd.UTC(), q.Model(&models.Event{}).Select("id")), now)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
 		return
 	}
-
 	var occs []models.EventOccurrence
-	a.DB.Where("event_id IN ? AND status = ? AND starts_at >= ? AND starts_at < ?",
-		visibleIDs, models.OccurrenceScheduled, windowStart.UTC(), windowEnd.UTC()).
-		Order("starts_at").Find(&occs)
+	if len(visibleIDs) > 0 {
+		a.DB.Where("event_id IN ? AND status = ? AND starts_at >= ? AND starts_at < ?",
+			visibleIDs, models.OccurrenceScheduled, windowStart.UTC(), windowEnd.UTC()).Order("starts_at").Find(&occs)
+	}
+	for _, read := range scoped {
+		if byID[read.Event.ID] == nil {
+			occs = append(occs, read.Occurrence)
+		}
+	}
+	sort.Slice(occs, func(i, j int) bool {
+		if occs[i].StartsAt.Equal(occs[j].StartsAt) {
+			return occs[i].ID < occs[j].ID
+		}
+		return occs[i].StartsAt.Before(occs[j].StartsAt)
+	})
 
 	// The viewer's own answers, for myStatus and the per-occurrence
 	// "Just mine" rule.
@@ -143,7 +159,24 @@ func (a *App) apiCalendar(c *gin.Context) {
 	for i := range occs {
 		occ := &occs[i]
 		ev := byID[occ.EventID]
-		if ev == nil {
+		if !vs.canSeeDate(me, ev, occ) {
+			read := scoped[occ.ID]
+			if read == nil {
+				continue
+			}
+			date := presentOccurrenceDate(&read.Event, occ, "", false, false, false, read.Registration, read, now)
+			if c.Query("remote") == "1" && !date.RemoteAvailable {
+				continue
+			}
+			if len(out) >= maxCalendarOccurrences {
+				truncated = true
+				break
+			}
+			status := read.Registration.Status
+			out = append(out, calendarOccurrenceJSON{EventID: date.EventID, Date: date.Date, DateURL: date.DateURL,
+				StartsAt: date.StartsAt, EndsAt: date.EndsAt, Title: date.Title, Location: date.Location,
+				ChurchWide:      read.Event.GroupID == nil,
+				RemoteAvailable: date.RemoteAvailable, ChildcareAvailable: read.Event.ChildcareAvailable, MyStatus: &status})
 			continue
 		}
 		grp, rel := groupAndRel(ev, groups, rels)
@@ -175,6 +208,9 @@ func (a *App) apiCalendar(c *gin.Context) {
 			ChurchWide:         ev.GroupID == nil,
 			RemoteAvailable:    remoteAvailable,
 			ChildcareAvailable: ev.ChildcareAvailable,
+		}
+		if !vs.canSeeSeries(me, ev) {
+			row.DateURL = occurrenceDatePath(ev.ID, occ.OriginalDate)
 		}
 		if shown != nil {
 			gid := shown.ID

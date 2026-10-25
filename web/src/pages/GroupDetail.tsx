@@ -1,10 +1,15 @@
+import { DateEditor } from "../components/DateEditor";
+import { AddRequestForm } from "../components/AddRequestForm";
+import { PeoplePicker } from "../components/ui/PeoplePicker";
+import { RequestContactButton } from "../components/RequestContactButton";
+import { ContactDetails } from "../components/ContactDetails";
 import { Badge } from "../components/ui/Badge";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
-import type { EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
+import type { PersonSearchResult, EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { Attendance } from "../components/Attendance";
@@ -23,97 +28,13 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 import { focalPosition, prepareUpload } from "../lib/image";
-import { formatTime, formatWhen, zoneNote } from "../lib/when";
-import { errorText } from "../lib/errors";
+import { formatTime, formatWhen } from "../lib/when";
+import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, HiddenFileInput, Input, Radio, Textarea } from "../components/ui/Field";
 import { FormActions } from "../components/ui/FormActions";
 import { Button, ButtonLink } from "../components/ui/Button";
 
 type Tab = "events" | "about" | "members";
-
-
-function DateEditor({
-  instance,
-  onSaved,
-  onClose,
-}: {
-  instance: EventOccurrence;
-  onSaved: () => void;
-  onClose: () => void;
-}) {
-  const [date, setDate] = useState(instance.startsLocal.slice(0, 10));
-  const [time, setTime] = useState(instance.startsLocal.slice(11, 16));
-  const [duration, setDuration] = useState(instance.durationMinutes);
-  const [title, setTitle] = useState(instance.title);
-  const [location, setLocation] = useState(instance.location);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
-    const body: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string } = {};
-    const startsLocal = `${date}T${time}`;
-    if (startsLocal !== instance.startsLocal) body.startsLocal = startsLocal;
-    if (duration !== instance.durationMinutes) body.durationMinutes = duration;
-    if (title !== instance.title) body.title = title;
-    if (location !== instance.location) body.location = location;
-    if (Object.keys(body).length === 0) {
-      onClose();
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await Events.updateOccurrence(instance.eventId, instance.date, body);
-      onSaved();
-    } catch (err) {
-      setError(errorText(err, "We couldn't update this date."));
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
-      <p className="text-sm text-text-muted">
-        This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
-      </p>
-      {error && <FormError>{error}</FormError>}
-      <div className="grid sm:grid-cols-3 gap-3">
-        <Field id={`date-${instance.id}`} label="Date">
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
-        </Field>
-        <Field id={`time-${instance.id}`} label="Start time">
-          <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
-        </Field>
-        <Field id={`dur-${instance.id}`} label="Minutes">
-          <Input
-            type="number"
-            min={1}
-            max={10080}
-            value={duration}
-            onChange={(e) => setDuration(Number(e.target.value))}
-          />
-        </Field>
-      </div>
-      <div className="grid sm:grid-cols-2 gap-3">
-        <Field id={`title-${instance.id}`} label="Title">
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} />
-        </Field>
-        <Field id={`loc-${instance.id}`} label="Location">
-          <Input value={location} onChange={(e) => setLocation(e.target.value)} />
-        </Field>
-      </div>
-      <div className="flex gap-2">
-        <Button variant="primary" type="submit" disabled={busy}>
-          {busy ? "Saving…" : "Save this date"}
-        </Button>
-        <Button variant="secondary" onClick={onClose}>
-          Close
-        </Button>
-      </div>
-    </form>
-  );
-}
 
 
 function EventRow({
@@ -165,6 +86,7 @@ function EventRow({
     <div className="bg-surface rounded-lg border border-border p-4 flex gap-4">
       <DateBadge at={instance.startsAt} />
       <div className="grow min-w-0">
+        {canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
         <div className="font-bold text-lg">{name}</div>
         {showDescription && instance.description && (
           <p className="text-sm text-text-muted whitespace-pre-wrap mt-1">{instance.description}</p>
@@ -227,7 +149,7 @@ function EventRow({
               eventId={instance.eventId}
               groupName={groupName}
               groupVisibility={groupVisibility}
-              visibility={instance.visibility ?? groupVisibility}
+              visibility={instance.seriesVisibility ?? instance.visibility ?? groupVisibility}
               leaderOpened={instance.leaderOpened}
               onSaved={onChanged}
             />
@@ -428,6 +350,8 @@ export function GroupDetail() {
   const [joinBusy, setJoinBusy] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
   const [memberEmail, setMemberEmail] = useState("");
+  const [memberSelection, setMemberSelection] = useState<PersonSearchResult | null>(null);
+  const [askMember, setAskMember] = useState<PersonSearchResult | null>(null);
   const [memberBusy, setMemberBusy] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -618,22 +542,25 @@ export function GroupDetail() {
   async function addMember(e: React.FormEvent) {
     e.preventDefault();
     const email = memberEmail.trim();
-    if (!email) return;
+    if (memberSelection?.teen) { setAskMember(memberSelection); return; }
+    if (!email && !memberSelection) return;
+    const target = memberSelection ? { selectionId: memberSelection.selectionId } : email;
     setMemberBusy(true);
     setMemberError(null);
     try {
       try {
-        await Groups.addMember(id!, email);
+        await Groups.addMember(id!, target);
       } catch (err) {
         // Full group: going over the limit is an explicit, audited choice (DEC-39).
-        if (!(err instanceof ApiError) || err.status !== 409) throw err;
-        if (!confirm(`“${group.name}” is full (${group.memberCount} of ${group.memberLimit}). Add ${email} anyway?`)) return;
-        await Groups.addMember(id!, email, true);
+        if (errorCode(err) !== "group_full") throw err;
+        if (!confirm(`“${group.name}” is full (${group.memberCount} of ${group.memberLimit}). Add ${memberSelection?.displayName ?? email} anyway?`)) return;
+        await Groups.addMember(id!, target, true);
       }
       setMemberEmail("");
+      setMemberSelection(null);
       await load();
     } catch (e) {
-      setMemberError(errorText(e, "We couldn't add that person."));
+      setMemberError(errorCode(e) === "teen_add_approval_required" ? "Select this person by name, then choose Ask to add. An email address cannot be used to send an ask." : errorText(e, "We couldn't add that person."));
     } finally {
       setMemberBusy(false);
     }
@@ -951,41 +878,45 @@ export function GroupDetail() {
                     {members && members.length > 0 ? (
                       <ul className="divide-y divide-border">
                         {members.map((m) => (
-                          <li key={m.id} className="py-3 flex items-center gap-3">
-                            <Avatar
-                              url={m.avatarUrl || undefined}
-                              name={m.name}
-                              focalX={m.avatarFocalX}
-                              focalY={m.avatarFocalY}
-                            />
-                            <div className="grow min-w-0">
-                              <div className="font-semibold">{m.name}
-                                {canManage && m.accountType === "teen" && <Badge>Teen</Badge>}
-                                {m.admin && (
-                                  <span className="ml-2 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
-                                    Admin
-                                  </span>
-                                )}
-                              </div>
-                              <div className="text-sm text-text-muted capitalize">{m.role}</div>
-                            </div>
-                            {canManage && (
-                              <Menu
-                                tone="quiet"
-                                label={`More for ${m.name}`}
-                                items={[
-                                  ...(m.role !== "leader" && m.accountType !== "teen"
-                                    ? [{ label: "Make leader", onSelect: () => void setRole(m.id, m.name, "leader"), disabled: memberBusy }]
-                                    : []),
-                                  ...(m.role === "leader" && leaderCount > 1 && (!m.admin || isAdmin)
-                                    ? [{ label: "Remove as leader", onSelect: () => void setRole(m.id, m.name, "member"), disabled: memberBusy }]
-                                    : []),
-                                  ...(m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (!m.admin || isAdmin)
-                                    ? [{ label: "Remove from group", onSelect: () => void removeMember(m.id, m.name), danger: true, disabled: memberBusy }]
-                                    : []),
-                                ]}
+                          <li key={m.id} className="py-3">
+                            <div className="flex items-center gap-3">
+                              <Avatar
+                                url={m.avatarUrl || undefined}
+                                name={m.name}
+                                focalX={m.avatarFocalX}
+                                focalY={m.avatarFocalY}
                               />
-                            )}
+                              <div className="grow min-w-0">
+                                <div className="font-semibold">{m.name}
+                                  {canManage && m.accountType === "teen" && <Badge>Teen</Badge>}
+                                  {m.admin && (
+                                    <span className="ml-2 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
+                                      Admin
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-sm text-text-muted capitalize">{m.role}</div>
+                                <ContactDetails email={m.email} phone={m.phone} />
+                              </div>
+                              {canManage && (
+                                <Menu
+                                  tone="quiet"
+                                  label={`More for ${m.name}`}
+                                  items={[
+                                    ...(m.role !== "leader" && m.accountType !== "teen"
+                                      ? [{ label: "Make leader", onSelect: () => void setRole(m.id, m.name, "leader"), disabled: memberBusy }]
+                                      : []),
+                                    ...(m.role === "leader" && leaderCount > 1 && (!m.admin || isAdmin)
+                                      ? [{ label: "Remove as leader", onSelect: () => void setRole(m.id, m.name, "member"), disabled: memberBusy }]
+                                      : []),
+                                    ...(m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (!m.admin || isAdmin)
+                                      ? [{ label: "Remove from group", onSelect: () => void removeMember(m.id, m.name), danger: true, disabled: memberBusy }]
+                                      : []),
+                                  ]}
+                                />
+                              )}
+                            </div>
+                            {canManage && isLeader && group.status === "active" && user?.status === "active" && user.accountType === "adult" && m.id !== user.id && m.email === undefined && m.phone === undefined && <div className="w-full"><RequestContactButton subjectUserId={m.id} subjectName={m.name} contextType="group" contextId={group.id} /></div>}
                           </li>
                         ))}
                       </ul>
@@ -1021,22 +952,24 @@ export function GroupDetail() {
                         )}
                       </form>
                       {inviteStatus && <p className="text-success text-sm mt-2">{inviteStatus}</p>}
-                      <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">
+                      <form onSubmit={addMember} className="mt-4 space-y-3">
+                        {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={memberSelection} disabled={memberBusy} onChange={(person) => { setMemberSelection(person); setAskMember(null); setMemberEmail(""); setMemberError(null); }} /></Field>}
                         <div className="grow min-w-48">
                           <Field id="add-member" label="Add a member by email">
                             <Input
                               value={memberEmail}
-                              onChange={(e) => setMemberEmail(e.target.value)}
+                              onChange={(e) => { setMemberEmail(e.target.value); setMemberSelection(null); setAskMember(null); }}
                               type="email"
                               placeholder="name@example.com"
                               autoComplete="off"
                             />
                           </Field>
                         </div>
-                        <Button variant="secondary" type="submit" disabled={memberBusy || !memberEmail.trim()}>
-                          {memberBusy ? "Adding…" : "Add member"}
+                        <Button variant="secondary" type="submit" disabled={memberBusy || (!memberSelection && !memberEmail.trim())}>
+                          {memberBusy ? "Adding…" : memberSelection?.teen ? "Ask to add" : "Add member"}
                         </Button>
                       </form>
+                      {askMember && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askMember.selectionId} person={askMember} scope={{ contextType: "group", contextId: Number(id) }} full={group.memberLimit !== null && group.memberCount >= group.memberLimit} onClose={() => setAskMember(null)} />}
                       </>
                     )}
                     {isLeader && (

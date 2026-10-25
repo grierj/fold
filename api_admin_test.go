@@ -4,6 +4,7 @@ import (
 	"fold/internal/audit"
 	"fold/models"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -863,5 +864,94 @@ func TestHouseholdRestoreUsesCumulativePools(t *testing.T) {
 	}
 	if got := findKind(feed(t, loginAPI(t, app, "returningfamily", "password1234"), ""), "registration.not_restored"); got == nil || !strings.Contains(got.Title, "Kit") {
 		t.Fatalf("holder notice %+v", got)
+	}
+}
+
+func TestAdminSelectionAdultAndRawTeenAdd(t *testing.T) {
+	app, actor, client := peopleTestApp(t)
+	g := newTestGroup(t, app, actor, "Admin selection", models.GroupActive)
+	adult := newTestUser(t, app, "admin chosen", "pw", models.RoleMember)
+	token, _ := app.newPeopleSelection(actor.ID, adult.ID, time.Now())
+	path := "/api/v1/admin/groups/" + itoa2(g.ID) + "/members"
+	w := client.do("POST", path, map[string]any{"selectionId": token}, true)
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var n int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ?", audit.MemberAdded).Count(&n)
+	if n != 1 {
+		t.Fatal(n)
+	}
+	teen := newTestUser(t, app, "admin teen", "pw", models.RoleMember)
+	birth := time.Now().AddDate(-15, 0, 0)
+	app.DB.Model(teen).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth})
+	w = client.do("POST", path, map[string]any{"userId": teen.ID}, true)
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "teen_add_approval_required") {
+		t.Fatal(w.Code, w.Body.String())
+	}
+}
+
+func TestAdminMemberAddRefreshesActorAfterContactGate(t *testing.T) {
+	for _, targetKind := range []string{"selection", "userId"} {
+		for change, revocation := range peopleAddActorRevocations(&models.User{}) {
+			t.Run(targetKind+"/"+revocation.name, func(t *testing.T) {
+				app, actor, client := peopleTestApp(t)
+				leader := newTestUser(t, app, "admin destination leader", "pw", models.RoleMember)
+				g := newTestGroup(t, app, leader, "Admin authority", models.GroupActive)
+				target := newTestUser(t, app, "private admin target", "pw", models.RoleMember)
+				body := map[string]any{"userId": target.ID}
+				if targetKind == "selection" {
+					token, err := app.newPeopleSelection(actor.ID, target.ID, time.Now())
+					if err != nil {
+						t.Fatal(err)
+					}
+					body = map[string]any{"selectionId": token}
+				}
+				gate := holdContactGate(t, app)
+				response := queueContact(func() *httptest.ResponseRecorder {
+					return client.do("POST", "/api/v1/admin/groups/"+itoa2(g.ID)+"/members", body, true)
+				})
+				waitContactWaiters(t, app, 1)
+				revocation := peopleAddActorRevocations(actor)[change]
+				if err := gate.Model(actor).Updates(revocation.updates).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := gate.Commit().Error; err != nil {
+					t.Fatal(err)
+				}
+				w := awaitContactResponse(t, response)
+				// Destination-policy refusal retains the admin endpoint's 400;
+				// an invalid session/account fails with a generic 403.
+				want := 403
+				if revocation.name == "demotion" {
+					want = 400
+				}
+				if w.Code != want || strings.Contains(w.Body.String(), target.Email) {
+					t.Fatalf("%s: %d %s", revocation.name, w.Code, w.Body.String())
+				}
+				if membershipStatus(app, target, g) != "none" || contactCount(t, app, &models.AuditLog{}, "action IN ?", []string{audit.MemberAdded, audit.AddedOverLimit, audit.RoleChanged}) != 0 {
+					t.Fatal("revoked admin committed membership or add audit")
+				}
+			})
+		}
+	}
+}
+
+func TestAdminMemberAddStillChangesExplicitRoleAndKeepsLastLeader(t *testing.T) {
+	app, actor, client := peopleTestApp(t)
+	leader := newTestUser(t, app, "admin role target", "pw", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Explicit admin role", models.GroupActive)
+	addMember(t, app, actor, g, models.MembershipLeader)
+	path := "/api/v1/admin/groups/" + itoa2(g.ID) + "/members"
+	w := client.do("POST", path, map[string]any{"userId": actor.ID, "role": models.MembershipMember}, true)
+	if w.Code != 200 || relIn(app.DB, actor.ID, g.ID).Leader {
+		t.Fatal("admin add did not change explicit role", w.Code, w.Body.String())
+	}
+	w = client.do("POST", path, map[string]any{"userId": leader.ID, "role": models.MembershipMember}, true)
+	if w.Code != 400 || !relIn(app.DB, leader.ID, g.ID).Leader {
+		t.Fatal("admin add demoted sole leader", w.Code, w.Body.String())
+	}
+	if contactCount(t, app, &models.AuditLog{}, "action = ?", audit.RoleChanged) != 1 || contactCount(t, app, &models.AuditLog{}, "action = ?", audit.MemberAdded) != 0 {
+		t.Fatal("explicit role change audits changed")
 	}
 }

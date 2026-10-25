@@ -75,3 +75,19 @@ it("hides the teen badge from ordinary attendee lists (DEC-82)", () => {
   expect(screen.getByText("Taylor")).toBeInTheDocument();
   expect(screen.queryByText("Teen")).not.toBeInTheDocument();
 });
+
+it("shows only authorized attendee contact and clears it when omitted", () => {
+  const a: Attendee = { registrationId: 3, userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "in_person" };
+  const view = render(<AttendeeDetails attendee={{ ...a, email: "sam@example.com", phone: "208-555-0100" }} />);
+  expect(screen.getByText("Email: sam@example.com")).toBeInTheDocument();
+  expect(screen.getByText("Phone: 208-555-0100")).toBeInTheDocument();
+  view.rerender(<AttendeeDetails attendee={a} />);
+  expect(screen.queryByText(/Email:|Phone:/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /contact/i })).not.toBeInTheDocument();
+});
+
+it("never substitutes a household signer's details for a person's missing contact", () => {
+  render(<AttendeeDetails attendee={attendee} />);
+  expect(screen.getByText("Signed up by John Smith")).toBeInTheDocument();
+  expect(screen.queryByText(/Email:|Phone:/)).not.toBeInTheDocument();
+});

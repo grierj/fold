@@ -394,32 +394,39 @@ type Contact struct {
 	// HideFromLeaders is the adult's "Hide my contact info from group
 	// leaders" setting (DEC-31). Always treated as on for teens.
 	HideFromLeaders bool
-	// Shares is true when the viewer leads a group the contact belongs to.
-	Shares bool
-	// Grant is true when an active ContactGrant covers the viewer (M1.11).
-	Grant bool
+	// These facts must describe the same group or event being presented,
+	// never an unrelated leadership, hosting, membership or registration.
+	GroupLeader     bool
+	GroupMember     bool
+	EventManager    bool
+	EventRegistrant bool
+	// ConfirmedGuardian is a current confirmed link to this teen, not
+	// household membership or a pending/revoked guardian claim.
+	ConfirmedGuardian bool
 }
 
-// CanSeeContact: admins always; the person themselves; leaders of a shared
-// group for adults who don't hide their details. A teen's details are never
-// shown to a leader, co-leader or host, whoever promoted them, unless both
-// an admin and the teen approved a grant (DEC-31, 5.11). Guardians come in
-// M1.10. Nothing exposes contact details to leaders yet; this rule is
-// written now so later milestones only call it.
+// CanSeeContact preserves self/admin/confirmed-guardian rights. Otherwise,
+// only the presented group's leaders or event's managers see unhidden adult
+// contact. No grant-based disclosure is available here: grants require the
+// separately audited reveal lifecycle, not bulk list presentation (DEC-31).
 func CanSeeContact(p *Person, self bool, c Contact) bool {
 	switch {
 	case p == nil:
 		return false
 	case p.Admin, self:
 		return true
-	case !c.Shares:
-		return false
-	case c.Teen, c.HideFromLeaders:
-		return c.Grant
-	default:
+	case c.Teen && c.ConfirmedGuardian && !p.Teen:
 		return true
+	case p.Teen, c.Teen, c.HideFromLeaders:
+		return false
+	default:
+		return (c.GroupLeader && c.GroupMember) || (c.EventManager && c.EventRegistrant)
 	}
 }
+
+// CanEditOwnContactPrivacy: adults choose their own preference; teens are
+// always hidden and cannot change that by submitting a profile preference.
+func CanEditOwnContactPrivacy(p *Person) bool { return p != nil && !p.Teen }
 
 // CanDemoteOrDelete guards account roles: only admins manage accounts,
 // nobody demotes or deletes themselves, and the last admin is never demoted
@@ -729,3 +736,12 @@ func CanSeeMinorRosterIdentity(p *Person, manager bool) bool {
 
 // CanUploadAvatar: teens have no public avatar (DEC-8).
 func CanUploadAvatar(p *Person) bool { return p != nil && !p.Teen }
+
+// EffectiveVisibility resolves only the date's ordinary visibility. It never
+// grants series, group, roster or explicit-invitation authority.
+func EffectiveVisibility(series string, override *string) string {
+	if override != nil {
+		return *override
+	}
+	return series
+}

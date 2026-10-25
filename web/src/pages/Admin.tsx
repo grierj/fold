@@ -1,7 +1,11 @@
+import { AddRequestForm } from "../components/AddRequestForm";
+import { PeoplePicker } from "../components/ui/PeoplePicker";
+import type { PersonSearchResult } from "../types";
+import { ContactDetails } from "../components/ContactDetails";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
-import { Link, useSearchParams } from "react-router-dom";
-import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, Groups, Invitations, Site } from "../api";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
@@ -11,8 +15,8 @@ import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
 import { GuardianLinkCard } from "../components/GuardianLinkCard";
-import { Button } from "../components/ui/Button";
-import { errorText } from "../lib/errors";
+import { Button, ButtonLink } from "../components/ui/Button";
+import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors, Textarea } from "../components/ui/Field";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -360,6 +364,8 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
 function MemberManager({ group, users }: { group: GroupSummary; users: User[] }) {
   const [members, setMembers] = useState<Member[] | null>(null);
   const [addUserId, setAddUserId] = useState("");
+  const [selection, setSelection] = useState<PersonSearchResult | null>(null);
+  const [askPerson, setAskPerson] = useState<PersonSearchResult | null>(null);
   const [addRole, setAddRole] = useState<"member" | "leader">("member");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -378,22 +384,25 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
   }, [load]);
 
   async function add() {
-    if (!addUserId) return;
+    if (selection?.teen) { setAskPerson(selection); return; }
+    if (!selection && !addUserId) return;
+    const target = selection ? { selectionId: selection.selectionId } : Number(addUserId);
     setBusy(true);
     setError(null);
     try {
       try {
-        await AdminGroups.addMember(group.id, Number(addUserId), addRole);
+        await AdminGroups.addMember(group.id, target, addRole);
       } catch (err) {
         // Full group: going over the limit is an explicit, audited choice (DEC-39).
-        if (!(err instanceof ApiError) || err.status !== 409) throw err;
+        if (errorCode(err) !== "group_full") throw err;
         if (!confirm(`“${group.name}” is full. Add this person anyway?`)) return;
-        await AdminGroups.addMember(group.id, Number(addUserId), addRole, true);
+        await AdminGroups.addMember(group.id, target, addRole, true);
       }
       setAddUserId("");
+      setSelection(null);
       await load();
     } catch (e) {
-      setError(errorText(e, "We couldn't add that person."));
+      setError(errorCode(e) === "teen_add_approval_required" ? "Select this person by name, then choose Ask to add. An account ID cannot be used to send an ask." : errorText(e, "We couldn't add that person."));
     } finally {
       setBusy(false);
     }
@@ -414,7 +423,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
   }
 
   const memberIds = new Set((members ?? []).map((m) => m.id));
-  const candidates = users.filter((u) => !memberIds.has(u.id));
+  const candidates = users.filter((u) => !memberIds.has(u.id) && u.accountType !== "teen");
 
   return (
     <div className="mt-3 border-t border-border pt-3">
@@ -439,14 +448,11 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
                 </span>
               )}
               <span className="text-xs text-text-muted capitalize">· {m.role}</span>
+              <ContactDetails email={m.email} phone={m.phone} />
             </div>
-            <button
-              onClick={() => remove(m)}
-              disabled={busy}
-              className="text-sm text-danger hover:underline"
-            >
+            <Button variant="danger-outline" onClick={() => remove(m)} disabled={busy}>
               Remove
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
@@ -454,8 +460,9 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
         <p className="text-sm text-text-muted py-2">No members yet.</p>
       )}
       <div className="mt-3 max-w-xl space-y-4">
-        <Field id="admin-add-person" label="Add person">
-          <Select value={addUserId} onChange={(e) => setAddUserId(e.target.value)}>
+        <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy} onChange={(person) => { setSelection(person); setAskPerson(null); setAddUserId(""); setError(null); }} /></Field>
+        <Field label="Or choose an adult by email">
+          <Select value={addUserId} onChange={(e) => { setAddUserId(e.target.value); setSelection(null); setAskPerson(null); }}>
             <option value="">Select…</option>
             {candidates.map((u) => (
               <option key={u.id} value={u.id}>
@@ -464,13 +471,14 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
             ))}
           </Select>
         </Field>
-        <Choices legend="Role">
+        {!selection?.teen && <Choices legend="Role">
           <Radio name={`admin-role-${group.id}`} label="Member" checked={addRole === "member"} onChange={() => setAddRole("member")} />
           <Radio name={`admin-role-${group.id}`} label="Leader" checked={addRole === "leader"} onChange={() => setAddRole("leader")} />
-        </Choices>
-        <Button variant="secondary" onClick={add} disabled={busy || !addUserId}>
-          {busy ? "…" : "Add"}
+        </Choices>}
+        <Button variant="secondary" onClick={add} disabled={busy || (!selection && !addUserId)}>
+          {busy ? "…" : selection?.teen ? "Ask to add" : "Add"}
         </Button>
+        {askPerson && <AddRequestForm key={askPerson.selectionId} person={askPerson} scope={{ contextType: "group", contextId: group.id }} full={group.memberLimit !== null && group.memberCount >= group.memberLimit} onClose={() => setAskPerson(null)} />}
       </div>
     </div>
   );
@@ -525,7 +533,7 @@ function GroupsTab({ users }: { users: User[] }) {
         <div key={g.id} className="bg-surface rounded-lg border border-border p-5">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="grow min-w-0">
-              <Link to={`/groups/${g.id}`} className="font-bold hover:text-primary">
+              <Link to={`/groups/${g.id}`} className="inline-flex min-h-11 items-center font-bold hover:text-primary">
                 {g.name}
               </Link>
               <div className="text-xs text-text-muted mt-0.5">
@@ -735,6 +743,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
 }
 
 function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
+  const navigate = useNavigate();
   // Your own row has no Disable or Delete: the server refuses both
   // ("you cannot disable/delete your own account"), so don't offer them.
   const { user: me } = useAuth();
@@ -785,7 +794,8 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
 
   return (
     <div>
-      <div className="flex justify-end mb-4">
+      <div className="flex flex-wrap justify-end gap-2 mb-4">
+        <ButtonLink variant="secondary" to="/admin/contact-history">Contact access history by ID</ButtonLink>
         <Button variant="primary" onClick={() => { setCreating(true); setEditingId(null); }}>
           New user
         </Button>
@@ -883,6 +893,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     tone="quiet"
                     label={`More for ${u.displayName || u.name}`}
                     items={[
+                      { label: "Contact access history", onSelect: () => navigate(`/admin/users/${String(u.id)}/contact-history`) },
                       ...(u.accountType === "teen" || u.hasTeenConsentHistory ? [{ label: u.accountType === "teen" ? "Manage consent" : "Consent history", onSelect: () => { setConsentId(u.id); setEditingId(null); setResetId(null); setCreating(false); } }] : []),
                       { label: "Reset password", onSelect: () => { setResetId(u.id); setEditingId(null); setCreating(false); } },
                       { label: "Revoke calendar link", onSelect: () => void revokeCalendarLink(u), danger: true, disabled: busy },

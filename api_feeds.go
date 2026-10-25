@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -145,11 +146,39 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 	if opts.onlyGroupID != nil {
 		q = q.Where("group_id = ?", *opts.onlyGroupID)
 	}
-	vs, err := a.visibleEvents(viewer, q)
+	vs, err := a.dateCandidates(viewer, q)
 	if err != nil {
 		return feed
 	}
 	byID, groups, rels, hosted, visibleIDs := vs.ByID, vs.Groups, vs.Rels, vs.Hosted, vs.IDs
+	// An invitation is always a standalone exact date, even for scope=all.
+	// Public/group feeds never consult personal access records.
+	if opts.personal && viewer != nil && opts.onlyGroupID == nil {
+		scoped, err := a.scopedOccurrenceReads(viewer, a.DB.Where("starts_at >= ? AND starts_at < ?", windowStart, windowEnd), now)
+		if err != nil {
+			return feed
+		}
+		scopedIDs := make([]uint, 0, len(scoped))
+		for id := range scoped {
+			scopedIDs = append(scopedIDs, id)
+		}
+		sort.Slice(scopedIDs, func(i, j int) bool { return scopedIDs[i] < scopedIDs[j] })
+		for _, id := range scopedIDs {
+			read := scoped[id]
+			if vs.canSeeDate(viewer, byID[read.Event.ID], &read.Occurrence) {
+				continue
+			}
+			date := presentOccurrenceDate(&read.Event, &read.Occurrence, "", false, false, false, read.Registration, read, now)
+			status := "CONFIRMED"
+			if read.Registration.Status == models.RegWaitlisted || read.Registration.Status == models.RegMaybe {
+				status = "TENTATIVE"
+			}
+			feed.Singles = append(feed.Singles, events.FeedSingle{EventID: date.EventID, OriginalDate: date.Date,
+				Title: date.Title, Location: date.Location, StartsAt: date.StartsAt, EndsAt: date.EndsAt, TZID: date.TZID,
+				VideoURL: date.VideoURL, RemoteAvailable: date.RemoteAvailable,
+				URL: a.emailBaseURL() + date.DateURL, UpdatedAt: read.Occurrence.UpdatedAt, Status: status})
+		}
+	}
 	if len(visibleIDs) == 0 {
 		return feed
 	}
@@ -160,6 +189,9 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		Order("starts_at").Find(&occs)
 	byEvent := map[uint][]*models.EventOccurrence{}
 	for i := range occs {
+		if !vs.canSeeDate(viewer, byID[occs[i].EventID], &occs[i]) {
+			continue
+		}
 		byEvent[occs[i].EventID] = append(byEvent[occs[i].EventID], &occs[i])
 	}
 
@@ -212,6 +244,17 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		}
 	}
 
+	// Whether recurrence may be emitted is loaded once across the whole
+	// candidate set, including stored overrides outside the export window.
+	// A failed lookup must never fall back to an unsafe RRULE.
+	var customizedIDs []uint
+	if err := a.DB.Model(&models.EventOccurrence{}).Where("event_id IN ? AND visibility_override IS NOT NULL", visibleIDs).Distinct().Pluck("event_id", &customizedIDs).Error; err != nil {
+		return feed
+	}
+	customized := map[uint]bool{}
+	for _, id := range customizedIDs {
+		customized[id] = true
+	}
 	for _, id := range visibleIDs {
 		ev := byID[id]
 		list := byEvent[id]
@@ -247,10 +290,11 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 			return ""
 		}
 		full := !opts.personal || opts.scope == models.CalendarFeedAll || rel.Member || hosted[ev.ID]
-		if !full {
+		singles := customized[ev.ID]
+		if !full || singles {
 			for _, occ := range list {
 				status, mine := myStatus[occ.ID]
-				if !mine || occ.Status == models.OccurrenceCancelled {
+				if (!full && !mine) || occ.Status == models.OccurrenceCancelled {
 					continue
 				}
 				eff := occurrenceToJSON(ev, occ, groupLoc)
@@ -263,7 +307,7 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 					Title: eff.Title, Description: ev.Description, Location: eff.Location,
 					VideoURL: videoFor(feedHouseholdVideoStatus(anyStatus[occ.ID], householdVideo[occ.ID])), RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: ev.ChildcareAvailable, ChildcareAges: ev.ChildcareAges,
 					TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
-					URL: a.feedEventURL(ev.ID), UpdatedAt: occ.UpdatedAt, Status: s,
+					URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate), UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: s,
 				})
 			}
 			continue

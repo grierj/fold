@@ -13,7 +13,7 @@ import { Button } from "./ui/Button";
 // redeemed, so this form only ever ends in "check your email". The
 // hidden website field is the honeypot the account form also carries.
 // A failed submit keeps what was typed, like every other Fold form.
-export function GuestRegistrationForm({ instance }: { instance: EventOccurrence }) {
+export function GuestRegistrationForm({ instance }: { instance: Pick<EventOccurrence, "id" | "eventId" | "date"> }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -46,9 +46,9 @@ export function GuestRegistrationForm({ instance }: { instance: EventOccurrence 
 
   if (!open && !done) {
     return (
-      <button type="button" onClick={() => setOpen(true)} className="text-sm text-primary font-semibold">
+      <Button variant="secondary" onClick={() => setOpen(true)}>
         Register as a guest
-      </button>
+      </Button>
     );
   }
 
