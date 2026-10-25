@@ -336,11 +336,11 @@ func TestGuestVisibilityAndTightening(t *testing.T) {
 	}
 
 	// A private event also refuses new guests, and tightening to
-	// private removes the guest who can no longer see it.
+	// private cancels the guest who can no longer see it, retaining history.
 	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID),
 		map[string]any{"visibility": models.VisibilityPrivate, "confirm": true}, http.StatusOK)
 	guestSubmit(t, anon, ev.ID, guestBody("Late", "late@example.com", true), http.StatusNotFound)
-	if regCount(app, &u, ev.ID) != 0 || regCount(app, mem, ev.ID) != 1 {
+	if regCount(app, &u, ev.ID) != 1 || regCount(app, mem, ev.ID) != 1 {
 		t.Fatalf("after tightening: guest %d, member %d", regCount(app, &u, ev.ID), regCount(app, mem, ev.ID))
 	}
 }
@@ -377,7 +377,7 @@ func TestTighteningCancelsWaitlistedGuest(t *testing.T) {
 	// tells them; the member's seat is untouched.
 	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID),
 		map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, http.StatusOK)
-	if regCount(app, &u, ev.ID) != 0 || regCount(app, mem, ev.ID) != 1 {
+	if regCount(app, &u, ev.ID) != 1 || regCount(app, mem, ev.ID) != 1 {
 		t.Fatalf("after tightening: guest %d, member %d", regCount(app, &u, ev.ID), regCount(app, mem, ev.ID))
 	}
 	var n int64

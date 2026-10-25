@@ -94,6 +94,10 @@ func (a *App) factsFor(u *models.User, ev *models.Event) eventFacts {
 }
 
 func (a *App) factsForIn(db *gorm.DB, u *models.User, ev *models.Event) eventFacts {
+	return eventFactsIn(db, u, ev)
+}
+
+func eventFactsIn(db *gorm.DB, u *models.User, ev *models.Event) eventFacts {
 	f := eventFacts{}
 	if ev.GroupID != nil {
 		var g models.Group
@@ -138,6 +142,7 @@ func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Gro
 		gid := shown.ID
 		inst.GroupID = &gid
 		inst.GroupName = shown.Name
+		inst.GroupVisibility = shown.Visibility
 		return
 	}
 	inst.HostedBy = a.siteName()
@@ -215,7 +220,7 @@ func (a *App) openEventIDs(u *models.User) []uint {
 	now := time.Now().UTC()
 	from, to, _ := upcomingWindow(now)
 	// Only events with a date in the listed window can add anything (#75).
-	vs, err := a.visibleEvents(u, a.DB.Where(
+	vs, err := a.dateCandidates(u, a.DB.Where(
 		"id IN (SELECT event_id FROM event_occurrences WHERE original_date >= ? AND original_date <= ?)", from, to))
 	if err != nil {
 		return nil
@@ -368,7 +373,8 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		Visibility string `json:"visibility"`
 		Reason     string `json:"reason"`
 		// Confirm acknowledges that registrants will be cancelled (the preview).
-		Confirm bool `json:"confirm"`
+		Confirm        bool `json:"confirm"`
+		ResetOverrides bool `json:"resetOverrides"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")
@@ -390,7 +396,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		return
 	}
 	opened := f.group != nil && policy.MoreOpen(vis, f.group.Visibility)
-	if ev.Visibility == vis && ev.LeaderOpened == opened {
+	if ev.Visibility == vis && ev.LeaderOpened == opened && !body.ResetOverrides {
 		c.JSON(http.StatusOK, gin.H{"event": a.presentEvent(ev, me, f)})
 		return
 	}
@@ -406,26 +412,49 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
 		}
-		// More private: the same cancel-and-notify as a group tightening (DEC-48).
-		if policy.Openness(vis) < policy.Openness(locked.Visibility) {
-			var err error
-			impact, err = eventImpactOf(tx, &locked, vis)
-			if err != nil {
-				return err
-			}
-			if !body.Confirm && len(impact.Tightened) == 1 && impact.Tightened[0].Registrants > 0 {
-				return errNeedDecision
-			}
-			ids, err := cancelLosers(c, tx, &locked, vis, time.Now().UTC())
-			emailed = append(emailed, ids...)
-			if err != nil {
-				return err
-			}
+		f = a.factsForIn(tx, me, &locked)
+		if !policy.CanSetEventVisibility(asPerson(me), f.view, f.rel, vis) {
+			return errDateVisibility
+		}
+		opened = f.group != nil && policy.MoreOpen(vis, f.group.Visibility)
+		action = audit.VisibilityChanged
+		if opened {
+			action = audit.VisibilityOverride
+		}
+		oldVis, oldOpened = locked.Visibility, locked.LeaderOpened
+		var err error
+		impact, err = eventImpactOfReset(tx, &locked, vis, body.ResetOverrides)
+		if err != nil {
+			return err
+		}
+		if !body.Confirm && impactHasLosers(impact) {
+			return errNeedDecision
 		}
 		if err := tx.Model(&locked).Updates(map[string]any{"visibility": vis, "leader_opened": opened}).Error; err != nil {
 			return err
 		}
 		locked.Visibility, locked.LeaderOpened = vis, opened
+		// More private: the same cancel-and-notify as a group tightening (DEC-48).
+		if policy.Openness(vis) < policy.Openness(oldVis) {
+			ids, err := a.cancelLosers(c, tx, &locked, vis, time.Now().UTC())
+			emailed = append(emailed, ids...)
+			if err != nil {
+				return err
+			}
+		}
+		if body.ResetOverrides {
+			var dates []models.EventOccurrence
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("event_id = ? AND starts_at > ? AND visibility_override IS NOT NULL", locked.ID, time.Now().UTC()).Order("id").Find(&dates).Error; err != nil {
+				return err
+			}
+			for i := range dates {
+				ids, err := a.changeDateVisibility(c, tx, &locked, &dates[i], nil, "series_reset", false)
+				if err != nil {
+					return err
+				}
+				emailed = append(emailed, ids...)
+			}
+		}
 		*ev = locked
 		meta := map[string]any{
 			"oldVisibility":   oldVis,
@@ -586,6 +615,14 @@ func (a *App) visibleEvents(viewer *models.User, q *gorm.DB) (visibleSet, error)
 // admin, events of soft-deleted groups are listed too. For anyone else
 // the switch does nothing.
 func (a *App) visibleEventsWith(viewer *models.User, q *gorm.DB, withDeleted bool) (visibleSet, error) {
+	return a.eventCandidates(viewer, q, withDeleted, false)
+}
+
+func (a *App) dateCandidates(viewer *models.User, q *gorm.DB) (visibleSet, error) {
+	return a.eventCandidates(viewer, q, false, true)
+}
+
+func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted, dates bool) (visibleSet, error) {
 	withDeleted = withDeleted && asPerson(viewer) != nil && asPerson(viewer).Admin
 	vs := visibleSet{ByID: map[uint]*models.Event{}, Groups: map[uint]*models.Group{}, Rels: map[uint]policy.Rel{}, Hosted: map[uint]bool{}}
 	var evs []models.Event
@@ -618,7 +655,7 @@ func (a *App) visibleEventsWith(viewer *models.User, q *gorm.DB, withDeleted boo
 		if grp != nil {
 			gp = asGroup(grp)
 		}
-		if policy.CanSeeEvent(p, viewOf(&ev, vs.Hosted[ev.ID]), gp, rel) {
+		if dates || policy.CanSeeEvent(p, viewOf(&ev, vs.Hosted[ev.ID]), gp, rel) {
 			vs.Events = append(vs.Events, ev)
 		}
 	}

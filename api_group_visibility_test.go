@@ -50,7 +50,7 @@ func TestGroupMorePrivateTightensAndCancels(t *testing.T) {
 	if e := eventRow(t, app, ev.ID); e.Visibility != models.VisibilityInviteOnly {
 		t.Fatalf("invite-only: %+v", e)
 	}
-	if regCount(app, out, ev.ID) != 0 || regCount(app, mem, ev.ID) != 1 {
+	if regCount(app, out, ev.ID) != 1 || regCount(app, mem, ev.ID) != 1 {
 		t.Fatalf("registrations: out %d, mem %d", regCount(app, out, ev.ID), regCount(app, mem, ev.ID))
 	}
 	rows, metas := auditRows(t, app, audit.RegistrationCancelled)
@@ -153,7 +153,7 @@ func TestLeaderOpenedEventsAskBeforeTightening(t *testing.T) {
 	if e := eventRow(t, app, tightened.ID); e.Visibility != models.VisibilityInviteOnly || e.LeaderOpened {
 		t.Fatalf("tightened: %+v", e)
 	}
-	if regCount(app, out, kept.ID) != 1 || regCount(app, out, tightened.ID) != 0 {
+	if regCount(app, out, kept.ID) != 1 || regCount(app, out, tightened.ID) != 1 {
 		t.Fatal("only the tightened event cancels outsiders")
 	}
 	var keptRows []models.AuditLog
@@ -204,7 +204,7 @@ func TestVisibilityImpactCountsHouseholdSubjectsAcrossDates(t *testing.T) {
 	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(holder.ID), map[string]any{"status": "disabled"}, http.StatusOK)
 	apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(eventID)+"/visibility", map[string]any{"visibility": "invite_only", "confirm": true}, http.StatusOK)
 	var n int64
-	app.DB.Model(&models.Registration{}).Where("user_id = ? OR registered_by = ?", holder.ID, holder.ID).Count(&n)
+	app.DB.Model(&models.Registration{}).Where("(user_id = ? OR registered_by = ?) AND status <> ?", holder.ID, holder.ID, models.RegCancelled).Count(&n)
 	if n != 0 {
 		t.Fatalf("disabled answers can resurface: %d", n)
 	}
@@ -240,7 +240,7 @@ func TestOccurrenceInvitationVisibilityImpactAndCommitAgree(t *testing.T) {
 			} else {
 				apiDo(t, f.admin, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/visibility", map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, 200)
 			}
-			if contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.recipient.ID, f.dates[0].ID) != 0 {
+			if contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ? AND status <> ?", f.recipient.ID, f.dates[0].ID, models.RegCancelled) != 0 {
 				t.Fatal("ordinary sibling kept")
 			}
 			if contactCount(t, f.app, &models.Registration{}, "id = ?", f.access.RegistrationID) != 1 || savedOccurrenceAccess(t, f).Status != "active" {
@@ -314,7 +314,7 @@ func TestVisibilityInvitationCollectionReadBudget(t *testing.T) {
 				}
 				commit := *n
 				var remains int64
-				f.app.DB.Model(&models.Registration{}).Where("id = ?", reg.ID).Count(&remains)
+				f.app.DB.Model(&models.Registration{}).Where("id = ? AND status <> ?", reg.ID, models.RegCancelled).Count(&remains)
 				if remains != 0 {
 					t.Fatal("ordinary loser survived")
 				}
@@ -366,7 +366,7 @@ func TestVisibilityBatchExcludesEndedAndUnconsentedInvitations(t *testing.T) {
 					root += "/visibility"
 				}
 				apiDo(t, f.admin, "PUT", root, map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, 200)
-				if contactCount(t, f.app, &models.Registration{}, "id = ?", f.access.RegistrationID) != 0 {
+				if contactCount(t, f.app, &models.Registration{}, "id = ? AND status <> ?", f.access.RegistrationID, models.RegCancelled) != 0 {
 					t.Fatal("stale invitation kept registration")
 				}
 				apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, 404)

@@ -20,7 +20,7 @@
   },
   "rawControls": {
     "web/src/components/GroupCard.tsx": 1,
-    "web/src/components/GuestRegistrationForm.tsx": 1,
+    "web/src/components/GuestRegistrationForm.tsx": 0,
     "web/src/components/Layout.tsx": 1,
     "web/src/components/Notifications.tsx": 8,
     "web/src/components/RsvpButtons.tsx": 1,

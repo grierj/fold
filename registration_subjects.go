@@ -131,7 +131,7 @@ func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *
 	}
 	allowed, loaded := access[holder.ID]
 	if !loaded {
-		allowed = a.canRegisterIn(tx, holder, ev)
+		allowed = a.canRegisterDateIn(tx, holder, ev, r.OccurrenceID)
 		access[holder.ID] = allowed
 	}
 	if !allowed && r.UserID != nil {

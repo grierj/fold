@@ -97,7 +97,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 		q = q.Where("childcare_available = ?", true)
 	}
 	// deleted=1 lists deleted groups' events too, for admins only (DEC-68).
-	vs, err := a.visibleEventsWith(me, q, c.Query("deleted") == "1")
+	vs, err := a.eventCandidates(me, q, c.Query("deleted") == "1", true)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
 		return
@@ -159,7 +159,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 	for i := range occs {
 		occ := &occs[i]
 		ev := byID[occ.EventID]
-		if ev == nil {
+		if !vs.canSeeDate(me, ev, occ) {
 			read := scoped[occ.ID]
 			if read == nil {
 				continue
@@ -208,6 +208,9 @@ func (a *App) apiCalendar(c *gin.Context) {
 			ChurchWide:         ev.GroupID == nil,
 			RemoteAvailable:    remoteAvailable,
 			ChildcareAvailable: ev.ChildcareAvailable,
+		}
+		if !vs.canSeeSeries(me, ev) {
+			row.DateURL = occurrenceDatePath(ev.ID, occ.OriginalDate)
 		}
 		if shown != nil {
 			gid := shown.ID

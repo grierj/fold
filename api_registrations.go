@@ -293,6 +293,13 @@ func hostIDs(tx *gorm.DB, eventID uint) []uint {
 // cannot see the group gets no group name, place, or group link
 // (PR #41). It reads nothing; loadNoticeFacts did the reading once for
 // every recipient.
+func effectiveOccurrenceTitle(ev *models.Event, o *models.EventOccurrence) string {
+	if o.TitleOverride != nil {
+		return *o.TitleOverride
+	}
+	return ev.Title
+}
+
 func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, facts *noticeFacts) (notify.Vars, string) {
 	var g *models.Group
 	if ev.GroupID != nil {
@@ -307,10 +314,10 @@ func eventNoticeVars(ev *models.Event, o *models.EventOccurrence, userID uint, f
 	if o.LocationOverride != nil {
 		place = *o.LocationOverride
 	}
-	vars := notify.Vars{Event: ev.Title, When: formatWhen(o.StartsAt, facts.zone(userID)), Place: place}
+	vars := notify.Vars{Event: effectiveOccurrenceTitle(ev, o), When: formatWhen(o.StartsAt, facts.zone(userID)), Place: place}
 	link := fmt.Sprintf("/events/%d", ev.ID)
 	if g != nil {
-		vars.Event = firstNonEmpty(ev.Title, g.Name) // group-ok: g is set only when facts.canSeeGroup is true
+		vars.Event = firstNonEmpty(effectiveOccurrenceTitle(ev, o), g.Name) // group-ok: g is set only when facts.canSeeGroup is true
 		if o.LocationOverride == nil {
 			vars.Place = firstNonEmpty(ev.Location, g.Location) // group-ok: g is set only when facts.canSeeGroup is true
 		}
@@ -882,15 +889,14 @@ type registrationBatchInput struct {
 }
 
 func (a *App) apiRegister(c *gin.Context) {
-	ev, _, ok := a.loadVisibleEvent(c)
-	if !ok {
-		return
-	}
-	u := apiUser(c)
-	if !a.canRegisterIn(a.DB, u, ev) {
+	var evRow models.Event
+	id, parseErr := strconv.ParseUint(c.Param("id"), 10, 64)
+	if parseErr != nil || id == 0 || a.DB.First(&evRow, id).Error != nil {
 		jsonError(c, 404, "event not found")
 		return
 	}
+	ev := &evRow
+	u := apiUser(c)
 	var body registrationBatchInput
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
@@ -944,6 +950,10 @@ func (a *App) apiRegister(c *gin.Context) {
 	var o models.EventOccurrence
 	if a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, body.Date, models.OccurrenceScheduled).First(&o).Error != nil {
 		jsonError(c, 404, "that date is not on this event")
+		return
+	}
+	if !a.canRegisterIn(a.DB, u, dateEvent(ev, &o)) {
+		jsonError(c, 404, "event not found")
 		return
 	}
 	// Discover responsible accounts before acquiring any household/date lock.
@@ -1003,13 +1013,11 @@ func (a *App) apiRegister(c *gin.Context) {
 			return errOccurrenceNotFound
 		}
 		var today time.Time
-		if gated || len(body.People) > 0 {
-			if err := tx.First(ev, ev.ID).Error; err != nil {
-				return err
-			}
+		if err := tx.First(ev, ev.ID).Error; err != nil {
+			return err
 		}
 		if len(body.People) > 0 {
-			if !a.canRegisterIn(tx, &holder, ev) {
+			if !a.canRegisterIn(tx, &holder, dateEvent(ev, locked)) {
 				return errOccurrenceNotFound
 			}
 			today = a.householdClock(now)
@@ -1053,7 +1061,7 @@ func (a *App) apiRegister(c *gin.Context) {
 			}
 			hasInvitation = live
 		}
-		if gated && !hasInvitation && !a.canRegisterIn(tx, &holder, ev) {
+		if !hasInvitation && !a.canRegisterIn(tx, &holder, dateEvent(ev, locked)) {
 			return errOccurrenceNotFound
 		}
 		changes := []registrationChange{}
@@ -1161,15 +1169,25 @@ func (a *App) apiRegister(c *gin.Context) {
 }
 
 func (a *App) canRegisterIn(tx *gorm.DB, u *models.User, ev *models.Event) bool {
-	f := a.factsForIn(tx, u, ev)
 	gp := policy.Group{}
-	if f.group != nil {
-		gp = asGroup(f.group)
+	rel := policy.Rel{}
+	if ev.GroupID != nil {
+		var group models.Group
+		if tx.First(&group, *ev.GroupID).Error != nil {
+			return false
+		}
+		gp = asGroup(&group)
+		// Host facts are irrelevant to visibility. An active public/private group
+		// needs no membership read; invitation-only or inactive contexts do.
+		if u != nil && !policy.IsAdmin(asPerson(u)) && (ev.Visibility == models.VisibilityInviteOnly || group.Status != models.GroupActive) {
+			rel = relIn(tx, u.ID, group.ID)
+		}
 	}
+	view := viewOf(ev, false)
 	if u != nil && u.Status == models.UserGuest {
-		return policy.CanRegisterGuest(f.view, gp)
+		return policy.CanRegisterGuest(view, gp)
 	}
-	return policy.CanRegisterEvent(asPerson(u), f.view, gp, f.rel)
+	return policy.CanRegisterEvent(asPerson(u), view, gp, rel)
 }
 
 // ---------------------------------------------------------------------------
@@ -1757,7 +1775,7 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 		if r.HouseholdPersonID != nil {
 			fits = facts.eligible(a, tx, r, &ev, access)
 		} else {
-			fits = a.canRegisterIn(tx, &holder, &ev)
+			fits = a.canRegisterDateIn(tx, &holder, &ev, o.ID)
 		}
 		mode := attendanceModeOf(r.AttendanceMode)
 		demand := effectiveChildcare(&ev, r)
@@ -1851,7 +1869,7 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		acct, found := householdAccountIn(tx, holderID)
 		links := guardianLinksForPeople(tx, []uint{personID})
 		f := a.factsForIn(tx, actor, ev)
-		problem := policy.CanManageHouseholdRegistration(asPerson(actor), asPerson(&holder), policy.CanManageEvent(asPerson(actor), f.view, f.rel), previouslyRegisteredPerson(tx, ev.ID, o.ID, personID, holderID), householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID), householdFacts(&person, links[personID], a.householdClock(now)), holder.Status == models.UserActive, a.canRegisterIn(tx, &holder, ev))
+		problem := policy.CanManageHouseholdRegistration(asPerson(actor), asPerson(&holder), policy.CanManageEvent(asPerson(actor), f.view, f.rel), previouslyRegisteredPerson(tx, ev.ID, o.ID, personID, holderID), householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID), householdFacts(&person, links[personID], a.householdClock(now)), holder.Status == models.UserActive, a.canRegisterIn(tx, &holder, dateEvent(ev, &o)))
 		if problem != "" {
 			return householdRegistrationError{code: problem}
 		}
@@ -2005,7 +2023,7 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 	if err := tx.First(&subject, targetID).Error; err != nil {
 		return models.Registration{}, nil, err
 	}
-	if options.approved != nil || policy.TeenAddNeedsApproval(asPerson(&subject)) || !a.canRegisterIn(tx, &subject, ev) {
+	if options.approved != nil || policy.TeenAddNeedsApproval(asPerson(&subject)) || !a.canRegisterIn(tx, &subject, dateEvent(ev, locked)) {
 		approved, err := a.verifiedOccurrenceAddIn(tx, options.approved, actor, targetID, ev.ID, locked.ID, policy.AddOptions{OverCapacity: options.overCapacity, AttendanceMode: mode, GuestCount: options.guests, ChildcareCount: count, ChildcareAgesNote: ages})
 		if err != nil {
 			return models.Registration{}, nil, err

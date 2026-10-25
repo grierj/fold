@@ -2,12 +2,13 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ApiError } from "../api";
+import { ApiError, Events } from "../api";
 import { Dates } from "../date-api";
 import type { EventDate, RegistrationResponse } from "../types";
 import { EventDatePage } from "./EventDate";
 
 const actor = vi.hoisted(() => ({ user: { id: 2 } as { id: number } | null }));
+vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), Events: { register: vi.fn() } }));
 vi.mock("../auth", () => ({ useAuth: () => actor }));
 vi.mock("../date-api", () => ({ Dates: { get: vi.fn(), register: vi.fn(), end: vi.fn() } }));
 const occurrence = (overrides: Partial<EventDate> = {}): EventDate => ({ id: 51, eventId: 7, date: "2026-12-01", dateUrl: "/events/7/dates/2026-12-01", title: "One invited date", location: "Room 2", startsAt: "2026-12-01T19:00:00Z", endsAt: "2026-12-01T20:00:00Z", startsLocal: "2026-12-01T19:00", endsLocal: "2026-12-01T20:00", tzid: "UTC", durationMinutes: 60, remoteAvailable: true, guestsAllowed: 3, myRegistration: "going", myAttendanceMode: "remote", myGuestCount: 1, videoProvider: "link", videoUrl: "https://example.com/private-call", videoHidden: false, canSeeVideo: true, canSeeAttendees: false, canDecline: true, canBlock: true, ...overrides });
@@ -104,8 +105,14 @@ it("ignores late reads after a newer focus refresh or unmount", async () => {
   view.unmount(); fireEvent(window, new Event("focus")); expect(Dates.get).toHaveBeenCalledTimes(2);
 });
 
-it("does not load guardian or other date authority when signed out", async () => {
-  actor.user = null; mount(); await screen.findByText("Sign in first"); expect(Dates.get).not.toHaveBeenCalled();
+it("loads a public exact date signed out without invitation mutations", async () => {
+  actor.user = null;
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ visibility: "public", hostedBy: "Church", canDecline: false, canBlock: false, canSeeVideo: false, videoUrl: undefined, myRegistration: null }) });
+  mount(); await screen.findByText("One invited date");
+  expect(Dates.get).toHaveBeenCalledWith("7", "2026-12-01");
+  expect(screen.getByText("Hosted by Church")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Register as a guest" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Don't add me again" })).not.toBeInTheDocument();
 });
 
 it("a confirmed end clears a newer focus read that completed before the end committed", async () => {
@@ -147,4 +154,22 @@ it("ignores an initial read that resolves after unmount", async () => {
   const view = mount(); view.unmount();
   await act(async () => finish({ occurrence: occurrence() }));
   expect(screen.queryByText("One invited date")).not.toBeInTheDocument(); expect(Dates.get).toHaveBeenCalledTimes(1);
+});
+
+ it("offers first ordinary RSVP options and withdraws without ending an invitation", async () => {
+ vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canRegister: true, canDecline: false, canBlock: false, myRegistration: null, myAttendanceMode: undefined, myGuestCount: undefined }) });
+ mount(); await screen.findByText("One invited date");
+ expect(screen.getByLabelText("In person")).toBeChecked(); expect(screen.getByLabelText("Guests")).toHaveValue(0);
+ await userEvent.click(screen.getByLabelText("Remote")); fireEvent.change(screen.getByLabelText("Guests"), {target:{value:"2"}});
+ vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({canRegister:true,canDecline:false,canBlock:false,myAttendanceMode:"remote",myGuestCount:2}) });
+ await userEvent.click(screen.getByRole("button",{name:"Going"})); await screen.findByText("Your answer: Going");
+ expect(Events.register).toHaveBeenCalledWith(7,{date:"2026-12-01",status:"going",attendanceMode:"remote",guestCount:2});
+ vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({canRegister:true,canDecline:false,canBlock:false,myRegistration:"declined"}) });
+ await userEvent.click(screen.getByRole("button",{name:"Can't go"})); await screen.findByText("Your answer: Can't go");
+ expect(Events.register).toHaveBeenLastCalledWith(7,{date:"2026-12-01",status:"declined"}); expect(Dates.end).not.toHaveBeenCalled(); expect(Dates.register).not.toHaveBeenCalled(); expect(window.confirm).not.toHaveBeenCalled();
+ });
+
+it("shows a retained cancelled answer when the date is visible again", async () => {
+ vi.mocked(Dates.get).mockResolvedValue({occurrence:occurrence({canRegister:true,canDecline:false,canBlock:false,myRegistration:"cancelled"})});
+ mount(); expect(await screen.findByText("Your answer: Cancelled")).toBeInTheDocument();
 });

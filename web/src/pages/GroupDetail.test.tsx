@@ -74,3 +74,11 @@ it("offers an explicit Ask to add for a selected teen instead of direct add", as
   expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
   expect(Groups.addMember).not.toHaveBeenCalled();
 });
+
+it("keeps the date visibility note in the content column rather than another horizontal column", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true, upcomingEvents: [occurrence({ visibilityOverride: "public" })] });
+  open();
+  const note = await screen.findByText("Visibility changed for this date");
+  expect(note.parentElement).toHaveClass("grow", "min-w-0");
+  expect(note.parentElement).not.toHaveClass("flex");
+});

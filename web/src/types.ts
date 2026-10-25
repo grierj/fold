@@ -158,6 +158,10 @@ export interface Attendee {
 // per-date edit moves the clock. startsAt/endsAt are UTC; startsLocal and
 // endsLocal are the wall clock in tzid.
 export interface EventOccurrence {
+ dateUrl?: string;
+ groupVisibility?: Visibility;
+ visibilityOverride?: Visibility;
+ seriesVisibility?: Visibility;
   id: number;
   eventId: number;
   date: string;
@@ -315,6 +319,9 @@ export interface SoleLedGroup {
 // What making a group more private does to its events (DEC-48).
 /** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface VisibilityImpactEvent {
+ date?: string;
+ occurrenceId?: number;
+ decisionKey?: string;
   id: number;
   title: string;
   visibility: Visibility;
@@ -323,6 +330,7 @@ export interface VisibilityImpactEvent {
 }
 
 export interface VisibilityImpact {
+ futureOverrides?: number;
   visibility: Visibility;
   tightened: VisibilityImpactEvent[];
   leaderOpened: VisibilityImpactEvent[];
@@ -668,6 +676,9 @@ export interface AddRequest {
 
 /** @public Exact-date read contract; does not authorize a mutation. */
 export interface EventDate {
+ canRegister?: boolean;
+ visibility?: Visibility;
+ hostedBy?: string;
   id: number;
   eventId: number;
   date: string;

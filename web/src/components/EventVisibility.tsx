@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ApiError, Events } from "../api";
 import type { Visibility, VisibilityImpact } from "../types";
 import { GroupVisibilityReview } from "./GroupVisibilityReview";
 import { openedEventWarning } from "./EventIntro";
 import { errorText } from "../lib/errors";
-import { Choices, Field, FormError, Input, Radio } from "./ui/Field";
+import { Checkbox, Choices, Field, FormError, Input, Radio } from "./ui/Field";
 import { Button } from "./ui/Button";
 
 const CHOICES: { value: Visibility; label: string; description: string }[] = [
@@ -44,15 +44,18 @@ export function EventVisibilityControl({
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resetOverrides, setResetOverrides] = useState(false);
+  const [futureOverrides, setFutureOverrides] = useState(0);
+  useEffect(() => { let live = true; Promise.resolve(Events.visibilityImpact(eventId, visibility)).then((impact) => { if (live) setFutureOverrides(impact?.futureOverrides ?? 0); }).catch(() => {}); return () => { live = false; }; }, [eventId, visibility]);
   const [review, setReview] = useState<VisibilityImpact | null>(null);
 
   // More private: preview first and confirm, the same as a group (DEC-48).
   async function save(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (visibilityRank(value) < visibilityRank(visibility)) {
+    if (resetOverrides || visibilityRank(value) < visibilityRank(visibility)) {
       try {
-        const impact = await Events.visibilityImpact(eventId, value);
+        const impact = await Events.visibilityImpact(eventId, value, resetOverrides);
         if (impact.tightened.length > 0) {
           setReview(impact);
           return;
@@ -69,12 +72,12 @@ export function EventVisibilityControl({
     setBusy(true);
     setError(null);
     try {
-      await Events.setVisibility(eventId, { visibility: value, reason: reason.trim() || undefined, confirm });
+      await Events.setVisibility(eventId, { visibility: value, reason: reason.trim() || undefined, confirm, resetOverrides });
       setReview(null);
       onSaved();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
-        setReview(await Events.visibilityImpact(eventId, value));
+        setReview(await Events.visibilityImpact(eventId, value, resetOverrides));
         setError("Registrations changed. Please review again.");
         return;
       }
@@ -98,6 +101,7 @@ export function EventVisibilityControl({
         reason={reason}
         onReason={setReason}
       />
+      {futureOverrides > 0 && <div className="space-y-2"><p className="text-sm text-text-muted">{futureOverrides} {futureOverrides === 1 ? "date has its" : "dates have their"} own visibility and won't change.</p><Checkbox label="Also reset those dates to the series setting" checked={resetOverrides} onChange={(e) => setResetOverrides(e.target.checked)} /></div>}
       {review && (
         <GroupVisibilityReview
           key={JSON.stringify(review)}
@@ -121,6 +125,9 @@ export function EventVisibilityControl({
 // optional reason and is saved as a leader-opened override (DEC-17/28).
 // A church-wide event is public or private.
 export function VisibilityField({
+  seriesVisibility,
+  inheritSelected,
+  onInherit,
   id,
   value,
   onChange,
@@ -131,6 +138,9 @@ export function VisibilityField({
   reason,
   onReason,
 }: {
+  seriesVisibility?: Visibility;
+  inheritSelected?: boolean;
+  onInherit?: () => void;
   id: string;
   value: Visibility;
   onChange: (v: Visibility) => void;
@@ -145,7 +155,8 @@ export function VisibilityField({
   const choices = churchWide ? CHOICES.filter((c) => c.value !== "invite_only") : CHOICES;
   return (
     <div className="space-y-3">
-      <Choices legend="Who can see this event">
+      <Choices legend={seriesVisibility ? "Who can see this date" : "Who can see this event"}>
+        {seriesVisibility && <Radio name={id} label={`Same as series (${seriesVisibility === "invite_only" ? "invite only" : seriesVisibility})`} checked={inheritSelected} onChange={onInherit} />}
         {choices.map((c) => (
           <Radio
             key={c.value}
@@ -153,7 +164,7 @@ export function VisibilityField({
             value={c.value}
             label={`${c.label}${!churchWide && c.value === groupVisibility ? " (same as the group)" : ""}`}
             description={c.description}
-            checked={value === c.value}
+            checked={!inheritSelected && value === c.value}
             onChange={() => onChange(c.value)}
           />
         ))}

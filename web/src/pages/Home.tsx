@@ -207,7 +207,7 @@ export function Home() {
             {openEvents.map((ev) => (
               <Link
                 key={`${ev.eventId}-${ev.date}`}
-                to={`/events/${ev.eventId}`}
+                to={ev.dateUrl || `/events/${ev.eventId}`}
                 className="bg-surface rounded-lg border border-border p-4 flex gap-4 hover:border-border-strong"
               >
                 <DateBadge at={ev.startsAt} />

@@ -105,7 +105,7 @@ func (a *App) loadOccurrenceAddFacts(tx *gorm.DB, r models.ContactRequest, now t
 	}
 	facts := a.factsForIn(tx, requester, &ev)
 	f.Manager = policy.CanManageEvent(asPerson(requester), facts.view, facts.rel)
-	f.OrdinaryEligible = a.canRegisterIn(tx, subject, &ev)
+	f.OrdinaryEligible = a.canRegisterDateIn(tx, subject, &ev, *r.OccurrenceID)
 	var block models.ManagerAddBlock
 	if err := tx.Where("subject_user_id = ? AND organizer_type = ? AND organizer_id = ?", r.SubjectUserID, f.Occurrence.Organizer.Type, f.Occurrence.Organizer.ID).Limit(1).Find(&block).Error; err != nil {
 		return f, err

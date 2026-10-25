@@ -1397,12 +1397,14 @@ single-date Ask controls use the shared name picker and separate add client.
 
 ### Exact-date invitation reads (M1.11 s4)
 
-`GET /api/v1/events/:id/dates/:date` requires a current authenticated account.
+`GET /api/v1/events/:id/dates/:date` permits ordinary effective-date visibility
+(including signed-out public dates in M1.13), or a current authenticated
+account with a live exact-date invitation.
 `:date` is the occurrence's original `YYYY-MM-DD` key, not its rescheduled
 start day. It returns `{occurrence: EventDate}` for ordinary event visibility
 or a current explicit invitation to **that stable occurrence only**. Missing,
 invalid, cancelled, deleted, or unauthorized dates return 404; signed-out
-requests return 401. GET has no side effects and does not approve an ask.
+requests for nonpublic dates return 404. GET has no side effects and does not approve an ask.
 Pending asks and ordinary registration rows alone confer no extra visibility.
 
 `EventDate` has exactly these fields (optional keys marked `?`):
@@ -1413,7 +1415,8 @@ startsAt, endsAt, startsLocal, endsLocal, tzid, durationMinutes,
 remoteAvailable, guestsAllowed,
 myRegistration, myAttendanceMode?, myGuestCount?,
 videoProvider, videoUrl?, videoHidden,
-canSeeVideo, canSeeAttendees, canDecline, canBlock
+canSeeVideo, canSeeAttendees, canDecline, canBlock,
+visibility?, hostedBy?, canRegister?
 ```
 
 Times/title/place are effective for that date. An invitation-only response
@@ -1733,3 +1736,75 @@ The admin history UI/client and focused browser/mobile/accessibility proof are
 implemented and independently reviewed. Local M1.11 acceptance and final
 integrated verification are recorded in `docs/plan/M1.11-BRIEF.md`; publication,
 merge and production deployment are separate.
+
+### Per-date visibility (M1.13)
+
+A date inherits `Event.visibility` unless its nullable `visibility_override`
+column is set. `visibility` on occurrence lists is the effective value;
+`visibilityOverride` is present for explicit date values. Managers also get
+`seriesVisibility` (the parent value, not the date value) and, when the group
+is visible, `groupVisibility` for the shared visibility editor.
+
+```
+PUT /api/v1/events/:id/occurrences/:date
+    {visibility?: "public"|"private"|"invite_only"|"series"|null,
+     reason?: string, confirm?: boolean, ...existing date edits}
+GET /api/v1/events/:id/occurrences/:date/visibility-impact?visibility=series
+GET /api/v1/events/:id/dates/:date
+```
+
+Omitting `visibility` leaves it unchanged. JSON null and `"series"` clear
+only the visibility override. Explicit equal-to-series values remain explicit.
+The usual event visibility policy applies: group leaders/admins may set any
+value; church-wide hosts/admins may use public/private only. Reasons are
+optional, at most 500 characters. Tightening, including clearing an open date,
+previews newly inaccessible registrations on that date. PUT returns 409 with
+`needsDecision` and `impact` until `confirm:true` acknowledges cancellation.
+Active explicit exact-date invitations preserve their own registrations and
+never grant series or group authority.
+
+The exact-date GET permits signed-out readers only when the effective date
+is public. It uses the restricted date projection, not an event/series DTO.
+An opened hidden-series date is discoverable with a `dateUrl`; the unauthorized
+series and sibling dates remain 404. Hidden group names, IDs, places, leaders,
+attendee names, and recurrence metadata are not included. Public exact-date
+pages use the ordinary verified guest form; verification rechecks current
+visibility and cancellation under the occurrence lock.
+
+Series visibility PUT accepts `resetOverrides?:boolean` (default false).
+Its visibility-impact GET accepts `resetOverrides=1` and returns
+`futureOverrides`, counted across all future stored dates, not the list limit.
+Without reset, explicit dates keep their visibility and are excluded from the
+series cancellations. With reset, each future override is cleared and audited
+atomically, including when the series value itself stays the same. Past dates
+and unrelated date customizations are unchanged.
+
+Group visibility review includes explicit dates wider than the new group value
+in `leaderOpened`, independently of the event's `leaderOpened` marker. Date
+rows include `{id: eventId, occurrenceId, date, decisionKey: "date:<occurrenceId>",
+visibility, title, registrants}`. Send keep/tighten decisions in `openedEvents`
+using `decisionKey` for dates and the existing numeric event-ID keys for series.
+All required decisions are rechecked under locks; missing ones roll back the
+whole change, including inherited-series tightening.
+
+Each actual date change/clear writes an audit row with `original_date`, old/new
+values, group visibility when applicable and optional reason. A wider-than-group
+date uses `event.visibility_override` and notifies other leaders/admins, naming
+the date; unchanged saves do neither. Keeping an opened date during a group
+review is audited and notified too. Registrations, audit and stored notices are
+transactional; email delivery follows commit. Tightening notices identify the
+affected date and never include hidden group details.
+
+Date lists and calendar candidates are filtered per occurrence before limits.
+Feeds with any visibility-customized dates use authorized standalone entries
+with exact-date URLs, rather than an RRULE that could regenerate hidden dates.
+Ordinary unchanged full-series feed behavior remains intact. Visibility changes
+therefore alter feed bodies/ETags as well as API output.
+
+Implemented consumers: group/upcoming/open-event lists, event/date details,
+calendar, public/group/personal feeds, account/household RSVP, guest submission
+and redemption, manager-add eligibility and waitlist promotion. Dedicated event
+search, reminder scheduling and room-suggestion infrastructure do not exist at
+this base. Their future consumers must resolve `policy.EffectiveVisibility`
+per date and apply the same ordinary policy separately from exact-date grants;
+no reminder/room/search integration pass is claimed by M1.13's current tests.

@@ -314,17 +314,18 @@ type EventHost struct {
 // change when a per-date override moves the clock time. Registrations hang
 // off this row, so a series edit can move the time without losing them.
 type EventOccurrence struct {
-	ID               uint      `gorm:"primaryKey"`
-	EventID          uint      `gorm:"not null;uniqueIndex:idx_event_original_date"`
-	Event            Event     `gorm:"foreignKey:EventID"`
-	OriginalDate     string    `gorm:"not null;uniqueIndex:idx_event_original_date"` // YYYY-MM-DD
-	StartsAt         time.Time `gorm:"not null;index"`
-	EndsAt           time.Time `gorm:"not null"`
-	Status           string    `gorm:"not null;default:scheduled"` // scheduled | cancelled
-	TitleOverride    *string
-	LocationOverride *string
-	StartsAtOverride *time.Time
-	DurationOverride *int
+	ID                 uint      `gorm:"primaryKey"`
+	EventID            uint      `gorm:"not null;uniqueIndex:idx_event_original_date"`
+	Event              Event     `gorm:"foreignKey:EventID"`
+	OriginalDate       string    `gorm:"not null;uniqueIndex:idx_event_original_date"` // YYYY-MM-DD
+	StartsAt           time.Time `gorm:"not null;index"`
+	EndsAt             time.Time `gorm:"not null"`
+	Status             string    `gorm:"not null;default:scheduled"` // scheduled | cancelled
+	VisibilityOverride *string
+	TitleOverride      *string
+	LocationOverride   *string
+	StartsAtOverride   *time.Time
+	DurationOverride   *int
 	// CapacityOverride replaces the event's capacity for this date (M1.5);
 	// nil means the date uses the event's capacity.
 	CapacityOverride *int
@@ -344,7 +345,7 @@ func (o EventOccurrence) TimeFrozen() bool {
 // Customized reports a per-date override or a cancellation. A series edit
 // leaves the row alone: it does not move the clock and does not drop the date.
 func (o EventOccurrence) Customized() bool {
-	return o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil || o.Status == OccurrenceCancelled
+	return o.VisibilityOverride != nil || o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil || o.Status == OccurrenceCancelled
 }
 
 // Membership is a user's roster entry in a group.

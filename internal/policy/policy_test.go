@@ -1000,3 +1000,16 @@ func TestCanEditOwnContactPrivacy(t *testing.T) {
 		}
 	}
 }
+
+func TestEffectiveVisibility(t *testing.T) {
+	for _, series := range []string{"public", "private", "invite_only"} {
+		if got := EffectiveVisibility(series, nil); got != series {
+			t.Fatalf("inherit: %s", got)
+		}
+		for _, value := range []string{"public", "private", "invite_only"} {
+			if got := EffectiveVisibility(series, &value); got != value {
+				t.Fatalf("override: %s", got)
+			}
+		}
+	}
+}

@@ -52,7 +52,7 @@ browser ──► single Go binary ──► /api/v1/* (JSON, cookie auth)
 church-wide (`events.group_id` null), created by an admin and run by its
 `EventHost` rows. An event has a plain-text `description` (5000 characters,
 same as a group). `visibility` is the event's own value,
-copied from the group at creation (DEC-48); `leader_opened` marks one a
+copied from the group at creation (DEC-48). A nullable occurrence `visibility_override` wins for that date (`policy.EffectiveVisibility`); date candidates never authorize the series. `leader_opened` marks one a
 leader set wider than its group. Making a group more private tightens
 inherited events and asks about leader-opened ones (`api_group_visibility.go`).
 The wall clock (`starts_local` + IANA `tzid`) is the source of truth;
@@ -244,10 +244,11 @@ alone starts no CI; open the PR to get the checks.
 Grier's rule (Oct 20, 2026). Wright may merge a fold PR, as a normal merge commit, when all of these hold:
 
 1. Every CI check is green (`test`, `web`, `provision`; branch protection requires them).
-2. A second reviewer bot approved it. Every fold PR needs one (Grier, Oct 20, 2026):
-   - UI, UX or design work: Illuminator.
-   - Database or performance work: Whittler, to keep out complexity that would only get cut later.
-   - Security, and backend or API work: Warden.
+2. Independent review approved it. Every fold PR needs review (Grier, Oct 20, 2026; orchestrate substitution approved Oct 25, 2026):
+   - UI, UX or design work: Illuminator, or the orchestrate plugin's UI review.
+   - Database or performance work: Whittler, or the orchestrate plugin's simplicity/database and efficiency reviews, to keep out complexity that would only get cut later.
+   - Security, and backend or API work: Warden, or the orchestrate plugin's security and correctness reviews.
+   - The orchestrate plugin's adversarial and domain-specific reviews serve as substitutes for the named reviewer bots; no separate named-bot approval or per-PR substitution permission is required. Use the reviews relevant to the change, retain their findings and approval evidence, and resolve blocking findings before merging. A completed plugin run alone is not review approval.
 3. No Grier decision on it is still open.
 
 PRs that change security or visibility policy, repo settings, or production and deploy wait for Grier, unless he already decided that change. After a merge, merge master into the other open branches (never rebase) and report the merge SHA.
@@ -316,7 +317,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 
 | Rule | Enforced by |
 |------|-------------|
-| Every list of event dates hides events the viewer can't see | Structure: `occurrencesForEvents` filters with `policy.CanSeeEvent`; `TestNarrowEventHiddenFromGroupLists` |
+| Every list of event dates hides events the viewer can't see | Structure: `dateCandidates` loads facts without granting series rights; `visibleSet.canSeeDate` filters each date before limits; `TestNarrowEventHiddenFromGroupLists` |
 | Event and notice output never shows a hidden group's name, place or id (PR #41) | `a.groupShownTo` plus `TestGroupDetailsGoThroughGroupShownTo` (lines needing an exception end with `// group-ok: <reason>`) |
 | Making a group or one event more private previews the cancellations and needs confirmation | `visibility-impact` for both, a 409 without `confirm`; `TestEventMorePrivateCancelsShutOutRegistrants`, `e2e/event-visibility.spec.ts` |
 | Making an event more private cancels and tells people it shuts out, whether the group or the event changed | `cancelLosers` in both paths; `TestGroupMorePrivateTightensAndCancels`, `TestEventMorePrivateCancelsShutOutRegistrants` |
