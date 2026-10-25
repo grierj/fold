@@ -2,14 +2,14 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { Events, Groups, Households } from "../api";
+import { ApiError, Events, Groups, Households, People } from "../api";
 import type { GroupDetailResponse, Household, User } from "../types";
 import { occurrence } from "../test/occurrence";
 import { GroupDetail } from "./GroupDetail";
 
 const actor = vi.hoisted(() => ({ user: { id: 2, accountType: "adult", hideContactFromLeaders: false } as User | null }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, isAdmin: false }) }));
-vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), Groups: { get: vi.fn() }, Events: { register: vi.fn() }, Households: { mine: vi.fn() } }));
+vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), People: { search: vi.fn() }, Groups: { get: vi.fn(), addMember: vi.fn() }, Events: { register: vi.fn() }, Households: { mine: vi.fn() } }));
 const family: Household = { id: 1, name: "Family", address: "", createdBy: 2, accounts: [], people: [{ id: 3, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary", kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] };
 const page: GroupDetailResponse = { group: { id: 1, name: "Family group", description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Hall", leaderName: "Leader", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null }, members: [], upcomingEvents: [occurrence({})], canManage: false, isMember: true };
 function open() { render(<MemoryRouter initialEntries={["/groups/1"]}><Routes><Route path="/groups/:id" element={<GroupDetail />} /></Routes></MemoryRouter>); }
@@ -45,4 +45,31 @@ it("shows supplied roster contact without reconstructing hidden members' details
   expect(screen.getByText("Hidden adult")).toBeInTheDocument();
   expect(screen.getByText("Teen member")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /contact/i })).not.toBeInTheDocument();
+});
+
+it.each(["group_full", "teen_add_approval_required", "people_selection_unavailable"])("adds by name and only retries the actual member limit: %s", async (code) => {
+  actor.user = { id: 2, status: "active", accountType: "adult" } as User;
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
+  vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "opaque", displayName: "Pat", teen: false, sharedGroups: [], otherGroups: [] }] });
+  vi.mocked(Groups.addMember).mockRejectedValueOnce(new ApiError(409, "private", { code })).mockResolvedValueOnce({});
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  open(); await userEvent.click(await screen.findByRole("button", { name: "members" }));
+  await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
+  expect(screen.getByLabelText("Add a member by email")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Add member" }));
+  expect(Groups.addMember).toHaveBeenNthCalledWith(1, "1", { selectionId: "opaque" });
+  if (code === "group_full") expect(Groups.addMember).toHaveBeenLastCalledWith("1", { selectionId: "opaque" }, true);
+  else { expect(Groups.addMember).toHaveBeenCalledTimes(1); expect(screen.getByRole("alert")).not.toHaveTextContent("private"); }
+});
+
+it("shows a teen but never offers direct add or an unimplemented approval action", async () => {
+  actor.user = { id: 2, status: "active", accountType: "adult" } as User;
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
+  vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
+  open(); await userEvent.click(await screen.findByRole("button", { name: "members" }));
+  await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
+  expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
+  expect(screen.getByRole("button", { name: "Add member" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: /Ask to add/i })).not.toBeInTheDocument();
+  expect(Groups.addMember).not.toHaveBeenCalled();
 });

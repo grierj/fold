@@ -430,3 +430,34 @@ func TestCanViewContactHistory(t *testing.T) {
 		})
 	}
 }
+
+func TestCanSearchPeople(t *testing.T) {
+	adult := ContactAccount{Person: &Person{ID: 1}, Active: true}
+	for _, tt := range []struct {
+		name               string
+		actor              ContactAccount
+		leader, host, want bool
+	}{
+		{"member", adult, false, false, false},
+		{"leader", adult, true, false, true},
+		{"host", adult, false, true, true},
+		{"admin", ContactAccount{Person: &Person{ID: 1, Admin: true}, Active: true}, false, false, true},
+		{"inactive", ContactAccount{Person: &Person{ID: 1, Admin: true}}, true, true, false},
+		{"teen manager", ContactAccount{Person: &Person{ID: 1, Admin: true, Teen: true}, Active: true}, true, true, false},
+		{"signed out", ContactAccount{}, true, true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanSearchPeople(tt.actor, tt.leader, tt.host); got != tt.want {
+				t.Fatalf("got %v want %v", got, tt.want)
+			}
+		})
+	}
+	age := 17
+	adult.AgeYears = &age
+	if CanSearchPeople(adult, true, true) || CanInitiatePeopleAdd(adult) {
+		t.Fatal("known underage adult allowed")
+	}
+	if !TeenAddNeedsApproval(&Person{Teen: true}) || TeenAddNeedsApproval(&Person{}) {
+		t.Fatal("teen approval policy")
+	}
+}

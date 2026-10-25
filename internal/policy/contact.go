@@ -49,6 +49,20 @@ type ContactAccount struct {
 	HideFromLeaders bool
 }
 
+// CanSearchPeople allows only active adult managers; a historical host row on
+// a group event is not a host fact. Search never grants add/visibility rights.
+func CanSearchPeople(actor ContactAccount, leadsGroup, hostsEvent bool) bool {
+	return actor.Active && actor.adult() && (actor.Person.Admin || leadsGroup || hostsEvent)
+}
+
+// CanInitiatePeopleAdd is independent of scope permission, which the group or
+// event policy must also grant. It keeps teen managers from using legacy adds.
+func CanInitiatePeopleAdd(actor ContactAccount) bool { return actor.Active && actor.adult() }
+
+// TeenAddNeedsApproval applies to every manager-initiated account add, including
+// admins and email/raw-ID siblings. Self/proxy/household/invitation flows differ.
+func TeenAddNeedsApproval(subject *Person) bool { return subject != nil && subject.Teen }
+
 func (a ContactAccount) adult() bool {
 	return a.Person != nil && !a.Person.Teen && (a.AgeYears == nil || *a.AgeYears >= 18)
 }

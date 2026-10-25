@@ -359,8 +359,8 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 	}
 	if !rel.Member {
 		// Self-join never goes over the member limit (DEC-39).
-		err := a.changeRole(c, g, u.ID, models.MembershipMember, "", false, func(_, t policy.Rel, _ int) bool {
-			return policy.CanJoinGroup(asPerson(u), asGroup(g), t)
+		err := a.changeRole(c, g, u.ID, models.MembershipMember, "", false, nil, func(me *models.User, _, t policy.Rel, _ int) bool {
+			return policy.CanJoinGroup(asPerson(me), asGroup(g), t)
 		})
 		switch err {
 		case nil:
@@ -400,7 +400,7 @@ func (a *App) apiLeaveGroup(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "group not found")
 		return
 	}
-	if err := a.changeRole(c, &g, u.ID, "", "", false, func(_, target policy.Rel, leaders int) bool {
+	if err := a.changeRole(c, &g, u.ID, "", "", false, nil, func(_ *models.User, _, target policy.Rel, leaders int) bool {
 		return !target.Member || policy.CanLeaveGroup(target, leaders)
 	}); err != nil {
 		if err == errRoleRefused {
@@ -505,7 +505,7 @@ func (a *App) loadManagedGroup(c *gin.Context) (*models.Group, *models.User, boo
 // is no admin-approval gate (DEC-31), but every change is audited and shown
 // to admins as an in-app notice.
 func (a *App) apiSetMemberRole(c *gin.Context) {
-	g, me, ok := a.loadManagedGroup(c)
+	g, _, ok := a.loadManagedGroup(c)
 	if !ok {
 		return
 	}
@@ -524,7 +524,7 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 		return
 	}
 	makeLeader := body.Role == models.MembershipLeader
-	err := a.changeRole(c, g, target.ID, body.Role, "", false, func(actor, targetRel policy.Rel, leaders int) bool {
+	err := a.changeRole(c, g, target.ID, body.Role, "", false, nil, func(me *models.User, actor, targetRel policy.Rel, leaders int) bool {
 		return policy.CanChangeRole(asPerson(me), actor, asPerson(&target), targetRel, makeLeader, leaders)
 	})
 	switch err {
@@ -555,18 +555,32 @@ func groupFull(c *gin.Context) {
 	c.JSON(http.StatusConflict, body)
 }
 
+// memberAddOptions distinguishes direct manager adds from self-join and role
+// changes. Regular adds preserve an active member's role; admin adds may change it.
+type memberAddOptions struct {
+	KeepExistingRole bool
+}
+
 // changeRole sets userID's role in g to newRole: "leader" or "member",
 // "" to leave the group, or memberRemoved when a leader or admin removes
 // them (note is kept in the audit row only). It locks the group row so
 // concurrent changes can't remove the last leader, asks allow with fresh
 // facts, keeps the displayed primary contact pointing at a leader, and
 // writes a membership.role_changed audit row when leadership changes, or a
-// membership.removed row for every removal.
-func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, note string, overLimit bool,
-	allow func(actor, target policy.Rel, leaders int) bool) error {
+// membership.removed row for every removal. Direct manager additions require
+// adult actors/targets and write membership.added.
+func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, note string, overLimit bool, add *memberAddOptions,
+	allow func(me *models.User, actor, target policy.Rel, leaders int) bool) error {
 	actor := apiUser(c)
 	var emailed []uint
 	err := a.contactMutation(contactChange{UserID: userID}, func(tx *gorm.DB) error {
+		if add != nil {
+			fresh, err := peopleAddActor(tx, actor)
+			if err != nil {
+				return err
+			}
+			actor = fresh
+		}
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(g, g.ID).Error; err != nil {
 			return err
 		}
@@ -583,10 +597,10 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, 
 		if actor.ID != userID {
 			actorRel = relIn(tx, actor.ID, g.ID)
 		}
-		if !allow(actorRel, targetRel, leaderCount(tx, g.ID)) {
+		if !allow(actor, actorRel, targetRel, leaderCount(tx, g.ID)) {
 			return errRoleRefused
 		}
-		if oldRole == newRole || (newRole == memberRemoved && !targetRel.Member) {
+		if (add != nil && add.KeepExistingRole && targetRel.Member) || oldRole == newRole || (newRole == memberRemoved && !targetRel.Member) {
 			return nil
 		}
 		// Adding someone (or bringing them back) needs room under the member
@@ -599,6 +613,14 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, 
 			var target models.User
 			if err := tx.First(&target, userID).Error; err != nil || target.Status == models.UserGuest {
 				return errRoleRefused
+			}
+			if add != nil {
+				if target.Status != models.UserActive {
+					return errRoleRefused
+				}
+				if policy.TeenAddNeedsApproval(asPerson(&target)) {
+					return errTeenAddApproval
+				}
 			}
 		}
 		count := 0
@@ -654,6 +676,9 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, 
 			return err
 		}
 		if oldRole != models.MembershipLeader && newRole != models.MembershipLeader {
+			if adding && add != nil {
+				return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.MemberAdded, TargetType: "group", TargetID: g.ID, Meta: map[string]any{"userId": userID, "role": newRole}, IP: c.ClientIP()})
+			}
 			return nil
 		}
 		ids, err := auditAndNotifyLeadership(tx, audit.Entry{
@@ -700,7 +725,7 @@ func roleOrNone(r string) string {
 	return r
 }
 
-// apiAddGroupMember lets a leader add someone by email. Invite-only
+// apiAddGroupMember lets a leader add someone by selection or email. Invite-only
 // groups have no public join button, so this is how they grow.
 func (a *App) apiAddGroupMember(c *gin.Context) {
 	g, _, ok := a.loadManagedGroup(c)
@@ -708,36 +733,47 @@ func (a *App) apiAddGroupMember(c *gin.Context) {
 		return
 	}
 	var body struct {
-		Email string `json:"email"`
+		Email       string `json:"email"`
+		SelectionID string `json:"selectionId"`
 		// OverLimit: add even though the group is full (DEC-39); audited.
 		OverLimit bool `json:"overLimit"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Email) == "" {
-		jsonError(c, http.StatusBadRequest, "email is required")
+	if err := c.ShouldBindJSON(&body); err != nil || (strings.TrimSpace(body.Email) == "") == (body.SelectionID == "") {
+		jsonError(c, http.StatusBadRequest, "choose one person by selection or email")
 		return
 	}
 	var target models.User
-	if err := a.DB.Where("email = ?", normalizeEmail(body.Email)).First(&target).Error; err != nil {
+	if body.SelectionID != "" {
+		selected, ok := a.resolvePeopleSelection(c, body.SelectionID)
+		if !ok {
+			return
+		}
+		target = *selected
+	} else if err := a.DB.Where("email = ?", normalizeEmail(body.Email)).First(&target).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "user not found")
 		return
 	}
-	if !relIn(a.DB, target.ID, g.ID).Member {
-		me := apiUser(c)
-		err := a.changeRole(c, g, target.ID, models.MembershipMember, "", body.OverLimit, func(actor, _ policy.Rel, _ int) bool {
-			return policy.CanManageGroup(asPerson(me), actor)
-		})
-		switch err {
-		case nil:
-		case errGroupFull:
-			groupFull(c)
-			return
-		case errRoleRefused:
-			jsonError(c, http.StatusForbidden, "forbidden")
-			return
-		default:
-			jsonError(c, http.StatusInternalServerError, "could not add member")
-			return
-		}
+	if policy.TeenAddNeedsApproval(asPerson(&target)) {
+		jsonError(c, 409, errTeenAddApproval.Error())
+		return
+	}
+	err := a.changeRole(c, g, target.ID, models.MembershipMember, "", body.OverLimit, &memberAddOptions{KeepExistingRole: true}, func(me *models.User, actor, _ policy.Rel, _ int) bool {
+		return policy.CanManageGroup(asPerson(me), actor)
+	})
+	switch err {
+	case errTeenAddApproval:
+		jsonError(c, 409, errTeenAddApproval.Error())
+		return
+	case nil:
+	case errGroupFull:
+		groupFull(c)
+		return
+	case errRoleRefused, errPeopleAddForbidden:
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return
+	default:
+		jsonError(c, http.StatusInternalServerError, "could not add member")
+		return
 	}
 	a.membershipAdded(c, g, target.ID)
 }
@@ -896,7 +932,7 @@ func (a *App) removeMember(c *gin.Context, g *models.Group) {
 		jsonError(c, http.StatusNotFound, "user not found")
 		return
 	}
-	err := a.changeRole(c, g, target.ID, memberRemoved, note, false, func(actor, t policy.Rel, leaders int) bool {
+	err := a.changeRole(c, g, target.ID, memberRemoved, note, false, nil, func(me *models.User, actor, t policy.Rel, leaders int) bool {
 		return policy.CanRemoveMember(asPerson(me), actor, asPerson(&target), t, leaders)
 	})
 	switch err {

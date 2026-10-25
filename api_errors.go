@@ -18,6 +18,8 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	"adding a teen needs their approval and an admin's approval; ask your church office for help":                                                    "teen_add_approval_required",
+	"that selection is unavailable; search for the person again":                                                                                     "people_selection_unavailable",
 	"direct-contact access is unavailable; refresh the request":                                                                                      "contact_unavailable",
 	"contact reason must be at most 1000 characters":                                                                                                 "contact_reason_long",
 	"you already have 10 open contact requests; withdraw one or wait for a decision":                                                                 "contact_open_limit",

@@ -1,3 +1,4 @@
+import { PeoplePicker } from "../components/ui/PeoplePicker";
 import { RequestContactButton } from "../components/RequestContactButton";
 import { ContactDetails } from "../components/ContactDetails";
 import { Badge } from "../components/ui/Badge";
@@ -6,7 +7,7 @@ import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
-import type { EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
+import type { PersonSearchResult, EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { Attendance } from "../components/Attendance";
@@ -26,7 +27,7 @@ import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 import { focalPosition, prepareUpload } from "../lib/image";
 import { formatTime, formatWhen, zoneNote } from "../lib/when";
-import { errorText } from "../lib/errors";
+import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, HiddenFileInput, Input, Radio, Textarea } from "../components/ui/Field";
 import { FormActions } from "../components/ui/FormActions";
 import { Button, ButtonLink } from "../components/ui/Button";
@@ -430,6 +431,7 @@ export function GroupDetail() {
   const [joinBusy, setJoinBusy] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
   const [memberEmail, setMemberEmail] = useState("");
+  const [memberSelection, setMemberSelection] = useState<PersonSearchResult | null>(null);
   const [memberBusy, setMemberBusy] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -620,19 +622,21 @@ export function GroupDetail() {
   async function addMember(e: React.FormEvent) {
     e.preventDefault();
     const email = memberEmail.trim();
-    if (!email) return;
+    if (memberSelection?.teen || (!email && !memberSelection)) return;
+    const target = memberSelection ? { selectionId: memberSelection.selectionId } : email;
     setMemberBusy(true);
     setMemberError(null);
     try {
       try {
-        await Groups.addMember(id!, email);
+        await Groups.addMember(id!, target);
       } catch (err) {
         // Full group: going over the limit is an explicit, audited choice (DEC-39).
-        if (!(err instanceof ApiError) || err.status !== 409) throw err;
-        if (!confirm(`“${group.name}” is full (${group.memberCount} of ${group.memberLimit}). Add ${email} anyway?`)) return;
-        await Groups.addMember(id!, email, true);
+        if (errorCode(err) !== "group_full") throw err;
+        if (!confirm(`“${group.name}” is full (${group.memberCount} of ${group.memberLimit}). Add ${memberSelection?.displayName ?? email} anyway?`)) return;
+        await Groups.addMember(id!, target, true);
       }
       setMemberEmail("");
+      setMemberSelection(null);
       await load();
     } catch (e) {
       setMemberError(errorText(e, "We couldn't add that person."));
@@ -1027,19 +1031,20 @@ export function GroupDetail() {
                         )}
                       </form>
                       {inviteStatus && <p className="text-success text-sm mt-2">{inviteStatus}</p>}
-                      <form onSubmit={addMember} className="mt-4 flex gap-2 flex-wrap items-end">
+                      <form onSubmit={addMember} className="mt-4 space-y-3">
+                        {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={memberSelection} disabled={memberBusy} onChange={(person) => { setMemberSelection(person); setMemberEmail(""); setMemberError(null); }} /></Field>}
                         <div className="grow min-w-48">
                           <Field id="add-member" label="Add a member by email">
                             <Input
                               value={memberEmail}
-                              onChange={(e) => setMemberEmail(e.target.value)}
+                              onChange={(e) => { setMemberEmail(e.target.value); setMemberSelection(null); }}
                               type="email"
                               placeholder="name@example.com"
                               autoComplete="off"
                             />
                           </Field>
                         </div>
-                        <Button variant="secondary" type="submit" disabled={memberBusy || !memberEmail.trim()}>
+                        <Button variant="secondary" type="submit" disabled={memberBusy || !!memberSelection?.teen || (!memberSelection && !memberEmail.trim())}>
                           {memberBusy ? "Adding…" : "Add member"}
                         </Button>
                       </form>

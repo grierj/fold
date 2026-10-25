@@ -11,6 +11,8 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
+  people_selection_unavailable: "That selection is no longer available. Search for the person again.",
+  teen_add_approval_required: "Adding a teen needs their approval and an admin's approval. Ask your church office for help.",
   contact_unavailable: "This contact request or grant is no longer available to you. Refresh the page to see its current status.",
   contact_reason_long: "Your reason is too long. Use 1000 characters or fewer, then try again.",
   contact_open_limit: "You have 10 open contact requests. Withdraw one or wait for a decision before sending another.",

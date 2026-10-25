@@ -616,3 +616,19 @@ export interface ContactReveal {
   email?: string;
   phone?: string;
 }
+
+export interface PersonSearchResult {
+  selectionId: string;
+  displayName: string;
+  teen: boolean;
+  avatarUrl?: string;
+  avatarFocalX?: number;
+  avatarFocalY?: number;
+  sharedGroups: string[];
+  otherGroups: string[];
+}
+
+export interface PeopleSearchResponse {
+  state: 'short_query' | 'throttled' | 'no_results' | 'results';
+  people: PersonSearchResult[];
+}

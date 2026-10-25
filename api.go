@@ -32,6 +32,24 @@ const (
 // JSON shapes
 // ---------------------------------------------------------------------------
 
+// personSearchJSON is a deliberately closed name-picker projection. No contact
+// data, internal account IDs, teen images or hidden group identifiers belong here.
+type personSearchJSON struct {
+	SelectionID  string   `json:"selectionId"`
+	DisplayName  string   `json:"displayName"`
+	Teen         bool     `json:"teen"`
+	AvatarURL    string   `json:"avatarUrl,omitempty"`
+	AvatarFocalX *float64 `json:"avatarFocalX,omitempty"`
+	AvatarFocalY *float64 `json:"avatarFocalY,omitempty"`
+	SharedGroups []string `json:"sharedGroups"`
+	OtherGroups  []string `json:"otherGroups"`
+}
+
+type peopleSearchJSON struct {
+	State  string             `json:"state"` // short_query | throttled | no_results | results
+	People []personSearchJSON `json:"people"`
+}
+
 type userJSON struct {
 	ID           uint    `json:"id"`
 	Name         string  `json:"name"`
@@ -543,6 +561,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// Password reset (M1.2): uniform response, single-use expiring tokens.
 	v1.POST("/auth/password-reset", a.apiRequestPasswordReset)
 	v1.POST("/auth/password-reset/confirm", a.apiConfirmPasswordReset)
+
+	v1.GET("/people/search", a.apiAuth(), a.apiSearchPeople)
 
 	// Direct contact: authenticated review, explicit audited disclosure only.
 	v1.POST("/contact-requests", a.apiAuth(), a.apiCreateContactRequest)

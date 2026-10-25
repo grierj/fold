@@ -1188,3 +1188,71 @@ by the trusted session. Body, query, token and claimed URL IDs are never parsed
 or retained by this hook. Its audit failure returns generic 500 without running
 the handler or disclosing fields. Ordinary list omissions, unrelated endpoints
 and generic auth failures elsewhere do not create contact audit rows.
+
+### Name picker (M1.11, DEC-78)
+
+`GET /api/v1/people/search?q=` requires an authenticated active adult admin,
+current group leader, or host of an undeleted church-wide event. Ordinary
+members and teens cannot search. Search matches name/display name only, with
+literal SQL wildcard characters, not email. Active teens and contact-hidden
+adults are included; guests, invited, disabled, deleted and pending-consent
+accounts are not. No per-keystroke audit is written.
+
+Response: `{state, people}`. `state` is `short_query` (fewer than two Unicode
+characters after trimming), `throttled`, `no_results`, or `results`. `people` is
+always an array, at most ten results. Queries longer than 100 characters return
+`no_results`. Throttling is 30 qualifying searches per actor per minute, persisted
+in the existing `login_throttles` table with a separate key namespace. Throttling
+is a successful **200** response with an empty array, not a 429 error.
+
+Each result has exactly `selectionId` (opaque string), `displayName` (public-name
+fallback), `teen` (boolean), `sharedGroups` and `otherGroups` (arrays of labels).
+Adults with a profile image additionally have `avatarUrl`, `avatarFocalX`,
+`avatarFocalY`. Teens never have any of these image fields. There are no user IDs,
+email, phone, birth date or group IDs. At most ten visible group labels per
+person are returned, shared groups first, then other groups, ordered by name.
+Labels use current group visibility policy; hidden invite-only groups never
+appear. Related labels are loaded in one bounded batch, not per result. Search database
+work shares a two-second request deadline.
+
+`selectionId` uses authenticated encryption with a domain-separated key derived
+from `SESSION_SECRET`, expires after ten minutes, and is bound to the searching
+actor and ordinary add purpose. It is not authority, a contact grant, or an event
+visibility override. The add rechecks current actor/subject and scope facts.
+Malformed, expired, wrong-actor or unavailable selections fail with 400 code
+`people_selection_unavailable`; the response does not explain account state.
+
+Existing add endpoints accept `selectionId` in place of the legacy target:
+
+- `POST /groups/:id/members`: exactly one of `selectionId`, `email`; retain
+  `overLimit` and existing group management/capacity rules.
+- `POST /admin/groups/:id/members`: exactly one of `selectionId`, `userId`;
+  retain `role`, `overLimit` and admin authorization.
+- `POST /events/:id/registrations/add`: `selectionId` instead of `userId`,
+  `email` or `personId`; retain `date`, attendance, childcare, guests and explicit
+  `overCapacity`. The selected adult must already be eligible to see/register
+  for the event. No one-date visibility override is implemented here.
+
+Actual manager-initiated ordinary membership additions write `membership.added`
+in the locked membership transaction (including email/admin siblings). Existing
+leadership/over-limit and registration audit rows remain; no-op adds do not log a
+new addition. Audit failure rolls back the membership change.
+
+Until Ask-to-add ships, every manager-initiated teen account add through these
+endpoints (including email, raw-ID and admin paths) fails closed with 409 code
+`teen_add_approval_required`. This is not an approval workflow and does not
+change teen self-RSVP, household, proxy, consent conversion or invitation flows.
+
+Picker copy (client-owned):
+
+- short query: “Type at least 2 letters”
+- throttled: “Too many searches. Try again in a minute.”
+- no results: “No one found. An admin can add people who aren't listed.”
+- indistinguishable same names: “More than one match? Ask an admin.”
+
+The UI must omit the unimplemented teen direct-add/Ask-to-add action, use an
+accessible debounced combobox, announce result count and discard stale responses.
+New error-copy entries: `people_selection_unavailable`: “That selection is no
+longer available. Search for the person again.”; `teen_add_approval_required`:
+“Adding a teen needs their approval and an admin's approval. Ask your church
+office for help.”

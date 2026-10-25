@@ -1,8 +1,10 @@
+import { PeoplePicker } from "../components/ui/PeoplePicker";
+import type { PersonSearchResult } from "../types";
 import { ContactDetails } from "../components/ContactDetails";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
 import { Link, useSearchParams } from "react-router-dom";
-import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
+import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, Groups, Invitations, Site } from "../api";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
@@ -13,7 +15,7 @@ import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
 import { GuardianLinkCard } from "../components/GuardianLinkCard";
 import { Button } from "../components/ui/Button";
-import { errorText } from "../lib/errors";
+import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors, Textarea } from "../components/ui/Field";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -361,6 +363,7 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
 function MemberManager({ group, users }: { group: GroupSummary; users: User[] }) {
   const [members, setMembers] = useState<Member[] | null>(null);
   const [addUserId, setAddUserId] = useState("");
+  const [selection, setSelection] = useState<PersonSearchResult | null>(null);
   const [addRole, setAddRole] = useState<"member" | "leader">("member");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -379,19 +382,21 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
   }, [load]);
 
   async function add() {
-    if (!addUserId) return;
+    if (selection?.teen || (!selection && !addUserId)) return;
+    const target = selection ? { selectionId: selection.selectionId } : Number(addUserId);
     setBusy(true);
     setError(null);
     try {
       try {
-        await AdminGroups.addMember(group.id, Number(addUserId), addRole);
+        await AdminGroups.addMember(group.id, target, addRole);
       } catch (err) {
         // Full group: going over the limit is an explicit, audited choice (DEC-39).
-        if (!(err instanceof ApiError) || err.status !== 409) throw err;
+        if (errorCode(err) !== "group_full") throw err;
         if (!confirm(`“${group.name}” is full. Add this person anyway?`)) return;
-        await AdminGroups.addMember(group.id, Number(addUserId), addRole, true);
+        await AdminGroups.addMember(group.id, target, addRole, true);
       }
       setAddUserId("");
+      setSelection(null);
       await load();
     } catch (e) {
       setError(errorText(e, "We couldn't add that person."));
@@ -415,7 +420,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
   }
 
   const memberIds = new Set((members ?? []).map((m) => m.id));
-  const candidates = users.filter((u) => !memberIds.has(u.id));
+  const candidates = users.filter((u) => !memberIds.has(u.id) && u.accountType !== "teen");
 
   return (
     <div className="mt-3 border-t border-border pt-3">
@@ -442,13 +447,9 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
               <span className="text-xs text-text-muted capitalize">· {m.role}</span>
               <ContactDetails email={m.email} phone={m.phone} />
             </div>
-            <button
-              onClick={() => remove(m)}
-              disabled={busy}
-              className="text-sm text-danger hover:underline"
-            >
+            <Button variant="danger-outline" onClick={() => remove(m)} disabled={busy}>
               Remove
-            </button>
+            </Button>
           </li>
         ))}
       </ul>
@@ -456,8 +457,9 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
         <p className="text-sm text-text-muted py-2">No members yet.</p>
       )}
       <div className="mt-3 max-w-xl space-y-4">
-        <Field id="admin-add-person" label="Add person">
-          <Select value={addUserId} onChange={(e) => setAddUserId(e.target.value)}>
+        <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy} onChange={(person) => { setSelection(person); setAddUserId(""); setError(null); }} /></Field>
+        <Field label="Or choose an adult by email">
+          <Select value={addUserId} onChange={(e) => { setAddUserId(e.target.value); setSelection(null); }}>
             <option value="">Select…</option>
             {candidates.map((u) => (
               <option key={u.id} value={u.id}>
@@ -470,7 +472,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
           <Radio name={`admin-role-${group.id}`} label="Member" checked={addRole === "member"} onChange={() => setAddRole("member")} />
           <Radio name={`admin-role-${group.id}`} label="Leader" checked={addRole === "leader"} onChange={() => setAddRole("leader")} />
         </Choices>
-        <Button variant="secondary" onClick={add} disabled={busy || !addUserId}>
+        <Button variant="secondary" onClick={add} disabled={busy || !!selection?.teen || (!selection && !addUserId)}>
           {busy ? "…" : "Add"}
         </Button>
       </div>
@@ -527,7 +529,7 @@ function GroupsTab({ users }: { users: User[] }) {
         <div key={g.id} className="bg-surface rounded-lg border border-border p-5">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="grow min-w-0">
-              <Link to={`/groups/${g.id}`} className="font-bold hover:text-primary">
+              <Link to={`/groups/${g.id}`} className="inline-flex min-h-11 items-center font-bold hover:text-primary">
                 {g.name}
               </Link>
               <div className="text-xs text-text-muted mt-0.5">

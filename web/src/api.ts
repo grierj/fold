@@ -82,6 +82,7 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
 
 import type {
   AccountRequest,
+  PeopleSearchResponse,
   AgeBand,
   AttendanceMode,
   Attendee,
@@ -132,6 +133,10 @@ export const Auth = {
     api<{ user: User }>("/auth/password-reset/confirm", { method: "POST", body: { token, password } }),
 };
 
+export const People = {
+  search: (query: string) => api<PeopleSearchResponse>(`/people/search?q=${encodeURIComponent(query)}`),
+};
+
 export const Groups = {
   list: (search = "", tags: string[] = []) => {
     const q = new URLSearchParams();
@@ -174,8 +179,8 @@ export const Groups = {
   setRole: (id: number | string, userId: number, role: "leader" | "member") =>
     api<{ members: Member[] }>(`/groups/${id}/members/${userId}/role`, { method: "PUT", body: { role } }),
   // overLimit: add even though the group is full (an explicit, audited choice; DEC-39).
-  addMember: (id: number | string, email: string, overLimit = false) =>
-    api<unknown>(`/groups/${id}/members`, { method: "POST", body: { email, overLimit } }),
+  addMember: (id: number | string, target: string | { selectionId: string }, overLimit = false) =>
+    api<unknown>(`/groups/${id}/members`, { method: "POST", body: { ...(typeof target === "string" ? { email: target } : target), overLimit } }),
   // Leaders and admins remove someone (audited; DEC-35). The note stays in the audit log.
   removeMember: (id: number | string, userId: number, note?: string) =>
     api<{ members: Member[] }>(`/groups/${id}/members/${userId}`, { method: "DELETE", body: { note } }),
@@ -351,8 +356,8 @@ export const Events = {
     api<unknown>(`/events/${id}/registrations/remove`, { method: "POST", body: { date, registrationId, note } }),
   promoteRegistration: (id: number, date: string, registrationId: number) =>
     api<unknown>(`/events/${id}/registrations/promote`, { method: "POST", body: { date, registrationId } }),
-  addRegistration: (id: number, date: string, email: string, overCapacity?: boolean, childcare?: { childcareCount: number; childcareAgesNote: string }) =>
-    api<unknown>(`/events/${id}/registrations/add`, { method: "POST", body: { date, email, overCapacity, ...childcare } }),
+  addRegistration: (id: number, date: string, target: string | { selectionId: string }, overCapacity?: boolean, childcare?: { childcareCount: number; childcareAgesNote: string }) =>
+    api<unknown>(`/events/${id}/registrations/add`, { method: "POST", body: { date, ...(typeof target === "string" ? { email: target } : target), overCapacity, ...childcare } }),
   restoreRegistration: (id: number, date: string, target: { userId: number } | { personId: number; registeredBy: number }, attendanceMode: AttendanceMode, overCapacity: boolean) =>
     api<unknown>(`/events/${id}/registrations/add`, { method: "POST", body: { date, ...target, attendanceMode, overCapacity } }),
   cancelOccurrence: (id: number, date: string) =>
@@ -572,8 +577,8 @@ export const AdminTeenConsents = {
 
 export const AdminGroups = {
   list: () => api<{ groups: GroupSummary[] }>("/admin/groups"),
-  addMember: (id: number | string, userId: number, role: "leader" | "member" = "member", overLimit = false) =>
-    api<unknown>(`/admin/groups/${id}/members`, { method: "POST", body: { userId, role, overLimit } }),
+  addMember: (id: number | string, target: number | { selectionId: string }, role: "leader" | "member" = "member", overLimit = false) =>
+    api<unknown>(`/admin/groups/${id}/members`, { method: "POST", body: { ...(typeof target === "number" ? { userId: target } : target), role, overLimit } }),
   removeMember: (id: number | string, userId: number) =>
     api<unknown>(`/admin/groups/${id}/members/${userId}`, { method: "DELETE" }),
 };

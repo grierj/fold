@@ -41,6 +41,9 @@ const (
 	// and the optional note, which is never shown to the removed person.
 	MemberRemoved = "membership.removed"
 
+	// MemberAdded records an actual manager-initiated ordinary member addition.
+	MemberAdded = "membership.added"
+
 	// UserDeleted: an admin deleted an account. Target is the user. Any
 	// sole-leader handoff is recorded as RoleChanged rows with reason
 	// "account_deleted" (DEC-36).

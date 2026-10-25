@@ -1286,6 +1286,7 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 	}
 	var body struct {
 		UserID             uint   `json:"userId"`
+		SelectionID        string `json:"selectionId"`
 		PersonID           uint   `json:"personId"`
 		RegisteredBy       uint   `json:"registeredBy"`
 		ChildcareRequested *bool  `json:"childcareRequested"`
@@ -1298,8 +1299,12 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		AttendanceMode *string `json:"attendanceMode"`
 		childcareRequest
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Date == "" || (body.UserID == 0 && body.Email == "" && body.PersonID == 0) {
+	if err := c.ShouldBindJSON(&body); err != nil || body.Date == "" || (body.UserID == 0 && body.Email == "" && body.PersonID == 0 && body.SelectionID == "") {
 		jsonError(c, http.StatusBadRequest, "userId or email, and date, are required")
+		return
+	}
+	if body.SelectionID != "" && (body.UserID != 0 || body.Email != "" || body.PersonID != 0) {
+		jsonError(c, 400, "choose one registration target")
 		return
 	}
 	if body.PersonID != 0 {
@@ -1351,7 +1356,13 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 	var target models.User
 	// A pruned guest keeps status=guest (never active); the add action is
 	// their way back in, so both statuses resolve here.
-	if body.UserID != 0 {
+	if body.SelectionID != "" {
+		selected, ok := a.resolvePeopleSelection(c, body.SelectionID)
+		if !ok {
+			return
+		}
+		target = *selected
+	} else if body.UserID != 0 {
 		if err := a.DB.Where("id = ? AND status IN ?", body.UserID,
 			[]string{models.UserActive, models.UserGuest}).First(&target).Error; err != nil {
 			jsonError(c, http.StatusNotFound, "person not found")
@@ -1364,6 +1375,10 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 			jsonError(c, http.StatusNotFound, "person not found")
 			return
 		}
+	}
+	if policy.TeenAddNeedsApproval(asPerson(&target)) {
+		jsonError(c, 409, errTeenAddApproval.Error())
+		return
 	}
 	// The leader can't seat someone on an event the person couldn't see
 	// themselves: that would bypass the audited visibility path and
@@ -1388,12 +1403,32 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 	overCap := body.OverCapacity != nil && *body.OverCapacity
 	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		// Manager adds serialize with account, leadership and host revocation.
+		// Take the existing contact gate FIRST, before any domain row lock.
+		if err := lockContacts(tx); err != nil {
+			return err
+		}
+		actor, err := peopleAddActor(tx, me)
+		if err != nil {
+			return err
+		}
+		if err := tx.First(ev, ev.ID).Error; err != nil {
+			return errPeopleAddForbidden
+		}
+		facts := a.factsForIn(tx, actor, ev)
+		if !policy.CanManageEvent(asPerson(actor), facts.view, facts.rel) {
+			return errPeopleAddForbidden
+		}
+		me = actor
 		var holder models.User
 		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&holder, target.ID).Error; err != nil {
 			return err
 		}
 		if holder.Status != models.UserActive && holder.Status != models.UserGuest {
 			return errRegNotFound
+		}
+		if policy.TeenAddNeedsApproval(asPerson(&holder)) {
+			return errTeenAddApproval
 		}
 		locked, err := lockOccurrence(tx, o.ID)
 		if err != nil {
@@ -1488,6 +1523,12 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		body := errorBody(http.StatusConflict, "This event is full")
 		body["full"] = true
 		c.JSON(http.StatusConflict, body)
+		return
+	case errors.Is(err, errPeopleAddForbidden):
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return
+	case errors.Is(err, errTeenAddApproval):
+		jsonError(c, 409, errTeenAddApproval.Error())
 		return
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not add registration")

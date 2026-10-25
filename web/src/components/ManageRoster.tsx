@@ -1,8 +1,9 @@
+import { PeoplePicker } from "./ui/PeoplePicker";
 import { useEffect, useState } from "react";
 import { useAuth } from "../auth";
 import { RequestContactButton } from "./RequestContactButton";
 import { Events, attendeeSubject } from "../api";
-import type { Attendee, EventOccurrence } from "../types";
+import type { PersonSearchResult, Attendee, EventOccurrence } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { AttendeeDetails } from "./AttendeeDetails";
 import { Button } from "./ui/Button";
@@ -13,6 +14,7 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
   const { user } = useAuth();
   const [busy, setBusy] = useState<number | "add" | null>(null);
   const [email, setEmail] = useState("");
+  const [selection, setSelection] = useState<PersonSearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Refresh at the next care boundary and whenever a background tab returns.
   useEffect(() => {
@@ -46,11 +48,19 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
   }
 
   async function add(e: React.FormEvent) {
-    e.preventDefault(); if (!email.trim()) return;
+    e.preventDefault(); if (selection?.teen || (!selection && !email.trim())) return;
+    const target = selection ? { selectionId: selection.selectionId } : email.trim();
     const full = instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0;
     if (full && !confirm("This date is full. Add them over capacity?")) return;
     setBusy("add"); setError(null);
-    try { await Events.addRegistration(instance.eventId, instance.date, email.trim(), full || undefined); setEmail(""); onChanged(); }
+    try {
+      try { await Events.addRegistration(instance.eventId, instance.date, target, full || undefined); }
+      catch (e) {
+        if (errorCode(e) !== "event_full" || full || !confirm("This date filled up. Add them over capacity?")) throw e;
+        await Events.addRegistration(instance.eventId, instance.date, target, true);
+      }
+      setEmail(""); setSelection(null); onChanged();
+    }
     catch (e) { setError(errorText(e, "We couldn't add that registration.")); }
     finally { setBusy(null); }
   }
@@ -59,7 +69,7 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
   return <section aria-label="Manage sign-ups" className="mt-3 border-t border-border pt-3">
     <div className="flex items-center justify-between gap-3"><h3 className="font-semibold">Manage sign-ups</h3><Button variant="link" onClick={onClose}>Close</Button></div>
     {error && <FormError>{error}</FormError>}
-    {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by email below." />}
+    {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by name or email below." />}
     <ul className="space-y-3 my-3">{roster.map((a) => <li key={a.registrationId} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
       <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} status={statusLabel(a, roster)} showAccountType />
         {user?.status === "active" && user.accountType === "adult" && a.userId !== undefined && a.userId > 0 && !a.householdPerson && a.userId !== user.id && a.email === undefined && a.phone === undefined && <RequestContactButton subjectUserId={a.userId} subjectName={a.name} contextType="event" contextId={instance.eventId} />}
@@ -75,7 +85,9 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
         <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={false} showAccountType /></div><Button variant="secondary" aria-label={`Add back ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "restore")}>Add back</Button>
       </li>)}</ul>
     </section>}
-    <form onSubmit={add} className="space-y-2"><Field label="Add someone" hint="Their email address"><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></Field><Button type="submit" variant="secondary" disabled={busy !== null}>{busy === "add" ? "Adding…" : "Add"}</Button></form>
+    <form onSubmit={add} className="space-y-3">
+      {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy !== null} onChange={(person) => { setSelection(person); setEmail(""); setError(null); }} /></Field>}
+      <Field label="Add someone" hint="Or use their email address"><Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setSelection(null); }} /></Field><Button type="submit" variant="secondary" disabled={busy !== null || !!selection?.teen || (!selection && !email.trim())}>{busy === "add" ? "Adding…" : "Add"}</Button></form>
   </section>;
 }
 
