@@ -150,9 +150,14 @@ func (a *App) toMemberJSON(m *models.Membership) memberJSON {
 // startsLocal/endsLocal are the wall clock in tzid (C2). date is the series
 // date and stays put when a per-date override moves the clock.
 type occurrenceJSON struct {
+	hideSeries            bool             `json:"-"`
 	ID                    uint             `json:"id"`
 	EventID               uint             `json:"eventId"`
 	Date                  string           `json:"date"`
+	DateURL               string           `json:"dateUrl,omitempty"`
+	VisibilityOverride    *string          `json:"visibilityOverride,omitempty"`
+	SeriesVisibility      string           `json:"seriesVisibility,omitempty"`
+	GroupVisibility       string           `json:"groupVisibility,omitempty"`
 	StartsAt              time.Time        `json:"startsAt"`
 	EndsAt                time.Time        `json:"endsAt"`
 	StartsLocal           string           `json:"startsLocal"`
@@ -668,7 +673,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// Video (M1.8): mint a Jitsi room URL (leaders, hosts, admins).
 	v1.POST("/events/video/jitsi", a.apiAuth(), a.apiGenerateJitsiLink)
 	v1.GET("/events/:id", a.optionalUser(), a.apiGetEvent)
-	v1.GET("/events/:id/dates/:date", a.apiAuth(), a.apiGetOccurrenceDate)
+	v1.GET("/events/:id/dates/:date", a.optionalUser(), a.apiGetOccurrenceDate)
+	v1.GET("/events/:id/occurrences/:date/visibility-impact", a.apiAuth(), a.apiDateVisibilityImpact)
 	v1.POST("/events/:id/dates/:date/decline", a.apiAuth(), a.apiDeclineOccurrence)
 	v1.POST("/events/:id/dates/:date/block", a.apiAuth(), a.apiBlockOccurrence)
 	v1.PUT("/events/:id/dates/:date/registration", a.apiAuth(), a.apiRegisterOccurrence)

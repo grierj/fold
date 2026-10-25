@@ -94,14 +94,19 @@ func (a *App) guestDisplay(reg *models.Registration, occ *models.EventOccurrence
 // loadGuestEvent loads the event in :id for a signed-out visitor. It
 // answers 404 unless a guest may register for it, like every other
 // hidden thing in the API.
-func (a *App) loadGuestEvent(c *gin.Context) (*models.Event, eventFacts, bool) {
+func (a *App) loadGuestEvent(c *gin.Context, date string) (*models.Event, eventFacts, bool) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var ev models.Event
 	if err := a.DB.First(&ev, id).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return nil, eventFacts{}, false
 	}
-	f := a.factsFor(nil, &ev)
+	var occ models.EventOccurrence
+	if a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, date, models.OccurrenceScheduled).First(&occ).Error != nil {
+		jsonError(c, 404, "event not found")
+		return nil, eventFacts{}, false
+	}
+	f := a.factsFor(nil, dateEvent(&ev, &occ))
 	gp := policy.Group{}
 	if f.group != nil {
 		gp = asGroup(f.group)
@@ -128,13 +133,13 @@ type guestRegistrationInput struct {
 // that could reveal whether an email is registered answers with the
 // same thanks message and lets the email itself carry the difference.
 func (a *App) apiCreateGuestRegistration(c *gin.Context) {
-	ev, f, ok := a.loadGuestEvent(c)
-	if !ok {
-		return
-	}
 	var body guestRegistrationInput
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	ev, f, ok := a.loadGuestEvent(c, strings.TrimSpace(body.Date))
+	if !ok {
 		return
 	}
 	name := strings.TrimSpace(body.Name)
@@ -284,7 +289,7 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		// The door may have closed since the form was sent: the event
 		// tightened, or the date was cancelled.
 		if occ.Status != models.OccurrenceScheduled ||
-			!policy.CanRegisterGuest(viewOf(&ev, false), gp) {
+			!policy.CanRegisterGuest(viewOf(dateEvent(&ev, occ), false), gp) {
 			return errGuestEventGone
 		}
 		var user models.User

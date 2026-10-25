@@ -233,6 +233,9 @@ type dateOccurrenceJSON struct {
 	CanSeeAttendees  bool      `json:"canSeeAttendees"`
 	CanDecline       bool      `json:"canDecline"`
 	CanBlock         bool      `json:"canBlock"`
+	Visibility       string    `json:"visibility,omitempty"`
+	CanRegister      bool      `json:"canRegister,omitempty"`
+	HostedBy         string    `json:"hostedBy,omitempty"`
 }
 
 func presentOccurrenceDate(ev *models.Event, occ *models.EventOccurrence, groupLocation string, ordinary, manager, attendees bool, reg models.Registration, invited *occurrenceRead, now time.Time) dateOccurrenceJSON {
@@ -276,7 +279,7 @@ func (a *App) apiGetOccurrenceDate(c *gin.Context) {
 		return
 	}
 	me, now := apiUser(c), time.Now().UTC()
-	vs, err := a.visibleEvents(me, a.DB.Where("id = ?", id))
+	vs, err := a.dateCandidates(me, a.DB.Where("id = ?", id))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load this date")
 		return
@@ -292,7 +295,8 @@ func (a *App) apiGetOccurrenceDate(c *gin.Context) {
 		jsonError(c, http.StatusNotFound, "event not found")
 		return
 	}
-	ev, ordinary := vs.ByID[uint(id)]
+	ev := vs.ByID[uint(id)]
+	ordinary := vs.canSeeDate(me, ev, &occ)
 	invited := scoped[occ.ID]
 	if !ordinary && invited == nil {
 		jsonError(c, http.StatusNotFound, "event not found")
@@ -311,12 +315,20 @@ func (a *App) apiGetOccurrenceDate(c *gin.Context) {
 		}
 		manager = policy.CanManageEvent(asPerson(me), viewOf(ev, vs.Hosted[ev.ID]), rel)
 		attendees = policy.CanSeeAttendeeNames(asPerson(me), viewOf(ev, vs.Hosted[ev.ID]), gp, rel)
-		a.DB.Where("user_id = ? AND occurrence_id = ? AND status <> ?", me.ID, occ.ID, models.RegCancelled).Find(&reg)
+		if me != nil {
+			a.DB.Where("user_id = ? AND occurrence_id = ? AND status <> ?", me.ID, occ.ID, models.RegCancelled).Find(&reg)
+		}
 	} else {
 		ev = &invited.Event
 		reg = invited.Registration
 	}
-	c.JSON(http.StatusOK, gin.H{"occurrence": presentOccurrenceDate(ev, &occ, groupLocation, ordinary, manager, attendees, reg, invited, now)})
+	out := presentOccurrenceDate(ev, &occ, groupLocation, ordinary, manager, attendees, reg, invited, now)
+	if ordinary {
+		out.CanRegister = me != nil && a.canRegisterDateIn(a.DB, me, ev, occ.ID)
+		out.Visibility = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride)
+		out.HostedBy = a.siteName()
+	}
+	c.JSON(http.StatusOK, gin.H{"occurrence": out})
 }
 
 // occurrenceAccountsIn uses the same latest-consent ordering as the single-user

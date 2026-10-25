@@ -173,6 +173,8 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 					f.Manager = policy.CanManageEvent(asPerson(users[r.RequesterID]), viewOf(&ev, hosts[addRequestPair{r.RequesterID, ev.ID}]), requesterRel)
 					subject := users[r.SubjectUserID]
 					view := viewOf(&ev, hosts[addRequestPair{r.SubjectUserID, ev.ID}])
+					occ := occs[*r.OccurrenceID]
+					view.Visibility = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride)
 					f.OrdinaryEligible = policy.CanRegisterEvent(asPerson(subject), view, gp, subjectRel)
 					if subject != nil && subject.Status == models.UserGuest {
 						f.OrdinaryEligible = policy.CanRegisterGuest(view, gp)

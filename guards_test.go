@@ -925,9 +925,9 @@ func TestNotificationCategoriesMatch(t *testing.T) {
 
 // --- One list filter for event visibility ---
 //
-// Lists of events go through visibleEvents (api_event_access.go), which
-// skips events whose group row is gone. A policy.CanSeeEvent call inside
-// a loop anywhere else is a fifth copy of that filter (#75).
+// Series lists go through visibleEvents; date lists load eventCandidates then
+// apply visibleSet.canSeeDate. Candidate parents never authorize a series.
+// Both paths skip missing groups; policy loops elsewhere duplicate the filter.
 
 func TestOneEventVisibilityFilter(t *testing.T) {
 	files, _ := filepath.Glob("*.go")
@@ -942,7 +942,7 @@ func TestOneEventVisibilityFilter(t *testing.T) {
 		}
 		for _, d := range f.Decls {
 			fn, ok := d.(*ast.FuncDecl)
-			if !ok || fn.Body == nil || fn.Name.Name == "visibleEventsWith" {
+			if !ok || fn.Body == nil || fn.Name.Name == "eventCandidates" {
 				continue
 			}
 			ast.Inspect(fn.Body, func(n ast.Node) bool {

@@ -131,7 +131,7 @@ func TestOccurrenceDateReadExactAuthorityAndAllowlist(t *testing.T) {
 		}
 	}
 	apiDo(t, f.stranger, "GET", path, nil, 404)
-	apiDo(t, newAPIClient(t, f.app), "GET", path, nil, 401)
+	apiDo(t, newAPIClient(t, f.app), "GET", path, nil, 404)
 	for _, date := range []string{f.dates[0].OriginalDate, f.dates[2].OriginalDate, "not-a-date"} {
 		apiDo(t, f.client, "GET", dateReadPath(f.event.ID, date), nil, 404)
 	}
