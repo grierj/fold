@@ -26,6 +26,7 @@ import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 
 const GuardianConsentPage = lazy(() => import("./pages/GuardianConsent").then((m) => ({ default: m.GuardianConsentPage })));
+const ContactHistoryPage = lazy(() => import("./pages/ContactHistory").then((m) => ({ default: m.ContactHistoryPage })));
 const AdminPage = lazy(() => import("./pages/Admin").then((module) => ({ default: module.AdminPage })));
 const ContactRequestsPage = lazy(() => import("./pages/ContactRequests").then((m) => ({ default: m.ContactRequestsPage })));
 const AddRequestsPage = lazy(() => import("./pages/AddRequests").then((m) => ({ default: m.AddRequestsPage })));
@@ -82,6 +83,8 @@ export default function App() {
         <Route path="/add-requests/:id" element={<Suspense fallback={<Skeleton kind="page" label="Loading add request…" />}><AddRequestsPage /></Suspense>} />
         <Route path="/contact-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact requests…" />}><ContactRequestsPage /></Suspense>} />
         <Route path="/contact-requests/:id" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact request…" />}><ContactRequestsPage /></Suspense>} />
+        <Route path="/admin/contact-history" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact history…" />}><ContactHistoryPage /></Suspense>} />
+        <Route path="/admin/users/:id/contact-history" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact history…" />}><ContactHistoryPage /></Suspense>} />
         <Route path="/admin" element={<Suspense fallback={<div className="max-w-6xl mx-auto px-4 py-8"><Skeleton kind="page" label="Loading admin…" /></div>}><AdminPage /></Suspense>} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="*" element={<NotFound />} />

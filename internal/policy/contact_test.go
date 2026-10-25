@@ -396,7 +396,7 @@ func TestContactIneligibility(t *testing.T) {
 	}
 }
 
-func TestCanViewContactHistory(t *testing.T) {
+func TestCanViewContactRequestAndGrant(t *testing.T) {
 	_, f, r, g := contactFixture()
 	admin := ContactAccount{Person: &Person{ID: 9, Admin: true}, Active: true}
 	outsider := ContactAccount{Person: &Person{ID: 8}, Active: true}
@@ -477,6 +477,28 @@ func TestContactScopeRejectsAddFields(t *testing.T) {
 			if CanCreateContactRequest(s, f, 0) || ContactRequestStatusAfterDecision(f.Subject, ContactSubject, ContactApproved, r, f) != "" ||
 				ContactGrantCurrent(g, f) || CanRevealContactGrant(f.Requester, s, g, f) || ContactGrantRevocationReason(f.Subject, false, g) != "" {
 				t.Fatal("add fields acquired contact-request/grant authority")
+			}
+		})
+	}
+}
+
+func TestCanViewContactHistory(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		actor ContactAccount
+		want  bool
+	}{
+		{"signed out", ContactAccount{}, false},
+		{"active admin", ContactAccount{Person: &Person{ID: 1, Admin: true}, Active: true}, true},
+		{"member or own request", ContactAccount{Person: &Person{ID: 1}, Active: true}, false},
+		{"disabled admin", ContactAccount{Person: &Person{ID: 1, Admin: true}}, false},
+		{"teen admin", ContactAccount{Person: &Person{ID: 1, Admin: true, Teen: true}, Active: true}, false},
+		{"underage adult", ContactAccount{Person: &Person{ID: 1, Admin: true}, Active: true, AgeYears: new(16)}, false},
+		{"missing identity", ContactAccount{Person: &Person{Admin: true}, Active: true}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanViewContactHistory(tt.actor); got != tt.want {
+				t.Fatalf("got %v want %v", got, tt.want)
 			}
 		})
 	}

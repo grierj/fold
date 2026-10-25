@@ -693,3 +693,29 @@ export interface EventDate {
   canDecline: boolean;
   canBlock: boolean;
 }
+
+/** @public Retained safeguarding projection, checked by TestWebTypesMatchGoJSON; no contact values or free text. */
+export interface ContactHistoryEntry {
+  id: string;
+  at: string;
+  action: string;
+  actorId?: string;
+  requesterId?: string;
+  subjectUserId?: string;
+  purpose?: string;
+  requestId?: string;
+  accessId?: string;
+  contextType?: string;
+  contextId?: string;
+  occurrenceId?: string;
+  fields?: string;
+  outcome: string;
+  party?: string;
+  decision?: string;
+}
+
+/** @public Administrative history page, checked by TestWebTypesMatchGoJSON. */
+export interface ContactHistoryResponse {
+  entries: ContactHistoryEntry[];
+  nextBefore?: string;
+}

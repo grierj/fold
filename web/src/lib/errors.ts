@@ -11,6 +11,7 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
+  contact_history_filters: "Those history filters aren't valid. Check the dates and filters, then try again.",
   people_selection_unavailable: "That selection is no longer available. Search for the person again.",
   teen_add_approval_required: "Adding a teen needs their approval and an admin's approval. Ask your church office for help.",
   add_reason_long: "Your reason is too long. Use 1000 characters or fewer, then try again.",

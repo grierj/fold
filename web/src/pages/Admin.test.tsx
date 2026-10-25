@@ -1,10 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { AdminAccountRequests, AdminGroups, Groups, People, ApiError } from "../api";
+import { AdminAccountRequests, AdminGroups, AdminUsers, Groups, People, ApiError } from "../api";
 import { ERROR_COPY } from "../lib/errors";
-import type { AccountRequest } from "../types";
+import type { AccountRequest, User } from "../types";
 import { AdminPage } from "./Admin";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1 }, loading: false, isAdmin: true }) }));
@@ -84,4 +84,17 @@ it("offers a teen Ask to add without a leader-role shortcut", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
   expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
   expect(AdminGroups.addMember).not.toHaveBeenCalled();
+});
+
+it("opens person history from the existing user menu and offers retained-ID history", async () => {
+  const person: User = { id: 42, name: "Pat History", displayName: "Pat", email: "pat-history@example.com", phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [person] });
+  render(<MemoryRouter initialEntries={["/admin?tab=users"]}><Routes>
+    <Route path="/admin" element={<AdminPage />} />
+    <Route path="/admin/users/:id/contact-history" element={<p>Person history destination</p>} />
+  </Routes></MemoryRouter>);
+  expect(await screen.findByRole("link", { name: "Contact access history by ID" })).toHaveAttribute("href", "/admin/contact-history");
+  await userEvent.click(await screen.findByRole("button", { name: "More for Pat" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Contact access history" }));
+  expect(screen.getByText("Person history destination")).toBeInTheDocument();
 });

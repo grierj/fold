@@ -69,6 +69,8 @@ var tsContracts = []struct {
 }{
 	{personSearchJSON{}, "PersonSearchResult"},
 	{peopleSearchJSON{}, "PeopleSearchResponse"},
+	{contactHistoryEntryJSON{}, "ContactHistoryEntry"},
+	{contactHistoryJSON{}, "ContactHistoryResponse"},
 	{contactRequestJSON{}, "ContactRequest"},
 	{addRequestJSON{}, "AddRequest"},
 	{contactGrantJSON{}, "ContactGrant"},

@@ -13,6 +13,7 @@ import (
 
 // Actions. Add new ones here so they are easy to find and query.
 const (
+	ContactHistoryExported      = "contact_history.exported"
 	OccurrenceAccessAdded       = "occurrence_access.added"
 	OccurrenceBlocked           = "occurrence.blocked"
 	OccurrenceRefused           = "occurrence.refused"

@@ -4,7 +4,7 @@ import type { PersonSearchResult } from "../types";
 import { ContactDetails } from "../components/ContactDetails";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, Groups, Invitations, Site } from "../api";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
@@ -15,7 +15,7 @@ import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
 import { DeleteUserPanel } from "../components/DeleteUserPanel";
 import { GuardianLinkCard } from "../components/GuardianLinkCard";
-import { Button } from "../components/ui/Button";
+import { Button, ButtonLink } from "../components/ui/Button";
 import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors, Textarea } from "../components/ui/Field";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -743,6 +743,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
 }
 
 function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
+  const navigate = useNavigate();
   // Your own row has no Disable or Delete: the server refuses both
   // ("you cannot disable/delete your own account"), so don't offer them.
   const { user: me } = useAuth();
@@ -793,7 +794,8 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
 
   return (
     <div>
-      <div className="flex justify-end mb-4">
+      <div className="flex flex-wrap justify-end gap-2 mb-4">
+        <ButtonLink variant="secondary" to="/admin/contact-history">Contact access history by ID</ButtonLink>
         <Button variant="primary" onClick={() => { setCreating(true); setEditingId(null); }}>
           New user
         </Button>
@@ -891,6 +893,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     tone="quiet"
                     label={`More for ${u.displayName || u.name}`}
                     items={[
+                      { label: "Contact access history", onSelect: () => navigate(`/admin/users/${String(u.id)}/contact-history`) },
                       ...(u.accountType === "teen" || u.hasTeenConsentHistory ? [{ label: u.accountType === "teen" ? "Manage consent" : "Consent history", onSelect: () => { setConsentId(u.id); setEditingId(null); setResetId(null); setCreating(false); } }] : []),
                       { label: "Reset password", onSelect: () => { setResetId(u.id); setEditingId(null); setCreating(false); } },
                       { label: "Revoke calendar link", onSelect: () => void revokeCalendarLink(u), danger: true, disabled: busy },

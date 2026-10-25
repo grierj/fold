@@ -1020,7 +1020,7 @@ For staged teen conversion, `approved_user_id` is the authoritative account asso
 These authenticated endpoints use the normal cookie session, CSRF header for
 POSTs, and `Cache-Control: no-store`. They do not grant membership, registration,
 series visibility, or permission to add a person. Ask to add and one-date access
-use separate purpose-safe APIs (group asks below; one-date access remains deferred). GET never approves or reveals a contact field.
+use the separate purpose-safe group/occurrence APIs documented below. GET never approves or reveals a contact field.
 
 ```
 POST /api/v1/contact-requests
@@ -1241,8 +1241,9 @@ new addition. Audit failure rolls back the membership change.
 
 Every ordinary direct manager-initiated teen account add through these
 endpoints (including email, raw-ID and admin paths) fails closed with 409 code
-`teen_add_approval_required`. This is not an approval workflow and does not
-change teen self-RSVP, household, proxy, consent conversion or invitation flows.
+`teen_add_approval_required`. Use a separate Ask to add; direct endpoints do not
+auto-create asks. Teen self-RSVP, household, proxy, consent conversion and
+invitation flows retain their own rules.
 
 Picker copy (client-owned):
 
@@ -1253,16 +1254,17 @@ Picker copy (client-owned):
 
 The UI must omit teen direct-add, use an accessible debounced combobox, announce
 result count and discard stale responses. Group Ask-to-add has the API below;
-occurrence Ask-to-add and its UI remain deferred.
+occurrence Ask-to-add and its UI use the final s4 Add contract further below.
 New error-copy entries: `people_selection_unavailable`: “That selection is no
 longer available. Search for the person again.”; `teen_add_approval_required`:
 “Adding a teen needs their approval and an admin's approval. Ask your church
 office for help.”
 
-### Group Ask to add (M1.11 s4 group API partition)
+### Group Ask to add (M1.11 s4)
 
 All routes require the normal current cookie session, CSRF on POST and no-store.
-They are purpose-specific: **only `group_add`**, not contact or occurrence asks.
+This section describes `group_add`; the same routes also dispatch
+`occurrence_add` as documented below, never contact authority.
 The contact endpoints above now explicitly filter persisted `purpose=contact`
 before adaptation, decisions, withdrawal, grants and reveals. These add rows
 never appear in a contact DTO, contact reason, contact grant or contact lifecycle.
@@ -1293,15 +1295,16 @@ admin's approval, including when the requester is an admin. Guardians never
 approve for the teen. The typed policy also handles subject-only adult asks when
 ordinary addition is unavailable; currently all active eligible adult group
 accounts use the existing direct-add route, not an unnecessary ask. Contact
-hiding is not a membership restriction. No occurrence creation/finalization or
-out-of-visibility date route is enabled by this partition.
+hiding is not a membership restriction. Occurrence creation/finalization and
+the out-of-visibility date contract are documented separately below.
 
-The optional reason is trimmed and limited to 1000 Unicode characters. The
+The optional reason is limited to 1000 Unicode characters before trimming. The
 explicit `overLimit` choice defaults false, is immutable and never inferred from
 approval. Ten open requests per requester **across all purposes** and a fixed
 14-day expiry are serialized by the shared gate.
 
-`AddRequest` (exact Go/TS contract; optional fields marked `?`):
+Group-purpose `AddRequest` projection (optional fields marked `?`; the
+occurrence-purpose additions are documented below):
 
 ```
 id: number
@@ -1361,8 +1364,7 @@ Historic `granted` asks stay granted after later membership removal or role loss
 Contact grants retain their existing, separate automatic-end rules. The sweep
 now dispatches occurrence-add rows through their own current-facts lifecycle;
 it never guesses from contact registration or last-date facts. Occurrence create,
-review, decision and completion APIs remain closed pending the complete mutation
-and recipient-control partition.
+review, decision and completion use the separate occurrence-purpose checks below.
 
 Audit actions: `add.requested`, `add.decision` (including either denial),
 `add.withdrawn`, `add.expired`, `add.ended`, `add.completed`, `add.refused`;
@@ -1390,10 +1392,10 @@ Actionable errors (no 429):
 - `request_open_limit` (409): “You have 10 open requests. Withdraw one or wait for
   a decision before sending another.”
 
-No React control, API client, UI action or scoped occurrence read is added here.
-The next UI partition must use the exact contract and approved controls/copy.
+Profile's Add request history opens the purpose-aware review UI; group and
+single-date Ask controls use the shared name picker and separate add client.
 
-### Exact-date invitation reads (M1.11 s4 read partition)
+### Exact-date invitation reads (M1.11 s4)
 
 `GET /api/v1/events/:id/dates/:date` requires a current authenticated account.
 `:date` is the occurrence's original `YYYY-MM-DD` key, not its rescheduled
@@ -1422,9 +1424,8 @@ is the viewer's own status or null. Video is gated by that date's own RSVP and
 current policy; an invitation does not inherit manager video authority.
 `canSeeAttendees` is always false for invitation-only access, and this endpoint
 never includes attendees even for ordinary viewers. `canDecline`/`canBlock`
-describe current recipient invitation policy, **not enabled mutation endpoints**;
-no decline, block, reveal, or occurrence-add API is introduced by this read
-partition. Ordinary voluntary RSVP continues to use its existing authority.
+describe current recipient invitation policy for the mutations below. Ordinary
+voluntary RSVP continues to use its existing authority.
 
 Calendar rows for invitation-only dates retain the slim `CalendarOccurrence`
 shape, with `dateUrl` set to `/events/:id/dates/:date`, the recipient's own Going
@@ -1435,13 +1436,13 @@ Personal feeds, including `scope=all`, export such dates as standalone VEVENTs
 with an absolute exact-date URL: never RRULE, sibling EXDATEs, series metadata,
 or a bare series URL. Public and group feeds remain ordinary-visibility only.
 The UI owner must follow `dateUrl` for scoped rows rather than synthesizing a
-parent-event link; the exact-date SPA page is not part of this partition.
+parent-event link. The exact-date SPA page uses this sanitized contract.
 
 `CanSeeEvent`, `loadVisibleEvent`, ordinary `/events` discovery, and rich
 occurrence lists retain their existing series-only semantics. Explicit
 invitation parent event IDs are never added to their visible event sets. Scoped
-access is reachable through exact-date/calendar/personal-feed links (and the
-later notice UI), not an expansion of ordinary discovery. Group pages/rosters,
+access is reachable through exact-date/calendar/personal-feed/notice links,
+not an expansion of ordinary discovery. Group pages/rosters,
 sibling dates, series detail, contact and management remain separately gated.
 
 Invitation reads reload current account/teen account consent, active invitation,
@@ -1450,17 +1451,15 @@ organizing group. Disable/consent loss, cancellation/deletion, removal/revocatio
 or organizer mismatch fails closed before cleanup. Rescheduling the same
 occurrence preserves its original exact-date link; a new occurrence never
 copies access. Accepted invitations do not depend on the issuer retaining a
-role, and a new organizer block does not revoke other accepted dates. The later
-mutation/lifecycle owner must persist irreversible ends on disable, consent
-loss, cancellation and deletion before enabling occurrence adds: a read cannot
-detect a historical disable followed by re-enable if no end was recorded.
+role, and a new organizer block does not revoke other accepted dates. Mutation/lifecycle hooks persist irreversible ends on disable, consent loss,
+cancellation and deletion: a read alone cannot detect a historical disable
+followed by re-enable if no end was recorded.
 Downloaded calendar data cannot be recalled from another application.
 
-### Occurrence recipient controls and lifecycle (M1.11 s4 checkpoint)
+### Occurrence recipient controls and lifecycle (M1.11 s4)
 
-New occurrence Ask creation/review/completion remains **closed**. Existing
-`add-requests` routes still expose only group asks. Ordinary adult manager adds
-do not yet mint provenance; teen/out-of-visibility adds remain unavailable.
+Occurrence Ask creation/review/completion and ordinary adult manager-add
+provenance are enabled as described in the final Add contract below.
 
 Authenticated exact-date mutations use normal CSRF and API no-store:
 
@@ -1490,8 +1489,8 @@ that transaction. Current-manager removal uses `registrations/remove` with fresh
 session/management checks. Explicit invitation removal ends access and releases/
 promotes seats; its notice and audit omit private management notes. Ordinary
 legacy pruning keeps its existing seat reservation. Legacy account-add selection,
-email and ID siblings honor blocks and retained endings, without enabling new
-request authority or direct provenance.
+email and ID siblings honor blocks and retained endings; eligible direct adult
+adds mint explicit provenance as described below.
 
 Ordinary RSVP detects active provenance in its existing registration row query.
 If present, it rolls back before any writes and retries with the gate FIRST;
@@ -1519,15 +1518,11 @@ organizer or series values, and names-free email. Deleted dates receive no new
 invalid navigation notice. Effects, audit, tasks and notices commit together;
 mail runs only after commit.
 
-Remaining before additions launch: safe occurrence request DTO/create/review,
-immutable final options and approval-capacity retry completion, persistent
-per-actor manager-add rate limiting, direct ordinary add provenance, safe added-
-person/current confirmed guardian completion notices, and integrated UI/e2e proof.
+### Final s4 Add contract
 
-### Final s4 backend Add contract (supersedes checkpoint restrictions above)
-
-Occurrence requests are now enabled on the same authenticated `/add-requests`
-routes as group asks. This is backend delivery, not UI or milestone acceptance.
+Occurrence requests are enabled on the same authenticated `/add-requests`
+routes as group asks. The UI and focused browser proof are implemented; final
+M1.11 acceptance remains pending (see `plan/M1.11-BRIEF.md`).
 
 `POST /add-requests` takes an actor-bound `selectionId`, `contextType` (`group`
 or `event`), `contextId`, optional `reason` (1000 characters). Group accepts
@@ -1597,3 +1592,144 @@ not obstruct an independently eligible voluntary waiter. Invitation-only waiters
 need current exact access; stale/ended access never promotes. Automatic and
 household/proxy promotion rules otherwise remain unchanged. Manager removal also
 ends conflicting pending exact-date asks, preventing stale approvals after prune.
+
+### Administrative contact/access history (M1.11 s5; final acceptance pending)
+
+```
+GET /api/v1/admin/users/:id/contact-history
+  → 200 {entries: ContactHistoryEntry[], nextBefore?: string}
+GET /api/v1/admin/users/:id/contact-history.csv
+  → 200 text/csv; charset=utf-8
+```
+
+Both require a current active adult admin session. A requester, subject,
+guardian, leader or host has no administrative history/export right, including
+for their own ID. Existing private `/contact-requests`, `/contact-grants` and
+`/add-requests` review/list permissions are unchanged. Session version, current
+role and disabled/deleted state are checked on each request. Adult eligibility
+uses the church-local calendar day, never the UTC day; teen accounts never
+qualify. Responses use `Cache-Control: no-store`. GET export follows ordinary authenticated read
+routing; it adds an audit row, not a new CSRF exemption.
+
+`:id` is a positive retained account ID (up to signed bigint), not a live user
+lookup. A deleted requester, deleted subject or absent history returns 200;
+absent records give `entries: []` or a header-only CSV, not 404. History uses
+retained AuditLog and request/occurrence-access provenance, independent of live
+accounts, groups, events, registrations and notification cleanup.
+
+JSON pagination is descending **audit ID**, regardless of timestamp. Optional
+`limit` is 1–100 (default 50); `before` is an exclusive positive audit ID. When
+`nextBefore` exists, pass it as `before` with the same filters to continue.
+Timestamp ties cannot duplicate or skip IDs. JSON pages are fresh reads, not a
+cross-request snapshot; newly committed higher IDs appear on a fresh first page.
+
+Shared optional filters (ANDed with the person's actor/requester/subject
+involvement):
+
+- `purpose=contact|group_add|occurrence_add`
+- `action`: one exact listed action below, not a prefix or arbitrary audit action
+- `contextType=group|event`, optionally `contextId=<positive ID>`; an ID needs a type
+- `occurrenceId=<positive ID>`
+- `from=<RFC3339 timestamp>` inclusive, `until=<RFC3339 timestamp>` exclusive;
+  when both are given, `from` must be earlier. Explicit Go zero timestamps
+  (`0001-01-01T00:00:00Z`, including equivalent offset representations) are
+  rejected, not interpreted as absent bounds. URL-encode offsets containing `+`.
+
+Unknown, repeated, empty, malformed or overlong parameters return 400
+`contact_history_filters`. Each value is at most 64 bytes; the total query is
+at most 1024 bytes. CSV accepts these same shared filters but **rejects**
+`before` and `limit`: it exports **all** matching retained entries, not a JSON
+page and not a silently capped result.
+
+`ContactHistoryEntry` is a closed projection:
+
+```
+{id, at, action, actorId?, requesterId?, subjectUserId?, purpose?,
+ requestId?, accessId?, contextType?, contextId?, occurrenceId?, fields?,
+ outcome, party?, decision?}
+```
+
+Every JSON ID is an exact **decimal string**, not a JavaScript number:
+`id`, `actorId`, `requesterId`, `subjectUserId`, `requestId`, `accessId`,
+`contextId`, `occurrenceId`, and page `nextBefore`. Optional IDs are omitted,
+never null. `entries` is always an array. Positive IDs through
+`"9223372036854775807"` round-trip exactly, including distinct values
+`"9007199254740992"` and `"9007199254740993"`. Keep these as strings in
+frontend state, URLSearchParams, cursors, comparisons and download paths;
+**never use Number(), parseInt(), unary + or numeric sorting on history IDs**.
+This does not change numeric IDs in other APIs or database/internal ID types.
+`at` is RFC3339; actor absence denotes a system action. IDs denote retained
+provenance, not permission to open a current context. Requester and subject are
+loaded from the known retained request/access relation. Ordinary group/date add
+and removal audits use only their typed numeric `userId` (and date
+`occurrenceId`) metadata. No substring matching or live-person joins occur.
+Malformed/missing metadata omits the unproven fields; it does not fail open or
+panic. Generic endpoint refusals and request refusals without retained request
+provenance remain actor-only rows. Submitted hidden person/context IDs,
+selections or guessed request IDs are **not** recovered to invent a subject or
+improve filtering. Such rows therefore do not appear under an alleged subject
+or a purpose/context filter they cannot establish.
+
+Included action families:
+
+- `contact.requested`, `.decision`, `.withdrawn`, `.expired`, `.granted`,
+  `.reveal`, `.refused`, `.revoked`, `.ended`
+- `add.requested`, `.decision`, `.withdrawn`, `.expired`, `.completed`,
+  `.refused`, `.ended`
+- `occurrence_access.added`, `.ended`, `occurrence.blocked`, `.refused`
+- `membership.added`, `.added_over_limit`, `.removed`
+- `registration.added`, `.added_over_capacity`, `.removed`
+
+This is not an unrestricted general audit viewer. Every action must also match
+its known target shape. `outcome` is `requested`, `decision`, `approved`,
+`denied`, `withdrawn`, `expired`, `granted`, `revealed`, `refused`, `revoked`,
+`ended`, `added`, `removed` or `blocked`. For a valid decision audit only,
+`party=subject|admin` and `decision=approved|denied` preserve the historical
+party decision rather than the request's current final status. `fields` is the
+contact field **selection** (`email|phone|both`), never its value; add rows have
+no contact fields or grants. There are no names, email/phone values, submitted
+reasons/notes, IPs, arbitrary metadata, request bodies, tokens, or video URLs.
+
+CSV filename is deterministic: `contact-history-<personId>.csv`. Its fixed
+column order is:
+
+```
+auditId,at,action,actorId,requesterId,subjectUserId,purpose,requestId,accessId,contextType,contextId,occurrenceId,fields,outcome,party,decision
+```
+
+Absent values are empty cells; timestamps are UTC RFC3339 with fractional
+precision when present. The Go CSV encoder handles Unicode, commas, double
+quotes and CRLF record endings. Every cell is spreadsheet-escaped: a leading
+formula operator (`=`, `+`, `-`, `@`), including after whitespace, or a leading
+control/format character gets a literal apostrophe prefix. Quoting alone is not
+treated as formula protection.
+
+Export reads a repeatable-read snapshot in internal pages of 100 into a private
+0600 temporary file, then flushes/syncs/rewinds/stats it. Immediately before
+the export audit, a `FOR SHARE` locking read rechecks the current actor, session
+version, active/deleted state, admin role and church-local adult eligibility.
+Under PostgreSQL REPEATABLE READ, an actor changed after the snapshot causes
+this locking read to fail serialization; it is not trusted as stale authority.
+No actor lock is held during lengthy page materialization. The checked row lock
+is held through audit commit, the authorization linearization point. Revocation
+after that point cannot retract a prepared export. The transaction commits
+`contact_history.exported` (target type `user`, retained person ID; actor admin;
+metadata contains count and the explicit safe filters). Only after that commit
+are CSV headers/body emitted. Auth, query, disk or audit failures return an error
+without partial CSV masquerading as a complete export. Temporary files are
+closed and removed on normal success/error returns (not process crashes); no
+blob service or persistent export store is introduced. Network interruption can
+still interrupt a download; Content-Length
+allows a client to detect it. The audit denotes a prepared authorized export,
+not confirmed network receipt. Go memory is page-bounded, but aggregate temporary
+disk, concurrent export count and transaction duration have no added budget.
+The export audit is retained but is not itself an entry in this contact/add
+action projection. History reads do not take the
+contact mutation gate and do not reconcile lifecycle state. Existing lifecycle
+mutations/sweeps own their actual audit entries. DEC-33 hash chaining, write-once
+offsite storage and retention hardening remain deferred.
+
+The admin history UI/client and focused browser/mobile/accessibility proof are
+implemented and independently reviewed. Local M1.11 acceptance and final
+integrated verification are recorded in `docs/plan/M1.11-BRIEF.md`; publication,
+merge and production deployment are separate.

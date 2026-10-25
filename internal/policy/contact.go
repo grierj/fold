@@ -289,6 +289,12 @@ func CanRevealContactGrant(actor ContactAccount, requested ContactScope, g Conta
 		(requested.Fields == g.Fields || g.Fields == ContactBoth)
 }
 
+// CanViewContactHistory is administrative safeguarding review/export, not the
+// requester's or subject's own request list. Retained target IDs confer no right.
+func CanViewContactHistory(actor ContactAccount) bool {
+	return actor.Active && actor.adult() && actor.Person.ID > 0 && IsAdmin(actor.Person)
+}
+
 // CanViewContactRequest authorizes outcome review only, never contact fields.
 func CanViewContactRequest(actor ContactAccount, r ContactRequest) bool {
 	return actor.Active && actor.Person != nil && (actor.Person.ID == r.RequesterID || actor.Person.ID == r.SubjectUserID || (actor.adult() && actor.Person.Admin))

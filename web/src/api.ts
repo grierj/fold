@@ -78,6 +78,26 @@ export async function api<T>(path: string, opts: RequestOptions = {}): Promise<T
   return data;
 }
 
+// CSV reads share cookie and signed-out handling with JSON reads, but must
+// reject JSON/proxy errors before creating any downloadable blob.
+export async function authenticatedCSV(path: string): Promise<Blob> {
+  const res = await fetch(`/api/v1${path}`, {
+    headers: { Accept: "text/csv" }, credentials: "include", cache: "no-store",
+  });
+  if (res.status === 401) {
+    onUnauthorized?.();
+    throw new ApiError(401, "unauthorized", { code: "signed_out" });
+  }
+  if (!res.ok) {
+    const raw = await res.json().catch(() => ({})) as Record<string, unknown>;
+    throw new ApiError(res.status, "CSV request failed", raw);
+  }
+  if (res.headers.get("Content-Type")?.split(";")[0].trim().toLowerCase() !== "text/csv") {
+    throw new ApiError(500, "Expected CSV", { code: "server_error" });
+  }
+  return res.blob();
+}
+
 // ---- endpoint wrappers ----
 
 import type {

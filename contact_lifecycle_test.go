@@ -280,9 +280,18 @@ func TestContactSweepsBoundariesAndIdempotence(t *testing.T) {
 	if err := f.app.DB.Create(&models.Setting{Key: settingTimezone, Value: "America/Los_Angeles"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	birth := time.Date(2008, 10, 25, 0, 0, 0, 0, time.UTC)
-	f.app.DB.Model(f.subject).Update("birth_date", birth)
-	boundary := time.Date(2026, 10, 25, 7, 0, 0, 0, time.UTC)
+	zone, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Keep the fake birthday after the real grant, even when this test runs
+	// years later. October's local midnight is still not UTC midnight.
+	year := g.GrantedAt.In(zone).Year() + 1
+	birth := time.Date(year-18, 10, 25, 0, 0, 0, 0, time.UTC)
+	if err := f.app.DB.Model(f.subject).Update("birth_date", birth).Error; err != nil {
+		t.Fatal(err)
+	}
+	boundary := time.Date(year, 10, 25, 0, 0, 0, 0, zone).UTC()
 	if err := f.app.sweepContacts(context.Background(), boundary.Add(-time.Microsecond)); err != nil {
 		t.Fatal(err)
 	}

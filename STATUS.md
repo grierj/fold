@@ -23,7 +23,7 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.8 Video, remote, childcare | done (video #102, remote #105, childcare #109 merged) | Wright | `m1.8-remote-capacity` |
 | M1.9 Households and household people | done (merged, #106, #107, #110, #111) | Wright | `m1.9-household-convert` |
 | M1.10 Teen accounts, consent, badges | implemented and verified (#114–#118; docs/plan/M1.10-BRIEF.md) | Wright | `m1.10-age-rollover` |
-| M1.11 Contact privacy and direct-contact requests | in progress: s1 privacy, s2 direct-contact lifecycle, s3 name search and s4 Ask to add with exact-date access implemented, reviewed and verified; s5 history/export and final milestone acceptance pending | Wright | `orchestrate/207252f0-d74a-467e-83c4-314a924143cd` |
+| M1.11 Contact privacy and direct-contact requests | implemented, independently reviewed and verified locally; all 16 acceptance criteria satisfied (docs/plan/M1.11-BRIEF.md); not pushed or merged | Wright | `orchestrate/207252f0-d74a-467e-83c4-314a924143cd` |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
 | M1.13 Per-date event visibility (DEC-46) | unclaimed | | |
 | Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | done (merged, #43) | Wright | `simplicity` |
