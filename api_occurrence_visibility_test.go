@@ -173,13 +173,14 @@ func TestDateTighteningCancelsOnlyThatDateAndRechecksGuestRedemption(t *testing.
 	if cancelled.Status != models.RegCancelled {
 		t.Fatalf("history lost: %+v", cancelled)
 	}
+	apiDo(t, admin, "PUT", path, map[string]any{"title": "PRIVATE FUTURE TITLE", "location": "PRIVATE FUTURE PLACE", "startsLocal": dates[0].StartsAt.Add(2 * time.Hour).UTC().Format("2006-01-02T15:04")}, 200)
 	for _, method := range []string{"GET", "POST"} {
 		path := "/api/v1/guest-registrations/manage/" + manageToken
 		if method == "POST" {
 			path += "/cancel"
 		}
-		raw := apiDo(t, anon, method, path, nil, 200)
-		if !strings.Contains(raw, `"status":"cancelled"`) || strings.Contains(raw, "Hidden fellowship") || strings.Contains(raw, "SECRET GROUP PLACE") {
+		raw := apiDo(t, anon, method, path, nil, 404)
+		if strings.Contains(raw, "PRIVATE FUTURE") || strings.Contains(raw, "Hidden fellowship") || strings.Contains(raw, "SECRET GROUP PLACE") {
 			t.Fatalf("cancelled manage: %s", raw)
 		}
 	}
@@ -408,5 +409,38 @@ func TestOpenedDateNoticesUseEffectiveTitle(t *testing.T) {
 		if strings.Contains(string(raw), "CONFIDENTIAL") || !strings.Contains(n.Title+n.Body, "Community supper") || !strings.Contains(n.EmailTitle+n.EmailBody, "Community supper") {
 			t.Fatalf("unsafe notice/email: %s", raw)
 		}
+	}
+}
+
+func TestVisibilityCancellationRevokesPromotedAccountManageToken(t *testing.T) {
+	app, admin, anon, ev, dates := dateVisibilityFixture(t, models.VisibilityPublic)
+	app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{"capacity": 1, "waitlist_enabled": true})
+	user := newTestUser(t, app, "promoted-token", "password1234", models.RoleMember)
+	client := loginAPI(t, app, "promoted-token", "password1234")
+	root := fmt.Sprintf("/api/v1/events/%d", ev.ID)
+	answer := map[string]any{"date": dates[0].OriginalDate, "status": "going"}
+	apiDo(t, admin, "PUT", root+"/registrations", answer, 200)
+	apiDo(t, client, "PUT", root+"/registrations", answer, 200)
+	apiDo(t, admin, "PUT", root+"/registrations", map[string]any{"date": dates[0].OriginalDate, "status": "declined"}, 200)
+	raw := manageTokenInEmail(t, latestEmail(t, app, user.Email))
+	manage := "/api/v1/guest-registrations/manage/" + raw
+	apiDo(t, anon, "GET", manage, nil, 200)
+	path := root + "/occurrences/" + dates[0].OriginalDate
+	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "invite_only", "confirm": true}, 200)
+	apiDo(t, admin, "PUT", path, map[string]any{"title": "PRIVATE PROMOTED TITLE", "location": "PRIVATE PROMOTED PLACE", "startsLocal": dates[0].StartsAt.Add(2 * time.Hour).UTC().Format("2006-01-02T15:04")}, 200)
+	for _, method := range []string{"GET", "POST"} {
+		target := manage
+		if method == "POST" {
+			target += "/cancel"
+		}
+		body := apiDo(t, anon, method, target, nil, 404)
+		if strings.Contains(body, "PRIVATE PROMOTED") || strings.Contains(body, "startsAt") || strings.Contains(body, "location") {
+			t.Fatalf("revoked token revealed private date: %s", body)
+		}
+	}
+	var reg models.Registration
+	app.DB.Where("user_id = ? AND occurrence_id = ?", user.ID, dates[0].ID).First(&reg)
+	if reg.Status != models.RegCancelled || reg.ManageTokenHash != "" {
+		t.Fatalf("history or revocation: %+v", reg)
 	}
 }
