@@ -395,3 +395,38 @@ func TestContactIneligibility(t *testing.T) {
 		})
 	}
 }
+
+func TestCanViewContactHistory(t *testing.T) {
+	_, f, r, g := contactFixture()
+	admin := ContactAccount{Person: &Person{ID: 9, Admin: true}, Active: true}
+	outsider := ContactAccount{Person: &Person{ID: 8}, Active: true}
+	for _, tc := range []struct {
+		name                                  string
+		actor                                 ContactAccount
+		guardian, teen, ended, request, grant bool
+	}{
+		{"requester", f.Requester, false, true, false, true, true},
+		{"subject", f.Subject, false, true, false, true, true},
+		{"admin", admin, false, true, false, true, true},
+		{"outsider", outsider, false, true, false, false, false},
+		{"confirmed guardian", outsider, true, true, false, false, true},
+		{"pending or revoked guardian", outsider, false, true, false, false, false},
+		{"guardian ended", outsider, true, true, true, false, false},
+		{"guardian actual adulthood", outsider, true, false, false, false, false},
+		{"disabled", ContactAccount{Person: &Person{ID: 1}}, true, true, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			grant := g
+			if tc.ended {
+				now := f.Now
+				grant.EndedAt = &now
+			}
+			if got := CanViewContactRequest(tc.actor, r); got != tc.request {
+				t.Errorf("request %v", got)
+			}
+			if got := CanViewContactGrant(tc.actor, tc.guardian, tc.teen, grant); got != tc.grant {
+				t.Errorf("grant %v", got)
+			}
+		})
+	}
+}

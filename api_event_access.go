@@ -401,7 +401,7 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 	oldVis, oldOpened := ev.Visibility, ev.LeaderOpened
 	var impact visibilityImpactJSON
 	var emailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
@@ -509,7 +509,7 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 		return
 	}
 	uid, _ := strconv.Atoi(c.Param("userId"))
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err

@@ -94,6 +94,9 @@ func lockConversionParticipants(tx *gorm.DB, inv *models.Invitation, person *mod
 // lockTeenLifecycleUsers also locks a staged conversion's household before a
 // caller locks a guardian link, a group or an occurrence.
 func lockTeenLifecycleUsers(tx *gorm.DB, userID uint, extraIDs ...uint) (map[uint]*models.User, error) {
+	if err := lockContacts(tx); err != nil {
+		return nil, err
+	}
 	stage, err := stagedTeenConversionIn(tx, userID)
 	if err != nil {
 		return nil, err

@@ -285,7 +285,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 	}
 	var impact visibilityImpactJSON
 	var emailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
 		// Lock the row and read the stored visibility, so a concurrent change
 		// can't skip the tightening (DEC-48).
 		var locked models.Group
@@ -566,7 +566,7 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, 
 	allow func(actor, target policy.Rel, leaders int) bool) error {
 	actor := apiUser(c)
 	var emailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{UserID: userID}, func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(g, g.ID).Error; err != nil {
 			return err
 		}
@@ -827,7 +827,7 @@ func auditAndNotifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
 // memberships have no deleted-at column, so they are removed outright.
 func (a *App) deleteGroup(ctx context.Context, g *models.Group, by *uint) error {
 	imageURL := g.ImageURL
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
 		var eventIDs []uint
 		if err := tx.Unscoped().Model(&models.Event{}).Where("group_id = ?", g.ID).Pluck("id", &eventIDs).Error; err != nil {
 			return err

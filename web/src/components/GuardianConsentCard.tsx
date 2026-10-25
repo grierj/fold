@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Guardians, type GuardianConsentScope } from "../guardian-api";
 import type { GuardianTeen } from "../types";
 import { errorText } from "../lib/errors";
@@ -6,7 +6,10 @@ import { Button } from "./ui/Button";
 import { Field, FormError, Input, Select } from "./ui/Field";
 import { ErrorNotice } from "./ErrorNotice";
 
+const GuardianContactGrants = lazy(() => import("./GuardianContactGrants").then((m) => ({ default: m.GuardianContactGrants })));
+
 function TeenConsentControls({ teen, onChanged }: { teen: GuardianTeen; onChanged: () => Promise<void> }) {
+  const [showGrants, setShowGrants] = useState(false);
   const [scope, setScope] = useState<GuardianConsentScope>("account");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -20,6 +23,7 @@ function TeenConsentControls({ teen, onChanged }: { teen: GuardianTeen; onChange
     setMessage("");
     try {
       await Guardians.change(teen.linkId, scope, status);
+      setShowGrants(false);
       await onChanged();
       setMessage(`${scope === "sms" ? "SMS" : scope === "photos" ? "Photo" : "Account"} consent ${status}.`);
     } catch (e) { setError(errorText(e)); }
@@ -36,6 +40,8 @@ function TeenConsentControls({ teen, onChanged }: { teen: GuardianTeen; onChange
 
   return <div className="border-t border-border pt-4 mt-4">
     <h3 className="font-semibold">{teen.teenName}</h3>
+    <Button variant="link" aria-expanded={showGrants} onClick={() => setShowGrants(!showGrants)}>{showGrants ? "Close contact access" : "View active contact access"}</Button>
+    {showGrants && <Suspense fallback={<p role="status">Loading contact access…</p>}><GuardianContactGrants teenUserId={teen.teenUserId} /></Suspense>}
     <Field id={`guardian-scope-${teen.linkId}`} label="Consent" hint="Account consent lets your teen use Fold. SMS consent also needs their own opt-in before any texts can be sent.">
       <Select value={scope} onChange={(e) => {
         const value = e.target.value;

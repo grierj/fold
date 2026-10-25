@@ -77,7 +77,7 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 	}
 	apply(&g)
 	errHandled := errors.New("already handled")
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
 		res := tx.Model(&models.Group{}).Where("id = ? AND status = ?", g.ID, models.GroupPending).
 			Updates(map[string]any{"status": g.Status, "tags": g.Tags})
 		if res.Error != nil {
@@ -561,7 +561,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	if len(updates) > 0 || body.Status != nil {
 		var emailed []uint
 		errTeenActivation := errors.New("a teen account waiting for consent becomes active only when consent is granted")
-		err := a.DB.Transaction(func(tx *gorm.DB) error {
+		err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 			actor, target, err := lockConsentUsers(tx, me.ID, u.ID)
 			if err != nil {
 				return err
@@ -708,7 +708,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// free for a new account, and the session version is bumped so open
 	// sessions end.
 	var emailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(u, u.ID).Error; err != nil {
 			return err
 		}

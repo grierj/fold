@@ -332,3 +332,22 @@ func TestRenderEmailSafeNamesNobody(t *testing.T) {
 		t.Fatalf("stored email rendering names someone")
 	}
 }
+
+func TestContactKindsNavigationOnlySafeEmail(t *testing.T) {
+	for _, key := range []string{ContactSubjectReview, ContactAdminReview, ContactUpdated} {
+		k, ok := Lookup(key)
+		if !ok {
+			t.Fatalf("missing %s", key)
+		}
+		if len(k.Actions) != 0 || k.BatchWindow != 0 || !k.AllowEmail || k.RenderEmailSafe == nil {
+			t.Fatalf("unsafe contact kind %#v", k)
+		}
+		if k.Waiting != (key != ContactUpdated) {
+			t.Fatalf("wrong task state %s", key)
+		}
+		title, body := k.RenderForEmail(Vars{Actor: "Private requester", Person: "Private subject", Group: "Hidden group", Event: "Hidden event", Note: "private reason"})
+		if strings.Contains(title+body, "Private") || strings.Contains(title+body, "Hidden") || strings.Contains(title+body, "private reason") {
+			t.Fatalf("sensitive email %s: %s %s", key, title, body)
+		}
+	}
+}

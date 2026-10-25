@@ -11,6 +11,9 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
+  contact_unavailable: "This contact request or grant is no longer available to you. Refresh the page to see its current status.",
+  contact_reason_long: "Your reason is too long. Use 1000 characters or fewer, then try again.",
+  contact_open_limit: "You have 10 open contact requests. Withdraw one or wait for a decision before sending another.",
   invalid_guardian_email: "Enter a parent or guardian's email address, different from your own.",
   consent_existing_account: "This email already has an account. Approve without granting consent, then review the account in Users.",
   consent_teen_only: "This account is no longer a teen account. Refresh the user list.",

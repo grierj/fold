@@ -269,3 +269,15 @@ func CanRevealContactGrant(actor ContactAccount, requested ContactScope, g Conta
 		requested.ContextType == g.ContextType && requested.ContextID == g.ContextID &&
 		(requested.Fields == g.Fields || g.Fields == ContactBoth)
 }
+
+// CanViewContactRequest authorizes outcome review only, never contact fields.
+func CanViewContactRequest(actor ContactAccount, r ContactRequest) bool {
+	return actor.Active && actor.Person != nil && (actor.Person.ID == r.RequesterID || actor.Person.ID == r.SubjectUserID || (actor.adult() && actor.Person.Admin))
+}
+
+// CanViewContactGrant gives confirmed guardians active teen grants only. An
+// actual adult with a stale teen account must not retain guardian-based access.
+func CanViewContactGrant(actor ContactAccount, confirmedGuardian, subjectTeen bool, g ContactGrant) bool {
+	return CanViewContactRequest(actor, ContactRequest{ContactScope: g.ContactScope}) ||
+		(actor.Active && actor.adult() && confirmedGuardian && subjectTeen && g.NeedsAdmin && g.EndedAt == nil)
+}

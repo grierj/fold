@@ -141,7 +141,7 @@ func (a *App) apiUseGuardianEmail(c *gin.Context) {
 		return
 	}
 	var mailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{}, func(tx *gorm.DB) error {
 		_, payload, err := a.guardianEmailToken(tx, body.Token)
 		if err != nil {
 			return err

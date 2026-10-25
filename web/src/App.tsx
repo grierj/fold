@@ -27,6 +27,7 @@ import { useAuth } from "./auth";
 
 const GuardianConsentPage = lazy(() => import("./pages/GuardianConsent").then((m) => ({ default: m.GuardianConsentPage })));
 const AdminPage = lazy(() => import("./pages/Admin").then((module) => ({ default: module.AdminPage })));
+const ContactRequestsPage = lazy(() => import("./pages/ContactRequests").then((m) => ({ default: m.ContactRequestsPage })));
 const WaitingForConsent = lazy(() => import("./pages/WaitingForConsent"));
 
 export default function App() {
@@ -74,6 +75,8 @@ export default function App() {
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/my-groups" element={<MyGroups />} />
         <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/contact-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact requests…" />}><ContactRequestsPage /></Suspense>} />
+        <Route path="/contact-requests/:id" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact request…" />}><ContactRequestsPage /></Suspense>} />
         <Route path="/admin" element={<Suspense fallback={<div className="max-w-6xl mx-auto px-4 py-8"><Skeleton kind="page" label="Loading admin…" /></div>}><AdminPage /></Suspense>} />
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="*" element={<NotFound />} />

@@ -1014,3 +1014,177 @@ Group rosters omit teen names and IDs for ordinary viewers while retaining the t
 
 
 For staged teen conversion, `approved_user_id` is the authoritative account association; changing an email never changes it. `converted_user_id` and the household-account row are set only when the transfer completes. User locks are acquired in ID order before the household and affected occurrences. Consent grants, teen-account guardian confirmation, and admin enable all run the same completion operation when the last prerequisite is ready. At eighteen an unsuspended account completes as an adult without teen-consent or guardian requirements; a suspended account stays with its household until enabled.
+
+### Direct-contact requests and grants (M1.11 s2 backend)
+
+These authenticated endpoints use the normal cookie session, CSRF header for
+POSTs, and `Cache-Control: no-store`. They do not grant membership, registration,
+series visibility, or permission to add a person. Ask to add and one-date access
+are separate later work. GET never approves or reveals a contact field.
+
+```
+POST /api/v1/contact-requests
+  {subjectUserId, contextType: "group"|"event", contextId,
+   fields: "email"|"phone"|"both", reason?: string}
+  → 201 {request: ContactRequest}
+GET /api/v1/contact-requests?before=<requestId>
+  → 200 {requests: ContactRequest[]}
+GET /api/v1/contact-requests/:id
+  → 200 {request: ContactRequest} | 404
+POST /api/v1/contact-requests/:id/decision
+  {party: "subject"|"admin", decision: "approved"|"denied"}
+  → 200 {request: ContactRequest}
+POST /api/v1/contact-requests/:id/withdraw
+  → 200 {}
+GET /api/v1/contact-grants?before=<grantId>
+  → 200 {grants: ContactGrant[]}
+POST /api/v1/contact-grants/:id/revoke
+  → 200 {}
+POST /api/v1/contact-grants/:id/reveal
+  {subjectUserId, contextType: "group"|"event", contextId,
+   fields: "email"|"phone"|"both"}
+  → 200 ContactReveal
+```
+
+Lists return at most 100 rows, newest ID first; `before` is an exclusive numeric
+cursor. Requester, subject and current adult admin can review request history.
+A currently confirmed active adult guardian can see only active teen-approved
+grants (not the pending request or ended grant history), and can revoke, never
+approve. Requester/subject/admin can also review their authorized ended grants.
+`contextId` is omitted if the viewer cannot currently see that context. No group
+name, place, contact value, birth date or avatar is included in these DTOs.
+
+`ContactRequest` (all fields required except those marked `?`):
+
+```
+id: number
+requesterId: number
+requesterName: string
+subjectUserId: number
+subjectName: string
+contextType: "group" | "event"
+contextId?: number
+fields: "email" | "phone" | "both"
+reason: string
+needsAdmin: boolean
+subjectDecision: "pending" | "approved" | "denied"
+subjectDecidedBy?: number
+subjectDecidedAt?: string
+adminDecision: "pending" | "approved" | "denied" | "not_needed"
+adminDecidedBy?: number
+adminDecidedAt?: string
+status: "pending" | "granted" | "denied" | "withdrawn" | "expired" | "ended"
+createdAt: string
+expiresAt: string
+completedAt?: string
+endReason: "" | "left_role" | "left_context" | "context_ended" |
+           "turned_18" | "account_disabled" | "event_ended"
+canSubjectDecide: boolean
+canAdminDecide: boolean
+canWithdraw: boolean
+```
+
+`ContactGrant`:
+
+```
+id: number
+requestId: number
+requesterId: number
+requesterName: string
+subjectUserId: number
+subjectName: string
+contextType: "group" | "event"
+contextId?: number
+fields: "email" | "phone" | "both"
+needsAdmin: boolean
+grantedAt: string
+endedAt?: string
+endReason: "" | "revoked_by_subject" | "revoked_by_admin" |
+           "revoked_by_guardian" | "left_role" | "left_context" |
+           "context_ended" | "turned_18" | "account_disabled" | "event_ended"
+endedBy?: number
+canReveal: boolean
+canRevoke: boolean
+```
+
+`ContactReveal` is `{email?: string, phone?: string}`. A successful reveal
+contains exactly the selected authorized fields, including an empty string if
+that authorized value is empty; an unselected field is omitted, not null. The
+requester must echo the exact subject/context and a field selection within the
+grant. A `both` grant can reveal either field separately. Even admins do not use
+someone else's grant. Every successful reveal commits `contact.reveal` before
+writing the response. Grants never make roster/list contact fields visible;
+ordinary self/admin/guardian contact presentation remains independent.
+
+An optional reason is at most **1000 Unicode characters**, validated before
+trimming; blank means no reason. Reasons stay on authorized request reviews,
+never in audit metadata, notification text/data or email. There are at most ten
+pending requests per requester, serialized transactionally. Expired/invalid
+pending requests are closed before enforcing the cap. The fixed expiry is 14
+24-hour days from creation; exact expiry is too late. An adult subject decides
+alone. Teen requests need independent subject and admin approvals in either
+order; an admin requester cannot skip the teen. Either denial terminates.
+
+Rejected contact operations commit a `contact.refused` audit even though no
+business change succeeds. A failed audit fails closed and returns 500 with no
+contact fields. Common actionable error codes (no 429):
+
+- `contact_reason_long` (400): shorten the reason to 1000 characters.
+- `contact_open_limit` (409): withdraw an open request or wait for a decision.
+- `contact_unavailable` (403): refresh the request; it may have ended, changed or
+  no longer be available to you. Unauthorized request reviews answer 404.
+
+Mutations end pending requests (`status=ended` with a reason) and active grants
+inside the same transaction when role, current subject relationship, context or
+either active account is lost. This includes group leadership changes/handoffs,
+host removal, registration pruning, visibility cancellations, group/event
+removal, admin disable/deletion and teen-consent disable. A successful request
+stays historically `granted` after its grant ends. Regaining a role, re-enabling
+an account or rejoining a context never clears an end. Actual church-local
+adulthood ends teen-approved access even if staged DEC-83 account conversion is
+still waiting; it never becomes an adult approval automatically. Event grants
+end at the exact final stored occurrence end plus 30 24-hour days. Current
+eligibility is checked again under the gate before decision/reveal. The existing
+startup/daily scheduler runs an idempotent advisory-locked expiry/end sweep;
+the existing birthday scheduler also ends actual-age access independently of
+staged conversion rollback.
+
+Audit actions are `contact.requested`, `contact.decision` (party and outcome),
+`contact.withdrawn`, `contact.expired`, `contact.granted`, `contact.reveal`,
+`contact.refused`, `contact.revoked` and `contact.ended`. Metadata holds numeric
+party/context IDs, validated context/field vocabulary and machine outcomes,
+never contact values or the free-text reason. These retained rows and outcome
+records survive live account/context deletion. Admin CSV export is not part of
+this backend component.
+
+Notifications are navigation-only, unbatched safety kinds:
+`contact.subject_review`, `contact.admin_review` (separate waiting tasks), and
+`contact.updated`. Each party's decision resolves only that party's task; a
+terminal outcome resolves both. Confirmed active guardians get grant/end
+updates for teen-approved grants. Email names nobody and links to the same
+sign-in-protected `/contact-requests/:id` review path; a guardian opens that path
+using active grant facts, not permission to read the request reason/decisions.
+The client must use the grants endpoint for the guardian view. Email links
+never approve or reveal by themselves.
+
+**Lock protocol:** one transaction-scoped PostgreSQL advisory gate serializes
+contact operations. Contact-affecting domain transactions acquire it at entry,
+before their existing user-first or group-first locks and before notification
+writes. New contact operations/sweeps acquire it before loading current facts
+and locking outcome rows. Lifecycle cleanup is a tail step in the original
+mutation transaction, not a nested transaction. The gate remains held through
+audit, task resolution, notification inserts and commit. This intentionally
+coarse protocol avoids inverting the existing domain prefixes. Ordinary RSVP
+answers (`going`, `maybe`, `declined`) retain an actual registration relationship
+and do not take the contact gate; registration pruning/cancellation does.
+
+Pre-domain refusals on the exact POST routes above are also audited once:
+CSRF failure, missing/invalid authentication, and a restricted pending-consent
+session. The existing abort sites call a narrow hook **before** writing their
+401/403 response. No CSRF exemption or auth bypass is added. These rows use
+`target_type=contact_endpoint`, no claimed target ID, and only generic reason,
+HTTP method and route template metadata. The actor is nil unless established
+by the trusted session. Body, query, token and claimed URL IDs are never parsed
+or retained by this hook. Its audit failure returns generic 500 without running
+the handler or disclosing fields. Ordinary list omissions, unrelated endpoints
+and generic auth failures elsewhere do not create contact audit rows.

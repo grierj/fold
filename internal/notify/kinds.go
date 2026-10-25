@@ -24,6 +24,9 @@ var Categories = []string{CatAdmin, CatGroups, CatEvents, CatMessages, CatSafety
 // fails on a key that is never registered, and the registry test renders
 // every kind with teen and hidden-adult fixtures.
 const (
+	ContactSubjectReview    = "contact.subject_review"
+	ContactAdminReview      = "contact.admin_review"
+	ContactUpdated          = "contact.updated"
 	GroupPending            = "group.pending"
 	GroupDeletion           = "group.deletion"
 	LeadershipChanged       = "group.leadership_changed"
@@ -171,6 +174,18 @@ func join(parts ...string) string {
 }
 
 func init() {
+	for _, item := range []struct {
+		key     string
+		waiting bool
+	}{{ContactSubjectReview, true}, {ContactAdminReview, true}, {ContactUpdated, false}} {
+		waiting := item.waiting
+		register(Kind{Key: item.key, Category: CatSafety, Waiting: waiting, AllowEmail: true, Render: func(Vars) (string, string) {
+			if waiting {
+				return "Review a direct-contact request", "Open Fold to review the requested access. No contact details have been shared."
+			}
+			return "Direct-contact access updated", "Open Fold to review the request or grant."
+		}, RenderEmailSafe: func(Vars) (string, string) { return "Review an update in Fold", "Sign in to Fold to review an update." }})
+	}
 	register(Kind{Key: AccountTurned18, Category: CatSafety, AllowEmail: true,
 		Render: func(Vars) (string, string) {
 			return "Your account is now an adult account", "Teen consent is no longer required. Your consent history stays on file. An admin's suspension, if any, still applies."

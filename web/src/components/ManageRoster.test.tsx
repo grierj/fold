@@ -3,12 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError, Events } from "../api";
 import { occurrence } from "../test/occurrence";
-import type { Attendee } from "../types";
+import type { Attendee, User } from "../types";
 import { ManageRoster } from "./ManageRoster";
 
+const actor = vi.hoisted(() => ({ user: null as Pick<User, "id" | "status" | "accountType"> | null }));
+vi.mock("../auth", () => ({ useAuth: () => actor }));
 vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), Events: { removeRegistration: vi.fn(), promoteRegistration: vi.fn(), restoreRegistration: vi.fn(), addRegistration: vi.fn() } }));
 const child: Attendee = { registrationId: 91, name: "Kit", status: "waitlisted", guestCount: 0, attendanceMode: "remote", householdPerson: { personId: 3, name: "Kit", kind: "child", age: 6, householdName: "Leader household", registeredBy: { userId: 7, name: "Holder" } } };
-beforeEach(() => { vi.resetAllMocks(); vi.spyOn(window, "confirm").mockReturnValue(true); });
+beforeEach(() => { vi.resetAllMocks(); actor.user = null; vi.spyOn(window, "confirm").mockReturnValue(true); });
 
 it("acts on the registration ID when user and person IDs overlap", async () => {
   const onChanged = vi.fn();
@@ -57,4 +59,18 @@ it("keeps waitlist positions per pool and places status before care notes", () =
   const signer = within(row).getByText(/Signed up by/);
   expect(signer.nextElementSibling).toHaveTextContent("Waitlist position 1");
   expect(row.textContent?.indexOf("Waitlist position 1")).toBeLessThan(row.textContent?.indexOf("Care notes") ?? 0);
+});
+
+it.each([null, { id: 10, status: "active", accountType: "teen" }, { id: 10, status: "disabled", accountType: "adult" }] as const)("offers no request to an ineligible actor %j", (user) => {
+  actor.user = user;
+  render(<ManageRoster instance={occurrence({ attendees: [{ registrationId: 92, userId: 3, name: "Hidden Pat", status: "going", attendanceMode: "in_person", guestCount: 0 }] })} onChanged={() => {}} onClose={() => {}} />);
+  expect(screen.queryByRole("button", { name: "Request direct contact" })).not.toBeInTheDocument();
+});
+
+it("offers contact compose only for another real hidden account, not household people, missing IDs, self or visible contacts", () => {
+  actor.user = { id: 10, status: "active", accountType: "adult" };
+  const base: Attendee = { registrationId: 92, userId: 3, name: "Hidden Pat", status: "going", attendanceMode: "in_person", guestCount: 0 };
+  render(<ManageRoster instance={occurrence({ attendees: [base, { ...base, registrationId: 93, userId: 10, name: "Self" }, { ...base, registrationId: 94, userId: 4, name: "Visible Sam", email: "sam@example.com", phone: "" }, { ...base, registrationId: 95, userId: undefined, name: "No account ID" }, { ...child, status: "going" }] })} onChanged={() => {}} onClose={() => {}} />);
+  expect(screen.getAllByRole("button", { name: "Request direct contact" })).toHaveLength(1);
+  expect(within(screen.getByText("Hidden Pat").closest("li")!).getByRole("button", { name: "Request direct contact" })).toBeInTheDocument();
 });

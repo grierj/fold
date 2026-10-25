@@ -18,6 +18,9 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	"direct-contact access is unavailable; refresh the request":                                                                                      "contact_unavailable",
+	"contact reason must be at most 1000 characters":                                                                                                 "contact_reason_long",
+	"you already have 10 open contact requests; withdraw one or wait for a decision":                                                                 "contact_open_limit",
 	"this approved account is waiting for consent and guardian confirmation; ask your church office before changing their identity or removing them": "household_conversion_consent",
 	"that email already has an account; approve without consent and review the account separately":                                                   "consent_existing_account",
 	"consent is only available for teen accounts; refresh the user list":                                                                             "consent_teen_only",

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { AccountRequests, CalendarFeeds, Profile as ProfileApi } from "../api";
 import type { CalendarFeed } from "../types";
 import { useAuth } from "../auth";
-import { Button } from "../components/ui/Button";
+import { Button, ButtonLink } from "../components/ui/Button";
 import { AdminIcon } from "../components/icons";
 import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
@@ -187,6 +187,7 @@ export function ProfilePage() {
   return (
     <div className="max-w-xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">Your profile</h1>
+      <div className="mb-6"><ButtonLink variant="secondary" to="/contact-requests">Direct contact requests and access</ButtonLink></div>
       {isAdmin && (
         // Phones have no Admin link in the header; it's a row here (PR #65 review F2).
         <Link

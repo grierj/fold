@@ -67,6 +67,9 @@ var tsContracts = []struct {
 	goType any
 	tsName string
 }{
+	{contactRequestJSON{}, "ContactRequest"},
+	{contactGrantJSON{}, "ContactGrant"},
+	{contactRevealJSON{}, "ContactReveal"},
 	{userJSON{}, "User"},
 	{groupSummaryJSON{}, "GroupSummary"},
 	{memberJSON{}, "Member"},

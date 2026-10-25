@@ -565,3 +565,54 @@ export interface HouseholdAnswer {
   attendanceMode?: AttendanceMode;
   childcareRequested?: boolean;
 }
+
+export interface ContactRequest {
+  id: number;
+  requesterId: number;
+  requesterName: string;
+  subjectUserId: number;
+  subjectName: string;
+  contextType: "group" | "event";
+  contextId?: number;
+  fields: "email" | "phone" | "both";
+  reason: string;
+  needsAdmin: boolean;
+  subjectDecision: "pending" | "approved" | "denied";
+  subjectDecidedBy?: number;
+  subjectDecidedAt?: string;
+  adminDecision: "pending" | "approved" | "denied" | "not_needed";
+  adminDecidedBy?: number;
+  adminDecidedAt?: string;
+  status: "pending" | "granted" | "denied" | "withdrawn" | "expired" | "ended";
+  createdAt: string;
+  expiresAt: string;
+  completedAt?: string;
+  endReason: "" | "left_role" | "left_context" | "context_ended" | "turned_18" | "account_disabled" | "event_ended";
+  canSubjectDecide: boolean;
+  canAdminDecide: boolean;
+  canWithdraw: boolean;
+}
+
+export interface ContactGrant {
+  id: number;
+  requestId: number;
+  requesterId: number;
+  requesterName: string;
+  subjectUserId: number;
+  subjectName: string;
+  contextType: "group" | "event";
+  contextId?: number;
+  fields: "email" | "phone" | "both";
+  needsAdmin: boolean;
+  grantedAt: string;
+  endedAt?: string;
+  endReason: "" | "revoked_by_subject" | "revoked_by_admin" | "revoked_by_guardian" | "left_role" | "left_context" | "context_ended" | "turned_18" | "account_disabled" | "event_ended";
+  endedBy?: number;
+  canReveal: boolean;
+  canRevoke: boolean;
+}
+
+export interface ContactReveal {
+  email?: string;
+  phone?: string;
+}

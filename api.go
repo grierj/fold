@@ -346,6 +346,11 @@ func (a *App) restrictedSession() gin.HandlerFunc {
 			switch c.FullPath() {
 			case "/api/v1/auth/csrf", "/api/v1/auth/me", "/api/v1/auth/logout":
 			default:
+				if err := a.auditContactRejection(c, "restricted_session"); err != nil {
+					jsonError(c, http.StatusInternalServerError, "could not complete contact operation")
+					c.Abort()
+					return
+				}
 				jsonError(c, http.StatusForbidden, "your account is waiting for consent")
 				c.Abort()
 				return
@@ -360,6 +365,11 @@ func (a *App) apiAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		user, ok := a.userFromSession(c)
 		if !ok {
+			if err := a.auditContactRejection(c, "authentication"); err != nil {
+				jsonError(c, http.StatusInternalServerError, "could not complete contact operation")
+				c.Abort()
+				return
+			}
 			jsonError(c, http.StatusUnauthorized, "unauthorized")
 			c.Abort()
 			return
@@ -533,6 +543,16 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// Password reset (M1.2): uniform response, single-use expiring tokens.
 	v1.POST("/auth/password-reset", a.apiRequestPasswordReset)
 	v1.POST("/auth/password-reset/confirm", a.apiConfirmPasswordReset)
+
+	// Direct contact: authenticated review, explicit audited disclosure only.
+	v1.POST("/contact-requests", a.apiAuth(), a.apiCreateContactRequest)
+	v1.GET("/contact-requests", a.apiAuth(), a.apiListContactRequests)
+	v1.GET("/contact-requests/:id", a.apiAuth(), a.apiGetContactRequest)
+	v1.POST("/contact-requests/:id/decision", a.apiAuth(), a.apiDecideContactRequest)
+	v1.POST("/contact-requests/:id/withdraw", a.apiAuth(), a.apiWithdrawContactRequest)
+	v1.GET("/contact-grants", a.apiAuth(), a.apiListContactGrants)
+	v1.POST("/contact-grants/:id/revoke", a.apiAuth(), a.apiRevokeContactGrant)
+	v1.POST("/contact-grants/:id/reveal", a.apiAuth(), a.apiRevealContactGrant)
 
 	// Profile.
 	v1.PUT("/me", a.apiAuth(), a.apiUpdateMe)

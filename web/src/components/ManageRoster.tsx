@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { useAuth } from "../auth";
+import { RequestContactButton } from "./RequestContactButton";
 import { Events, attendeeSubject } from "../api";
 import type { Attendee, EventOccurrence } from "../types";
 import { errorCode, errorText } from "../lib/errors";
@@ -8,6 +10,7 @@ import { Field, FormError, Input } from "./ui/Field";
 import { EmptyState } from "./ui/EmptyState";
 
 export function ManageRoster({ instance, onChanged, onClose }: { instance: EventOccurrence; onChanged: () => void; onClose: () => void }) {
+  const { user } = useAuth();
   const [busy, setBusy] = useState<number | "add" | null>(null);
   const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +61,9 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
     {error && <FormError>{error}</FormError>}
     {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by email below." />}
     <ul className="space-y-3 my-3">{roster.map((a) => <li key={a.registrationId} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-      <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} status={statusLabel(a, roster)} showAccountType /></div>
+      <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} status={statusLabel(a, roster)} showAccountType />
+        {user?.status === "active" && user.accountType === "adult" && a.userId !== undefined && a.userId > 0 && !a.householdPerson && a.userId !== user.id && a.email === undefined && a.phone === undefined && <RequestContactButton subjectUserId={a.userId} subjectName={a.name} contextType="event" contextId={instance.eventId} />}
+      </div>
       <div className="flex flex-wrap gap-2">
         {a.status === "waitlisted" && <Button variant="secondary" disabled={busy !== null} onClick={() => void action(a, "promote")}>Promote</Button>}
         <Button variant="danger-outline" aria-label={`Remove ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "remove")}>Remove</Button>

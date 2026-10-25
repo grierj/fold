@@ -1137,7 +1137,7 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 	}
 	me := apiUser(c)
 	var emailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		if err := lockRegistrationHolder(tx, body.RegistrationID, o.ID); err != nil {
 			return err
 		}

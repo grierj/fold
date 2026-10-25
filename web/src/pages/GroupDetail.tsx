@@ -1,3 +1,4 @@
+import { RequestContactButton } from "../components/RequestContactButton";
 import { ContactDetails } from "../components/ContactDetails";
 import { Badge } from "../components/ui/Badge";
 import { useHousehold } from "../lib/useHousehold";
@@ -952,42 +953,45 @@ export function GroupDetail() {
                     {members && members.length > 0 ? (
                       <ul className="divide-y divide-border">
                         {members.map((m) => (
-                          <li key={m.id} className="py-3 flex items-center gap-3">
-                            <Avatar
-                              url={m.avatarUrl || undefined}
-                              name={m.name}
-                              focalX={m.avatarFocalX}
-                              focalY={m.avatarFocalY}
-                            />
-                            <div className="grow min-w-0">
-                              <div className="font-semibold">{m.name}
-                                {canManage && m.accountType === "teen" && <Badge>Teen</Badge>}
-                                {m.admin && (
-                                  <span className="ml-2 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
-                                    Admin
-                                  </span>
-                                )}
-                              </div>
-                              <div className="text-sm text-text-muted capitalize">{m.role}</div>
-                              <ContactDetails email={m.email} phone={m.phone} />
-                            </div>
-                            {canManage && (
-                              <Menu
-                                tone="quiet"
-                                label={`More for ${m.name}`}
-                                items={[
-                                  ...(m.role !== "leader" && m.accountType !== "teen"
-                                    ? [{ label: "Make leader", onSelect: () => void setRole(m.id, m.name, "leader"), disabled: memberBusy }]
-                                    : []),
-                                  ...(m.role === "leader" && leaderCount > 1 && (!m.admin || isAdmin)
-                                    ? [{ label: "Remove as leader", onSelect: () => void setRole(m.id, m.name, "member"), disabled: memberBusy }]
-                                    : []),
-                                  ...(m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (!m.admin || isAdmin)
-                                    ? [{ label: "Remove from group", onSelect: () => void removeMember(m.id, m.name), danger: true, disabled: memberBusy }]
-                                    : []),
-                                ]}
+                          <li key={m.id} className="py-3">
+                            <div className="flex items-center gap-3">
+                              <Avatar
+                                url={m.avatarUrl || undefined}
+                                name={m.name}
+                                focalX={m.avatarFocalX}
+                                focalY={m.avatarFocalY}
                               />
-                            )}
+                              <div className="grow min-w-0">
+                                <div className="font-semibold">{m.name}
+                                  {canManage && m.accountType === "teen" && <Badge>Teen</Badge>}
+                                  {m.admin && (
+                                    <span className="ml-2 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
+                                      Admin
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-sm text-text-muted capitalize">{m.role}</div>
+                                <ContactDetails email={m.email} phone={m.phone} />
+                              </div>
+                              {canManage && (
+                                <Menu
+                                  tone="quiet"
+                                  label={`More for ${m.name}`}
+                                  items={[
+                                    ...(m.role !== "leader" && m.accountType !== "teen"
+                                      ? [{ label: "Make leader", onSelect: () => void setRole(m.id, m.name, "leader"), disabled: memberBusy }]
+                                      : []),
+                                    ...(m.role === "leader" && leaderCount > 1 && (!m.admin || isAdmin)
+                                      ? [{ label: "Remove as leader", onSelect: () => void setRole(m.id, m.name, "member"), disabled: memberBusy }]
+                                      : []),
+                                    ...(m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (!m.admin || isAdmin)
+                                      ? [{ label: "Remove from group", onSelect: () => void removeMember(m.id, m.name), danger: true, disabled: memberBusy }]
+                                      : []),
+                                  ]}
+                                />
+                              )}
+                            </div>
+                            {canManage && isLeader && group.status === "active" && user?.status === "active" && user.accountType === "adult" && m.id !== user.id && m.email === undefined && m.phone === undefined && <div className="w-full"><RequestContactButton subjectUserId={m.id} subjectName={m.name} contextType="group" contextId={group.id} /></div>}
                           </li>
                         ))}
                       </ul>

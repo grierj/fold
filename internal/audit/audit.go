@@ -13,6 +13,15 @@ import (
 
 // Actions. Add new ones here so they are easy to find and query.
 const (
+	ContactRequested            = "contact.requested"
+	ContactDecision             = "contact.decision"
+	ContactWithdrawn            = "contact.withdrawn"
+	ContactExpired              = "contact.expired"
+	ContactGranted              = "contact.granted"
+	ContactReveal               = "contact.reveal"
+	ContactRefused              = "contact.refused"
+	ContactRevoked              = "contact.revoked"
+	ContactEnded                = "contact.ended"
 	UserTurned18                = "user.turned_18"
 	HouseholdChildTurned13      = "household.child_turned_13"
 	HouseholdAccountTurnedAdult = "household.account_turned_adult"
