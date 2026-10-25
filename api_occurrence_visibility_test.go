@@ -18,7 +18,7 @@ func dateVisibilityFixture(t *testing.T, visibility string) (*App, *apiClient, *
 	admin := loginAPI(t, app, "admin", "password1234")
 	gid := createGroupAs(t, admin, "Hidden fellowship", visibility)
 	app.DB.Model(&models.Group{}).Where("id = ?", gid).Update("location", "SECRET GROUP PLACE")
-	w := admin.do("POST", fmt.Sprintf("/api/v1/groups/%d/events", gid), map[string]any{"title": "Open evening", "startsLocal": time.Now().UTC().AddDate(0, 0, 2).Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC", "recurrenceRule": "FREQ=WEEKLY;COUNT=4"}, true)
+	w := admin.do("POST", fmt.Sprintf("/api/v1/groups/%d/events", gid), map[string]any{"title": "Open evening", "startsLocal": time.Now().UTC().AddDate(0, 0, 2).Format("2006-01-02") + "T18:00", "durationMinutes": 60, "tzid": "UTC", "recurrenceRule": "FREQ=WEEKLY;COUNT=4"}, true)
 	if w.Code != 201 {
 		t.Fatalf("create: %d %s", w.Code, w.Body.String())
 	}
@@ -203,7 +203,7 @@ func TestVisibilityOverrideProtectsDateFromSeriesClockEdit(t *testing.T) {
 	app.DB.First(&first, dates[0].ID)
 	app.DB.First(&second, dates[1].ID)
 	if !first.StartsAt.Equal(dates[0].StartsAt) || !second.StartsAt.Equal(dates[1].StartsAt.Add(time.Hour)) {
-		t.Fatalf("customized date moved or inherited date stuck: %v %v", first.StartsAt, second.StartsAt)
+		t.Fatalf("customized date moved or inherited date stuck: got %v %v expected %v %v override %v", first.StartsAt, second.StartsAt, dates[0].StartsAt, dates[1].StartsAt.Add(time.Hour), first.VisibilityOverride)
 	}
 }
 
