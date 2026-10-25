@@ -518,7 +518,7 @@ func TestContactRequestLimitsAndRefusalAudit(t *testing.T) {
 		f.create(t, "phone", "")
 	}
 	w = f.lc.do("POST", "/api/v1/contact-requests", map[string]any{"subjectUserId": f.subject.ID, "contextType": "group", "contextId": f.group.ID, "fields": "phone"}, true)
-	if w.Code != 409 || !strings.Contains(w.Body.String(), "contact_open_limit") {
+	if w.Code != 409 || !strings.Contains(w.Body.String(), "request_open_limit") {
 		t.Fatalf("cap %d %s", w.Code, w.Body.String())
 	}
 }
@@ -612,5 +612,430 @@ func TestContactMiddlewareAuditFailureFailsClosed(t *testing.T) {
 	}
 	if contactCount(t, f.app, &models.ContactRequest{}, "1=1") != 0 {
 		t.Fatal("audit failure ran handler")
+	}
+}
+
+func newGroupAskFixture(t *testing.T) *contactAPIFixture {
+	t.Helper()
+	f := newContactAPIFixture(t, true)
+	if err := f.app.DB.Where("group_id = ? AND user_id = ?", f.group.ID, f.subject.ID).Delete(&models.Membership{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.Model(f.group).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+func createGroupAsk(t *testing.T, f *contactAPIFixture, client *apiClient, actor *models.User, overLimit bool) addRequestJSON {
+	t.Helper()
+	f.app.Config.SessionSecret = []byte("group-ask-test-secret")
+	token, err := f.app.newPeopleSelection(actor.ID, f.subject.ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := client.do("POST", "/api/v1/add-requests", map[string]any{"selectionId": token, "contextType": "group", "contextId": f.group.ID, "reason": "Please join our group", "overLimit": overLimit}, true)
+	if w.Code != 201 {
+		t.Fatalf("create ask: %d %s", w.Code, w.Body.String())
+	}
+	var b struct {
+		Request addRequestJSON `json:"request"`
+	}
+	decodeJSON(t, w, &b)
+	return b.Request
+}
+func addDecision(c *apiClient, id uint, party, decision string) *httptest.ResponseRecorder {
+	return c.do("POST", "/api/v1/add-requests/"+itoa(id)+"/decision", map[string]string{"party": party, "decision": decision}, true)
+}
+func savedAsk(t *testing.T, f *contactAPIFixture, id uint) models.ContactRequest {
+	t.Helper()
+	var r models.ContactRequest
+	if err := f.app.DB.First(&r, id).Error; err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+func TestGroupAskBothOrdersDenialsAndAdminRequester(t *testing.T) {
+	for _, scenario := range []string{"subject_first", "admin_first", "subject_denies", "admin_denies", "admin_requester"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newGroupAskFixture(t)
+			client, actor := f.lc, f.leader
+			if scenario == "admin_requester" {
+				client, actor = f.ac, f.admin
+			}
+			r := createGroupAsk(t, f, client, actor, false)
+			if !r.NeedsAdmin || r.Status != "pending" || r.AdminDecision != "pending" {
+				t.Fatalf("teen approvals: %+v", r)
+			}
+			if w := addDecision(f.gc, r.ID, "subject", "approved"); w.Code != 403 {
+				t.Fatalf("guardian shortcut: %d", w.Code)
+			}
+			first, second, party1, party2 := f.sc, f.ac, "subject", "admin"
+			if scenario == "admin_first" || scenario == "admin_requester" {
+				first, second, party1, party2 = f.ac, f.sc, "admin", "subject"
+			}
+			decision := "approved"
+			if scenario == "subject_denies" {
+				decision = "denied"
+			}
+			if w := addDecision(first, r.ID, party1, decision); w.Code != 200 {
+				t.Fatalf("first: %d %s", w.Code, w.Body.String())
+			}
+			if contactCount(t, f.app, &models.Membership{}, "group_id = ? AND user_id = ? AND status = 'active'", f.group.ID, f.subject.ID) != 0 {
+				t.Fatal("added before both approvals")
+			}
+			if scenario == "admin_denies" {
+				decision = "denied"
+			} else {
+				decision = "approved"
+			}
+			w := addDecision(second, r.ID, party2, decision)
+			denied := scenario == "subject_denies" || scenario == "admin_denies"
+			if scenario == "subject_denies" {
+				if w.Code != 403 {
+					t.Fatalf("denied replay: %d", w.Code)
+				}
+			} else if w.Code != 200 {
+				t.Fatalf("second: %d %s", w.Code, w.Body.String())
+			}
+			saved := savedAsk(t, f, r.ID)
+			if denied {
+				if saved.Status != "denied" || saved.CompletedTargetID != nil {
+					t.Fatalf("denial: %+v", saved)
+				}
+			} else {
+				if saved.Status != "granted" || saved.CompletedTargetID == nil {
+					t.Fatalf("completion: %+v", saved)
+				}
+				if contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.AddCompleted, r.ID) != 1 {
+					t.Fatal("completion audit missing")
+				}
+				if contactCount(t, f.app, &models.Notification{}, "kind = ? AND user_id = ? AND subject_id = ?", notify.AddUpdated, f.guardian.ID, r.ID) != 1 {
+					t.Fatal("guardian safe completion notice missing")
+				}
+			}
+			if contactCount(t, f.app, &models.ContactGrant{}, "request_id = ?", r.ID) != 0 {
+				t.Fatal("ask produced contact grant")
+			}
+			if contactCount(t, f.app, &models.Notification{}, "subject_id = ? AND kind IN ? AND resolved_at IS NULL", r.ID, []string{notify.AddSubjectReview, notify.AddAdminReview}) != 0 {
+				t.Fatal("unresolved terminal tasks")
+			}
+			if w := addDecision(f.sc, r.ID, "subject", "approved"); w.Code != 403 {
+				t.Fatalf("terminal replay %d", w.Code)
+			}
+		})
+	}
+}
+func TestGroupAskContactIsolationAndSafePreview(t *testing.T) {
+	f := newContactAPIFixture(t, true)
+	contact := f.create(t, "email", "Contact-only private reason")
+	if err := f.app.DB.Where("group_id = ? AND user_id = ?", f.group.ID, f.subject.ID).Delete(&models.Membership{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.Model(f.group).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	ask := createGroupAsk(t, f, f.lc, f.leader, false)
+	if err := f.app.sweepContacts(t.Context(), time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if savedAsk(t, f, ask.ID).Status != "pending" {
+		t.Fatal("contact lifecycle inferred membership for add")
+	}
+	if savedAsk(t, f, contact.ID).Status != "ended" {
+		t.Fatal("contact membership loss no longer ends contact request")
+	}
+	for _, c := range []*apiClient{f.sc, f.ac, f.lc} {
+		w := c.do("GET", "/api/v1/contact-requests", nil, false)
+		var b struct {
+			Requests []contactRequestJSON `json:"requests"`
+		}
+		decodeJSON(t, w, &b)
+		for _, r := range b.Requests {
+			if r.ID == ask.ID {
+				t.Fatal("add leaked to contact list")
+			}
+		}
+		if w = c.do("GET", "/api/v1/contact-requests/"+itoa(ask.ID), nil, false); w.Code != 404 {
+			t.Fatalf("cross-purpose contact detail: %d", w.Code)
+		}
+	}
+	for _, path := range []string{"decision", "withdraw"} {
+		w := f.lc.do("POST", "/api/v1/contact-requests/"+itoa(ask.ID)+"/"+path, map[string]string{"party": "admin", "decision": "approved"}, true)
+		if w.Code != 403 {
+			t.Fatalf("contact mutation accepted ask %s %d", path, w.Code)
+		}
+	}
+	if w := addDecision(f.ac, contact.ID, "admin", "approved"); w.Code != 403 {
+		t.Fatal("add decision accepted contact")
+	}
+	for _, client := range []*apiClient{f.sc, f.gc, f.oc} {
+		w := client.do("GET", "/api/v1/add-requests/"+itoa(ask.ID), nil, false)
+		if client != f.sc {
+			if w.Code != 404 {
+				t.Fatalf("unrelated/guardian sees add: %d", w.Code)
+			}
+			continue
+		}
+		if w.Code != 200 {
+			t.Fatal(w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), f.group.Name) || strings.Contains(w.Body.String(), "contextId") || strings.Contains(w.Body.String(), "subjectName") || strings.Contains(w.Body.String(), "requesterName") {
+			t.Fatalf("hidden preview: %s", w.Body.String())
+		}
+		for _, secret := range []string{"email", "phone", "fields", f.subject.Email, f.subject.Phone, "Contact-only private reason"} {
+			if strings.Contains(w.Body.String(), secret) {
+				t.Fatalf("unsafe preview %s", w.Body.String())
+			}
+		}
+	}
+	// Pending approval grants no ordinary group or roster access.
+	if w := f.sc.do("GET", "/api/v1/groups/"+itoa(f.group.ID), nil, false); w.Code != 404 {
+		t.Fatalf("pending group read %d %s", w.Code, w.Body.String())
+	}
+	for _, path := range []string{"reveal", "revoke"} {
+		if w := f.lc.do("POST", "/api/v1/contact-grants/"+itoa(ask.ID)+"/"+path, map[string]any{"subjectUserId": f.subject.ID, "contextType": "group", "contextId": f.group.ID, "fields": "email"}, true); w.Code != 403 {
+			t.Fatalf("ask grant %s %d", path, w.Code)
+		}
+	}
+	// Cross-domain adapters are fail-closed even if called without query filtering.
+	if contactScope(savedAsk(t, f, ask.ID)).RequesterID != 0 {
+		t.Fatal("add adapted to contact scope")
+	}
+}
+func TestGroupAskCapacityRetainsApprovalThenRetry(t *testing.T) {
+	f := newGroupAskFixture(t)
+	r := createGroupAsk(t, f, f.lc, f.leader, false)
+	limit := 1
+	if err := f.app.DB.Model(f.group).Update("member_limit", limit).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		c *apiClient
+		p string
+	}{{f.sc, "subject"}, {f.ac, "admin"}} {
+		if w := addDecision(step.c, r.ID, step.p, "approved"); w.Code != 200 {
+			t.Fatalf("decision: %d %s", w.Code, w.Body.String())
+		}
+	}
+	saved := savedAsk(t, f, r.ID)
+	if saved.Status != "pending" || saved.SubjectDecision != "approved" || saved.AdminDecision != "approved" || saved.CompletedTargetID != nil {
+		t.Fatalf("capacity rolled back decisions or false success: %+v", saved)
+	}
+	decisions := contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.AddDecision, r.ID)
+	if decisions != 2 {
+		t.Fatal("missing decision audits")
+	}
+	if w := f.sc.do("POST", "/api/v1/add-requests/"+itoa(r.ID)+"/complete", nil, true); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	limit = 2
+	if err := f.app.DB.Model(f.group).Update("member_limit", limit).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := f.lc.do("POST", "/api/v1/add-requests/"+itoa(r.ID)+"/complete", nil, true); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	saved = savedAsk(t, f, r.ID)
+	if saved.Status != "granted" || saved.CompletedTargetID == nil {
+		t.Fatalf("retry: %+v", saved)
+	}
+	if contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.AddDecision, r.ID) != decisions {
+		t.Fatal("retry duplicated decisions")
+	}
+	if w := f.lc.do("POST", "/api/v1/add-requests/"+itoa(r.ID)+"/complete", nil, true); w.Code != 403 {
+		t.Fatal("completion replay succeeded")
+	}
+	// Historic success is retained after ordinary membership removal.
+	if err := f.app.DB.Model(&models.Membership{}).Where("id = ?", *saved.CompletedTargetID).Update("status", "removed").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.sweepContacts(t.Context(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if savedAsk(t, f, r.ID).Status != "granted" {
+		t.Fatal("membership removal rewrote historic outcome")
+	}
+}
+func TestGroupAskSelectionAndDirectTeenRoutesStayClosed(t *testing.T) {
+	f := newGroupAskFixture(t)
+	f.app.Config.SessionSecret = []byte("group-ask-test-secret")
+	if w := f.lc.do("POST", "/api/v1/add-requests", map[string]any{"contextType": "group", "contextId": f.group.ID, "reason": strings.Repeat("a", 1001)}, true); w.Code != 400 || !strings.Contains(w.Body.String(), "add_reason_long") {
+		t.Fatalf("long reason: %d %s", w.Code, w.Body.String())
+	}
+	for _, body := range []map[string]any{
+		{"subjectUserId": f.subject.ID, "contextType": "group", "contextId": f.group.ID},
+		{"selectionId": "invalid", "contextType": "group", "contextId": f.group.ID},
+		{"selectionId": "invalid", "contextType": "event", "contextId": f.group.ID},
+	} {
+		if w := f.lc.do("POST", "/api/v1/add-requests", body, true); w.Code != 403 {
+			t.Fatalf("invalid ask accepted: %d", w.Code)
+		}
+	}
+	token, err := f.app.newPeopleSelection(f.leader.ID, f.subject.ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		c    *apiClient
+		path string
+		body map[string]any
+	}{
+		{f.lc, "/api/v1/groups/" + itoa(f.group.ID) + "/members", map[string]any{"selectionId": token}},
+		{f.lc, "/api/v1/groups/" + itoa(f.group.ID) + "/members", map[string]any{"email": f.subject.Email}},
+		{f.ac, "/api/v1/admin/groups/" + itoa(f.group.ID) + "/members", map[string]any{"userId": f.subject.ID}},
+	} {
+		if w := tc.c.do("POST", tc.path, tc.body, true); w.Code != 409 {
+			t.Fatalf("direct teen route: %d %s", w.Code, w.Body.String())
+		}
+	}
+	if contactCount(t, f.app, &models.Membership{}, "group_id = ? AND user_id = ?", f.group.ID, f.subject.ID) != 0 {
+		t.Fatal("direct teen bypass")
+	}
+}
+
+func TestGroupAskOccurrenceRowsRemainContactIsolated(t *testing.T) {
+	f := newGroupAskFixture(t)
+	ev, occ := seedEvent(t, f.app, f.group, f.leader.ID, time.Now().Add(24*time.Hour))
+	r := models.ContactRequest{Purpose: policy.RequestOccurrenceAdd, RequesterID: f.leader.ID, SubjectUserID: f.subject.ID, ContextType: policy.ContactEvent, ContextID: ev.ID, OccurrenceID: &occ.ID, AddAttendanceMode: "in_person", Reason: "Occurrence-only private reason", NeedsAdmin: true, SubjectDecision: "pending", AdminDecision: "pending", Status: "pending", CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(policy.ContactRequestLifetime)}
+	if err := f.app.DB.Create(&r).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{"contact-requests"} {
+		w := f.ac.do("GET", "/api/v1/"+root, nil, false)
+		if w.Code != 200 || strings.Contains(w.Body.String(), r.Reason) {
+			t.Fatalf("occurrence row in %s: %d %s", root, w.Code, w.Body.String())
+		}
+		if w = f.ac.do("GET", "/api/v1/"+root+"/"+itoa(r.ID), nil, false); w.Code != 404 {
+			t.Fatalf("occurrence detail %s %d", root, w.Code)
+		}
+		for _, action := range []string{"decision", "withdraw"} {
+			if w = f.lc.do("POST", "/api/v1/"+root+"/"+itoa(r.ID)+"/"+action, map[string]string{"party": "subject", "decision": "approved"}, true); w.Code != 403 {
+				t.Fatalf("occurrence mutation %s %s: %d", root, action, w.Code)
+			}
+		}
+	}
+	if err := f.app.sweepContacts(t.Context(), time.Now().Add(15*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, f.ac, "GET", "/api/v1/add-requests/"+itoa(r.ID), nil, 200)
+	// Occurrence lifecycle is purpose-dispatched.
+	if savedAsk(t, f, r.ID).Status != "expired" {
+		t.Fatal("occurrence request did not expire through its own lifecycle")
+	}
+	if w := f.lc.do("POST", "/api/v1/add-requests", map[string]any{"contextType": "event", "contextId": ev.ID, "occurrenceId": occ.ID}, true); w.Code != 403 {
+		t.Fatalf("occurrence create enabled: %d", w.Code)
+	}
+	if contactScope(r).ContextID != 0 || contactRequestPolicy(r).Status != "" {
+		t.Fatal("occurrence adapted to contact authority")
+	}
+}
+
+func TestGroupAskExplicitOverLimitAndExistingRole(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		name := "new_membership"
+		if existing {
+			name = "existing_membership"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newGroupAskFixture(t)
+			limit := 1
+			if err := f.app.DB.Model(f.group).Update("member_limit", limit).Error; err != nil {
+				t.Fatal(err)
+			}
+			r := createGroupAsk(t, f, f.lc, f.leader, true)
+			if existing {
+				if err := f.app.DB.Create(&models.Membership{UserID: f.subject.ID, GroupID: f.group.ID, Role: models.MembershipMember, Status: "active"}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, step := range []struct {
+				c     *apiClient
+				party string
+			}{{f.sc, "subject"}, {f.ac, "admin"}} {
+				if w := addDecision(step.c, r.ID, step.party, "approved"); w.Code != 200 {
+					t.Fatalf("approve: %d %s", w.Code, w.Body.String())
+				}
+			}
+			if savedAsk(t, f, r.ID).Status != "granted" {
+				t.Fatal("explicit over-limit did not complete")
+			}
+			want := int64(1)
+			if existing {
+				want = 0
+			}
+			if contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.AddedOverLimit, f.group.ID) != want {
+				t.Fatal("over-limit audit did not match actual addition")
+			}
+			var rows []models.AuditLog
+			if err := f.app.DB.Where("target_type = ?", "add_request").Find(&rows).Error; err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range rows {
+				for _, secret := range []string{f.subject.Email, f.subject.Phone, "Please join our group"} {
+					if strings.Contains(row.MetaJSON, secret) {
+						t.Fatalf("audit leaked private data: %+v", row)
+					}
+				}
+			}
+		})
+	}
+}
+func TestGroupAskMiddlewareRefusalsArePurposeSafe(t *testing.T) {
+	f := newGroupAskFixture(t)
+	body := map[string]any{"selectionId": "untrusted secret", "reason": "private@example.com", "subjectUserId": f.subject.ID}
+	if w := f.lc.do("POST", "/api/v1/add-requests", body, false); w.Code != 403 {
+		t.Fatalf("csrf: %d", w.Code)
+	}
+	anon := newAPIClient(t, f.app)
+	anon.fetchCSRF()
+	if w := anon.do("POST", "/api/v1/add-requests", body, true); w.Code != 401 {
+		t.Fatalf("auth: %d %s", w.Code, w.Body.String())
+	}
+	var rows []models.AuditLog
+	if err := f.app.DB.Where("action = ?", audit.AddRefused).Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("missing middleware audits: %+v", rows)
+	}
+	for _, row := range rows {
+		if row.TargetType != "add_endpoint" || row.TargetID != 0 || strings.Contains(row.MetaJSON, "private@example.com") || strings.Contains(row.MetaJSON, "untrusted secret") {
+			t.Fatalf("unsafe middleware audit: %+v", row)
+		}
+	}
+	if contactCount(t, f.app, &models.AuditLog{}, "action = ?", audit.ContactRefused) != 0 {
+		t.Fatal("add auth failure misclassified as contact")
+	}
+}
+
+func TestGroupAskCompletionClearsObsoleteDeletionRequest(t *testing.T) {
+	f := newGroupAskFixture(t)
+	if err := f.app.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(f.group).Update("deletion_requested", true).Error; err != nil {
+			return err
+		}
+		_, err := notifyDeletionRequested(tx, f.group, f.leader.ID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := createGroupAsk(t, f, f.lc, f.leader, false)
+	for _, step := range []struct {
+		c     *apiClient
+		party string
+	}{{f.sc, "subject"}, {f.ac, "admin"}} {
+		if w := addDecision(step.c, r.ID, step.party, "approved"); w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	var g models.Group
+	if err := f.app.DB.First(&g, f.group.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if g.DeletionRequested {
+		t.Fatal("successful addition left obsolete deletion request")
+	}
+	if contactCount(t, f.app, &models.Notification{}, "kind = ? AND subject_id = ? AND resolved_at IS NULL", notify.GroupDeletion, g.ID) != 0 {
+		t.Fatal("deletion task unresolved")
 	}
 }

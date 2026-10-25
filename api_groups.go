@@ -559,6 +559,7 @@ func groupFull(c *gin.Context) {
 // changes. Regular adds preserve an active member's role; admin adds may change it.
 type memberAddOptions struct {
 	KeepExistingRole bool
+	approved         *verifiedGroupAdd
 }
 
 // changeRole sets userID's role in g to newRole: "leader" or "member",
@@ -574,125 +575,131 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, 
 	actor := apiUser(c)
 	var emailed []uint
 	err := a.contactMutation(contactChange{UserID: userID}, func(tx *gorm.DB) error {
-		if add != nil {
-			fresh, err := peopleAddActor(tx, actor)
-			if err != nil {
-				return err
-			}
-			actor = fresh
-		}
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(g, g.ID).Error; err != nil {
-			return err
-		}
-		var m models.Membership // any status, so a removed row is reused
-		if err := tx.Where("user_id = ? AND group_id = ?", userID, g.ID).Limit(1).Find(&m).Error; err != nil {
-			return err
-		}
-		targetRel := membershipRel(m)
-		oldRole := ""
-		if targetRel.Member {
-			oldRole = m.Role
-		}
-		actorRel := targetRel
-		if actor.ID != userID {
-			actorRel = relIn(tx, actor.ID, g.ID)
-		}
-		if !allow(actor, actorRel, targetRel, leaderCount(tx, g.ID)) {
-			return errRoleRefused
-		}
-		if (add != nil && add.KeepExistingRole && targetRel.Member) || oldRole == newRole || (newRole == memberRemoved && !targetRel.Member) {
-			return nil
-		}
-		// Adding someone (or bringing them back) needs room under the member
-		// limit, or an explicit over-limit choice, which is audited (DEC-39).
-		adding := !targetRel.Member && (newRole == models.MembershipLeader || newRole == models.MembershipMember)
-		if adding {
-			// A guest (M1.4) has no account to hold a membership with:
-			// they join a group only after an account upgrade or an
-			// invitation turns the guest row into one.
-			var target models.User
-			if err := tx.First(&target, userID).Error; err != nil || target.Status == models.UserGuest {
-				return errRoleRefused
-			}
-			if add != nil {
-				if target.Status != models.UserActive {
-					return errRoleRefused
-				}
-				if policy.TeenAddNeedsApproval(asPerson(&target)) {
-					return errTeenAddApproval
-				}
-			}
-		}
-		count := 0
-		if adding {
-			count = int(memberCount(tx, g.ID))
-			if !policy.GroupHasRoom(g.MemberLimit, count) && !overLimit {
-				return errGroupFull
-			}
-		}
-		switch {
-		case newRole == "":
-			if err := tx.Delete(&m).Error; err != nil {
-				return err
-			}
-		case newRole == memberRemoved:
-			if err := tx.Model(&m).Updates(map[string]any{"status": memberRemoved, "role": models.MembershipMember}).Error; err != nil {
-				return err
-			}
-		case m.ID == 0:
-			if err := tx.Create(&models.Membership{UserID: userID, GroupID: g.ID, Role: newRole,
-				Status: "active", JoinedAt: time.Now().UTC()}).Error; err != nil {
-				return err
-			}
-		default: // a role change, or adding back someone who left or was removed
-			if err := tx.Model(&m).Updates(map[string]any{"role": newRole, "status": "active"}).Error; err != nil {
-				return err
-			}
-		}
-		if oldRole == models.MembershipLeader || newRole == models.MembershipLeader {
-			if err := fixPrimaryContact(tx, g); err != nil {
-				return err
-			}
-		}
-		if adding && !policy.GroupHasRoom(g.MemberLimit, count) {
-			if err := audit.Write(tx, audit.Entry{
-				Actor: &actor.ID, Action: audit.AddedOverLimit, TargetType: "group", TargetID: g.ID,
-				Meta: map[string]any{"userId": userID, "count": count, "limit": *g.MemberLimit, "role": newRole},
-				IP:   c.ClientIP(),
-			}); err != nil {
-				return err
-			}
-		}
-		if newRole == memberRemoved {
-			meta := map[string]any{"userId": userID, "oldRole": oldRole}
-			if note != "" {
-				meta["note"] = note
-			}
-			ids, err := auditAndNotifyLeadership(tx, audit.Entry{
-				Actor: &actor.ID, Action: audit.MemberRemoved,
-				TargetType: "group", TargetID: g.ID, Meta: meta, IP: c.ClientIP(),
-			})
-			emailed = append(emailed, ids...)
-			return err
-		}
-		if oldRole != models.MembershipLeader && newRole != models.MembershipLeader {
-			if adding && add != nil {
-				return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.MemberAdded, TargetType: "group", TargetID: g.ID, Meta: map[string]any{"userId": userID, "role": newRole}, IP: c.ClientIP()})
-			}
-			return nil
-		}
-		ids, err := auditAndNotifyLeadership(tx, audit.Entry{
-			Actor: &actor.ID, Action: audit.RoleChanged,
-			TargetType: "group", TargetID: g.ID,
-			Meta: map[string]any{"userId": userID, "oldRole": roleOrNone(oldRole), "newRole": roleOrNone(newRole)},
-			IP:   c.ClientIP(),
-		})
-		emailed = append(emailed, ids...)
-		return err
+		return a.changeRoleIn(tx, actor, c.ClientIP(), g, userID, newRole, note, overLimit, add, allow, &emailed)
 	})
 	if err == nil {
 		a.deliverNotificationEmails(emailed)
 	}
+	return err
+}
+
+// changeRoleIn requires the contact gate and caller-owned transaction. It keeps
+// the group-first lock/capacity protocol and never commits or sends emails.
+func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models.Group, userID uint, newRole, note string, overLimit bool, add *memberAddOptions, allow func(*models.User, policy.Rel, policy.Rel, int) bool, emailed *[]uint) error {
+	if add != nil {
+		fresh, err := peopleAddActor(tx, actor)
+		if err != nil {
+			return err
+		}
+		actor = fresh
+	}
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(g, g.ID).Error; err != nil {
+		return err
+	}
+	var m models.Membership // any status, so a removed row is reused
+	if err := tx.Where("user_id = ? AND group_id = ?", userID, g.ID).Limit(1).Find(&m).Error; err != nil {
+		return err
+	}
+	targetRel := membershipRel(m)
+	oldRole := ""
+	if targetRel.Member {
+		oldRole = m.Role
+	}
+	actorRel := targetRel
+	if actor.ID != userID {
+		actorRel = relIn(tx, actor.ID, g.ID)
+	}
+	if !allow(actor, actorRel, targetRel, leaderCount(tx, g.ID)) {
+		return errRoleRefused
+	}
+	if (add != nil && add.KeepExistingRole && targetRel.Member) || oldRole == newRole || (newRole == memberRemoved && !targetRel.Member) {
+		return nil
+	}
+	// Adding someone (or bringing them back) needs room under the member
+	// limit, or an explicit over-limit choice, which is audited (DEC-39).
+	adding := !targetRel.Member && (newRole == models.MembershipLeader || newRole == models.MembershipMember)
+	if adding {
+		// A guest (M1.4) has no account to hold a membership with:
+		// they join a group only after an account upgrade or an
+		// invitation turns the guest row into one.
+		var target models.User
+		if err := tx.First(&target, userID).Error; err != nil || target.Status == models.UserGuest {
+			return errRoleRefused
+		}
+		if add != nil {
+			if target.Status != models.UserActive {
+				return errRoleRefused
+			}
+			if policy.TeenAddNeedsApproval(asPerson(&target)) && (add.approved == nil || !a.verifiedGroupAddIn(tx, add.approved, actor.ID, userID, g.ID)) {
+				return errTeenAddApproval
+			}
+		}
+	}
+	count := 0
+	if adding {
+		count = int(memberCount(tx, g.ID))
+		if !policy.GroupHasRoom(g.MemberLimit, count) && !overLimit {
+			return errGroupFull
+		}
+	}
+	switch {
+	case newRole == "":
+		if err := tx.Delete(&m).Error; err != nil {
+			return err
+		}
+	case newRole == memberRemoved:
+		if err := tx.Model(&m).Updates(map[string]any{"status": memberRemoved, "role": models.MembershipMember}).Error; err != nil {
+			return err
+		}
+	case m.ID == 0:
+		if err := tx.Create(&models.Membership{UserID: userID, GroupID: g.ID, Role: newRole,
+			Status: "active", JoinedAt: time.Now().UTC()}).Error; err != nil {
+			return err
+		}
+	default: // a role change, or adding back someone who left or was removed
+		if err := tx.Model(&m).Updates(map[string]any{"role": newRole, "status": "active"}).Error; err != nil {
+			return err
+		}
+	}
+	if oldRole == models.MembershipLeader || newRole == models.MembershipLeader {
+		if err := fixPrimaryContact(tx, g); err != nil {
+			return err
+		}
+	}
+	if adding && !policy.GroupHasRoom(g.MemberLimit, count) {
+		if err := audit.Write(tx, audit.Entry{
+			Actor: &actor.ID, Action: audit.AddedOverLimit, TargetType: "group", TargetID: g.ID,
+			Meta: map[string]any{"userId": userID, "count": count, "limit": *g.MemberLimit, "role": newRole},
+			IP:   ip,
+		}); err != nil {
+			return err
+		}
+	}
+	if newRole == memberRemoved {
+		meta := map[string]any{"userId": userID, "oldRole": oldRole}
+		if note != "" {
+			meta["note"] = note
+		}
+		ids, err := auditAndNotifyLeadership(tx, audit.Entry{
+			Actor: &actor.ID, Action: audit.MemberRemoved,
+			TargetType: "group", TargetID: g.ID, Meta: meta, IP: ip,
+		})
+		*emailed = append(*emailed, ids...)
+		return err
+	}
+	if oldRole != models.MembershipLeader && newRole != models.MembershipLeader {
+		if adding && add != nil {
+			return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.MemberAdded, TargetType: "group", TargetID: g.ID, Meta: map[string]any{"userId": userID, "role": newRole}, IP: ip})
+		}
+		return nil
+	}
+	ids, err := auditAndNotifyLeadership(tx, audit.Entry{
+		Actor: &actor.ID, Action: audit.RoleChanged,
+		TargetType: "group", TargetID: g.ID,
+		Meta: map[string]any{"userId": userID, "oldRole": roleOrNone(oldRole), "newRole": roleOrNone(newRole)},
+		IP:   ip,
+	})
+	*emailed = append(*emailed, ids...)
 	return err
 }
 
@@ -840,12 +847,16 @@ func (a *App) apiCancelDeletion(c *gin.Context) {
 // admins' task with outcome (kept, withdrawn).
 func (a *App) clearDeletionRequest(groupID uint, by *uint, outcome string) error {
 	return a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.Group{}).Where("id = ?", groupID).Update("deletion_requested", false).Error; err != nil {
-			return err
-		}
-		_, err := notify.Resolve(tx, notify.GroupDeletion, groupID, by, outcome)
-		return err
+		return clearDeletionRequestIn(tx, groupID, by, outcome)
 	})
+}
+
+func clearDeletionRequestIn(tx *gorm.DB, groupID uint, by *uint, outcome string) error {
+	if err := tx.Model(&models.Group{}).Where("id = ?", groupID).Update("deletion_requested", false).Error; err != nil {
+		return err
+	}
+	_, err := notify.Resolve(tx, notify.GroupDeletion, groupID, by, outcome)
+	return err
 }
 
 // auditAndNotifyLeadership writes a RoleChanged or MemberRemoved row and

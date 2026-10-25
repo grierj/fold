@@ -23,12 +23,12 @@ it("creates an adult request with the exact context and optional reason, without
 });
 
 it("preserves field selection and reason on server failure and shows friendly error copy", async () => {
-  vi.mocked(Contacts.create).mockRejectedValue(new ApiError(409, "SECRET", { code: "contact_open_limit" }));
+  vi.mocked(Contacts.create).mockRejectedValue(new ApiError(409, "SECRET", { code: "request_open_limit" }));
   mount();
   await userEvent.click(screen.getByLabelText("Phone"));
   await userEvent.type(screen.getByLabelText(/Reason/), "Please call about transport");
   await userEvent.click(screen.getByRole("button", { name: "Send request" }));
-  expect(await screen.findByRole("alert")).toHaveTextContent("You have 10 open contact requests");
+  expect(await screen.findByRole("alert")).toHaveTextContent("You have 10 open requests");
   expect(screen.getByLabelText("Phone")).toBeChecked();
   expect(screen.getByLabelText(/Reason/)).toHaveValue("Please call about transport");
   expect(screen.queryByText("SECRET")).not.toBeInTheDocument();

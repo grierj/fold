@@ -408,7 +408,12 @@ func (a *App) apiSetEventVisibility(c *gin.Context) {
 		}
 		// More private: the same cancel-and-notify as a group tightening (DEC-48).
 		if policy.Openness(vis) < policy.Openness(locked.Visibility) {
-			if impact = eventImpactOf(tx, &locked, vis); !body.Confirm && len(impact.Tightened) == 1 && impact.Tightened[0].Registrants > 0 {
+			var err error
+			impact, err = eventImpactOf(tx, &locked, vis)
+			if err != nil {
+				return err
+			}
+			if !body.Confirm && len(impact.Tightened) == 1 && impact.Tightened[0].Registrants > 0 {
 				return errNeedDecision
 			}
 			ids, err := cancelLosers(c, tx, &locked, vis, time.Now().UTC())

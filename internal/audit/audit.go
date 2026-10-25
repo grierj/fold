@@ -13,6 +13,17 @@ import (
 
 // Actions. Add new ones here so they are easy to find and query.
 const (
+	OccurrenceAccessAdded       = "occurrence_access.added"
+	OccurrenceBlocked           = "occurrence.blocked"
+	OccurrenceRefused           = "occurrence.refused"
+	OccurrenceAccessEnded       = "occurrence_access.ended"
+	AddRequested                = "add.requested"
+	AddDecision                 = "add.decision"
+	AddWithdrawn                = "add.withdrawn"
+	AddExpired                  = "add.expired"
+	AddCompleted                = "add.completed"
+	AddRefused                  = "add.refused"
+	AddEnded                    = "add.ended"
 	ContactRequested            = "contact.requested"
 	ContactDecision             = "contact.decision"
 	ContactWithdrawn            = "contact.withdrawn"

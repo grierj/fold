@@ -1,3 +1,4 @@
+import { AddRequestForm } from "./AddRequestForm";
 import { PeoplePicker } from "./ui/PeoplePicker";
 import { useEffect, useState } from "react";
 import { useAuth } from "../auth";
@@ -15,6 +16,8 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
   const [busy, setBusy] = useState<number | "add" | null>(null);
   const [email, setEmail] = useState("");
   const [selection, setSelection] = useState<PersonSearchResult | null>(null);
+  const [approvalRequired, setApprovalRequired] = useState<{ overCapacity: boolean } | null>(null);
+  const [askPerson, setAskPerson] = useState<{ person: PersonSearchResult; overCapacity: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Refresh at the next care boundary and whenever a background tab returns.
   useEffect(() => {
@@ -48,20 +51,29 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
   }
 
   async function add(e: React.FormEvent) {
-    e.preventDefault(); if (selection?.teen || (!selection && !email.trim())) return;
+    e.preventDefault();
+    if (selection && (selection.teen || approvalRequired)) { setAskPerson({ person: selection, overCapacity: approvalRequired?.overCapacity ?? false }); return; }
+    if (!selection && !email.trim()) return;
     const target = selection ? { selectionId: selection.selectionId } : email.trim();
     const full = instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0;
+    let overCapacity = full;
     if (full && !confirm("This date is full. Add them over capacity?")) return;
     setBusy("add"); setError(null);
     try {
       try { await Events.addRegistration(instance.eventId, instance.date, target, full || undefined); }
       catch (e) {
         if (errorCode(e) !== "event_full" || full || !confirm("This date filled up. Add them over capacity?")) throw e;
+        overCapacity = true;
         await Events.addRegistration(instance.eventId, instance.date, target, true);
       }
-      setEmail(""); setSelection(null); onChanged();
+      setEmail(""); setSelection(null); setApprovalRequired(null); onChanged();
     }
-    catch (e) { setError(errorText(e, "We couldn't add that registration.")); }
+    catch (e) {
+      if (["date_add_approval_required", "teen_add_approval_required"].includes(errorCode(e) ?? "")) {
+        if (selection) { setApprovalRequired({ overCapacity }); setError("They need to approve this date. Choose Ask to add to send an ask using your selected person and options."); }
+        else setError("Select this person by name, then choose Ask to add. An email address cannot be used to send an ask.");
+      } else setError(errorText(e, "We couldn't add that registration."));
+    }
     finally { setBusy(null); }
   }
 
@@ -72,6 +84,7 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
     {roster.length === 0 && <EmptyState title="No sign-ups yet" body="People who sign up for this date will appear here. You can add someone by name or email below." />}
     <ul className="space-y-3 my-3">{roster.map((a) => <li key={a.registrationId} className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
       <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} status={statusLabel(a, roster)} showAccountType />
+        {a.addedByLeader === true && <p className="text-sm text-text-muted">Added by a leader</p>}
         {user?.status === "active" && user.accountType === "adult" && a.userId !== undefined && a.userId > 0 && !a.householdPerson && a.userId !== user.id && a.email === undefined && a.phone === undefined && <RequestContactButton subjectUserId={a.userId} subjectName={a.name} contextType="event" contextId={instance.eventId} />}
       </div>
       <div className="flex flex-wrap gap-2">
@@ -86,8 +99,9 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
       </li>)}</ul>
     </section>}
     <form onSubmit={add} className="space-y-3">
-      {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy !== null} onChange={(person) => { setSelection(person); setEmail(""); setError(null); }} /></Field>}
-      <Field label="Add someone" hint="Or use their email address"><Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setSelection(null); }} /></Field><Button type="submit" variant="secondary" disabled={busy !== null || !!selection?.teen || (!selection && !email.trim())}>{busy === "add" ? "Adding…" : "Add"}</Button></form>
+      {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy !== null} onChange={(person) => { setSelection(person); setApprovalRequired(null); setAskPerson(null); setEmail(""); setError(null); }} /></Field>}
+      <Field label="Add someone" hint="Or use their email address"><Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setSelection(null); setApprovalRequired(null); setAskPerson(null); }} /></Field><Button type="submit" variant="secondary" disabled={busy !== null || (!selection && !email.trim())}>{busy === "add" ? "Adding…" : selection && (selection.teen || approvalRequired) ? "Ask to add" : "Add"}</Button></form>
+    {askPerson && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askPerson.person.selectionId} person={askPerson.person} scope={{ contextType: "event", contextId: instance.eventId, occurrenceId: instance.id, overCapacity: askPerson.overCapacity }} full={instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0} onClose={() => setAskPerson(null)} />}
   </section>;
 }
 

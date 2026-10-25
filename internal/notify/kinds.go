@@ -24,6 +24,12 @@ var Categories = []string{CatAdmin, CatGroups, CatEvents, CatMessages, CatSafety
 // fails on a key that is never registered, and the registry test renders
 // every kind with teen and hidden-adult fixtures.
 const (
+	AddSubjectReview        = "add.subject_review"
+	AddAdminReview          = "add.admin_review"
+	OccurrenceChanged       = "occurrence.changed"
+	OccurrenceAdded         = "occurrence.added"
+	OccurrenceUpdated       = "occurrence.updated"
+	AddUpdated              = "add.updated"
 	ContactSubjectReview    = "contact.subject_review"
 	ContactAdminReview      = "contact.admin_review"
 	ContactUpdated          = "contact.updated"
@@ -174,6 +180,15 @@ func join(parts ...string) string {
 }
 
 func init() {
+	register(Kind{Key: OccurrenceChanged, Category: CatSafety, AllowEmail: true, Render: func(Vars) (string, string) {
+		return "Your date invitation was updated", "Open Fold to review this date and your attendance."
+	}, RenderEmailSafe: func(Vars) (string, string) { return "Review an update in Fold", "Sign in to Fold to review an update." }})
+	register(Kind{Key: OccurrenceAdded, Category: CatSafety, AllowEmail: true, Render: func(Vars) (string, string) {
+		return "You have a date invitation", "Open Fold to review the date and your attendance choices."
+	}, RenderEmailSafe: func(Vars) (string, string) { return "Review an update in Fold", "Sign in to Fold to review an update." }})
+	register(Kind{Key: OccurrenceUpdated, Category: CatSafety, AllowEmail: true, Render: func(Vars) (string, string) {
+		return "Your date invitation has ended", "Open Fold to review your upcoming dates."
+	}, RenderEmailSafe: func(Vars) (string, string) { return "Review an update in Fold", "Sign in to Fold to review an update." }})
 	for _, item := range []struct {
 		key     string
 		waiting bool
@@ -184,6 +199,18 @@ func init() {
 				return "Review a direct-contact request", "Open Fold to review the requested access. No contact details have been shared."
 			}
 			return "Direct-contact access updated", "Open Fold to review the request or grant."
+		}, RenderEmailSafe: func(Vars) (string, string) { return "Review an update in Fold", "Sign in to Fold to review an update." }})
+	}
+	for _, item := range []struct {
+		key     string
+		waiting bool
+	}{{AddSubjectReview, true}, {AddAdminReview, true}, {AddUpdated, false}} {
+		waiting := item.waiting
+		register(Kind{Key: item.key, Category: CatSafety, Waiting: waiting, AllowEmail: true, Render: func(Vars) (string, string) {
+			if waiting {
+				return "Review an ask to add", "Sign in to Fold to review a request to add someone. No contact access is included."
+			}
+			return "Ask to add updated", "Sign in to Fold to review the request. No contact access is included."
 		}, RenderEmailSafe: func(Vars) (string, string) { return "Review an update in Fold", "Sign in to Fold to review an update." }})
 	}
 	register(Kind{Key: AccountTurned18, Category: CatSafety, AllowEmail: true,

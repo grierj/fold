@@ -27,7 +27,7 @@ var groupDetailRe = regexp.MustCompile(`\b(g|f\.group|group)\.(Location|Name)\b|
 
 // eventOutputFiles build event and notice output for viewers who may not
 // see the event's group.
-var eventOutputFiles = []string{"api_events.go", "api_event_access.go", "api_notifications.go", "api_group_visibility.go", "api_guest.go", "api_registrations.go", "api_calendar.go", "api_feeds.go"}
+var eventOutputFiles = []string{"api_occurrence_access.go", "api_events.go", "api_event_access.go", "api_notifications.go", "api_group_visibility.go", "api_guest.go", "api_registrations.go", "api_calendar.go", "api_feeds.go"}
 
 func groupDetailViolations(src string) []string {
 	var bad []string
@@ -70,6 +70,7 @@ var tsContracts = []struct {
 	{personSearchJSON{}, "PersonSearchResult"},
 	{peopleSearchJSON{}, "PeopleSearchResponse"},
 	{contactRequestJSON{}, "ContactRequest"},
+	{addRequestJSON{}, "AddRequest"},
 	{contactGrantJSON{}, "ContactGrant"},
 	{contactRevealJSON{}, "ContactReveal"},
 	{userJSON{}, "User"},
@@ -79,6 +80,7 @@ var tsContracts = []struct {
 	{resolutionJSON{}, "NotificationResolution"},
 	{occurrenceJSON{}, "EventOccurrence"}, // Includes the public childcareFull flag; totals stay optional.
 	{calendarOccurrenceJSON{}, "CalendarOccurrence"},
+	{dateOccurrenceJSON{}, "EventDate"},
 	{eventJSON{}, "EventSeries"},
 	{hostJSON{}, "EventHostRow"},
 	{impactEventJSON{}, "VisibilityImpactEvent"},

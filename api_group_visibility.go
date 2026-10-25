@@ -95,6 +95,29 @@ func losersQuery(tx *gorm.DB, ev *models.Event, newVis string, now time.Time) *g
 		Joins("JOIN users ON users.id = COALESCE(registrations.user_id,registrations.registered_by)").
 		Where("event_occurrences.event_id = ? AND event_occurrences.starts_at > ?", ev.ID, now).
 		Where("registrations.status IN ?", []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted})
+	// Only a current explicit invitation preserves its own registration. Parent
+	// event visibility never widens, and household/ordinary siblings still lose.
+	var accesses []models.OccurrenceAccess
+	if err := tx.Where("event_id = ? AND status = ? AND registration_id IN (?)", ev.ID, policy.OccurrenceAccessActive,
+		q.Session(&gorm.Session{}).Select("registrations.id")).Order("id").Find(&accesses).Error; err != nil {
+		q.AddError(err)
+		return q
+	}
+	reads, err := occurrenceInvitationReadsIn(tx, accesses, now)
+	if err != nil {
+		q.AddError(err)
+		return q
+	}
+	kept := []uint{}
+	for _, access := range accesses {
+		if reads[access.ID] != nil {
+			kept = append(kept, access.RegistrationID)
+		}
+	}
+	if len(kept) > 0 {
+		q = q.Where("registrations.id NOT IN ?", kept)
+	}
+
 	switch newVis {
 	case models.VisibilityPrivate:
 		// Signed-in people keep their registrations at private. Guests
@@ -111,14 +134,16 @@ func losersQuery(tx *gorm.DB, ev *models.Event, newVis string, now time.Time) *g
 	}
 }
 
-func toImpact(tx *gorm.DB, evs []models.Event, newVis string, now time.Time) []impactEventJSON {
+func toImpact(tx *gorm.DB, evs []models.Event, newVis string, now time.Time) ([]impactEventJSON, error) {
 	out := []impactEventJSON{}
 	for i := range evs {
 		var n int64
-		losersQuery(tx, &evs[i], newVis, now).Select("COUNT(DISTINCT (registrations.user_id,registrations.household_person_id))").Scan(&n)
+		if err := losersQuery(tx, &evs[i], newVis, now).Select("COUNT(DISTINCT (registrations.user_id,registrations.household_person_id))").Scan(&n).Error; err != nil {
+			return nil, err
+		}
 		out = append(out, impactEventJSON{ID: evs[i].ID, Title: evs[i].Title, Visibility: evs[i].Visibility, Registrants: n})
 	}
-	return out
+	return out, nil
 }
 
 func impactOf(tx *gorm.DB, g *models.Group, newVis string, lock bool) (visibilityImpactJSON, []models.Event, []models.Event, error) {
@@ -127,11 +152,15 @@ func impactOf(tx *gorm.DB, g *models.Group, newVis string, lock bool) (visibilit
 	if err != nil {
 		return visibilityImpactJSON{}, nil, nil, err
 	}
-	return visibilityImpactJSON{
-		Visibility:   newVis,
-		Tightened:    toImpact(tx, auto, newVis, now),
-		LeaderOpened: toImpact(tx, opened, newVis, now),
-	}, auto, opened, nil
+	tightened, err := toImpact(tx, auto, newVis, now)
+	if err != nil {
+		return visibilityImpactJSON{}, nil, nil, err
+	}
+	leaderOpened, err := toImpact(tx, opened, newVis, now)
+	if err != nil {
+		return visibilityImpactJSON{}, nil, nil, err
+	}
+	return visibilityImpactJSON{Visibility: newVis, Tightened: tightened, LeaderOpened: leaderOpened}, auto, opened, nil
 }
 
 // apiGroupVisibilityImpact previews a visibility change so the SPA can show
@@ -272,12 +301,16 @@ func cancelLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, newVis string, 
 // eventImpactOf is what setting one event to newVis would do, in the same
 // shape as a group change: the event is listed under tightened when newVis
 // is more private, with the registrants that would be cancelled.
-func eventImpactOf(tx *gorm.DB, ev *models.Event, newVis string) visibilityImpactJSON {
+func eventImpactOf(tx *gorm.DB, ev *models.Event, newVis string) (visibilityImpactJSON, error) {
 	impact := visibilityImpactJSON{Visibility: newVis, Tightened: []impactEventJSON{}, LeaderOpened: []impactEventJSON{}}
 	if policy.Openness(newVis) < policy.Openness(ev.Visibility) {
-		impact.Tightened = toImpact(tx, []models.Event{*ev}, newVis, time.Now().UTC())
+		var err error
+		impact.Tightened, err = toImpact(tx, []models.Event{*ev}, newVis, time.Now().UTC())
+		if err != nil {
+			return impact, err
+		}
 	}
-	return impact
+	return impact, nil
 }
 
 // apiEventVisibilityImpact previews a single-event visibility change, like
@@ -297,5 +330,10 @@ func (a *App) apiEventVisibilityImpact(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, msg)
 		return
 	}
-	c.JSON(http.StatusOK, eventImpactOf(a.DB, ev, vis))
+	impact, err := eventImpactOf(a.DB, ev, vis)
+	if err != nil {
+		jsonError(c, 500, "could not preview visibility")
+		return
+	}
+	c.JSON(http.StatusOK, impact)
 }

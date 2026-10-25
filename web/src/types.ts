@@ -138,6 +138,7 @@ export interface GuestRegistration {
 // One attendee entry on an occurrence (M1.5 adds guestCount).
 /** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface Attendee {
+  addedByLeader?: boolean;
   email?: string;
   phone?: string;
   accountType?: "adult" | "teen";
@@ -401,6 +402,8 @@ export interface AccountRequest {
 export interface CalendarOccurrence {
   eventId: number;
   date: string;
+  // Exact-date link for an invitation that grants no series access.
+  dateUrl?: string;
   startsAt: string;
   endsAt: string;
   title: string;
@@ -631,4 +634,62 @@ export interface PersonSearchResult {
 export interface PeopleSearchResponse {
   state: 'short_query' | 'throttled' | 'no_results' | 'results';
   people: PersonSearchResult[];
+}
+
+/** @public Safe ask preview, checked by TestWebTypesMatchGoJSON; never group/roster/contact authority. */
+export interface AddRequest {
+  id: number;
+  purpose: "group_add" | "occurrence_add";
+  eventTitle?: string;
+  date?: string;
+  startsAt?: string;
+  endsAt?: string;
+  tzid?: string;
+  completionProblem?: "capacity" | "childcare" | "options" | "throttled";
+  requesterName?: string;
+  subjectName?: string;
+  contextId?: number;
+  groupName?: string;
+  reason: string;
+  overLimit: boolean;
+  needsAdmin: boolean;
+  subjectDecision: "pending" | "approved" | "denied";
+  adminDecision: "pending" | "approved" | "denied" | "not_needed";
+  status: "pending" | "granted" | "denied" | "withdrawn" | "expired" | "ended";
+  createdAt: string;
+  expiresAt: string;
+  completedAt?: string;
+  endReason: string;
+  canSubjectDecide: boolean;
+  canAdminDecide: boolean;
+  canWithdraw: boolean;
+  canComplete: boolean;
+}
+
+/** @public Exact-date read contract; does not authorize a mutation. */
+export interface EventDate {
+  id: number;
+  eventId: number;
+  date: string;
+  dateUrl: string;
+  title: string;
+  location: string;
+  startsAt: string;
+  endsAt: string;
+  startsLocal: string;
+  endsLocal: string;
+  tzid: string;
+  durationMinutes: number;
+  remoteAvailable: boolean;
+  guestsAllowed: number;
+  myRegistration: RegistrationStatus | null;
+  myAttendanceMode?: AttendanceMode;
+  myGuestCount?: number;
+  videoProvider: VideoProvider;
+  videoUrl?: string;
+  videoHidden: boolean;
+  canSeeVideo: boolean;
+  canSeeAttendees: boolean;
+  canDecline: boolean;
+  canBlock: boolean;
 }

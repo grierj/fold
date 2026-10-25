@@ -90,13 +90,15 @@ it("adds an opaque adult selection and retains email as an alternative", async (
   expect(changed).toHaveBeenCalledTimes(2);
 });
 
-it("shows teen approval guidance without an add, and no search after role loss", async () => {
+it("offers a teen Ask instead of direct add, and no search after role loss", async () => {
   actor.user = { id: 10, status: "active", accountType: "adult" };
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
   const view = render(<ManageRoster instance={occurrence({})} onChanged={() => {}} onClose={() => {}} />);
   await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
   expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
-  expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
+  expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
   expect(Events.addRegistration).not.toHaveBeenCalled();
   actor.user = { id: 10, status: "active", accountType: "teen" };
   view.rerender(<ManageRoster instance={occurrence({})} onChanged={() => {}} onClose={() => {}} />);
@@ -117,4 +119,36 @@ it("preserves explicit over-capacity confirmation and handles seats filled durin
   await userEvent.type(screen.getByLabelText("Add someone"), "known@example.com"); await userEvent.click(screen.getByRole("button", { name: "Add" }));
   expect(window.confirm).toHaveBeenCalledWith("This date filled up. Add them over capacity?");
   expect(Events.addRegistration).toHaveBeenLastCalledWith(7, "2026-12-01", "known@example.com", true);
+});
+
+it("offers an explicit adult ask only after approval-needed, preserving the selected token and confirmed override", async () => {
+  actor.user = { id: 10, status: "active", accountType: "adult" };
+  vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "adult-opaque", displayName: "Pat", teen: false, sharedGroups: [], otherGroups: [] }] });
+  vi.mocked(Events.addRegistration).mockRejectedValue(new ApiError(409, "SECRET", { code: "date_add_approval_required" }));
+  render(<ManageRoster instance={occurrence({ capacity: 1, spotsLeft: 0 })} onChanged={() => {}} onClose={() => {}} />);
+  await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
+  await userEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(screen.queryByRole("button", { name: "Send ask to add" })).not.toBeInTheDocument();
+  expect(Events.addRegistration).toHaveBeenCalledWith(7, "2026-12-01", { selectionId: "adult-opaque" }, true);
+  await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
+  expect(screen.getByRole("checkbox", { name: /Allow adding over capacity/ })).toBeChecked();
+  expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
+  expect(Events.addRegistration).toHaveBeenCalledTimes(1);
+});
+
+it("asks email approval refusals to use name selection, without reconstructing a token", async () => {
+  vi.mocked(Events.addRegistration).mockRejectedValue(new ApiError(409, "SECRET", { code: "date_add_approval_required" }));
+  render(<ManageRoster instance={occurrence({})} onChanged={() => {}} onClose={() => {}} />);
+  await userEvent.type(screen.getByLabelText("Add someone"), "known@example.com"); await userEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("Select this person by name");
+  expect(screen.getByLabelText("Add someone")).toHaveValue("known@example.com");
+  expect(screen.queryByRole("button", { name: "Ask to add" })).not.toBeInTheDocument();
+});
+
+it("labels manager provenance only when the server explicitly supplies addedByLeader true", () => {
+  const base: Attendee = { registrationId: 1, userId: 3, name: "Invited", status: "going", guestCount: 0, attendanceMode: "in_person" };
+  const inferred = { ...base, registrationId: 2, name: "No inference", source: "manager_add" };
+  render(<ManageRoster instance={occurrence({ attendees: [{ ...base, addedByLeader: true }, inferred, { ...base, registrationId: 3, name: "False", addedByLeader: false }] })} onChanged={() => {}} onClose={() => {}} />);
+  expect(screen.getAllByText("Added by a leader")).toHaveLength(1);
+  expect(within(screen.getByText("Invited").closest("li")!).getByText("Added by a leader")).toBeInTheDocument();
 });

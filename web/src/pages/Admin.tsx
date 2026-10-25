@@ -1,3 +1,4 @@
+import { AddRequestForm } from "../components/AddRequestForm";
 import { PeoplePicker } from "../components/ui/PeoplePicker";
 import type { PersonSearchResult } from "../types";
 import { ContactDetails } from "../components/ContactDetails";
@@ -364,6 +365,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
   const [members, setMembers] = useState<Member[] | null>(null);
   const [addUserId, setAddUserId] = useState("");
   const [selection, setSelection] = useState<PersonSearchResult | null>(null);
+  const [askPerson, setAskPerson] = useState<PersonSearchResult | null>(null);
   const [addRole, setAddRole] = useState<"member" | "leader">("member");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -382,7 +384,8 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
   }, [load]);
 
   async function add() {
-    if (selection?.teen || (!selection && !addUserId)) return;
+    if (selection?.teen) { setAskPerson(selection); return; }
+    if (!selection && !addUserId) return;
     const target = selection ? { selectionId: selection.selectionId } : Number(addUserId);
     setBusy(true);
     setError(null);
@@ -399,7 +402,7 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
       setSelection(null);
       await load();
     } catch (e) {
-      setError(errorText(e, "We couldn't add that person."));
+      setError(errorCode(e) === "teen_add_approval_required" ? "Select this person by name, then choose Ask to add. An account ID cannot be used to send an ask." : errorText(e, "We couldn't add that person."));
     } finally {
       setBusy(false);
     }
@@ -457,9 +460,9 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
         <p className="text-sm text-text-muted py-2">No members yet.</p>
       )}
       <div className="mt-3 max-w-xl space-y-4">
-        <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy} onChange={(person) => { setSelection(person); setAddUserId(""); setError(null); }} /></Field>
+        <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy} onChange={(person) => { setSelection(person); setAskPerson(null); setAddUserId(""); setError(null); }} /></Field>
         <Field label="Or choose an adult by email">
-          <Select value={addUserId} onChange={(e) => { setAddUserId(e.target.value); setSelection(null); }}>
+          <Select value={addUserId} onChange={(e) => { setAddUserId(e.target.value); setSelection(null); setAskPerson(null); }}>
             <option value="">Select…</option>
             {candidates.map((u) => (
               <option key={u.id} value={u.id}>
@@ -468,13 +471,14 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
             ))}
           </Select>
         </Field>
-        <Choices legend="Role">
+        {!selection?.teen && <Choices legend="Role">
           <Radio name={`admin-role-${group.id}`} label="Member" checked={addRole === "member"} onChange={() => setAddRole("member")} />
           <Radio name={`admin-role-${group.id}`} label="Leader" checked={addRole === "leader"} onChange={() => setAddRole("leader")} />
-        </Choices>
-        <Button variant="secondary" onClick={add} disabled={busy || !!selection?.teen || (!selection && !addUserId)}>
-          {busy ? "…" : "Add"}
+        </Choices>}
+        <Button variant="secondary" onClick={add} disabled={busy || (!selection && !addUserId)}>
+          {busy ? "…" : selection?.teen ? "Ask to add" : "Add"}
         </Button>
+        {askPerson && <AddRequestForm key={askPerson.selectionId} person={askPerson} scope={{ contextType: "group", contextId: group.id }} full={group.memberLimit !== null && group.memberCount >= group.memberLimit} onClose={() => setAskPerson(null)} />}
       </div>
     </div>
   );

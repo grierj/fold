@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { People } from "../../api";
 import type { PeopleSearchResponse, PersonSearchResult } from "../../types";
-import { errorText, ERROR_COPY } from "../../lib/errors";
+import { errorText } from "../../lib/errors";
 import { Avatar } from "../Avatar";
 import { Badge } from "./Badge";
 import { useField, wire } from "./Field";
@@ -13,7 +13,7 @@ const COPY = {
 };
 
 // Name-only search, not a directory. A selection is opaque and grants no
-// permission to add; each destination still authorizes the adult add.
+// permission to add; each destination still authorizes the add or ask.
 export function PeoplePicker({ value, onChange, disabled = false }: {
   value: PersonSearchResult | null;
   onChange: (person: PersonSearchResult | null) => void;
@@ -76,7 +76,7 @@ export function PeoplePicker({ value, onChange, disabled = false }: {
     person.avatarFocalX === other.avatarFocalX && person.avatarFocalY === other.avatarFocalY &&
     JSON.stringify(person.sharedGroups) === JSON.stringify(other.sharedGroups) &&
     JSON.stringify(person.otherGroups) === JSON.stringify(other.otherGroups)));
-  const status = value ? value.teen ? ERROR_COPY.teen_add_approval_required : `${value.displayName} selected` :
+  const status = value ? value.teen ? "Adding a teen needs their approval and an admin's approval. Choose Ask to add to continue." : `${value.displayName} selected` :
     loading ? "Searching…" : error ?? (response.state === "results" ? `${people.length} ${people.length === 1 ? "person" : "people"} found` : COPY[response.state]);
 
   return <div>

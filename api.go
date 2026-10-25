@@ -228,6 +228,7 @@ type occurrenceJSON struct {
 }
 
 type attendeeJSON struct {
+	AddedByLeader      *bool                  `json:"addedByLeader,omitempty"`
 	Email              *string                `json:"email,omitempty"`
 	Phone              *string                `json:"phone,omitempty"`
 	AccountType        string                 `json:"accountType,omitempty"`
@@ -565,6 +566,12 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/people/search", a.apiAuth(), a.apiSearchPeople)
 
 	// Direct contact: authenticated review, explicit audited disclosure only.
+	v1.POST("/add-requests", a.apiAuth(), a.apiCreateAddRequest)
+	v1.GET("/add-requests", a.apiAuth(), a.apiListAddRequests)
+	v1.GET("/add-requests/:id", a.apiAuth(), a.apiGetAddRequest)
+	v1.POST("/add-requests/:id/decision", a.apiAuth(), a.apiDecideAddRequest)
+	v1.POST("/add-requests/:id/withdraw", a.apiAuth(), a.apiWithdrawAddRequest)
+	v1.POST("/add-requests/:id/complete", a.apiAuth(), a.apiCompleteAddRequest)
 	v1.POST("/contact-requests", a.apiAuth(), a.apiCreateContactRequest)
 	v1.GET("/contact-requests", a.apiAuth(), a.apiListContactRequests)
 	v1.GET("/contact-requests/:id", a.apiAuth(), a.apiGetContactRequest)
@@ -659,6 +666,10 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// Video (M1.8): mint a Jitsi room URL (leaders, hosts, admins).
 	v1.POST("/events/video/jitsi", a.apiAuth(), a.apiGenerateJitsiLink)
 	v1.GET("/events/:id", a.optionalUser(), a.apiGetEvent)
+	v1.GET("/events/:id/dates/:date", a.apiAuth(), a.apiGetOccurrenceDate)
+	v1.POST("/events/:id/dates/:date/decline", a.apiAuth(), a.apiDeclineOccurrence)
+	v1.POST("/events/:id/dates/:date/block", a.apiAuth(), a.apiBlockOccurrence)
+	v1.PUT("/events/:id/dates/:date/registration", a.apiAuth(), a.apiRegisterOccurrence)
 	v1.PUT("/events/:id", a.apiAuth(), a.apiUpdateEvent)
 	v1.DELETE("/events/:id", a.apiAuth(), a.apiDeleteEvent)
 	v1.PUT("/events/:id/visibility", a.apiAuth(), a.apiSetEventVisibility)

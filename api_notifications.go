@@ -511,6 +511,10 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 		userIDs = append(userIDs, r.UserID)
 	}
 	facts := loadNoticeFacts(tx, groupIDs, userIDs)
+	accesses, err := occurrenceNoticeAccesses(tx, occIDs)
+	if err != nil {
+		return nil, err
+	}
 	var ids []uint
 	for _, r := range rows {
 		o := occByID[r.OccID]
@@ -519,6 +523,11 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 		}
 		ev := evByID[o.EventID]
 		if ev == nil {
+			continue
+		}
+		if _, ok := accesses[o.ID][r.UserID]; ok {
+			// Lifecycle reconciliation owns the single invitation-ended notice.
+			// Ordinary registrants still receive the cancellation notice below.
 			continue
 		}
 		vars, link := eventNoticeVars(ev, o, r.UserID, facts)

@@ -104,3 +104,52 @@ func TestTeenGuardianTaskExplainsConsent(t *testing.T) {
 		t.Fatal("conversion notice must not be an approval task")
 	}
 }
+
+func TestAddRequestNoticesAreSeparateSafeTasks(t *testing.T) {
+	for _, key := range []string{AddSubjectReview, AddAdminReview, AddUpdated} {
+		k, ok := Lookup(key)
+		if !ok || k.BatchWindow != 0 || len(k.Actions) != 0 || !k.AllowEmail || k.Waiting != (key != AddUpdated) {
+			t.Fatalf("unsafe add kind: %s %+v", key, k)
+		}
+		v := Vars{Person: "Private teen", Actor: "Private requester", Group: "Secret group", Event: "Secret event", Note: "private@example.com", Teen: true}
+		title, body := k.Render(v)
+		emailTitle, emailBody := k.RenderForEmail(v)
+		for _, secret := range []string{v.Person, v.Actor, v.Group, v.Event, v.Note} {
+			if strings.Contains(title+body+emailTitle+emailBody, secret) {
+				t.Fatalf("%s leaked %s", key, secret)
+			}
+		}
+	}
+}
+
+func TestOccurrenceUpdateNoticeIsSafeAndNavigationOnly(t *testing.T) {
+	k, ok := Lookup(OccurrenceUpdated)
+	if !ok || k.BatchWindow != 0 || len(k.Actions) != 0 || k.Waiting || !k.AllowEmail {
+		t.Fatalf("unsafe occurrence update: %+v", k)
+	}
+	vars := Vars{Person: "Private teen", Actor: "Hidden host", Group: "Hidden organizer", Event: "Secret series", Note: "private@example.com", Teen: true}
+	title, body := k.Render(vars)
+	emailTitle, emailBody := k.RenderForEmail(vars)
+	for _, secret := range []string{vars.Person, vars.Actor, vars.Group, vars.Event, vars.Note} {
+		if strings.Contains(title+body+emailTitle+emailBody, secret) {
+			t.Fatalf("notice leaked %s", secret)
+		}
+	}
+}
+
+func TestOccurrenceAddedAndChangedAreNamesFreeNavigationOnly(t *testing.T) {
+	for _, key := range []string{OccurrenceAdded, OccurrenceChanged} {
+		k, ok := Lookup(key)
+		if !ok || k.BatchWindow != 0 || k.Waiting || len(k.Actions) != 0 || !k.AllowEmail {
+			t.Fatal("unsafe kind", key)
+		}
+		v := Vars{Person: "Private teen", Actor: "Private leader", Group: "Hidden group", Event: "Secret series", Note: "private@example.com", Teen: true}
+		title, body := k.Render(v)
+		et, eb := k.RenderForEmail(v)
+		for _, secret := range []string{v.Person, v.Actor, v.Group, v.Event, v.Note} {
+			if strings.Contains(title+body+et+eb, secret) {
+				t.Fatal("notice leaked", key, secret)
+			}
+		}
+	}
+}

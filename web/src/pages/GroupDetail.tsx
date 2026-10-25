@@ -1,3 +1,4 @@
+import { AddRequestForm } from "../components/AddRequestForm";
 import { PeoplePicker } from "../components/ui/PeoplePicker";
 import { RequestContactButton } from "../components/RequestContactButton";
 import { ContactDetails } from "../components/ContactDetails";
@@ -432,6 +433,7 @@ export function GroupDetail() {
   const [coverBusy, setCoverBusy] = useState(false);
   const [memberEmail, setMemberEmail] = useState("");
   const [memberSelection, setMemberSelection] = useState<PersonSearchResult | null>(null);
+  const [askMember, setAskMember] = useState<PersonSearchResult | null>(null);
   const [memberBusy, setMemberBusy] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteBusy, setInviteBusy] = useState(false);
@@ -622,7 +624,8 @@ export function GroupDetail() {
   async function addMember(e: React.FormEvent) {
     e.preventDefault();
     const email = memberEmail.trim();
-    if (memberSelection?.teen || (!email && !memberSelection)) return;
+    if (memberSelection?.teen) { setAskMember(memberSelection); return; }
+    if (!email && !memberSelection) return;
     const target = memberSelection ? { selectionId: memberSelection.selectionId } : email;
     setMemberBusy(true);
     setMemberError(null);
@@ -639,7 +642,7 @@ export function GroupDetail() {
       setMemberSelection(null);
       await load();
     } catch (e) {
-      setMemberError(errorText(e, "We couldn't add that person."));
+      setMemberError(errorCode(e) === "teen_add_approval_required" ? "Select this person by name, then choose Ask to add. An email address cannot be used to send an ask." : errorText(e, "We couldn't add that person."));
     } finally {
       setMemberBusy(false);
     }
@@ -1032,22 +1035,23 @@ export function GroupDetail() {
                       </form>
                       {inviteStatus && <p className="text-success text-sm mt-2">{inviteStatus}</p>}
                       <form onSubmit={addMember} className="mt-4 space-y-3">
-                        {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={memberSelection} disabled={memberBusy} onChange={(person) => { setMemberSelection(person); setMemberEmail(""); setMemberError(null); }} /></Field>}
+                        {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={memberSelection} disabled={memberBusy} onChange={(person) => { setMemberSelection(person); setAskMember(null); setMemberEmail(""); setMemberError(null); }} /></Field>}
                         <div className="grow min-w-48">
                           <Field id="add-member" label="Add a member by email">
                             <Input
                               value={memberEmail}
-                              onChange={(e) => { setMemberEmail(e.target.value); setMemberSelection(null); }}
+                              onChange={(e) => { setMemberEmail(e.target.value); setMemberSelection(null); setAskMember(null); }}
                               type="email"
                               placeholder="name@example.com"
                               autoComplete="off"
                             />
                           </Field>
                         </div>
-                        <Button variant="secondary" type="submit" disabled={memberBusy || !!memberSelection?.teen || (!memberSelection && !memberEmail.trim())}>
-                          {memberBusy ? "Adding…" : "Add member"}
+                        <Button variant="secondary" type="submit" disabled={memberBusy || (!memberSelection && !memberEmail.trim())}>
+                          {memberBusy ? "Adding…" : memberSelection?.teen ? "Ask to add" : "Add member"}
                         </Button>
                       </form>
+                      {askMember && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askMember.selectionId} person={askMember} scope={{ contextType: "group", contextId: Number(id) }} full={group.memberLimit !== null && group.memberCount >= group.memberLimit} onClose={() => setAskMember(null)} />}
                       </>
                     )}
                     {isLeader && (

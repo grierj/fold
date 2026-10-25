@@ -72,7 +72,7 @@ it("uses name selection on admin add with the existing role and over-limit choic
   expect(Groups.members).toHaveBeenCalledWith(3);
 });
 
-it("keeps a teen searchable but non-addable through admin controls", async () => {
+it("offers a teen Ask to add without a leader-role shortcut", async () => {
   vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [{ id: 3, name: "Choir", memberCount: 0, status: "active" } as import("../types").GroupSummary] });
   vi.mocked(AdminGroups.addMember).mockReset();
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
@@ -80,6 +80,8 @@ it("keeps a teen searchable but non-addable through admin controls", async () =>
   await userEvent.click(await screen.findByRole("button", { name: "Manage members" }));
   await userEvent.type(screen.getByRole("combobox", { name: "Find a person by name" }), "Pat"); await userEvent.click(await screen.findByRole("option", { name: /Teen Pat/ }));
   expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
-  expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
+  expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
   expect(AdminGroups.addMember).not.toHaveBeenCalled();
 });

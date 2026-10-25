@@ -187,7 +187,7 @@ export function ProfilePage() {
   return (
     <div className="max-w-xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">Your profile</h1>
-      <div className="mb-6"><ButtonLink variant="secondary" to="/contact-requests">Direct contact requests and access</ButtonLink></div>
+      <div className="mb-6 flex flex-wrap gap-3"><ButtonLink variant="secondary" to="/contact-requests">Direct contact requests and access</ButtonLink><ButtonLink variant="secondary" to="/add-requests">Add request history</ButtonLink></div>
       {isAdmin && (
         // Phones have no Admin link in the header; it's a row here (PR #65 review F2).
         <Link

@@ -543,3 +543,214 @@ func TestContactConsentRevocationEndsAccess(t *testing.T) {
 		})
 	}
 }
+
+func TestGroupAskParallelFinalDecisionsExactlyOneMembership(t *testing.T) {
+	f := newGroupAskFixture(t)
+	r := createGroupAsk(t, f, f.lc, f.leader, false)
+	gate := holdContactGate(t, f.app)
+	subject := queueContact(func() *httptest.ResponseRecorder { return addDecision(f.sc, r.ID, "subject", "approved") })
+	waitContactWaiters(t, f.app, 1)
+	admin := queueContact(func() *httptest.ResponseRecorder { return addDecision(f.ac, r.ID, "admin", "approved") })
+	waitContactWaiters(t, f.app, 2)
+	duplicate := queueContact(func() *httptest.ResponseRecorder {
+		return addDecision(cloneContactClient(f.ac), r.ID, "admin", "approved")
+	})
+	waitContactWaiters(t, f.app, 3)
+	gate.Rollback()
+	for _, ch := range []<-chan *httptest.ResponseRecorder{subject, admin} {
+		if w := awaitContactResponse(t, ch); w.Code != 200 {
+			t.Fatalf("approve: %d %s", w.Code, w.Body.String())
+		}
+	}
+	if w := awaitContactResponse(t, duplicate); w.Code != 403 {
+		t.Fatalf("replay: %d", w.Code)
+	}
+	if contactCount(t, f.app, &models.Membership{}, "user_id = ? AND group_id = ? AND status = 'active'", f.subject.ID, f.group.ID) != 1 || contactCount(t, f.app, &models.AuditLog{}, "action = ? AND target_id = ?", audit.AddCompleted, r.ID) != 1 {
+		t.Fatal("duplicate or absent completed add")
+	}
+	if savedAsk(t, f, r.ID).CompletedTargetID == nil {
+		t.Fatal("no membership provenance")
+	}
+}
+func TestGroupAskImmediateLifecycleAndNoResurrection(t *testing.T) {
+	for _, mutation := range []string{"role_loss", "disable_subject", "disable_requester", "context_loss", "adult_age", "expiry", "withdraw"} {
+		t.Run(mutation, func(t *testing.T) {
+			f := newGroupAskFixture(t)
+			r := createGroupAsk(t, f, f.lc, f.leader, false)
+			if w := addDecision(f.sc, r.ID, "subject", "approved"); w.Code != 200 {
+				t.Fatal(w.Body.String())
+			}
+			want, reason := "ended", ""
+			switch mutation {
+			case "role_loss":
+				if err := f.app.DB.Create(&models.Membership{UserID: f.admin.ID, GroupID: f.group.ID, Role: models.MembershipLeader, Status: "active"}).Error; err != nil {
+					t.Fatal(err)
+				}
+				if w := f.ac.do("PUT", "/api/v1/groups/"+itoa(f.group.ID)+"/members/"+itoa(f.leader.ID)+"/role", map[string]any{"role": "member"}, true); w.Code != 200 {
+					t.Fatal(w.Body.String())
+				}
+				reason = policy.ContactLeftRole
+				// Restoring the role cannot revive the old ask.
+				if w := f.ac.do("PUT", "/api/v1/groups/"+itoa(f.group.ID)+"/members/"+itoa(f.leader.ID)+"/role", map[string]any{"role": "leader"}, true); w.Code != 200 {
+					t.Fatal(w.Body.String())
+				}
+			case "disable_subject", "disable_requester":
+				u := f.subject
+				if mutation == "disable_requester" {
+					if err := f.app.DB.Create(&models.Membership{UserID: f.admin.ID, GroupID: f.group.ID, Role: models.MembershipLeader, Status: "active"}).Error; err != nil {
+						t.Fatal(err)
+					}
+					u = f.leader
+				}
+				if w := f.ac.do("PUT", "/api/v1/admin/users/"+itoa(u.ID), map[string]any{"status": "disabled"}, true); w.Code != 200 {
+					t.Fatal(w.Body.String())
+				}
+				reason = policy.ContactAccountDisabled
+				if w := f.ac.do("PUT", "/api/v1/admin/users/"+itoa(u.ID), map[string]any{"status": "active"}, true); w.Code != 200 {
+					t.Fatal(w.Body.String())
+				}
+			case "context_loss":
+				if err := f.app.contactMutation(contactChange{GroupID: f.group.ID}, func(tx *gorm.DB) error { return tx.Model(f.group).Update("status", models.GroupArchived).Error }); err != nil {
+					t.Fatal(err)
+				}
+				reason = policy.ContactContextEnded
+			case "adult_age":
+				birth := time.Now().AddDate(-18, 0, 0)
+				if err := f.app.contactMutation(contactChange{UserID: f.subject.ID}, func(tx *gorm.DB) error { return tx.Model(f.subject).Update("birth_date", birth).Error }); err != nil {
+					t.Fatal(err)
+				}
+				reason = policy.ContactTurned18
+			case "expiry":
+				if err := f.app.sweepContacts(t.Context(), time.Now().Add(15*24*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+				want = "expired"
+			case "withdraw":
+				if w := f.lc.do("POST", "/api/v1/add-requests/"+itoa(r.ID)+"/withdraw", nil, true); w.Code != 200 {
+					t.Fatal(w.Body.String())
+				}
+				want = "withdrawn"
+			}
+			saved := savedAsk(t, f, r.ID)
+			if saved.Status != want || saved.EndReason != reason {
+				t.Fatalf("immediate end missing: %+v", saved)
+			}
+			if w := addDecision(f.ac, r.ID, "admin", "approved"); w.Code != 403 {
+				t.Fatalf("resurrection: %d %s", w.Code, w.Body.String())
+			}
+			if w := f.ac.do("POST", "/api/v1/add-requests/"+itoa(r.ID)+"/complete", nil, true); w.Code != 403 {
+				t.Fatalf("completion resurrection: %d", w.Code)
+			}
+			before := contactCount(t, f.app, &models.AuditLog{}, "target_type = ? AND target_id = ? AND action IN ?", "add_request", r.ID, []string{audit.AddEnded, audit.AddExpired, audit.AddWithdrawn})
+			for i := 0; i < 2; i++ {
+				if err := f.app.sweepContacts(t.Context(), time.Now().Add(16*24*time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if before != 1 || contactCount(t, f.app, &models.AuditLog{}, "target_type = ? AND target_id = ? AND action IN ?", "add_request", r.ID, []string{audit.AddEnded, audit.AddExpired, audit.AddWithdrawn}) != before {
+				t.Fatal("repeated sweep rewrote terminal history")
+			}
+			if contactCount(t, f.app, &models.Notification{}, "subject_id = ? AND kind IN ? AND resolved_at IS NULL", r.ID, []string{notify.AddSubjectReview, notify.AddAdminReview}) != 0 {
+				t.Fatal("terminal ask left tasks")
+			}
+		})
+	}
+}
+func TestGroupAskAuditFailureRollsBackEffectDecisionsAndTasks(t *testing.T) {
+	f := newGroupAskFixture(t)
+	r := createGroupAsk(t, f, f.lc, f.leader, false)
+	if w := addDecision(f.sc, r.ID, "subject", "approved"); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	action := audit.AddCompleted
+	name := "group-ask:audit-failure"
+	if err := f.app.DB.Callback().Create().Before("gorm:create").Register(name, func(db *gorm.DB) {
+		if row, ok := db.Statement.Dest.(*models.AuditLog); ok && row.Action == action {
+			db.AddError(errors.New("injected add audit failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer f.app.DB.Callback().Create().Remove(name)
+	if w := addDecision(f.ac, r.ID, "admin", "approved"); w.Code != 500 {
+		t.Fatalf("audit failure: %d %s", w.Code, w.Body.String())
+	}
+	saved := savedAsk(t, f, r.ID)
+	if saved.Status != "pending" || saved.AdminDecision != "pending" || saved.CompletedTargetID != nil || contactCount(t, f.app, &models.Membership{}, "group_id = ? AND user_id = ?", f.group.ID, f.subject.ID) != 0 {
+		t.Fatal("audit failure leaked completion")
+	}
+	if contactCount(t, f.app, &models.Notification{}, "subject_id = ? AND kind = ? AND resolved_at IS NULL", r.ID, notify.AddAdminReview) != 1 {
+		t.Fatal("audit failure resolved admin task")
+	}
+	action = audit.AddEnded
+	if err := f.app.DB.Create(&models.Membership{UserID: f.admin.ID, GroupID: f.group.ID, Role: models.MembershipLeader, Status: "active"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := f.ac.do("PUT", "/api/v1/groups/"+itoa(f.group.ID)+"/members/"+itoa(f.leader.ID)+"/role", map[string]any{"role": "member"}, true); w.Code != 500 {
+		t.Fatalf("end audit failure: %d %s", w.Code, w.Body.String())
+	}
+	if savedAsk(t, f, r.ID).Status != "pending" || !relIn(f.app.DB, f.leader.ID, f.group.ID).Leader {
+		t.Fatal("lifecycle failure did not roll back domain mutation")
+	}
+	action = ""
+	if w := addDecision(f.ac, r.ID, "admin", "approved"); w.Code != 200 {
+		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+	}
+	if savedAsk(t, f, r.ID).Status != "granted" {
+		t.Fatal("successful retry not granted")
+	}
+}
+func TestGroupAskCapIncludesContactRequests(t *testing.T) {
+	f := newContactAPIFixture(t, true)
+	f.app.Config.SessionSecret = []byte("group-ask-test-secret")
+	for i := 0; i < 9; i++ {
+		f.create(t, "email", "")
+	}
+	r := createGroupAsk(t, f, f.lc, f.leader, false)
+	if r.Status != "pending" {
+		t.Fatal("not pending")
+	}
+	token, err := f.app.newPeopleSelection(f.leader.ID, f.subject.ID, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := f.lc.do("POST", "/api/v1/add-requests", map[string]any{"selectionId": token, "contextType": "group", "contextId": f.group.ID}, true); w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"request_open_limit"`) {
+		t.Fatalf("mixed cap: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.lc.do("POST", "/api/v1/contact-requests", map[string]any{"subjectUserId": f.subject.ID, "contextType": "group", "contextId": f.group.ID, "fields": "phone"}, true); w.Code != 409 || !strings.Contains(w.Body.String(), `"code":"request_open_limit"`) {
+		t.Fatalf("reverse mixed cap: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGroupAskApprovedCapacityPendingStillExpires(t *testing.T) {
+	f := newGroupAskFixture(t)
+	r := createGroupAsk(t, f, f.lc, f.leader, false)
+	if err := f.app.DB.Model(f.group).Update("member_limit", 1).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range []struct {
+		c *apiClient
+		p string
+	}{{f.sc, "subject"}, {f.ac, "admin"}} {
+		if w := addDecision(step.c, r.ID, step.p, "approved"); w.Code != 200 {
+			t.Fatal(w.Body.String())
+		}
+	}
+	before := savedAsk(t, f, r.ID)
+	if before.Status != "pending" || before.AdminDecision != "approved" || before.SubjectDecision != "approved" {
+		t.Fatalf("not approved/pending: %+v", before)
+	}
+	if err := f.app.sweepContacts(t.Context(), time.Now().Add(15*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.Model(f.group).Update("member_limit", 2).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := f.lc.do("POST", "/api/v1/add-requests/"+itoa(r.ID)+"/complete", nil, true); w.Code != 403 {
+		t.Fatalf("expired capacity request resurrected: %d", w.Code)
+	}
+	after := savedAsk(t, f, r.ID)
+	if after.Status != "expired" || !after.ExpiresAt.Equal(before.ExpiresAt) || after.CompletedTargetID != nil {
+		t.Fatalf("expiry changed contract: %+v", after)
+	}
+}

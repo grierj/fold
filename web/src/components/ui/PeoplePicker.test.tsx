@@ -84,7 +84,7 @@ it("uses arrows, active descendant, Escape and Enter without submitting the form
 it("selects a teen for neutral guidance, not an unimplemented add action", async () => {
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ ...pat, teen: true }] });
   render(<Harness />); await query("pa"); fireEvent.click(screen.getByRole("option"));
-  expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval and an admin's approval. Ask your church office for help.");
+  expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval and an admin's approval. Choose Ask to add to continue.");
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
 });
 

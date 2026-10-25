@@ -55,9 +55,9 @@ test("hidden adult requests preserve failures, disclose only on explicit reveal,
   await page.getByLabel("Email and phone", { exact: true }).check();
   await page.getByLabel(/Reason/).fill("Please coordinate transport with me.");
   // A controlled server failure proves the real form retains valid values.
-  await page.route("**/api/v1/contact-requests", (route) => route.request().method() === "POST" ? route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: "contact_open_limit", error: "not for display" }) }) : route.continue());
+  await page.route("**/api/v1/contact-requests", (route) => route.request().method() === "POST" ? route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: "request_open_limit", error: "not for display" }) }) : route.continue());
   await page.getByRole("button", { name: "Send request" }).click();
-  await expect(page.getByRole("alert")).toContainText("10 open contact requests");
+  await expect(page.getByRole("alert")).toContainText("10 open requests");
   await expect(page.getByLabel(/Reason/)).toHaveValue("Please coordinate transport with me.");
   await expect(page.getByLabel("Email and phone", { exact: true })).toBeChecked();
   await capture(page, "adult-compose-failed");

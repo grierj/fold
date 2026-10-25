@@ -28,6 +28,8 @@ import { useAuth } from "./auth";
 const GuardianConsentPage = lazy(() => import("./pages/GuardianConsent").then((m) => ({ default: m.GuardianConsentPage })));
 const AdminPage = lazy(() => import("./pages/Admin").then((module) => ({ default: module.AdminPage })));
 const ContactRequestsPage = lazy(() => import("./pages/ContactRequests").then((m) => ({ default: m.ContactRequestsPage })));
+const AddRequestsPage = lazy(() => import("./pages/AddRequests").then((m) => ({ default: m.AddRequestsPage })));
+const EventDatePage = lazy(() => import("./pages/EventDate").then((m) => ({ default: m.EventDatePage })));
 const WaitingForConsent = lazy(() => import("./pages/WaitingForConsent"));
 
 export default function App() {
@@ -72,9 +74,12 @@ export default function App() {
         <Route path="/groups/:id/events/new" element={<NewEvent />} />
         <Route path="/events/new" element={<NewChurchEvent />} />
         <Route path="/events/:id" element={<EventDetail />} />
+        <Route path="/events/:id/dates/:date" element={<Suspense fallback={<Skeleton kind="page" label="Loading this date…" />}><EventDatePage /></Suspense>} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/my-groups" element={<MyGroups />} />
         <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/add-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading add requests…" />}><AddRequestsPage /></Suspense>} />
+        <Route path="/add-requests/:id" element={<Suspense fallback={<Skeleton kind="page" label="Loading add request…" />}><AddRequestsPage /></Suspense>} />
         <Route path="/contact-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact requests…" />}><ContactRequestsPage /></Suspense>} />
         <Route path="/contact-requests/:id" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact request…" />}><ContactRequestsPage /></Suspense>} />
         <Route path="/admin" element={<Suspense fallback={<div className="max-w-6xl mx-auto px-4 py-8"><Skeleton kind="page" label="Loading admin…" /></div>}><AdminPage /></Suspense>} />

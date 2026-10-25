@@ -1768,7 +1768,7 @@ func TestSelectionRegistrationCapacityVisibilityAndTeenGate(t *testing.T) {
 	}
 	app.DB.Model(&models.Event{}).Where("id = ?", ev).Update("visibility", "invite_only")
 	w = client.do("POST", path, map[string]any{"selectionId": second, "date": date, "overCapacity": true}, true)
-	if w.Code != 404 {
+	if w.Code != 409 {
 		t.Fatal("selection overrode visibility", w.Code, w.Body.String())
 	}
 	teen := newTestUser(t, app, "event teen", "pw", models.RoleMember)
@@ -1777,7 +1777,7 @@ func TestSelectionRegistrationCapacityVisibilityAndTeenGate(t *testing.T) {
 	teenToken, _ := app.newPeopleSelection(actor.ID, teen.ID, time.Now())
 	for _, body := range []map[string]any{{"selectionId": teenToken, "date": date}, {"userId": teen.ID, "date": date}, {"email": teen.Email, "date": date}} {
 		w = client.do("POST", path, body, true)
-		if w.Code != 409 || !strings.Contains(w.Body.String(), "teen_add_approval_required") {
+		if w.Code != 409 || !strings.Contains(w.Body.String(), "date_add_approval_required") {
 			t.Fatal(w.Code, w.Body.String())
 		}
 	}
@@ -1891,5 +1891,53 @@ func TestManagerRegistrationAddRechecksScopeAfterContactGate(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestHouseholdPromotionDoesNotUseHoldersInvitation(t *testing.T) {
+	for _, route := range []string{"automatic", "manual"} {
+		t.Run(route, func(t *testing.T) {
+			f := newOccurrenceReadFixture(t)
+			if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Updates(map[string]any{"visibility": models.VisibilityPublic, "capacity": 1, "waitlist_enabled": true}).Error; err != nil {
+				t.Fatal(err)
+			}
+			person := addMyPerson(t, f.client, map[string]any{"firstName": "Mary", "kind": "adult", "birthDate": "1990-01-01"})
+			answer := batchAnswer(t, f.client, f.event.ID, f.dates[1].OriginalDate, map[string]any{"people": []map[string]any{{"personId": person.ID, "status": "going"}}}, 200)
+			if len(answer.People) != 1 || answer.People[0].Status != models.RegWaitlisted {
+				t.Fatal("household not waitlisted", answer)
+			}
+			if route == "automatic" {
+				apiDo(t, f.admin, "PUT", "/api/v1/events/"+itoa(f.event.ID), map[string]any{"capacity": 2}, 200)
+			} else {
+				// Make room without invoking the automatic promotion owner.
+				if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Update("capacity", 2).Error; err != nil {
+					t.Fatal(err)
+				}
+				apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/promote", map[string]any{"date": f.dates[1].OriginalDate, "registrationId": answer.People[0].RegistrationID}, 200)
+			}
+			var reg models.Registration
+			if err := f.app.DB.First(&reg, answer.People[0].RegistrationID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if reg.Status != models.RegGoing || reg.ManageTokenHash == "" {
+				t.Fatal("household promotion lost attendance/token", reg)
+			}
+			var notices []models.Notification
+			if err := f.app.DB.Where("user_id = ? AND kind = ?", f.recipient.ID, "registration.promoted").Find(&notices).Error; err != nil {
+				t.Fatal(err)
+			}
+			if len(notices) != 1 || !strings.Contains(notices[0].Title+notices[0].Body, "Mary") || !strings.Contains(notices[0].EmailTitle+notices[0].EmailBody, "Mary") {
+				t.Fatal("person-specific ordinary notice missing", notices)
+			}
+			if contactCount(t, f.app, &models.Notification{}, "user_id = ? AND kind = ?", f.recipient.ID, "occurrence.changed") != 0 {
+				t.Fatal("household promotion notified own invitation")
+			}
+			// The ordinary household manage credential still controls only Mary.
+			raw := manageTokenInEmail(t, latestEmail(t, f.app, f.recipient.Email))
+			apiDo(t, anonClient(t, f.app, "10.3.8.2"), "POST", "/api/v1/guest-registrations/manage/"+raw+"/cancel", nil, 200)
+			if savedOccurrenceAccess(t, f).Status != "active" || regStatus(t, f.app, f.recipient.ID, f.dates[1].ID) != models.RegGoing {
+				t.Fatal("household cancel affected own invitation")
+			}
+		})
 	}
 }

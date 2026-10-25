@@ -62,14 +62,15 @@ it.each(["group_full", "teen_add_approval_required", "people_selection_unavailab
   else { expect(Groups.addMember).toHaveBeenCalledTimes(1); expect(screen.getByRole("alert")).not.toHaveTextContent("private"); }
 });
 
-it("shows a teen but never offers direct add or an unimplemented approval action", async () => {
+it("offers an explicit Ask to add for a selected teen instead of direct add", async () => {
   actor.user = { id: 2, status: "active", accountType: "adult" } as User;
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
   open(); await userEvent.click(await screen.findByRole("button", { name: "members" }));
   await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
   expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
-  expect(screen.getByRole("button", { name: "Add member" })).toBeDisabled();
-  expect(screen.queryByRole("button", { name: /Ask to add/i })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
+  expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
   expect(Groups.addMember).not.toHaveBeenCalled();
 });

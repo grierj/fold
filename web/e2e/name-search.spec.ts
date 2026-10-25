@@ -86,8 +86,8 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   await capture("group-adult-added");
   await picker.fill(teenName); await page.getByRole("listbox", { name: "People" }).getByRole("option").click();
   await expect(page.getByRole("status")).toContainText("Adding a teen needs their approval and an admin's approval.");
-  await expect(page.getByRole("button", { name: "Add member", exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: /Ask to add/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Add member", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Ask to add", exact: true })).toBeEnabled();
   await capture("group-teen-guidance");
 
   await page.goto(`/events/${event.id}`); await fromMore(page, "Manage sign-ups");
@@ -109,7 +109,8 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   expect(await page.getByRole("listbox", { name: "People" }).getByRole("option").locator("img").count()).toBe(0);
   await capture("admin-picker-teen");
   await page.getByRole("listbox", { name: "People" }).getByRole("option").click();
-  await expect(card.getByRole("button", { name: "Add", exact: true })).toBeDisabled();
+  await expect(card.getByRole("button", { name: "Add", exact: true })).toHaveCount(0);
+  await expect(card.getByRole("button", { name: "Ask to add", exact: true })).toBeEnabled();
   await capture("admin-teen-guidance");
   await picker.fill(patName); await page.getByRole("listbox", { name: "People" }).getByRole("option").last().click();
   const adminPost = page.waitForRequest((r) => r.url().endsWith(`/admin/groups/${destination.id}/members`) && r.method() === "POST");

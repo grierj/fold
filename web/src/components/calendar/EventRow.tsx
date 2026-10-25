@@ -37,7 +37,7 @@ function StatusBadge({ status }: { status: CalendarOccurrence["myStatus"] }) {
 export function EventRow({ occ }: { occ: CalendarOccurrence }) {
   return (
     <Link
-      to={`/events/${occ.eventId}`}
+      to={occ.dateUrl || `/events/${occ.eventId}`}
       className="block min-h-11 rounded-lg border border-border bg-surface p-4 hover:border-border-strong"
     >
       <span className="flex flex-wrap items-center gap-2">
@@ -56,7 +56,7 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
           </span>
         ) : (
           <>
-            <span className="shrink-0">{occ.groupName ?? `Hosted by ${occ.hostedBy}`}</span>
+            {(occ.groupName || occ.hostedBy) && <span className="shrink-0">{occ.groupName || `Hosted by ${occ.hostedBy}`}</span>}
             {occ.groupDeleted && (
               <span className="shrink-0 rounded-full bg-sunken px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-text-muted">
                 Deleted group
@@ -64,7 +64,7 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
             )}
           </>
         )}
-        {occ.location && <span className="truncate"> · {occ.location}</span>}
+        {occ.location && <span className="truncate">{occ.churchWide || occ.groupName || occ.hostedBy ? " · " : ""}{occ.location}</span>}
       </span>
     </Link>
   );
@@ -85,7 +85,7 @@ export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurren
     .join(", ");
   return (
     <Link
-      to={`/events/${occ.eventId}`}
+      to={occ.dateUrl || `/events/${occ.eventId}`}
       title={name}
       aria-label={name}
       tabIndex={pointerOnly ? -1 : undefined}

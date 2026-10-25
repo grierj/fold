@@ -1020,7 +1020,7 @@ For staged teen conversion, `approved_user_id` is the authoritative account asso
 These authenticated endpoints use the normal cookie session, CSRF header for
 POSTs, and `Cache-Control: no-store`. They do not grant membership, registration,
 series visibility, or permission to add a person. Ask to add and one-date access
-are separate later work. GET never approves or reveals a contact field.
+use separate purpose-safe APIs (group asks below; one-date access remains deferred). GET never approves or reveals a contact field.
 
 ```
 POST /api/v1/contact-requests
@@ -1130,7 +1130,8 @@ business change succeeds. A failed audit fails closed and returns 500 with no
 contact fields. Common actionable error codes (no 429):
 
 - `contact_reason_long` (400): shorten the reason to 1000 characters.
-- `contact_open_limit` (409): withdraw an open request or wait for a decision.
+- `request_open_limit` (409): withdraw an open request or wait for a decision.
+  The ten-open cap includes contact and add requests.
 - `contact_unavailable` (403): refresh the request; it may have ended, changed or
   no longer be available to you. Unauthorized request reviews answer 404.
 
@@ -1238,7 +1239,7 @@ in the locked membership transaction (including email/admin siblings). Existing
 leadership/over-limit and registration audit rows remain; no-op adds do not log a
 new addition. Audit failure rolls back the membership change.
 
-Until Ask-to-add ships, every manager-initiated teen account add through these
+Every ordinary direct manager-initiated teen account add through these
 endpoints (including email, raw-ID and admin paths) fails closed with 409 code
 `teen_add_approval_required`. This is not an approval workflow and does not
 change teen self-RSVP, household, proxy, consent conversion or invitation flows.
@@ -1250,9 +1251,349 @@ Picker copy (client-owned):
 - no results: “No one found. An admin can add people who aren't listed.”
 - indistinguishable same names: “More than one match? Ask an admin.”
 
-The UI must omit the unimplemented teen direct-add/Ask-to-add action, use an
-accessible debounced combobox, announce result count and discard stale responses.
+The UI must omit teen direct-add, use an accessible debounced combobox, announce
+result count and discard stale responses. Group Ask-to-add has the API below;
+occurrence Ask-to-add and its UI remain deferred.
 New error-copy entries: `people_selection_unavailable`: “That selection is no
 longer available. Search for the person again.”; `teen_add_approval_required`:
 “Adding a teen needs their approval and an admin's approval. Ask your church
 office for help.”
+
+### Group Ask to add (M1.11 s4 group API partition)
+
+All routes require the normal current cookie session, CSRF on POST and no-store.
+They are purpose-specific: **only `group_add`**, not contact or occurrence asks.
+The contact endpoints above now explicitly filter persisted `purpose=contact`
+before adaptation, decisions, withdrawal, grants and reveals. These add rows
+never appear in a contact DTO, contact reason, contact grant or contact lifecycle.
+
+```
+POST /api/v1/add-requests
+  {selectionId: string, contextType: "group", contextId: number,
+   reason?: string, overLimit?: boolean}
+  → 201 {request: AddRequest}
+GET /api/v1/add-requests?before=<requestId>
+  → 200 {requests: AddRequest[]}
+GET /api/v1/add-requests/:id
+  → 200 {request: AddRequest} | 404
+POST /api/v1/add-requests/:id/decision
+  {party: "subject"|"admin", decision: "approved"|"denied"}
+  → 200 {request: AddRequest}
+POST /api/v1/add-requests/:id/withdraw
+  → 200 {request: AddRequest}
+POST /api/v1/add-requests/:id/complete
+  → 200 {request: AddRequest}
+```
+
+Creation accepts only the opaque, actor-bound, unexpired search `selectionId`,
+not a target email or raw subject ID. It reloads current requester and subject,
+current age, active account and group, and group management authority under the
+shared transaction gate. A teen **always** needs their own approval and an adult
+admin's approval, including when the requester is an admin. Guardians never
+approve for the teen. The typed policy also handles subject-only adult asks when
+ordinary addition is unavailable; currently all active eligible adult group
+accounts use the existing direct-add route, not an unnecessary ask. Contact
+hiding is not a membership restriction. No occurrence creation/finalization or
+out-of-visibility date route is enabled by this partition.
+
+The optional reason is trimmed and limited to 1000 Unicode characters. The
+explicit `overLimit` choice defaults false, is immutable and never inferred from
+approval. Ten open requests per requester **across all purposes** and a fixed
+14-day expiry are serialized by the shared gate.
+
+`AddRequest` (exact Go/TS contract; optional fields marked `?`):
+
+```
+id: number
+purpose: "group_add"
+requesterName?: string
+subjectName?: string
+contextId?: number
+groupName?: string
+reason: string
+overLimit: boolean
+needsAdmin: boolean
+subjectDecision: "pending"|"approved"|"denied"
+adminDecision: "pending"|"approved"|"denied"|"not_needed"
+status: "pending"|"granted"|"denied"|"withdrawn"|"expired"|"ended"
+createdAt: string
+expiresAt: string
+completedAt?: string
+endReason: string
+canSubjectDecide: boolean
+canAdminDecide: boolean
+canWithdraw: boolean
+canComplete: boolean
+```
+
+Lists return at most 100 rows in descending ID order with an exclusive `before`
+cursor. Only the requester, subject and current active adult admins can review or
+retry; a guardian alone has no request-history access. Group identity and both
+preview names are omitted unless the viewer may already see the group. There
+are no raw person IDs, membership IDs, email, phone, fields, avatars, birth dates,
+rosters or locations in this DTO. Reviewing or approving a pending ask grants no
+ordinary group read/roster permission. Free-text reason stays within this
+purpose-specific review, never contact review, audit metadata or notices.
+
+Either party declining ends the request. Each valid decision is audited and its
+own waiting task resolved in the same commit. When all approvals are present,
+completion calls the original group-first locked membership helper within that
+same transaction. The membership retains an existing role; otherwise it is added
+as member. `granted` is written only after the live active membership effect,
+with `completed_target_id` and `completed_at` committed atomically. No
+`ContactGrant` is created. Ordinary self-join, consent and household flows are
+unchanged; email/raw-ID/admin/direct selection teen-add paths stay closed.
+
+**Capacity is not denial:** when the group filled after the ask, a valid final
+approval returns **200, `pending`, both approvals retained**, no completion time
+or membership. `canComplete=true` means completion is authorized, not that room
+is available. Display that the approvals are recorded but the group needs space;
+retry `/complete` after space is available. A retry never repeats either party's
+decision audit or extends expiry. An explicit original `overLimit=true` follows
+the existing over-limit audit path. All completion attempts refresh current
+actor/session, requester/subject eligibility, age, authority, context and expiry;
+no stale approval or terminal request can be replayed.
+
+Role loss, account disable/deletion, adulthood and context loss end pending group
+asks in the affecting gated domain transaction; expiry uses the daily sweep and
+mutation reconciliation. Repeated sweeps do not repeat terminal audit/notices.
+Historic `granted` asks stay granted after later membership removal or role loss.
+Contact grants retain their existing, separate automatic-end rules. The sweep
+now dispatches occurrence-add rows through their own current-facts lifecycle;
+it never guesses from contact registration or last-date facts. Occurrence create,
+review, decision and completion APIs remain closed pending the complete mutation
+and recipient-control partition.
+
+Audit actions: `add.requested`, `add.decision` (including either denial),
+`add.withdrawn`, `add.expired`, `add.ended`, `add.completed`, `add.refused`;
+`target_type=add_request`. Current group/member IDs and outcomes are audited,
+never contact values or free-text reason. A capacity refusal is audited as
+`group_full` while the valid decision remains committed. CSRF/session refusals
+use `add.refused`, `target_type=add_endpoint` and no claimed IDs/body. Audit or
+notification failure rolls back decisions, membership and task changes together.
+
+Notices: `add.subject_review` and `add.admin_review` are **separate waiting
+kinds**; `add.updated` is not waiting. Terminal transitions resolve both task
+kinds; approvals resolve only the deciding party's task. All are safety-category,
+unbatched, navigation-only (`/add-requests/:id`) and names/contact/reason-free in
+both feed and email. Confirmed active adult guardians receive a safe completion
+notice for a teen, not pending-request approval authority.
+
+Actionable errors (no 429):
+
+- `add_request_unavailable` (403): “This ask to add is no longer available to you.
+  Refresh the page to see its current status.” Invalid/wrong-purpose selections,
+  current authority loss, invalid/replayed decisions and terminal retries fail
+  uniformly, without explaining account state.
+- `add_reason_long` (400): “Your reason is too long. Use 1000 characters or fewer,
+  then try again.”
+- `request_open_limit` (409): “You have 10 open requests. Withdraw one or wait for
+  a decision before sending another.”
+
+No React control, API client, UI action or scoped occurrence read is added here.
+The next UI partition must use the exact contract and approved controls/copy.
+
+### Exact-date invitation reads (M1.11 s4 read partition)
+
+`GET /api/v1/events/:id/dates/:date` requires a current authenticated account.
+`:date` is the occurrence's original `YYYY-MM-DD` key, not its rescheduled
+start day. It returns `{occurrence: EventDate}` for ordinary event visibility
+or a current explicit invitation to **that stable occurrence only**. Missing,
+invalid, cancelled, deleted, or unauthorized dates return 404; signed-out
+requests return 401. GET has no side effects and does not approve an ask.
+Pending asks and ordinary registration rows alone confer no extra visibility.
+
+`EventDate` has exactly these fields (optional keys marked `?`):
+
+```text
+id, eventId, date, dateUrl, title, location,
+startsAt, endsAt, startsLocal, endsLocal, tzid, durationMinutes,
+remoteAvailable, guestsAllowed,
+myRegistration, myAttendanceMode?, myGuestCount?,
+videoProvider, videoUrl?, videoHidden,
+canSeeVideo, canSeeAttendees, canDecline, canBlock
+```
+
+Times/title/place are effective for that date. An invitation-only response
+never falls back to a hidden group's place. There are no group IDs/names,
+host identities, attendee/contact details, counts, capacities, series title,
+series start, RRULE/until, sibling dates, or management controls. `myRegistration`
+is the viewer's own status or null. Video is gated by that date's own RSVP and
+current policy; an invitation does not inherit manager video authority.
+`canSeeAttendees` is always false for invitation-only access, and this endpoint
+never includes attendees even for ordinary viewers. `canDecline`/`canBlock`
+describe current recipient invitation policy, **not enabled mutation endpoints**;
+no decline, block, reveal, or occurrence-add API is introduced by this read
+partition. Ordinary voluntary RSVP continues to use its existing authority.
+
+Calendar rows for invitation-only dates retain the slim `CalendarOccurrence`
+shape, with `dateUrl` set to `/events/:id/dates/:date`, the recipient's own Going
+status, and no hidden group/host fields or attendance counts. They appear in
+Just mine. Group filters still require visibility of the named group and cannot
+be bypassed by an invitation. Remote/childcare/window filters still apply.
+Personal feeds, including `scope=all`, export such dates as standalone VEVENTs
+with an absolute exact-date URL: never RRULE, sibling EXDATEs, series metadata,
+or a bare series URL. Public and group feeds remain ordinary-visibility only.
+The UI owner must follow `dateUrl` for scoped rows rather than synthesizing a
+parent-event link; the exact-date SPA page is not part of this partition.
+
+`CanSeeEvent`, `loadVisibleEvent`, ordinary `/events` discovery, and rich
+occurrence lists retain their existing series-only semantics. Explicit
+invitation parent event IDs are never added to their visible event sets. Scoped
+access is reachable through exact-date/calendar/personal-feed links (and the
+later notice UI), not an expansion of ordinary discovery. Group pages/rosters,
+sibling dates, series detail, contact and management remain separately gated.
+
+Invitation reads reload current account/teen account consent, active invitation,
+matching registration provenance, scheduled occurrence, live event and active
+organizing group. Disable/consent loss, cancellation/deletion, removal/revocation,
+or organizer mismatch fails closed before cleanup. Rescheduling the same
+occurrence preserves its original exact-date link; a new occurrence never
+copies access. Accepted invitations do not depend on the issuer retaining a
+role, and a new organizer block does not revoke other accepted dates. The later
+mutation/lifecycle owner must persist irreversible ends on disable, consent
+loss, cancellation and deletion before enabling occurrence adds: a read cannot
+detect a historical disable followed by re-enable if no end was recorded.
+Downloaded calendar data cannot be recalled from another application.
+
+### Occurrence recipient controls and lifecycle (M1.11 s4 checkpoint)
+
+New occurrence Ask creation/review/completion remains **closed**. Existing
+`add-requests` routes still expose only group asks. Ordinary adult manager adds
+do not yet mint provenance; teen/out-of-visibility adds remain unavailable.
+
+Authenticated exact-date mutations use normal CSRF and API no-store:
+
+- `POST /events/:id/dates/:date/decline`: no body. Ends your selected invitation
+  and declines its registration, releasing/promoting seats.
+- `POST /events/:id/dates/:date/block`: no body. Also blocks future manager
+  account adds by the organizing group, or that event when church-wide. Hidden
+  organizer IDs are never inputs or outputs. Conflicting pending occurrence asks
+  end and their tasks resolve; other accepted dates and memberships stay intact.
+- `PUT /events/:id/dates/:date/registration`: `{status, guestCount?,
+  attendanceMode?, childcareCount?, childcareAgesNote?}`. Status is going,
+  maybe or declined; omitted options preserve your registration. No household,
+  proxy, other-person or management options are accepted. Declined ends access
+  immediately. Maybe retains only this date and uses per-date video policy.
+  Going uses original capacity/childcare/waitlist rules, never an override.
+
+POST success is `{}`. PUT success is `{registration: Registration}`; no hidden
+organizer, host, series or contact data. Invalid, ended, unrelated, stale-session
+or currently ineligible invitations return opaque 404. Existing capacity and
+childcare errors retain their codes. Recipient refusals are audited, including
+rolled-back domain errors; an audit failure fails closed. Replay cannot reopen
+retained access.
+
+Recipient mutations take the contact gate FIRST, then account/occurrence locks,
+reloading current session, consent, exact provenance and live context through
+that transaction. Current-manager removal uses `registrations/remove` with fresh
+session/management checks. Explicit invitation removal ends access and releases/
+promotes seats; its notice and audit omit private management notes. Ordinary
+legacy pruning keeps its existing seat reservation. Legacy account-add selection,
+email and ID siblings honor blocks and retained endings, without enabling new
+request authority or direct provenance.
+
+Ordinary RSVP detects active provenance in its existing registration row query.
+If present, it rolls back before any writes and retries with the gate FIRST;
+unrelated ordinary/household RSVP takes no extra query or gate. Ordinary decline
+therefore immediately ends the invitation too. Independently eligible voluntary
+RSVP remains possible, but never writes or reopens invitation access.
+
+Visibility previews and committed cancellations share the same current explicit
+invitation test. A live invitation preserves exactly its date while ordinary-
+ineligible siblings are cancelled. Pending requests, ended/invalid-consent or
+cancelled/deleted/mismatched provenance cannot preserve dates. Preview fact
+loading errors fail closed, not as a zero impact.
+
+Shared gated lifecycle/sweep dispatch separately handles pending occurrence asks
+and accepted access. Disable/deletion/consent loss, date/event/group deletion or
+cancellation, and registration cancellation/removal persist irreversible endings.
+Re-enable, consent regrant and restoring dates never revive access. Issuer role
+loss ends pending asks, not accepted attendance; later blocks preserve other
+accepted dates; stable occurrence rescheduling preserves access.
+
+`occurrence_access.ended` audit retains subject/event/occurrence IDs and outcome,
+not contact values or internal end reasons. Navigation-only, unbatched
+`occurrence.updated` notices use exact-date links without personal, hidden
+organizer or series values, and names-free email. Deleted dates receive no new
+invalid navigation notice. Effects, audit, tasks and notices commit together;
+mail runs only after commit.
+
+Remaining before additions launch: safe occurrence request DTO/create/review,
+immutable final options and approval-capacity retry completion, persistent
+per-actor manager-add rate limiting, direct ordinary add provenance, safe added-
+person/current confirmed guardian completion notices, and integrated UI/e2e proof.
+
+### Final s4 backend Add contract (supersedes checkpoint restrictions above)
+
+Occurrence requests are now enabled on the same authenticated `/add-requests`
+routes as group asks. This is backend delivery, not UI or milestone acceptance.
+
+`POST /add-requests` takes an actor-bound `selectionId`, `contextType` (`group`
+or `event`), `contextId`, optional `reason` (1000 characters). Group accepts
+`overLimit`. Event requires exact stable `occurrenceId` and accepts
+`overCapacity`, `attendanceMode`, `guestCount`, `childcareCount`,
+`childcareAgesNote`; omitted options resolve from the current registration, or
+in-person/zero for a new registration. Resolved final options are immutable.
+Raw person IDs/emails cannot replace the selection on Ask creation.
+
+Existing `GET /add-requests[/:id]`, `POST /:id/decision` with
+`{party:"subject"|"admin",decision:"approved"|"denied"}`, `POST /:id/withdraw`
+and `POST /:id/complete` now dispatch both Add purposes, never contact authority.
+Lists retain exclusive `before` pagination and limit 100. Actors are requester,
+subject or current adult admin; a guardian is not an approver. Shared cap remains
+10 pending requests across all purposes and expiry remains 14 days.
+
+Every teen requires both subject and admin decisions, including admin requesters.
+Adults need subject approval when ordinarily ineligible or after a retained end.
+Direct selection/email/raw-ID siblings return 409 `date_add_approval_required`
+instead of auto-creating requests or bypassing approval. Blocks refuse additions.
+The UI must explicitly create an Ask; contact grants never authorize these adds.
+
+Occurrence `AddRequest` previews omit names, context/group IDs, group name,
+submitted reason, location, hosts, siblings, recurrence and contact data. They add
+only optional `eventTitle`, `date`, `startsAt`, `endsAt`, `tzid` to the checked
+shared request/decision/status/capability envelope. Pending request possession
+confers no read authority. No parent-event link is returned by the preview.
+
+A valid final decision commits its own audit and resolves its waiting task even
+when capacity/childcare/current capabilities prevent completion. Response stays
+200 with `status=pending`, `canComplete=true`, no completed target, and optional
+`completionProblem` (`capacity`, `childcare`, `options`, `throttled`). Retry with
+`/complete`; no retry extends expiry or infers an override. `options` requires a
+new Ask with currently valid options. A read may omit this transient problem;
+readiness flags never promise room. Group pending-capacity behavior is unchanged.
+
+Completion reloads current facts under gate FIRST and original holder/occurrence
+locks. The real registration, granted request/completed target, new exact access,
+audit, task resolution and safe notices commit atomically. Capacity/childcare
+checks are before registration writes. New approved requests after an ending
+append provenance; old approvals and direct additions cannot reopen old records.
+
+Ordinary eligible adult direct account adds now create the same immutable
+exact-date provenance and notice atomically. Duplicate active invitations may
+update ordinarily permitted registration options without duplicate notices/access
+or rewriting original issuer/request provenance. Guest/household/proxy paths keep
+their existing rules and gain no override.
+
+A shared persisted per-requester limit of 30 qualifying single-person date-add
+attempts per minute covers account-add selection/email/ID, occurrence Ask create
+and completion attempts. Decisions are still recorded if completion is throttled.
+Direct/create throttling returns 409 `date_add_throttled`, never a new public 429:
+“You have made several date additions. Wait a minute, then try again.” Approval
+needed copy is “This date needs their approval. Send an ask to add instead.”
+
+The added person and a teen's currently confirmed active guardians receive a
+names-free, navigation-only, unbatched `occurrence.added` notice to the exact date.
+Invitation changes/promotions/cancellations also use names-free exact-date links,
+not hidden group or series links. Managers alone receive optional
+`Attendee.addedByLeader`, computed from current explicit access, never inferred
+from Registration source; other viewers have no such key.
+
+Manual promotion services existing voluntary waitlist responses, teen included;
+it is not a new invitation and mints no access. Fresh manager/session/destination
+checks apply, but organizer add-blocks and previous special-access endings do
+not obstruct an independently eligible voluntary waiter. Invitation-only waiters
+need current exact access; stale/ended access never promotes. Automatic and
+household/proxy promotion rules otherwise remain unchanged. Manager removal also
+ends conflicting pending exact-date asks, preventing stale approvals after prune.
