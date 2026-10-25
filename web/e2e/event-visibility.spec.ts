@@ -41,3 +41,29 @@ test("making one event invite-only previews and confirms", async ({ page, reques
   await page.getByRole("button", { name: "Notifications" }).click();
   await expect(page.getByText("Registration cancelled: Seed swap")).toBeVisible();
 });
+
+test("a private series can open one date without opening its siblings", async ({ page, request }) => {
+  const admin = await apiAs(request, "grier");
+  const { group } = await admin("POST", "/groups", { name: "Date-only welcome", visibility: "invite_only", location: "Hidden meeting room" }) as { group: { id: number } };
+  const date = futureDate(14);
+  const { event } = await admin("POST", `/groups/${group.id}/events`, { title: "Welcome evening", startsLocal: `${date}T18:00`, durationMinutes: 60, tzid: "UTC", recurrenceRule: "FREQ=WEEKLY;COUNT=3" }) as { event: { id: number } };
+  await signIn(page, "grier");
+  await page.goto(`/events/${event.id}`);
+  await fromMore(page, "Edit this date");
+  await page.getByRole("radio", { name: /^Public/ }).click();
+  await page.getByRole("button", { name: "Save this date" }).click();
+  await expect(page.getByText("Visibility changed for this date")).toBeVisible();
+  await page.context().clearCookies();
+  await page.goto(`/events/${event.id}/dates/${date}`);
+  await expect(page.getByRole("heading", { name: "Welcome evening" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Register as a guest" })).toBeVisible();
+  await expect(page.getByText("Hidden meeting room")).toHaveCount(0);
+  await expect(page.getByText("Date-only welcome")).toHaveCount(0);
+  await page.getByRole("button", { name: "Register as a guest" }).click();
+  await expect(page.getByLabel("Full name")).toBeVisible();
+  const sibling = futureDate(21);
+  await page.goto(`/events/${event.id}/dates/${sibling}`);
+  await expect(page.getByText("This date is not available")).toBeVisible();
+  await page.goto(`/events/${event.id}`);
+  await expect(page.getByText("Welcome evening")).toHaveCount(0);
+});

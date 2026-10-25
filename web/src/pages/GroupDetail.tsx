@@ -1,3 +1,4 @@
+import { DateEditor } from "../components/DateEditor";
 import { AddRequestForm } from "../components/AddRequestForm";
 import { PeoplePicker } from "../components/ui/PeoplePicker";
 import { RequestContactButton } from "../components/RequestContactButton";
@@ -27,97 +28,13 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 import { focalPosition, prepareUpload } from "../lib/image";
-import { formatTime, formatWhen, zoneNote } from "../lib/when";
+import { formatTime, formatWhen } from "../lib/when";
 import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, HiddenFileInput, Input, Radio, Textarea } from "../components/ui/Field";
 import { FormActions } from "../components/ui/FormActions";
 import { Button, ButtonLink } from "../components/ui/Button";
 
 type Tab = "events" | "about" | "members";
-
-
-function DateEditor({
-  instance,
-  onSaved,
-  onClose,
-}: {
-  instance: EventOccurrence;
-  onSaved: () => void;
-  onClose: () => void;
-}) {
-  const [date, setDate] = useState(instance.startsLocal.slice(0, 10));
-  const [time, setTime] = useState(instance.startsLocal.slice(11, 16));
-  const [duration, setDuration] = useState(instance.durationMinutes);
-  const [title, setTitle] = useState(instance.title);
-  const [location, setLocation] = useState(instance.location);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
-    const body: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string } = {};
-    const startsLocal = `${date}T${time}`;
-    if (startsLocal !== instance.startsLocal) body.startsLocal = startsLocal;
-    if (duration !== instance.durationMinutes) body.durationMinutes = duration;
-    if (title !== instance.title) body.title = title;
-    if (location !== instance.location) body.location = location;
-    if (Object.keys(body).length === 0) {
-      onClose();
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      await Events.updateOccurrence(instance.eventId, instance.date, body);
-      onSaved();
-    } catch (err) {
-      setError(errorText(err, "We couldn't update this date."));
-      setBusy(false);
-    }
-  }
-
-  return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
-      <p className="text-sm text-text-muted">
-        This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
-      </p>
-      {error && <FormError>{error}</FormError>}
-      <div className="grid sm:grid-cols-3 gap-3">
-        <Field id={`date-${instance.id}`} label="Date">
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
-        </Field>
-        <Field id={`time-${instance.id}`} label="Start time">
-          <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
-        </Field>
-        <Field id={`dur-${instance.id}`} label="Minutes">
-          <Input
-            type="number"
-            min={1}
-            max={10080}
-            value={duration}
-            onChange={(e) => setDuration(Number(e.target.value))}
-          />
-        </Field>
-      </div>
-      <div className="grid sm:grid-cols-2 gap-3">
-        <Field id={`title-${instance.id}`} label="Title">
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} />
-        </Field>
-        <Field id={`loc-${instance.id}`} label="Location">
-          <Input value={location} onChange={(e) => setLocation(e.target.value)} />
-        </Field>
-      </div>
-      <div className="flex gap-2">
-        <Button variant="primary" type="submit" disabled={busy}>
-          {busy ? "Saving…" : "Save this date"}
-        </Button>
-        <Button variant="secondary" onClick={onClose}>
-          Close
-        </Button>
-      </div>
-    </form>
-  );
-}
 
 
 function EventRow({
@@ -167,6 +84,7 @@ function EventRow({
 
   return (
     <div className="bg-surface rounded-lg border border-border p-4 flex gap-4">
+      {canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
       <DateBadge at={instance.startsAt} />
       <div className="grow min-w-0">
         <div className="font-bold text-lg">{name}</div>
@@ -231,7 +149,7 @@ function EventRow({
               eventId={instance.eventId}
               groupName={groupName}
               groupVisibility={groupVisibility}
-              visibility={instance.visibility ?? groupVisibility}
+              visibility={instance.seriesVisibility ?? instance.visibility ?? groupVisibility}
               leaderOpened={instance.leaderOpened}
               onSaved={onChanged}
             />

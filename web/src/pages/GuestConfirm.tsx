@@ -71,7 +71,7 @@ export function GuestConfirm() {
               <Link to={`/guest/manage/${result.manageToken}`} className="text-primary font-semibold text-sm">
                 Manage or cancel
               </Link>
-              <Link to={`/events/${reg.eventId}`} className="text-primary font-semibold text-sm">
+              <Link to={`/events/${reg.eventId}/dates/${reg.date}`} className="text-primary font-semibold text-sm">
                 View the event
               </Link>
             </p>

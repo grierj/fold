@@ -104,8 +104,14 @@ it("ignores late reads after a newer focus refresh or unmount", async () => {
   view.unmount(); fireEvent(window, new Event("focus")); expect(Dates.get).toHaveBeenCalledTimes(2);
 });
 
-it("does not load guardian or other date authority when signed out", async () => {
-  actor.user = null; mount(); await screen.findByText("Sign in first"); expect(Dates.get).not.toHaveBeenCalled();
+it("loads a public exact date signed out without invitation mutations", async () => {
+  actor.user = null;
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ visibility: "public", hostedBy: "Church", canDecline: false, canBlock: false, canSeeVideo: false, videoUrl: undefined, myRegistration: null }) });
+  mount(); await screen.findByText("One invited date");
+  expect(Dates.get).toHaveBeenCalledWith("7", "2026-12-01");
+  expect(screen.getByText("Hosted by Church")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Register as a guest" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Don't add me again" })).not.toBeInTheDocument();
 });
 
 it("a confirmed end clears a newer focus read that completed before the end committed", async () => {

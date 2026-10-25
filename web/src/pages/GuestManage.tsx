@@ -77,7 +77,7 @@ export function GuestManage() {
               <>
                 <p className="text-sm mt-4">Your registration is cancelled.</p>
                 <p className="mt-4">
-                  <Link to={`/events/${reg.eventId}`} className="text-primary font-semibold text-sm">
+                  <Link to={`/events/${reg.eventId}/dates/${reg.date}`} className="text-primary font-semibold text-sm">
                     Changed your mind? Register again
                   </Link>
                 </p>
@@ -96,7 +96,7 @@ export function GuestManage() {
                   {busy ? "Cancelling…" : "Cancel my registration"}
                 </Button>
                 <p className="mt-4">
-                  <Link to={`/events/${reg.eventId}`} className="text-primary font-semibold text-sm">
+                  <Link to={`/events/${reg.eventId}/dates/${reg.date}`} className="text-primary font-semibold text-sm">
                     View the event
                   </Link>
                 </p>

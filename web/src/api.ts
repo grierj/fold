@@ -333,10 +333,10 @@ export const Events = {
   setVisibility: (
     id: number,
     // confirm: the leader saw the preview of registrations this cancels.
-    data: { visibility: Visibility; reason?: string; confirm?: boolean }
+    data: { visibility: Visibility; reason?: string; confirm?: boolean; resetOverrides?: boolean }
   ) => api<{ event: EventSeries }>(`/events/${id}/visibility`, { method: "PUT", body: data }),
-  visibilityImpact: (id: number, visibility: Visibility) =>
-    api<VisibilityImpact>(`/events/${id}/visibility-impact?visibility=${encodeURIComponent(visibility)}`),
+  visibilityImpact: (id: number, visibility: Visibility, resetOverrides = false) =>
+    api<VisibilityImpact>(`/events/${id}/visibility-impact?visibility=${encodeURIComponent(visibility)}&resetOverrides=${resetOverrides ? "1" : "0"}`),
   addHost: (id: number, email: string) =>
     api<{ hosts: EventHostRow[] }>(`/events/${id}/hosts`, { method: "POST", body: { email } }),
   removeHost: (id: number, userId: number) =>
@@ -382,10 +382,12 @@ export const Events = {
     api<unknown>(`/events/${id}/registrations/add`, { method: "POST", body: { date, ...target, attendanceMode, overCapacity } }),
   cancelOccurrence: (id: number, date: string) =>
     api<unknown>(`/events/${id}/cancel`, { method: "POST", body: { date } }),
+  dateVisibilityImpact: (id: number, date: string, visibility: Visibility | "series") =>
+    api<VisibilityImpact>(`/events/${id}/occurrences/${date}/visibility-impact?visibility=${encodeURIComponent(visibility)}`),
   updateOccurrence: (
     id: number,
     date: string,
-    data: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string; capacityOverride?: number | null; remoteCapacityOverride?: number | null }
+    data: { startsLocal?: string; durationMinutes?: number; location?: string; title?: string; capacityOverride?: number | null; remoteCapacityOverride?: number | null; visibility?: Visibility | "series" | null; reason?: string; confirm?: boolean }
   ) => api<{ occurrence: EventOccurrence }>(`/events/${id}/occurrences/${date}`, { method: "PUT", body: data }),
   delete: (id: number) => api<unknown>(`/events/${id}`, { method: "DELETE" }),
 };

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { Navigate, useLocation, useParams } from "react-router-dom";
-import { ApiError } from "../api";
+import { useParams } from "react-router-dom";
+import { ApiError, Events } from "../api";
 import { Dates } from "../date-api";
+import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { useAuth } from "../auth";
 import type { AttendanceMode, EventDate } from "../types";
 import { Button, ButtonLink } from "../components/ui/Button";
@@ -12,13 +13,12 @@ import { formatWhen, heldIn } from "../lib/when";
 
 export function EventDatePage() {
   const { user } = useAuth();
-  const location = useLocation();
   const { id = "", date = "" } = useParams();
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  return <DateDetail key={`${user.id}:${id}:${date}`} id={id} date={date} />;
+  return <DateDetail key={`${user?.id ?? "anonymous"}:${id}:${date}`} id={id} date={date} />;
 }
 
 function DateDetail({ id, date }: { id: string; date: string }) {
+  const { user } = useAuth();
   const [occurrence, setOccurrence] = useState<EventDate | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -47,11 +47,12 @@ function DateDetail({ id, date }: { id: string; date: string }) {
   }, [id, date, revision, refresh, clear]);
 
   async function answer(status: "going" | "maybe", options: { attendanceMode?: AttendanceMode; guestCount?: number }) {
-    if (!occurrence?.canDecline || busy) return;
+    if (!occurrence || !(occurrence.canDecline || occurrence.canRegister) || busy) return;
     const current = generation.current;
     setBusy(true); setError("");
     try {
-      await Dates.register(id, date, { status, ...options });
+      if (occurrence.canDecline) await Dates.register(id, date, { status, ...options });
+      else await Events.register(Number(id), { date, status, ...options });
       if (generation.current === current) refresh();
     } catch (e) {
       if (!mounted.current) return;
@@ -89,13 +90,15 @@ function DateDetail({ id, date }: { id: string; date: string }) {
       <p>{formatWhen(occurrence.startsAt)} – {formatWhen(occurrence.endsAt)}</p>
       {zone && <p className="text-sm text-text-muted">{zone}</p>}
       {occurrence.location && <p>{occurrence.location}</p>}
+      {occurrence.hostedBy && <p className="text-sm text-text-muted">Hosted by {occurrence.hostedBy}</p>}
+      {!user && occurrence.visibility === "public" && <GuestRegistrationForm instance={occurrence} />}
       <p className="text-text-muted">This page is for one date only. It does not give access to a group, a series or other dates.</p>
-      <p role="status" className="font-semibold">Your answer: {occurrence.myRegistration === "going" ? "Going" : occurrence.myRegistration === "maybe" ? "Maybe" : occurrence.myRegistration === "waitlisted" ? "Waitlisted" : occurrence.myRegistration === "declined" ? "Can't go" : "Not attending"}</p>
+      {user && <p role="status" className="font-semibold">Your answer: {occurrence.myRegistration === "going" ? "Going" : occurrence.myRegistration === "maybe" ? "Maybe" : occurrence.myRegistration === "waitlisted" ? "Waitlisted" : occurrence.myRegistration === "declined" ? "Can't go" : "Not answered"}</p>}
       {occurrence.myAttendanceMode && <p>Attending: {occurrence.myAttendanceMode === "remote" ? "Remote" : "In person"}{occurrence.myGuestCount !== undefined ? ` · Guests: ${occurrence.myGuestCount}` : ""}</p>}
       {occurrence.canSeeVideo && occurrence.videoUrl && <ButtonLink variant="secondary" to={occurrence.videoUrl} external>Join video call (opens in a new tab)</ButtonLink>}
       {occurrence.videoHidden && !(occurrence.canSeeVideo && occurrence.videoUrl) && <p className="text-sm text-text-muted">The video link is not available to you. Check your answer or refresh to see your current access.</p>}
       {error && <FormError>{error}</FormError>}
-      {occurrence.canDecline && <DateAnswer occurrence={occurrence} busy={busy} onAnswer={answer} />}
+      {(occurrence.canDecline || occurrence.canRegister) && <DateAnswer occurrence={occurrence} busy={busy} onAnswer={answer} />}
       <div className="flex flex-wrap gap-2">
         {occurrence.canDecline && <Button variant="danger-outline" disabled={busy} onClick={() => void end("decline")}>Can't go</Button>}
         {occurrence.canBlock && <Button variant="danger-outline" disabled={busy} onClick={() => void end("block")}>Don't add me again</Button>}
