@@ -81,3 +81,9 @@ it.each([EventRow, EventChip])("marks childcare availability with a neutral cale
   wrap(<Component occ={occ({ childcareAvailable: true })} />);
   expect(screen.getByText("Childcare")).toHaveClass("bg-sunken", "text-text-muted");
 });
+
+it.each([EventRow, EventChip])("prefers the server's exact date URL and does not invent a hidden organizer", (Component) => {
+  wrap(<Component occ={occ({ dateUrl: "/events/7/dates/2026-10-22", groupName: undefined, groupId: undefined, hostedBy: undefined })} />);
+  expect(screen.getByRole("link")).toHaveAttribute("href", "/events/7/dates/2026-10-22");
+  expect(screen.queryByText(/Hosted by|undefined/)).not.toBeInTheDocument();
+});

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -150,6 +151,34 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		return feed
 	}
 	byID, groups, rels, hosted, visibleIDs := vs.ByID, vs.Groups, vs.Rels, vs.Hosted, vs.IDs
+	// An invitation is always a standalone exact date, even for scope=all.
+	// Public/group feeds never consult personal access records.
+	if opts.personal && viewer != nil && opts.onlyGroupID == nil {
+		scoped, err := a.scopedOccurrenceReads(viewer, a.DB.Where("starts_at >= ? AND starts_at < ?", windowStart, windowEnd), now)
+		if err != nil {
+			return feed
+		}
+		scopedIDs := make([]uint, 0, len(scoped))
+		for id := range scoped {
+			scopedIDs = append(scopedIDs, id)
+		}
+		sort.Slice(scopedIDs, func(i, j int) bool { return scopedIDs[i] < scopedIDs[j] })
+		for _, id := range scopedIDs {
+			read := scoped[id]
+			if byID[read.Event.ID] != nil {
+				continue
+			}
+			date := presentOccurrenceDate(&read.Event, &read.Occurrence, "", false, false, false, read.Registration, read, now)
+			status := "CONFIRMED"
+			if read.Registration.Status == models.RegWaitlisted || read.Registration.Status == models.RegMaybe {
+				status = "TENTATIVE"
+			}
+			feed.Singles = append(feed.Singles, events.FeedSingle{EventID: date.EventID, OriginalDate: date.Date,
+				Title: date.Title, Location: date.Location, StartsAt: date.StartsAt, EndsAt: date.EndsAt, TZID: date.TZID,
+				VideoURL: date.VideoURL, RemoteAvailable: date.RemoteAvailable,
+				URL: a.emailBaseURL() + date.DateURL, UpdatedAt: read.Occurrence.UpdatedAt, Status: status})
+		}
+	}
 	if len(visibleIDs) == 0 {
 		return feed
 	}

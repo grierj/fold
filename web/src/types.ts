@@ -17,6 +17,7 @@ export interface User {
   displayName: string;
   email: string;
   phone: string;
+  hideContactFromLeaders: boolean;
   avatarUrl: string;
   avatarFocalX: number;
   avatarFocalY: number;
@@ -64,6 +65,8 @@ export type VideoProvider = "none" | "link" | "jitsi";
 export type VideoReveal = "always" | "registered_only";
 
 export interface Member {
+  email?: string;
+  phone?: string;
   accountType?: "teen";
   id: number;
   name: string;
@@ -135,6 +138,9 @@ export interface GuestRegistration {
 // One attendee entry on an occurrence (M1.5 adds guestCount).
 /** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
 export interface Attendee {
+  addedByLeader?: boolean;
+  email?: string;
+  phone?: string;
   accountType?: "adult" | "teen";
   registrationId: number;
   userId?: number;
@@ -396,6 +402,8 @@ export interface AccountRequest {
 export interface CalendarOccurrence {
   eventId: number;
   date: string;
+  // Exact-date link for an invitation that grants no series access.
+  dateUrl?: string;
   startsAt: string;
   endsAt: string;
   title: string;
@@ -559,4 +567,155 @@ export interface HouseholdAnswer {
   status: "going" | "maybe" | "declined";
   attendanceMode?: AttendanceMode;
   childcareRequested?: boolean;
+}
+
+export interface ContactRequest {
+  id: number;
+  requesterId: number;
+  requesterName: string;
+  subjectUserId: number;
+  subjectName: string;
+  contextType: "group" | "event";
+  contextId?: number;
+  fields: "email" | "phone" | "both";
+  reason: string;
+  needsAdmin: boolean;
+  subjectDecision: "pending" | "approved" | "denied";
+  subjectDecidedBy?: number;
+  subjectDecidedAt?: string;
+  adminDecision: "pending" | "approved" | "denied" | "not_needed";
+  adminDecidedBy?: number;
+  adminDecidedAt?: string;
+  status: "pending" | "granted" | "denied" | "withdrawn" | "expired" | "ended";
+  createdAt: string;
+  expiresAt: string;
+  completedAt?: string;
+  endReason: "" | "left_role" | "left_context" | "context_ended" | "turned_18" | "account_disabled" | "event_ended";
+  canSubjectDecide: boolean;
+  canAdminDecide: boolean;
+  canWithdraw: boolean;
+}
+
+export interface ContactGrant {
+  id: number;
+  requestId: number;
+  requesterId: number;
+  requesterName: string;
+  subjectUserId: number;
+  subjectName: string;
+  contextType: "group" | "event";
+  contextId?: number;
+  fields: "email" | "phone" | "both";
+  needsAdmin: boolean;
+  grantedAt: string;
+  endedAt?: string;
+  endReason: "" | "revoked_by_subject" | "revoked_by_admin" | "revoked_by_guardian" | "left_role" | "left_context" | "context_ended" | "turned_18" | "account_disabled" | "event_ended";
+  endedBy?: number;
+  canReveal: boolean;
+  canRevoke: boolean;
+}
+
+export interface ContactReveal {
+  email?: string;
+  phone?: string;
+}
+
+export interface PersonSearchResult {
+  selectionId: string;
+  displayName: string;
+  teen: boolean;
+  avatarUrl?: string;
+  avatarFocalX?: number;
+  avatarFocalY?: number;
+  sharedGroups: string[];
+  otherGroups: string[];
+}
+
+export interface PeopleSearchResponse {
+  state: 'short_query' | 'throttled' | 'no_results' | 'results';
+  people: PersonSearchResult[];
+}
+
+/** @public Safe ask preview, checked by TestWebTypesMatchGoJSON; never group/roster/contact authority. */
+export interface AddRequest {
+  id: number;
+  purpose: "group_add" | "occurrence_add";
+  eventTitle?: string;
+  date?: string;
+  startsAt?: string;
+  endsAt?: string;
+  tzid?: string;
+  completionProblem?: "capacity" | "childcare" | "options" | "throttled";
+  requesterName?: string;
+  subjectName?: string;
+  contextId?: number;
+  groupName?: string;
+  reason: string;
+  overLimit: boolean;
+  needsAdmin: boolean;
+  subjectDecision: "pending" | "approved" | "denied";
+  adminDecision: "pending" | "approved" | "denied" | "not_needed";
+  status: "pending" | "granted" | "denied" | "withdrawn" | "expired" | "ended";
+  createdAt: string;
+  expiresAt: string;
+  completedAt?: string;
+  endReason: string;
+  canSubjectDecide: boolean;
+  canAdminDecide: boolean;
+  canWithdraw: boolean;
+  canComplete: boolean;
+}
+
+/** @public Exact-date read contract; does not authorize a mutation. */
+export interface EventDate {
+  id: number;
+  eventId: number;
+  date: string;
+  dateUrl: string;
+  title: string;
+  location: string;
+  startsAt: string;
+  endsAt: string;
+  startsLocal: string;
+  endsLocal: string;
+  tzid: string;
+  durationMinutes: number;
+  remoteAvailable: boolean;
+  guestsAllowed: number;
+  myRegistration: RegistrationStatus | null;
+  myAttendanceMode?: AttendanceMode;
+  myGuestCount?: number;
+  videoProvider: VideoProvider;
+  videoUrl?: string;
+  videoHidden: boolean;
+  canSeeVideo: boolean;
+  canSeeAttendees: boolean;
+  canDecline: boolean;
+  canBlock: boolean;
+}
+
+/** @public Retained safeguarding projection, checked by TestWebTypesMatchGoJSON; no contact values or free text. */
+export interface ContactHistoryEntry {
+  id: string;
+  at: string;
+  action: string;
+  actorId?: string;
+  requesterId?: string;
+  subjectUserId?: string;
+  purpose?: string;
+  requestId?: string;
+  accessId?: string;
+  contextType?: string;
+  contextId?: string;
+  occurrenceId?: string;
+  fields?: string;
+  outcome: string;
+  party?: string;
+  decision?: string;
+}
+
+/** @public Administrative history page, checked by TestWebTypesMatchGoJSON. */
+export interface ContactHistoryResponse {
+  entries: ContactHistoryEntry[];
+  nextBefore?: string;
 }

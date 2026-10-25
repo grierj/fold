@@ -28,6 +28,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ---------------------------------------------------------------------------
@@ -51,12 +52,13 @@ var allowedImageTypes = map[string]string{
 func (a *App) apiUpdateMe(c *gin.Context) {
 	u := apiUser(c)
 	var body struct {
-		Name        *string `json:"name"`
-		DisplayName *string `json:"displayName"`
-		Email       *string `json:"email"`
-		Phone       *string `json:"phone"`
-		Timezone    *string `json:"timezone"`
-		AvatarFocal *struct {
+		Name                   *string `json:"name"`
+		DisplayName            *string `json:"displayName"`
+		Email                  *string `json:"email"`
+		Phone                  *string `json:"phone"`
+		Timezone               *string `json:"timezone"`
+		HideContactFromLeaders *bool   `json:"hideContactFromLeaders"`
+		AvatarFocal            *struct {
 			X float64 `json:"x"`
 			Y float64 `json:"y"`
 		} `json:"avatarFocal"`
@@ -105,6 +107,9 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		}
 		updates["timezone"] = tz
 	}
+	if body.HideContactFromLeaders != nil && policy.CanEditOwnContactPrivacy(asPerson(u)) {
+		updates["hide_contact_from_leaders"] = *body.HideContactFromLeaders
+	}
 	if body.AvatarFocal != nil {
 		updates["avatar_focal_x"] = clampFocal(body.AvatarFocal.X)
 		updates["avatar_focal_y"] = clampFocal(body.AvatarFocal.Y)
@@ -115,13 +120,31 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	}
 	updated := *u
 	if len(updates) > 0 {
-		if err := a.DB.Model(u).Updates(updates).Error; err != nil {
+		err := a.DB.Transaction(func(tx *gorm.DB) error {
+			var locked models.User
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, u.ID).Error; err != nil {
+				return err
+			}
+			// Recheck the account type under the lock. A teen's stored value
+			// never changes through this profile preference.
+			if !policy.CanEditOwnContactPrivacy(asPerson(&locked)) {
+				delete(updates, "hide_contact_from_leaders")
+			}
+			oldHidden := locked.HideContactFromLeaders
+			if err := tx.Model(&locked).Updates(updates).Error; err != nil {
+				return err
+			}
+			if value, supplied := updates["hide_contact_from_leaders"]; supplied && value != oldHidden {
+				if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: contactPrivacyChanged,
+					TargetType: "user", TargetID: u.ID, IP: c.ClientIP(),
+					Meta: map[string]any{"hideContactFromLeaders": value}}); err != nil {
+					return err
+				}
+			}
+			return tx.First(&updated, u.ID).Error
+		})
+		if err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not save profile")
-			return
-		}
-		// Reload so the response reflects the saved state.
-		if err := a.DB.First(&updated, u.ID).Error; err != nil {
-			jsonError(c, http.StatusInternalServerError, "could not reload profile")
 			return
 		}
 	}

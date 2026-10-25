@@ -1,15 +1,18 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { AdminAccountRequests, ApiError } from "../api";
+import { AdminAccountRequests, AdminGroups, AdminUsers, Groups, People, ApiError } from "../api";
 import { ERROR_COPY } from "../lib/errors";
-import type { AccountRequest } from "../types";
+import type { AccountRequest, User } from "../types";
 import { AdminPage } from "./Admin";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1 }, loading: false, isAdmin: true }) }));
 vi.mock("../api", async (actual) => ({
   ...(await actual<typeof import("../api")>()),
+  People: { search: vi.fn() },
+  Groups: { members: vi.fn().mockResolvedValue({ members: [] }) },
+  AdminGroups: { list: vi.fn(), addMember: vi.fn() },
   Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }) },
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }) },
   AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
@@ -52,4 +55,46 @@ it("requires evidence for approval with account consent and sends both in one de
   await userEvent.type(screen.getByLabelText("Consent evidence"), "Parent signed paper form");
   await userEvent.click(screen.getByRole("button", { name: "Approve" }));
   expect(AdminAccountRequests.approve).toHaveBeenCalledWith(7, undefined, undefined, "Parent signed paper form");
+});
+
+it("uses name selection on admin add with the existing role and over-limit choice", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [{ id: 3, name: "Choir", memberCount: 0, status: "active" } as import("../types").GroupSummary] });
+  vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "opaque", displayName: "Pat", teen: false, sharedGroups: [], otherGroups: [] }] });
+  vi.mocked(AdminGroups.addMember).mockRejectedValueOnce(new ApiError(409, "full", { code: "group_full" })).mockResolvedValueOnce({});
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: "Manage members" }));
+  await userEvent.type(screen.getByRole("combobox", { name: "Find a person by name" }), "Pat"); await userEvent.click(await screen.findByRole("option", { name: "Pat" }));
+  await userEvent.click(screen.getByRole("radio", { name: "Leader" }));
+  await userEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(AdminGroups.addMember).toHaveBeenNthCalledWith(1, 3, { selectionId: "opaque" }, "leader");
+  expect(AdminGroups.addMember).toHaveBeenLastCalledWith(3, { selectionId: "opaque" }, "leader", true);
+  expect(Groups.members).toHaveBeenCalledWith(3);
+});
+
+it("offers a teen Ask to add without a leader-role shortcut", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [{ id: 3, name: "Choir", memberCount: 0, status: "active" } as import("../types").GroupSummary] });
+  vi.mocked(AdminGroups.addMember).mockReset();
+  vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: "Manage members" }));
+  await userEvent.type(screen.getByRole("combobox", { name: "Find a person by name" }), "Pat"); await userEvent.click(await screen.findByRole("option", { name: /Teen Pat/ }));
+  expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
+  expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
+  expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
+  expect(AdminGroups.addMember).not.toHaveBeenCalled();
+});
+
+it("opens person history from the existing user menu and offers retained-ID history", async () => {
+  const person: User = { id: 42, name: "Pat History", displayName: "Pat", email: "pat-history@example.com", phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [person] });
+  render(<MemoryRouter initialEntries={["/admin?tab=users"]}><Routes>
+    <Route path="/admin" element={<AdminPage />} />
+    <Route path="/admin/users/:id/contact-history" element={<p>Person history destination</p>} />
+  </Routes></MemoryRouter>);
+  expect(await screen.findByRole("link", { name: "Contact access history by ID" })).toHaveAttribute("href", "/admin/contact-history");
+  await userEvent.click(await screen.findByRole("button", { name: "More for Pat" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Contact access history" }));
+  expect(screen.getByText("Person history destination")).toBeInTheDocument();
 });

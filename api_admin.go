@@ -77,7 +77,7 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 	}
 	apply(&g)
 	errHandled := errors.New("already handled")
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
 		res := tx.Model(&models.Group{}).Where("id = ? AND status = ?", g.ID, models.GroupPending).
 			Updates(map[string]any{"status": g.Status, "tags": g.Tags})
 		if res.Error != nil {
@@ -561,7 +561,7 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 	if len(updates) > 0 || body.Status != nil {
 		var emailed []uint
 		errTeenActivation := errors.New("a teen account waiting for consent becomes active only when consent is granted")
-		err := a.DB.Transaction(func(tx *gorm.DB) error {
+		err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 			actor, target, err := lockConsentUsers(tx, me.ID, u.ID)
 			if err != nil {
 				return err
@@ -708,7 +708,7 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 	// free for a new account, and the session version is bumped so open
 	// sessions end.
 	var emailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(u, u.ID).Error; err != nil {
 			return err
 		}
@@ -800,18 +800,29 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 		return
 	}
 	var body struct {
-		UserID uint   `json:"userId"`
-		Role   string `json:"role"`
+		UserID      uint   `json:"userId"`
+		SelectionID string `json:"selectionId"`
+		Role        string `json:"role"`
 		// OverLimit: add even though the group is full (DEC-39); audited.
 		OverLimit bool `json:"overLimit"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.UserID == 0 {
-		jsonError(c, http.StatusBadRequest, "userId is required")
+	if err := c.ShouldBindJSON(&body); err != nil || (body.UserID == 0) == (body.SelectionID == "") {
+		jsonError(c, 400, "choose one person by selection or userId")
 		return
 	}
 	var u models.User
-	if err := a.DB.First(&u, body.UserID).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "user not found")
+	if body.SelectionID != "" {
+		selected, ok := a.resolvePeopleSelection(c, body.SelectionID)
+		if !ok {
+			return
+		}
+		u = *selected
+	} else if err := a.DB.First(&u, body.UserID).Error; err != nil {
+		jsonError(c, 404, "user not found")
+		return
+	}
+	if policy.TeenAddNeedsApproval(asPerson(&u)) {
+		jsonError(c, 409, errTeenAddApproval.Error())
 		return
 	}
 	role := body.Role
@@ -822,16 +833,21 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "role must be leader or member")
 		return
 	}
-	me := apiUser(c)
-	err := a.changeRole(c, &g, u.ID, role, "", body.OverLimit, func(actor, t policy.Rel, leaders int) bool {
+	err := a.changeRole(c, &g, u.ID, role, "", body.OverLimit, &memberAddOptions{}, func(me *models.User, actor, t policy.Rel, leaders int) bool {
 		// Admins may add someone straight in with either role.
-		return policy.CanChangeRole(asPerson(me), actor, asPerson(&u),
+		return policy.IsAdmin(asPerson(me)) && policy.CanChangeRole(asPerson(me), actor, asPerson(&u),
 			policy.Rel{Member: true, Leader: t.Leader}, role == models.MembershipLeader, leaders)
 	})
 	switch err {
+	case errTeenAddApproval:
+		jsonError(c, 409, errTeenAddApproval.Error())
+		return
 	case nil:
 	case errGroupFull:
 		groupFull(c)
+		return
+	case errPeopleAddForbidden:
+		jsonError(c, http.StatusForbidden, "forbidden")
 		return
 	case errRoleRefused:
 		jsonError(c, http.StatusBadRequest,

@@ -254,7 +254,7 @@ func (a *App) apiChangeTeenConsent(c *gin.Context) {
 	}
 	me := apiUser(c)
 	var mailed []uint
-	err = a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.contactMutation(contactChange{UserID: uint(id)}, func(tx *gorm.DB) error {
 		actor, teen, err := lockConsentUsers(tx, me.ID, uint(id))
 		if err != nil {
 			return err

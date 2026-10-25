@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"fold/internal/audit"
 	"fold/internal/policy"
 	"fold/models"
+	"gorm.io/gorm"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"sort"
 	"strings"
@@ -931,4 +934,223 @@ func TestGroupListCarriesNextEventAt(t *testing.T) {
 	}
 	decodeJSON(t, w, &detail)
 	check("detail", detail.Group)
+}
+
+func TestSelectionGroupAddsCapacityAuditAndTeenGate(t *testing.T) {
+	app, actor, client := peopleTestApp(t)
+	g := newTestGroup(t, app, actor, "Selection", models.GroupActive)
+	limit := 1
+	app.DB.Model(g).Update("member_limit", limit)
+	target := newTestUser(t, app, "selected adult", "pw", models.RoleMember)
+	token, _ := app.newPeopleSelection(actor.ID, target.ID, time.Now())
+	path := "/api/v1/groups/" + itoa2(g.ID) + "/members"
+	if w := client.do("POST", path, map[string]any{"selectionId": token}, true); w.Code != 409 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := client.do("POST", path, map[string]any{"selectionId": token, "overLimit": true}, true); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if w := client.do("POST", path, map[string]any{"selectionId": token}, true); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var n int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ?", audit.MemberAdded).Count(&n)
+	if n != 1 {
+		t.Fatalf("add/no-op audits %d", n)
+	}
+	app.DB.Model(&models.AuditLog{}).Where("action = ?", audit.AddedOverLimit).Count(&n)
+	if n != 1 {
+		t.Fatalf("overlimit audits %d", n)
+	}
+	teen := newTestUser(t, app, "teen selected", "pw", models.RoleMember)
+	birth := time.Now().AddDate(-15, 0, 0)
+	app.DB.Model(teen).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth})
+	teenToken, _ := app.newPeopleSelection(actor.ID, teen.ID, time.Now())
+	for _, body := range []map[string]any{{"selectionId": teenToken, "overLimit": true}, {"email": teen.Email, "overLimit": true}} {
+		w := client.do("POST", path, body, true)
+		if w.Code != 409 || !strings.Contains(w.Body.String(), "teen_add_approval_required") {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	if membershipStatus(app, teen, g) != "none" {
+		t.Fatal("teen bypassed approval")
+	}
+}
+
+func TestSelectionGroupAddAuditFailureRollsBack(t *testing.T) {
+	app, actor, client := peopleTestApp(t)
+	g := newTestGroup(t, app, actor, "Rollback", models.GroupActive)
+	target := newTestUser(t, app, "rollback target", "pw", models.RoleMember)
+	token, _ := app.newPeopleSelection(actor.ID, target.ID, time.Now())
+	name := "people:audit-failure"
+	if err := app.DB.Callback().Create().Before("gorm:create").Register(name, func(db *gorm.DB) {
+		if db.Statement.Table == "audit_logs" {
+			db.AddError(fmt.Errorf("injected audit failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.DB.Callback().Create().Remove(name) })
+	w := client.do("POST", "/api/v1/groups/"+itoa2(g.ID)+"/members", map[string]any{"selectionId": token}, true)
+	if w.Code != 500 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if membershipStatus(app, target, g) != "none" {
+		t.Fatal("audit failure committed membership")
+	}
+}
+
+func TestMemberAddSiblingAuditsAndTeenSelfJoin(t *testing.T) {
+	app, actor, client := peopleTestApp(t)
+	leader := newTestUser(t, app, "sibling leader", "pw", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Sibling adds", models.GroupActive)
+	emailTarget := newTestUser(t, app, "email sibling", "pw", models.RoleMember)
+	rawTarget := newTestUser(t, app, "raw sibling", "pw", models.RoleMember)
+	for _, tt := range []struct {
+		path string
+		body map[string]any
+	}{
+		{"/api/v1/groups/" + itoa2(g.ID) + "/members", map[string]any{"email": emailTarget.Email}},
+		{"/api/v1/admin/groups/" + itoa2(g.ID) + "/members", map[string]any{"userId": rawTarget.ID}},
+		{"/api/v1/admin/groups/" + itoa2(g.ID) + "/members", map[string]any{"userId": actor.ID}},
+	} {
+		if w := client.do("POST", tt.path, tt.body, true); w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	var n int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ?", audit.MemberAdded).Count(&n)
+	if n != 3 {
+		t.Fatalf("email/raw/self manager audits: %d", n)
+	}
+	teen := newTestUser(t, app, "self teen", "pw", models.RoleMember)
+	birth := time.Now().AddDate(-15, 0, 0)
+	app.DB.Model(teen).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth})
+	teenClient := loginAPI(t, app, "self teen", "pw")
+	w := teenClient.do("POST", "/api/v1/groups/"+itoa2(g.ID)+"/join", map[string]any{}, true)
+	if w.Code != 200 {
+		t.Fatal("self join changed", w.Code, w.Body.String())
+	}
+}
+
+func TestGroupManagerAddRefreshesActorAfterContactGate(t *testing.T) {
+	for _, targetKind := range []string{"selection", "email"} {
+		for change, revocation := range peopleAddActorRevocations(&models.User{}) {
+			t.Run(targetKind+"/"+revocation.name, func(t *testing.T) {
+				app, actor, client := peopleTestApp(t)
+				leader := newTestUser(t, app, "other leader", "pw", models.RoleMember)
+				g := newTestGroup(t, app, leader, "Fresh authority", models.GroupActive)
+				target := newTestUser(t, app, "private add target", "pw", models.RoleMember)
+				body := map[string]any{"email": target.Email}
+				if targetKind == "selection" {
+					token, err := app.newPeopleSelection(actor.ID, target.ID, time.Now())
+					if err != nil {
+						t.Fatal(err)
+					}
+					body = map[string]any{"selectionId": token}
+				}
+				gate := holdContactGate(t, app)
+				response := queueContact(func() *httptest.ResponseRecorder {
+					return client.do("POST", "/api/v1/groups/"+itoa2(g.ID)+"/members", body, true)
+				})
+				waitContactWaiters(t, app, 1) // authentication/selection already resolved
+				revocation := peopleAddActorRevocations(actor)[change]
+				if err := gate.Model(actor).Updates(revocation.updates).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := gate.Commit().Error; err != nil {
+					t.Fatal(err)
+				}
+				w := awaitContactResponse(t, response)
+				if w.Code != 403 || strings.Contains(w.Body.String(), target.Email) {
+					t.Fatalf("%s: %d %s", revocation.name, w.Code, w.Body.String())
+				}
+				if membershipStatus(app, target, g) != "none" || contactCount(t, app, &models.AuditLog{}, "action IN ?", []string{audit.MemberAdded, audit.AddedOverLimit, audit.RoleChanged}) != 0 {
+					t.Fatal("revoked actor committed membership or add audit")
+				}
+			})
+		}
+	}
+}
+
+func TestGroupManagerAddRechecksLeaderAfterContactGate(t *testing.T) {
+	for _, change := range []string{"demote", "remove"} {
+		t.Run(change, func(t *testing.T) {
+			app, admin, _ := peopleTestApp(t)
+			leader := newTestUser(t, app, "queued leader", "pw", models.RoleMember)
+			g := newTestGroup(t, app, leader, "Leadership revocation", models.GroupActive)
+			addMember(t, app, admin, g, models.MembershipLeader)
+			target := newTestUser(t, app, "leadership target", "pw", models.RoleMember)
+			client := loginAPI(t, app, "queued leader", "pw")
+			token, err := app.newPeopleSelection(leader.ID, target.ID, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate := holdContactGate(t, app)
+			response := queueContact(func() *httptest.ResponseRecorder {
+				return client.do("POST", "/api/v1/groups/"+itoa2(g.ID)+"/members", map[string]any{"selectionId": token}, true)
+			})
+			waitContactWaiters(t, app, 1)
+			updates := map[string]any{"role": models.MembershipMember}
+			if change == "remove" {
+				updates["status"] = memberRemoved
+			}
+			if err := gate.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, leader.ID).Updates(updates).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := gate.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			w := awaitContactResponse(t, response)
+			if w.Code != 403 || strings.Contains(w.Body.String(), target.Email) {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			if membershipStatus(app, target, g) != "none" || contactCount(t, app, &models.AuditLog{}, "action = ?", audit.MemberAdded) != 0 {
+				t.Fatal("former leader committed membership or add audit")
+			}
+		})
+	}
+}
+
+func TestGroupManagerAddExistingLeaderKeepsRoleUnderContactGate(t *testing.T) {
+	for _, targetKind := range []string{"selection", "email"} {
+		t.Run(targetKind, func(t *testing.T) {
+			app, actor, client := peopleTestApp(t)
+			leader := newTestUser(t, app, "existing sole leader", "pw", models.RoleMember)
+			g := newTestGroup(t, app, leader, "Keep existing leadership", models.GroupActive)
+			body := map[string]any{"email": leader.Email}
+			if targetKind == "selection" {
+				token, err := app.newPeopleSelection(actor.ID, leader.ID, time.Now())
+				if err != nil {
+					t.Fatal(err)
+				}
+				body = map[string]any{"selectionId": token}
+			}
+			path := "/api/v1/groups/" + itoa2(g.ID) + "/members"
+			if w := client.do("POST", path, body, true); w.Code != 200 {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			if !relIn(app.DB, leader.ID, g.ID).Leader || leaderCount(app.DB, g.ID) != 1 {
+				t.Fatal("regular add demoted the sole existing leader")
+			}
+			gate := holdContactGate(t, app)
+			response := queueContact(func() *httptest.ResponseRecorder {
+				return client.do("POST", path, body, true)
+			})
+			waitContactWaiters(t, app, 1)
+			if err := gate.Model(actor).Update("role", models.RoleMember).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := gate.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			w := awaitContactResponse(t, response)
+			if w.Code != 403 || strings.Contains(w.Body.String(), leader.Email) {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			if !relIn(app.DB, leader.ID, g.ID).Leader || contactCount(t, app, &models.AuditLog{}, "action IN ?", []string{audit.MemberAdded, audit.RoleChanged, audit.AddedOverLimit}) != 0 {
+				t.Fatal("existing-member add changed leadership or wrote an add audit")
+			}
+		})
+	}
 }

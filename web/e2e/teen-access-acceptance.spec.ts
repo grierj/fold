@@ -83,13 +83,18 @@ test("a consented teen joins general events with restricted roles, private ident
       const body = await eventResponse.json();
       const attendee = body.occurrences[0].attendees?.find((a: { userId?: number }) => a.userId === teen.id);
       visibility.push({ role, identityVisible: attendee !== undefined, badge: attendee?.accountType ?? null });
-      expect(JSON.stringify(body)).not.toContain(teenEmail);
-      expect(JSON.stringify(body)).not.toContain(teenPhone);
+      if (role === "admin") expect(attendee).toMatchObject({ email: teenEmail, phone: teenPhone });
+      else {
+        expect(JSON.stringify(body)).not.toContain(teenEmail);
+        expect(JSON.stringify(body)).not.toContain(teenPhone);
+      }
       if (role === "member") expect(attendee).toBeUndefined();
       else {
         expect(attendee).toMatchObject({ name: teenName, accountType: "teen", status: "going" });
-        expect(attendee).not.toHaveProperty("email");
-        expect(attendee).not.toHaveProperty("phone");
+        if (role !== "admin") {
+          expect(attendee).not.toHaveProperty("email");
+          expect(attendee).not.toHaveProperty("phone");
+        }
         expect(attendee).not.toHaveProperty("avatarUrl");
       }
       await viewer.goto(`/events/${eventID}`);
@@ -108,8 +113,11 @@ test("a consented teen joins general events with restricted roles, private ident
         const member = roster.members.find((m: { id: number }) => m.id === teen.id);
         if (role === "member") expect(member).toBeUndefined();
         else expect(member).toMatchObject({ name: teenName, accountType: "teen", avatarUrl: "", role: "member" });
-        expect(JSON.stringify(roster)).not.toContain(teenEmail);
-        expect(JSON.stringify(roster)).not.toContain(teenPhone);
+        if (role === "admin") expect(member).toMatchObject({ email: teenEmail, phone: teenPhone });
+        else {
+          expect(JSON.stringify(roster)).not.toContain(teenEmail);
+          expect(JSON.stringify(roster)).not.toContain(teenPhone);
+        }
       }
       await capture(viewer, `active-teen-${role}-visibility`);
     }

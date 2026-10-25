@@ -455,7 +455,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	var created, upgraded bool
 	var raw string
 	var mailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{}, func(tx *gorm.DB) error {
 		var consentActor *models.User
 		var conversionLocked map[uint]*models.User
 		if approve && req.Source == models.RequestHouseholdConversion && req.HouseholdPersonID != nil && req.InvitationID != nil {

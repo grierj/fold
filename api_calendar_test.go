@@ -389,3 +389,63 @@ func TestHouseholdOnlyCalendarDoesNotOverwriteOwnStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestCalendarScopedInvitationIsOneSlimGoingDate(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	seedReadInvitation(t, f.app, f.issuer, f.other, f.event, f.dates[2])
+	window := "from=" + f.dates[0].OriginalDate + "&to=" + f.dates[2].OriginalDate + "&tz=UTC"
+	for _, mine := range []string{"", "&mine=1"} {
+		page, raw := getCalendar(t, f.client, window+mine, 200)
+		if len(page.Occurrences) != 1 {
+			t.Fatalf("calendar broadened: %s", raw)
+		}
+		row := page.Occurrences[0]
+		if row.Date != f.dates[1].OriginalDate || row.DateURL != occurrenceDatePath(f.event.ID, row.Date) || row.MyStatus == nil || *row.MyStatus != "going" || row.Title != "Invited date title" || row.Location != "Invited date place" {
+			t.Fatalf("wrong invited row: %+v", row)
+		}
+		for _, forbidden := range []string{"Hidden group", "Hidden series", `"groupId"`, `"groupName"`, `"hostedBy"`, `"attendees"`, `"registrations"`, `"capacity"`, `"seatsUsed"`, `"recurrenceRule"`, f.issuer.Email} {
+			if strings.Contains(raw, forbidden) {
+				t.Fatalf("calendar leaked %q: %s", forbidden, raw)
+			}
+		}
+	}
+	other, _ := getCalendar(t, f.stranger, window+"&mine=1", 200)
+	if len(other.Occurrences) != 1 || other.Occurrences[0].Date != f.dates[2].OriginalDate {
+		t.Fatalf("distinct recipient scope: %+v", other)
+	}
+	getCalendar(t, f.client, window+"&group="+itoa(f.group), 404)
+	getCalendar(t, f.client, window+"&remote=1", 200)
+	// A visible group filter cannot be widened by an unrelated invitation.
+	public := createFeedGroup(t, f.admin, "Other visible group", models.VisibilityPublic, "")
+	page, _ := getCalendar(t, f.client, window+"&group="+itoa(public), 200)
+	if len(page.Occurrences) != 0 {
+		t.Fatal("invitation escaped group filter", page)
+	}
+	// There is no implicit hidden-group location fallback.
+	if err := f.app.DB.Model(&f.dates[1]).Update("location_override", nil).Error; err != nil {
+		t.Fatal(err)
+	}
+	page, _ = getCalendar(t, f.client, window, 200)
+	if len(page.Occurrences) != 1 || page.Occurrences[0].Location != "" {
+		t.Fatal("hidden fallback", page)
+	}
+}
+
+func TestCalendarScopedInvitationLoadingIsBatched(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	window := "from=" + f.dates[0].OriginalDate + "&to=" + f.dates[2].OriginalDate + "&tz=UTC"
+	counter := countDBReads(t, f.app.DB)
+	getCalendar(t, f.client, window, 200)
+	counter.Stop()
+	one := counter.Reads()
+	seedReadInvitation(t, f.app, f.issuer, f.recipient, f.event, f.dates[0])
+	seedReadInvitation(t, f.app, f.issuer, f.recipient, f.event, f.dates[2])
+	counter = countDBReads(t, f.app.DB)
+	page, _ := getCalendar(t, f.client, window, 200)
+	counter.Stop()
+	three := counter.Reads()
+	if len(page.Occurrences) != 3 || three != one {
+		t.Fatalf("invitation reads grew per date: one=%d three=%d dates=%d", one, three, len(page.Occurrences))
+	}
+	t.Logf("calendar reads with 1 or 3 scoped dates: %d", one)
+}

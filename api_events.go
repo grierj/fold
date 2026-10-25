@@ -197,6 +197,11 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	// One set of household facts and one church-local clock per request.
 	facts := a.requestFacts()
 	names, removed := a.attendeeNames(kept, showNames, showChildcare, showDeclined, me, facts)
+	guardians := a.confirmedContactGuardians(me, facts.users)
+	for _, o := range kept {
+		presentAttendeeContacts(names[o.ID], me, facts.users, guardians, showDeclined[o.EventID])
+		presentAttendeeContacts(removed[o.ID], me, facts.users, guardians, showDeclined[o.EventID])
+	}
 	ownHousehold := a.myHouseholdAnswers(ids, me, facts)
 	// Only a household account can have registered someone by name.
 	householdVideo := map[uint]bool{}
@@ -762,7 +767,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 	}
 	me := apiUser(c)
 	var emailed []uint
-	err = a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		var locked models.Event
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
@@ -917,7 +922,7 @@ func (a *App) apiDeleteEvent(c *gin.Context) {
 	if !ok {
 		return
 	}
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		return deleteEventRows(tx, []uint{ev.ID})
 	})
 	if err != nil {
@@ -973,7 +978,7 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		return
 	}
 	var emailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		res := tx.Model(&models.EventOccurrence{}).Where("id = ? AND status <> ?", occ.ID, models.OccurrenceCancelled).
 			Update("status", models.OccurrenceCancelled)
 		if res.Error != nil || res.RowsAffected == 0 {
@@ -1059,7 +1064,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 	}
 	var emailed []uint
 	var inst occurrenceJSON
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		var o models.EventOccurrence
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("event_id = ? AND original_date = ?", ev.ID, date).First(&o).Error; err != nil {

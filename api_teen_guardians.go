@@ -223,7 +223,7 @@ func (a *App) apiGuardianChangeConsent(c *gin.Context) {
 	}
 	me := apiUser(c)
 	var mailed []uint
-	err = a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.contactMutation(contactChange{UserID: *link.TeenUserID}, func(tx *gorm.DB) error {
 		guardian, teen, _, err := lockedTeenGuardian(tx, me.ID, *link.TeenUserID, link.ID)
 		if err != nil || guardian.SessionVersion != me.SessionVersion {
 			return errConsentForbidden

@@ -13,7 +13,7 @@ vi.mock("../api", async (actual) => ({
 const teen: User = {
   id: 7, name: "Casey Teen", displayName: "Casey", email: "casey@example.com", phone: "",
   avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "pending_consent",
-  hasPassword: true, accountType: "teen", birthDate: "2011-01-01", timezone: "",
+  hasPassword: true, accountType: "teen", hideContactFromLeaders: true, birthDate: "2011-01-01", timezone: "",
 };
 const consent: TeenConsent = {
   id: 11, teenUserId: teen.id, scope: "account", status: "granted", grantedBy: 1, granterRole: "admin",
@@ -68,7 +68,7 @@ it("explains independent suspension and keeps adult history read-only", async ()
   vi.mocked(AdminTeenConsents.list).mockResolvedValue({ consents: [consent], administrativelyDisabled: true });
   const view = render(<TeenConsentPanel user={teen} onUpdated={vi.fn()} onClose={vi.fn()} />);
   expect(await screen.findByText(/Granting consent keeps it disabled/)).toBeInTheDocument();
-  view.rerender(<TeenConsentPanel user={{ ...teen, accountType: "adult" }} onUpdated={vi.fn()} onClose={vi.fn()} />);
+  view.rerender(<TeenConsentPanel user={{ ...teen, accountType: "adult", hideContactFromLeaders: false }} onUpdated={vi.fn()} onClose={vi.fn()} />);
   await waitFor(() => expect(screen.queryByRole("button", { name: "Grant consent" })).not.toBeInTheDocument());
   expect(screen.getByText(/Their teen consent history stays on file/)).toBeVisible();
   await userEvent.click(screen.getByText("Consent history (1)"));

@@ -134,6 +134,13 @@ func (f *subjectFacts) eligible(a *App, tx *gorm.DB, r models.Registration, ev *
 		allowed = a.canRegisterIn(tx, holder, ev)
 		access[holder.ID] = allowed
 	}
+	if !allowed && r.UserID != nil {
+		var invitation models.OccurrenceAccess
+		if tx.Where("registration_id = ? AND status = ?", r.ID, policy.OccurrenceAccessActive).Limit(1).Find(&invitation).Error == nil && invitation.ID != 0 {
+			live, err := liveOccurrenceInvitationIn(tx, invitation, time.Now().UTC())
+			allowed = err == nil && live
+		}
+	}
 	if !allowed || (r.AttendanceMode == models.AttendanceRemote && !ev.RemoteAvailable) {
 		return false
 	}
@@ -448,11 +455,19 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, mana
 	if len(ids) == 0 {
 		return out, removed
 	}
-	var rows []models.Registration
-	a.DB.Joins(listedRegistrations()).Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).Order("registrations.waitlisted_at ASC NULLS FIRST, registrations.id").Find(&rows)
-	facts.load(a.DB, rows, me)
+	var rows []struct {
+		models.Registration
+		LeaderAdded bool
+	}
+	a.DB.Model(&models.Registration{}).Select("registrations.*, EXISTS (SELECT 1 FROM occurrence_accesses oa WHERE oa.registration_id = registrations.id AND oa.status = 'active') AS leader_added").Joins(listedRegistrations()).Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).Order("registrations.waitlisted_at ASC NULLS FIRST, registrations.id").Find(&rows)
+	registrations := make([]models.Registration, 0, len(rows))
+	for _, row := range rows {
+		registrations = append(registrations, row.Registration)
+	}
+	facts.load(a.DB, registrations, me)
 	now := time.Now().UTC()
-	for _, r := range rows {
+	for _, row := range rows {
+		r := row.Registration
 		o := byID[r.OccurrenceID]
 		if r.Status == models.RegRemoved && !managers[o.EventID] {
 			continue
@@ -460,6 +475,10 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, mana
 		dto := facts.attendee(r, o, me, managers[o.EventID], childcare[o.EventID], now)
 		if dto == nil {
 			continue
+		}
+		if managers[o.EventID] {
+			added := row.LeaderAdded
+			dto.AddedByLeader = &added
 		}
 		if r.Status == models.RegRemoved {
 			removed[o.ID] = append(removed[o.ID], *dto)

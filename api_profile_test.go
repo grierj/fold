@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fold/internal/audit"
 	"fold/models"
 	"net/http"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestFocalPoints(t *testing.T) {
@@ -806,5 +809,125 @@ func TestHouseholdProfileNotesRequireGuardian(t *testing.T) {
 	app.DB.Where("person_id = ? AND guardian_user_id = ?", child.ID, holder.ID).First(&link)
 	if link.Status != models.GuardianConfirmed {
 		t.Fatal("edit revoked a confirmed guardian")
+	}
+}
+
+func TestProfileContactPrivacyPreference(t *testing.T) {
+	app := testApp(t)
+	adult := newTestUser(t, app, "adult", "password1234", models.RoleMember)
+	client := loginAPI(t, app, adult.Email, "password1234")
+	var me struct {
+		User userJSON `json:"user"`
+	}
+	w := client.do("GET", "/api/v1/auth/me", nil, false)
+	decodeJSON(t, w, &me)
+	if me.User.HideContactFromLeaders {
+		t.Fatal("adult preference must default to off")
+	}
+	for _, hidden := range []bool{true, true, false} {
+		w = client.do("PUT", "/api/v1/me", map[string]any{"hideContactFromLeaders": hidden}, true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("save: %d %s", w.Code, w.Body.String())
+		}
+		decodeJSON(t, w, &me)
+		if me.User.HideContactFromLeaders != hidden || me.User.Email != adult.Email {
+			t.Fatalf("self response: %+v", me.User)
+		}
+		var saved models.User
+		if err := app.DB.First(&saved, adult.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if saved.HideContactFromLeaders != hidden {
+			t.Fatalf("stored preference: %+v", saved)
+		}
+	}
+	var count int64
+	if err := app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", contactPrivacyChanged, adult.ID).Count(&count).Error; err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("privacy changes must audit once, no-op never: %d", count)
+	}
+	// This endpoint always changes the actor, not a submitted user ID.
+	other := newTestUser(t, app, "other", "password1234", models.RoleMember)
+	w = client.do("PUT", "/api/v1/me", map[string]any{"id": other.ID, "hideContactFromLeaders": true}, true)
+	if w.Code != http.StatusOK {
+		t.Fatal(w.Body.String())
+	}
+	if err := app.DB.First(other, other.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if other.HideContactFromLeaders {
+		t.Fatal("changed someone else's preference")
+	}
+	// The ordinary CSRF and authenticated profile boundaries still apply.
+	w = client.do("PUT", "/api/v1/me", map[string]any{"hideContactFromLeaders": false}, false)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("missing CSRF: %d", w.Code)
+	}
+	out := newAPIClient(t, app)
+	out.fetchCSRF()
+	w = out.do("PUT", "/api/v1/me", map[string]any{"hideContactFromLeaders": true}, true)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("signed out: %d", w.Code)
+	}
+}
+
+func TestProfileTeenContactAlwaysHidden(t *testing.T) {
+	app := testApp(t)
+	teen := newTestUser(t, app, "teen", "password1234", models.RoleMember)
+	birth := time.Now().UTC().AddDate(-15, 0, 0)
+	if err := app.DB.Model(teen).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth}).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := loginAPI(t, app, teen.Email, "password1234")
+	for _, pref := range []bool{false, true} {
+		w := client.do("PUT", "/api/v1/me", map[string]any{"hideContactFromLeaders": pref, "displayName": "Teen name"}, true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("save: %d %s", w.Code, w.Body.String())
+		}
+		var me struct {
+			User userJSON `json:"user"`
+		}
+		decodeJSON(t, w, &me)
+		if !me.User.HideContactFromLeaders || me.User.DisplayName != "Teen name" || me.User.Email != teen.Email {
+			t.Fatalf("effective teen preference/self contact: %+v", me.User)
+		}
+		if err := app.DB.First(teen, teen.ID).Error; err != nil {
+			t.Fatal(err)
+		}
+		if teen.HideContactFromLeaders {
+			t.Fatal("teen changed the stored preference")
+		}
+	}
+	var count int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ?", contactPrivacyChanged).Count(&count)
+	if count != 0 {
+		t.Fatalf("ignored teen preference audited as change: %d", count)
+	}
+}
+
+func TestProfileContactPrivacyAuditFailureRollsBack(t *testing.T) {
+	app := testApp(t)
+	adult := newTestUser(t, app, "adult", "password1234", models.RoleMember)
+	client := loginAPI(t, app, adult.Email, "password1234")
+	const callback = "test:contact_privacy_audit_failure"
+	if err := app.DB.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+		if tx.Statement.Table == "audit_logs" {
+			tx.AddError(errors.New("audit unavailable"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.DB.Callback().Create().Remove(callback) })
+	w := client.do("PUT", "/api/v1/me", map[string]any{"hideContactFromLeaders": true, "phone": "changed"}, true)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("save with failed audit: %d %s", w.Code, w.Body.String())
+	}
+	if err := app.DB.First(adult, adult.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if adult.HideContactFromLeaders || adult.Phone != "" {
+		t.Fatalf("audit failure committed profile: %+v", adult)
 	}
 }

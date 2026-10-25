@@ -148,6 +148,9 @@ func (a *App) startOccurrenceTicker(ctx context.Context) {
 			if err := events.ExtendLocked(ctx, a.DB, time.Now().UTC()); err != nil {
 				log.Printf("occurrences: %v", err)
 			}
+			if err := a.sweepContacts(ctx, time.Now().UTC()); err != nil {
+				log.Printf("contact lifecycle: %v", err)
+			}
 		}
 		run()
 		tick := time.NewTicker(24 * time.Hour)

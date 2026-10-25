@@ -18,6 +18,16 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	"invalid contact history filters":                                                             "contact_history_filters",
+	"adding this person needs approval; send an ask to add for this date":                         "date_add_approval_required",
+	"too many date additions; wait a minute before trying again":                                  "date_add_throttled",
+	"add reason must be at most 1000 characters":                                                  "add_reason_long",
+	"this ask to add is unavailable; refresh the request":                                         "add_request_unavailable",
+	"you already have 10 open requests; withdraw one or wait for a decision":                      "request_open_limit",
+	"adding a teen needs their approval and an admin's approval; ask your church office for help": "teen_add_approval_required",
+	"that selection is unavailable; search for the person again":                                  "people_selection_unavailable",
+	"direct-contact access is unavailable; refresh the request":                                   "contact_unavailable",
+	"contact reason must be at most 1000 characters":                                              "contact_reason_long",
 	"this approved account is waiting for consent and guardian confirmation; ask your church office before changing their identity or removing them": "household_conversion_consent",
 	"that email already has an account; approve without consent and review the account separately":                                                   "consent_existing_account",
 	"consent is only available for teen accounts; refresh the user list":                                                                             "consent_teen_only",

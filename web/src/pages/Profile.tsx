@@ -3,13 +3,13 @@ import { Link } from "react-router-dom";
 import { AccountRequests, CalendarFeeds, Profile as ProfileApi } from "../api";
 import type { CalendarFeed } from "../types";
 import { useAuth } from "../auth";
-import { Button } from "../components/ui/Button";
+import { Button, ButtonLink } from "../components/ui/Button";
 import { AdminIcon } from "../components/icons";
 import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { errorText } from "../lib/errors";
-import { Choices, Field, FormError, Input, Radio, showFieldErrors } from "../components/ui/Field";
+import { Checkbox, Choices, Field, FormError, Input, Radio, showFieldErrors } from "../components/ui/Field";
 import { Skeleton } from "../components/ui/Skeleton";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { HouseholdSkeleton } from "../components/HouseholdSkeleton";
@@ -23,6 +23,7 @@ export function ProfilePage() {
   const [displayName, setDisplayName] = useState<string | null>(null);
   const [name, setName] = useState<string | null>(null);
   const [phone, setPhone] = useState<string | null>(null);
+  const [hideContactFromLeaders, setHideContactFromLeaders] = useState<boolean | null>(null);
   const [zone, setZone] = useState<string | null>(null);
   const [pictureBusy, setPictureBusy] = useState(false);
   const [pictureStatus, setPictureStatus] = useState<string | null>(null);
@@ -64,6 +65,7 @@ export function ProfilePage() {
   const fullName = name ?? user.name;
   const ph = phone ?? user.phone;
   const tz = zone ?? user.timezone;
+  const hideContact = hideContactFromLeaders ?? user.hideContactFromLeaders;
   const focalX = user.avatarFocalX;
   const focalY = user.avatarFocalY;
 
@@ -73,7 +75,7 @@ export function ProfilePage() {
     setError(null);
     setSaved(false);
     try {
-      await ProfileApi.update({ displayName: dn, name: fullName, phone: ph, ...(tz ? { timezone: tz } : {}) });
+      await ProfileApi.update({ displayName: dn, name: fullName, phone: ph, ...(tz ? { timezone: tz } : {}), ...(user?.accountType === "adult" ? { hideContactFromLeaders: hideContact } : {}) });
       await refresh();
       setSaved(true);
     } catch (err) {
@@ -185,6 +187,7 @@ export function ProfilePage() {
   return (
     <div className="max-w-xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">Your profile</h1>
+      <div className="mb-6 flex flex-wrap gap-3"><ButtonLink variant="secondary" to="/contact-requests">Direct contact requests and access</ButtonLink><ButtonLink variant="secondary" to="/add-requests">Add request history</ButtonLink></div>
       {isAdmin && (
         // Phones have no Admin link in the header; it's a row here (PR #65 review F2).
         <Link
@@ -256,6 +259,21 @@ export function ProfilePage() {
           >
             <ZonePicker value={tz} onChange={setZone} />
           </Field>
+          <section aria-labelledby="profile-contact-privacy">
+            <h2 id="profile-contact-privacy" className="font-semibold">Contact privacy</h2>
+            {user.accountType === "teen" ? (
+              <p className="mt-2 text-sm text-text-muted">
+                Your email and phone are always hidden from group leaders and event hosts. You, admins, and your confirmed guardians can still see them.
+              </p>
+            ) : (
+              <Checkbox
+                label="Hide my contact info from group leaders"
+                description="Hide your email and phone from group leaders and event hosts. Admins can still see them. Save your profile to apply this choice."
+                checked={hideContact}
+                onChange={(e) => setHideContactFromLeaders(e.target.checked)}
+              />
+            )}
+          </section>
           <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={saving}>
             {saving ? "Saving…" : "Save profile"}
           </Button>

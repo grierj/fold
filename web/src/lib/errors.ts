@@ -11,6 +11,16 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
+  contact_history_filters: "Those history filters aren't valid. Check the dates and filters, then try again.",
+  people_selection_unavailable: "That selection is no longer available. Search for the person again.",
+  teen_add_approval_required: "Adding a teen needs their approval and an admin's approval. Ask your church office for help.",
+  add_reason_long: "Your reason is too long. Use 1000 characters or fewer, then try again.",
+  add_request_unavailable: "This ask to add is no longer available to you. Refresh the page to see its current status.",
+  request_open_limit: "You have 10 open requests. Withdraw one or wait for a decision before sending another.",
+  contact_unavailable: "This contact request or grant is no longer available to you. Refresh the page to see its current status.",
+  date_add_approval_required: "This date needs their approval. Send an ask to add instead.",
+  date_add_throttled: "You have made several date additions. Wait a minute, then try again.",
+  contact_reason_long: "Your reason is too long. Use 1000 characters or fewer, then try again.",
   invalid_guardian_email: "Enter a parent or guardian's email address, different from your own.",
   consent_existing_account: "This email already has an account. Approve without granting consent, then review the account in Users.",
   consent_teen_only: "This account is no longer a teen account. Refresh the user list.",

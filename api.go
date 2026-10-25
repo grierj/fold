@@ -32,6 +32,24 @@ const (
 // JSON shapes
 // ---------------------------------------------------------------------------
 
+// personSearchJSON is a deliberately closed name-picker projection. No contact
+// data, internal account IDs, teen images or hidden group identifiers belong here.
+type personSearchJSON struct {
+	SelectionID  string   `json:"selectionId"`
+	DisplayName  string   `json:"displayName"`
+	Teen         bool     `json:"teen"`
+	AvatarURL    string   `json:"avatarUrl,omitempty"`
+	AvatarFocalX *float64 `json:"avatarFocalX,omitempty"`
+	AvatarFocalY *float64 `json:"avatarFocalY,omitempty"`
+	SharedGroups []string `json:"sharedGroups"`
+	OtherGroups  []string `json:"otherGroups"`
+}
+
+type peopleSearchJSON struct {
+	State  string             `json:"state"` // short_query | throttled | no_results | results
+	People []personSearchJSON `json:"people"`
+}
+
 type userJSON struct {
 	ID           uint    `json:"id"`
 	Name         string  `json:"name"`
@@ -48,11 +66,15 @@ type userJSON struct {
 	BirthDate    string  `json:"birthDate,omitempty"`
 	// Admin list only. Kept after age rollover so consent history is reachable.
 	HasTeenConsentHistory bool `json:"hasTeenConsentHistory,omitempty"`
+	// Effective preference: always true for a teen, regardless of stored value.
+	HideContactFromLeaders bool `json:"hideContactFromLeaders"`
 	// Timezone is the person's own zone for emails (DEC-58); "" means
 	// the church's, until the browser fills it in.
 	Timezone string `json:"timezone"`
 }
 
+// toUserJSON is unrestricted: only self/session and admin account endpoints
+// may use it. Rosters and attendees use context-filtered contact presentation.
 func (a *App) toUserJSON(u *models.User) userJSON {
 	avatarURL := ""
 	if u.AvatarKey != "" {
@@ -69,7 +91,8 @@ func (a *App) toUserJSON(u *models.User) userJSON {
 		AvatarFocalX: u.AvatarFocalX, AvatarFocalY: u.AvatarFocalY,
 		Role: u.Role, Status: u.Status, HasPassword: u.PasswordHash != nil,
 		AccountType: accountType, BirthDate: formatBirthDate(u.BirthDate),
-		Timezone: u.Timezone,
+		Timezone:               u.Timezone,
+		HideContactFromLeaders: u.AccountType == models.AccountTeen || u.HideContactFromLeaders,
 	}
 }
 
@@ -94,6 +117,8 @@ type groupSummaryJSON struct {
 }
 
 type memberJSON struct {
+	Email        *string `json:"email,omitempty"`
+	Phone        *string `json:"phone,omitempty"`
 	AccountType  string  `json:"accountType,omitempty"`
 	ID           uint    `json:"id"`
 	Name         string  `json:"name"`
@@ -203,6 +228,9 @@ type occurrenceJSON struct {
 }
 
 type attendeeJSON struct {
+	AddedByLeader      *bool                  `json:"addedByLeader,omitempty"`
+	Email              *string                `json:"email,omitempty"`
+	Phone              *string                `json:"phone,omitempty"`
 	AccountType        string                 `json:"accountType,omitempty"`
 	RegistrationID     uint                   `json:"registrationId"`
 	HouseholdPerson    *householdAttendeeJSON `json:"householdPerson,omitempty"`
@@ -337,6 +365,11 @@ func (a *App) restrictedSession() gin.HandlerFunc {
 			switch c.FullPath() {
 			case "/api/v1/auth/csrf", "/api/v1/auth/me", "/api/v1/auth/logout":
 			default:
+				if err := a.auditContactRejection(c, "restricted_session"); err != nil {
+					jsonError(c, http.StatusInternalServerError, "could not complete contact operation")
+					c.Abort()
+					return
+				}
 				jsonError(c, http.StatusForbidden, "your account is waiting for consent")
 				c.Abort()
 				return
@@ -351,6 +384,11 @@ func (a *App) apiAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		user, ok := a.userFromSession(c)
 		if !ok {
+			if err := a.auditContactRejection(c, "authentication"); err != nil {
+				jsonError(c, http.StatusInternalServerError, "could not complete contact operation")
+				c.Abort()
+				return
+			}
 			jsonError(c, http.StatusUnauthorized, "unauthorized")
 			c.Abort()
 			return
@@ -525,6 +563,26 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/auth/password-reset", a.apiRequestPasswordReset)
 	v1.POST("/auth/password-reset/confirm", a.apiConfirmPasswordReset)
 
+	v1.GET("/people/search", a.apiAuth(), a.apiSearchPeople)
+
+	// Direct contact: authenticated review, explicit audited disclosure only.
+	v1.POST("/add-requests", a.apiAuth(), a.apiCreateAddRequest)
+	v1.GET("/add-requests", a.apiAuth(), a.apiListAddRequests)
+	v1.GET("/add-requests/:id", a.apiAuth(), a.apiGetAddRequest)
+	v1.POST("/add-requests/:id/decision", a.apiAuth(), a.apiDecideAddRequest)
+	v1.POST("/add-requests/:id/withdraw", a.apiAuth(), a.apiWithdrawAddRequest)
+	v1.POST("/add-requests/:id/complete", a.apiAuth(), a.apiCompleteAddRequest)
+	v1.POST("/contact-requests", a.apiAuth(), a.apiCreateContactRequest)
+	v1.GET("/contact-requests", a.apiAuth(), a.apiListContactRequests)
+	v1.GET("/contact-requests/:id", a.apiAuth(), a.apiGetContactRequest)
+	v1.POST("/contact-requests/:id/decision", a.apiAuth(), a.apiDecideContactRequest)
+	v1.POST("/contact-requests/:id/withdraw", a.apiAuth(), a.apiWithdrawContactRequest)
+	v1.GET("/admin/users/:id/contact-history", a.apiAuth(), a.apiContactHistory)
+	v1.GET("/admin/users/:id/contact-history.csv", a.apiAuth(), a.apiExportContactHistory)
+	v1.GET("/contact-grants", a.apiAuth(), a.apiListContactGrants)
+	v1.POST("/contact-grants/:id/revoke", a.apiAuth(), a.apiRevokeContactGrant)
+	v1.POST("/contact-grants/:id/reveal", a.apiAuth(), a.apiRevealContactGrant)
+
 	// Profile.
 	v1.PUT("/me", a.apiAuth(), a.apiUpdateMe)
 	v1.POST("/me/password", a.apiAuth(), a.apiChangePassword)
@@ -610,6 +668,10 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// Video (M1.8): mint a Jitsi room URL (leaders, hosts, admins).
 	v1.POST("/events/video/jitsi", a.apiAuth(), a.apiGenerateJitsiLink)
 	v1.GET("/events/:id", a.optionalUser(), a.apiGetEvent)
+	v1.GET("/events/:id/dates/:date", a.apiAuth(), a.apiGetOccurrenceDate)
+	v1.POST("/events/:id/dates/:date/decline", a.apiAuth(), a.apiDeclineOccurrence)
+	v1.POST("/events/:id/dates/:date/block", a.apiAuth(), a.apiBlockOccurrence)
+	v1.PUT("/events/:id/dates/:date/registration", a.apiAuth(), a.apiRegisterOccurrence)
 	v1.PUT("/events/:id", a.apiAuth(), a.apiUpdateEvent)
 	v1.DELETE("/events/:id", a.apiAuth(), a.apiDeleteEvent)
 	v1.PUT("/events/:id/visibility", a.apiAuth(), a.apiSetEventVisibility)

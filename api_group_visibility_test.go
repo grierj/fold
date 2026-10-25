@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"fold/internal/audit"
+	"fold/internal/policy"
 	"fold/models"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGroupMorePrivateTightensAndCancels(t *testing.T) {
@@ -192,7 +194,10 @@ func TestVisibilityImpactCountsHouseholdSubjectsAcrossDates(t *testing.T) {
 	answer(o.OriginalDate)
 	var ev models.Event
 	app.DB.First(&ev, eventID)
-	impact := eventImpactOf(app.DB, &ev, models.VisibilityInviteOnly)
+	impact, err := eventImpactOf(app.DB, &ev, models.VisibilityInviteOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(impact.Tightened) != 1 || impact.Tightened[0].Registrants != 3 {
 		t.Fatalf("subject impact %+v", impact)
 	}
@@ -202,5 +207,170 @@ func TestVisibilityImpactCountsHouseholdSubjectsAcrossDates(t *testing.T) {
 	app.DB.Model(&models.Registration{}).Where("user_id = ? OR registered_by = ?", holder.ID, holder.ID).Count(&n)
 	if n != 0 {
 		t.Fatalf("disabled answers can resurface: %d", n)
+	}
+}
+
+func TestOccurrenceInvitationVisibilityImpactAndCommitAgree(t *testing.T) {
+	for _, throughGroup := range []bool{false, true} {
+		t.Run(fmt.Sprint("group=", throughGroup), func(t *testing.T) {
+			f := newOccurrenceReadFixture(t)
+			if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Updates(map[string]any{"visibility": models.VisibilityPublic, "leader_opened": false}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := f.app.DB.Model(&models.Group{}).Where("id = ?", f.group).Update("visibility", models.VisibilityPublic).Error; err != nil {
+				t.Fatal(err)
+			}
+			// The explicit date alone causes no cancellation. A voluntary sibling
+			// is an ordinary loser even though it belongs to the same subject.
+			var ev models.Event
+			if err := f.app.DB.First(&ev, f.event.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			impact, err := eventImpactOf(f.app.DB, &ev, models.VisibilityInviteOnly)
+			if err != nil || len(impact.Tightened) != 1 || impact.Tightened[0].Registrants != 0 {
+				t.Fatal("live exact invite counted as loser", impact, err)
+			}
+			apiDo(t, f.client, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/registrations", map[string]any{"date": f.dates[0].OriginalDate, "status": "going"}, 200)
+			impact, err = eventImpactOf(f.app.DB, &ev, models.VisibilityInviteOnly)
+			if err != nil || impact.Tightened[0].Registrants != 1 {
+				t.Fatal("sibling not counted", impact, err)
+			}
+			if throughGroup {
+				apiDo(t, f.admin, "PUT", "/api/v1/groups/"+itoa(f.group), map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, 200)
+			} else {
+				apiDo(t, f.admin, "PUT", "/api/v1/events/"+itoa(f.event.ID)+"/visibility", map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, 200)
+			}
+			if contactCount(t, f.app, &models.Registration{}, "user_id = ? AND occurrence_id = ?", f.recipient.ID, f.dates[0].ID) != 0 {
+				t.Fatal("ordinary sibling kept")
+			}
+			if contactCount(t, f.app, &models.Registration{}, "id = ?", f.access.RegistrationID) != 1 || savedOccurrenceAccess(t, f).Status != "active" {
+				t.Fatal("explicit date cancelled")
+			}
+			apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, 200)
+			apiDo(t, f.client, "GET", "/api/v1/events/"+itoa(f.event.ID), nil, 404)
+		})
+	}
+}
+
+func TestVisibilityInvitationCollectionReadBudget(t *testing.T) {
+	for _, scope := range []string{"event", "group"} {
+		var smallPreview, smallCommit int
+		for _, size := range []int{1, 100} {
+			t.Run(fmt.Sprintf("%s/%d", scope, size), func(t *testing.T) {
+				f := newOccurrenceReadFixture(t)
+				if err := f.app.DB.Model(&models.Group{}).Where("id = ?", f.group).Update("visibility", models.VisibilityPublic).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Update("visibility", models.VisibilityPublic).Error; err != nil {
+					t.Fatal(err)
+				}
+				past := time.Now().UTC().AddDate(0, -1, 0)
+				if err := f.app.DB.Model(&f.dates[2]).Updates(map[string]any{"starts_at": past, "ends_at": past.Add(time.Hour)}).Error; err != nil {
+					t.Fatal(err)
+				}
+				// Retained history is active but irrelevant to upcoming visibility candidates.
+				for i := 0; i < size; i++ {
+					u := *f.recipient
+					u.ID = 0
+					u.Email = fmt.Sprintf("budget%d@example.com", i)
+					if err := f.app.DB.Create(&u).Error; err != nil {
+						t.Fatal(err)
+					}
+					seedReadInvitation(t, f.app, f.issuer, &u, f.event, f.dates[0])
+					seedReadInvitation(t, f.app, f.issuer, &u, f.event, f.dates[2])
+				}
+				reg := models.Registration{UserID: &f.other.ID, OccurrenceID: f.dates[0].ID, Status: models.RegGoing, Source: "web", AttendanceMode: models.AttendanceInPerson}
+				if err := f.app.DB.Create(&reg).Error; err != nil {
+					t.Fatal(err)
+				}
+				root := "/api/v1/events/" + itoa(f.event.ID)
+				if scope == "group" {
+					root = "/api/v1/groups/" + itoa(f.group)
+				}
+				n := collectionReadCounter(t, f.app.DB)
+				w := f.admin.do("GET", root+"/visibility-impact?visibility=invite_only", nil, false)
+				if w.Code != 200 {
+					t.Fatal(w.Code, w.Body.String())
+				}
+				preview := *n
+				if scope == "group" {
+					var j visibilityImpactJSON
+					if err := json.Unmarshal(w.Body.Bytes(), &j); err != nil || len(j.Tightened) != 1 || j.Tightened[0].Registrants != 1 {
+						t.Fatal(err, w.Body.String())
+					}
+				} else {
+					if !strings.Contains(w.Body.String(), `"registrants":1`) {
+						t.Fatal(w.Body.String())
+					}
+				}
+				*n = 0
+				commitPath := root
+				if scope == "event" {
+					commitPath += "/visibility"
+				}
+				w = f.admin.do("PUT", commitPath, map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, true)
+				if w.Code != 200 {
+					t.Fatal(w.Code, w.Body.String())
+				}
+				commit := *n
+				var remains int64
+				f.app.DB.Model(&models.Registration{}).Where("id = ?", reg.ID).Count(&remains)
+				if remains != 0 {
+					t.Fatal("ordinary loser survived")
+				}
+				f.app.DB.Model(&models.OccurrenceAccess{}).Where("status = ?", policy.OccurrenceAccessActive).Count(&remains)
+				if remains != int64(2*size+1) {
+					t.Fatal("live invitations changed", remains)
+				}
+				if size == 1 {
+					smallPreview, smallCommit = preview, commit
+				} else if preview != smallPreview || commit != smallCommit {
+					t.Fatalf("reads grow with invitations/history preview %d->%d commit %d->%d", smallPreview, preview, smallCommit, commit)
+				}
+				t.Logf("%s invitations=%d future+%d past preview=%d commit=%d", scope, size, size, preview, commit)
+			})
+		}
+	}
+}
+
+func TestVisibilityBatchExcludesEndedAndUnconsentedInvitations(t *testing.T) {
+	for _, scope := range []string{"event", "group"} {
+		for _, state := range []string{"teen_without_consent", "ended"} {
+			t.Run(scope+"/"+state, func(t *testing.T) {
+				f := newOccurrenceReadFixture(t)
+				if err := f.app.DB.Model(&models.Group{}).Where("id = ?", f.group).Update("visibility", models.VisibilityPublic).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.event.ID).Update("visibility", models.VisibilityPublic).Error; err != nil {
+					t.Fatal(err)
+				}
+				if state == "teen_without_consent" {
+					birth := time.Now().AddDate(-15, 0, 0)
+					if err := f.app.DB.Model(f.recipient).Updates(map[string]any{"account_type": models.AccountTeen, "birth_date": birth}).Error; err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if err := f.app.DB.Model(&f.access).Updates(map[string]any{"status": policy.OccurrenceAccessEnded, "ended_at": time.Now(), "end_reason": policy.OccurrenceDeclined, "ended_by": f.recipient.ID}).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				root := "/api/v1/events/" + itoa(f.event.ID)
+				if scope == "group" {
+					root = "/api/v1/groups/" + itoa(f.group)
+				}
+				w := f.admin.do("GET", root+"/visibility-impact?visibility=invite_only", nil, false)
+				if w.Code != 200 || !strings.Contains(w.Body.String(), `"registrants":1`) {
+					t.Fatal(w.Code, w.Body.String())
+				}
+				if scope == "event" {
+					root += "/visibility"
+				}
+				apiDo(t, f.admin, "PUT", root, map[string]any{"visibility": models.VisibilityInviteOnly, "confirm": true}, 200)
+				if contactCount(t, f.app, &models.Registration{}, "id = ?", f.access.RegistrationID) != 0 {
+					t.Fatal("stale invitation kept registration")
+				}
+				apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, 404)
+			})
+		}
 	}
 }

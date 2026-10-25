@@ -510,12 +510,22 @@ func (a *App) apiGetGuestRegistration(c *gin.Context) {
 }
 
 func (a *App) apiCancelGuestRegistration(c *gin.Context) {
+	// Discover only the reconciliation scope here. The token is authenticated
+	// again under the contact gate, before any registration locks or writes.
+	_, _, scope, _, err := liveTokenManage(a.DB, c.Param("token"))
+	if err != nil {
+		jsonError(c, http.StatusNotFound, "registration not found")
+		return
+	}
 	var display guestRegistrationJSON
 	var emailed []uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
+	err = a.contactMutation(contactChange{EventID: scope.ID}, func(tx *gorm.DB) error {
 		reg, occ, ev, grp, err := liveTokenManage(tx, c.Param("token"))
 		if err != nil {
 			return err
+		}
+		if ev.ID != scope.ID {
+			return errTokenInvalid
 		}
 		if err := lockRegistrationHolder(tx, reg.ID, occ.ID); err != nil {
 			return errTokenInvalid

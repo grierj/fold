@@ -1,14 +1,16 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ApiError, Events } from "../api";
+import { ApiError, Events, People } from "../api";
 import { occurrence } from "../test/occurrence";
-import type { Attendee } from "../types";
+import type { Attendee, User } from "../types";
 import { ManageRoster } from "./ManageRoster";
 
-vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), Events: { removeRegistration: vi.fn(), promoteRegistration: vi.fn(), restoreRegistration: vi.fn(), addRegistration: vi.fn() } }));
+const actor = vi.hoisted(() => ({ user: null as Pick<User, "id" | "status" | "accountType"> | null }));
+vi.mock("../auth", () => ({ useAuth: () => actor }));
+vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), People: { search: vi.fn() }, Events: { removeRegistration: vi.fn(), promoteRegistration: vi.fn(), restoreRegistration: vi.fn(), addRegistration: vi.fn() } }));
 const child: Attendee = { registrationId: 91, name: "Kit", status: "waitlisted", guestCount: 0, attendanceMode: "remote", householdPerson: { personId: 3, name: "Kit", kind: "child", age: 6, householdName: "Leader household", registeredBy: { userId: 7, name: "Holder" } } };
-beforeEach(() => { vi.resetAllMocks(); vi.spyOn(window, "confirm").mockReturnValue(true); });
+beforeEach(() => { vi.resetAllMocks(); actor.user = null; vi.spyOn(window, "confirm").mockReturnValue(true); });
 
 it("acts on the registration ID when user and person IDs overlap", async () => {
   const onChanged = vi.fn();
@@ -57,4 +59,96 @@ it("keeps waitlist positions per pool and places status before care notes", () =
   const signer = within(row).getByText(/Signed up by/);
   expect(signer.nextElementSibling).toHaveTextContent("Waitlist position 1");
   expect(row.textContent?.indexOf("Waitlist position 1")).toBeLessThan(row.textContent?.indexOf("Care notes") ?? 0);
+});
+
+it.each([null, { id: 10, status: "active", accountType: "teen" }, { id: 10, status: "disabled", accountType: "adult" }] as const)("offers no request to an ineligible actor %j", (user) => {
+  actor.user = user;
+  render(<ManageRoster instance={occurrence({ attendees: [{ registrationId: 92, userId: 3, name: "Hidden Pat", status: "going", attendanceMode: "in_person", guestCount: 0 }] })} onChanged={() => {}} onClose={() => {}} />);
+  expect(screen.queryByRole("button", { name: "Request direct contact" })).not.toBeInTheDocument();
+});
+
+it("offers contact compose only for another real hidden account, not household people, missing IDs, self or visible contacts", () => {
+  actor.user = { id: 10, status: "active", accountType: "adult" };
+  const base: Attendee = { registrationId: 92, userId: 3, name: "Hidden Pat", status: "going", attendanceMode: "in_person", guestCount: 0 };
+  render(<ManageRoster instance={occurrence({ attendees: [base, { ...base, registrationId: 93, userId: 10, name: "Self" }, { ...base, registrationId: 94, userId: 4, name: "Visible Sam", email: "sam@example.com", phone: "" }, { ...base, registrationId: 95, userId: undefined, name: "No account ID" }, { ...child, status: "going" }] })} onChanged={() => {}} onClose={() => {}} />);
+  expect(screen.getAllByRole("button", { name: "Request direct contact" })).toHaveLength(1);
+  expect(within(screen.getByText("Hidden Pat").closest("li")!).getByRole("button", { name: "Request direct contact" })).toBeInTheDocument();
+});
+
+it("adds an opaque adult selection and retains email as an alternative", async () => {
+  actor.user = { id: 10, status: "active", accountType: "adult" };
+  vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "opaque", displayName: "Pat", teen: false, sharedGroups: [], otherGroups: [] }] });
+  const changed = vi.fn();
+  render(<ManageRoster instance={occurrence({})} onChanged={changed} onClose={() => {}} />);
+  await userEvent.type(screen.getByRole("combobox"), "Pat");
+  await userEvent.click(await screen.findByRole("option"));
+  await userEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(Events.addRegistration).toHaveBeenCalledWith(7, "2026-12-01", { selectionId: "opaque" }, undefined);
+  await userEvent.type(screen.getByLabelText("Add someone"), "known@example.com");
+  await userEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(Events.addRegistration).toHaveBeenLastCalledWith(7, "2026-12-01", "known@example.com", undefined);
+  expect(changed).toHaveBeenCalledTimes(2);
+});
+
+it("offers a teen Ask instead of direct add, and no search after role loss", async () => {
+  actor.user = { id: 10, status: "active", accountType: "adult" };
+  vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
+  const view = render(<ManageRoster instance={occurrence({})} onChanged={() => {}} onClose={() => {}} />);
+  await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
+  expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
+  expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
+  await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
+  expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
+  expect(Events.addRegistration).not.toHaveBeenCalled();
+  actor.user = { id: 10, status: "active", accountType: "teen" };
+  view.rerender(<ManageRoster instance={occurrence({})} onChanged={() => {}} onClose={() => {}} />);
+  expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+});
+
+it.each(["childcare_full", "people_selection_unavailable", "forbidden", "teen_add_approval_required"])("does not bypass %s through an over-capacity retry", async (code) => {
+  vi.mocked(Events.addRegistration).mockRejectedValue(new ApiError(409, "private text", { code }));
+  render(<ManageRoster instance={occurrence({})} onChanged={() => {}} onClose={() => {}} />);
+  await userEvent.type(screen.getByLabelText("Add someone"), "known@example.com"); await userEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(screen.getByRole("alert")).not.toHaveTextContent("private text");
+  expect(Events.addRegistration).toHaveBeenCalledTimes(1); expect(window.confirm).not.toHaveBeenCalled();
+});
+
+it("preserves explicit over-capacity confirmation and handles seats filled during add", async () => {
+  vi.mocked(Events.addRegistration).mockRejectedValueOnce(new ApiError(409, "full", { code: "event_full" })).mockResolvedValueOnce({});
+  render(<ManageRoster instance={occurrence({})} onChanged={() => {}} onClose={() => {}} />);
+  await userEvent.type(screen.getByLabelText("Add someone"), "known@example.com"); await userEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(window.confirm).toHaveBeenCalledWith("This date filled up. Add them over capacity?");
+  expect(Events.addRegistration).toHaveBeenLastCalledWith(7, "2026-12-01", "known@example.com", true);
+});
+
+it("offers an explicit adult ask only after approval-needed, preserving the selected token and confirmed override", async () => {
+  actor.user = { id: 10, status: "active", accountType: "adult" };
+  vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "adult-opaque", displayName: "Pat", teen: false, sharedGroups: [], otherGroups: [] }] });
+  vi.mocked(Events.addRegistration).mockRejectedValue(new ApiError(409, "SECRET", { code: "date_add_approval_required" }));
+  render(<ManageRoster instance={occurrence({ capacity: 1, spotsLeft: 0 })} onChanged={() => {}} onClose={() => {}} />);
+  await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
+  await userEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(screen.queryByRole("button", { name: "Send ask to add" })).not.toBeInTheDocument();
+  expect(Events.addRegistration).toHaveBeenCalledWith(7, "2026-12-01", { selectionId: "adult-opaque" }, true);
+  await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
+  expect(screen.getByRole("checkbox", { name: /Allow adding over capacity/ })).toBeChecked();
+  expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
+  expect(Events.addRegistration).toHaveBeenCalledTimes(1);
+});
+
+it("asks email approval refusals to use name selection, without reconstructing a token", async () => {
+  vi.mocked(Events.addRegistration).mockRejectedValue(new ApiError(409, "SECRET", { code: "date_add_approval_required" }));
+  render(<ManageRoster instance={occurrence({})} onChanged={() => {}} onClose={() => {}} />);
+  await userEvent.type(screen.getByLabelText("Add someone"), "known@example.com"); await userEvent.click(screen.getByRole("button", { name: "Add" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("Select this person by name");
+  expect(screen.getByLabelText("Add someone")).toHaveValue("known@example.com");
+  expect(screen.queryByRole("button", { name: "Ask to add" })).not.toBeInTheDocument();
+});
+
+it("labels manager provenance only when the server explicitly supplies addedByLeader true", () => {
+  const base: Attendee = { registrationId: 1, userId: 3, name: "Invited", status: "going", guestCount: 0, attendanceMode: "in_person" };
+  const inferred = { ...base, registrationId: 2, name: "No inference", source: "manager_add" };
+  render(<ManageRoster instance={occurrence({ attendees: [{ ...base, addedByLeader: true }, inferred, { ...base, registrationId: 3, name: "False", addedByLeader: false }] })} onChanged={() => {}} onClose={() => {}} />);
+  expect(screen.getAllByText("Added by a leader")).toHaveLength(1);
+  expect(within(screen.getByText("Invited").closest("li")!).getByText("Added by a leader")).toBeInTheDocument();
 });

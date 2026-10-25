@@ -13,6 +13,27 @@ import (
 
 // Actions. Add new ones here so they are easy to find and query.
 const (
+	ContactHistoryExported      = "contact_history.exported"
+	OccurrenceAccessAdded       = "occurrence_access.added"
+	OccurrenceBlocked           = "occurrence.blocked"
+	OccurrenceRefused           = "occurrence.refused"
+	OccurrenceAccessEnded       = "occurrence_access.ended"
+	AddRequested                = "add.requested"
+	AddDecision                 = "add.decision"
+	AddWithdrawn                = "add.withdrawn"
+	AddExpired                  = "add.expired"
+	AddCompleted                = "add.completed"
+	AddRefused                  = "add.refused"
+	AddEnded                    = "add.ended"
+	ContactRequested            = "contact.requested"
+	ContactDecision             = "contact.decision"
+	ContactWithdrawn            = "contact.withdrawn"
+	ContactExpired              = "contact.expired"
+	ContactGranted              = "contact.granted"
+	ContactReveal               = "contact.reveal"
+	ContactRefused              = "contact.refused"
+	ContactRevoked              = "contact.revoked"
+	ContactEnded                = "contact.ended"
 	UserTurned18                = "user.turned_18"
 	HouseholdChildTurned13      = "household.child_turned_13"
 	HouseholdAccountTurnedAdult = "household.account_turned_adult"
@@ -31,6 +52,9 @@ const (
 	// Target is the group; meta has userId, oldRole ("leader" or "member"),
 	// and the optional note, which is never shown to the removed person.
 	MemberRemoved = "membership.removed"
+
+	// MemberAdded records an actual manager-initiated ordinary member addition.
+	MemberAdded = "membership.added"
 
 	// UserDeleted: an admin deleted an account. Target is the user. Any
 	// sole-leader handoff is recorded as RoleChanged rows with reason
