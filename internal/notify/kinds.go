@@ -288,7 +288,7 @@ func init() {
 		Key: RegistrationCancelled, Category: CatEvents, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			return "Registration cancelled: " + or(v.Event, "An event you registered for"),
-				"Who can see this event has changed, so the affected registration was cancelled. Your registrations for other dates have not changed."
+				"Who can see this event has changed, so registrations for dates you can no longer access were cancelled."
 		},
 	})
 	register(Kind{
