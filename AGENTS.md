@@ -52,7 +52,7 @@ browser ──► single Go binary ──► /api/v1/* (JSON, cookie auth)
 church-wide (`events.group_id` null), created by an admin and run by its
 `EventHost` rows. An event has a plain-text `description` (5000 characters,
 same as a group). `visibility` is the event's own value,
-copied from the group at creation (DEC-48); `leader_opened` marks one a
+copied from the group at creation (DEC-48). A nullable occurrence `visibility_override` wins for that date (`policy.EffectiveVisibility`); date candidates never authorize the series. `leader_opened` marks one a
 leader set wider than its group. Making a group more private tightens
 inherited events and asks about leader-opened ones (`api_group_visibility.go`).
 The wall clock (`starts_local` + IANA `tzid`) is the source of truth;
@@ -316,7 +316,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 
 | Rule | Enforced by |
 |------|-------------|
-| Every list of event dates hides events the viewer can't see | Structure: `occurrencesForEvents` filters with `policy.CanSeeEvent`; `TestNarrowEventHiddenFromGroupLists` |
+| Every list of event dates hides events the viewer can't see | Structure: `dateCandidates` loads facts without granting series rights; `visibleSet.canSeeDate` filters each date before limits; `TestNarrowEventHiddenFromGroupLists` |
 | Event and notice output never shows a hidden group's name, place or id (PR #41) | `a.groupShownTo` plus `TestGroupDetailsGoThroughGroupShownTo` (lines needing an exception end with `// group-ok: <reason>`) |
 | Making a group or one event more private previews the cancellations and needs confirmation | `visibility-impact` for both, a 409 without `confirm`; `TestEventMorePrivateCancelsShutOutRegistrants`, `e2e/event-visibility.spec.ts` |
 | Making an event more private cancels and tells people it shuts out, whether the group or the event changed | `cancelLosers` in both paths; `TestGroupMorePrivateTightensAndCancels`, `TestEventMorePrivateCancelsShutOutRegistrants` |

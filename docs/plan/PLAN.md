@@ -1925,6 +1925,14 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [ ] A church-wide event's date can be `public` or `private` only; a non-admin host can set it on events they host
 - Tests: policy tables for effective visibility; API tests for the audit row, notices, privacy keys, and series-edit interaction; a Playwright test for the private-series, one-public-date flow.
 
+M1.13 implementation note: date storage/policy, API consumers, shared date editor,
+series preserve/reset and group-date review are implemented on the milestone
+branch. Acceptance remains subject to the implementation report and checks;
+boxes above are deliberately not auto-checked. Dedicated event search,
+reminder scheduling and room-suggestion consumers are absent at this base, so
+the combined consumer acceptance remains qualified rather than marking absent
+integrations passed. Future consumers must use the effective date value.
+
 **M1.14 Series RSVP and RSVP-aware calendar (DEC-71)**
 - Narrow prerequisite implemented within M1.11 s4 (operator-authorized; final M1.11 acceptance pending): stable-occurrence invitations with explicit provenance, separate sanitized exact-date GET and own RSVP/decline/block mutations, safe recipient/confirmed-guardian notices, exact-date calendar links and standalone personal ICS entries. These grant neither group/roster nor series/management access. DEC-78 supersedes DEC-75's older hidden-teen picker exclusion: active teens are searchable, but every teen add needs teen and admin approval. See `M1.11-BRIEF.md` for source/tests and retained proof. Full M1.14 calendar styling, series responses/Undo, join/leave changes, own-scope/discovery/window rules and generalized block management remain deferred; all acceptance boxes below stay unchecked.
 - Depends on: M1.5 (capacity and waitlist), M1.6 (calendar views), M1.7 (ICS feeds). Best after M1.13, so series-wide responses use each date's effective visibility.
