@@ -736,3 +736,12 @@ func CanSeeMinorRosterIdentity(p *Person, manager bool) bool {
 
 // CanUploadAvatar: teens have no public avatar (DEC-8).
 func CanUploadAvatar(p *Person) bool { return p != nil && !p.Teen }
+
+// EffectiveVisibility resolves only the date's ordinary visibility. It never
+// grants series, group, roster or explicit-invitation authority.
+func EffectiveVisibility(series string, override *string) string {
+	if override != nil {
+		return *override
+	}
+	return series
+}
