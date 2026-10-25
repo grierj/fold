@@ -461,3 +461,23 @@ func TestCanSearchPeople(t *testing.T) {
 		t.Fatal("teen approval policy")
 	}
 }
+
+// Contact-only adapters cannot construct a valid grant from an add row, whose
+// fields are always empty. DB-purpose dispatch is additionally mandatory before
+// any adapter is called; it cannot be inferred from a historic granted status.
+func TestContactScopeRejectsAddFields(t *testing.T) {
+	for _, context := range []string{ContactGroup, ContactEvent} {
+		t.Run(context, func(t *testing.T) {
+			s, f, r, g := contactFixture()
+			if context == ContactEvent {
+				contactEventContext(&f)
+			}
+			s.ContextType, r.ContextType, g.ContextType = context, context, context
+			s.Fields, r.Fields, g.Fields = "", "", ""
+			if CanCreateContactRequest(s, f, 0) || ContactRequestStatusAfterDecision(f.Subject, ContactSubject, ContactApproved, r, f) != "" ||
+				ContactGrantCurrent(g, f) || CanRevealContactGrant(f.Requester, s, g, f) || ContactGrantRevocationReason(f.Subject, false, g) != "" {
+				t.Fatal("add fields acquired contact-request/grant authority")
+			}
+		})
+	}
+}

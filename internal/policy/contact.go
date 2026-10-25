@@ -93,10 +93,9 @@ type ContactAccessFacts struct {
 	Now       time.Time
 }
 
-// ContactScope is the exact identity persisted on a request and its grant.
-// Direct contact is the only purpose here. A later ask-to-add slice must add an
-// explicit purpose and its own scope/constraints; a contact grant never adds a
-// membership, registration or visibility right.
+// ContactScope is intentionally contact-only. AddScope is a distinct type:
+// adapters MUST dispatch the stored purpose before constructing this scope.
+// Contact grants never add membership, registration or occurrence visibility.
 type ContactScope struct {
 	RequesterID   uint
 	SubjectUserID uint
@@ -208,15 +207,21 @@ func ContactRequestStatusAfterDecision(actor ContactAccount, party, decision str
 	if !actor.Active || actor.Person == nil || actor.Person.ID == 0 || !pendingContactRequest(r, f) || (decision != ContactApproved && decision != ContactDenied) {
 		return ""
 	}
-	subject, admin := r.SubjectDecision, r.AdminDecision
+	return requestDecision(actor, party, decision, r.SubjectUserID, r.NeedsAdmin, r.SubjectDecision, r.AdminDecision)
+}
+
+// requestDecision is the shared two-party decision rule, not a completion
+// engine. Contact callers create a grant on granted; add callers treat that
+// result only as readiness and must complete the actual locked add first.
+func requestDecision(actor ContactAccount, party, decision string, subjectID uint, needsAdmin bool, subject, admin string) string {
 	switch party {
 	case ContactSubject:
-		if actor.Person.ID != r.SubjectUserID || subject != ContactPending {
+		if actor.Person.ID != subjectID || subject != ContactPending {
 			return ""
 		}
 		subject = decision
 	case ContactAdmin:
-		if !r.NeedsAdmin || !actor.adult() || !actor.Person.Admin || admin != ContactPending {
+		if !needsAdmin || !actor.adult() || !actor.Person.Admin || admin != ContactPending {
 			return ""
 		}
 		admin = decision

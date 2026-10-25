@@ -765,3 +765,276 @@ func TestTeenConsentMigrationAppendOnlyAndRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestContactAddRequestsMigration preserves the exact s2 data through up/down/up.
+func TestContactAddRequestsMigration(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, false))
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := p.UpTo(ctx, 30); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,needs_admin,admin_decision,created_at,expires_at)
+		 VALUES(1,101,102,'group',103,'both',true,'pending','2026-10-24 12:00Z','2026-11-07 12:00Z')`,
+		`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,needs_admin,subject_decision,subject_decided_by,subject_decided_at,
+		 admin_decision,status,created_at,expires_at,completed_at)
+		 VALUES(2,101,102,'event',104,'phone',false,'approved',102,'2026-10-25 12:00Z','not_needed','granted','2026-10-24 12:00Z','2026-11-07 12:00Z','2026-10-25 12:00Z')`,
+		`INSERT INTO contact_grants(request_id,leader_id,subject_user_id,context_type,context_id,fields,granted_at)
+		 VALUES(2,101,102,'event',104,'phone','2026-10-25 12:00Z')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var before, after string
+	query := `SELECT jsonb_agg(to_jsonb(r) ORDER BY id)::text FROM contact_requests r`
+	if err := db.QueryRow(query).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := p.Up(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRow(`SELECT jsonb_agg(to_jsonb(r) - ARRAY['purpose','occurrence_id','add_over_limit','add_over_capacity',
+		 'add_attendance_mode','add_guest_count','add_childcare_count','add_childcare_ages_note','completed_target_id'] ORDER BY id)::text FROM contact_requests r`).Scan(&after); err != nil {
+			t.Fatal(err)
+		}
+		if before != after {
+			t.Fatalf("old contact data changed:\n%s\n%s", before, after)
+		}
+		var count int
+		if err := db.QueryRow(`SELECT count(*) FROM contact_requests WHERE purpose='contact'`).Scan(&count); err != nil || count != 2 {
+			t.Fatalf("contact defaults %d %v", count, err)
+		}
+		if _, err := p.DownTo(ctx, 30); err != nil {
+			t.Fatal(err)
+		}
+		if err := db.QueryRow(query).Scan(&after); err != nil || after != before {
+			t.Fatalf("down changed contact data: %s %v", after, err)
+		}
+	}
+	if _, err := p.Up(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestContactAddRequestsConstraints(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, true))
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	for _, q := range []string{
+		`INSERT INTO users(id,email,status) VALUES(1,'issuer@example.com','active'),(2,'recipient@example.com','active'),(3,'other@example.com','active')`,
+		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Hidden',1,'active','invite_only')`,
+		`INSERT INTO events(id,group_id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by)
+		 VALUES(20,10,'Hidden series','','2026-12-01T18:00',60,'UTC','','','invite_only',1)`,
+		`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status)
+		 VALUES(30,20,'2026-12-01','2026-12-01 18:00Z','2026-12-01 19:00Z','scheduled'),
+		 (31,20,'2026-12-02','2026-12-02 18:00Z','2026-12-02 19:00Z','scheduled')`,
+		`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(40,30,2,'going','admin'),(41,31,2,'going','admin')`,
+		`INSERT INTO memberships(id,user_id,group_id,role,status) VALUES(50,2,10,'member','active')`,
+	} {
+		exec(q)
+	}
+	requestCreated := "2026-10-24 12:00Z"
+	insertRequest := func(purpose string) int {
+		t.Helper()
+		var id int
+		contextType, contextID, mode := "event", 20, "in_person"
+		var occurrence any = 30
+		if purpose == "group_add" {
+			contextType, contextID, mode, occurrence = "group", 10, "", nil
+		}
+		err := db.QueryRow(`INSERT INTO contact_requests(requester_id,subject_user_id,context_type,context_id,fields,purpose,occurrence_id,
+		 add_attendance_mode,needs_admin,admin_decision,created_at,expires_at)
+		 VALUES(1,2,$1,$2,'',$3,$4,$5,true,'pending',$6::timestamptz,$6::timestamptz + interval '14 days') RETURNING id`, contextType, contextID, purpose, occurrence, mode, requestCreated).Scan(&id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	for _, tt := range []struct{ name, mutation string }{
+		{"unknown purpose", `purpose='other'`}, {"contact cannot be retargeted", `purpose='contact', fields='email'`},
+		{"add has no contact fields", `fields='both'`}, {"exact occurrence required", `occurrence_id=NULL`},
+		{"positive occurrence", `occurrence_id=0`}, {"event context only", `context_type='group'`},
+		{"resolved mode required", `add_attendance_mode=''`}, {"invalid mode", `add_attendance_mode='phone'`},
+		{"guest max", `add_guest_count=6`}, {"negative guests", `add_guest_count=-1`},
+		{"care max", `add_childcare_count=21`}, {"negative care", `add_childcare_count=-1`},
+		{"care note max", `add_childcare_ages_note=repeat('é',201)`},
+		{"date cannot override group limit", `add_over_limit=true`},
+		{"pending cannot claim completed target", `completed_target_id=40`},
+		{"granted requires decisions and effect", `status='granted', completed_at='2026-10-25 12:00Z'`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			id := insertRequest("occurrence_add")
+			if _, err := db.Exec("UPDATE contact_requests SET "+tt.mutation+" WHERE id=$1", id); err == nil {
+				t.Fatal("malformed request accepted")
+			}
+		})
+	}
+	// Exercise insertion CHECKs too, independently of immutable-update guards.
+	base := insertRequest("occurrence_add")
+	for _, bad := range []string{
+		`{"purpose":"other"}`, `{"purpose":"contact","fields":"email"}`, `{"fields":"both"}`,
+		`{"occurrence_id":null}`, `{"occurrence_id":0}`, `{"context_type":"group"}`,
+		`{"add_attendance_mode":""}`, `{"add_attendance_mode":"phone"}`, `{"add_guest_count":6}`,
+		`{"add_guest_count":-1}`, `{"add_childcare_count":21}`, `{"add_childcare_count":-1}`,
+		`{"add_over_limit":true}`, `{"completed_target_id":40}`,
+	} {
+		if _, err := db.Exec(`INSERT INTO contact_requests SELECT (jsonb_populate_record(NULL::contact_requests,
+			to_jsonb(r) || $2::jsonb || jsonb_build_object('id',nextval('contact_requests_id_seq')))).*
+			FROM contact_requests r WHERE r.id=$1`, base, bad); err == nil {
+			t.Fatalf("malformed insertion accepted: %s", bad)
+		}
+	}
+	// Resolved options are immutable even before first approval; forged input
+	// and changing an already-reviewed capacity override must both fail.
+	id := insertRequest("occurrence_add")
+	if _, err := db.Exec(`UPDATE contact_requests SET add_over_capacity=true WHERE id=$1`, id); err == nil {
+		t.Fatal("request option changed")
+	}
+	// Fully approved but incomplete is valid/retryable; still no grant/access.
+	approveSQL := `UPDATE contact_requests SET subject_decision='approved',subject_decided_by=2,subject_decided_at='2026-10-25 12:00Z',
+	 admin_decision='approved',admin_decided_by=1,admin_decided_at='2026-10-25 12:00Z' WHERE id=$1`
+	exec(approveSQL, id)
+	if _, err := db.Exec(`INSERT INTO contact_grants(request_id,leader_id,subject_user_id,context_type,context_id,fields,granted_at)
+	 VALUES($1,1,2,'event',20,'','2026-10-25 12:00Z')`, id); err == nil {
+		t.Fatal("add created contact grant")
+	}
+	if _, err := db.Exec(`UPDATE contact_requests SET status='granted',completed_at='2026-10-25 12:00Z',completed_target_id=40 WHERE id=$1`, id); err == nil {
+		t.Fatal("successful add without occurrence effect accepted")
+	}
+	exec(`UPDATE contact_requests SET status='expired',completed_at=expires_at WHERE id=$1`, id)
+	if _, err := db.Exec(`UPDATE contact_requests SET status='pending',completed_at=NULL WHERE id=$1`, id); err == nil {
+		t.Fatal("expired add resurrected")
+	}
+	blocked := insertRequest("occurrence_add")
+	exec(`UPDATE contact_requests SET status='ended',completed_at='2026-10-25 12:00Z',end_reason='blocked' WHERE id=$1`, blocked)
+	group := insertRequest("group_add")
+	exec(approveSQL, group)
+	exec(`UPDATE contact_requests SET status='granted',completed_at='2026-10-25 12:00Z',completed_target_id=50 WHERE id=$1`, group)
+	// Exact request/issuer/date/registration provenance is checked in addition
+	// to the completed target, all in one deferred completion transaction.
+	complete := func(request int, accessSQL string) error {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		if _, err = tx.Exec(approveSQL, request); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(`UPDATE contact_requests SET status='granted',completed_at='2026-10-25 12:00Z',completed_target_id=40 WHERE id=$1`, request); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(accessSQL, request); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	accessSQL := `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,request_id,registration_id,granted_at)
+	 VALUES(2,30,20,'group',10,1,$1,40,'2026-10-25 12:00Z')`
+	for _, mutation := range []struct{ old, new string }{
+		{"2,30,20", "3,30,20"}, {"2,30,20", "2,31,20"}, {"2,30,20", "2,30,21"},
+		{"'group',10", "'group',11"}, {"10,1,$1", "10,3,$1"}, {"$1,40", "$1,41"},
+	} {
+		r := insertRequest("occurrence_add")
+		if err := complete(r, strings.Replace(accessSQL, mutation.old, mutation.new, 1)); err == nil {
+			t.Fatalf("mismatched provenance accepted: %s", mutation.new)
+		}
+	}
+	request := insertRequest("occurrence_add")
+	exec(`UPDATE users SET account_type='teen',birth_date='2010-01-01' WHERE id=2`)
+	if _, err := db.Exec(strings.Replace(accessSQL, "$1", "NULL", 1)); err == nil {
+		t.Fatal("direct teen manager add accepted")
+	}
+	if err := complete(request, accessSQL); err != nil {
+		t.Fatal(err)
+	}
+	if err := complete(insertRequest("occurrence_add"), accessSQL); err == nil {
+		t.Fatal("second live subject/date invitation accepted")
+	}
+	for _, mutation := range []string{
+		`end_reason='removed'`, `status='ended'`,
+		`status='ended',ended_at='2026-10-24 12:00Z',end_reason='declined',ended_by=2`,
+		`status='ended',ended_at='2026-10-26 12:00Z',end_reason='declined',ended_by=1`,
+		`status='ended',ended_at='2026-10-26 12:00Z',end_reason='unknown'`,
+		`status='ended',ended_at='2026-10-26 12:00Z',end_reason='account_disabled',ended_by=1`,
+	} {
+		if _, err := db.Exec("UPDATE occurrence_accesses SET " + mutation + " WHERE occurrence_id=30"); err == nil {
+			t.Fatalf("malformed access end accepted: %s", mutation)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO contact_grants(request_id,leader_id,subject_user_id,context_type,context_id,fields,granted_at)
+	 VALUES($1,1,2,'event',20,'','2026-10-25 12:00Z')`, request); err == nil {
+		t.Fatal("approved add created ContactGrant")
+	}
+	for _, mutation := range []string{`issuer_id=3`, `occurrence_id=31`, `request_id=NULL`, `registration_id=41`, `granted_at=granted_at+interval '1 second'`} {
+		if _, err := db.Exec("UPDATE occurrence_accesses SET " + mutation + " WHERE occurrence_id=30"); err == nil {
+			t.Fatalf("immutable provenance changed: %s", mutation)
+		}
+	}
+	// Other accepted dates survive organizer block; new dates cannot be added.
+	exec(`UPDATE users SET account_type='adult' WHERE id=2`)
+	exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
+	 VALUES(2,31,20,'group',10,1,41)`)
+	staleAsk := insertRequest("occurrence_add")
+	exec(`UPDATE occurrence_accesses SET status='ended',ended_at='2026-10-25 12:00Z',end_reason='declined',ended_by=2 WHERE occurrence_id=30`)
+	if _, err := db.Exec(strings.Replace(accessSQL, "$1", "NULL", 1)); err == nil {
+		t.Fatal("direct re-add after end accepted")
+	}
+	if err := complete(staleAsk, accessSQL); err == nil {
+		t.Fatal("pending ask predating removal resurrected access")
+	}
+	requestCreated = "2026-10-25 12:00Z"
+	freshAsk := insertRequest("occurrence_add")
+	if err := complete(freshAsk, accessSQL); err != nil {
+		t.Fatalf("genuinely new approved ask refused: %v", err)
+	}
+	if _, err := db.Exec(`DELETE FROM occurrence_accesses WHERE occurrence_id=30`); err == nil {
+		t.Fatal("retained invitation history deleted")
+	}
+	exec(`INSERT INTO manager_add_blocks(subject_user_id,organizer_type,organizer_id) VALUES(2,'group',10)`)
+	exec(`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status)
+	 VALUES(32,20,'2026-12-03','2026-12-03 18:00Z','2026-12-03 19:00Z','scheduled')`)
+	exec(`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(42,32,2,'going','admin')`)
+	if _, err := db.Exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
+	 VALUES(2,32,20,'group',10,1,42)`); err == nil {
+		t.Fatal("new date add bypassed organizer block")
+	}
+	exec(`UPDATE occurrence_accesses SET status='ended',ended_at='2026-10-26 12:00Z',end_reason='blocked',ended_by=2 WHERE occurrence_id=30 AND status='active'`)
+	if _, err := db.Exec(`UPDATE occurrence_accesses SET status='active',ended_at=NULL,end_reason='',ended_by=NULL WHERE occurrence_id=30`); err == nil {
+		t.Fatal("access tombstone resurrected")
+	}
+	if _, err := db.Exec(strings.Replace(accessSQL, "$1", "NULL", 1)); err == nil {
+		t.Fatal("duplicate/readded ended date accepted")
+	}
+	var count int
+	if err := db.QueryRow(`SELECT count(*) FROM occurrence_accesses WHERE status='active' AND occurrence_id=31`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("block ended unrelated accepted date: %d %v", count, err)
+	}
+	// History survives actual hard deletion, independent of live-domain joins.
+	for _, q := range []string{`DELETE FROM registrations`, `DELETE FROM event_occurrences`, `DELETE FROM events`, `DELETE FROM memberships`, `DELETE FROM groups`, `DELETE FROM users`} {
+		exec(q)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM occurrence_accesses`).Scan(&count); err != nil || count != 3 {
+		t.Fatalf("access history lost: %d %v", count, err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM manager_add_blocks`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("block history lost: %d %v", count, err)
+	}
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DownTo(context.Background(), 30); err == nil || !strings.Contains(err.Error(), "add safeguarding history exists") {
+		t.Fatalf("downgrade discarded history: %v", err)
+	}
+}
