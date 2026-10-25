@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { ApiError, Guests } from "../api";
 import { formatWhen } from "../lib/when";
 import type { GuestRegistration } from "../types";
 import { errorText } from "../lib/errors";
-import { Button } from "../components/ui/Button";
+import { Button, ButtonLink } from "../components/ui/Button";
 import { FormError } from "../components/ui/Field";
 
 // Redeem a guest registration verification link (M1.4). Opening the
@@ -67,14 +67,14 @@ export function GuestConfirm() {
             <p className="text-sm text-text-muted mt-2">
               We also emailed you this confirmation with a link to manage it if your plans change.
             </p>
-            <p className="mt-4 flex gap-4">
-              <Link to={`/guest/manage/${result.manageToken}`} className="text-primary font-semibold text-sm">
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+              <ButtonLink variant="secondary" to={`/guest/manage/${result.manageToken}`}>
                 Manage or cancel
-              </Link>
-              <Link to={`/events/${reg.eventId}/dates/${reg.date}`} className="text-primary font-semibold text-sm">
+              </ButtonLink>
+              <ButtonLink variant="link" to={`/events/${reg.eventId}/dates/${reg.date}`}>
                 View the event
-              </Link>
-            </p>
+              </ButtonLink>
+            </div>
           </>
         ) : (
           <>
