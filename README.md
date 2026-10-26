@@ -41,7 +41,8 @@ process remembers that setup finished until it exits.
 
 ## Backup
 
-Backups stay a command you run, not another container.
+Current backups use commands or the DigitalOcean host-cron helper. A portable
+backup container is planned in M5.2, not installed.
 
 ```bash
 docker compose exec -T db pg_dump -U church fold > fold.sql
@@ -63,7 +64,8 @@ optional encrypted offsite copy. See `docs/DEPLOY-DIGITALOCEAN.md`.
 
 ## Local development
 
-Recommended: Go 1.26+, Node 24 LTS, and Docker (for the dev Postgres 16 database).
+Recommended: the Go toolchain pinned in `go.mod`, Node at the major in `.nvmrc`,
+and Docker (for the dev Postgres 16 database).
 
 ```bash
 make dev    # starts Postgres (deploy/docker-compose.dev.yml), the API on :8080,
@@ -94,17 +96,29 @@ Useful env vars:
 
 ```bash
 make test   # go test ./... on Postgres; starts the dev database if DATABASE_URL is unset
-make lint   # go vet + gofmt
+make lint   # shell, Go (vet/gofmt/staticcheck), and web lint
 cd web && npm test   # Vitest component tests
 make e2e    # Playwright browser tests (first run: cd web && npx playwright install chromium)
 ```
 
-API contract: `docs/API.md`. Agent working notes: `AGENTS.md`.
+## Documentation
+
+- [PLAN.md](docs/plan/PLAN.md): product decisions and milestone scope (source of truth).
+- [STATUS.md](STATUS.md): merged work and remaining follow-ups.
+- [Summary](docs/plan/SUMMARY.md): shipped versus planned features.
+- [Documentation review](docs/plan/DOCUMENTATION-REVIEW.md): unresolved conflicts and implementation gaps.
+- [API contract](docs/API.md), [member guide](docs/MEMBERS.md), and
+  [DigitalOcean deployment](docs/DEPLOY-DIGITALOCEAN.md).
+- [AGENTS.md](AGENTS.md): development and review rules.
+
+Current Compose does not pass `FOLD_SMTP_URL`/`FOLD_EMAIL_FROM` into the app;
+setting them only in `.env` is insufficient. See the deployment guide's mail
+warning before relying on invitations or password resets.
 
 ## Layout
 
 - `main.go` — wiring, setup wizard, embedded-SPA serving
-- `api.go` — JSON API v1 handlers (auth, groups, memberships, events, registrations, admin)
+- `api.go`, `api_*.go` — JSON API v1 wiring and handlers
 - `csrf.go` — hand-rolled synchronizer CSRF tokens
 - `config.go` — environment-based configuration
 - `cli.go` — subcommands (`serve`, `healthcheck`, `migrate`, `version`)

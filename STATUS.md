@@ -2,7 +2,7 @@
 
 Claim a milestone here (in its own PR or commit) before starting it.
 
-Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older rows and docs say Wright for the same bot.
+Reconciled against merged history through `1a3f077` (Oct 25, 2026). “Merged” is not a production deployment or a claim that later findings are fixed. Product scope lives in [PLAN.md](docs/plan/PLAN.md); remaining conflicts are in [DOCUMENTATION-REVIEW.md](docs/plan/DOCUMENTATION-REVIEW.md).
 
 | Milestone | Status | Owner | Branch/PR |
 | --- | --- | --- | --- |
@@ -19,13 +19,14 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | M1.4 Guest registration | done (merged, #55) | Muse | `m1.4-guest-registration` |
 | M1.5 Capacity, waitlist, pruning | done (merged, #57) | Winston | `m1.5-capacity-waitlist-pruning` |
 | M1.6 Calendar views | done (merged, #73) | Wright | `calendar` |
-| M1.7 ICS feeds | done (landed on master without a PR; reviewed and fixed in the m17-fixes PR; video_reveal moves to M1.8) | Muse, Wright | `m1.7-ics-feeds`, `m17-fixes` |
+| M1.7 ICS feeds | done (initial direct landing; reviewed/fixed in #80; video reveal delivered in M1.8) | Muse, Wright | `m1.7-ics-feeds`, `m17-fixes` |
 | M1.8 Video, remote, childcare | done (video #102, remote #105, childcare #109 merged) | Wright | `m1.8-remote-capacity` |
 | M1.9 Households and household people | done (merged, #106, #107, #110, #111) | Wright | `m1.9-household-convert` |
-| M1.10 Teen accounts, consent, badges | implemented and verified (#114–#118; docs/plan/M1.10-BRIEF.md) | Wright | `m1.10-age-rollover` |
-| M1.11 Contact privacy and direct-contact requests | implemented, independently reviewed and verified locally; all 16 acceptance criteria satisfied (docs/plan/M1.11-BRIEF.md); PR review and merge pending | Wright | `orchestrate/207252f0-d74a-467e-83c4-314a924143cd` |
+| M1.10 Teen accounts, consent, badges | done (merged #114–#118; M1.10-VERIFICATION.md) | Wright | `m1.10-age-rollover` |
+| M1.11 Contact privacy and direct-contact requests | done (merged #122; M1.11-VERIFICATION.md) | Wright | `orchestrate/207252f0-d74a-467e-83c4-314a924143cd` |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
-| M1.13 Per-date event visibility (DEC-46) | unclaimed | | |
+| M1.13 Per-date event visibility (DEC-46) | merged #123; existing consumers verified, absent search/reminder/room consumers deferred | Wright | `m1.13-date-visibility` |
+| M1.14 Series RSVP and RSVP-aware calendar | partial: exact-date invitation prerequisite merged in #122; remaining scope unclaimed | | |
 | Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | done (merged, #43) | Wright | `simplicity` |
 
 ## Other merged work (not milestones)
@@ -41,7 +42,6 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | Shorter time zone labels that fit on phones | done (merged) | Illuminator | #52 |
 | DigitalOcean droplet guide, provisioner and backups ("recommended", not "supported") | done (merged) | Cursor agent | #53 |
 | Tests sit next to their code; layout guard | done (merged) | Wright | #54 |
-| M1.5 brief (`docs/plan/M1.5-BRIEF.md`) | committed to master | Grier | `75485a1` |
 | UI makeover PR 1: event times in the viewer's zone (DEC-57), profile time zone for emails (DEC-58) | done (merged) | Wright | #58 |
 | UI makeover PR 3: Fold Violet tokens and self-hosted Inter (DEC-60), setup and outbox on the built CSS, axe and screenshot checks, color guard | done (merged) | Grok, Illuminator | #60 |
 | UI makeover PR 4: friendly errors from API codes (DEC-61), error wording map, error-text guard | done (merged) | Grok | #61 |
@@ -49,11 +49,13 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 | UI enforcement (Illuminator's ENFORCEMENT.md): token contrast in CI, layout and target spec, wider axe, `components/ui`, UI ratchets, verify-ui skill | done (merged) | Grok, Illuminator | #64 |
 | UI makeover PR 5: nav shell (phone tabs, desktop top bar, church name), vendored Lucide icons, 44px targets and safe areas (DEC-62); 24px targets, clipped selects and controls cut off by an overflow box now hard gates; review fixes: Admin Users cards below md, labeled New group, Admin row on Me, no Disable/Delete on your own row | merged (#65) | Grok | `nav-shell` |
 | UI makeover PR 6: event, series, leader and admin pages (DEC-63): shared More menu, segmented RSVP, attendance counts with a names expand, series as next date + N more in the next 90 days; can't-go count and names for leaders and admins only (DEC-64); layout gate now also checks the last content clears the tab bar | merged (#66) | Grok | `event-pages` |
-| UI makeover PR 7: forms (DEC-65): one Field pattern (label, hint above the control, error below, only optional fields marked), Radio/Checkbox rows at 44px in fieldsets, searchable time zone combobox everywhere but setup, focus moves to the first invalid field, verb-plus-noun buttons full width on phones; guard keeps raw form controls in components/ui; layout gate on 44px radio and checkbox rows | in review | Grok | `forms` |
+| UI makeover PR 7: forms (DEC-65): one Field pattern (label, hint above the control, error below, only optional fields marked), Radio/Checkbox rows at 44px in fieldsets, searchable time zone combobox everywhere but setup, focus moves to the first invalid field, verb-plus-noun buttons full width on phones; guard keeps raw form controls in components/ui; layout gate on 44px radio and checkbox rows | merged (#71) | Grok | `forms` |
 | UI makeover PR 8: empty, error and loading states, covers, brand (DEC-66): every empty list says what would show up and offers the next step, missing pages offer a way home, failed loads offer Try again, slow loads show skeletons, photo-less groups get one of six patterned covers by id, the tab gets the Fold icon; placeholder illustrations and covers wait on Gilder | merged (#72) | Muse | `empty-states` |
 | UI makeover PR 9: calendar (M1.6, DEC-67): `/calendar` with Agenda, Week and Month views of every date the viewer may see, a "Just mine" chip and a group filter, times in the viewer's zone, a Calendar tab (5 tabs), and a read-only `GET /api/v1/calendar` with slim rows and no attendance | merged (#73) | Wright | `calendar` |
 
-## Follow-ups (not yet claimed)
+## Remaining follow-ups
+
+Recheck implementation before claiming an older finding; this docs pass did not rerun the feature suites.
 
 - M1.10 phase scope: account access, guardian consent, staged conversion, birthdays, and existing roster badges are implemented and verified in #114–#118. Recipient-list composition, guardian message copies, SMS sending, and galleries remain future milestones. DEC-83 records the staged inactive-holder retry exception and independent suspension behavior.
 
@@ -61,17 +63,10 @@ Wright is the bot that builds fold (renamed from Codex on Oct 18, 2026); older r
 - (Whittler, #105) An admin re-adding someone who is already going in the same pool counts their seats twice (api_registrations.go admin add path, ~1150-1157). Fix: subtract the existing going party from used seats before the fit check.
 - (Illuminator, PR 110 N5) Use the Going/Maybe/Can't go radios for each household person instead of the "Answer for X" select (judgment call 38).
 - (M1.9 slice 2, judgment call 34) Seat-only manager removal still doesn't auto-promote; making every removal promote (5.4) is deferred.
-- (Warden, PR 110) Solo RSVP membership race: a solo answer no longer re-checks `canRegisterIn` under the locks. Either re-check it after `lockOccurrence`, or have membership removal take the occurrence lock.
-- (Warden, PR 110) `loadSubjectFacts` seeds its clock with UTC instead of `householdClock`, so callers that don't set `today` compute ages on the UTC date (DEC-81 says church-local). Done in #111.
+- (Warden, PR 110) Recheck the solo RSVP/membership-removal race against the current locked authorization path in `api_registrations.go`. It now calls `canRegisterIn` inside the transaction; this documentation pass did not establish whether all competing membership mutations serialize with that check. Do not treat the older finding as verified closed.
 - (Whittler, PR 110) Select attendee names in the attendee query so the account load can be skipped (GET /events/:id to about 18 reads).
-- (Whittler, PR 110) Assert that a solo going PUT stays at or under 12 reads in `TestRegistrationReadBudget` (it measures the maybe path now). Done in #111.
-- (Illuminator, PR 110 N8) On roster rows, show the status ("Going") under "Signed up by", above the notes. Done in #111.
-- (Illuminator, PR 110 N9) Give Profile's lazy-loaded household card a placeholder of about its real height, so the page doesn't jump. Done in #111.
-- CI hardening (Warden review of #83, Oct 20, 2026; issue #95): claimed by Wright, in review. Actions pinned to full SHAs and a top-level `permissions: contents: read`, enforced by `TestWorkflowActionsPinnedAndReadOnly`.
 - VideoField polish (Illuminator, optional, from the #102 review): N7, clear the field's error when the link or the video option changes; N8, add a little space between the event page's time line and the "Join by video" button.
 - Terminology (Grier, Oct 20, 2026; DEC-78): rethink the name "private" for groups. The word is overloaded, because private groups are visible to every signed-in member.
-- M1.8/M1.9 progress (Oct 22, 2026). M1.8 remote (#105) and childcare are merged. M1.9 slice 1 (households, #106 and UI) and slice 2 (registering household people, #110, DEC-81) are merged. M1.9 slice 3 (turning a household person into their own account by invitation, plus docs/MEMBERS.md) is merged in #111. Judgment calls are logged in docs/plan/M1.9-JUDGMENT-CALLS.md.
-- Warden follow-ups from the #106 review (Oct 21, 2026):
-  1. An admin confirming their own guardian link: decided by Grier as DEC-79 and done in #106. Blocked while another active admin exists; a sole admin may, audited as `selfConfirm`.
-  2. M1.9 slice 2 must check a `kind: adult` household person against their birth date rather than trusting the kind. Done in #110.
-  3. A confirmed teen link survives a switch to `child`. Probably fine, and left as is.
+- A confirmed household-person guardian link survives a teen-to-child kind edit; this is the retained behavior, not an unapproved new permission.
+
+Completed follow-ups removed from the queue: CI SHA pinning/read-only permissions (#100); household church-local age checks, going-path read budget, roster status placement and Profile placeholder (#111). Superseded slice briefs/judgment logs are in git history; their current rules are consolidated in PLAN and docs/API.md.

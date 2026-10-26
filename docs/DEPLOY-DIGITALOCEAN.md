@@ -218,16 +218,26 @@ dig +short TXT <selector>._domainkey.groups.example.org
 dig +short CNAME pm-bounces.groups.example.org
 ```
 
+**Current Compose gap:** the checked-in `docker-compose.yml` does not pass
+`FOLD_SMTP_URL` or `FOLD_EMAIL_FROM` to the app. Compose's `.env` is interpolation
+input, not automatically the container environment. These values alone will not
+enable email. Before relying on invites or resets, explicitly pass both through
+the app service's environment in an operator-managed Compose override, then
+recreate the app and verify delivery. This documentation pass does not change
+the Compose configuration.
+
 Put the SMTP URL in `/opt/fold/.env` (Postmark's host is
-`smtp.postmarkapp.com`, port 587) and reload:
+`smtp.postmarkapp.com`, port 587):
 
 ```bash
 FOLD_SMTP_URL=smtp://SERVER_TOKEN:SERVER_TOKEN@smtp.postmarkapp.com:587
 FOLD_EMAIL_FROM=Fold <noreply@groups.example.org>
 ```
 
-`sudo docker compose --project-directory /opt/fold up -d` reloads them.
-Leave SMS unset until the church has a Telnyx account and wants texting.
+After adding the environment pass-through, run Compose with the same override
+file(s) to recreate the app. `sudo docker compose --project-directory /opt/fold
+up -d` by itself cannot load values the service does not reference.
+SMS is not implemented yet; do not provision texting just to run this version.
 
 `SESSION_SECRET` must be at least 32 characters. The script generates one
 with `openssl rand -base64 48`. Store `.env` in the church password manager.
