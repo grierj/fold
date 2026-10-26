@@ -99,7 +99,9 @@ export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurren
   const title = occ.title || occ.groupName || "";
   const state = calendarState(occ);
   const label = calendarStateLabel(occ);
-  const name = [`${time} ${title}`, occ.remoteAvailable && "Remote", occ.childcareAvailable && "Childcare", occ.churchWide ? "Church-wide" : occ.groupName, occ.groupDeleted && "deleted group", label]
+  // Keep the visible words in the same order in the accessible name, then
+  // append context that a compact chip does not have room to render.
+  const name = [`${time} ${title}`, label, occ.remoteAvailable && "Remote", occ.childcareAvailable && "Childcare", occ.churchWide ? "Church-wide" : occ.groupName, occ.groupDeleted && "deleted group"]
     .filter(Boolean)
     .join(", ");
   const stateClass = state === "going"

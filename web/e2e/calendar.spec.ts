@@ -27,24 +27,46 @@ test("the calendar shows what sam may see, in all three views", async ({ page, r
   await admin("POST", `/groups/${secret.id}/events`, {
     title: "Secret supper", startsLocal: `${day(2)}T18:00`, durationMinutes: 60, tzid: "America/Boise", location: "", recurrenceRule: "",
   });
-  const { event: picnic } = (await admin("POST", "/events", {
-    title: "Calendar picnic", startsLocal: `${day(2)}T12:00`, durationMinutes: 60, tzid: "America/Boise", location: "Park",
-    recurrenceRule: "", visibility: "public",
-  })) as { event: { id: number } };
+  async function churchEvent(title: string, hour: string, extra: Record<string, unknown> = {}) {
+    const { event } = (await admin("POST", "/events", {
+      title, startsLocal: `${day(2)}T${hour}:00`, durationMinutes: 60, tzid: "America/Boise", location: "Park",
+      recurrenceRule: "", visibility: "public", ...extra,
+    })) as { event: { id: number } };
+    return event;
+  }
+  const picnic = await churchEvent("Calendar picnic", "12");
+  const maybe = await churchEvent("Calendar maybe", "13");
+  const declined = await churchEvent("Calendar declined", "14");
+  await churchEvent("Calendar unanswered", "15");
+  const waitlist = await churchEvent("Calendar waitlist", "16", { capacity: 1, waitlistEnabled: true });
   const sam = await apiAs(request, "sam");
   await sam("PUT", `/events/${picnic.id}/registrations`, { status: "going", date: day(2) });
+  await sam("PUT", `/events/${maybe.id}/registrations`, { status: "maybe", date: day(2) });
+  await sam("PUT", `/events/${declined.id}/registrations`, { status: "declined", date: day(2) });
+  const lee = await apiAs(request, "lee");
+  await lee("PUT", `/events/${waitlist.id}/registrations`, { status: "going", date: day(2) });
+  const samAgain = await apiAs(request, "sam");
+  await samAgain("PUT", `/events/${waitlist.id}/registrations`, { status: "going", date: day(2) });
 
   await signIn(page, "sam");
   await page.goto("/calendar");
   await expect(page.getByRole("heading", { name: "Calendar", level: 1 })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Calendar picnic/ }).first()).toBeVisible();
+  await expect(page.getByRole("link", { name: /Calendar picnic/ }).first()).toContainText("Going");
+  await expect(page.getByRole("link", { name: /Calendar maybe/ }).first()).toContainText("Maybe");
+  await expect(page.getByRole("link", { name: /Calendar declined/ }).first()).toContainText("Can't go");
+  await expect(page.getByRole("link", { name: /Calendar unanswered/ }).first()).toContainText("Not answered");
+  await expect(page.getByRole("link", { name: /Calendar waitlist/ }).first()).toContainText("Waitlisted");
   await expect(page.getByText("Secret supper")).toHaveCount(0);
 
-  // Church-wide dates are standing own scope inside the 30-day window. The
-  // viewer's own answer is shown without changing the unanswered group date.
+  // Church-wide dates are standing own scope inside the 30-day window. Just
+  // mine retains every state except Can't go.
   await page.getByRole("button", { name: "Just mine" }).click();
   await expect(page).toHaveURL(/mine=1/);
   await expect(page.getByRole("link", { name: /Calendar picnic/ }).first()).toContainText("Going");
+  await expect(page.getByRole("link", { name: /Calendar maybe/ }).first()).toContainText("Maybe");
+  await expect(page.getByRole("link", { name: /Calendar unanswered/ }).first()).toContainText("Not answered");
+  await expect(page.getByRole("link", { name: /Calendar waitlist/ }).first()).toContainText("Waitlisted");
+  await expect(page.getByRole("link", { name: /Calendar declined/ })).toHaveCount(0);
   await page.getByRole("button", { name: "Just mine" }).click();
   await proveView(page, "agenda");
 

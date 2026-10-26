@@ -71,9 +71,32 @@ describe("EventChip", () => {
     expect(screen.getByText("Remote")).toHaveClass("bg-sunken");
     expect(screen.getByRole("link")).toHaveAccessibleName(/Remote/);
   });
-  it("spells out what the chip abbreviates", () => {
-    wrap(<EventChip occ={occ({ myStatus: "going", ownScope: true })} />);
-    expect(screen.getByRole("link")).toHaveAccessibleName(/Thursday class.*Going/);
+  it.each([
+    ["going", "Going", "bg-primary"],
+    ["maybe", "Maybe", "border-dashed"],
+    ["waitlisted", "Waitlisted", "border-dashed"],
+    [null, "Not answered", "border-dashed"],
+  ] as const)("spells out the %s own-scope state and keeps it in the accessible name", (myStatus, label, style) => {
+    wrap(<EventChip occ={occ({ myStatus, ownScope: true })} />);
+    const link = screen.getByRole("link");
+    expect(link).toHaveAccessibleName(new RegExp(`Thursday class.*${label}`));
+    expect(link).toHaveClass(style);
+    expect(link.className).not.toMatch(/opacity/);
+  });
+
+  it("labels Can't go in Everything without applying the ghosted treatment", () => {
+    wrap(<EventChip occ={occ({ myStatus: "declined", ownScope: true })} />);
+    const link = screen.getByRole("link");
+    expect(link).toHaveAccessibleName(/Thursday class.*Can't go/);
+    expect(link).not.toHaveClass("border-dashed");
+  });
+
+  it("keeps compact context in visible-text order without overriding its content name", () => {
+    wrap(<EventChip occ={occ({ myStatus: "maybe", ownScope: true, remoteAvailable: true, childcareAvailable: true })} />);
+    const link = screen.getByRole("link");
+    expect(link).toHaveAccessibleName(/Thursday class.*Maybe.*Remote.*Childcare/);
+    expect(link).toHaveAttribute("title", expect.stringMatching(/Thursday class, Maybe, Remote, Childcare, Room 201 class/));
+    expect(link).not.toHaveAttribute("aria-label");
   });
 
   it("stacks the time over a two-line title in the week view, keeping the full name", () => {
