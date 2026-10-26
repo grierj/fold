@@ -1,6 +1,14 @@
 {
   "preApproveImplementation": true,
   "preApproveMerge": true,
+  "models": {
+    "challenge": { "model": "meta/muse-spark-1.3-contributor", "effort": "high" }
+  },
+  "publication": {
+    "remote": "origin",
+    "baseBranch": "master",
+    "protectedBranches": ["main", "master", "default"]
+  },
   "checks": {
     "go-build": {
       "id": "go-build",
