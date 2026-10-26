@@ -1,13 +1,15 @@
 # Fold: roster sync with church management software (ChMS)
 
-Status: research note for a **far-future** idea, not a milestone. Written Oct 10, 2026 from public docs only (no accounts, trials, or vendor contact). Anything not confirmed in a primary source is marked **[unverified]**.
+Status: historical research for **far-future M6.15**, not scheduled implementation. Written Oct 10, 2026 from public docs only (no accounts, trials, or vendor contact). Anything not confirmed in a primary source is marked **[unverified]**.
+
+Reconciled 2026-10-25 with DEC-40: **one-way ChMS → Fold only; no write-back**. Vendor capabilities below are historical research, not implementation commitments; recheck before building. Field ownership and local-control locks remain open design work.
 
 Context from `PLAN.md` that shapes this note:
 
-- Fold is Go 1.25 + Gin + GORM + PostgreSQL 16, one binary, single-tenant (one deployment per church, D2). No Python (3.2).
-- Every proprietary dependency sits behind a small Go interface in `internal/providers`, registered by name, configured from `ProviderConfig` with AES-GCM-encrypted secrets, contract-tested against `httptest` fakes (5.6, C8). Webhooks arrive at `/hooks/*` outside CSRF and are signature-verified (C17).
+- Fold is Go + Gin + GORM + PostgreSQL 16, one binary and single-tenant. `go.mod` owns the toolchain; no Python (3.2).
+- The future provider architecture uses small interfaces, encrypted ProviderConfig secrets, contract tests and authenticated webhooks (5.6, C8, C17). This is not installed ChMS infrastructure.
 - One email = one `User` account (DEC-23). Shared emails become `adult` `HouseholdPerson` rows. No accounts under 13; children are `HouseholdPerson(kind=child)`; teens 13–17 need `TeenConsent`; every guardian link to a minor needs an admin to confirm it with a `check_note` (DEC-8, DEC-32). Leaders never see teen email/phone (DEC-31). Imported phones are never SMS-opted-in (10.4).
-- ChurchTrac CSV import is already "Later" and blocked on a real sample export (DEC-15, M6.11). People CSV import is M4.5.
+- ChurchTrac CSV import is already "Later" and blocked on a real sample export (DEC-15, M6.11; the sample-import prerequisite to M6.15). People CSV import is M4.5.
 
 ---
 
@@ -49,7 +51,7 @@ Takeaway: of the systems most common with small churches, **Planning Center** an
 
 - **Docs:** https://api.planningcenteronline.com/docs (redirect from https://developer.planning.center/docs/). Single JSON:API 1.0 API across products (https://www.planningcenter.com/developers).
 - **Auth:** PAT (HTTP Basic, app id + secret) for "a script that runs on … a server you control", one org; OAuth 2 for apps used by multiple churches; access tokens last 2 h with refresh tokens; scopes `people`, `groups`, `check_ins`, etc.; since Mar 22, 2023 only Organization Administrators can create OAuth apps (https://api.planningcenteronline.com/docs/overview/authentication). Every request acts as a user and sees only what that user can see.
-  - *Fit for Fold:* single-tenant, self-hosted Fold matches the **PAT** model (the church admin creates a PAT for a dedicated Planning Center user). An OAuth app would need a client secret that an open-source project cannot ship; each church could register its own, but PAT is simpler. Use a dedicated "Fold sync" PCO user so permissions are explicit.
+  - *Fit for Fold:* single-tenant, self-hosted Fold matches the **PAT** model (the church admin creates a PAT for a dedicated Planning Center user). OAuth would need church/operator credential configuration; never ship a shared client secret. Recheck vendor terms before choosing PAT authentication. Use a dedicated "Fold sync" PCO user so permissions are explicit.
 - **People data (R/W):** `POST/PATCH/DELETE /people/v2/people` with attributes incl. `first_name`, `last_name`, `birthdate`, `child`, `grade`, `gender`, `medical_notes`, `membership`, `status`, `remote_id` (https://api.planningcenteronline.com/docs/apps/people/versions/2026-10-05/vertices/person). Emails are child resources (`POST /people/v2/people/{id}/emails`, `PATCH /people/v2/emails/{id}`, `address`, `primary`). Query filters include `where[updated_at]`, `where[created_at]`, `where[child]`, `where[remote_id]`, `where[search_name_or_email]`.
 - **Households (R/W):** `POST /people/v2/households` with `primary_contact` and `people` relationships; `POST /people/v2/households/{id}/household_memberships` (`household_role`, `pending`) (https://api.planningcenteronline.com/docs/apps/people/versions/2026-10-05/vertices/household).
 - **Groups:** list/read groups, memberships, group types, events. **Groups cannot be created via the API**: only `PATCH /groups/v2/groups/{id}` (name, group_type_id, schedule, tag_ids) plus a `duplicate` action (https://api.planningcenteronline.com/docs/apps/groups/versions/2023-07-10/vertices/group). Memberships can be created: `POST /groups/v2/groups/{group_id}/memberships` (`joined_at`, `role`, `person_id`) (https://api.planningcenteronline.com/docs/apps/groups/versions/2023-07-10/vertices/membership); it now works for people only in People, with a short delay (https://github.com/planningcenter/developers/issues/755). Membership delete/update: [unverified].
@@ -141,7 +143,6 @@ A new provider kind `chms` in `ProviderConfig` (one active row), adapters in `in
 // What an adapter can do; drives UI, job scheduling, and the rate limiter.
 type ChMSCaps struct {
     ReadPeople, ReadHouseholds, ReadGroups, ReadMemberships bool
-    WritePeople, WriteHouseholds, CreateGroups, WriteMemberships bool
     ChangeFeed   ChangeFeedKind // none | modified_since | action_log | webhook
     Webhooks     bool
     RateLimit    RateLimit      // tokens, per duration, burst; overridden by response headers
@@ -179,14 +180,6 @@ type ChangeFeed interface {
     Changes(ctx context.Context, since Checkpoint) (ChangeSet, Checkpoint, error) // ids to refetch + deletions
 }
 
-// Optional: write-back. Every call is idempotent on (op, ExternalID).
-type RosterSink interface {
-    CreatePerson(ctx context.Context, p NewExtPerson) (externalID string, err error)
-    UpdatePerson(ctx context.Context, externalID string, patch PersonPatch) error // only fields Fold owns
-    AddMembership(ctx context.Context, m ExtMembership) error
-    RemoveMembership(ctx context.Context, m ExtMembership) error
-}
-
 // Optional: push notifications, same shape as the email/SMS WebhookParser.
 type ChMSProvisioner interface {
     EnsureWebhook(ctx context.Context, url, secret string, events []string) error
@@ -200,19 +193,19 @@ Adapters: `csv` (file upload + saved column mapping; covers ChurchTrac, Realm, P
 Supporting tables (sketch):
 
 - `ExternalLink(provider, external_type person|household|group, external_id, fold_type user|household_person|household|group, fold_id, last_seen_hash, last_synced_at)` — unique `(provider, external_type, external_id)`.
-- `SyncRun(provider, kind full|incremental|writeback, started_at, finished_at, stats_json, error)`.
-- `SyncProposal(run_id, action create_account|create_household_person|link|merge|update_field|remove_membership, payload_json, status pending|applied|rejected, decided_by, decided_at)` — the review queue.
-- `SyncFieldPolicy(field, owner chms|fold, direction pull|push|none)` — seeded defaults, admin-editable within limits.
+- `SyncRun(provider, kind full|incremental, started_at, finished_at, stats_json, error)`.
+- `SyncProposal(run_id, action create_account|create_household_person|link|merge|update_field, payload_json, status pending|applied|rejected, decided_by, decided_at)` — the review queue.
+- Field ownership/locking remains to be designed. ChMS-owned fields may be pulled; Fold-owned fields are never pushed.
 
-Jobs (5.5 worker): `chms.full_sync` (nightly, advisory-locked), `chms.incremental` (every 10–15 min where a change feed exists), `chms.refetch` (from webhooks), `chms.writeback` (batched, rate-limited by `Capabilities().RateLimit` with a token bucket, honoring `Retry-After` and PCO's `X-PCO-API-Request-Rate-*` headers). Webhooks land at `/hooks/chms/{provider}` outside CSRF (C17).
+Future jobs: `chms.full_sync` (nightly, advisory-locked), `chms.incremental` (where a change feed exists), and `chms.refetch` (verified webhooks). Reads honor provider limits and response headers. No write-back job or sink interface (DEC-40).
 
-### 3.2 One-way import vs two-way sync
+### 3.2 One-way import only (DEC-40)
 
-Do it in three steps, and stop at step 2 unless churches ask for more:
-
-1. **One-way import, admin-reviewed** (ChMS → Fold). Every run produces `SyncProposal`s; the admin approves in bulk. First run = onboarding; later runs = scheduled refresh. This is the same flow as M4.5 CSV import and should share its code. Works for every system, including CSV-only ones.
-2. **Narrow write-back** (Fold → ChMS) for things Fold is the natural place for: (a) group memberships for groups that Fold owns, (b) new adults who signed up in Fold and were approved by an admin, created in the ChMS as a basic person record (name, email), (c) later, attendance. Only for adapters with `RosterSink`. Never write minors' data back (3.5).
-3. **Full bidirectional sync** of profile fields: not recommended. It needs conflict detection on both sides, the slowest APIs (Breeze 20/min) make it fragile, and most fields have a clear owner anyway.
+Start with admin-reviewed CSV import, sharing M4.5's machinery. Later add
+read adapters and scheduled or webhook-driven refresh. Preserve Fold's account
+approval, consent and safeguarding boundaries. Fold never writes people,
+memberships, attendance or identifiers back to the ChMS. Vendor write APIs
+are comparison facts only, not future Fold scope.
 
 ### 3.3 Source of truth and conflict rules
 
@@ -220,19 +213,19 @@ Use **field ownership**, not last-write-wins:
 
 | Data | Owner | Rule |
 |---|---|---|
-| Person name, birth date, address, household structure, membership status | ChMS | Pull; Fold edits to these fields are blocked (or shown as "edit in <ChMS>") once a person is linked. |
+| Person name, address, household structure | ChMS (DEC-40) | Pull; design local-control locks before implementation. Age/identity changes must preserve Fold's approval and safeguarding checks. |
 | Email used for login | **Fold** after the account exists | A ChMS email change becomes a proposal; applying it runs Fold's verified email-change flow (10.1). Never silently change a login. |
 | Phone | ChMS for the value; **Fold** for SMS consent | A changed number clears `phone_verified_at` and SMS consent in Fold (number ownership must be re-proved, 7.4). |
 | Consent (email/SMS), suppression, `TeenConsent`, guardian-link confirmation, contact grants | **Fold only** | Never imported as granted; never exported. |
 | Fold roles (admin/leader/host), registrations, RSVPs, waitlists | Fold only | Not synced. |
-| Group list | Per group: `source=chms` (read-only roster in Fold, leaders can't add/remove there) or `source=fold` (Fold owns membership, optional push) | Set per group at link time. |
+| Group memberships | Fold (DEC-40) | No push or automatic takeover of the roster; settle imported metadata and local-control locks before implementation. |
 | Deletions / inactivation in ChMS | ChMS | Become a proposal to disable the Fold account (never auto-delete; audit and consent history are kept, 5.3). |
 
 Conflicts (same field changed on both sides since the last sync, detected via `last_seen_hash`) never auto-resolve; they become `SyncProposal(update_field)` rows. All applied changes write `AuditLog` rows (`chms.*` actions).
 
 ### 3.4 Matching and de-duplication of people
 
-1. **Existing link wins:** `ExternalLink` by external id. Also store Fold's id in the ChMS where supported (PCO `remote_id`) [writing `remote_id` from a third party: unverified].
+1. **Existing link wins:** a local `ExternalLink` stores the external id. Never write Fold's id into the ChMS (DEC-40).
 2. **Email match (case-insensitive, `citext`)** for unlinked records. One Fold account per email (DEC-23):
    - If one ChMS person has the email → propose link/create account.
    - If several ChMS people in **one household** share it → the household's primary contact (PCO `primary_contact`, Breeze/CCB/Elvanto "Primary Contact"/"Head") becomes the account; the others become `adult` `HouseholdPerson`s on that account (exactly what 5.10 already says for CSV). Children sharing a parent's email are children, not adults (3.5).
@@ -247,7 +240,7 @@ Conflicts (same field changed on both sides since the last sync, detected via `l
 Fold's rules (no accounts under 13; teens need consent; admin confirms every guardian link; leaders never see teen contact info; audit everything) mean imports must be **more** conservative than the ChMS:
 
 - **Age gate on import:** anyone the source marks as a child (PCO `child`, grade set, household role child) or with a birth date under 18 is treated as a minor. Under 13 → only `HouseholdPerson(kind=child)` under a household with an account holder. 13–17 → `HouseholdPerson(kind=teen)` by default, **never** an account, even if the ChMS has their own email. A teen account is created only through Fold's normal teen flow (`pending_consent` → `TeenConsent account`). Missing birth date + child flag → treat as child; missing both → treat as adult only if the admin confirms.
-- **Guardian links:** ChMS household membership is *evidence*, not confirmation. Import creates `GuardianLink(status=pending)`; an admin confirms (bulk-confirm is fine) with a `check_note` such as "From Planning Center household 'Smith', reviewed by <admin>" (DEC-32 allows no auto-confirm).
+- **Guardian links:** ChMS household membership is *evidence*, not confirmation. Import creates `GuardianLink(status=pending)`; an admin confirms (with DEC-79's self-confirmation restriction; bulk confirmation has not been approved) with a `check_note` such as "From Planning Center household 'Smith', reviewed by <admin>" (DEC-32 allows no auto-confirm).
 - **Consent is never imported.** ChMS "photo release", "can text", "receive email" flags do not create `TeenConsent`, `Consent`, or `photo_consent`. Imported phones are not opted in (10.4). (Optionally show the ChMS flag to the admin as a hint.)
 - **Do NOT import about children/teens:**
   - medical notes, allergies, medications, special needs (PCO `medical_notes`, CCB `allergies`, check-in notes) — these stay in the ChMS/check-in system; if a church wants them in Fold `care_notes`, a guardian enters them;
@@ -258,16 +251,16 @@ Fold's rules (no accounts under 13; teens need consent; admin confirms every gua
   - a minor's own email/phone (household people have no contact fields in Fold);
   - giving, contribution, or pledge data for anyone (out of scope per 13.3);
   - ChMS privacy settings and custom fields, by default.
-- **Write-back:** never create or update minors in the ChMS from Fold; never push teen consent, contact grants, or Fold messages.
-- **Leaders:** a `source=chms` group roster in Fold still applies DEC-31 (teen badge, no teen contact info), regardless of what the ChMS lets leaders see.
+- **No write-back for anyone**, including adults; never push consent, contact grants or Fold messages (DEC-40).
+- **Leaders:** imported people still follow Fold's contact/badge policy regardless of what the ChMS exposes. Import does not take ownership of Fold group memberships (DEC-40).
 - **Audit:** every import decision about a minor (create, link proposed/confirmed, field skipped) is an `AuditLog` row that is never purged, as 5.3 already requires for minors.
 - **Staging hygiene:** the `Raw` payload is kept only until the proposal is decided, then purged, so ChMS medical fields don't linger in Fold's DB or backups. Better: adapters drop those fields at parse time.
 
 ### 3.6 Which systems first
 
 1. **Generic CSV adapter (with saved column mappings)** — first. It reuses M4.5, covers ChurchTrac (Fold's own reference, closed API), Realm, PowerChurch, Church Windows, and Servant Keeper, and unblocks DEC-15 once a sample export exists. One-way only.
-2. **Planning Center** — first API adapter. People is free, so it's extremely common among small churches [market share unverified]; it has the best API (JSON:API, R/W people and households, webhooks with HMAC, clear rate-limit headers); PAT auth fits single-tenant Fold; group memberships can be pushed (groups cannot be created by API).
-3. **Breeze** — second API adapter. Popular with small churches [unverified], flat price with API included, simple key auth, R/W people/families/tags, and `account/list_log` for incremental pulls. Design around 20 req/min (bulk `details=1` reads, slow batched writes, no webhooks).
+2. **Planning Center** — first API adapter. People is free, so it's extremely common among small churches [market share unverified]; it has the best API (JSON:API, R/W people and households, webhooks with HMAC, clear rate-limit headers); evaluate PAT auth for single-tenant read-only access; Fold never pushes group memberships.
+3. **Breeze** — second API adapter. Popular with small churches [unverified], flat price with API included, simple key auth, R/W people/families/tags, and `account/list_log` for incremental pulls. Design reads around 20 req/min (bulk `details=1`, no documented webhooks).
 
 Next candidates: **ChMeetings** (cheapest, cleanest API: full CRUD, webhooks, 100 req/s — great if Fold churches use it), then **CCB v1**. Skip Realm (no public API), Faithlife (gone), Subsplash (gated/paid), F1 (legacy), Rock (its churches will want Rock as the hub).
 
@@ -275,7 +268,7 @@ Next candidates: **ChMeetings** (cheapest, cleanest API: full CRUD, webhooks, 10
 
 ## 4. Gaps and things to verify before building
 
-- Planning Center: full webhook event list; whether a PAT user can create webhook subscriptions by API; group membership delete/role update; whether third parties may write `remote_id`; Groups pricing tiers.
+- Planning Center: full webhook event list; whether a PAT user can create webhook subscriptions by API; group membership delete/role update; Groups pricing tiers and read-only authentication terms.
 - Breeze: complete list of `list_log` action names (deletions, family changes, tag assignment); any ToS clause on third-party sync; current ownership.
 - CCB/Pushpay v2: rate limits and whether ChMS webhooks exist; whether v1 will be retired.
 - Elvanto: rate limits; webhook signatures; whether the US "Tithe.ly ChMS" has any people API.

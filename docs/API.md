@@ -1,13 +1,14 @@
 # Fold API — v1 contract
 
-Base path: `/api/v1`. All responses are JSON. Keys are camelCase.
-Errors: `{"error": "message"}` with the appropriate status code.
+Base path: `/api/v1`. Responses are JSON unless an endpoint explicitly returns CSV or a feed. Keys are camelCase.
+Errors include `{"error": "message"}` and, for actionable errors, `code`; some include structured details. The SPA uses client-owned wording, never server error text.
 Timestamps are RFC 3339 (`2026-10-06T19:00:00Z`).
 
 ## Auth & CSRF
 
-Cookie sessions (same as Phase 0). Every unsafe request (POST/PUT/DELETE)
-must send the CSRF token as the **`X-CSRF-Token`** header.
+Cookie sessions. Unsafe API requests (POST/PUT/DELETE) must send the CSRF
+token as **`X-CSRF-Token`** (or the `csrf_token` form field). Only explicitly
+registered provider hooks outside this API may be exempt.
 
 ```
 GET /api/v1/auth/csrf            → {csrfToken}   (also sets the session cookie)
@@ -43,7 +44,9 @@ SHA-256, single use, and expire after 24 hours. Confirming sets the password
 (≥ 10 chars), ends every other session, and signs the browser in.
 
 Sign-in is by email in any letter case (`users.email` is `citext`, unique).
-Only an `active` account with a password signs in. Every failure, whether
+Ordinary access requires an `active` account with a password. A teen in
+`pending_consent` may authenticate but gets only the restricted waiting/session
+routes, not ordinary app access (M1.10). Every failure, whether
 the email is unknown, the password is wrong, or the account is invited or
 disabled, answers `401 {"error":"invalid email or password"}` after one
 bcrypt comparison, so the response doesn't reveal whether an account
@@ -362,7 +365,7 @@ status.
 POST /api/v1/groups/:id/join    → 200 {membership}  (auth; idempotent)
 POST /api/v1/groups/:id/leave   → 200 {}            (auth; 400 if you are the only leader)
 POST /api/v1/groups/:id/members → 200 {membership}  (auth; leader or admin)
-     body: {email, overLimit?} — adds that account as a member; a full group
+     body: {selectionId | email, overLimit?} — one target only; teen adds need a separate Ask to add; a full group
      answers 409 {error: "This group is full", full: true} unless overLimit is true (audited)
 DELETE /api/v1/groups/:id/members/:userId → 200 {members: [...]}  (auth; leader or admin; DEC-35)
      body (optional): {note} — kept only in the audit row, never shown to the removed person
@@ -556,7 +559,7 @@ DELETE /api/v1/events/:id/hosts/:userId     → 200 {hosts}   (admin; refuses th
 POST /api/v1/events/:id/cancel              → 200 {}        (leader, host, or admin)
      body: {date: "YYYY-MM-DD"} — cancels that stored date
 PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (leader, host, or admin)
-     body: any of {startsLocal, durationMinutes, location, title} — this date only
+     body: any of {startsLocal, durationMinutes, location, title, capacityOverride, visibility, reason, confirm} — this date only; see Per-date visibility below
 GET  /api/v1/calendar?from=&to=&tz=&mine=1&group=&deleted=1&remote=1&childcare=1
   → {occurrences: [calendarOccurrence], truncated}   (slim rows, no attendance;
      remote=1 keeps only events with remoteAvailable;
@@ -691,7 +694,7 @@ means `startsAt` is strictly after now; a date already underway stays.
 Future dates without a per-date override move onto the new times and keep
 their registrations (same occurrence row). A future date the new rule no
 longer contains is cancelled, and people who registered going or waitlisted
-see a derived notice. A date whose time moves sends `event.changed`
+receive a stored cancellation notification. A date whose time moves sends `event.changed`
 (variant `time`) to going and waitlisted people; a changed event place sends
 `event.changed` (variant `place`) on every future date. Raising the capacity
 promotes waitlisted parties in line order on each future date whose
@@ -700,7 +703,11 @@ including a location-only override, are left alone. Dates the new rule adds
 are inserted. The per-date update (`PUT /events/:id/occurrences/:date`)
 takes `startsLocal?`, `durationMinutes?`, `location?`, `title?`, and
 `capacityOverride?` (number or null, like `capacity`); time or place changes
-fan out `event.changed`, and a raised override promotes.
+fan out `event.changed`, and a raised override promotes. It also accepts the
+per-date visibility contract documented below; a visibility-only override does
+not pin the date's time/place. Series visibility preserves customized dates by
+default, with explicit `resetOverrides` and impact confirmation to clear future
+visibility overrides.
 
 Occurrences are returned in chronological order. `from`/`to` are inclusive
 `YYYY-MM-DD` and at most 366 days apart. Cancelled dates are left out of
@@ -719,7 +726,7 @@ POST /api/v1/events/:id/registrations/remove  → 200 {} | 403 | 404  (leader/ho
 POST /api/v1/events/:id/registrations/promote → 200 {} | 403 | 404 | 409  (leader/host)
   body: {date: "YYYY-MM-DD", registrationId}
 POST /api/v1/events/:id/registrations/add     → 200 {} | 403 | 404 | 409  (leader/host)
-  body: {date: "YYYY-MM-DD", userId? | email? | (personId + registeredBy),
+  body: {date: "YYYY-MM-DD", selectionId | userId | email | (personId + registeredBy),
          guestCount?, childcareRequested?, overCapacity?}
 ```
 
@@ -844,7 +851,7 @@ POST /api/v1/admin/groups/:id/reject-deletion → 200 {}               (admin; c
 DELETE /api/v1/admin/groups/:id            → 200 {}                    (admin; deletes the group)
 GET  /api/v1/admin/groups                  → {groups: [groupSummary]}  (admin; all statuses)
 POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
-     body: {userId, role: "member"|"leader", overLimit?} — role=leader adds a (co-)leader; audited;
+     body: {selectionId | userId, role: "member"|"leader", overLimit?} — one target only; role=leader adds a (co-)leader; audited;
      a full group needs overLimit (audited as membership.added_over_limit)
 DELETE /api/v1/admin/groups/:id/members/:userId → 200 {members}      (admin; same rules as the leader route)
 GET  /api/v1/admin/users                   → {users: [user]}           (admin)
@@ -894,7 +901,7 @@ opt-in before any texts can be sent.
 
 Rosters (`members` in group detail, `GET /groups/:id/members`, admin rosters) include `admin: true` for church admins, so the SPA can label them and hide Remove (DEC-38).
 
-Disabling (DEC-38): the account's memberships and registrations are kept, hidden from rosters, and left out of member counts, registration counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Disabling frees every seat the account held on future dates, promoting waitlisted parties into them. Enabling it again restores them as plain member, writing `membership.restored` per membership and `user.enabled`. Going registrations are restored when they fit; one that would overfill is deleted instead (DEC-47): `registration.not_restored` is written and the person gets an ask-a-leader notice. Waitlisted rows keep their place. In a group at its member limit the membership is dropped instead (DEC-47): `membership.not_restored` (meta `userId`, `count`, `limit`) is written and the person gets a notification ("You're not back in … yet", "Ask a leader to add you.", id `not-restored:<audit id>`, kept 30 days). A leader or admin can add them with `overLimit: true`. Deleting still ends memberships.
+Disabling (DEC-38): the account's memberships and registrations are kept, hidden from rosters, and left out of member counts, registration counts, and leader counts; any leadership becomes plain membership (with `membership.role_changed`, reason `account_disabled`). Disabling frees every seat the account held on future dates, promoting waitlisted parties into them. Enabling it again restores them as plain member, writing `membership.restored` per membership and `user.enabled`. Going registrations are restored when they fit; one that would overfill is deleted instead (DEC-47): `registration.not_restored` is written and the person gets an ask-a-leader notice. Waitlisted rows keep their place. In a group at its member limit the membership is dropped instead (DEC-47): `membership.not_restored` (meta `userId`, `count`, `limit`) is written and the person gets a notification ("You're not back in … yet", "Ask a leader to add you.", stored notification with a numeric ID and standard notification retention). A leader or admin can add them with `overLimit: true`. Deleting still ends memberships.
 
 Removing a member (DEC-35): leaders remove people from groups they lead,
 co-leaders included, but never an admin (they can't demote an admin
@@ -917,21 +924,41 @@ with `reason` `account_deleted` or `account_disabled` and
 `departingUserId`, plus `user.deleted` or `user.disabled`.
 ### Notifications
 
+Stored per-recipient rows, never a derived feed or localStorage dismissal list.
+All routes require ordinary authentication; another user's row returns 404.
+
 ```
-GET /api/v1/notifications → {notifications: [{id, type, title, body, link}]}  (auth)
+GET    /api/v1/notifications?filter=all|unread|waiting|archived&before=<cursor>&limit=20
+       → 200 {waiting, waitingTotal, notifications, next}
+GET    /api/v1/notifications/badge → 200 {unread, waiting} | 304 (ETag)
+POST   /api/v1/notifications/seen {ids: number[]} → 200 {} (at most 100)
+POST   /api/v1/notifications/read-all → 200 {}
+POST   /api/v1/notifications/archive-read → 200 {}
+POST   /api/v1/notifications/:id/read → 200 {notification}
+DELETE /api/v1/notifications/:id/read → 200 {notification}
+POST   /api/v1/notifications/:id/archive → 200 {notification}
+DELETE /api/v1/notifications/:id/archive → 200 {notification}
 ```
 
-`id` names the exact notice and changes when it is about something new
-(e.g. another pending group), so a dismissal never hides a later notice.
-The SPA refetches on sign-in, navigation, window focus and every 5 minutes.
+A notification is `{id, kind, subjectId?, category, title, body, link, actions,
+batchCount, createdAt, updatedAt, read, archived, waiting, resolution?}`. IDs are
+numeric. Resolution is `{outcome, by, byMe, at}`. Feed cursors are opaque; invalid
+filters/cursors return 400. `waiting` is the separate task section, with its
+full count in `waitingTotal`.
 
-Derived, not stored: `approval` (admins, when groups await approval or a
-leader has asked for a group to be deleted), `event` (scheduled occurrences
-in your groups in the next 7 days, max 10, and a notice when a date you
-registered going or maybe is cancelled), and `leadership` (admins: someone else
-made or removed a group leader in the last 14 days, from the audit log). The client tracks dismissed items
-locally. Admin `DELETE /admin/groups/:id` removes a group immediately,
-with or without a deletion request, and whether or not it still has members.
+The badge counts unread ordinary rows plus unresolved waiting rows without
+double counting; opening the panel does not clear it. Read-all leaves waiting
+tasks counted. Seen is reserved for future delivery escalation. Event expiry
+archives rather than deletes. Retention is 90 days for read/archived rows and
+180 for unread rows (DEC-45). Reminders do not create bell rows.
+
+The SPA keeps the feed in memory only and refreshes the badge every 60 seconds
+while visible, on focus/navigation and after actions. Logout clears it. Inline
+actions use domain endpoints, checked against notification ownership, kind and
+subject. Only group approval and eligible clean-adult account requests are
+inline; sensitive requests use navigation and explicit destination decisions.
+Resolved races return structured already-handled details. No contact data or
+hidden-group metadata may enter feed text; sensitive email is names-free.
 
 ### ICS feeds (outside `/api/v1`)
 
@@ -952,8 +979,8 @@ fetch time; a disabled or deleted owner's token answers the same plain
 - `POST` create → `201`; `PUT` update → `200`; `DELETE` → `200 {}`.
 - Auth failures → `401 {"error":"unauthorized"}`; forbidden → `403`.
 - Validation failures → `400 {"error":"..."}`; missing → `404`.
-- Lists are unpaginated in v1 (fine for church scale); add `?page=` later
-  if needed.
+- Pagination is endpoint-specific: notifications and request/history APIs have
+  bounded pages/cursors; ordinary group lists remain unpaginated.
 - Every response carries the app's security headers (`securityHeaders` in
   `main.go`, DEC-37): a `Content-Security-Policy` allowing only same-origin
   scripts, styles, and connections (images may also be `data:`, `blob:`, or
@@ -1231,8 +1258,8 @@ Existing add endpoints accept `selectionId` in place of the legacy target:
   retain `role`, `overLimit` and admin authorization.
 - `POST /events/:id/registrations/add`: `selectionId` instead of `userId`,
   `email` or `personId`; retain `date`, attendance, childcare, guests and explicit
-  `overCapacity`. The selected adult must already be eligible to see/register
-  for the event. No one-date visibility override is implemented here.
+  `overCapacity`. Ordinary selection rechecks adult eligibility. Explicit exact-date invitations
+  use the separate one-date contract below, never a series-visibility override.
 
 Actual manager-initiated ordinary membership additions write `membership.added`
 in the locked membership transaction (including email/admin siblings). Existing
@@ -1524,8 +1551,8 @@ mail runs only after commit.
 ### Final s4 Add contract
 
 Occurrence requests are enabled on the same authenticated `/add-requests`
-routes as group asks. The UI and focused browser proof are implemented; final
-M1.11 acceptance remains pending (see `plan/M1.11-BRIEF.md`).
+routes as group asks. M1.11 was accepted and merged in #122; historical evidence
+is in [M1.11-VERIFICATION.md](plan/M1.11-VERIFICATION.md).
 
 `POST /add-requests` takes an actor-bound `selectionId`, `contextType` (`group`
 or `event`), `contextId`, optional `reason` (1000 characters). Group accepts
@@ -1734,8 +1761,8 @@ offsite storage and retention hardening remain deferred.
 
 The admin history UI/client and focused browser/mobile/accessibility proof are
 implemented and independently reviewed. Local M1.11 acceptance and final
-integrated verification are recorded in `docs/plan/M1.11-BRIEF.md`; publication,
-merge and production deployment are separate.
+integrated verification are recorded in [M1.11-VERIFICATION.md](plan/M1.11-VERIFICATION.md).
+Merged in #122; production deployment is not claimed.
 
 ### Per-date visibility (M1.13)
 

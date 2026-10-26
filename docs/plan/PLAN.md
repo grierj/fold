@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: draft v4, updated 2026-10-09 with Grier's decisions (section 15, DEC-1 to DEC-56; progress synced to merged work on 2026-10-15) and the Wright reviews (`REVIEW.md`, including its final review), for Grier (owner) and for AI coding agents.
-Repo: https://github.com/grierj/fold (first read at commit `aa992e2`; re-checked at `e7c0e8f`, "Merge pull request #7 from grierj/admin-invite-and-rename", merged 2026-10-09 4:31 PM MT).
+Status: active product plan, reconciled against merged work through `1a3f077` (2026-10-25), including M1.11 (#122) and M1.13 (#123). Decisions run through DEC-83. This is not a production-readiness or fresh test-run claim.
+Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
-- People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions (nothing is open).
-- Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Do one milestone per work session and one PR per milestone. Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, tagged DEC-1 to DEC-56) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
+- Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
+- Precedence: Grier's decisions (section 15, through DEC-83; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -18,7 +18,7 @@ How to use this document:
 1. Goals and non-goals
 2. Grier's requirements (traceability)
 3. The current repo and what to keep
-4. Recommended changes to the skeleton (and why)
+4. Architecture change index
 5. Architecture
 6. Permissions matrix
 7. Messaging pipeline
@@ -29,7 +29,7 @@ How to use this document:
 12. Third-party services and hosting
 13. Extra features from research
 14. Phased roadmap and milestones
-15. Decisions (Oct 9, 2026) and remaining open questions
+15. Decisions and remaining open questions
 16. Appendix A: AGENTS.md "Deployment" section outline
 17. Appendix B: Sources and unverified facts
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (DEC-1 to DEC-56) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-83) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -103,39 +103,20 @@ The decisions in section 15 (DEC-1 to DEC-56) refine these requirements. Where a
 
 ### 3.1 What is there today
 
-The skeleton is a working, tested app built in PRs #1 to #6 (all merged 2026-10-06/07). It is about 10,000 lines. PR #7 (merged 2026-10-09) renamed the app to `fold` and lets admins see invite-only groups; see 3.4.
+Merged through Oct 25, 2026 (see STATUS for PRs):
 
-Stack:
-
-- Go 1.25 (`go.mod` says `go 1.25.0`; the README still says "Go 1.24+" at `e7c0e8f`, which is stale). Gin for HTTP, GORM for data.
-- Postgres 16 in production (`DATABASE_URL` is required unless `APP_ENV=dev`). SQLite in dev and tests through the pure-Go `glebarez/sqlite` driver, so no CGO. The plan removes SQLite entirely (DEC-1, DEC-24, C14).
-- React 18 + Vite 6 + Tailwind 3 + React Router 7 single-page app in `web/`. It builds to `web/dist` and is embedded in the Go binary with `go:embed`. `web/package.json` has only `build`, `dev`, and `preview` scripts: there is no frontend test runner and no Playwright yet (M0.4 adds them).
-- `teambition/rrule-go` for recurrence. `gorilla/sessions` cookie sessions, bcrypt passwords, hand-rolled synchronizer CSRF (`csrf.go`), applied globally (`main.go:147-148`).
-- Accounts log in by **username** (`api_auth.go`: `WHERE username = ?`, throttled by username). `models.User` has `Username` (unique, not null), `Password` (not null), and `Email` (defaults to `""`). DEC-23 replaces this with email login (M0.3).
-- `main.go:129` calls `SetTrustedProxies(nil)`, so behind Caddy every request's client IP is Caddy's. M0.1 fixes this.
-- `LoadConfig()` runs before subcommand dispatch (`main.go:48`), so every subcommand needs the full production config.
-- Docker: multi-stage build (node, then go, then distroless static nonroot). `docker-compose.yml` runs `db` (postgres:16-alpine), `app`, and `caddy` (caddy:2-alpine, automatic HTTPS). Named volumes `pgdata`, `uploads` (mounted at `/data`), `caddydata`, `caddyconfig`. There is no Makefile.
-- GitHub Actions: `go test ./...` on SQLite and on Postgres 16, plus `npm ci && npm run build`. (The SQLite job goes away in M0.1.)
-- MIT license, copyright Grier Johnson.
-
-Layout (flat `package main` at the root):
-
-- `main.go`: wiring, first-run setup page (server-rendered `templates/setup.html`), SPA serving, `/healthz`, `healthcheck` subcommand.
-- `api.go`, `api_auth.go`, `api_groups.go`, `api_meetings.go`, `api_profile.go`, `api_admin.go`, `api_notifications.go`: JSON API under `/api/v1`.
-- Module and binary named `fold` since PR #7 (they were `church-groups`).
-- `models/models.go`: `User`, `Group`, `Meeting`, `MeetingException`, `Membership`, `RSVP`, `Setting`.
-- `storage/storage.go`: a `Store` interface with `LocalStore`. Its comments describe an S3 seam.
-- `docs/API.md`: the API contract.
-- Tests (at the time): `auth_test.go`, `behavior_test.go`, `admin_test.go`, `profile_test.go`, `storage/storage_test.go`. Since Oct 2026 tests sit next to their source (`X_test.go` beside `X.go`; see AGENTS.md).
-
-Features already built:
-
-- Local accounts. Admins create users. There is no self-signup and no password reset by email.
-- Groups with a `pending` approval workflow. Visibility is `public` or `private`, plus an `InviteOnly` bool that is only valid on private groups. Tags, cover image with focal point, leader transfer, deletion requests.
-- Meetings belong to a group, with an optional RRULE. Single instances can be cancelled with `MeetingException`. Per-instance RSVPs (going / maybe / declined), addressed by `(meetingId, date)`.
-- Profiles with avatar upload (upload-only; no fetch-from-URL, per the Oct 14 decision), focal points, and client-side image compression.
-- Admin panel: pending groups, deletion requests, users, memberships.
-- Derived notifications (not stored), dismissed in the browser's localStorage. Logout clears that storage, so dismissals reset on the next sign-in. M1.1c replaced them with stored notifications built in Fold, with dismissal (`archived_at`) and read state kept per user on the server (5.12, DEC-42).
+- Go language minimum 1.26, toolchain pinned in `go.mod` (currently 1.27.3); Gin, GORM, PostgreSQL 16 everywhere, `DATABASE_URL` required in every environment, `CGO_ENABLED=0`.
+- React 19, Vite 8, Tailwind 4 and React Router 7. Node major comes from `.nvmrc`. `web/dist` is embedded in the Go binary. Vitest, Playwright, accessibility/layout checks, contrast and bundle budgets are installed.
+- Cookie sessions, bcrypt, email login, Postgres login throttles, synchronizer CSRF, trusted-proxy configuration and security headers. Stateless-cookie logout limitations remain accepted (DEC-41).
+- Docker Compose runs app, Postgres and Caddy, with `pgdata`, `uploads` (mounted at `/data`, files in `/data/uploads`), `caddydata` and `caddyconfig`. The image is distroless/nonroot. `Makefile` owns development, test and lint commands.
+- Root `package main` contains HTTP handlers and wiring; domain logic is under `internal/`, models in `models/`, and embedded goose SQL in `migrations/` owns the schema. Tests sit beside source. MIT license, copyright Grier Johnson.
+- Groups have `public|private|invite_only` visibility, approval, membership-based co-leaders, limits, removal and sole-leader handoff.
+- Events have wall-clock recurrence, stored occurrences, church-wide hosts, waitlists, remote attendance, childcare, calendar views and ICS feeds. Series and per-date visibility are separate; date access never grants series or hidden-group access.
+- Invitations, account requests, password reset, verified email changes and verified guest registration use the minimal SMTP/devoutbox sender.
+- Notifications are stored per user, with server-side read/archive state and post-commit email, not derived or dismissed in localStorage.
+- Households, approval-first conversion, teen consent, guardian checks and church-local birthdays are implemented (DEC-79–DEC-83).
+- Contact privacy, explicit audited reveals, name search, purpose-separated Ask to add, exact-date invitations and retained admin history/CSV are implemented. The narrow exact-date prerequisite does not complete M1.14.
+- Avatars and covers are upload-only through `storage.Store`. UI controls use role tokens and shared components (DEC-60–DEC-66).
 
 ### 3.2 Goals already written in the repo
 
@@ -144,12 +125,12 @@ From `AGENTS.md` and `README.md`:
 - "Deployment simplicity is the top concern." Always one Go binary that serves the API and the SPA. No separate frontend hosting.
 - Single-tenant; "SaaS" means many single-tenant deployments. No multi-tenant data model.
 - No Python, ever. Shell or Go for tooling.
-- Postgres-only features go behind flags so SQLite dev keeps working. **Superseded by DEC-1 and DEC-24**: PostgreSQL everywhere, so no flags are needed.
+- PostgreSQL everywhere (DEC-1, DEC-24); no alternate-database flags.
 - OIDC (Microsoft Entra ID and Google) later, behind an `AuthProvider` seam.
 - The group approval workflow is core and must survive refactors.
 - Meetup is the primary UI and design reference, and ChurchTrac is the secondary one (Grier, Oct 10, 2026).
-- SMS is a hard requirement for "Phase 2". It should sit behind a `Notifier` interface in `internal/notify/`, broadcast-only in v1, with replies routed to the group leader. **Corrected**: the line "Group SMS via Twilio is a hard requirement" (still in `AGENTS.md` at `e7c0e8f`) was a mistake. SMS goes through provider adapters with Telnyx as the default and Twilio as the second adapter, none required (C13).
-- Versioned SQL migrations in `migrations/` once the first destructive change is needed. **Now** (C1): a clean baseline in M0.1.
+- SMS is future Phase 3 messaging work: provider adapters, Telnyx first and Twilio second, neither required to run Fold. Replies relay through Fold (7.8).
+- Versioned SQL migrations in `migrations/` have been authoritative since M0.1.
 
 ### 3.3 Keep
 
@@ -169,38 +150,17 @@ These match Grier's requirements and stay unless a milestone says otherwise. Und
 
 **Stack note (DEC-22).** Language and frameworks are open, as long as the choice is not Python and stays very simple to deploy. Go + Gin + GORM + React is kept by default: it is one static binary, the skeleton already works, and nothing clearly better and simpler exists for this shape of app. One alternative is worth knowing: `sqlc` + `pgx` (SQL-first, generated Go) would fit a Postgres-heavy schema (ranges, exclusion constraints, `SKIP LOCKED`) better than an ORM. It is not worth the churn now. GORM stays for simple CRUD; hand-written SQL through GORM's `Raw`/`Exec` is fine for Postgres-specific queries, and goose migrations (not GORM tags) own the schema (C1).
 
-### 3.4 Repo items that conflict with Grier's requirements (status at `e7c0e8f`)
+### 3.4 Remaining work, not installed functionality
 
-| Item | Status | Fixed by |
-|---|---|---|
-| Admins could open invite-only groups by id but did not see them in lists | **Fixed upstream** in PR #7 (merged 2026-10-09): admins now see every group (DEC-5) | done; M0.2 keeps it under policy tests |
-| Name `church-groups` (module, binary, image paths, DB name, cookie) | **Fixed upstream** in PR #7 (DEC-12) | done; nothing to upgrade (DEC-22) |
-| `AGENTS.md`: "Group SMS via Twilio is a hard requirement" | Still present; Grier confirmed it was a mistake | C13, M0.1 |
-| README says Go 1.24+; `go.mod` says 1.25.0 | Still present | C13, M0.1 |
-| SQLite dev and test path (`glebarez/sqlite`, `SQLITE_PATH` in the production Dockerfile, AGENTS.md test rules) | Conflicts with DEC-1 and DEC-24 | C14, M0.1 |
-| Login by username; `Email` defaults to `""`; `Password` is required | Conflicts with DEC-23 | C16, M0.3 |
-| `SetTrustedProxies(nil)`: every client IP is Caddy's, so per-IP throttling cannot work | Open | C17, M0.1 |
-| Global CSRF middleware would reject provider webhooks and RFC 8058 one-click unsubscribe POSTs | Open | C17, M0.1 |
-| `LoadConfig()` before dispatch: `fold version` needs `SESSION_SECRET` | Open | C11, M0.1 |
-| No email: no invites, password reset, guest or self-signup; admins create every user | Open | C6, C15, M1.2, M1.3 |
-| Visibility is a bool pair, and only on groups | Open | C3, M0.2 |
-| Leadership is checked through `Group.LeaderID` (about 16 places, for example `api_groups.go:543`) | Open | C12, M0.2 |
-| Meetings must belong to a group (no church-wide events) | Open | C4, M1.1b |
-| Recurrence expanded in UTC (wrong times across DST) | Open | C2, M1.1a |
-| All uploads are public | Open | C9, M4.7 |
-| Compose builds the image on the VPS | Open | C10, M5.1 |
-| Backups are manual `pg_dump` only | Open | M5.2 |
-| Setup asks only for the site name and admin | Open | M4.2 to M4.6 |
-| Config is env-only | Open | C8, M4.1 |
-| No frontend tests (`npm test` does not exist) | Resolved: Vitest and Playwright | M0.4 |
+M1.14 remains partial. Rooms, jobs, messaging relay/composer, scheduled reminders, SMS, notification preferences/digests, encrypted provider settings, SPA setup/CLI, CSV import, admin TOTP and private assets/S3 are future work. Published release images, the portable backup container and the pre-migration backup gate also remain future work. The DigitalOcean guide already has host-cron backups and upgrade scripts; that is not completion of M5.1–M5.4.
 
-There is nothing to upgrade from: PR #7's database and cookie renames need no upgrade note, because no church runs Fold (DEC-22). `docs/UPGRADING.md` starts with the first release churches can run (v0.5).
+Sections 5–13 describe the target design as well as current behavior. Future tables, endpoints and commands there are not an installed API. Use `docs/API.md` for shipped HTTP behavior and `docs/DEPLOY-DIGITALOCEAN.md` for runnable deployment instructions. Known gaps and unresolved product conflicts are in [DOCUMENTATION-REVIEW.md](DOCUMENTATION-REVIEW.md).
 
 ---
 
-## 4. Recommended changes to the skeleton (and why)
+## 4. Architecture change index
 
-These are the main places this plan departs from the skeleton. Each one has a milestone. Under the clean break (DEC-22), none of them needs a data migration or a fixture test for old data.
+Stable C-identifiers connect architectural rationale to milestones. Foundation changes are largely complete (section 3 and STATUS); this table is not a fresh task list. DEC-22 permits a pre-live clean break; the later expand/contract rule in 14.1 governs live changes.
 
 | # | Change | Why | Milestone |
 |---|---|---|---|
@@ -315,9 +275,9 @@ The field lists show the important columns, not every column. Every table has `i
   - `account_type`: `adult|teen`. Nobody under 13 gets a `User` row (DEC-8).
   - `birth_date`: required for teens, so Fold knows when they turn 18. Adults only confirm "I am 18 or older"; their birth date is optional.
   - `timezone`: nullable IANA zone for SMS send windows (DEC-9, DEC-25). If empty, Fold uses the church time zone.
-  - `login_enabled` (bool), `email_verified_at`, `phone_verified_at` (set only after the SMS ownership check, 7.4), `session_version` (bumped to end other sessions, 10.1), `pending_email` and `pending_email_token_hash` (during a verified email change, 10.1), `totp_secret_enc` and `totp_enabled_at` (admins, M4.9), `directory_prefs_json` (later).
+  - `email_verified_at`, `session_version` (bumped to end other sessions, 10.1), `pending_email` and its verification-token fields. Future: `phone_verified_at` (SMS ownership, 7.4), `totp_secret_enc` and `totp_enabled_at` (M4.9), directory preferences. There is no separate `login_enabled` column; account status, password and consent determine access.
   - `hide_contact_from_leaders` (bool, default false; adults only, DEC-31). Teens are always hidden from leaders and hosts, whatever this says (5.11).
-  - Sign-in requires `status=active`, `login_enabled=true`, and a password hash. Guests are `status=guest, login_enabled=false`; a guest who signs up again with the same email merges into the same row.
+  - Ordinary sign-in requires an active account and a password. A pending-consent teen with a password may authenticate only to the restricted waiting/session routes (M1.10). Guests cannot sign in; an approved upgrade reuses their row.
   - There is no `username` column (DEC-23).
 - `AccountRequest(name, email, phone, account_type, birth_date?, message, source self_signup|member_invite|guest_upgrade, requested_by?, group_id?, status pending|approved|rejected|expired|withdrawn, decided_by, decided_at, decision_note, expires_at)`. Only admins approve. Approval creates or upgrades the `User` and emails a set-password link. Requests expire after 30 days (DEC-4). A request for an email that already has an account gets the same on-screen answer as any other request ("Thanks; check your email"), and the email says "you already have an account; sign in or reset your password". The form never reveals whether an email is registered (10.1).
 - `Invitation(email, phone, invited_by, role, account_type, group_id?, token_hash, expires_at, accepted_at)`. Created only by admins and leaders. A leader's invitation may name only a group they lead. Accepting creates an active account with no admin approval, except that a teen account starts `pending_consent` (DEC-4, DEC-8). A leader may send at most 20 invitations a day (default, set by admins; 10.1).
@@ -328,20 +288,20 @@ The field lists show the important columns, not every column. Every table has `i
   - `child`: under 13. Children never have accounts.
   - `teen`: 13 to 17 without their own email; registered by a guardian.
   - `adult`: an adult who shares the account holder's email, for example a spouse (5.10).
-  - `care_notes` (allergies, medical, custody notes) are visible only as section 6 allows. A `HouseholdPerson` can later be turned into their own account once they have their own email (an admin or the account holder starts it; registrations move with them). For a teen, the new account's guardian link still needs admin approval (DEC-32).
+  - `care_notes` (allergies, medical, custody notes) are visible only as section 6 allows. A `HouseholdPerson` can later be turned into their own account using an invitation and admin-approved account request (DEC-82). Acceptance alone creates no account and moves nothing. Adult approval transfers registrations atomically. Teen approval stages an account; transfer waits for account consent and a newly confirmed link to an original household guardian (M1.10, DEC-83).
 - `GuardianLink(guardian_user_id, teen_user_id?, person_id?, status pending|confirmed|rejected|revoked, confirmed_by, check_note, created_at)`. Exactly one of `teen_user_id` or `person_id` is set. Every link to a teen or child starts `pending`, and only an admin can confirm it (DEC-32). That covers a guardian adding a child or teen household person, turning a household teen into an account, a teen naming a guardian at self-signup, and anyone claiming an existing teen. There is no auto-confirm path. The confirming admin writes how they checked in `check_note` (for example "known family; parent came to the office"). Until a link is confirmed, the adult can't grant consent, register the child or teen, or get copies, and leaders see nothing about the person. Adding a teen account to a `HouseholdAccount` follows the same rule. Adult household people need no approval.
 - `TeenConsent(teen_user_id, scope account|sms|photos, status granted|revoked, granted_by, granter_role guardian|admin, evidence_text, at)`. Append-only; the latest row per `(teen, scope)` wins. `account` consent turns a teen from `pending_consent` to `active`. `evidence_text` is required when an admin grants, for example "paper consent form on file, signed 2026-10-12". The daily age job turns teens into adults on their 18th birthday and keeps the consent history.
 
 **Groups**
 
 - `Group`: `visibility` (`public|private|invite_only`; replaces `Visibility` + `InviteOnly`), `status` (`pending|active|archived`), `leader_id` (displayed primary contact only; never used for permissions, C12), `category` (from a short admin-defined list, for example "Small group", "Ministry", "Class", "Youth"). `member_limit` (nullable positive int; null, the default, means unlimited; set by the group's leaders or an admin; DEC-39, 5.4). Joining: any member who can see a public or private group may join it at once; invite-only groups are joined only by invitation. There is no join-request step; leaders remove members who shouldn't be there (DEC-30). There is no teen restriction on groups (DEC-20).
-- `Membership`: `role` = `leader|member`; several leaders allowed; this is the only source of leadership. `status` = `active|invited|removed`. `removed` means a leader or admin removed the person (DEC-35): they can't rejoin on their own until a leader or admin adds them back, and the removal is in the `AuditLog`. A disabled account keeps its `active` memberships, hidden and uncounted, with any leadership handed off (DEC-38). When an account is re-enabled and a group is at its `member_limit`, that membership is dropped and the person is told to ask a leader (DEC-47); there is no `pending_return` status. A teen account can never have `role=leader` (DEC-18).
+- `Membership`: `role` = `leader|member`; several leaders allowed; this is the only source of leadership. `status` = `active|removed`. `removed` means a leader or admin removed the person (DEC-35): they can't rejoin on their own until a leader or admin adds them back, and the removal is in the `AuditLog`. A disabled account keeps its `active` memberships, hidden and uncounted, with any leadership handed off (DEC-38). When an account is re-enabled and a group is at its `member_limit`, that membership is dropped and the person is told to ask a leader (DEC-47); there is no `pending_return` status. A teen account can never have `role=leader` (DEC-18).
 
 **Events**
 
 - `Event` (renamed from `Meeting`):
   - `group_id` (nullable; null = a church-wide event, created only by admins and run by its assigned hosts, see `EventHost`; DEC-7)
-  - `title`, `description_html` (sanitized), `category` (same list as groups; used by room suggestions)
+  - `title`, `description` (plain text, at most 5000 characters); future `category` (same list as groups; used by room suggestions). Rich text belongs to the messaging composer, not event descriptions.
   - `visibility` (`public|private|invite_only`), the event's own value, copied from the group when the event is created (DEC-48), and `leader_opened` (bool), set when a leader or admin made the event wider than its group. There is no live link to the group: making the group more open never changes its events. Making the group more private tightens, in the same transaction, every event more open than the new value that isn't `leader_opened` (one audit row each), and cancels and notifies registrants who can no longer see it; each `leader_opened` event wider than the new value is shown to the leader before saving, to keep open (a logged override) or tighten (DEC-6, DEC-17, DEC-48):
     - A leader of the event's group, or an admin, may set any of the three values on a group event. For example, an invite-only group's event can be made `private` (all signed-in members) or `public`.
     - A change that makes the event more open than its group writes an `AuditLog` row `event.visibility_override` (old value, new value, group visibility, optional `visibility_reason`; a reason is never required, DEC-28) and notifies the group's other leaders and the admins. Going back to the group's value or to a stricter value is also audited and clears `leader_opened`.
@@ -381,7 +341,7 @@ The field lists show the important columns, not every column. Every table has `i
 **Contact privacy (DEC-31, 5.11, 7.8)**
 
 - `ContactRequest(requester_id, subject_user_id, context_type group|event, context_id, fields email|phone|both, reason?, needs_admin, subject_decision pending|approved|denied, subject_decided_at, admin_decision pending|approved|denied|not_needed, admin_decided_by, admin_decided_at, status pending|granted|denied|withdrawn|expired, expires_at)`. `needs_admin` is true for teens. Requests expire after 14 days.
-- `ContactGrant(request_id, leader_id, subject_user_id, context_type, context_id, fields, granted_at, ended_at, end_reason revoked_by_subject|revoked_by_admin|revoked_by_guardian|left_role|turned_18|account_disabled, ended_by)`. A grant is active while `ended_at` is null.
+- `ContactGrant(request_id, leader_id, subject_user_id, context_type, context_id, fields, granted_at, ended_at, end_reason revoked_by_subject|revoked_by_admin|revoked_by_guardian|left_role|turned_18|account_disabled, ended_by)`. A grant needs both an unended row and current lifecycle authority; null `ended_at` alone never grants access.
 - `Conversation(context_type group|event, context_id, created_by, relay_token_hash, closed_at)`, `ConversationParticipant(conversation_id, user_id)`, and `ConversationMessage(conversation_id, author_id, channel in_app|email|sms, body_text, inbound_message_id?, at)` (from M3.11).
 
 **Notifications (5.12, DEC-42; from M1.1c)**
@@ -412,19 +372,21 @@ The field lists show the important columns, not every column. Every table has `i
 
 ### 5.4 Capacity and waitlist rules
 
-- Capacity counts `going` registrations plus their `guest_count`, per occurrence. `maybe` does not take a slot. If `remote_capacity` is set, remote registrations count against it separately (Meetup does the same for hybrid events).
+- Capacity counts `going` registrations plus their `guest_count`, per occurrence and attendance pool. `capacity` limits in-person parties; `remote_capacity` limits remote parties when remote attendance is on (null means unlimited). Each named household person uses one seat; do not count them again as unnamed guests. `maybe` takes no seat. One waitlist remembers each party's mode; switching pools starts a fresh wait in the new pool.
 - A new "going" on a full event becomes `waitlisted` with `waitlisted_at = now` if the waitlist is on. Otherwise it is refused with 409 and a clear message.
 - Promotion runs in one transaction that locks the occurrence row (`SELECT ... FOR UPDATE`). It runs when a `going` registration is cancelled or declined, when capacity goes up, or when an admin removes someone. It promotes the earliest waitlisted registrations that fit. A registration with guests that does not fit is skipped, and the next one is tried (Meetup does this too).
+- Childcare-aware promotion (DEC-80): each picked party must fit both its attendance pool and remaining childcare. Skip a request that does not fit without losing its request, age note or queue time; earlier picks consume childcare in the same pass. Manual promotion refuses with `childcare_full` when care does not fit. Retry when attendance/care is freed or limits grow/clear; there is no separate childcare waitlist. Named in-person children request one spot explicitly; unnamed requests remain separate.
 - No auto-promotion within 2 hours of the start (a fixed rule, not a setting). The leader gets a notice instead, and promotion is one click.
 - A promoted person gets a transactional email (and an SMS if they opted in) with a one-click "I can't come" link that frees the slot again.
 - People see their waitlist position ("You are #3 on the waitlist").
 - Disabled accounts (DEC-38): their registrations stay but never take a slot or count in waitlist math or attendee counts. On re-enable each comes back as it was if it fits; otherwise it is left out (the registration is dropped, audited) and the person gets a notice to ask a leader or host (DEC-47). A leader, host, or admin can then add them back, over capacity only as an explicit choice.
 - Group member limit (DEC-39). Groups have no waitlist and no registration capacity: an optional `Group.member_limit` caps active memberships (a class in a room). Only `active` memberships of accounts that aren't disabled or deleted count, leaders included; `invited`, `removed`, and disabled accounts don't. Self-join into a full group is refused with 409 "This group is full". A leader or admin adds someone over the limit only by explicit choice (the API takes `overLimit: true`, the SPA confirms first), and that add is audited (`membership.added_over_limit`). Accepting a leader's or admin's invitation into a group follows the same rule as that leader's add. Lowering the limit below the current count is allowed; nobody is removed, and joins stay blocked until the count is below the limit. Leaders and admins see "count of limit". Every join, add, and restore locks the group row (`SELECT ... FOR UPDATE`) before counting.
-- There is no sign-up approval step (DEC-30). Anyone who can see an event may sign up. A leader or host can remove (prune) any registration with an optional note; the person is told, and the freed slot triggers promotion (DEC-20).
+- There is no self-sign-up approval step (DEC-30); eligibility still includes consent, age, visibility and prior-removal rules. Manager-initiated teen adds instead require the teen and an admin to approve (DEC-78). A leader or host can prune registrations. Promotion on ordinary seat-only pruning remains a documented implementation gap; explicit-date invitation removal promotes (see DOCUMENTATION-REVIEW.md).
+- M1.14 owns join/leave previews and upcoming-registration cleanup (DEC-74), the standing-invite/own-scope model (DEC-72/73), and series answers. Only its purpose-separated one-date invitation prerequisite is already implemented in M1.11.
 
 ### 5.5 Background jobs
 
-- Until M3.1, the few periodic tasks (occurrence extension, age rollover, token cleanup, request expiry) run from one in-process daily ticker guarded by a Postgres advisory lock. There is no jobs table yet.
+- Until M3.1, periodic work stays in-process and advisory-locked, without a jobs table. Occurrence extension, token/request cleanup and contact lifecycle sweeps use the existing startup/daily path. Birthdays run at startup and each church-local midnight (DEC-83), not a fixed UTC or 24-hour age timer.
 - From M3.1, a `jobs` table and worker live in the same binary. The worker starts with `serve`. `FOLD_WORKERS=0` turns it off, for debugging only.
 - Job kinds: `occurrences.extend`, `message.send`, `message.deliver_batch`, `reminder.schedule`, `waitlist.notify`, `webhook.process`, `provider.poll_status` (for example SMS registration or email domain verification), `cleanup.tokens`, `accounts.expire_requests`, `contact.expire_requests` and `contact.end_grants` (a daily sweep; role changes also end grants at once, 5.11), `accounts.age_rollover` (teens turn into adults at 18; household children who turn 13 are flagged to their guardians), `notification.deliver` (5.12; `notification.digest` later, M6.16), and `notifications.cleanup` (daily: auto-archives event items whose occurrence has ended, and applies retention, 5.12). Until M3.1, the notification cleanup runs on the daily ticker.
 - The worker claims jobs with `FOR UPDATE SKIP LOCKED` and polls every 1 to 2 seconds (`FOLD_JOB_POLL=1s`). There is no `LISTEN/NOTIFY`.
@@ -507,7 +469,7 @@ Rules for adapters:
 
 - Default is link-out. A leader pastes a Zoom, Meet, Teams, or other URL, or clicks "Generate Jitsi link", which makes `https://<jitsi_domain>/<church-slug>-<12 random characters>` with no API call.
 - `video_reveal=registered_only` (the default) shows the link only to people registered `going`, plus leaders and admins. For public events this keeps uninvited people out of the call.
-- The link appears in reminders, on the event page, and in personal ICS feeds. It is left out of public feeds when the setting is `registered_only`.
+- The link appears on the event page and in eligible email/feed output; scheduled reminders are future M3.6/M3.8 work. Personal ICS alone also reveals `registered_only` links for Maybe, and unanswered dates of a group member or host (DEC-70). Waitlisted, declined, cancelled, removed and unanswered outsiders get no such link. API/email remain going-only apart from managers; public/group feeds include only `always`. An unchanged recurring feed entry may carry a qualifying date's link across the series (accepted DEC-70 limitation). Visibility-customized dates export standalone (M1.13).
 - Embedding video inside Fold is out of scope for now (DEC-16). Revisit in a later revision of this plan if churches ask for it. Embedded meet.jit.si calls are reportedly limited to 5 minutes, and JaaS and self-hosted Jitsi cost money or a second server (12.4).
 - Later: a Zoom adapter that creates meetings by API, and a Google Meet adapter (needs Google Workspace; not verified).
 
@@ -549,7 +511,11 @@ The age gate is on every door, and on the guest registration form for public eve
 - Email reaches them after `account` consent. SMS reaches them only with both `TeenConsent` scope `sms` and their own SMS opt-in.
 - **Guardian copies** (DEC-19): off by default. An admin can turn on the church setting `guardian_copies`. Then each confirmed guardian gets an email copy of every non-transactional email and SMS sent to their teen, marked "Copy: sent to <teen> because your church sends guardian copies". Copies go by email only, never by SMS, because texts cost money (DEC-29). Turning it on or off is audited, and the privacy page says which way it is set.
 
-**Household people** (no login): children under 13, teens without their own email, and adults who share an email with the account holder. The account holder registers them and receives every message about them. They are never messaged directly. Adding a child or teen, or turning a household teen into an account, waits for an admin to confirm the guardian link (DEC-32); adding an adult does not.
+**Household people** (no login): children under 13, teens without their own email, and adults sharing an email. Any adult account in the household can manage it; `registered_by` remains the original responsible account, not the last editor. Notices about named registrations go to that holder. GET never creates a household; the first PUT or person-add POST does. Children/teens need an admin-confirmed guardian link (DEC-32/79); adults need no link approval.
+
+**Age and care rules (DEC-81/83):** registration needs birth-date evidence, including for adults. A teen under 13 or child/teen aged 18+ is refused. A saved child aged 13–17 stays eligible until the household edits the kind; the midnight job sends one review notice, not a forced kind change. Ages use the church-local date. Event care-note access requires a going child on a scheduled date inside the inclusive 24-hour-before/after window. Pending household adults may submit notes but cannot read them back.
+
+**Conversion (DEC-82/83):** invitation acceptance stores a pending account request and held password hash, not an account or transfer. Adult approval creates the account and transfers every registration atomically. Teen approval creates a staged pending-consent account; the household keeps managing sign-ups until consent and a newly confirmed teen-account link to an original household guardian are both ready. Independent suspension delays transfer; an inactive original holder defers the entire staged rollover. No memberships move, and transfer preserves registration IDs, answers and queue history without rechecking event access or capacity. See M1.10 and docs/API.md for staging and birthday behavior.
 
 **Shared emails** (DEC-23). Some members, often older couples, share one email address. Fold allows one account per email, so:
 
@@ -570,12 +536,12 @@ Guidance for church staff (in `docs/DEPLOY.md` and the admin help page): import 
 
 ### 5.11 Contact privacy: Fold as the contact proxy (DEC-31)
 
-Leaders, co-leaders, and hosts reach teens through Fold, never directly. Adults choose.
+Contact privacy, requests and audited reveals are implemented in M1.11. The general email/SMS/in-app relay described here is future M3.11 work, not an installed messaging feature. Leaders, co-leaders and hosts must use that relay to reach teens unless explicitly granted direct contact; adults choose their contact preference.
 
 - **Teens**: a leader or host never sees a teen's email address or phone number. They reach the teen with Fold email, Fold SMS (with the teen's consents, 7.4), or an in-app one-to-one message (7.8). Admins, the teen's confirmed guardians, and the teen still see it.
 - **Adults**: the profile setting "Hide my contact info from group leaders" (`hide_contact_from_leaders`) is **off by default**, so leaders see adult members' email and phone as before (10.2). When it's on, leaders and hosts reach that adult only through Fold.
 - **Asking for direct contact**: on a hidden person's card, a leader or host clicks "Request direct contact", picks email, phone, or both, and may add a reason. Leaders can ask only about people in their own groups, and hosts only about registrants of their own events.
-  - Hidden adult: the adult alone approves or declines, in the app or from an email link.
+  - Hidden adult: the adult alone approves or declines in the app. Sensitive email links only navigate; opening one never approves or reveals contact.
   - Teen: an admin **and** the teen must both approve (DEC-31). Either one declining ends the request. A confirmed guardian gets a notice when a grant is made and sees active grants on the teen's page.
   - A request with no decision expires after 14 days. A leader can have at most 10 open requests (defaults).
 - **Grants**: an approved request creates a `ContactGrant` for that leader, that person, and that group or event. Every time the leader opens the revealed details, Fold writes a `contact.reveal` audit row.
@@ -587,9 +553,9 @@ Leaders, co-leaders, and hosts reach teens through Fold, never directly. Adults 
 
 ### 5.12 Notifications (DEC-42, DEC-43)
 
-Fold builds its notifications itself: no vendor and no new service (DEC-42). Knock (knock.app) is the **UX reference only**: separate unread, read, and archived states, "Mark all as read", archive with ×, batching, at most two inline buttons, and a category × channel preferences grid. Knock and Novu were researched and rejected as add-ons. Knock is closed SaaS that would need an account per church, would duplicate Fold's consent and send-window rules, and would add `connect-src` origins. Novu needs MongoDB, Redis and four services. Research and the designer's guidelines: [`research/notifications.md`](research/notifications.md) (Quill's sections 0–5 and Illuminator's section 6). Section 6 of that file is the UI spec for the bell, the panel, the `/notifications` page and the settings page. Grier answered its product questions (6.14) in DEC-44. Where the research file and this section differ, this section wins.
+Fold builds its notifications itself: no vendor and no new service (DEC-42). Knock (knock.app) is the **UX reference only**: separate unread, read, and archived states, "Mark all as read", archive with ×, batching, at most two inline buttons, and a category × channel preferences grid. Knock and Novu were researched and rejected as add-ons. Knock is closed SaaS that would need an account per church, would duplicate Fold's consent and send-window rules, and would add `connect-src` origins. Novu needs MongoDB, Redis and four services. The consolidated UX reference is [`research/notifications.md`](research/notifications.md). DEC-44/45 settle badge, delivery, preferences and retention; DEC-60–DEC-66 replace the original visual styling. This section owns product rules; docs/API.md owns the shipped HTTP contract.
 
-**Shape.** Notifications are stored, not derived, with one row per recipient (fan-out on write). The same code path that writes the `AuditLog` row calls `notify.Send(ctx, tx, kind, recipients, subject, data)` inside its transaction. `internal/notify` holds a **kind registry in Go**, not in the database: `Kind{Key, Category, Required, BatchWindow, AllowEmail, AllowSMS, Actions, Render, RenderEmailSafe}`. Title, body, and link are rendered when the row is written, so later edits don't rewrite history. Tables are listed in 5.3: `notifications` and `notification_deliveries`. A third table, the digest settings `notification_settings`, waits for digests (M6.16, DEC-44).
+**Shape.** Notifications are stored, not derived, with one row per recipient (fan-out on write). The same code path that writes the `AuditLog` row calls `notify.Send(tx, notify.Msg{...})` inside its transaction. `internal/notify` holds a **kind registry in Go**, not in the database: `Kind{Key, Category, Required, BatchWindow, AllowEmail, AllowSMS, Actions, Render, RenderEmailSafe}`. Title, body, and link are rendered when the row is written, so later edits don't rewrite history. Tables are listed in 5.3: `notifications` and `notification_deliveries`. A third table, the digest settings `notification_settings`, waits for digests (M6.16, DEC-44).
 
 **States and the badge.** In-app is always on.
 - **Badge count (DEC-44):** the badge shows one plain count, with no needs-action dot: unread items plus unresolved items waiting on you, with no double counting, capped at "9+". Opening the panel doesn't clear it. Opening an item, or "Mark all as read", clears ordinary items.
@@ -872,7 +838,7 @@ Minors (DEC-8, DEC-19):
 
 - SMS send window (DEC-9, DEC-25; SMS only, email is not limited):
   - Default: send only between **8:00 AM and 8:00 PM in the recipient's local time**. Admins can change it in Settings.
-  - The recipient's local time comes from `User.timezone` if the person set it in their profile, and otherwise from the church time zone. Guests use the church time zone.
+  - The recipient's local time comes from `User.timezone`, falling back to the church zone. Guest forms capture the browser zone too (DEC-58); guests use the church zone only when none was saved.
   - A message to many people is split by time zone. Each recipient's copy waits until their window opens. The composer shows "N recipients will get this later (outside their send window)".
   - If an admin sets a window that starts before 8:00 AM or ends after 9:00 PM, Fold shows a warning before saving. The federal TCPA rule bars telephone solicitations before 8 a.m. or after 9 p.m. in the called party's local time (47 CFR 64.1200(c)(1)), and some states are stricter. The admin must tick "I understand" to save, and the change is audited.
   - Override for one urgent message (for example "service cancelled, snow"): admins only. It needs a reason and shows the same warning when the send time is outside 8 AM to 9 PM. It is audited.
@@ -946,7 +912,7 @@ ICS details:
 
 - Emit each series as one `VEVENT` with `RRULE` and `EXDATE` for cancelled dates, plus `RECURRENCE-ID` entries for changed occurrences. Use `arran4/golang-ical` or write the text by hand; either way the output must pass parse and golden-file tests.
 - `UID` = `event-<id>@<SITE_URL host>`, stable forever.
-- `DESCRIPTION` = plain text from `description_html` plus the event URL. `LOCATION` = room name and location text. The remote and childcare flags are mentioned in the description.
+- `DESCRIPTION` = the plain-text event `description` plus the authorized event/date URL. `LOCATION` includes only location fields the viewer may see (room names once rooms exist). Remote and childcare flags are mentioned; registration care notes never are.
 
 ---
 
@@ -971,7 +937,7 @@ When someone picks a room for event E (group G_E, which may be none; visibility 
 **Definitions**
 
 - A *usage* is a `RoomBooking` B with status `confirmed`, on an occurrence of some event E_B, starting within the last 12 months or in the future.
-- V_B is the **current** visibility of E_B. If an invite-only group's event was made `private` or `public` (DEC-6, DEC-17), its usages count as usages of that visibility. That is safe, because the event is already visible at that level.
+- V_B is the **current effective visibility of B's occurrence**: its override, otherwise E_B's stored value (DEC-46/48). V_E likewise uses the date being booked. Group visibility alone never changes the classification of a historical usage. An explicitly opened date counts at its own level; other dates of the hidden series do not.
 
 **Rule 1: which usages count**
 
@@ -1014,7 +980,7 @@ Implementation note for agents: keep the counting-usage test in one function, `r
 | 3 | Same as 1; new invite-only event in group X | R suggested |
 | 4 | Same as 1; new invite-only event in another invite-only group Y | R not suggested |
 | 5 | R used by a private event and by group X (invite-only); new public event | R suggested; count shows 1 usage, not 2 |
-| 6 | Group X changes from invite-only to private | X's past usages now count for public and private events |
+| 6 | Group X changes from invite-only to private, with its event/date values unchanged | Its invite-only usages still do not count (DEC-48); widening the group never widens its events |
 | 7 | Type filter matches nothing | Fallback list, labeled |
 | 8 | Restricted room; leader chooses | Not suggested. Admin chooses: suggested |
 | 9 | Only usage is older than 12 months | Not suggested |
@@ -1029,7 +995,7 @@ Implementation note for agents: keep the counting-usage test in one function, `r
 
 ### 10.1 Baseline (keep and extend)
 
-- Keep: HTTPS through Caddy, Secure/HttpOnly/SameSite=Lax cookies, CSRF tokens, bcrypt, session invalidation on password change, upload content sniffing, the SSRF guard on URL fetch, `nosniff`, and security headers.
+- Keep: HTTPS through Caddy, Secure/HttpOnly/SameSite=Lax cookies, CSRF tokens, bcrypt, session invalidation on password change, upload content sniffing, `nosniff`, and security headers. Images are upload-only; the URL-fetch path and its SSRF guard were removed (DEC-49).
 - Add:
   - Trusted proxies (C17): Gin trusts `X-Forwarded-For` only from `FOLD_TRUSTED_PROXIES`. The compose file gives the internal network a fixed subnet, and that subnet is the default. With the wrong value, a test page at Admin > System shows the IP Fold sees.
   - CSRF route groups (C17): every state-changing route uses CSRF except `/hooks/*` (provider signature required) and `POST /u/unsubscribe/<token>` (signed token required). A test asserts that list stays exactly that.
@@ -1503,9 +1469,9 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 
 ### 14.1 Rules for every milestone
 
-- One milestone = one pull request, sized for one agent session. If it grows, split it and update this file.
+- High-complexity work (database + API + UI, or 3+ tables) must be split early into thin end-to-end slices, one reviewable PR per slice: database, then API/internals, then UI. Smaller milestones may be one PR. This is Grier's Oct 22 rule, replacing the original one-PR-per-milestone assumption.
 - Before starting, read `AGENTS.md`, this plan's sections for the milestone, and the "Depends on" milestones' code.
-- Clean break (DEC-22): no milestone needs data-migration code or fixture tests for old data. Before v0.5, nobody runs Fold, so schema changes are new migrations on top of the baseline and nothing else.
+- Before go-live, DEC-22 permits a clean break, but schema changes still use new migrations. Once live, follow AGENTS.md's Oct 22 expand/contract rule: additive expansion and old-column write auditing; wait at least 14 days or two runs of the slowest job; contract refuses on audit hits, old-column queries or a deployed build predating expansion. Before go-live, contract may follow immediately. These are required future safeguards, not a claim that the current health endpoint or migration runner implements them.
 - Done means:
   - [ ] `go vet ./...` and `go test ./...` pass against PostgreSQL 16 (`make test` locally, a Postgres service container in CI). There is no SQLite job (DEC-1, DEC-24)
   - [ ] `npm run build` passes in `web/`; from M0.4 on, `npm test` (Vitest) passes too, and any Playwright test the milestone lists passes in CI
@@ -1533,7 +1499,7 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 
 Rooms (M2) can be built in parallel with M3 once M1.1a is merged.
 
-Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a and M1.1b, then M1.2 and M1.3. Run M0.3 (email login) after M0.2, not in parallel: both rewrite handlers and the test helpers (`newTestUser` in `auth_test.go` uses `Username`). M0.4 (test tooling) can run in parallel with M0.2 and M0.3.
+M0 and M1.1–M1.13 have merged. Check STATUS and the documented gaps before choosing the next slice; M1.14 remains partial.
 
 ### 14.3 Phase 0: Foundations
 
@@ -1757,7 +1723,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 
 **M1.5 Capacity, waitlist, pruning**
 - Depends on: M1.2
-- Scope: 5.4 in full, including remote capacity, guests, and removal by leaders and hosts (DEC-20). Also the DEC-38 rules for disabled and re-enabled accounts: hidden and uncounted while disabled, and left out with an "ask a leader" notice when a restore would exceed capacity (DEC-47). Event-change and waitlist notifications (5.12; Quill's "M2.x" phase, placed here because Fold's Phase 2 is Rooms): cancellations, time or place changes, and "you're in" off the waitlist go in the bell for people going or waitlisted, and by email. The no-auto-promotion cutoff notice goes to leaders. Each event item has `expires_at` set to the occurrence end and is auto-archived (not deleted) after that. Reminders stay out of the bell (7.7).
+- Scope: the initial in-person capacity/waitlist, guests, and removal by leaders/hosts (DEC-20). Remote and childcare counting landed in M1.8, then named household people in M1.9; section 5.4 describes their combined rules. Also the DEC-38 rules for disabled and re-enabled accounts: hidden and uncounted while disabled, and left out with an "ask a leader" notice when a restore would exceed capacity (DEC-47). Event-change and waitlist notifications (5.12; Quill's "M2.x" phase, placed here because Fold's Phase 2 is Rooms): cancellations, time or place changes, and "you're in" off the waitlist go in the bell for people going or waitlisted, and by email. The no-auto-promotion cutoff notice goes to leaders. Each event item has `expires_at` set to the occurrence end and is auto-archived (not deleted) after that. Reminders stay out of the bell (7.7).
 - Acceptance:
   - [x] 50 concurrent "going" requests on a 10-seat event give exactly 10 going and 40 waitlisted (Postgres test)
   - [x] Cancelling promotes the earliest entry that fits, skipping a party too big for the free seats
@@ -1787,35 +1753,37 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] Recurring events appear as one VEVENT with RRULE, EXDATE, and RECURRENCE-ID
   - [x] A revoked or regenerated token returns 404
   - [x] Leaving an invite-only group removes its events from the personal feed on the next fetch
-  - [x] Video links follow `video_reveal` (moved to M1.8: events have no video fields yet; M1.8 adds them and its `registered_only` check covers feeds)
+  - [x] Video links follow `video_reveal`, delivered in M1.8 with the personal-feed exception in DEC-70
 - Tests: golden files; permission tests; ETag test.
 
 **M1.8 Video, remote, childcare**
+- Delivery: merged in #102 (video), #105 (remote) and #109 (childcare).
 - Depends on: M1.1a
 - Scope: 5.8 video links (link and Jitsi), remote flag and remote capacity UI, childcare fields and counts on registration (F11–F13).
 - Acceptance:
-  - [ ] Remote and childcare capacity follow DEC-38: a disabled account's registrations never count, and a restore that would exceed `remote_capacity` or `childcare_capacity` is left out with an "ask a leader" notice (DEC-47)
+  - [x] Remote and childcare capacity follow DEC-38: a disabled account's registrations never count, and a restore that would exceed `remote_capacity` or `childcare_capacity` is left out with an "ask a leader" notice (DEC-47)
   - [x] "Generate Jitsi link" makes a new random URL on the configured domain
-  - [x] `registered_only` hides the link from people not going, in the API, emails, and feeds
-  - [ ] Events can be filtered by "remote available" and "childcare available"
-  - [ ] Childcare counts and notes are visible only to admins and the event's leaders or hosts
+  - [x] `registered_only` is going-only in API/email (apart from managers); personal ICS additionally allows Maybe and unanswered members/hosts (DEC-70)
+  - [x] Events can be filtered by "remote available" and "childcare available"
+  - [x] Other people's childcare counts and notes are visible only to admins and the event's leaders/hosts; registrants can see their own requests
   - [x] There is no video embed or iframe anywhere; the link opens in a new tab (DEC-16)
 - Tests: policy and API tests.
 
 **M1.9 Households and household people**
+- Delivery: merged through #111; teen-account conversion and birthdays followed in M1.10.
 - Depends on: M1.5
 - Scope: `Household`, `HouseholdAccount`, `HouseholdPerson` (child, teen, adult), `GuardianLink` for household children, registering household people for events, turning a household person into their own account, the shared-email rules in 5.10, admin confirmation of every link to a child or teen (DEC-32), and `docs/MEMBERS.md` (DEC-8, DEC-23).
 - Acceptance:
-  - [ ] An account holder can add a spouse who shares their email as an adult household person and RSVP for both; both count toward capacity, and the list shows "Mary Smith (via John Smith)"
-  - [ ] Messages about a household person's registration go only to the account holder
-  - [ ] Turning a household person into their own account (with a new, unique email) moves their registrations
-  - [ ] Household children's care notes are visible only to guardians, admins, and the event's leaders or hosts during the event window
-  - [ ] Adding a child or teen household person creates a pending `GuardianLink` that only an admin can confirm; until then the person can't be registered and leaders see nothing about them; adding an adult household person needs no approval (DEC-32)
-  - [ ] `docs/MEMBERS.md` exists with the member guidance from 5.10
+  - [x] A holder can register a spouse sharing their email; both count toward capacity and authorized roster output identifies the responsible holder
+  - [x] Transactional notices about a household person's registration go to the account holder (general messaging is future work)
+  - [x] Adult conversion transfers registrations only on account approval; teen transfer waits for M1.10 consent/link prerequisites (DEC-82/83)
+  - [x] Care notes follow guardian/admin access and the scheduled-going event window (DEC-81)
+  - [x] Child/teen registration requires an admin-confirmed guardian link; adults need no link approval (DEC-32/79)
+  - [x] `docs/MEMBERS.md` contains the member guidance from 5.10
 - Tests: policy table for the household rows in section 6; API tests.
 
 **M1.10 Teen accounts, consent, badges**
-- Delivery: five approved end-to-end slices in `docs/plan/M1.10-BRIEF.md`: age gates and restricted access; consent lifecycle; guardian links and email consent; approval-first household teen conversion; daily church-local age rollover and final acceptance.
+- Delivery: five merged end-to-end slices (#114–#118), with retained evidence in [M1.10-VERIFICATION.md](M1.10-VERIFICATION.md): age gates and restricted access; consent lifecycle; guardian links and email consent; approval-first household teen conversion; daily church-local age rollover and final acceptance.
 - Household teen conversion creates an account only after approval. Sign-ups remain household-managed until account consent and the fresh original-household guardian link are confirmed. The last prerequisite completes transfer in one transaction. At 18 the consent/link requirements end; independent suspension and unavailable responsible accounts still delay transfer (DEC-83).
 - Depends on: M1.9, M1.3
 - Scope: teen accounts, `TeenConsent`, guardian links to teen accounts, consent emails with a signed link, the daily age rollover, Teen and Child badges (DEC-8, DEC-18, DEC-20).
@@ -1832,10 +1800,10 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 - Tests: policy table for every row in section 6 on teens; API tests; fake-clock tests.
 
 **M1.11 Contact privacy and direct-contact requests**
-- Operator scope (Oct 24, 2026): implement only cross-milestone dependencies necessary to complete M1.11 safely. The DEC-75 one-occurrence access dependency belongs to a later M1.11 slice with its complete read filtering and lifecycle protections; the rest of M1.14 remains deferred. Work starts with s1 contact privacy (backend, then UI); no milestone acceptance is claimed by a partial handoff.
+- Delivery: merged in #122 (Oct 25, 2026), including the authorized DEC-75 one-date dependency with read filtering and lifecycle protections. Broader M1.14 remains deferred. Contact, group-add and occurrence-add requests share machinery, never authority; an approved add never grants contact access.
 - Depends on: M1.10, M1.2
 - Scope: 5.11 (DEC-31): leaders and hosts never get teen contact details; the adult setting "Hide my contact info from group leaders" (off by default); `ContactRequest` and `ContactGrant`; approval rules (a hidden adult decides alone; for a teen, an admin and the teen must both approve); revocation by the person, an admin, or a teen's confirmed guardian; automatic end of grants; audit rows for every attempt; the admin contact-access history and CSV export.
-- **Add people by name (DEC-78).** Leaders and hosts add people to their groups and events by searching names, with no email needed, because teens' and hidden adults' emails are never shown to them (5.11), so today's add-by-email (`POST /groups/:id/members` takes an `email`) can't reach exactly the people who most need adding (teens joining an invite-only youth group, adults who hide their contact info).
+- **Add people by name (DEC-78).** Leaders and hosts add people to their groups and events by searching names, with no email needed, because teens' and hidden adults' emails are never shown to them (5.11), and email-only selection could not reach people who most need adding (teens joining an invite-only youth group, adults who hide their contact info).
   - Search: `GET /api/v1/people/search?q=` for leaders and hosts only (and admins), at least 2 characters, at most 10 results, rate-limited per user. Each result carries display name, a Teen badge where it applies, and an opaque id; never an email, phone, birth date or avatar of a teen. It is not a directory (10.2, M6.1): there is no browse or empty-query list, and members who aren't leaders or hosts can't call it.
   - Results include every active account the search may return: adults (including those with "Hide my contact info from group leaders" on, which hides contact details, not the name) and teens with active accounts (badged). Disabled and deleted accounts, guests and `pending_consent` teens are excluded. There is no opt-out from name search and no teen hiding from search (Grier, Oct 20). "Hide contact info" (always on for teens, optional for adults) stays separate from a possible "hide completely", which is an open question for later (DEC-78).
   - Telling same names apart: each result shows, in order, the person's profile picture if they set one (teens have no public avatar, 10.3, so they skip this), then the groups they share with the searcher, then their other groups, but only groups the searcher could already see: public groups and private groups (which every signed-in member can view), plus invite-only groups only if the searcher is in them or can otherwise see them. An invite-only group the searcher can't see is never named. If nothing distinguishes two results, they say "More than one match? Ask an admin."
@@ -1859,7 +1827,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] Under 2 characters the picker shows a hint ("Type at least 2 letters"), and when rate-limited it shows a calm message ("Too many searches. Try again in a minute.") instead of an error
   - [x] The no-results message never says why someone is missing: "No one found. An admin can add people who aren't listed."
 - Tests: policy tables for the 5.11 rows of section 6; API tests on every path; fake-clock tests for expiry and age; search result key and exclusion tests.
-- Local acceptance (Oct 25, 2026): all 16 criteria verified; source/test matrix, independent reviews, final integrated gates and actual sensitive-mail/UI proof are recorded in `docs/plan/M1.11-BRIEF.md`. Not pushed, merged or deployed. Only the necessary one-date invitation dependency of M1.14 is included; broader M1.14 remains deferred.
+- Acceptance and merge: all 16 existing-surface criteria accepted locally, then merged in #122 (`99764d0`). [M1.11-VERIFICATION.md](M1.11-VERIFICATION.md) retains the matrix, independent reviews, integrated gates and mail/UI proof. Future messaging recipient-list composition was not tested or built; broader M1.14 and production deployment are not claimed.
 
 **M1.12 Frontend toolchain upgrades**
 - Depends on: M0.4. Best done **before M1.6**, the first large new UI, so new screens are written once against the new stack. It's independent of the other Phase 1 milestones and can run in parallel.
@@ -1901,7 +1869,7 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
 
 **M1.13 Per-date event visibility (DEC-46)**
 - Depends on: M1.1b and M1.6. Best done after M1.7 too, so the feeds honor it from the start (if it lands first, M1.7 must apply the per-date value).
-- Why: Grier, Oct 12, 2026: "when I edit an event in a series of events, I want to be able to change the visibility for just that event. Like take a private recurring series and make one public." Today visibility lives only on `Event`. `PUT /events/:id/occurrences/:date` (`apiUpdateOccurrence`) accepts start, duration, location, and title, but not visibility, and the UI's visibility control (`EventVisibilityControl`) changes the whole series.
+- Why: DEC-46 allows one private-series date to be public without exposing its siblings. Implemented in #123; the shared date editor now sets or clears the date override.
 - Scope:
   - Data: a nullable `EventOccurrence.visibility_override` (`public|private|invite_only`), added by a goose migration. The **effective visibility** of a date is the override if set, else the event's value (DEC-48: the event's own `visibility`, copied from the group at creation). `Customized()` counts the override, so series edits leave the date alone.
   - API: `apiUpdateOccurrence` accepts `visibility` (a value, or `null`/`"series"` to clear the override). The same people who may set the event's visibility may set a date's (a leader of the group or an admin; for church-wide events the hosts and admins, `public` or `private` only). Every read path uses the effective visibility per date: event and occurrence pages, lists, the calendar, ICS feeds, search, registration (`CanRegisterEvent`), reminders, and room-suggestion counts (9.3 counts a usage at the visibility of that date).
@@ -1920,22 +1888,20 @@ Suggested first slice (from the reviews): M0.1, then M0.2, then M0.3, then M1.1a
   - [x] A series visibility change leaves dates with their own visibility alone, the dialog shows how many, and "Also reset" clears them
   - [x] A per-date more-open change writes one `event.visibility_override` audit row with the date, reason optional, and one notice to the other leaders and the admins; clearing or tightening is audited too
   - [x] For an invite-only group, the opened date never exposes the group's name, link, location, leaders, or other dates (API JSON key tests, page tests, the ICS entry, and outside-registrant notices)
-  - [ ] Calendar, ICS feeds, search, reminders, and room suggestions use the per-date value (tests for each)
+  - [x] Existing calendar, ICS feeds and date discovery use the per-date value (regression evidence in M1.13-VERIFICATION.md)
+  - [ ] Future dedicated event search, scheduled reminders (M3.6/M3.8) and room suggestions (M2.3) apply the same per-date rule; no tests are claimed for absent consumers
   - [x] Making a date stricter cancels and notifies registrants who can no longer see it, after the leader confirms the count
   - [x] A church-wide event's date can be `public` or `private` only; a non-admin host can set it on events they host
 - Tests: policy tables for effective visibility; API tests for the audit row, notices, privacy keys, and series-edit interaction; a Playwright test for the private-series, one-public-date flow.
 
-M1.13 implementation and local verification (Oct 25, 2026): date storage/policy,
-API consumers, shared date editor, series preserve/reset and group-date review
-are implemented. The checked items have regression and browser evidence in
-[M1.13-VERIFICATION.md](M1.13-VERIFICATION.md). Calendar and ICS consumers pass;
-dedicated event search, reminder scheduling and room-suggestion consumers are
-absent at this base, so the combined consumer acceptance remains unchecked.
-Future consumers must use the effective date value. Publication remains subject
-to PR checks and the repository's reviewer requirements.
+M1.13 merged in #123 (`2c38f8f`, Oct 25, 2026). Date storage/policy, API consumers,
+shared date editor, series preserve/reset and group-date review are implemented.
+[M1.13-VERIFICATION.md](M1.13-VERIFICATION.md) retains the local regression,
+browser and independent-review evidence. Absent consumers remain future work,
+not a reason to call this merged implementation unclaimed.
 
 **M1.14 Series RSVP and RSVP-aware calendar (DEC-71)**
-- Narrow prerequisite implemented within M1.11 s4 (operator-authorized; final M1.11 acceptance pending): stable-occurrence invitations with explicit provenance, separate sanitized exact-date GET and own RSVP/decline/block mutations, safe recipient/confirmed-guardian notices, exact-date calendar links and standalone personal ICS entries. These grant neither group/roster nor series/management access. DEC-78 supersedes DEC-75's older hidden-teen picker exclusion: active teens are searchable, but every teen add needs teen and admin approval. See `M1.11-BRIEF.md` for source/tests and retained proof. Full M1.14 calendar styling, series responses/Undo, join/leave changes, own-scope/discovery/window rules and generalized block management remain deferred; all acceptance boxes below stay unchecked.
+- Narrow prerequisite merged with M1.11 (#122): stable-occurrence invitations, sanitized exact-date GET and own RSVP/decline/block, safe recipient/guardian notices, exact-date calendar links and standalone personal ICS. These grant no group/roster or series/management access. Active teens are searchable, but every teen add needs teen and admin approval (DEC-78). See M1.11-VERIFICATION.md. Full calendar styling, series answers/Undo, join/leave cleanup, own-scope/window rules and generalized block management remain deferred; acceptance below stays unchecked except the separately delivered exact-date behavior.
 - Depends on: M1.5 (capacity and waitlist), M1.6 (calendar views), M1.7 (ICS feeds). Best after M1.13, so series-wide responses use each date's effective visibility.
 - Why: Grier, Oct 20, 2026 (via Big Boss): his calendar and personal feed should show where he stands on each date, with dates he isn't going to removed, and answering a long series one date at a time is tedious. Illuminator's review of #103 settled the UI (DEC-71, amending DEC-67).
 - Wording: user-facing copy uses the DEC-63 words only: "Going", "Maybe", "Can't go", plus "Waitlisted" and the new "Not answered" (a date in the viewer's own scope with no response). The stored status `declined` never appears in copy.
@@ -1972,7 +1938,7 @@ to PR checks and the repository's reviewer requirements.
   - [ ] Leaving or removal ends registrations only on upcoming dates not kept, never past ones (past sign-ups and attendance are unchanged), promotes the waitlist, and audits it; joining puts upcoming dates on their calendar as Not answered (DEC-74)
   - [ ] A non-member's public-event date appears in their Just mine and personal feed only after Maybe or Going; unanswered it appears in neither (DEC-73)
   - [ ] Church-wide dates are in every member's own scope (DEC-72); unanswered public and church-wide dates show in Just mine, the personal feed and Everything only within the next 30 days, and answered dates always show (DEC-77)
-  - [ ] A leader or host can add one existing account at a time (rate-limited; hidden teens never in the picker) to one date with the explicit override. It grants that date only, never the roster, group page or other dates. The person gets a notice with Can't go and "Don't add me again"; a teen's guardian gets a copy; leaders see "Added by a leader"; every add, removal and block is audited; household and proxy adds use the proxy rules (DEC-75)
+  - [x] Exact-date prerequisite delivered in M1.11: a manager adds one eligible adult or sends a purpose-bound Ask; every teen needs teen + admin approval. Rate limits, sanitized date-only access, names-free recipient/guardian notices linking to Can't go/Don't add me again, manager-only Added by a leader, audit and existing household/proxy boundaries are covered in M1.11-VERIFICATION.md (DEC-75 amended by DEC-78). This does not complete M1.14.
 - Tests: API tests for bulk and this-and-following responses, leave and join, the non-member add, and own-scope membership; feed golden files for TENTATIVE and omitted dates; Playwright tests with axe for the calendar states and the dialog.
 
 ### 14.5 Phase 2: Rooms
@@ -1997,7 +1963,7 @@ to PR checks and the repository's reviewer requirements.
 
 **M2.3 Room suggestions**
 - Depends on: M2.1
-- Scope: 9.3 exactly.
+- Scope: 9.3 exactly, using M1.13 effective occurrence visibility, never just the event or group's value. Test explicitly opened and tightened dates as well as the original 13 cases.
 - Acceptance:
   - [ ] All 13 cases in the 9.3 table pass
   - [ ] The response never contains other events' titles, groups, or dates (a test checks the JSON keys)
@@ -2062,7 +2028,7 @@ to PR checks and the repository's reviewer requirements.
 
 **M3.6 Email reminders**
 - Depends on: M3.5
-- Scope: 7.7, email part (SMS reminders arrive with M3.8). Reminders are messages, not notifications: they create no bell rows (5.12, DEC-44).
+- Scope: 7.7, email part (SMS reminders arrive with M3.8). Reminders create no bell rows (DEC-44). Recheck M1.13 effective date visibility and live exact-date invitation authority at scheduling and delivery; never expose hidden series/group metadata.
 - Acceptance:
   - [ ] Each going registrant gets exactly one 24-hour email reminder per occurrence, even after restarts (`unique_key`)
   - [ ] Cancelled occurrences cancel their pending reminders
@@ -2088,7 +2054,7 @@ to PR checks and the repository's reviewer requirements.
 - Scope: the recipient-local send window (DEC-9, DEC-25), per-author and per-recipient limits, daily caps per registration path (DEC-3), SMS reminders (7.7).
 - Acceptance:
   - [ ] With the default window (8 AM to 8 PM), a 7:30 PM church-time send reaches a recipient whose profile is in the church zone at once, and a recipient whose profile zone is 2 hours ahead the next morning at 8 AM their time
-  - [ ] Recipients with no profile zone, and guests, use the church time zone
+  - [ ] Recipients without a saved zone use the church zone; guests with a browser-captured zone use it (DEC-58)
   - [ ] Saving a window that starts before 8 AM or ends after 9 PM shows the TCPA warning, needs a tick, and is audited
   - [ ] An admin's one-message override needs a reason and is audited; leaders cannot override
   - [ ] Sends beyond the path's daily cap roll over to the next day, and the author is told
@@ -2164,8 +2130,8 @@ to PR checks and the repository's reviewer requirements.
 - Tests: API tests for each step; Playwright run-through.
 - Later task (DEC-77): an admin setting `calendar_unanswered_window_days` (30, 60 or 90; default 30) for how far ahead unanswered public and church-wide dates show in Just mine, personal feeds and Everything. Audited like other settings; M1.14 ships the fixed 30-day default.
 - Follow-ups carried here (from UI makeover PR 8, Oct 18, 2026):
-  - Code-split the SPA. The main JS chunk is just over 500 kB minified, and Vite warns on every build. Load `/admin` (and this wizard) with `React.lazy` so members never download admin code, then drop the warning.
-  - "powered by Fold" shows twice: under the church name in the header and again in the footer. Settle it with the brand settings here (site name, and later a logo): keep one, most likely the header line.
+  - Keep the new wizard lazy-loaded and within the bundle budget. Admin and other less-used pages are already lazy-loaded; the original code-splitting follow-up is complete.
+  - Preserve the single header attribution when adding logo/brand settings; the old duplicate footer attribution is gone.
 
 **M4.3 Legal pages**
 - Depends on: M4.2
@@ -2243,6 +2209,7 @@ to PR checks and the repository's reviewer requirements.
 - Tests: CI smoke test starts the stack and hits `/healthz`.
 
 **M5.2 Backups**
+- Status: future portable container/restore scope. The existing DigitalOcean host-cron dump and optional encrypted offsite helper are useful partial groundwork, not completion of this milestone.
 - Depends on: M5.1
 - Scope: 11.8 for Compose: a small `ghcr.io/grierj/fold-backup` image (postgres:16-alpine plus `age` and `rclone`) with `backup.sh` (nightly loop and `now`) and `restore.sh`, `LAST_OK`, retention, `age`-encrypted offsite upload to any S3-compatible bucket.
 - Acceptance:
@@ -2254,6 +2221,7 @@ to PR checks and the repository's reviewer requirements.
 - Tests: CI restore test; retention unit test.
 
 **M5.3 Upgrades**
+- Status: the DigitalOcean upgrade helper exists and dumps before upgrading; the app's mandatory pre-migration backup gate and release-to-release CI remain future work.
 - Depends on: M5.2
 - Scope: 11.7. Backup check before migrating (skipped on first install or with no pending migrations; no off switch), exit non-zero on failure, `docs/UPGRADING.md`.
 - Acceptance:
@@ -2264,6 +2232,7 @@ to PR checks and the repository's reviewer requirements.
 - Tests: upgrade test in CI.
 
 **M5.4 Deployment docs (Compose)**
+- Status: partial groundwork exists in `docs/DEPLOY-DIGITALOCEAN.md`, AGENTS.md and the provision/smoke/upgrade scripts. The full release workflow below depends on unbuilt M5.1–M5.3 and `fold setup`; its acceptance remains open. Fix the documented Compose SMTP pass-through gap before relying on email flows.
 - Depends on: M5.1–M5.3
 - Scope: `docs/DEPLOY.md` for humans, and the AGENTS.md Deployment section (Appendix A).
 - Acceptance:
@@ -2307,7 +2276,7 @@ Built only when a church asks: Resend and Mailgun email adapters, a Plivo SMS ad
 
 ---
 
-## 15. Decisions (Oct 9, 2026) and remaining open questions
+## 15. Decisions and remaining open questions
 
 ### 15.1 Decisions
 
@@ -2389,23 +2358,25 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-72 | **Invite model: membership is the invite** (Grier, Oct 20, 2026; #103). Belonging to a group is a standing invite to that group's events. Church-wide events invite every member of the instance through an invisible church-wide group that every active account belongs to; it never shows in group lists, rosters or counts. A public event is not an invite: non-members can see it and sign up, but it doesn't show on their calendar until they respond (DEC-73). | 5.3, 5.4, 8.1, 8.2, M1.14 |
 | DEC-73 | **Non-members on public events** (Grier, Oct 20, 2026; #103). A non-member who answers Maybe or Going to a public event sees that date on their own calendar and personal feed: ghosted for Maybe, solid for Going, like invited members (DEC-71). A non-member who hasn't answered doesn't see it in their own calendar or personal feed at all. | 8.1, 8.2, M1.14 |
 | DEC-74 | **Leaving takes a person off the group's upcoming dates** (Grier, Oct 20, 2026; #103; revised from Illuminator's review, Grier OK'd). Joining a group puts its upcoming dates on the person's calendar right away (as Not answered). Leaving a group, or being removed by a leader or admin, ends their registrations on that group's **upcoming** dates, Going included; seats free up and the waitlist promotes as usual. Past sign-ups, check-ins and attendance never change. First, a confirmation shows the count of upcoming dates, never other attendees' names (DEC-64): "Leave Tuesday Bible Study?" / "You'll be taken off 4 upcoming dates, including 2 you said Going to. Your past attendance stays." with "Leave group" (danger) and "Stay", or a plain confirm when there are no dates. Leader version: "Remove Pat? They'll be taken off 4 upcoming dates and told." The confirmation lists dates underway or inside the cutoff with "Keep me on …" ticked by default, and public dates the person chose with Keep unticked; kept dates stay. To attend the group's public events later, they sign up again. | 5.4, 8.1, M1.14 |
-| DEC-75 | **A leader can add one person to one date** (Grier, Oct 20, 2026; #103; revised from Illuminator's review, Grier OK'd). A leader or host can add a specific person who already has an account on the church's site to a single date, one person at a time (no bulk add), rate-limited. It grants that date only, never the group roster, group page or other dates. Hidden teens can't be picked and never appear in the picker; a teen's guardian gets the guardian copy. Household and proxy adds go through the existing proxy rules, not this override. The added person gets a notice ("Lee added you to Romans 8 on Oct 31"), the date lands in their Just mine as Going, and they can choose Can't go or "Don't add me again" (blocks that group's leaders from adding them). Leaders see an "Added by a leader" label on the attendee list; other attendees see them only under `attendeesVisible`. Every add, removal and block is audited (who, whom, event, date, optional reason). Group membership is the answer for lasting attendance at a series. | 5.4, 6, M1.14 |
+| DEC-75 | **A leader can add one person to one date** (Grier, Oct 20, 2026; #103; revised from Illuminator's review, Grier OK'd). A leader or host can add a specific person who already has an account on the church's site to a single date, one person at a time (no bulk add), rate-limited. It grants that date only, never the group roster, group page or other dates. Active teens are searchable and every teen add requires teen + admin approval (DEC-78 supersedes the original hidden-teen exclusion); confirmed guardians receive the safe notice. Household and proxy adds go through the existing proxy rules, not this override. The added person gets a names-free, navigation-only notice (M1.11 safeguarding rules), the date lands in their Just mine as Going, and they can choose Can't go or "Don't add me again" (blocks that group's leaders from adding them). Leaders see an "Added by a leader" label on the attendee list; other attendees see them only under `attendeesVisible`. Every add, removal and block is audited (who, whom, event, date, optional reason). Group membership is the answer for lasting attendance at a series. | 5.4, 6, M1.14 |
 | DEC-76 | **Discovering public events is open** (Grier, Oct 20, 2026; #103). How people find one-off public events of groups they aren't in, together with the group promotion feature, is not designed yet. Grier will brainstorm it with Illuminator closer to implementation. Until then, the DEC-67 Everything view stays as built. | 8.1, M1.14 |
 | DEC-77 | **A 30-day window for unanswered public and church-wide dates** (Grier, Oct 20, 2026; #103; Illuminator's N8). Unanswered public and church-wide dates show only within the next 30 days, in Just mine, the personal ICS feed and the calendar's Everything view; dates the person answered always show, and dates of their own groups are not limited. This keeps unanswered church-wide dates from flooding Just mine and bounds Everything. Later, an admin setting chooses the window (for example 30, 60 or 90 days; M4.2). Amends DEC-67, DEC-71 and DEC-73. | 8.1, 8.2, M1.14, M4.2 |
 | DEC-78 | **Leaders add people by name, not email** (Grier, Oct 20, 2026; open questions decided the same day). Leaders and hosts search active accounts by name (2+ characters, up to 10 results, rate-limited, leaders, hosts and admins only) and add the person to a group or a single date without seeing any email. Results show the display name and a Teen badge, never contact details; it is not a directory. Decided: (1) "Hide contact info" (always on for teens, optional for adults) is separate from "hide completely". Teens and contact-hidden adults are findable by name; there is no opt-out from name search and no teen hiding from search. Whether anyone may "hide completely" is a new open question for later, since invisible users make Fold much harder to use. (2) Anyone who can't be added directly gets an "Ask to add" request through the direct-contact approval flow (5.11); a teen add always needs both an admin and the teen to approve. (3) Same-name results are told apart by profile picture if set (adults only, since teens have no public avatar), then groups shared with the searcher, then the person's other groups, showing only groups the searcher could already see (public and private groups, which every signed-in member can view; invite-only groups only if the searcher can see them); otherwise "More than one match? Ask an admin." The DEC-75 picker is this search. Open for later: rethink the name "private" for groups, since the word is overloaded (private groups are visible to every signed-in member). | 5.11, 6, 10.2, 10.3, M1.11, M1.14 |
 | DEC-79 | **No self-confirming your own guardian link** (Grier, Oct 21, 2026, via Big Boss; Warden's #106 review). An admin cannot confirm a guardian link where they are the guardian while another active admin exists; a different admin must confirm it (403 `self_confirm_blocked`). When the church has only one active admin, that admin may confirm their own link, and the `guardian_link.confirmed` audit row is marked `selfConfirm: true`. Rejecting your own link is not restricted. Tested by `TestGuardianLinkSelfConfirm`. | 5.12, 6, M1.9 |
 | DEC-80 | **Childcare-aware waitlist promotion** (Grier, Oct 21, 2026; overrules the slice 3 promote-without-childcare call). When childcare is available and its capacity is set, skip a waiter whose `childcare_count` exceeds the remaining childcare spots. Keep their request, age note, and `waitlisted_at`; promote the next party that fits its attendance pool and childcare. Earlier picks consume childcare spots in the same pass. Parties needing no childcare can promote when childcare is full. Hand-promoting a specific person refuses a request that does not fit with 409 `childcare_full`. Retry promotion when a going registration lowers its childcare count, cancels, declines, moves to maybe, is removed, or its account is disabled, and when a leader raises or clears the childcare limit or turns childcare off. Attendance seats must also fit, and the two-hour cutoff still applies. No separate childcare waitlist. Tested by `TestPickPromotionsByPoolChildcare`, `TestChildcarePromotionSkipsUntilRequestFits`, `TestChildcareBatchPromotionsShareRemainingPlaces`, `TestChildcareFreedPromotesOnlyWithSeat`, and `TestManualChildcarePromotionRequiresRoom`. | 5.4, M1.8 |
 | DEC-81 | **Household registration age and care-note rules** (Grier, Oct 22, 2026; PR 110; child rollover clarified in DEC-83). (1) An `adult` household person with no birth date can't be registered. (2) A `teen` under 13, or a `child` or `teen` aged 18 or older, can't be registered. (3) A `child` aged 13 to 17 can still be registered. The age job tells confirmed guardians to review the age group and keeps the saved kind until the household edits it. (4) Event leaders and hosts see a child's care notes only while the child is `going` on a scheduled date, within the 24-hour window; maybe and waitlisted don't count. (5) A household adult whose access is pending can write care notes but not read them back. Ages use the church-local date. | 5.3, 5.10, 6, 10.3, M1.9 |
-| DEC-82 | **Household conversion: approval first, teen visibility, badge** (Grier, Oct 22, 2026; PR 111). (1) A converted adult's account isn't created until an admin approves it. Accepting the invitation verifies the email, sets a password (held on the pending `household_conversion` account request) and nothing else. The person and their sign-ups stay with the household, which keeps managing them as before, so no one is locked out. Approval does the whole move in one transaction: it creates the active account, sets `converted_user_id`, moves the sign-ups and adds the household account. Rejection or the 30-day expiry just closes the request; there's nothing to undo. (2) Keep judgment 44.2: a `pending_consent` teen stays going and visible on rosters to those who saw them before. (3) Keep judgment 44.1: moved sign-ups aren't re-checked against event access at conversion. (4) The teen account badge (`attendeeJSON.accountType`) is shown only to event leaders and admins. The API leaves it out for everyone else, and the UI shows it only on the leader roster. | 5.10, M1.9 |
+| DEC-82 | **Household conversion: approval first, teen visibility, badge** (Grier, Oct 22, 2026; PR 111). (1) A converted adult's account isn't created until an admin approves it. Accepting the invitation verifies the email, sets a password (held on the pending `household_conversion` account request) and nothing else. The person and their sign-ups stay with the household, which keeps managing them as before, so no one is locked out. Approval does the whole move in one transaction: it creates the active account, sets `converted_user_id`, moves the sign-ups and adds the household account. Rejection or the 30-day expiry just closes the request; there's nothing to undo. (2) A `pending_consent` teen stays going and visible on rosters to those who saw them before. (3) Moved sign-ups aren't re-checked against event access at conversion. (4) The teen account badge (`attendeeJSON.accountType`) is shown only to event leaders and admins. The API leaves it out for everyone else, and the UI shows it only on the leader roster. | 5.10, M1.9 |
 | DEC-83 | **Birthday rollover preserves household access and capacity** (M1.10 implementation judgments, reviewed under Grier’s delegated approval, Oct 22, 2026). The job runs at startup and church-local midnight. (1) At 13, confirmed active guardians receive one age-neutral review notice. The household person's kind and sign-ups stay unchanged, with no new login. (2) At 18, an existing household account's `teen` relation becomes `adult`, without confirming any guardian links. (3) A staged original household person becomes `adult` at 18 while an independent account suspension keeps sign-ups household-managed until Enable. (4) An inactive original registration holder defers the entire staged user's rollover, including account type, plus transfer, because their hidden seats cannot silently become active. Other birthdays and notices continue. Startup and midnight retry after the holder is enabled. No registration history is dropped. (5) Successful adulthood rejects only pending teen-account guardian links as no longer needed, resolves their tasks as withdrawn, and audits `turned_18`. Confirmed links and consent history stay unchanged. | 5.3, 5.5, 5.10, M1.10 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 
 ### 15.2 Still open
 
-No open decisions. Illuminator's notification product questions (research 6.14) are answered in DEC-44.
+- DEC-76: where and how members discover public events outside their own groups.
+- DEC-78: whether a person can hide completely (distinct from contact privacy), and whether to rename “private” groups. Until decided, active teens and contact-hidden adults remain searchable; private groups remain visible to signed-in members.
+- DEC-40/M6.15: exact ChMS field ownership and local-control locking. One-way import and no write-back are already decided.
 
-No pending items. Notification retention was confirmed as DEC-45.
+The original notification questions and retention are settled by DEC-44/45. Delivery gaps and future consumers are tracked separately, not invented product decisions.
 
 ---
 

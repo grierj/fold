@@ -16,7 +16,7 @@ via `go:embed`). No separate frontend hosting. Ever.
 
 ## Stack
 
-- **Go 1.26** (Go 1.25 is out of security support), Gin (JSON API under `/api/v1`), GORM
+- **Go**: language minimum and toolchain pin come from `go.mod` (currently 1.26 and 1.27.3), Gin (JSON API under `/api/v1`), GORM
 - **PostgreSQL only**, everywhere: production, development, and tests
   (`DATABASE_URL`, DEC-1, DEC-24). There is no second database, so use
   Postgres features freely. `CGO_ENABLED=0`; keep it that way
@@ -87,7 +87,7 @@ Postgres (`login_throttles`, see `api_auth.go`).
 - Styling (DEC-60): use the role tokens and shared control classes in
   `web/src/index.css` (`bg-primary`, `text-text-muted`, `.btn-primary`,
   `.input`, `.chip`). Pick the role by meaning, not by the color you want.
-- UI controls (ENFORCEMENT.md): new controls use `components/ui` (`Button`,
+- UI controls (PLAN DEC-60–DEC-66): new controls use `components/ui` (`Button`,
   `Chip`, `Field` with `Input`/`Textarea`/`Select`, `EmptyState`); the
   ratchets below stop new raw ones. Judgment the checks can't make:
   one primary action per view; `danger-outline` beside a main action and
@@ -123,7 +123,8 @@ Postgres (`login_throttles`, see `api_auth.go`).
   inline role checks or read `Group.LeaderID` (display only). Leadership is
   `Membership.Role = leader`; a group can have several leaders.
 - Audit: record sensitive actions with `audit.Write` (`internal/audit`) in
-  the same transaction as the change. Admin notices derive from those rows.
+  the same transaction as the change. Admin notices are separate stored
+  notification rows written in that transaction, not derived from audit history.
 - Only `FOLD_TRUSTED_PROXIES` may set `X-Forwarded-For`.
 
 - UI reference is **Meetup** (primary), with ChurchTrac as the secondary
@@ -140,7 +141,8 @@ Postgres (`login_throttles`, see `api_auth.go`).
   row per recipient, written by `notify.Send(tx, notify.Msg{...})` in the
   same transaction as the change and its `AuditLog` row. The kind
   registry (`internal/notify/kinds.go`) owns category, wording, batching
-  and the inline-action allow-list; it never looks anything up, so the
+  and the inline-action allow-list (group approval and eligible clean-adult
+  account requests); it never looks anything up, so the
   caller decides what the recipient may see (pass a group's name, place or
   link only when `canSeeGroupIn` says so). Tasks (`waiting`) are closed
   with `notify.Resolve` wherever the subject is decided. The SPA keeps the
@@ -165,7 +167,7 @@ Postgres (`login_throttles`, see `api_auth.go`).
   paths in handlers. `App.Uploads` is the instance.
 - The local implementation (`storage.LocalStore`) ships now:
   `UPLOAD_DIR` (`./data/uploads` default, `/data/uploads` in compose),
-  served at `/uploads/<key>` with `nosniff`. Keys are server-generated —
+  served at `/uploads/<key>` with `nosniff` (currently public assets; private assets are future M4.7). Keys are server-generated —
   never trust client filenames. Uploads are content-sniffed
   (JPEG/PNG/GIF/WebP only), ≤ 5MB.
 - **S3 seam:** to move to S3-compatible storage, implement
@@ -175,8 +177,8 @@ Postgres (`login_throttles`, see `api_auth.go`).
   handler changes needed.
 - Docker: the final image pins `WORKDIR /` (distroless doesn't guarantee
   it) and pre-creates `/data/uploads` with `--chown=65532:65532` so the
-  nonroot app can write to the fresh named volume. Compose mounts that
-  directory as the named volume `uploads`. Do not drop the mount; an
+  nonroot app can write to the fresh named volume. Compose mounts the named
+  volume `uploads` at `/data`; uploaded files live in its `uploads/` subdirectory. Do not drop the mount; an
   anonymous volume is discarded on `up --build`.
 
 ## Phasing high-complexity work
@@ -207,7 +209,7 @@ Grier's rule (Oct 22, 2026).
 ```bash
 make dev      # dev Postgres (deploy/docker-compose.dev.yml) + Go server + Vite
 make test     # go test ./... against DATABASE_URL (starts the dev DB if unset)
-make lint     # go vet + gofmt
+make lint     # shell, Go (vet/gofmt/staticcheck), and web lint
 make e2e      # Playwright (Chromium) on a fresh Postgres database
 cd web && npm test        # Vitest component tests
 cd web && npm run build   # outputs to web/dist (embedded)
@@ -281,7 +283,7 @@ PRs that change security or visibility policy, repo settings, or production and 
   firewalls, snapshots, backup plans, or object-storage buckets. Postgres
   is the Compose `db` service. Run `provision.sh --dry-run` before a real run.
 
-## SMS (Phase 2, not yet)
+## SMS (messaging Phase 3, not yet)
 
 Group SMS goes through SMS provider adapters (Telnyx default, Twilio next).
 It is **not built yet**, and none is required to run Fold. When you build it:
@@ -321,7 +323,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Event and notice output never shows a hidden group's name, place or id (PR #41) | `a.groupShownTo` plus `TestGroupDetailsGoThroughGroupShownTo` (lines needing an exception end with `// group-ok: <reason>`) |
 | Making a group or one event more private previews the cancellations and needs confirmation | `visibility-impact` for both, a 409 without `confirm`; `TestEventMorePrivateCancelsShutOutRegistrants`, `e2e/event-visibility.spec.ts` |
 | Making an event more private cancels and tells people it shuts out, whether the group or the event changed | `cancelLosers` in both paths; `TestGroupMorePrivateTightensAndCancels`, `TestEventMorePrivateCancelsShutOutRegistrants` |
-| Every notification kind says no email address or phone number; only Approve-a-group is inline | `TestEveryKindRendersNoContactDetails`, `TestOnlyApproveGroupIsAllowListed` (internal/notify) |
+| Notification text has no email address or phone number; inline actions are allow-listed and account-request eligibility is checked on the server | Registry/privacy tests in `internal/notify`; account-request handler tests |
 | Notification rows are private to their owner and inline actions are checked on the server | `notify` queries filter by `user_id`; `TestStoredNotificationsAcceptance` |
 | `web/src/types.ts` matches the Go JSON structs field for field | `TestWebTypesMatchGoJSON` (add a pair to `tsContracts` for each new response type) |
 | State-changing routes outside CSRF are listed exactly | `TestCSRFExemptRoutesAreExact` |

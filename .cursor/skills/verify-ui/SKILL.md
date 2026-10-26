@@ -8,7 +8,7 @@ description: Prove Fold's web UI looks and behaves right at phone, tablet and de
 This is a layer on top of `verify-fold`. That skill owns launch, doctor, env and cleanup, and this one never starts or kills a server itself. Read `.cursor/skills/verify-fold/SKILL.md` first if you haven't. Its isolation rules apply here too: never use the dev database `fold`, `make dev`, or `make e2e`.
 
 **Toolchain:**
-- The repo targets Node 24 (CI, Docker).
+- Use the Node major in `.nvmrc` (CI and Docker read it too).
 - Go builds the binary.
 - Postgres comes from the dev container, or from `VERIFY_PG_URL`.
 - Chromium comes from `web/node_modules` (`npx playwright install chromium` once).
