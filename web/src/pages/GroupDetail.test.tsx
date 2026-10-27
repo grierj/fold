@@ -54,6 +54,29 @@ it("keeps account-only series scope available on a group date with household peo
   expect(screen.getByRole("checkbox", { name: "Mary" })).toBeChecked();
 });
 
+it("shows the authoritative series result on a group card while its parent GET is held", async () => {
+  vi.mocked(Households.mine).mockResolvedValue({ household: null });
+  const initial = { ...page, upcomingEvents: [occurrence({ recurrenceRule: "FREQ=WEEKLY", myRegistration: null })] };
+  const held = deferred<GroupDetailResponse>();
+  vi.mocked(Groups.get).mockResolvedValueOnce(initial).mockReturnValueOnce(held.promise);
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "waitlisted",
+    results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: {
+      registrationId: 4, status: "waitlisted", waitlistPosition: 3, attendanceMode: "in_person",
+      guestCount: 0, childcareCount: 0, childcareAgesNote: "",
+    } }], refusals: [],
+  });
+
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "Going to all dates" }));
+  await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText(/Waitlisted — position 3/)).toBeInTheDocument();
+  await act(async () => held.resolve({ ...initial, upcomingEvents: [occurrence({ recurrenceRule: "FREQ=WEEKLY",
+    myRegistration: "waitlisted", myWaitlistPosition: 3, myAttendanceMode: "in_person", myGuestCount: 0 })] }));
+  expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
+});
+
 it("clears protected group data while a terminal Undo refresh is still pending", async () => {
   const recurring = { ...page, upcomingEvents: [occurrence({ recurrenceRule: "FREQ=WEEKLY" })] };
   const terminal = deferred<GroupDetailResponse>();

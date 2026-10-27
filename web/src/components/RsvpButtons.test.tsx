@@ -1,5 +1,5 @@
 import { MemoryRouter } from "react-router-dom";
-import { useRef, useState } from "react";
+import { useRef, useState, type ComponentProps } from "react";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -155,11 +155,11 @@ describe("RsvpButtons", () => {
       refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
     });
     const instance = occurrence({ recurrenceRule: "FREQ=WEEKLY" });
-    const view = render(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: instance.date, revision: 1, actorDates: [instance.date] }} />);
+    const view = render(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: instance.date, revision: 1, actorResults: [{ date: instance.date, after: {} }] }} />);
     await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Maybe for 1 date");
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
-    view.rerender(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: "2026-12-08", revision: 2, actorDates: ["2026-12-08"] }} />);
+    view.rerender(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: "2026-12-08", revision: 2, actorResults: [{ date: "2026-12-08", after: {} }] }} />);
     await waitFor(() => expect(screen.getByRole("status")).toBeEmptyDOMElement());
     expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
   });
@@ -182,7 +182,10 @@ describe("RsvpButtons", () => {
     await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
     expect(screen.getByRole("status")).toBeEmptyDOMElement();
-    expect(onSeriesFeedback).toHaveBeenLastCalledWith(7, "2026-12-01", ["2026-12-01"]);
+    expect(onSeriesFeedback).toHaveBeenLastCalledWith(7, "2026-12-01", [{ date: "2026-12-01", after: {
+      registrationId: 4, status: "going", guestCount: 0, childcareCount: 0, childcareAgesNote: "",
+      attendanceMode: "in_person",
+    } }]);
   });
 
   it.each([
@@ -264,8 +267,8 @@ describe("single RSVP series refreshes", () => {
       bulkRefreshes.current += 1;
       setInstances(undo && bulkRefreshes.current === 2 ? initial : applied);
     };
-    const report = (eventId: number, date: string, actorDates: string[]) => setFeedback((current) => ({
-      eventId, date, actorDates, revision: (current?.revision ?? 0) + 1,
+    const report: NonNullable<ComponentProps<typeof RsvpButtons>["onSeriesFeedback"]> = (eventId, date, actorResults) => setFeedback((current) => ({
+      eventId, date, actorResults, revision: (current?.revision ?? 0) + 1,
     }));
     return <>{instances.map((instance) => <section key={instance.id} aria-label={`RSVP ${instance.date}`}>
       <RsvpButtons instance={instance} onChange={refresh} seriesFeedback={feedback} onSeriesFeedback={report} />
@@ -276,7 +279,10 @@ describe("single RSVP series refreshes", () => {
     const dates = initialDates();
     vi.mocked(Events.registerSeries).mockResolvedValue({
       eventId: 7, scope: "all_future", status: "going",
-      results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 30, status: "going" as const } })),
+      results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: {
+        registrationId: row.id + 30, status: "going" as const, attendanceMode: "remote" as const,
+        guestCount: 2, childcareCount: 2, childcareAgesNote: "4 and 6",
+      } })),
       refusals: [],
     });
     vi.mocked(Events.register).mockResolvedValue({ people: [], registration: {
@@ -313,12 +319,18 @@ describe("single RSVP series refreshes", () => {
     const dates = initialDates();
     vi.mocked(Events.registerSeries).mockResolvedValue({
       eventId: 7, scope: "all_future", status: "going",
-      results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 30, status: "going" as const } })),
+      results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: {
+        registrationId: row.id + 30, status: "going" as const, attendanceMode: "remote" as const,
+        guestCount: 2, childcareCount: 2, childcareAgesNote: "4 and 6",
+      } })),
       refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
     });
     vi.mocked(Events.undoSeriesRegistration).mockResolvedValue({
       eventId: 7, scope: "", status: "",
-      results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: { status: "going" as const }, after: { status: "going" as const } })),
+      results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: { status: "going" as const }, after: {
+        registrationId: row.id + 10, status: "going" as const, attendanceMode: "in_person" as const,
+        guestCount: 0, childcareCount: 0, childcareAgesNote: "",
+      } })),
       refusals: [],
     });
     vi.mocked(Events.register).mockResolvedValue({ people: [], registration: {
@@ -361,14 +373,17 @@ describe("single RSVP series refreshes", () => {
       const [instances, setInstances] = useState(initialDates());
       const [feedback, setFeedback] = useState<SeriesFeedbackSignal | null>(null);
       const revision = useRef(0);
-      const signal = (eventId: number, actorDates: string[]) => setFeedback({
-        eventId, date: "2026-12-08", actorDates, revision: ++revision.current,
+      const signal = (eventId: number, date: string) => setFeedback({
+        eventId, date: "2026-12-08", actorResults: [{ date, after: {
+          registrationId: 31, status: "going", attendanceMode: "in_person", guestCount: 0,
+          childcareCount: 0, childcareAgesNote: "",
+        } }], revision: ++revision.current,
       });
       return <>
         <Button variant="secondary" onClick={() => setInstances((rows) => rows.map((row) => ({ ...row })))}>Quiet refresh</Button>
-        <Button variant="secondary" onClick={() => signal(7, ["2026-12-15"])}>Out of scope</Button>
-        <Button variant="secondary" onClick={() => signal(99, ["2026-12-01"])}>Other event</Button>
-        <Button variant="secondary" onClick={() => signal(7, ["2026-12-01"])}>No-op affected</Button>
+        <Button variant="secondary" onClick={() => signal(7, "2026-12-15")}>Out of scope</Button>
+        <Button variant="secondary" onClick={() => signal(99, "2026-12-01")}>Other event</Button>
+        <Button variant="secondary" onClick={() => signal(7, "2026-12-01")}>No-op affected</Button>
         {instances.map((instance) => <section key={instance.id} aria-label={`RSVP ${instance.date}`}>
           <RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={feedback} />
         </section>)}
@@ -720,7 +735,7 @@ describe("named household answers", () => {
         myChildcareCount: 0,
         myChildcareAgesNote: "",
       }));
-      const report = (eventId: number, date: string, actorDates: string[]) => setFeedback((current) => ({ eventId, date, actorDates, revision: (current?.revision ?? 0) + 1 }));
+      const report: NonNullable<ComponentProps<typeof RsvpButtons>["onSeriesFeedback"]> = (eventId, date, actorResults) => setFeedback((current) => ({ eventId, date, actorResults, revision: (current?.revision ?? 0) + 1 }));
       return <MemoryRouter>{instances.map((instance) => <RsvpButtons key={instance.id} people={[mary]} instance={instance}
         onChange={refresh} seriesFeedback={feedback} onSeriesFeedback={report} />)}</MemoryRouter>;
     }

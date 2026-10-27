@@ -118,6 +118,226 @@ it("clears a sibling card's series Undo after a one-date answer", async () => {
   await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
 });
 
+it("uses series Apply results before its parent GET and rejects that older GET after a sibling save", async () => {
+  const first = occurrence({ recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, remoteCapacity: 10,
+    childcareAvailable: true, guestsAllowed: 2, myRegistration: "going", myAttendanceMode: "remote",
+    myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" });
+  const second = occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true,
+    remoteCapacity: 10, childcareAvailable: true, guestsAllowed: 2, myRegistration: "going",
+    myAttendanceMode: "in_person", myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "" });
+  const stalePage = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY", childcareAvailable: true,
+    guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10 }, occurrences: [first, second] };
+  const appliedRows = [first, second].map((row) => ({ ...row, myAttendanceMode: "remote" as const,
+    myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }));
+  const appliedPage = { ...stalePage, occurrences: appliedRows };
+  const held = deferred<EventDetailResponse>();
+  vi.mocked(Events.get).mockResolvedValueOnce(stalePage).mockReturnValueOnce(held.promise).mockResolvedValue(appliedPage);
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "going",
+    results: appliedRows.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: {
+      registrationId: row.id + 10, status: "going", attendanceMode: "remote", guestCount: 2,
+      childcareCount: 2, childcareAgesNote: "4 and 6",
+    } })), refusals: [],
+  });
+  vi.mocked(Events.register).mockResolvedValue({ registration: {
+    registrationId: 12, userId: 2, eventId: 7, occurrenceId: 2, date: second.date, status: "going",
+    guestCount: 2, childcareCount: 2, childcareAgesNote: "4 and 6", waitlistPosition: null, attendanceMode: "remote",
+  }, people: [] });
+
+  renderPage();
+  const cards = await screen.findAllByRole("group", { name: "Your answer" });
+  await userEvent.click(within(cards[0].parentElement!.parentElement!).getByRole("button", { name: "Going to all dates" }));
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(2));
+  const sibling = within(cards[1].parentElement!.parentElement!);
+  expect(sibling.getByRole("radio", { name: "Remote" })).toBeChecked();
+  expect(sibling.getByLabelText("Extra guests")).toHaveValue(2);
+  expect(sibling.getByLabelText(/^Children needing childcare/)).toHaveValue("2");
+  expect(sibling.getByLabelText(/^Ages/)).toHaveValue("4 and 6");
+
+  await userEvent.click(sibling.getByRole("button", { name: "Save" }));
+  await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
+  expect(Events.register).toHaveBeenLastCalledWith(7, {
+    status: "going", date: second.date, guestCount: 2, attendanceMode: "remote",
+    childcareCount: 2, childcareAgesNote: "4 and 6",
+  });
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
+  await act(async () => held.resolve(stalePage));
+  expect(sibling.getByRole("radio", { name: "Remote" })).toBeChecked();
+  expect(sibling.getByLabelText("Extra guests")).toHaveValue(2);
+});
+
+it("maps series Undo to not answered before its parent GET and cannot stale-save applied values", async () => {
+  const appliedRows = [
+    occurrence({ recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, remoteCapacity: 10, childcareAvailable: true,
+      guestsAllowed: 2, myRegistration: "going", myAttendanceMode: "remote", myGuestCount: 2,
+      myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }),
+    occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true,
+      remoteCapacity: 10, childcareAvailable: true, guestsAllowed: 2, myRegistration: "going",
+      myAttendanceMode: "remote", myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }),
+  ];
+  const appliedPage = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY", childcareAvailable: true,
+    guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10 }, occurrences: appliedRows };
+  const maybeRows = appliedRows.map((row, index) => index === 1 ? ({ ...row, myRegistration: "maybe" as const,
+    myAttendanceMode: "in_person" as const, myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "" }) : row);
+  const held = deferred<EventDetailResponse>();
+  vi.mocked(Events.get).mockResolvedValueOnce(appliedPage).mockResolvedValueOnce(appliedPage)
+    .mockReturnValueOnce(held.promise).mockResolvedValue({ ...appliedPage, occurrences: maybeRows });
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "going",
+    results: appliedRows.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: {
+      registrationId: row.id + 10, status: "going", attendanceMode: "remote", guestCount: 2,
+      childcareCount: 2, childcareAgesNote: "4 and 6",
+    } })), refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+  });
+  vi.mocked(Events.undoSeriesRegistration).mockResolvedValue({
+    eventId: 7, scope: "", status: "", results: appliedRows.map((row) => ({
+      occurrenceId: row.id, date: row.date, before: { status: "going" as const }, after: {},
+    })), refusals: [],
+  });
+  vi.mocked(Events.register).mockResolvedValue({ registration: {
+    registrationId: 12, userId: 2, eventId: 7, occurrenceId: 2, date: appliedRows[1].date, status: "maybe",
+    guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "in_person",
+  }, people: [] });
+
+  renderPage();
+  const cards = await screen.findAllByRole("group", { name: "Your answer" });
+  const first = within(cards[0].parentElement!.parentElement!);
+  const sibling = within(cards[1].parentElement!.parentElement!);
+  await userEvent.click(first.getByRole("button", { name: "Going to all dates" }));
+  await userEvent.click(await first.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
+  for (const name of ["Going", "Maybe", "Can't go"]) {
+    expect(sibling.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
+  }
+  expect(sibling.queryByLabelText(/^Children needing childcare/)).not.toBeInTheDocument();
+
+  await userEvent.click(sibling.getByRole("button", { name: "Maybe" }));
+  await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
+  expect(Events.register).toHaveBeenLastCalledWith(7, {
+    status: "maybe", date: appliedRows[1].date, guestCount: 0, attendanceMode: "in_person",
+  });
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(4));
+  await act(async () => held.resolve(appliedPage));
+  expect(sibling.getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-pressed", "true");
+  expect(sibling.getByRole("radio", { name: "In person" })).toBeChecked();
+});
+
+it("uses series Apply results in household forms while the parent GET is held and preserves proxy drafts", async () => {
+  vi.mocked(Households.mine).mockResolvedValue({ household: { id: 1, name: "Family", address: "", createdBy: 2,
+    accounts: [], people: [{ id: 3, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary",
+      kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] } });
+  const first = occurrence({ recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, remoteCapacity: 10,
+    childcareAvailable: true, guestsAllowed: 2, myRegistration: "going", myAttendanceMode: "remote",
+    myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" });
+  const second = occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true,
+    remoteCapacity: 10, childcareAvailable: true, guestsAllowed: 2, myRegistration: "going",
+    myAttendanceMode: "in_person", myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "" });
+  const stalePage = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY", childcareAvailable: true,
+    guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10 }, occurrences: [first, second] };
+  const appliedRows = [first, second].map((row) => ({ ...row, myAttendanceMode: "remote" as const,
+    myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }));
+  const appliedPage = { ...stalePage, occurrences: appliedRows };
+  const held = deferred<EventDetailResponse>();
+  vi.mocked(Events.get).mockResolvedValueOnce(stalePage).mockReturnValueOnce(held.promise).mockResolvedValue(appliedPage);
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "going",
+    results: appliedRows.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: {
+      registrationId: row.id + 10, status: "going", attendanceMode: "remote", guestCount: 2,
+      childcareCount: 2, childcareAgesNote: "4 and 6",
+    } })), refusals: [],
+  });
+  vi.mocked(Events.register).mockResolvedValue({ registration: {
+    registrationId: 12, userId: 2, eventId: 7, occurrenceId: 2, date: second.date, status: "going",
+    guestCount: 2, childcareCount: 2, childcareAgesNote: "4 and 6", waitlistPosition: null, attendanceMode: "remote",
+  }, people: [] });
+
+  renderPage();
+  const forms = await screen.findAllByRole("form", { name: "Household answers" });
+  const firstForm = within(forms[0]);
+  const sibling = within(forms[1]);
+  await userEvent.click(firstForm.getByRole("checkbox", { name: "Mary" }));
+  await userEvent.selectOptions(firstForm.getByLabelText("Answer for Mary"), "maybe");
+  await userEvent.click(firstForm.getByRole("button", { name: "Going to all dates" }));
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(2));
+  expect(within(sibling.getByRole("group", { name: "How you will attend" })).getByRole("radio", { name: "Remote" })).toBeChecked();
+  expect(sibling.getByLabelText("Extra guests")).toHaveValue(2);
+  expect(sibling.getByLabelText(/^Other children needing childcare/)).toHaveValue("2");
+  expect(sibling.getByRole("textbox", { name: /^Ages/ })).toHaveValue("4 and 6");
+  expect(firstForm.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  expect(firstForm.getByLabelText("Answer for Mary")).toHaveValue("maybe");
+
+  await userEvent.click(sibling.getByRole("button", { name: "Save answers" }));
+  expect(Events.register).toHaveBeenLastCalledWith(7, {
+    date: second.date, people: [], status: "going", attendanceMode: "remote", guestCount: 2,
+    childcareCount: 2, childcareAgesNote: "4 and 6",
+  });
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
+  await act(async () => held.resolve(stalePage));
+  expect(within(sibling.getByRole("group", { name: "How you will attend" })).getByRole("radio", { name: "Remote" })).toBeChecked();
+  expect(firstForm.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+});
+
+it("maps series Undo to no answer in household forms before the parent GET and saves fresh defaults", async () => {
+  vi.mocked(Households.mine).mockResolvedValue({ household: { id: 1, name: "Family", address: "", createdBy: 2,
+    accounts: [], people: [{ id: 3, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary",
+      kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] } });
+  const appliedRows = [
+    occurrence({ recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, remoteCapacity: 10, childcareAvailable: true,
+      guestsAllowed: 2, myRegistration: "going", myAttendanceMode: "remote", myGuestCount: 2,
+      myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }),
+    occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true,
+      remoteCapacity: 10, childcareAvailable: true, guestsAllowed: 2, myRegistration: "going",
+      myAttendanceMode: "remote", myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }),
+  ];
+  const appliedPage = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY", childcareAvailable: true,
+    guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10 }, occurrences: appliedRows };
+  const savedRows = appliedRows.map((row, index) => index === 1 ? ({ ...row, myRegistration: "going" as const,
+    myAttendanceMode: "in_person" as const, myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "" }) : row);
+  const held = deferred<EventDetailResponse>();
+  vi.mocked(Events.get).mockResolvedValueOnce(appliedPage).mockResolvedValueOnce(appliedPage)
+    .mockReturnValueOnce(held.promise).mockResolvedValue({ ...appliedPage, occurrences: savedRows });
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "going",
+    results: appliedRows.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: {
+      registrationId: row.id + 10, status: "going", attendanceMode: "remote", guestCount: 2,
+      childcareCount: 2, childcareAgesNote: "4 and 6",
+    } })), refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+  });
+  vi.mocked(Events.undoSeriesRegistration).mockResolvedValue({
+    eventId: 7, scope: "", status: "", results: appliedRows.map((row) => ({
+      occurrenceId: row.id, date: row.date, before: { status: "going" as const }, after: {},
+    })), refusals: [],
+  });
+  vi.mocked(Events.register).mockResolvedValue({ registration: {
+    registrationId: 12, userId: 2, eventId: 7, occurrenceId: 2, date: appliedRows[1].date, status: "going",
+    guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "in_person",
+  }, people: [] });
+
+  renderPage();
+  const forms = await screen.findAllByRole("form", { name: "Household answers" });
+  const first = within(forms[0]);
+  const sibling = within(forms[1]);
+  await userEvent.click(first.getByRole("checkbox", { name: "Mary" }));
+  await userEvent.selectOptions(first.getByLabelText("Answer for Mary"), "maybe");
+  await userEvent.click(first.getByRole("button", { name: "Going to all dates" }));
+  await userEvent.click(await first.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
+  expect(sibling.getByRole("checkbox", { name: "Me" })).not.toBeChecked();
+  expect(first.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  expect(first.getByLabelText("Answer for Mary")).toHaveValue("maybe");
+
+  await userEvent.click(sibling.getByRole("checkbox", { name: "Me" }));
+  await userEvent.click(sibling.getByRole("button", { name: "Save answers" }));
+  expect(Events.register).toHaveBeenLastCalledWith(7, {
+    date: appliedRows[1].date, people: [], status: "going", attendanceMode: "in_person", guestCount: 0,
+    childcareCount: 0, childcareAgesNote: "",
+  });
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(4));
+  await act(async () => held.resolve(appliedPage));
+  expect(sibling.getByRole("checkbox", { name: "Me" })).toBeChecked();
+  expect(within(sibling.getByRole("group", { name: "How you will attend" })).getByRole("radio", { name: "In person" })).toBeChecked();
+});
+
 it("clears protected event data while a terminal Undo refresh is still pending", async () => {
   const recurring = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: [occurrence({ recurrenceRule: "FREQ=WEEKLY" })] };
   const terminal = deferred<EventDetailResponse>();

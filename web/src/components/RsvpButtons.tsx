@@ -3,12 +3,15 @@ import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequest
 import { Button } from "./ui/Button";
 import { useEffect, useId, useRef, useState } from "react";
 import { Events } from "../api";
-import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, HouseholdAnswer, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson, SeriesRegistrationResponse } from "../types";
+import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, HouseholdAnswer, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson, SeriesRegistrationResponse, SeriesRegistrationState } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors } from "./ui/Field";
 import { SeriesRsvpDialog, type SeriesRsvpScope } from "./SeriesRsvpDialog";
 import { SegmentButton } from "./ui/SegmentButton";
 import { formatCalendarDay } from "../lib/when";
+import { actorResultFromRegistration, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
+
+export type { SeriesFeedbackSignal } from "../lib/rsvpFeedback";
 
 const OPTIONS: { value: RegistrationStatus; label: string }[] = [
   { value: "going", label: "Going" },
@@ -21,14 +24,13 @@ const MODES: { value: AttendanceMode; label: string }[] = [
   { value: "remote", label: "Remote" },
 ];
 
-export type SeriesFeedbackSignal = { eventId: number; date: string; revision: number; actorDates: string[] };
 type SeriesAnswer = {
   status: RegistrationStatus;
   attendanceMode: AttendanceMode;
   guestCount: number;
   childcare?: { childcareCount: number; childcareAgesNote: string };
 };
-type SeriesFeedbackReporter = (eventId: number, date: string, actorDates: string[]) => void;
+type SeriesFeedbackReporter = (eventId: number, date: string, actorResults: ActorRsvpResult[]) => void;
 
 const answerLabel = (status: RegistrationStatus) => status === "going" ? "Going" : status === "maybe" ? "Maybe" : "Can't go";
 const humanDays = (days: string[]) => days.map(formatCalendarDay).join(" and ");
@@ -89,11 +91,11 @@ function useActorSeriesRsvp({
     }
   }, [instance.date, instance.eventId, seriesFeedback]);
 
-  function reportDateMutation(message = "") {
+  function reportDateMutation(registration: RegistrationResponse, message = "") {
     setStatusMessage(message);
     setUndo(null);
     setError(null);
-    onSeriesFeedback?.(instance.eventId, instance.date, [instance.date]);
+    onSeriesFeedback?.(instance.eventId, instance.date, [actorResultFromRegistration(registration)]);
   }
 
   async function applySeries(answer: SeriesAnswer, scope: Exclude<SeriesRsvpScope, "just_this_date">) {
@@ -111,7 +113,7 @@ function useActorSeriesRsvp({
       });
       setStatusMessage(resultSummary(result));
       setUndo(result.undoToken && result.undoExpiresAt ? { token: result.undoToken, expiresAt: new Date(result.undoExpiresAt).getTime() } : null);
-      onSeriesFeedback?.(instance.eventId, instance.date, result.results.map((row) => row.date));
+      onSeriesFeedback?.(instance.eventId, instance.date, result.results.map(({ date, after }) => ({ date, after })));
       onChange({ registration: null, people: [] });
       queueMicrotask(() => statusRef.current?.focus());
     } catch (e) {
@@ -129,7 +131,7 @@ function useActorSeriesRsvp({
       const result = await Events.undoSeriesRegistration(instance.eventId, undo.token);
       setUndo(null);
       setStatusMessage(resultSummary(result, "Undo: "));
-      onSeriesFeedback?.(instance.eventId, instance.date, result.results.map((row) => row.date));
+      onSeriesFeedback?.(instance.eventId, instance.date, result.results.map(({ date, after }) => ({ date, after })));
       onChange({ registration: null, people: [] });
       queueMicrotask(() => statusRef.current?.focus());
     } catch (e) {
@@ -201,6 +203,13 @@ const savedActorAnswer = (instance: EventOccurrence): SavedActorAnswer => ({
   children: instance.myChildcareCount ?? 0,
   ages: instance.myChildcareAgesNote ?? "",
 });
+const savedActorAnswerFromState = (state: SeriesRegistrationState): SavedActorAnswer => ({
+  status: state.status ?? null,
+  mode: state.status ? state.attendanceMode ?? "in_person" : "in_person",
+  guests: state.status ? state.guestCount ?? 0 : 0,
+  children: state.status ? state.childcareCount ?? 0 : 0,
+  ages: state.status ? state.childcareAgesNote ?? "" : "",
+});
 const sameSavedActorAnswer = (left: SavedActorAnswer, right: SavedActorAnswer) => left.status === right.status
   && left.mode === right.mode && left.guests === right.guests && left.children === right.children && left.ages === right.ages;
 
@@ -211,11 +220,13 @@ function useActorDraftReconciliation(instance: EventOccurrence, seriesFeedback: 
   const reconcileRef = useRef(reconcile);
   reconcileRef.current = reconcile;
   useEffect(() => {
-    const nextSaved = savedActorAnswer(instance);
-    const savedChanged = !sameSavedActorAnswer(savedActor.current, nextSaved);
     const feedbackChanged = seriesFeedback?.revision !== undefined && seriesFeedback.revision !== actorRefreshRevision.current;
-    const actorRefresh = !!seriesFeedback && feedbackChanged && seriesFeedback.eventId === instance.eventId
-      && seriesFeedback.actorDates.includes(instance.date);
+    const actorResult = seriesFeedback?.eventId === instance.eventId
+      ? seriesFeedback.actorResults.find((row) => row.date === instance.date)
+      : undefined;
+    const actorRefresh = !!actorResult && feedbackChanged;
+    const nextSaved = actorRefresh ? savedActorAnswerFromState(actorResult.after) : savedActorAnswer(instance);
+    const savedChanged = !sameSavedActorAnswer(savedActor.current, nextSaved);
     savedActor.current = nextSaved;
     if (seriesFeedback?.revision !== undefined) actorRefreshRevision.current = seriesFeedback.revision;
     if (savedChanged || actorRefresh) reconcileRef.current(nextSaved);
@@ -301,7 +312,7 @@ function SingleRsvpButtons({
       });
       const registration: RegistrationResponse | null = result.registration;
       if (!registration) return;
-      series.reportDateMutation();
+      series.reportDateMutation(registration);
       onChange(result);
       if (switching) {
         series.announce(registration.status === "waitlisted"
@@ -490,8 +501,8 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
         ...(answer.status === "going" && instance.childcareAvailable ? answer.childcare : {}),
       });
       if (!result.registration) return;
-      series.reportDateMutation();
       const registration = result.registration;
+      series.reportDateMutation(registration);
       setMessage(registration.status === "waitlisted" ? `You: waitlist position ${registration.waitlistPosition}`
         : `You: ${registration.status === "going" ? `going ${registration.attendanceMode === "remote" ? "remotely" : "in person"}` : registration.status === "declined" ? "can't go" : "maybe"}`);
       onChange(result);
@@ -528,7 +539,7 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
       const describe = (name: string, status: string, mode: AttendanceMode, position: number | null) => status === "waitlisted" ? name + ": waitlist position " + position : name + ": " + (status === "going" ? "going " + (mode === "remote" ? "remotely" : "in person") : status === "declined" ? "can't go" : "maybe");
       const outcomes = result.people.map((r: HouseholdRegistration) => describe(people.find((p) => p.id === r.personId)?.name ?? "Household member", r.status, r.attendanceMode, r.waitlistPosition));
       if (result.registration) { const r = result.registration; outcomes.unshift(describe("You", r.status, r.attendanceMode, r.waitlistPosition)); }
-      if (command.status) series.reportDateMutation();
+      if (command.status && result.registration) series.reportDateMutation(result.registration);
       setMessage(outcomes.join("; ")); onChange(result);
     } catch (e) {
       setError(errorText(e, "We couldn't save your answers."));
