@@ -205,17 +205,41 @@ test("a household user keeps one-date drafts while their own answer uses every s
     .toEqual([["going", 2, 1, "5"], ["going", 2, 1, "5"], ["going", 2, 1, "5"]]);
   expect(afterFollowing.occurrences.flatMap((row) => row.myHouseholdRegistrations ?? [])).toEqual([]);
 
+  await first.getByRole("group", { name: "How you will attend" }).getByRole("radio", { name: "Remote" }).click();
+  await first.getByLabel("Extra guests").fill("2");
+  await first.getByLabel(/^Other children needing childcare/).fill("2");
+  await first.getByLabel(/^Ages/).fill("unsaved draft");
   await first.getByRole("button", { name: "Maybe for all" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Maybe for 4 dates" })).toHaveCount(1);
+  const refreshed = await parent("GET", `/events/${event.id}`) as {
+    occurrences: { myRegistration: string | null; myAttendanceMode: "in_person" | "remote"; myGuestCount: number; myChildcareCount: number; myChildcareAgesNote: string }[];
+  };
+  for (let index = 0; index < 4; index++) {
+    const form = forms.nth(index);
+    const server = refreshed.occurrences[index];
+    await expect(form.getByRole("checkbox", { name: "Me" })).toBeChecked();
+    await expect(form.getByLabel("Answer for you")).toHaveValue(server.myRegistration);
+    await expect(form.getByRole("group", { name: "How you will attend" }).getByRole("radio", { name: server.myAttendanceMode === "remote" ? "Remote" : "In person" })).toBeChecked();
+    await expect(form.getByLabel("Extra guests")).toHaveValue(String(server.myGuestCount));
+    await expect(form.getByLabel(/^Other children needing childcare/)).toHaveValue(String(server.myChildcareCount));
+    await expect(form.getByLabel(/^Ages/)).toHaveValue(server.myChildcareAgesNote);
+  }
   await expect(first.getByRole("checkbox", { name: "Mary" })).toBeChecked();
   await expect(first.getByLabel("Answer for Mary")).toHaveValue("maybe");
-  await capture(page, "household-series-all-future-result");
+  await capture(page, "household-series-r4-synchronized-forms");
+
+  const formerlyUnanswered = forms.nth(2);
+  await formerlyUnanswered.getByRole("checkbox", { name: "Mary" }).click();
+  await formerlyUnanswered.getByLabel("Answer for Mary").selectOption("maybe");
+  await formerlyUnanswered.getByRole("button", { name: "Save answers" }).click();
+  await expect(formerlyUnanswered.getByRole("status").filter({ hasText: "You: maybe" })).toBeVisible();
+  await expect(formerlyUnanswered.getByRole("status").filter({ hasText: "Mary: maybe" })).toBeVisible();
 
   const detail = await parent("GET", `/events/${event.id}`) as {
-    occurrences: { myRegistration: string | null; myGuestCount: number; myChildcareCount: number; myChildcareAgesNote: string; myHouseholdRegistrations?: unknown[] }[];
+    occurrences: { myRegistration: string | null; myGuestCount: number; myChildcareCount: number; myChildcareAgesNote: string; myHouseholdRegistrations?: { status: string }[] }[];
   };
   expect(detail.occurrences.map((row) => row.myRegistration)).toEqual(["maybe", "maybe", "maybe", "maybe"]);
-  expect(detail.occurrences.flatMap((row) => row.myHouseholdRegistrations ?? [])).toEqual([]);
+  expect(detail.occurrences[2].myHouseholdRegistrations?.map((row) => row.status)).toEqual(["maybe"]);
 });
 
 test("terminal Undo after authority loss refreshes away protected event details", async ({ page, request }) => {
@@ -240,9 +264,23 @@ test("terminal Undo after authority loss refreshes away protected event details"
 
   const { departure } = await admin("GET", `/groups/${group.id}/members/${sam!.id}/departure-preview`) as { departure: { snapshot: string } };
   await admin("POST", `/groups/${group.id}/members/${sam!.id}/departure`, { snapshot: departure.snapshot, keepOccurrenceIds: [] });
+  let releaseRefresh!: () => void;
+  let markRefreshStarted!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => { markRefreshStarted = resolve; });
+  const refreshRelease = new Promise<void>((resolve) => { releaseRefresh = resolve; });
+  const eventRoute = `**/api/v1/events/${event.id}`;
+  await page.route(eventRoute, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    markRefreshStarted();
+    await refreshRelease;
+    await route.continue();
+  });
   await page.getByRole("button", { name: "Undo" }).click();
-  await expect(page.getByRole("heading", { name: "Event not found" })).toBeVisible();
+  await refreshStarted;
   await expect(page.getByRole("heading", { name: "Protected Undo browser proof" })).toHaveCount(0);
+  releaseRefresh();
+  await expect(page.getByRole("heading", { name: "Event not found" })).toBeVisible();
+  await page.unroute(eventRoute);
 });
 
 test("mixed results, Undo seat loss, and Undo expiry are visible in the real browser", async ({ page, request }) => {

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,6 +34,13 @@ const page: EventDetailResponse = {
 
 function renderPage() {
   render(<MemoryRouter initialEntries={["/events/7"]}><Routes><Route path="/events/:id" element={<EventDetail />} /></Routes></MemoryRouter>);
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((accept, decline) => { resolve = accept; reject = decline; });
+  return { promise, resolve, reject };
 }
 
 async function editDate() {
@@ -111,12 +118,13 @@ it("clears a sibling card's series Undo after a one-date answer", async () => {
   await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
 });
 
-it("fails closed when terminal Undo refresh loses event authority", async () => {
+it("clears protected event data while a terminal Undo refresh is still pending", async () => {
   const recurring = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: [occurrence({ recurrenceRule: "FREQ=WEEKLY" })] };
+  const terminal = deferred<EventDetailResponse>();
   vi.mocked(Events.get)
     .mockResolvedValueOnce(recurring)
     .mockResolvedValueOnce(recurring)
-    .mockRejectedValueOnce(new ApiError(404, "hidden", { code: "not_found" }));
+    .mockReturnValueOnce(terminal.promise);
   vi.mocked(Events.registerSeries).mockResolvedValue({
     eventId: 7, scope: "all_future", status: "maybe",
     results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "maybe" } }],
@@ -126,8 +134,38 @@ it("fails closed when terminal Undo refresh loses event authority", async () => 
   renderPage();
   await userEvent.click(await screen.findByRole("button", { name: "Maybe for all" }));
   await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
-  expect(await screen.findByRole("heading", { name: "Event not found" })).toBeInTheDocument();
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
   expect(screen.queryByRole("heading", { name: "Hybrid study" })).not.toBeInTheDocument();
+  await act(async () => terminal.reject(new ApiError(404, "hidden", { code: "not_found" })));
+  expect(await screen.findByRole("heading", { name: "Event not found" })).toBeInTheDocument();
+});
+
+it("keeps the newest event refresh when an older quiet request resolves last", async () => {
+  const recurring = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: [occurrence({ recurrenceRule: "FREQ=WEEKLY" })] };
+  const old = deferred<EventDetailResponse>();
+  const terminal = deferred<EventDetailResponse>();
+  const stale = { ...recurring, event: { ...recurring.event, title: "Stale event details" } };
+  const current = { ...recurring, event: { ...recurring.event, title: "Current event details" } };
+  vi.mocked(Events.get)
+    .mockResolvedValueOnce(recurring)
+    .mockReturnValueOnce(old.promise)
+    .mockReturnValueOnce(terminal.promise);
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "maybe",
+    results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "maybe" } }],
+    refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+  });
+  vi.mocked(Events.undoSeriesRegistration).mockRejectedValue(new ApiError(409, "changed", { code: "undo_changed" }));
+  renderPage();
+  await userEvent.click(await screen.findByRole("button", { name: "Maybe for all" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+  await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
+  expect(screen.queryByRole("heading", { name: "Hybrid study" })).not.toBeInTheDocument();
+  await act(async () => terminal.resolve(current));
+  expect(await screen.findByRole("heading", { name: "Current event details" })).toBeInTheDocument();
+  await act(async () => old.resolve(stale));
+  expect(screen.getByRole("heading", { name: "Current event details" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Stale event details" })).not.toBeInTheDocument();
 });
 
 it("shows the public childcare ages and notes", async () => {

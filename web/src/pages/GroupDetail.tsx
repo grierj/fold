@@ -367,22 +367,31 @@ export function GroupDetail() {
   const [memberError, setMemberError] = useState<string | null>(null);
   const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
   const coverRef = useRef<HTMLInputElement>(null);
+  const loadRevision = useRef(0);
 
-  // quiet refreshes in place (after an RSVP) without the Loading screen.
+  // Quiet refreshes keep ordinary RSVP drafts mounted. A terminal refresh
+  // invalidates protected data immediately, and only the newest request may
+  // commit detail, error, not-found or loading state.
   const load = useCallback(async (quiet = false, failClosed = false) => {
     if (!id) return;
-    if (!quiet) setLoading(true);
+    const revision = ++loadRevision.current;
+    if (failClosed) {
+      setDetail(null);
+      setLoading(true);
+    } else if (!quiet) {
+      setLoading(true);
+    }
     setError(null);
     setNotFound(false);
     try {
-      const d = await Groups.get(id);
-      setDetail(d);
+      const next = await Groups.get(id);
+      if (loadRevision.current === revision) setDetail(next);
     } catch (e) {
-      if (failClosed) setDetail(null);
+      if (loadRevision.current !== revision) return;
       if (e instanceof ApiError && e.status === 404) setNotFound(true);
       else setError(errorText(e, "We couldn't load this group."));
     } finally {
-      setLoading(false);
+      if (loadRevision.current === revision) setLoading(false);
     }
   }, [id]);
 

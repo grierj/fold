@@ -1,6 +1,6 @@
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
 import { useAuth } from "../auth";
@@ -36,21 +36,31 @@ export function EventDetail() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
+  const loadRevision = useRef(0);
 
-  // quiet refreshes in place (after an RSVP) without the Loading screen.
+  // Quiet refreshes keep ordinary RSVP drafts mounted. A terminal refresh
+  // invalidates protected data immediately, and only the newest request may
+  // commit page, error, not-found or loading state.
   const load = useCallback(async (quiet = false, failClosed = false) => {
     if (!id) return;
-    if (!quiet) setLoading(true);
+    const revision = ++loadRevision.current;
+    if (failClosed) {
+      setPage(null);
+      setLoading(true);
+    } else if (!quiet) {
+      setLoading(true);
+    }
     setError(null);
     setNotFound(false);
     try {
-      setPage(await Events.get(id));
+      const next = await Events.get(id);
+      if (loadRevision.current === revision) setPage(next);
     } catch (e) {
-      if (failClosed) setPage(null);
+      if (loadRevision.current !== revision) return;
       if (e instanceof ApiError && e.status === 404) setNotFound(true);
       else setError(errorText(e, "We couldn't load this event."));
     } finally {
-      setLoading(false);
+      if (loadRevision.current === revision) setLoading(false);
     }
   }, [id]);
 

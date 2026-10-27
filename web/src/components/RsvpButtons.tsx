@@ -394,6 +394,12 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
   const [guests, setGuests] = useState(instance.myGuestCount ?? 0);
   const [children, setChildren] = useState(String(instance.myChildcareCount ?? 0));
   const [ages, setAges] = useState(instance.myChildcareAgesNote ?? "");
+  useEffect(() => {
+    setMe(draftAnswer(instance.myRegistration, instance.myAttendanceMode));
+    setGuests(instance.myGuestCount ?? 0);
+    setChildren(String(instance.myChildcareCount ?? 0));
+    setAges(instance.myChildcareAgesNote ?? "");
+  }, [instance]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");

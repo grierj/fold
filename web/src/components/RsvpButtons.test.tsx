@@ -1,6 +1,6 @@
 import { MemoryRouter } from "react-router-dom";
 import { useState } from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RsvpButtons } from "./RsvpButtons";
@@ -521,6 +521,69 @@ describe("named household answers", () => {
       status: "maybe", scope: "all_future", guestCount: 0,
     }));
     expect(screen.getByLabelText("Answer for Mary")).toHaveValue("maybe");
+  });
+
+  it("synchronizes refreshed actor answers across household cards without discarding proxy drafts", async () => {
+    const initial = [
+      occurrence({ recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, childcareAvailable: true, guestsAllowed: 2,
+        myRegistration: "going", myAttendanceMode: "remote", myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }),
+      occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, childcareAvailable: true, guestsAllowed: 2 }),
+    ];
+    vi.mocked(Events.registerSeries).mockResolvedValue({
+      eventId: 7, scope: "all_future", status: "maybe",
+      results: initial.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 30, status: "maybe" as const } })),
+      refusals: [],
+    });
+    vi.mocked(Events.register).mockResolvedValue({
+      registration: { registrationId: 32, userId: 3, eventId: 7, occurrenceId: 2, date: "2026-12-08", status: "maybe",
+        guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "remote" },
+      people: [{ registrationId: 33, personId: mary.id, registeredBy: 3, status: "maybe", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }],
+    });
+
+    function SiblingCards() {
+      const [instances, setInstances] = useState(initial);
+      const refresh = () => setInstances((rows) => rows.map((row) => ({
+        ...row,
+        myRegistration: "maybe",
+        myAttendanceMode: "remote",
+        myGuestCount: 0,
+        myChildcareCount: 0,
+        myChildcareAgesNote: "",
+      })));
+      return <MemoryRouter>{instances.map((instance) => <RsvpButtons key={instance.id} people={[mary]} instance={instance} onChange={refresh} />)}</MemoryRouter>;
+    }
+
+    render(<SiblingCards />);
+    let forms = screen.getAllByRole("form", { name: "Household answers" });
+    const sibling = within(forms[1]);
+    await userEvent.click(sibling.getByRole("checkbox", { name: "Mary" }));
+    await userEvent.selectOptions(sibling.getByLabelText("Answer for Mary"), "maybe");
+
+    await userEvent.click(within(forms[0]).getByRole("button", { name: "Maybe for all" }));
+    await waitFor(() => expect(within(screen.getAllByRole("form", { name: "Household answers" })[1]).getByRole("checkbox", { name: "Me" })).toBeChecked());
+    forms = screen.getAllByRole("form", { name: "Household answers" });
+    for (const form of forms) {
+      const card = within(form);
+      expect(card.getByRole("checkbox", { name: "Me" })).toBeChecked();
+      expect(card.getByLabelText("Answer for you")).toHaveValue("maybe");
+      expect(within(card.getByRole("group", { name: "How you will attend" })).getByRole("radio", { name: "Remote" })).toBeChecked();
+      expect(card.getByLabelText("Extra guests")).toHaveValue(0);
+      expect(card.getByLabelText(/^Other children needing childcare/)).toHaveValue("0");
+      expect(card.getByRole("textbox", { name: /^Ages/ })).toHaveValue("");
+    }
+    expect(within(forms[1]).getByRole("checkbox", { name: "Mary" })).toBeChecked();
+    expect(within(forms[1]).getByLabelText("Answer for Mary")).toHaveValue("maybe");
+
+    await userEvent.click(within(forms[1]).getByRole("button", { name: "Save answers" }));
+    expect(Events.register).toHaveBeenLastCalledWith(7, {
+      date: "2026-12-08",
+      status: "maybe",
+      attendanceMode: "remote",
+      guestCount: 0,
+      childcareCount: 0,
+      childcareAgesNote: "",
+      people: [{ personId: mary.id, status: "maybe", attendanceMode: "in_person", childcareRequested: false }],
+    });
   });
 
   it("keeps pending and missing-age people visible but disabled even if Me was removed", () => {
