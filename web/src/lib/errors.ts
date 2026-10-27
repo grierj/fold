@@ -127,6 +127,14 @@ export const ERROR_COPY = {
   series_scope_invalid: "Choose which future dates this answer should cover, then try again.",
   series_date_invalid: "That starting date isn't valid. Refresh the event and try again.",
   series_no_dates: "This series has no upcoming dates to answer. Refresh the event to see its current dates.",
+  undo_token_required: "That Undo link is incomplete. Refresh the event and try again.",
+  undo_other_actor: "That Undo belongs to someone else. Use Undo from your own answer.",
+  undo_expired: "The 10-second Undo time has ended. You can change your answers again from the event.",
+  undo_used: "That Undo was already used. Refresh the event to see your current answers.",
+  undo_changed: "An answer changed after that action. Refresh the event before changing it again.",
+  undo_authority_revoked: "You can no longer answer this series. Refresh the event or ask a leader for help.",
+  undo_date_ended: "One of those dates is no longer open. Refresh the event to see the dates you can answer.",
+  undo_not_found: "That Undo is no longer available. Refresh the event to see your current answers.",
 
   // Uploads
   file_too_large: "That picture is too big. Please use one under 5 MB.",

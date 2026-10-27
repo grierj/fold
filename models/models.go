@@ -366,6 +366,20 @@ type Membership struct {
 // User (C5), with Source guest_form and a hashed manage token: the raw
 // token travels only in the confirmation email and lets the guest cancel
 // without an account.
+// SeriesUndoReceipt is a short-lived, actor-bound receipt for one bulk
+// series answer. Snapshot is server-captured JSON containing only the selected
+// occurrence IDs and their exact before/after registration states.
+type SeriesUndoReceipt struct {
+	ID        uint      `gorm:"primaryKey"`
+	TokenHash string    `gorm:"not null;uniqueIndex:idx_series_undo_receipts_token_hash"`
+	ActorID   uint      `gorm:"not null;index"`
+	EventID   uint      `gorm:"not null"`
+	Snapshot  string    `gorm:"type:jsonb;not null"`
+	ExpiresAt time.Time `gorm:"not null;index"`
+	UsedAt    *time.Time
+	CreatedAt time.Time `gorm:"not null;default:now()"`
+}
+
 type Registration struct {
 	ID                 uint            `gorm:"primaryKey"`
 	OccurrenceID       uint            `gorm:"not null;uniqueIndex:idx_registration;uniqueIndex:idx_household_registration,where:household_person_id IS NOT NULL"`
@@ -828,7 +842,7 @@ type ManagerAddBlock struct {
 func All() []any {
 	return []any{
 		&User{}, &Group{}, &Event{}, &EventHost{}, &EventOccurrence{},
-		&Membership{}, &Registration{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
+		&Membership{}, &Registration{}, &SeriesUndoReceipt{}, &Setting{}, &AuditLog{}, &LoginThrottle{},
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},

@@ -137,6 +137,14 @@ var errorCodes = map[string]string{
 	"scope must be all_future or this_and_following":                                     "series_scope_invalid",
 	"date must be YYYY-MM-DD":                                                            "series_date_invalid",
 	"this series has no future dates to answer":                                          "series_no_dates",
+	"undo token is required":                                                             "undo_token_required",
+	"this Undo belongs to someone else":                                                  "undo_other_actor",
+	"the Undo time has ended":                                                            "undo_expired",
+	"this Undo was already used":                                                         "undo_used",
+	"an answer changed after this action; refresh before trying again":                   "undo_changed",
+	"you can no longer answer this series":                                               "undo_authority_revoked",
+	"one of these dates is no longer open":                                               "undo_date_ended",
+	"Undo not found":                                                                     "undo_not_found",
 
 	// Households and guardian links (M1.9, DEC-32)
 	"kind must be child, teen, or adult":                "invalid_kind",

@@ -60,12 +60,56 @@ type seriesRegistrationRefusal struct {
 }
 
 type seriesRegistrationResponse struct {
-	EventID  uint                        `json:"eventId"`
-	Scope    string                      `json:"scope"`
-	Date     string                      `json:"date,omitempty"`
-	Status   string                      `json:"status"`
-	Results  []seriesRegistrationResult  `json:"results"`
-	Refusals []seriesRegistrationRefusal `json:"refusals"`
+	EventID       uint                        `json:"eventId"`
+	Scope         string                      `json:"scope"`
+	Date          string                      `json:"date,omitempty"`
+	Status        string                      `json:"status"`
+	Results       []seriesRegistrationResult  `json:"results"`
+	Refusals      []seriesRegistrationRefusal `json:"refusals"`
+	UndoToken     string                      `json:"undoToken,omitempty"`
+	UndoExpiresAt *time.Time                  `json:"undoExpiresAt,omitempty"`
+	CapacityLoss  []string                    `json:"capacityLoss,omitempty"`
+}
+
+const seriesUndoTTL = 10 * time.Second
+
+type seriesUndoState struct {
+	Exists             bool       `json:"exists"`
+	RegistrationID     uint       `json:"registrationId,omitempty"`
+	Status             string     `json:"status,omitempty"`
+	GuestCount         int        `json:"guestCount,omitempty"`
+	AttendanceMode     string     `json:"attendanceMode,omitempty"`
+	ChildcareCount     int        `json:"childcareCount,omitempty"`
+	ChildcareAgesNote  string     `json:"childcareAgesNote,omitempty"`
+	ChildcareRequested bool       `json:"childcareRequested,omitempty"`
+	Source             string     `json:"source,omitempty"`
+	RegisteredBy       *uint      `json:"registeredBy,omitempty"`
+	WaitlistedAt       *time.Time `json:"waitlistedAt,omitempty"`
+	PromotedAt         *time.Time `json:"promotedAt,omitempty"`
+	UpdatedAt          time.Time  `json:"updatedAt,omitempty"`
+}
+
+type seriesUndoItem struct {
+	OccurrenceID uint            `json:"occurrenceId"`
+	Date         string          `json:"date"`
+	Before       seriesUndoState `json:"before"`
+	After        seriesUndoState `json:"after"`
+}
+
+func undoState(r models.Registration) seriesUndoState {
+	if r.ID == 0 {
+		return seriesUndoState{}
+	}
+	return seriesUndoState{Exists: true, RegistrationID: r.ID, Status: r.Status, GuestCount: r.GuestCount,
+		AttendanceMode: attendanceModeOf(r.AttendanceMode), ChildcareCount: r.ChildcareCount,
+		ChildcareAgesNote: r.ChildcareAgesNote, ChildcareRequested: r.ChildcareRequested, Source: r.Source,
+		RegisteredBy: r.RegisteredBy, WaitlistedAt: r.WaitlistedAt, PromotedAt: r.PromotedAt, UpdatedAt: r.UpdatedAt}
+}
+
+func sameUndoState(a, b seriesUndoState) bool {
+	aj, _ := json.Marshal(a)
+	bj, _ := json.Marshal(b)
+	return string(aj) == string(bj)
 }
 
 // registrationState is deliberately actor-only. Keeping the exact before and
@@ -122,6 +166,13 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	response := seriesRegistrationResponse{EventID: eventID, Scope: body.Scope, Date: body.Date, Status: body.Status,
 		Results: []seriesRegistrationResult{}, Refusals: []seriesRegistrationRefusal{}}
 	var mailed []uint
+	undoRaw, tokenErr := newRawToken()
+	if tokenErr != nil {
+		jsonError(c, http.StatusInternalServerError, tokenErr.Error())
+		return
+	}
+	undoExpires := now.Add(seriesUndoTTL)
+	var undoItems []seriesUndoItem
 
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		// Compatible order with membership, event, exact-date, and manager
@@ -272,6 +323,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 				afterState.WaitlistPosition = &position
 			}
 			response.Results = append(response.Results, seriesRegistrationResult{OccurrenceID: o.ID, Date: o.OriginalDate, Before: beforeState, After: afterState})
+			undoItems = append(undoItems, seriesUndoItem{OccurrenceID: o.ID, Date: o.OriginalDate, Before: undoState(old), After: undoState(after)})
 
 			// An ordinarily-authorized bulk Can't go still ends exact-date
 			// provenance on that date, matching the single-date path. The
@@ -289,6 +341,24 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 					mailed = append(mailed, ids...)
 				}
 			}
+		}
+		if len(undoItems) > 0 {
+			snapshot, err := json.Marshal(undoItems)
+			if err != nil {
+				return err
+			}
+			// Only the latest receipt for an actor can still match their current
+			// state. Removing older receipts also bounds retained snapshot data;
+			// expired rows for every actor are opportunistically swept here.
+			if err := tx.Where("expires_at <= ? OR actor_id = ?", now, actor.ID).Delete(&models.SeriesUndoReceipt{}).Error; err != nil {
+				return err
+			}
+			receipt := models.SeriesUndoReceipt{TokenHash: hashToken(undoRaw), ActorID: actor.ID, EventID: ev.ID,
+				Snapshot: string(snapshot), ExpiresAt: undoExpires, CreatedAt: now}
+			if err := tx.Create(&receipt).Error; err != nil {
+				return err
+			}
+			response.UndoToken, response.UndoExpiresAt = undoRaw, &undoExpires
 		}
 		return nil
 	})
@@ -319,11 +389,206 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
+type seriesUndoInput struct {
+	Token string `json:"token"`
+}
+
+func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
+	eventID64, parseErr := strconv.ParseUint(c.Param("id"), 10, 64)
+	var body seriesUndoInput
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	if parseErr != nil || eventID64 == 0 || decoder.Decode(&body) != nil || body.Token == "" {
+		jsonError(c, http.StatusBadRequest, "undo token is required")
+		return
+	}
+	actorAtRequest := apiUser(c)
+	now := time.Now().UTC()
+	response := seriesRegistrationResponse{EventID: uint(eventID64), Results: []seriesRegistrationResult{}, Refusals: []seriesRegistrationRefusal{}, CapacityLoss: []string{}}
+	var mailed []uint
+
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		// Peek only to identify the actor/event. The actual single-use decision
+		// happens after the standard contact -> actor lock order, matching normal
+		// and bulk registration mutations and avoiding a receipt/contact inversion.
+		var receipt models.SeriesUndoReceipt
+		if err := tx.Where("token_hash = ?", hashToken(body.Token)).First(&receipt).Error; err != nil {
+			return errSeriesUndoUnavailable
+		}
+		if receipt.ActorID != actorAtRequest.ID {
+			return errSeriesUndoOtherActor
+		}
+		if receipt.EventID != uint(eventID64) {
+			return errSeriesUndoUnavailable
+		}
+		if err := lockContacts(tx); err != nil {
+			return err
+		}
+		var actor models.User
+		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, actorAtRequest.ID).Error; err != nil || !actor.CanSignIn() || actor.SessionVersion != actorAtRequest.SessionVersion {
+			return errSeriesUndoAuthority
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", receipt.ID).First(&receipt).Error; err != nil {
+			return errSeriesUndoUnavailable
+		}
+		if receipt.UsedAt != nil {
+			return errSeriesUndoUsed
+		}
+		// The ten-second window is half-open: exactly ExpiresAt is expired.
+		if !now.Before(receipt.ExpiresAt) {
+			return errSeriesUndoExpired
+		}
+		var items []seriesUndoItem
+		if err := json.Unmarshal([]byte(receipt.Snapshot), &items); err != nil || len(items) == 0 {
+			return errSeriesUndoUnavailable
+		}
+		var ev models.Event
+		if err := tx.First(&ev, receipt.EventID).Error; err != nil || ev.RRule == "" {
+			return errSeriesUndoAuthority
+		}
+		gp, rel := policy.Group{}, policy.Rel{}
+		if ev.GroupID != nil {
+			var group models.Group
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&group, *ev.GroupID).Error; err != nil {
+				return errSeriesUndoAuthority
+			}
+			gp, rel = asGroup(&group), relIn(tx, actor.ID, group.ID)
+		}
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&ev, receipt.EventID).Error; err != nil ||
+			!policy.CanRegisterEvent(asPerson(&actor), viewOf(&ev, false), gp, rel) {
+			return errSeriesUndoAuthority
+		}
+
+		locked := make([]models.EventOccurrence, len(items))
+		for i, item := range items {
+			o, err := lockOccurrence(tx, item.OccurrenceID)
+			if err != nil || o.EventID != ev.ID || o.Status != models.OccurrenceScheduled || !o.StartsAt.After(now) ||
+				!policy.CanRegisterEvent(asPerson(&actor), viewOf(dateEvent(&ev, o), false), gp, rel) {
+				return errSeriesUndoEnded
+			}
+			locked[i] = *o
+			var current models.Registration
+			if err := tx.Where("occurrence_id = ? AND user_id = ?", o.ID, actor.ID).Limit(1).Find(&current).Error; err != nil {
+				return err
+			}
+			if !sameUndoState(undoState(current), item.After) {
+				return errSeriesUndoChanged
+			}
+		}
+		receipt.UsedAt = &now
+		if err := tx.Model(&receipt).Update("used_at", now).Error; err != nil {
+			return err
+		}
+
+		for i, item := range items {
+			o := &locked[i]
+			var current models.Registration
+			if err := tx.Where("occurrence_id = ? AND user_id = ?", o.ID, actor.ID).First(&current).Error; err != nil {
+				return err
+			}
+			beforePublic := registrationState(current)
+			savepoint := "series_undo_" + strconv.Itoa(i)
+			if err := tx.SavePoint(savepoint).Error; err != nil {
+				return err
+			}
+			if !item.Before.Exists {
+				zero, empty := 0, ""
+				change, err := prepareRegistration(current, o, userSubject(actor.ID), models.RegDeclined, 0, current.AttendanceMode,
+					childcareRequest{ChildcareCount: &zero, ChildcareAgesNote: &empty}, nil, now)
+				if err == nil {
+					var ids []uint
+					ids, err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, now, actor.ID, c.ClientIP())
+					mailed = append(mailed, ids...)
+				}
+				if err == nil {
+					err = tx.Delete(&models.Registration{}, current.ID).Error
+				}
+				if err != nil {
+					return err
+				}
+				response.Results = append(response.Results, seriesRegistrationResult{OccurrenceID: o.ID, Date: item.Date, Before: beforePublic, After: seriesRegistrationState{}})
+				continue
+			}
+
+			next := current
+			next.Status, next.GuestCount, next.AttendanceMode = item.Before.Status, item.Before.GuestCount, item.Before.AttendanceMode
+			next.ChildcareCount, next.ChildcareAgesNote, next.ChildcareRequested = item.Before.ChildcareCount, item.Before.ChildcareAgesNote, item.Before.ChildcareRequested
+			next.Source, next.RegisteredBy, next.WaitlistedAt, next.PromotedAt = item.Before.Source, item.Before.RegisteredBy, item.Before.WaitlistedAt, item.Before.PromotedAt
+			change := registrationChange{old: current, next: next, found: true}
+			ids, err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, now, actor.ID, c.ClientIP())
+			if err != nil {
+				if code := seriesRefusalCode(err); code != "" {
+					if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {
+						return rollbackErr
+					}
+					response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: item.Date, Code: code})
+					if item.Before.Status == models.RegGoing {
+						response.CapacityLoss = append(response.CapacityLoss, item.Date)
+					}
+					continue
+				}
+				return err
+			}
+			mailed = append(mailed, ids...)
+			var restored models.Registration
+			if err := tx.First(&restored, current.ID).Error; err != nil {
+				return err
+			}
+			afterPublic := registrationState(restored)
+			if restored.Status == models.RegWaitlisted {
+				position, err := waitlistPosition(tx, o.ID, restored.ID)
+				if err != nil {
+					return err
+				}
+				afterPublic.WaitlistPosition = &position
+			}
+			if item.Before.Status == models.RegGoing && restored.Status != models.RegGoing {
+				response.CapacityLoss = append(response.CapacityLoss, item.Date)
+			}
+			response.Results = append(response.Results, seriesRegistrationResult{OccurrenceID: o.ID, Date: item.Date, Before: beforePublic, After: afterPublic})
+		}
+		// Keep cleanup explicit and cheap; at most one live receipt per actor is
+		// created, and spent/expired receipts disappear on subsequent use.
+		return tx.Where("expires_at <= ?", now).Delete(&models.SeriesUndoReceipt{}).Error
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, errSeriesUndoOtherActor):
+			jsonError(c, http.StatusForbidden, "this Undo belongs to someone else")
+		case errors.Is(err, errSeriesUndoExpired):
+			jsonError(c, http.StatusConflict, "the Undo time has ended")
+		case errors.Is(err, errSeriesUndoUsed):
+			jsonError(c, http.StatusConflict, "this Undo was already used")
+		case errors.Is(err, errSeriesUndoChanged):
+			jsonError(c, http.StatusConflict, "an answer changed after this action; refresh before trying again")
+		case errors.Is(err, errSeriesUndoAuthority):
+			jsonError(c, http.StatusConflict, "you can no longer answer this series")
+		case errors.Is(err, errSeriesUndoEnded):
+			jsonError(c, http.StatusConflict, "one of these dates is no longer open")
+		case errors.Is(err, errSeriesUndoUnavailable):
+			jsonError(c, http.StatusNotFound, "Undo not found")
+		default:
+			jsonError(c, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	sort.Strings(response.CapacityLoss)
+	a.deliverNotificationEmails(mailed)
+	c.JSON(http.StatusOK, response)
+}
+
 var (
-	errSeriesUnavailable    = errors.New("series unavailable")
-	errSeriesNoDates        = errors.New("series has no future dates")
-	errSeriesGuests         = errors.New("series guest count invalid")
-	errSeriesMode           = errors.New("series attendance mode invalid")
-	errSeriesChildcareCount = errors.New("series childcare count invalid")
-	errSeriesChildcareNote  = errors.New("series childcare note invalid")
+	errSeriesUnavailable     = errors.New("series unavailable")
+	errSeriesNoDates         = errors.New("series has no future dates")
+	errSeriesGuests          = errors.New("series guest count invalid")
+	errSeriesMode            = errors.New("series attendance mode invalid")
+	errSeriesChildcareCount  = errors.New("series childcare count invalid")
+	errSeriesChildcareNote   = errors.New("series childcare note invalid")
+	errSeriesUndoUnavailable = errors.New("series undo unavailable")
+	errSeriesUndoOtherActor  = errors.New("series undo other actor")
+	errSeriesUndoExpired     = errors.New("series undo expired")
+	errSeriesUndoUsed        = errors.New("series undo used")
+	errSeriesUndoChanged     = errors.New("series undo state changed")
+	errSeriesUndoAuthority   = errors.New("series undo authority revoked")
+	errSeriesUndoEnded       = errors.New("series undo occurrence ended")
 )

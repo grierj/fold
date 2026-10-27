@@ -745,10 +745,17 @@ PUT /api/v1/events/:id/registrations   → 200 {registration, people}   (auth)
   body: {date: "YYYY-MM-DD", status?: "going"|"maybe"|"declined", guestCount?,
          attendanceMode?, childcareCount?, childcareAgesNote?,
          people?: [{personId, status, attendanceMode?, childcareRequested?}]}
-POST /api/v1/events/:id/series-registrations  → 200 {eventId, scope, date?, status, results, refusals}   (auth)
+POST /api/v1/events/:id/series-registrations  → 200 {eventId, scope, date?, status, results, refusals, undoToken?, undoExpiresAt?}   (auth)
   body: {scope: "all_future"|"this_and_following", date?,
          status: "going"|"maybe"|"declined", guestCount?, attendanceMode?,
          childcareCount?, childcareAgesNote?}
+  The server freezes the selected occurrence IDs and their before/after states in
+  an actor-bound receipt. Only the latest receipt remains live for an actor.
+POST /api/v1/events/:id/series-registrations/undo  → 200 {eventId, results, refusals, capacityLoss}   (auth)
+  body: {token}
+  The receipt is single-use and expires after 10 seconds. Undo refuses if answers,
+  authority, or date availability changed. Restoring Going uses current capacity;
+  capacityLoss lists only the signed-in person's dates that could not regain a seat.
 POST /api/v1/events/:id/registrations/remove  → 200 {} | 403 | 404  (leader/host)
   body: {date: "YYYY-MM-DD", registrationId, note?}
 POST /api/v1/events/:id/registrations/promote → 200 {} | 403 | 404 | 409  (leader/host)
