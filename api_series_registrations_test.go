@@ -219,8 +219,9 @@ func TestSeriesRegistrationRequiresSeriesAuthorityAndIgnoresManagerBlock(t *test
 	if err := app.DB.Create(&reg).Error; err != nil {
 		t.Fatal(err)
 	}
+	issuerID := leader.ID
 	access := models.OccurrenceAccess{SubjectUserID: actor.ID, OccurrenceID: occs[0].ID, EventID: ev.ID, OrganizerType: policy.ContactGroup,
-		OrganizerID: group.ID, IssuerID: leader.ID, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: time.Now().UTC()}
+		OrganizerID: group.ID, Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: time.Now().UTC()}
 	if err := app.DB.Create(&access).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -635,8 +636,9 @@ func TestSeriesUndoDoesNotReviveEndedOccurrenceAccess(t *testing.T) {
 	if err := app.DB.Create(&reg).Error; err != nil {
 		t.Fatal(err)
 	}
+	issuerID := leader.ID
 	access := models.OccurrenceAccess{SubjectUserID: actor.ID, OccurrenceID: occs[0].ID, EventID: ev.ID, OrganizerType: policy.ContactGroup,
-		OrganizerID: group.ID, IssuerID: leader.ID, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: time.Now().UTC()}
+		OrganizerID: group.ID, Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: time.Now().UTC()}
 	if err := app.DB.Create(&access).Error; err != nil {
 		t.Fatal(err)
 	}

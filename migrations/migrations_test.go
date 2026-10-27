@@ -12,6 +12,7 @@ import (
 	"fold/migrations"
 	"fold/models"
 
+	"github.com/pressly/goose/v3"
 	"github.com/pressly/goose/v3/lock"
 )
 
@@ -170,6 +171,384 @@ func TestContactRequestsConstraints(t *testing.T) {
 	if _, err := p.Up(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestOccurrenceAccessDepartureOriginMigration(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, true))
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	refuse := func(name, q string) {
+		t.Helper()
+		if _, err := db.Exec(q); err == nil {
+			t.Fatalf("%s accepted", name)
+		}
+	}
+	for _, q := range []string{
+		`INSERT INTO users(id,email,status,role,account_type) VALUES
+		 (1,'departure-leader@example.com','active','member','adult'),
+		 (2,'departure-subject@example.com','active','member','adult'),
+		 (3,'departure-member@example.com','active','member','adult'),
+		 (4,'departure-admin@example.com','active','admin','adult'),
+		 (5,'departure-coleader@example.com','active','member','adult'),
+		 (6,'departure-teen@example.com','active','member','teen'),
+		 (7,'departure-other-admin@example.com','active','admin','adult')`,
+		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Departure group',1,'active','invite_only')`,
+		`INSERT INTO memberships(id,user_id,group_id,role,status) VALUES
+		 (50,2,10,'member','active'),(51,1,10,'leader','active'),(52,3,10,'member','active'),
+		 (53,5,10,'leader','active'),(54,4,10,'member','active'),(55,6,10,'member','active')`,
+		`INSERT INTO events(id,group_id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by)
+		 VALUES(20,10,'Departure series','','2026-12-01T18:00',60,'UTC','','','invite_only',1)`,
+		`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status) VALUES
+		 (30,20,'2026-12-01','2026-12-01 18:00Z','2026-12-01 19:00Z','scheduled'),
+		 (31,20,'2026-12-02','2026-12-02 18:00Z','2026-12-02 19:00Z','scheduled'),
+		 (32,20,'2026-12-03','2026-12-03 18:00Z','2026-12-03 19:00Z','scheduled'),
+		 (33,20,'2026-12-04','2026-12-04 18:00Z','2026-12-04 19:00Z','scheduled'),
+		 (34,20,'2026-12-05','2026-12-05 18:00Z','2026-12-05 19:00Z','scheduled'),
+		 (35,20,'2026-12-06','2026-12-06 18:00Z','2026-12-06 19:00Z','scheduled'),
+		 (36,20,'2026-12-07','2026-12-07 18:00Z','2026-12-07 19:00Z','scheduled')`,
+		`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES
+		 (40,30,2,'maybe','web'),(41,31,2,'waitlisted','web'),(42,32,3,'going','admin'),
+		 (43,33,3,'going','admin'),(44,34,6,'going','admin'),(45,35,4,'going','web'),
+		 (46,36,3,'maybe','web')`,
+		`INSERT INTO contact_requests(id,requester_id,subject_user_id,context_type,context_id,fields,needs_admin,admin_decision,created_at,expires_at)
+		 VALUES(60,1,4,'group',10,'email',false,'not_needed','2026-10-20 12:00Z','2026-11-03 12:00Z')`,
+		`INSERT INTO manager_add_blocks(subject_user_id,organizer_type,organizer_id) VALUES(2,'group',10),(3,'group',10)`,
+	} {
+		exec(q)
+	}
+
+	// Blocks govern new manager adds only. They do not invalidate standing
+	// Maybe/Waitlisted registrations retained by an authorized departure.
+	exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,
+	 registration_id,departure_membership_id,departure_actor_id,granted_at)
+	 VALUES(2,30,20,'group',10,'departure_self',40,50,2,'2026-10-26 12:00Z')`)
+	exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,
+	 registration_id,departure_membership_id,departure_actor_id,granted_at)
+	 VALUES(2,31,20,'group',10,'departure_removal',41,50,1,'2026-10-26 12:00Z')`)
+
+	// Existing manager rows receive the explicit default and keep their issuer
+	// requirements. A block, teen direct add, and non-Going manager add fail.
+	exec(`DELETE FROM manager_add_blocks WHERE subject_user_id=3`)
+	exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
+	 VALUES(3,32,20,'group',10,1,42)`)
+	refuse("manager add for Maybe", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
+	 VALUES(3,36,20,'group',10,1,46)`)
+	var origin string
+	if err := db.QueryRow(`SELECT origin FROM occurrence_accesses WHERE occurrence_id=32`).Scan(&origin); err != nil || origin != "manager_add" {
+		t.Fatalf("manager origin default = %q, %v", origin, err)
+	}
+	exec(`INSERT INTO manager_add_blocks(subject_user_id,organizer_type,organizer_id) VALUES(3,'group',10)`)
+	refuse("blocked manager add", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
+	 VALUES(3,33,20,'group',10,1,43)`)
+	refuse("direct teen manager add", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id)
+	 VALUES(6,34,20,'group',10,1,44)`)
+	refuse("manager origin without issuer", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,registration_id)
+	 VALUES(4,35,20,'group',10,45)`)
+
+	for _, tt := range []struct{ name, sql string }{
+		{"self leave by another actor", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_self',45,54,1)`},
+		{"removal by plain member", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_removal',45,54,3)`},
+		{"leader removes admin", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_removal',45,54,1)`},
+		{"wrong membership", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_removal',45,52,4)`},
+		{"departure forged issuer", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,issuer_id,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_removal',1,45,54,4)`},
+		{"departure forged request", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,request_id,registration_id,departure_membership_id,departure_actor_id) VALUES(4,35,20,'group',10,'departure_removal',60,45,54,4)`},
+	} {
+		t.Run(tt.name, func(t *testing.T) { refuse(tt.name, tt.sql) })
+	}
+	// An admin can authorize removal of an admin; this records the remover as
+	// departure actor, never as a fictitious invitation issuer.
+	exec(`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,
+	 registration_id,departure_membership_id,departure_actor_id)
+	 VALUES(4,35,20,'group',10,'departure_removal',45,54,7)`)
+
+	for _, mutation := range []string{
+		`origin='manager_add'`, `departure_actor_id=4`, `departure_membership_id=52`, `issuer_id=1`,
+	} {
+		if _, err := db.Exec(`UPDATE occurrence_accesses SET ` + mutation + ` WHERE occurrence_id=30`); err == nil {
+			t.Fatalf("immutable departure provenance changed: %s", mutation)
+		}
+	}
+	refuse("second active access", `INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id) VALUES(2,30,20,'group',10,'departure_self',40,50,2)`)
+
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DownTo(context.Background(), 33); err == nil || !strings.Contains(err.Error(), "departure occurrence access history exists") {
+		t.Fatalf("downgrade discarded departure provenance: %v", err)
+	}
+	// TRUNCATE is test cleanup; ordinary deletes remain forbidden. With no
+	// departure history, down/up is lossless for the preceding schema.
+	exec(`TRUNCATE occurrence_accesses`)
+	if _, err := p.DownTo(context.Background(), 33); err != nil {
+		t.Fatal(err)
+	}
+	var column *string
+	if err := db.QueryRow(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='occurrence_accesses' AND column_name='origin'`).Scan(&column); err != sql.ErrNoRows {
+		t.Fatalf("origin column remains after down: %v %v", column, err)
+	}
+	if _, err := p.UpTo(context.Background(), 34); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDepartureOccurrenceAccessExpiryMigration(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 34); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string) {
+		t.Helper()
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	for _, q := range []string{
+		`INSERT INTO users(id,email,status,role) VALUES(1,'expiry-actor@example.com','active','admin'),(2,'expiry-subject@example.com','active','member')`,
+		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Expiry group',1,'active','invite_only')`,
+		`INSERT INTO memberships(id,user_id,group_id,role,status) VALUES(50,2,10,'member','active')`,
+		`INSERT INTO events(id,group_id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by) VALUES(20,10,'Expiry','','2026-12-01T18:00',60,'UTC','','','invite_only',1)`,
+		`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status) VALUES(30,20,'2026-12-01','2026-12-01 18:00Z','2026-12-01 19:00Z','scheduled')`,
+		`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(40,30,2,'going','web')`,
+		`INSERT INTO occurrence_accesses(subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,origin,registration_id,departure_membership_id,departure_actor_id,granted_at) VALUES(2,30,20,'group',10,'departure_self',40,50,2,'2026-10-26 12:00Z')`,
+	} {
+		exec(q)
+	}
+	if _, err := p.UpTo(ctx, 35); err != nil {
+		t.Fatal(err)
+	}
+	exec(`UPDATE occurrence_accesses SET status='ended',ended_at='2026-12-01 19:00Z',end_reason='occurrence_ended' WHERE occurrence_id=30`)
+	if _, err := p.DownTo(ctx, 34); err == nil {
+		t.Fatal("downgrade accepted an occurrence_ended row the old constraint cannot represent")
+	}
+	exec(`TRUNCATE occurrence_accesses`)
+	if _, err := p.DownTo(ctx, 34); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 35); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDepartureAccessSupersessionMigration(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 36); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(q string) {
+		t.Helper()
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	for _, q := range []string{
+		`INSERT INTO users(id,email,status,role) VALUES(1,'supersede-issuer@example.com','active','member'),(2,'supersede-subject@example.com','active','member')`,
+		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Supersede group',1,'active','invite_only')`,
+		`INSERT INTO memberships(id,user_id,group_id,role,status) VALUES(50,1,10,'leader','active'),(51,2,10,'member','active')`,
+		`INSERT INTO events(id,group_id,title,description,starts_local,duration_minutes,tzid,rrule,location,visibility,created_by) VALUES(20,10,'Supersede','','2026-12-01T18:00',60,'UTC','','','invite_only',1)`,
+		`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status) VALUES(30,20,'2026-12-01','2026-12-01 18:00Z','2026-12-01 19:00Z','scheduled')`,
+		`INSERT INTO registrations(id,occurrence_id,user_id,status,source) VALUES(40,30,2,'going','admin')`,
+		`INSERT INTO occurrence_accesses(id,subject_user_id,occurrence_id,event_id,organizer_type,organizer_id,issuer_id,registration_id,granted_at) VALUES(60,2,30,20,'group',10,1,40,'2026-11-01 12:00Z')`,
+	} {
+		exec(q)
+	}
+	if _, err := p.UpTo(ctx, 37); err != nil {
+		t.Fatal(err)
+	}
+	exec(`UPDATE occurrence_accesses SET status='ended',ended_at='2026-11-02 12:00Z',end_reason='departure_superseded',ended_by=2 WHERE id=60`)
+	var origin string
+	var issuer int64
+	var registration int64
+	if err := db.QueryRow(`SELECT origin,issuer_id,registration_id FROM occurrence_accesses WHERE id=60`).Scan(&origin, &issuer, &registration); err != nil || origin != "manager_add" || issuer != 1 || registration != 40 {
+		t.Fatalf("manager provenance changed: origin=%q issuer=%d registration=%d err=%v", origin, issuer, registration, err)
+	}
+	if _, err := p.DownTo(ctx, 36); err == nil || !strings.Contains(err.Error(), "departure supersession history exists") {
+		t.Fatalf("downgrade discarded supersession history: %v", err)
+	}
+	exec(`TRUNCATE occurrence_accesses`)
+	if _, err := p.DownTo(ctx, 36); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 37); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const membershipTenureRollbackError = "advanced membership tenure exists; cannot downgrade safely"
+
+func seedMembershipTenureMigration(t *testing.T, status string) (*sql.DB, *goose.Provider, time.Time) {
+	t.Helper()
+	db := openSQL(t, testdb.Fresh(t, false))
+	ctx := context.Background()
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 35); err != nil {
+		t.Fatal(err)
+	}
+	joined := time.Date(2026, time.January, 2, 3, 4, 0, 0, time.UTC)
+	for _, q := range []string{
+		`INSERT INTO users(id,email,status,role) VALUES(1,'tenure@example.com','active','member')`,
+		`INSERT INTO groups(id,name,leader_id,status,visibility) VALUES(10,'Tenure group',1,'active','public')`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO memberships(id,user_id,group_id,role,status,joined_at) VALUES(50,1,10,'member',$1,$2)`, status, joined); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.UpTo(ctx, 36); err != nil {
+		t.Fatal(err)
+	}
+	return db, p, joined
+}
+
+func assertMembershipTenurePreserved(t *testing.T, db *sql.DB, p *goose.Provider, wantTenure int64, wantJoined time.Time) {
+	t.Helper()
+	var tenure int64
+	var joined time.Time
+	if err := db.QueryRow(`SELECT tenure, joined_at FROM memberships WHERE id=50`).Scan(&tenure, &joined); err != nil || tenure != wantTenure || !joined.Equal(wantJoined) {
+		t.Fatalf("membership tenure=%d joined=%s want tenure=%d joined=%s err=%v", tenure, joined, wantTenure, wantJoined, err)
+	}
+	var trigger, function bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid='memberships'::regclass AND tgname='memberships_tenure_guard' AND NOT tgisinternal)`).Scan(&trigger); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT to_regprocedure('guard_membership_tenure()') IS NOT NULL`).Scan(&function); err != nil {
+		t.Fatal(err)
+	}
+	if !trigger || !function {
+		t.Fatalf("tenure guard preserved trigger=%v function=%v", trigger, function)
+	}
+	version, err := p.GetDBVersion(context.Background())
+	if err != nil || version != 36 {
+		t.Fatalf("migration version=%d err=%v, want 36", version, err)
+	}
+	if _, err := db.Exec(`UPDATE memberships SET tenure=9 WHERE id=50`); err == nil {
+		t.Fatal("preserved trigger accepted a direct tenure update")
+	}
+}
+
+func TestMembershipTenureMigration(t *testing.T) {
+	db, p, joined := seedMembershipTenureMigration(t, "active")
+	ctx := context.Background()
+
+	var tenure int64
+	var backfilledJoined time.Time
+	if err := db.QueryRow(`SELECT tenure, joined_at FROM memberships WHERE id=50`).Scan(&tenure, &backfilledJoined); err != nil || tenure != 1 || !backfilledJoined.Equal(joined) {
+		t.Fatalf("backfilled tenure=%d joined=%s want tenure=1 joined=%s err=%v", tenure, backfilledJoined, joined, err)
+	}
+	for _, q := range []string{
+		`UPDATE memberships SET role='leader' WHERE id=50`,
+		`UPDATE memberships SET status='removed' WHERE id=50`,
+		`UPDATE memberships SET status='active' WHERE id=50`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if _, err := p.DownTo(ctx, 35); err == nil || !strings.Contains(err.Error(), membershipTenureRollbackError) {
+		t.Fatalf("downgrade did not preserve advanced tenure: %v", err)
+	}
+	assertMembershipTenurePreserved(t, db, p, 2, joined)
+}
+
+func TestMembershipTenureMigrationCleanRollback(t *testing.T) {
+	db, p, joined := seedMembershipTenureMigration(t, "active")
+	ctx := context.Background()
+	if _, err := p.DownTo(ctx, 35); err != nil {
+		t.Fatal(err)
+	}
+	var column *string
+	if err := db.QueryRow(`SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='memberships' AND column_name='tenure'`).Scan(&column); err != sql.ErrNoRows {
+		t.Fatalf("tenure column remains after clean down: %v %v", column, err)
+	}
+	var trigger, function bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname='memberships_tenure_guard' AND NOT tgisinternal)`).Scan(&trigger); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT to_regprocedure('guard_membership_tenure()') IS NOT NULL`).Scan(&function); err != nil {
+		t.Fatal(err)
+	}
+	version, err := p.GetDBVersion(ctx)
+	if err != nil || version != 35 || trigger || function {
+		t.Fatalf("clean down version=%d trigger=%v function=%v err=%v", version, trigger, function, err)
+	}
+	if _, err := p.UpTo(ctx, 36); err != nil {
+		t.Fatal(err)
+	}
+	assertMembershipTenurePreserved(t, db, p, 1, joined)
+}
+
+func TestMembershipTenureMigrationWaitsForReactivation(t *testing.T) {
+	db, p, joined := seedMembershipTenureMigration(t, "removed")
+	ctx := context.Background()
+	writer, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = writer.Rollback() })
+	if _, err := writer.ExecContext(ctx, `UPDATE memberships SET status='active' WHERE id=50`); err != nil {
+		t.Fatal(err)
+	}
+
+	down := make(chan error, 1)
+	go func() {
+		_, err := p.DownTo(ctx, 35)
+		down <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var waiting bool
+		err := db.QueryRow(`SELECT EXISTS(
+			SELECT 1 FROM pg_stat_activity
+			WHERE datname=current_database() AND wait_event_type='Lock'
+			AND query ILIKE 'LOCK TABLE memberships IN ACCESS EXCLUSIVE MODE%'
+		)`).Scan(&waiting)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("migration downgrade never waited for the membership writer")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-down:
+		t.Fatalf("downgrade completed before the writer committed: %v", err)
+	default:
+	}
+	if err := writer.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-down:
+		if err == nil || !strings.Contains(err.Error(), membershipTenureRollbackError) {
+			t.Fatalf("downgrade did not reject committed reactivation: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("downgrade did not finish after the writer committed")
+	}
+	assertMembershipTenurePreserved(t, db, p, 2, joined)
 }
 
 func TestSeriesUndoReceiptMigrationAndRollback(t *testing.T) {

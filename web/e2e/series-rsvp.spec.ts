@@ -714,10 +714,8 @@ test("terminal Undo after authority loss refreshes away protected event details"
   await page.getByRole("button", { name: "Maybe for all" }).first().click();
   await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
 
-  // PR2 intentionally predates the departure preview/confirmation contract.
-  // The existing removal route still revokes series authority and exercises
-  // the same terminal Undo refresh boundary without pulling PR3 into this slice.
-  await admin("DELETE", `/groups/${group.id}/members/${sam!.id}`);
+  const { departure } = await admin("GET", `/groups/${group.id}/members/${sam!.id}/departure-preview`) as { departure: { snapshot: string } };
+  await admin("POST", `/groups/${group.id}/members/${sam!.id}/departure`, { snapshot: departure.snapshot, keepOccurrenceIds: [] });
   let releaseRefresh!: () => void;
   let markRefreshStarted!: () => void;
   const refreshStarted = new Promise<void>((resolve) => { markRefreshStarted = resolve; });

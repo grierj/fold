@@ -147,7 +147,11 @@ func TestContactHistoryContactPathWalkAndDeletionSurvival(t *testing.T) {
 	r = f.create(t, "email", "")
 	f.grant(t, r)
 	// Actual HTTP role/context loss ends a grant, not a synthetic audit row.
-	apiDo(t, f.ac, "DELETE", "/api/v1/admin/groups/"+itoa(f.group.ID)+"/members/"+itoa(f.subject.ID), nil, 200)
+	removePath := "/api/v1/admin/groups/" + itoa(f.group.ID) + "/members/" + itoa(f.subject.ID)
+	previewPath := "/api/v1/groups/" + itoa(f.group.ID) + "/members/" + itoa(f.subject.ID) + "/departure-preview"
+	if w := confirmDeparture(t, f.ac, "DELETE", removePath, previewPath, ""); w.Code != 200 {
+		t.Fatalf("remove: %d %s", w.Code, w.Body.String())
+	}
 	historyBothParties(t, f, audit.ContactRequested, audit.ContactDecision, audit.ContactGranted, audit.ContactReveal, audit.ContactRefused, audit.ContactRevoked, audit.ContactWithdrawn, audit.ContactExpired, audit.ContactEnded)
 	entries := getHistory(t, f.ac, f.subject.ID, "?limit=100").Entries
 	for _, e := range entries {

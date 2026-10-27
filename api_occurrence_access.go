@@ -26,10 +26,19 @@ type occurrenceRead struct {
 
 func occurrenceAccessPolicy(row models.OccurrenceAccess) policy.OccurrenceAccess {
 	out := policy.OccurrenceAccess{SubjectUserID: row.SubjectUserID, OccurrenceID: row.OccurrenceID,
-		EventID: row.EventID, Organizer: policy.OrganizerScope{Type: row.OrganizerType, ID: row.OrganizerID},
-		IssuerID: row.IssuerID, RegistrationID: row.RegistrationID, Status: row.Status, GrantedAt: row.GrantedAt, EndedAt: row.EndedAt}
+		EventID: row.EventID, Organizer: policy.OrganizerScope{Type: row.OrganizerType, ID: row.OrganizerID}, Origin: row.Origin,
+		RegistrationID: row.RegistrationID, Status: row.Status, GrantedAt: row.GrantedAt, EndedAt: row.EndedAt}
+	if row.IssuerID != nil {
+		out.IssuerID = *row.IssuerID
+	}
 	if row.RequestID != nil {
 		out.RequestID = *row.RequestID
+	}
+	if row.DepartureMembershipID != nil {
+		out.DepartureMembershipID = *row.DepartureMembershipID
+	}
+	if row.DepartureActorID != nil {
+		out.DepartureActorID = *row.DepartureActorID
 	}
 	return out
 }
@@ -86,7 +95,7 @@ func occurrenceInvitationReadsIn(tx *gorm.DB, accesses []models.OccurrenceAccess
 			g := facts.groups[*ev.GroupID]
 			live = g.ID != 0 && g.Status == models.GroupActive
 		}
-		f := policy.OccurrenceFacts{ID: occ.ID, EventID: ev.ID, Organizer: organizer, ContextActive: live, Scheduled: occ.Status == models.OccurrenceScheduled}
+		f := policy.OccurrenceFacts{ID: occ.ID, EventID: ev.ID, Organizer: organizer, ContextActive: live, Scheduled: occ.Status == models.OccurrenceScheduled, EndsAt: occ.EndsAt}
 		access := occurrenceAccessPolicy(row)
 		if policy.CanSeeOccurrence(actor, false, access, f, now) {
 			out[row.ID] = &occurrenceRead{Event: ev, Occurrence: occ, Registration: reg, Account: actor, Access: access, Facts: f}
@@ -162,7 +171,7 @@ func loadOccurrenceInvitationFacts(tx *gorm.DB, accesses []models.OccurrenceAcce
 
 // endReason preserves the scalar lifecycle precedence, including retained past
 // dates. It does not reconsider issuer authority or a recipient's add block.
-func (f *occurrenceInvitationFacts) endReason(row models.OccurrenceAccess) string {
+func (f *occurrenceInvitationFacts) endReason(row models.OccurrenceAccess, now time.Time) string {
 	u := f.users[row.SubjectUserID]
 	if u == nil || !u.CanSignIn() {
 		return policy.ContactAccountDisabled
@@ -194,6 +203,9 @@ func (f *occurrenceInvitationFacts) endReason(row models.OccurrenceAccess) strin
 	}
 	if occ.Status != models.OccurrenceScheduled {
 		return policy.OccurrenceCancelled
+	}
+	if row.Origin != policy.OccurrenceOriginManagerAdd && !occ.EndsAt.IsZero() && !now.Before(occ.EndsAt) {
+		return policy.OccurrenceEnded
 	}
 	reg := f.registrations[row.RegistrationID]
 	if reg.ID == 0 || reg.UserID == nil || *reg.UserID != row.SubjectUserID || reg.OccurrenceID != row.OccurrenceID {

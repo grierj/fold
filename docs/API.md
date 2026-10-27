@@ -94,8 +94,8 @@ from the earlier detached `(series UID, RECURRENCE-ID)` form. Anyone who importe
 a development feed from an earlier build may see the old rows removed and the
 corrected rows added once; removing and re-adding that development subscription
 is the safest cleanup if a client retains stale rows. Representative external
-calendar clients still need manual interoperability checks. Revoking a link that
-is already off still answers 200.
+calendar clients still need manual interoperability checks. Revoking a link that is already off still
+answers 200.
 
 Profile update body: any of `{name, displayName, phone, email, timezone, hideContactFromLeaders, avatarFocal: {x, y}}`.
 `hideContactFromLeaders` is a boolean preference for the signed-in adult only,
@@ -382,12 +382,17 @@ status.
 
 ```
 POST /api/v1/groups/:id/join    → 200 {membership}  (auth; idempotent)
-POST /api/v1/groups/:id/leave   → 200 {}            (auth; 400 if you are the only leader)
+GET  /api/v1/groups/:id/departure-preview → 200 {departure} (auth; read-only self-leave preview)
+GET  /api/v1/groups/:id/members/:userId/departure-preview → 200 {departure} (auth; leader/admin removal preview)
+POST /api/v1/groups/:id/leave   → 200 {departure}    (auth; CSRF; confirmed self-leave)
+     body: {snapshot, keepOccurrenceIds: [id, ...], note?}
+POST /api/v1/groups/:id/members/:userId/departure → 200 {departure} (auth; CSRF; confirmed leader/admin removal)
+     body: {snapshot, keepOccurrenceIds: [id, ...], note?}
 POST /api/v1/groups/:id/members → 200 {membership}  (auth; leader or admin)
      body: {selectionId | email, overLimit?} — one target only; teen adds need a separate Ask to add; a full group
      answers 409 {error: "This group is full", full: true} unless overLimit is true (audited)
-DELETE /api/v1/groups/:id/members/:userId → 200 {members: [...]}  (auth; leader or admin; DEC-35)
-     body (optional): {note} — kept only in the audit row, never shown to the removed person
+DELETE /api/v1/groups/:id/members/:userId → 200 {departure}  (auth; leader or admin; DEC-35; confirmed legacy alias)
+     body: {snapshot, keepOccurrenceIds: [id, ...], note?}; note stays only in audit/removal records and is never shown to the removed person
 PUT  /api/v1/groups/:id/members/:userId/role → 200 {members: [...]}  (auth; leader or admin)
      body: {role: "leader"|"member"} — userId must already be an active member
 POST /api/v1/groups/:id/deletion-request → 200 {group}  (auth; a leader)
@@ -402,8 +407,9 @@ accepted only from a leader who is the group's only active member. Adding
 a member clears a pending request.
 
 Role changes: only adults can be made leaders (teen accounts arrive in
-M1.10 and are refused), and a group never loses its last leader: demoting,
-removing, or leaving as the only leader is a 400. There is no admin
+M1.10 and are refused), and a group never loses its last leader. Demoting
+the only leader is a 400; a leave/removal confirmation that is no longer
+authorized is a coded 409. There is no admin
 approval step for a leader promoting a co-leader (DEC-31). Instead every
 change that makes or removes a leader (including leaving and admin
 add/remove) writes a `membership.role_changed` audit row (actor, group,
@@ -413,7 +419,36 @@ earliest-joined remaining leader. `DELETE` on the
 request withdraws it without deleting the group.
 
 `membership`: `{id, userId, user: {id, name}, groupId, role: "leader"|"member",
-status, joinedAt}`
+status, joinedAt}`.
+
+Departure preview (M1.14 T4a, DEC-74) uses one facts implementation for self-leave and authorized leader/admin removal. It is a read-only, repeatable-read GET and never changes groups, memberships, registrations, exact-date access, audit rows, or notifications. The response is:
+
+```text
+departure: {
+  action: "leave" | "remove",
+  groupId, groupName, subjectId, subjectName,
+  affectedCount, goingCount, maybeCount, waitlistedCount,
+  keepableCount, defaultKeepCount,
+  dates: [{
+    occurrenceId, date, title, startsAt, endsAt,
+    status: "going" | "maybe" | "waitlisted",
+    visibility: "public" | "private" | "invite_only",
+    defaultKeep,
+    keepReason: "underway" | "cutoff" | "public"
+  }],
+  snapshot
+}
+```
+
+Only the subject account's scheduled, not-ended Going, Maybe, and Waitlisted registrations in this group are affected. Past attendance stays. Declined (already Can't go), cancelled, and leader-removed registrations are already ended choices and are excluded. Household/person and other proxy registrations are never departure registrations. A scheduled date already underway or at/inside the existing two-hour cutoff is keepable and checked by default. A later date whose effective per-date visibility is public is keepable but unchecked. Other future private/invite-only registrations count as affected but are not returned in `dates`. Zero affected dates still returns a valid confirmation context and snapshot.
+
+Keepable rows are date-only and contain no attendees, location, hidden parent-group data, recurrence rule, sibling dates, roster, or management metadata. `visibility` is the effective date value (the override when present). The opaque snapshot is authenticated with a key derived from `SESSION_SECRET` and bound to the current actor, subject, and group. Its digest covers current actor/subject and membership facts, leader count, the complete affected set, displayed date clocks/status/effective visibility, the subject's own registration, and active exact-date access/provenance. Other attendees and capacity, waitlist, guest, remote, and childcare configuration are deliberately excluded: confirmation uses current resource math under occurrence locks. T4b must parse it with `parseDepartureSnapshot`, recompute `loadDepartureFacts` under its locks, and require `departureSnapshotMatches` before any write; client-supplied counts, date facts, or snapshots are never authority. The snapshot has no observation timestamp: ordinary elapsed seconds do not stale it, while crossing the cutoff/start/end boundary changes derived facts and does.
+
+A missing/hidden group is 404, a visible group the actor cannot manage is 403, and changed membership/leadership authority is 409 `departure_unavailable`.
+
+Departure confirmation (M1.14 T4b) sends the preview's opaque `snapshot` plus only occurrence IDs selected from its keepable `dates`. The response is the safe summary `{departure: {action, groupId, subjectId, keptCount, endedCount}}` for self-leave and removal alike; it never includes a roster. Clients refetch the normal authorized group or member GET after removal. Under one transaction the server takes the contact gate, locks the group, actor/subject accounts in ID order, and every affected occurrence in ID order; it then reloads and compares the entire preview snapshot before writing. Missing, malformed, tampered, actor/subject/group-mismatched, expired-by-fact-change snapshots and forged/nonkeepable `keepOccurrenceIds` answer coded 409 `departure_stale` with no domain writes. Legacy leave and DELETE removal routes use this same contract and cannot bypass confirmation.
+
+A selected date is retained with DEC-74 departure provenance tied to the locked membership, actor, and current registration. An already-correct departure-origin row is retained. If an active `manager_add` row supplied the date, it is irreversibly ended as `departure_superseded` without a per-date notice and a new departure-origin row is inserted; the manager issuer/request/origin remain immutable history and the successor expires at the occurrence's exact end. Every other current, not-ended registration belonging to the subject account is ended through the normal registration batch, preserving capacity/childcare release, waitlist promotion and the two-hour cutoff. Proxy registrations are untouched. The membership is then marked `removed` (the row remains), contact grants/requests are ended through their normal lifecycle, primary-contact and leadership audits/notices are maintained, and all writes roll back together on failure. Self-leave tells current leaders once; removal sends the removed account and confirmed teen guardians one privacy-safe summary with kept/ended counts. Departure does not emit per-date update notices, and email delivery starts only after commit.
 
 ### Invitations
 
@@ -908,7 +943,7 @@ GET  /api/v1/admin/groups                  → {groups: [groupSummary]}  (admin;
 POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
      body: {selectionId | userId, role: "member"|"leader", overLimit?} — one target only; role=leader adds a (co-)leader; audited;
      a full group needs overLimit (audited as membership.added_over_limit)
-DELETE /api/v1/admin/groups/:id/members/:userId → 200 {members}      (admin; same rules as the leader route)
+DELETE /api/v1/admin/groups/:id/members/:userId → 200 {departure} (admin; same confirmed body and transaction as the leader route)
 GET  /api/v1/admin/users                   → {users: [user]}           (admin)
 GET  /api/v1/admin/users/:id/teen-consents  → {consents: [teenConsent], administrativelyDisabled} (admin)
 POST /api/v1/admin/users/:id/teen-consents → 200 {} | 400 | 403 | 409  (admin)

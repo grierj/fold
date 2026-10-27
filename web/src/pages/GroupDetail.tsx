@@ -9,13 +9,14 @@ import { SeriesEditor } from "../components/SeriesEditor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
-import type { PersonSearchResult, EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
+import type { DepartureConfirmation, PersonSearchResult, EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { DateBadge } from "../components/DateBadge";
 import { Attendance } from "../components/Attendance";
 import { Menu } from "../components/ui/Menu";
 import { EventVisibilityControl, visibilityRank } from "../components/EventVisibility";
 import { GroupVisibilityReview } from "../components/GroupVisibilityReview";
+import { GroupDepartureDialog } from "../components/GroupDepartureDialog";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { Avatar } from "../components/Avatar";
@@ -369,16 +370,23 @@ export function GroupDetail() {
   const [inviteOverLimit, setInviteOverLimit] = useState(false);
   const [inviteStatus, setInviteStatus] = useState<string | null>(null);
   const [memberError, setMemberError] = useState<string | null>(null);
+  const [departureTarget, setDepartureTarget] = useState<{ subjectId?: number; allowNote: boolean } | null>(null);
+  const [departureStatus, setDepartureStatus] = useState<string | null>(null);
   const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
   const seriesFeedbackRevision = useRef(0);
   const coverRef = useRef<HTMLInputElement>(null);
   const loadRevision = useRef(0);
   const rsvpMutationGate = useRsvpMutationGate();
 
-  // Quiet refreshes keep ordinary RSVP drafts mounted. A terminal refresh
-  // invalidates protected data immediately, and only the newest request may
-  // commit detail, error, not-found or loading state.
-  const load = useCallback(async (quiet = false, failClosed = false) => {
+  // Quiet refreshes keep ordinary RSVP drafts mounted. Authority-changing
+  // refreshes invalidate protected data immediately, and only the newest
+  // request may commit detail, error, not-found, loading or navigation state.
+  const load = useCallback(async ({ quiet = false, failClosed = false, onLoaded, onFailure }: {
+    quiet?: boolean;
+    failClosed?: boolean;
+    onLoaded?: () => void;
+    onFailure?: (error: unknown) => void;
+  } = {}) => {
     if (!id) return;
     const revision = ++loadRevision.current;
     if (failClosed) {
@@ -391,10 +399,13 @@ export function GroupDetail() {
     setNotFound(false);
     try {
       const next = await Groups.get(id);
-      if (loadRevision.current === revision) setDetail(next);
+      if (loadRevision.current !== revision) return;
+      setDetail(next);
+      onLoaded?.();
     } catch (e) {
       if (loadRevision.current !== revision) return;
-      if (e instanceof ApiError && e.status === 404) setNotFound(true);
+      if (onFailure) onFailure(e);
+      else if (e instanceof ApiError && e.status === 404) setNotFound(true);
       else setError(errorText(e, "We couldn't load this group."));
     } finally {
       if (loadRevision.current === revision) setLoading(false);
@@ -452,10 +463,14 @@ export function GroupDetail() {
       navigate("/login", { state: { from: `/groups/${id}` } });
       return;
     }
+    if (isMember) {
+      setDepartureStatus(null);
+      setDepartureTarget({ allowNote: false });
+      return;
+    }
     setJoinBusy(true);
     try {
-      if (isMember) await Groups.leave(id!);
-      else await Groups.join(id!);
+      await Groups.join(id!);
       await load();
     } catch (e) {
       alert(errorText(e, "That didn't work."));
@@ -464,8 +479,27 @@ export function GroupDetail() {
     }
   }
 
+  function departureResult(result: DepartureConfirmation) {
+    return `${result.keptCount} ${result.keptCount === 1 ? "date" : "dates"} kept · ${result.endedCount} ${result.endedCount === 1 ? "date" : "dates"} ended.`;
+  }
+
+  async function completedDeparture(result: DepartureConfirmation) {
+    setDepartureTarget(null);
+    const summary = departureResult(result);
+    if (result.action === "remove") {
+      setDepartureStatus(summary);
+      await load({ quiet: true });
+      return;
+    }
+    await load({
+      failClosed: true,
+      onLoaded: () => setDepartureStatus(summary),
+      onFailure: () => navigate("/my-groups", { replace: true, state: { departureStatus: summary } }),
+    });
+  }
+
   // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
-  function handleRsvp() { void load(true); }
+  function handleRsvp() { void load({ quiet: true }); }
   function reportSeriesFeedback(eventId: number, date: string, actorResults: ActorRsvpResult[]) {
     const signal = { eventId, date, actorResults, revision: ++seriesFeedbackRevision.current };
     setDetail((current) => current ? {
@@ -556,19 +590,10 @@ export function GroupDetail() {
     }
   }
 
-  async function removeMember(memberId: number, name: string) {
-    if (!confirm(`Remove ${name} from “${group.name}”? They can't rejoin on their own; a leader can add them back.`)) return;
-    const note = prompt("Optional note for the church admins (never shown to the person you remove):") ?? "";
-    setMemberBusy(true);
+  function removeMember(memberId: number) {
     setMemberError(null);
-    try {
-      await Groups.removeMember(id!, memberId, note.trim() || undefined);
-      await load();
-    } catch (e) {
-      setMemberError(errorText(e, "We couldn't remove that person."));
-    } finally {
-      setMemberBusy(false);
-    }
+    setDepartureStatus(null);
+    setDepartureTarget({ subjectId: memberId, allowNote: true });
   }
 
   async function addMember(e: React.FormEvent) {
@@ -719,7 +744,7 @@ export function GroupDetail() {
                     items={[
                       { label: "Edit group", onSelect: () => setEditing(true) },
                       { label: coverBusy ? "Uploading cover…" : "Change cover photo", onSelect: () => coverRef.current?.click(), disabled: coverBusy },
-                      ...(isMember ? [{ label: joinBusy ? "Leaving…" : "Leave group", onSelect: () => void toggleJoin(), disabled: joinBusy }] : []),
+                      ...(isMember ? [{ label: "Leave group", onSelect: () => void toggleJoin(), disabled: !!departureTarget }] : []),
                     ]}
                   />
                   <HiddenFileInput
@@ -736,7 +761,7 @@ export function GroupDetail() {
               {(group.visibility !== "invite_only" || isMember) && !(canManage && isMember) && (
                 <button
                   onClick={toggleJoin}
-                  disabled={joinBusy}
+                  disabled={joinBusy || !!departureTarget}
                   className={isMember ? "btn-secondary" : "btn-primary"}
                 >
                   {joinBusy ? "…" : isMember ? "Leave group" : "Join this group"}
@@ -748,6 +773,7 @@ export function GroupDetail() {
       </div>
 
       <div className="max-w-6xl mx-auto px-4 py-6">
+        {departureStatus && <p role="status" className="mb-4 rounded-lg border border-border bg-sunken px-4 py-3 text-sm">{departureStatus}</p>}
         {editing && review && (
           <>
             {reviewError && <FormError layout="mb-2">{reviewError}</FormError>}
@@ -845,9 +871,9 @@ export function GroupDetail() {
                     seriesFeedback={seriesFeedback}
                     mutationGate={rsvpMutationGate}
                     onSeriesFeedback={reportSeriesFeedback}
-                    onTerminalRefresh={() => void load(true, true)}
+                    onTerminalRefresh={() => void load({ quiet: true, failClosed: true })}
                     onCancelled={handleCancelled}
-                    onChanged={() => void load(true)}
+                    onChanged={() => void load({ quiet: true })}
                   />
                 ))}
               </div>
@@ -946,7 +972,7 @@ export function GroupDetail() {
                                       ? [{ label: "Remove as leader", onSelect: () => void setRole(m.id, m.name, "member"), disabled: memberBusy }]
                                       : []),
                                     ...(m.id !== user?.id && (m.role !== "leader" || leaderCount > 1) && (!m.admin || isAdmin)
-                                      ? [{ label: "Remove from group", onSelect: () => void removeMember(m.id, m.name), danger: true, disabled: memberBusy }]
+                                      ? [{ label: "Remove from group", onSelect: () => removeMember(m.id), danger: true, disabled: memberBusy || !!departureTarget }]
                                       : []),
                                   ]}
                                 />
@@ -1039,6 +1065,16 @@ export function GroupDetail() {
           </>
         )}
       </div>
+      {departureTarget && (
+        <GroupDepartureDialog
+          groupId={id!}
+          subjectId={departureTarget.subjectId}
+          allowNote={departureTarget.allowNote}
+          onCancel={() => setDepartureTarget(null)}
+          onUnavailable={() => load({ quiet: true })}
+          onCompleted={completedDeparture}
+        />
+      )}
     </div>
   );
 }

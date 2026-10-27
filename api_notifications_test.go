@@ -154,7 +154,9 @@ func TestDeletionRequestTask(t *testing.T) {
 	gid := createGroupAs(t, admin, "Solo", models.VisibilityPublic)
 	leadID := addMemberEmail(t, admin, gid, "lead@example.com")
 	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/groups/%d/members/%d/role", gid, leadID), map[string]any{"role": "leader"}, http.StatusOK)
-	apiDo(t, admin, "POST", "/api/v1/groups/"+itoa(gid)+"/leave", map[string]any{}, http.StatusOK)
+	if w := confirmDeparture(t, admin, "POST", "/api/v1/groups/"+itoa(gid)+"/leave", "/api/v1/groups/"+itoa(gid)+"/departure-preview", ""); w.Code != http.StatusOK {
+		t.Fatalf("leave: %d %s", w.Code, w.Body.String())
+	}
 
 	apiDo(t, lead, "POST", "/api/v1/groups/"+itoa(gid)+"/deletion-request", map[string]any{}, http.StatusOK)
 	apiDo(t, lead, "POST", "/api/v1/groups/"+itoa(gid)+"/deletion-request", map[string]any{}, http.StatusOK)

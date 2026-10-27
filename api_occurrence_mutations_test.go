@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -112,6 +113,85 @@ func TestOccurrenceMutationLifecycleImmediateIrreversibleAndIdempotent(t *testin
 				}
 			}
 		})
+	}
+}
+
+func TestDepartureOccurrenceLifecycleTerminatesWithoutMembershipCoupling(t *testing.T) {
+	for _, scenario := range []string{"cancel", "decline", "block", "manager_remove", "disable", "delete"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newDepartureReadFixture(t, models.VisibilityInviteOnly, models.RegGoing, policy.OccurrenceOriginDepartureSelf)
+			if savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessActive {
+				t.Fatal("membership departure ended access")
+			}
+			expected := map[string]string{
+				"cancel": policy.OccurrenceCancelled, "decline": policy.OccurrenceDeclined,
+				"block": policy.OccurrenceBlocked, "manager_remove": policy.OccurrenceRemoved,
+				"disable": policy.ContactAccountDisabled, "delete": policy.ContactAccountDisabled,
+			}[scenario]
+			switch scenario {
+			case "cancel":
+				if err := f.app.contactMutation(contactChange{EventID: f.event.ID}, func(tx *gorm.DB) error {
+					return tx.Model(&models.EventOccurrence{}).Where("id = ?", f.dates[1].ID).Update("status", models.OccurrenceCancelled).Error
+				}); err != nil {
+					t.Fatal(err)
+				}
+			case "decline", "block":
+				apiDo(t, f.client, "POST", occurrenceMutationPath(f, scenario), nil, 200)
+			case "manager_remove":
+				adminView := f.admin.do("GET", "/api/v1/events/"+itoa(f.event.ID), nil, false)
+				if adminView.Code != http.StatusOK || !strings.Contains(adminView.Body.String(), `"addedByLeader":false`) || strings.Contains(adminView.Body.String(), `"addedByLeader":true`) {
+					t.Fatal("departure provenance mislabeled as manager add", adminView.Code, adminView.Body.String())
+				}
+				apiDo(t, f.admin, "POST", "/api/v1/events/"+itoa(f.event.ID)+"/registrations/remove", map[string]any{"registrationId": f.access.RegistrationID, "date": f.dates[1].OriginalDate}, 200)
+			case "disable":
+				if err := f.app.contactMutation(contactChange{UserID: f.recipient.ID}, func(tx *gorm.DB) error {
+					return tx.Model(f.recipient).Update("status", models.UserDisabled).Error
+				}); err != nil {
+					t.Fatal(err)
+				}
+			case "delete":
+				if err := f.app.contactMutation(contactChange{UserID: f.recipient.ID}, func(tx *gorm.DB) error {
+					return tx.Delete(f.recipient).Error
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			row := savedOccurrenceAccess(t, f)
+			if row.Status != policy.OccurrenceAccessEnded || row.EndReason != expected || row.EndedAt == nil {
+				t.Fatalf("%s did not persist terminal access: %+v", scenario, row)
+			}
+			if scenario == "block" && contactCount(t, f.app, &models.ManagerAddBlock{}, "subject_user_id = ? AND organizer_type = ? AND organizer_id = ?", f.recipient.ID, policy.ContactGroup, f.group) != 1 {
+				t.Fatal("departure block did not retain manager-add protection")
+			}
+		})
+	}
+}
+
+func TestDepartureOccurrenceAccessDoesNotActForHouseholdOrProxyRegistrations(t *testing.T) {
+	f := newDepartureReadFixture(t, models.VisibilityInviteOnly, models.RegGoing, policy.OccurrenceOriginDepartureRemoval)
+	household := models.Household{Name: "Retained holder household", CreatedBy: f.recipient.ID}
+	if err := f.app.DB.Create(&household).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.Create(&models.HouseholdAccount{HouseholdID: household.ID, UserID: f.recipient.ID, Relation: models.HouseholdRelationAdult}).Error; err != nil {
+		t.Fatal(err)
+	}
+	birth := time.Now().UTC().AddDate(-30, 0, 0)
+	person := models.HouseholdPerson{HouseholdID: household.ID, FirstName: "Proxy adult", Kind: models.HouseholdAdult, BirthDate: &birth, CreatedBy: f.recipient.ID}
+	if err := f.app.DB.Create(&person).Error; err != nil {
+		t.Fatal(err)
+	}
+	proxy := models.Registration{HouseholdPersonID: &person.ID, RegisteredBy: &f.recipient.ID, OccurrenceID: f.dates[1].ID, Status: models.RegGoing, Source: models.RegSourceWeb, AttendanceMode: models.AttendanceInPerson}
+	if err := f.app.DB.Create(&proxy).Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, f.stranger, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, http.StatusNotFound)
+	apiDo(t, f.client, "POST", occurrenceMutationPath(f, "decline"), nil, http.StatusOK)
+	if err := f.app.DB.First(&proxy, proxy.ID).Error; err != nil || proxy.Status != models.RegGoing {
+		t.Fatalf("own retained decline changed proxy registration: %+v err=%v", proxy, err)
+	}
+	if savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessEnded {
+		t.Fatal("own retained access did not end")
 	}
 }
 

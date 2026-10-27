@@ -393,25 +393,7 @@ func (a *App) membershipAdded(c *gin.Context, g *models.Group, userID uint) {
 }
 
 func (a *App) apiLeaveGroup(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	u := apiUser(c)
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	}
-	if err := a.changeRole(c, &g, u.ID, "", "", false, nil, func(_ *models.User, _, target policy.Rel, leaders int) bool {
-		return !target.Member || policy.CanLeaveGroup(target, leaders)
-	}); err != nil {
-		if err == errRoleRefused {
-			jsonError(c, http.StatusBadRequest,
-				"you are the only leader — make someone else a leader first")
-			return
-		}
-		jsonError(c, http.StatusInternalServerError, "could not leave group")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{})
+	a.apiLeaveGroupConfirmed(c)
 }
 
 func (a *App) apiGroupMembers(c *gin.Context) {
@@ -909,52 +891,9 @@ func memberCount(db *gorm.DB, groupID uint) int64 {
 	return n
 }
 
-// apiRemoveGroupMember lets a group's leaders (and admins) remove someone
-// from the roster (DEC-35). 404 for a group the caller can't see, 403 for
-// one they don't lead.
+// apiRemoveGroupMember routes the legacy DELETE through the same preview-bound
+// confirmation transaction as the POST departure endpoint. A missing snapshot
+// is therefore refused rather than bypassing cleanup.
 func (a *App) apiRemoveGroupMember(c *gin.Context) {
-	g, _, ok := a.loadManagedGroup(c)
-	if !ok {
-		return
-	}
-	a.removeMember(c, g)
-}
-
-// removeMember removes :userId from g if policy allows, marks the
-// membership removed, and audits it. Body: optional {note}.
-func (a *App) removeMember(c *gin.Context, g *models.Group) {
-	uid, _ := strconv.Atoi(c.Param("userId"))
-	var body struct {
-		Note string `json:"note"`
-	}
-	_ = c.ShouldBindJSON(&body) // the body is optional
-	note := strings.TrimSpace(body.Note)
-	if len(note) > 500 {
-		jsonError(c, http.StatusBadRequest, "note must be at most 500 characters")
-		return
-	}
-	me := apiUser(c)
-	if uint(uid) == me.ID {
-		jsonError(c, http.StatusBadRequest, "to leave the group, use leave")
-		return
-	}
-	var target models.User
-	if err := a.DB.First(&target, uid).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "user not found")
-		return
-	}
-	err := a.changeRole(c, g, target.ID, memberRemoved, note, false, nil, func(me *models.User, actor, t policy.Rel, leaders int) bool {
-		return policy.CanRemoveMember(asPerson(me), actor, asPerson(&target), t, leaders)
-	})
-	switch err {
-	case nil:
-	case errRoleRefused:
-		jsonError(c, http.StatusBadRequest,
-			"leaders can't remove an admin, and nobody can remove the group's only leader (make someone else a leader first)")
-		return
-	default:
-		jsonError(c, http.StatusInternalServerError, "could not remove member")
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"members": a.rosterFor(g.ID, apiUser(c), true)})
+	a.apiRemoveGroupMemberConfirmed(c)
 }

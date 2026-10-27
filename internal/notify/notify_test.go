@@ -62,6 +62,32 @@ func TestEveryKindRendersNoContactDetails(t *testing.T) {
 	}
 }
 
+func TestDepartureKindsRenderSummariesWithoutPrivateContext(t *testing.T) {
+	departure, ok := Lookup(MembershipDeparture)
+	if !ok || departure.Category != CatGroups || !departure.AllowEmail || len(departure.Actions) != 0 {
+		t.Fatalf("departure kind: %+v ok=%v", departure, ok)
+	}
+	vars := Vars{Person: "Private Person", Group: "Hidden Group", KeptCount: 2, EndedCount: 3}
+	title, body := departure.Render(vars)
+	if title != "Your group membership ended" || !strings.Contains(body, "2 upcoming dates were kept and 3 ended") ||
+		strings.Contains(title+body, vars.Person) || strings.Contains(title+body, vars.Group) {
+		t.Fatalf("unsafe departure summary: %q %q", title, body)
+	}
+	emailTitle, emailBody := departure.RenderEmailSafe(vars)
+	if strings.Contains(emailTitle+emailBody, vars.Person) || strings.Contains(emailTitle+emailBody, vars.Group) || !strings.Contains(emailBody, "2 upcoming dates were kept and 3 ended") {
+		t.Fatalf("unsafe departure email: %q %q", emailTitle, emailBody)
+	}
+
+	left, ok := Lookup(MembershipLeft)
+	if !ok || left.Category != CatGroups || !left.AllowEmail || len(left.Actions) != 0 {
+		t.Fatalf("left kind: %+v ok=%v", left, ok)
+	}
+	leftTitle, _ := left.Render(vars)
+	if leftTitle != "Private Person left Hidden Group" {
+		t.Fatalf("leader summary title=%q", leftTitle)
+	}
+}
+
 func TestOnlyApproveGroupIsAllowListed(t *testing.T) {
 	// The v1 allow-list (5.12, DEC-44): approve a new group, and approve
 	// a clean adult account request. Nothing else changes state inline.

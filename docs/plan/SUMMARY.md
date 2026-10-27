@@ -1,9 +1,12 @@
 # Fold: product and delivery summary
 
-Reconciled October 25, 2026 against merged work through `1a3f077`.
-[PLAN.md](PLAN.md) owns product decisions; [STATUS.md](../../STATUS.md) tracks
-merges; [DOCUMENTATION-REVIEW.md](DOCUMENTATION-REVIEW.md) lists open conflicts.
-Merged does not mean deployed or production-ready.
+Reconciled October 27, 2026 against merged work through M1.14 series RSVP/Undo
+PR #130 (merge `7229e92`, reviewed head `5f927ce`) and the locally validated
+departure publication head `deb093d`. [PLAN.md](PLAN.md) owns product decisions;
+[STATUS.md](../../STATUS.md) tracks merges and publication state;
+[DOCUMENTATION-REVIEW.md](DOCUMENTATION-REVIEW.md) lists open product conflicts.
+Local validation does not mean protected-branch CI, merge, deployment or
+production readiness.
 
 ## Product
 
@@ -35,9 +38,31 @@ matter more than novel design.
 - M1.13: per-date visibility with preview/confirmation, safe discovery/feed
   output and series preserve/reset (#123). Future consumers still need wiring.
 
-M1.14 is **partial**, not complete: only the exact-date invitation prerequisite
-landed with M1.11. RSVP-aware calendar styling, series answers/Undo, join/leave
-cleanup and the unanswered church-wide window remain deferred.
+## Locally accepted, publication in progress
+
+M1.14 implementation was originally accepted locally at `754a2f6`: RSVP-aware
+calendar and personal-feed scope, series answers with Undo, and group-departure
+preview/cleanup/retained-date access are implemented. That historical run passed
+all 12 integrated gates with 509 component tests and 77 browser passes plus 6
+conditional skips. Publication follow-ups `30d48c3`, `09b1260` and `5f927ce`
+then repaired single-date draft reconciliation, atomic RSVP response feedback and
+page-wide mutation serialization. Independent review approved the final PR #130
+head, and all three protected checks passed before normal merge `7229e92`.
+
+The departure publication boundary is locally prepared and independently approved
+at exact source head `deb093d`. A fresh run passed all 12 repository gates, 520
+component tests and 80 browser tests with 6 conditional skips. The retained 390px
+atomic-feedback/page-gate proofs report no overflow, clipping, cut-off controls,
+under-24px targets, under-44px RSVP targets or serious/critical Axe findings.
+The exact evidence and acceptance matrix are in
+[M1.14-VERIFICATION.md](M1.14-VERIFICATION.md).
+
+M1.14 implementation is complete on this branch. Delivery is split across
+calendar/feed #129 (`891ce26`), series RSVP/Undo #130 (`7229e92`, reviewed head
+`5f927ce`) and [departure #131](https://github.com/grierj/fold/pull/131).
+PR #131 is the final protected CI and merge receipt; local evidence does not
+substitute for those checks. Representative external calendar-client
+interoperability was not manually tested.
 
 ## Privacy decisions that must survive later work
 
@@ -61,7 +86,7 @@ cleanup and the unanswered church-wide window remain deferred.
 
 | Phase | Remaining scope |
 |---|---|
-| M1.14 | Complete series RSVP and calendar/feed scope behavior |
+| M1.14 | Finish the publication stack: open the independently approved departure PR at `deb093d`, run its protected-branch CI, and merge it normally |
 | Phase 2 | Rooms, booking conflicts, visibility-aware suggestions |
 | Phase 3 | Durable jobs, messaging composer/relay, provider adapters, reminders, optional SMS, notification preferences |
 | Phase 4 | Encrypted settings, resumable setup/CLI, CSV import, private/S3 assets, admin TOTP |

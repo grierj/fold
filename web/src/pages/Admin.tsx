@@ -2,14 +2,15 @@ import { AddRequestForm } from "../components/AddRequestForm";
 import { PeoplePicker } from "../components/ui/PeoplePicker";
 import type { PersonSearchResult } from "../types";
 import { ContactDetails } from "../components/ContactDetails";
+import { GroupDepartureDialog } from "../components/GroupDepartureDialog";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, Groups, Invitations, Site } from "../api";
+import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
-import type { AgeBand, AccountRequest, GuardianLink, GuardianNomination, GroupSummary, Member, User } from "../types";
+import type { AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, User } from "../types";
 import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
@@ -361,26 +362,46 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
 // Groups: list, edit (via group page), manage members
 // ---------------------------------------------------------------------------
 
-function MemberManager({ group, users }: { group: GroupSummary; users: User[] }) {
+function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
+  group: GroupSummary;
+  users: User[];
+  onUnavailable: (groupId: number) => void;
+  fallbackFocus: () => void;
+}) {
   const [members, setMembers] = useState<Member[] | null>(null);
+  const [membersLoading, setMembersLoading] = useState(true);
   const [addUserId, setAddUserId] = useState("");
   const [selection, setSelection] = useState<PersonSearchResult | null>(null);
   const [askPerson, setAskPerson] = useState<PersonSearchResult | null>(null);
   const [addRole, setAddRole] = useState<"member" | "leader">("member");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [departureMember, setDepartureMember] = useState<number | null>(null);
+  const [departureStatus, setDepartureStatus] = useState<string | null>(null);
+  const [accessUnavailable, setAccessUnavailable] = useState(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (collapseOnDenied = true) => {
+    setMembers(null);
+    setMembersLoading(true);
+    setError(null);
     try {
-      const { members } = await Groups.members(group.id);
-      setMembers(members);
+      const { members: nextMembers } = await Groups.members(group.id);
+      setMembers(nextMembers);
+      setAccessUnavailable(false);
+      return true;
     } catch (e) {
+      const denied = e instanceof ApiError && (e.status === 401 || e.status === 403 || e.status === 404);
+      setAccessUnavailable(denied);
       setError(errorText(e, "We couldn't load the members."));
+      if (denied && collapseOnDenied) onUnavailable(group.id);
+      return false;
+    } finally {
+      setMembersLoading(false);
     }
-  }, [group.id]);
+  }, [group.id, onUnavailable]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
 
   async function add() {
@@ -408,18 +429,25 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
     }
   }
 
-  async function remove(m: Member) {
-    if (!confirm(`Remove ${m.name} from “${group.name}”?`)) return;
-    setBusy(true);
+  function remove(m: Member) {
     setError(null);
-    try {
-      await AdminGroups.removeMember(group.id, m.id);
-      await load();
-    } catch (e) {
-      setError(errorText(e, "We couldn't remove that."));
-    } finally {
-      setBusy(false);
-    }
+    setDepartureStatus(null);
+    setDepartureMember(m.id);
+  }
+
+  async function completedDeparture(result: DepartureConfirmation) {
+    setDepartureMember(null);
+    setDepartureStatus(`${result.keptCount} ${result.keptCount === 1 ? "date" : "dates"} kept · ${result.endedCount} ${result.endedCount === 1 ? "date" : "dates"} ended.`);
+    await load();
+  }
+
+  async function departureUnavailable() {
+    await load(false);
+  }
+
+  function cancelDeparture() {
+    setDepartureMember(null);
+    if (accessUnavailable) onUnavailable(group.id);
   }
 
   const memberIds = new Set((members ?? []).map((m) => m.id));
@@ -428,58 +456,74 @@ function MemberManager({ group, users }: { group: GroupSummary; users: User[] })
   return (
     <div className="mt-3 border-t border-border pt-3">
       {error && <FormError layout="mb-2">{error}</FormError>}
-      <ul className="divide-y divide-border">
-        {(members ?? []).map((m) => (
-          <li key={m.id} className="py-2 flex items-center gap-3">
-            <Avatar
-              url={m.avatarUrl || undefined}
-              name={m.name}
-              focalX={m.avatarFocalX}
-              focalY={m.avatarFocalY}
-              size="w-8 h-8"
-              textSize="text-xs"
-            />
-            <div className="grow min-w-0">
-              <span className="font-medium">{m.name}</span>{" "}
-              {m.accountType === "teen" && <Badge>Teen</Badge>}
-              {m.admin && (
-                <span className="mr-1 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
-                  Admin
-                </span>
-              )}
-              <span className="text-xs text-text-muted capitalize">· {m.role}</span>
-              <ContactDetails email={m.email} phone={m.phone} />
-            </div>
-            <Button variant="danger-outline" onClick={() => remove(m)} disabled={busy}>
-              Remove
-            </Button>
-          </li>
-        ))}
-      </ul>
-      {members && members.length === 0 && (
-        <p className="text-sm text-text-muted py-2">No members yet.</p>
-      )}
-      <div className="mt-3 max-w-xl space-y-4">
-        <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy} onChange={(person) => { setSelection(person); setAskPerson(null); setAddUserId(""); setError(null); }} /></Field>
-        <Field label="Or choose an adult by email">
-          <Select value={addUserId} onChange={(e) => { setAddUserId(e.target.value); setSelection(null); setAskPerson(null); }}>
-            <option value="">Select…</option>
-            {candidates.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.displayName || u.name}{u.accountType === "teen" ? " (Teen)" : ""} ({u.email})
-              </option>
+      {departureStatus && <p role="status" className="mb-2 rounded-lg border border-border bg-sunken px-3 py-2 text-sm">{departureStatus}</p>}
+      {membersLoading && <p role="status" className="py-2 text-sm text-text-muted">Loading members…</p>}
+      {!accessUnavailable && !membersLoading && (
+        <>
+          <ul className="divide-y divide-border">
+            {(members ?? []).map((m) => (
+              <li key={m.id} className="py-2 flex items-center gap-3">
+                <Avatar
+                  url={m.avatarUrl || undefined}
+                  name={m.name}
+                  focalX={m.avatarFocalX}
+                  focalY={m.avatarFocalY}
+                  size="w-8 h-8"
+                  textSize="text-xs"
+                />
+                <div className="grow min-w-0">
+                  <span className="font-medium">{m.name}</span>{" "}
+                  {m.accountType === "teen" && <Badge>Teen</Badge>}
+                  {m.admin && (
+                    <span className="mr-1 inline-block rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-semibold text-primary-on-subtle">
+                      Admin
+                    </span>
+                  )}
+                  <span className="text-xs text-text-muted capitalize">· {m.role}</span>
+                  <ContactDetails email={m.email} phone={m.phone} />
+                </div>
+                <Button variant="danger-outline" onClick={() => remove(m)} disabled={busy || departureMember !== null}>
+                  Remove
+                </Button>
+              </li>
             ))}
-          </Select>
-        </Field>
-        {!selection?.teen && <Choices legend="Role">
-          <Radio name={`admin-role-${group.id}`} label="Member" checked={addRole === "member"} onChange={() => setAddRole("member")} />
-          <Radio name={`admin-role-${group.id}`} label="Leader" checked={addRole === "leader"} onChange={() => setAddRole("leader")} />
-        </Choices>}
-        <Button variant="secondary" onClick={add} disabled={busy || (!selection && !addUserId)}>
-          {busy ? "…" : selection?.teen ? "Ask to add" : "Add"}
-        </Button>
-        {askPerson && <AddRequestForm key={askPerson.selectionId} person={askPerson} scope={{ contextType: "group", contextId: group.id }} full={group.memberLimit !== null && group.memberCount >= group.memberLimit} onClose={() => setAskPerson(null)} />}
-      </div>
+          </ul>
+          {members && members.length === 0 && (
+            <p className="text-sm text-text-muted py-2">No members yet.</p>
+          )}
+          <div className="mt-3 max-w-xl space-y-4">
+            <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy} onChange={(person) => { setSelection(person); setAskPerson(null); setAddUserId(""); setError(null); }} /></Field>
+            <Field label="Or choose an adult by email">
+              <Select value={addUserId} onChange={(e) => { setAddUserId(e.target.value); setSelection(null); setAskPerson(null); }}>
+                <option value="">Select…</option>
+                {candidates.map((u) => (
+                  <option key={u.id} value={u.id}>
+                    {u.displayName || u.name}{u.accountType === "teen" ? " (Teen)" : ""} ({u.email})
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            {!selection?.teen && <Choices legend="Role">
+              <Radio name={`admin-role-${group.id}`} label="Member" checked={addRole === "member"} onChange={() => setAddRole("member")} />
+              <Radio name={`admin-role-${group.id}`} label="Leader" checked={addRole === "leader"} onChange={() => setAddRole("leader")} />
+            </Choices>}
+            <Button variant="secondary" onClick={add} disabled={busy || (!selection && !addUserId)}>
+              {busy ? "…" : selection?.teen ? "Ask to add" : "Add"}
+            </Button>
+            {askPerson && <AddRequestForm key={askPerson.selectionId} person={askPerson} scope={{ contextType: "group", contextId: group.id }} full={group.memberLimit !== null && group.memberCount >= group.memberLimit} onClose={() => setAskPerson(null)} />}
+          </div>
+        </>
+      )}
+      {departureMember !== null && (
+        <GroupDepartureDialog
+          groupId={group.id}
+          subjectId={departureMember}
+          onCancel={cancelDeparture}
+          onUnavailable={departureUnavailable}
+          onCompleted={completedDeparture}
+          fallbackFocus={fallbackFocus}
+        />
+      )}
     </div>
   );
 }
@@ -492,6 +536,10 @@ function GroupsTab({ users }: { users: User[] }) {
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  const manageMemberButtons = useRef(new Map<number, HTMLButtonElement>());
+  const closeMembers = useCallback((groupId: number) => {
+    setOpenMembers((current) => current === groupId ? null : current);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -556,7 +604,14 @@ function GroupsTab({ users }: { users: User[] }) {
                 · {g.memberCount} members · {g.leaderName || "no leader"}
               </div>
             </div>
-            <Button variant="secondary" onClick={() => setOpenMembers((v) => (v === g.id ? null : g.id))}>
+            <Button
+              ref={(button) => {
+                if (button) manageMemberButtons.current.set(g.id, button);
+                else manageMemberButtons.current.delete(g.id);
+              }}
+              variant="secondary"
+              onClick={() => setOpenMembers((v) => (v === g.id ? null : g.id))}
+            >
               {openMembers === g.id ? "Hide members" : "Manage members"}
             </Button>
             <Link to={`/groups/${g.id}`} className="btn-secondary py-1.5! px-3! text-sm">
@@ -566,7 +621,8 @@ function GroupsTab({ users }: { users: User[] }) {
               {deletingId === g.id ? "…" : "Delete"}
             </Button>
           </div>
-          {openMembers === g.id && <MemberManager group={g} users={users} />}
+          {openMembers === g.id && <MemberManager group={g} users={users} onUnavailable={closeMembers}
+            fallbackFocus={() => manageMemberButtons.current.get(g.id)?.focus()} />}
         </div>
       ))}
       {groups.length === 0 && (

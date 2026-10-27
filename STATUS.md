@@ -2,7 +2,7 @@
 
 Claim a milestone here (in its own PR or commit) before starting it.
 
-Reconciled against merged history through `1a3f077` (Oct 25, 2026). “Merged” is not a production deployment or a claim that later findings are fixed. Product scope lives in [PLAN.md](docs/plan/PLAN.md); remaining conflicts are in [DOCUMENTATION-REVIEW.md](docs/plan/DOCUMENTATION-REVIEW.md).
+Reconciled against merged history through M1.14 series RSVP/Undo PR #130 (merge `7229e92`, reviewed head `5f927ce`, Oct 27, 2026) and the locally validated departure publication head `deb093d`. “Merged” is not a production deployment, and local validation is not protected-branch CI or merge. Product scope lives in [PLAN.md](docs/plan/PLAN.md); remaining conflicts are in [DOCUMENTATION-REVIEW.md](docs/plan/DOCUMENTATION-REVIEW.md).
 
 | Milestone | Status | Owner | Branch/PR |
 | --- | --- | --- | --- |
@@ -26,7 +26,7 @@ Reconciled against merged history through `1a3f077` (Oct 25, 2026). “Merged”
 | M1.11 Contact privacy and direct-contact requests | done (merged #122; M1.11-VERIFICATION.md) | Wright | `orchestrate/207252f0-d74a-467e-83c4-314a924143cd` |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
 | M1.13 Per-date event visibility (DEC-46) | merged #123; existing consumers verified, absent search/reminder/room consumers deferred | Wright | `m1.13-date-visibility` |
-| M1.14 Series RSVP and RSVP-aware calendar | partial: exact-date invitation prerequisite merged in #122; remaining scope unclaimed | | |
+| M1.14 Series RSVP and RSVP-aware calendar | original integrated implementation accepted locally at `754a2f6`; publication follow-ups `30d48c3`, `09b1260` and `5f927ce` repaired RSVP draft reconciliation, atomic response feedback and page-wide mutation serialization. Calendar/feed merged in #129 (`891ce26`); series RSVP/Undo merged in #130 (merge `7229e92`, reviewed head `5f927ce`) after all protected checks and independent approval. Departure is locally prepared at exact source head `deb093d`: all 12 repository gates passed (520 component tests; 80 browser passes and 6 conditional skips) and the independent publication review approved every assigned domain. Implementation is complete on this branch; the final delivery and protected CI/merge receipt is [departure PR #131](https://github.com/grierj/fold/pull/131). See [verification](docs/plan/M1.14-VERIFICATION.md) and [finish tasks](docs/plan/M1.14-FINISH-TASKS.md). | Parent + gpt-5.6-sol via pi-subagents | #129, #130 and [#131](https://github.com/grierj/fold/pull/131); preserved recovery history: `26ef2d2`, `79fa47b`, `7f1a214`, `orchestrate/b7eae0cf-c293-4968-ad97-51783bb7b1af` |
 | Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | done (merged, #43) | Wright | `simplicity` |
 
 ## Other merged work (not milestones)
@@ -55,7 +55,7 @@ Reconciled against merged history through `1a3f077` (Oct 25, 2026). “Merged”
 
 ## Remaining follow-ups
 
-Recheck implementation before claiming an older finding; this docs pass did not rerun the feature suites.
+Recheck implementation before claiming an older finding. M1.14's exact-head local suites and review evidence are recorded separately; older follow-ups below are not silently closed by that milestone.
 
 - M1.10 phase scope: account access, guardian consent, staged conversion, birthdays, and existing roster badges are implemented and verified in #114–#118. Recipient-list composition, guardian message copies, SMS sending, and galleries remain future milestones. DEC-83 records the staged inactive-holder retry exception and independent suspension behavior.
 
@@ -65,6 +65,7 @@ Recheck implementation before claiming an older finding; this docs pass did not 
 - (M1.9 slice 2, judgment call 34) Seat-only manager removal still doesn't auto-promote; making every removal promote (5.4) is deferred.
 - (Warden, PR 110) Recheck the solo RSVP/membership-removal race against the current locked authorization path in `api_registrations.go`. It now calls `canRegisterIn` inside the transaction; this documentation pass did not establish whether all competing membership mutations serialize with that check. Do not treat the older finding as verified closed.
 - (Whittler, PR 110) Select attendee names in the attendee query so the account load can be skipped (GET /events/:id to about 18 reads).
+- (M1.14 departure-security review, P2) Disabling a Going member inside the cutoff can notify leaders, then later departure cleanup can repeat the same waitlist-cutoff notice even though no additional seat was freed. Capacity and authorization remain correct; avoid the duplicate notification in a focused follow-up.
 - VideoField polish (Illuminator, optional, from the #102 review): N7, clear the field's error when the link or the video option changes; N8, add a little space between the event page's time line and the "Join by video" button.
 - Terminology (Grier, Oct 20, 2026; DEC-78): rethink the name "private" for groups. The word is overloaded, because private groups are visible to every signed-in member.
 - A confirmed household-person guardian link survives a teen-to-child kind edit; this is the retained behavior, not an unapproved new permission.

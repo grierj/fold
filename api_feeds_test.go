@@ -546,7 +546,9 @@ func TestPersonalFeedDropsGroupAfterLeaving(t *testing.T) {
 	if body := feedBody(t, anon, path); !strings.Contains(body, "Inner Night") {
 		t.Fatalf("member feed is missing the invite-only event:\n%s", body)
 	}
-	apiDo(t, sam, "POST", "/api/v1/groups/"+itoa(inner)+"/leave", map[string]any{}, http.StatusOK)
+	if w := confirmDeparture(t, sam, "POST", "/api/v1/groups/"+itoa(inner)+"/leave", "/api/v1/groups/"+itoa(inner)+"/departure-preview", ""); w.Code != http.StatusOK {
+		t.Fatalf("leave: %d %s", w.Code, w.Body.String())
+	}
 	if body := feedBody(t, anon, path); strings.Contains(body, "Inner Night") {
 		t.Fatalf("feed still carries the group after leaving:\n%s", body)
 	}

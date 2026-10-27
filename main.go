@@ -42,13 +42,13 @@ type App struct {
 	// run inline so they can read the outbox straight after the request.
 	background func(func())
 
-	// calendarClock fixes DEC-77 window boundaries in handler tests. Production
-	// leaves it nil and reads the current UTC time.
-	calendarClock func() time.Time
-
 	// seriesClock is a per-App clock seam for lock-boundary tests. Production
 	// leaves it nil and reads the current UTC time.
 	seriesClock func() time.Time
+
+	// calendarClock fixes DEC-77 window boundaries in handler tests. Production
+	// leaves it nil and reads the current UTC time.
+	calendarClock func() time.Time
 
 	// setupDone is set once any user exists. The wizard cannot be re-entered
 	// without a process restart after that, which is the normal case.
