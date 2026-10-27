@@ -54,6 +54,30 @@ it("preserves valid values on capacity error, validates guests, and keeps Maybe 
   expect(screen.getByLabelText("Guests")).toHaveValue(2); expect(screen.getByLabelText("Remote")).toBeChecked();
 });
 
+it("keeps native keyboard activation and blocks disabled segment answers", async () => {
+  mount(); await screen.findByText("One invited date");
+  const maybe = screen.getByRole("button", { name: "Maybe" });
+  maybe.focus();
+  await userEvent.keyboard("{Enter}");
+  expect(Dates.register).toHaveBeenCalledWith("7", "2026-12-01", { status: "maybe", attendanceMode: "remote", guestCount: 1 });
+
+  fireEvent.change(screen.getByLabelText("Guests"), { target: { value: "4" } });
+  const going = screen.getByRole("button", { name: "Going" });
+  expect(going).toBeDisabled();
+  await userEvent.click(going);
+  expect(Dates.register).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  ["going", "Going"], ["waitlisted", "Going"], ["maybe", "Maybe"], ["declined", "Can't go"], [null, null],
+] as const)("maps %s to only the matching exact-date segment", async (status, selected) => {
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canRegister: true, canDecline: false, canBlock: false, myRegistration: status, myAttendanceMode: undefined, myGuestCount: undefined }) });
+  mount(); await screen.findByText(`Your answer: ${status === "waitlisted" ? "Waitlisted" : status === "going" ? "Going" : status === "maybe" ? "Maybe" : status === "declined" ? "Can't go" : "Not answered"}`);
+  for (const name of ["Going", "Maybe", "Can't go"]) {
+    expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", String(name === selected));
+  }
+});
+
 it("never invents unsupported options or edit authority for an ordinary/guardian read", async () => {
   vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canDecline: false, canBlock: false, canSeeVideo: false, videoHidden: false, myAttendanceMode: undefined, myGuestCount: undefined }) });
   mount(); await screen.findByText("One invited date");

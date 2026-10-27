@@ -93,6 +93,10 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
   await expect(first.getByText("No one yet")).toBeVisible();
 
   await answer.getByRole("button", { name: "Maybe" }).click();
+  const maybeScope = page.getByRole("dialog", { name: /How far should “Maybe” apply/ });
+  const maybeJustThisDate = maybeScope.getByRole("button", { name: "Just this date" });
+  await expect(maybeJustThisDate).toBeFocused();
+  await maybeJustThisDate.click();
   await expect(answer.getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-pressed", "true");
   // Not color alone: the chosen segment leads with a check mark.
   expect(await answer.getByRole("button", { name: "Maybe" }).evaluate((b) => getComputedStyle(b, "::before").content)).toContain("✓");
@@ -100,6 +104,10 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
   const cardBox = (await first.boundingBox())!, groupBox = (await answer.boundingBox())!;
   expect(groupBox.width).toBeGreaterThan(cardBox.width - 40);
   await expect(first.getByText("0 going · 1 maybe")).toBeVisible();
+  const secondAnswer = page.getByRole("group", { name: "Your answer" }).nth(1);
+  for (const name of ["Going", "Maybe", "Can't go"]) {
+    await expect(secondAnswer.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
+  }
   const show = first.getByRole("button", { name: "Show who's coming" });
   await expect(show).toHaveAttribute("aria-expanded", "false");
   await show.click();
@@ -109,7 +117,14 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
   await expect(attendee).toContainText("(maybe)");
 
   await answer.getByRole("button", { name: "Can't go" }).click();
+  const declineScope = page.getByRole("dialog", { name: /How far should “Can't go” apply/ });
+  const declineJustThisDate = declineScope.getByRole("button", { name: "Just this date" });
+  await expect(declineJustThisDate).toBeFocused();
+  await declineJustThisDate.click();
   await expect(answer.getByRole("button", { name: "Can't go" })).toHaveAttribute("aria-pressed", "true");
+  for (const name of ["Going", "Maybe", "Can't go"]) {
+    await expect(secondAnswer.getByRole("button", { name })).toHaveAttribute("aria-pressed", "false");
+  }
   await expect(first.getByText("No one yet")).toBeVisible();
   await expect(first.getByText(/can.t go/i).and(first.locator(":not(button)"))).toHaveCount(0);
   await expect(first.getByText("Sam Member")).toHaveCount(0);

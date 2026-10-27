@@ -8,6 +8,7 @@ import type { AttendanceMode, EventDate } from "../types";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Choices, Field, FormError, Input, Radio } from "../components/ui/Field";
+import { SegmentButton } from "../components/ui/SegmentButton";
 import { errorText } from "../lib/errors";
 import { formatWhen, heldIn } from "../lib/when";
 
@@ -123,9 +124,9 @@ function DateAnswer({ occurrence, busy, onAnswer }: { occurrence: EventDate; bus
     </Choices>}
     {showGuests && <Field label="Guests" hint={`Whole number from 0 to ${guestMax}. Guests use spaces too.`} error={!guestValid ? `Enter a whole number from 0 to ${guestMax}.` : undefined}><Input type="number" min={0} max={guestMax} step={1} value={guests} disabled={busy} onChange={(e) => setGuests(e.target.value)} /></Field>}
     <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
-      <button type="button" className="segment" aria-pressed={occurrence.myRegistration === "going" || occurrence.myRegistration === "waitlisted"} disabled={busy || (showGuests && !guestValid)} onClick={() => void onAnswer("going", options)}>Going</button>
-      <button type="button" className="segment" aria-pressed={occurrence.myRegistration === "maybe"} disabled={busy || (showGuests && !guestValid)} onClick={() => void onAnswer("maybe", options)}>Maybe</button>
-      {occurrence.canRegister && !occurrence.canDecline && <button type="button" className="segment" aria-pressed={occurrence.myRegistration === "declined"} disabled={busy} onClick={() => void onAnswer("declined", {})}>Can't go</button>}
+      <SegmentButton pressed={occurrence.myRegistration === "going" || occurrence.myRegistration === "waitlisted"} disabled={busy || (showGuests && !guestValid)} onClick={() => void onAnswer("going", options)}>Going</SegmentButton>
+      <SegmentButton pressed={occurrence.myRegistration === "maybe"} disabled={busy || (showGuests && !guestValid)} onClick={() => void onAnswer("maybe", options)}>Maybe</SegmentButton>
+      {occurrence.canRegister && !occurrence.canDecline && <SegmentButton pressed={occurrence.myRegistration === "declined"} disabled={busy} onClick={() => void onAnswer("declined", {})}>Can't go</SegmentButton>}
     </div>
   </div>;
 }
