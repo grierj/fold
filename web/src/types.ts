@@ -423,7 +423,10 @@ export interface CalendarOccurrence {
   remoteAvailable: boolean;
   childcareAvailable: boolean;
   hostedBy?: string;
-  myStatus: "going" | "maybe" | "waitlisted" | null;
+  myStatus: "going" | "maybe" | "waitlisted" | "declined" | null;
+  // True only for the viewer's standing/answered/household/exact-date scope.
+  // It is presentation data, never authorization.
+  ownScope: boolean;
   // Set only for an admin who turned on "Show deleted events" (DEC-68).
   groupDeleted?: boolean;
 }

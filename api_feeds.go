@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -151,32 +150,13 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 		return feed
 	}
 	byID, groups, rels, hosted, visibleIDs := vs.ByID, vs.Groups, vs.Rels, vs.Hosted, vs.IDs
-	// An invitation is always a standalone exact date, even for scope=all.
-	// Public/group feeds never consult personal access records.
+	// Exact-date access is loaded independently of ordinary visibility. Public
+	// and group feeds never consult these records.
+	scoped := map[uint]*occurrenceRead{}
 	if opts.personal && viewer != nil && opts.onlyGroupID == nil {
-		scoped, err := a.scopedOccurrenceReads(viewer, a.DB.Where("starts_at >= ? AND starts_at < ?", windowStart, windowEnd), now)
+		scoped, err = a.scopedOccurrenceReads(viewer, a.DB.Where("starts_at >= ? AND starts_at < ?", windowStart, windowEnd), now)
 		if err != nil {
 			return feed
-		}
-		scopedIDs := make([]uint, 0, len(scoped))
-		for id := range scoped {
-			scopedIDs = append(scopedIDs, id)
-		}
-		sort.Slice(scopedIDs, func(i, j int) bool { return scopedIDs[i] < scopedIDs[j] })
-		for _, id := range scopedIDs {
-			read := scoped[id]
-			if vs.canSeeDate(viewer, byID[read.Event.ID], &read.Occurrence) {
-				continue
-			}
-			date := presentOccurrenceDate(&read.Event, &read.Occurrence, "", false, false, false, read.Registration, read, now)
-			status := "CONFIRMED"
-			if read.Registration.Status == models.RegWaitlisted || read.Registration.Status == models.RegMaybe {
-				status = "TENTATIVE"
-			}
-			feed.Singles = append(feed.Singles, events.FeedSingle{EventID: date.EventID, OriginalDate: date.Date,
-				Title: date.Title, Location: date.Location, StartsAt: date.StartsAt, EndsAt: date.EndsAt, TZID: date.TZID,
-				VideoURL: date.VideoURL, RemoteAvailable: date.RemoteAvailable,
-				URL: a.emailBaseURL() + date.DateURL, UpdatedAt: read.Occurrence.UpdatedAt, Status: status})
 		}
 	}
 	if len(visibleIDs) == 0 {
@@ -187,6 +167,9 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 	a.DB.Where("event_id IN ? AND starts_at >= ? AND starts_at < ?",
 		visibleIDs, windowStart, windowEnd).
 		Order("starts_at").Find(&occs)
+	if opts.personal && viewer != nil {
+		return a.buildPersonalFeedSingles(feed, viewer, opts.scope, now, occs, scoped, vs)
+	}
 	byEvent := map[uint][]*models.EventOccurrence{}
 	for i := range occs {
 		if !vs.canSeeDate(viewer, byID[occs[i].EventID], &occs[i]) {
@@ -352,6 +335,98 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 			}
 		}
 		feed.Events = append(feed.Events, fe)
+	}
+	return feed
+}
+
+// buildPersonalFeedSingles expands personal feeds date by date. That makes
+// every hidden, declined, out-of-window, or differently answered recurrence
+// explicit, so an RRULE can never reintroduce it in a calendar client.
+func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, rawScope string, now time.Time, occs []models.EventOccurrence, scoped map[uint]*occurrenceRead, vs visibleSet) events.Feed {
+	ids := make([]uint, len(occs))
+	for i := range occs {
+		ids[i] = occs[i].ID
+	}
+	facts, err := a.loadCalendarScopeBatch(viewer, ids)
+	if err != nil {
+		return feed
+	}
+	scope := policy.CalendarScopeMine
+	if rawScope == models.CalendarFeedAll {
+		scope = policy.CalendarScopeAll
+	}
+	householdGoing := householdGoingMap(a.DB, ids, viewer, false)
+	viewerAdmin := asPerson(viewer).Admin
+	for i := range occs {
+		occ := &occs[i]
+		if occ.Status != models.OccurrenceScheduled {
+			continue
+		}
+		ev := vs.ByID[occ.EventID]
+		read := scoped[occ.ID]
+		ordinary := vs.canSeeDate(viewer, ev, occ)
+		if !ordinary && read == nil {
+			continue
+		}
+		if ev == nil && read != nil {
+			ev = &read.Event
+		}
+		grp, rel := groupAndRel(ev, vs.Groups, vs.Rels)
+		ownStatus := facts.ownStatus[occ.ID]
+		decision := calendarScopeDecision(scope, true, ev, occ, rel, vs.Hosted[ev.ID], facts.household[occ.ID], read != nil, ownStatus, now)
+		// Personal ICS never carries Can't go, even in scope=all.
+		if !decision.Include || ownStatus == models.RegDeclined {
+			continue
+		}
+
+		status := "TENTATIVE"
+		if ownStatus == models.RegGoing {
+			status = "CONFIRMED"
+		}
+		if !ordinary {
+			date := presentOccurrenceDate(&read.Event, occ, "", false, false, false, read.Registration, read, now)
+			feed.Singles = append(feed.Singles, events.FeedSingle{
+				EventID: date.EventID, OriginalDate: date.Date, Title: date.Title,
+				Location: date.Location, TZID: date.TZID, StartsAt: date.StartsAt, EndsAt: date.EndsAt,
+				VideoURL: date.VideoURL, RemoteAvailable: date.RemoteAvailable,
+				URL: a.emailBaseURL() + date.DateURL, UpdatedAt: occ.UpdatedAt, Status: status,
+			})
+			continue
+		}
+
+		groupLoc := ""
+		if shown := a.groupShownTo(viewer, grp, rel); shown != nil {
+			groupLoc = shown.Location
+		}
+		eff := occurrenceToJSON(ev, occ, groupLoc)
+		seriesVisible := vs.canSeeSeries(viewer, ev)
+		videoStatus := ownStatus
+		if videoStatus == "" && householdGoing[occ.ID] {
+			videoStatus = models.RegGoing
+		}
+		videoURL := ""
+		if seriesVisible {
+			if link := videoLinkOf(ev); link != "" && policy.CanSeeVideoLinkInFeed(videoRevealOf(ev), videoStatus,
+				rel.Member || vs.Hosted[ev.ID], rel.Leader || vs.Hosted[ev.ID] || viewerAdmin) {
+				videoURL = link
+			}
+		}
+		description := ""
+		childcareAvailable := false
+		childcareAges := ""
+		if seriesVisible {
+			description = ev.Description
+			childcareAvailable = ev.ChildcareAvailable
+			childcareAges = ev.ChildcareAges
+		}
+		feed.Singles = append(feed.Singles, events.FeedSingle{
+			EventID: ev.ID, OriginalDate: occ.OriginalDate, Title: eff.Title,
+			Description: description, Location: eff.Location, TZID: ev.TZID,
+			StartsAt: eff.StartsAt, EndsAt: eff.EndsAt, VideoURL: videoURL,
+			RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: childcareAvailable,
+			ChildcareAges: childcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),
+			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: status,
+		})
 	}
 	return feed
 }

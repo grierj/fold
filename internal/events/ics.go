@@ -56,9 +56,9 @@ type FeedEvent struct {
 	Occurrences        []FeedOccurrence
 }
 
-// FeedSingle is one standalone date with no series entry in this feed:
-// a personal feed's "I'm going to this one date of someone else's
-// series". Its UID carries the date for that reason (see singleUID).
+// FeedSingle is one standalone date with no series entry in this feed.
+// Its UID carries the immutable original date so expanded personal rows keep
+// their identity when a series clock changes (see singleUID).
 type FeedSingle struct {
 	EventID      uint
 	OriginalDate string
@@ -289,9 +289,11 @@ func renderSingle(s *FeedSingle, host string) ([]string, *time.Location, bool) {
 		"BEGIN:VEVENT",
 		"UID:" + singleUID(s.EventID, date, host),
 		"DTSTAMP:" + dtstamp(s.UpdatedAt, s.StartsAt),
-		"DTSTART;TZID=" + s.TZID + ":" + s.StartsAt.In(loc).Format(icsWall),
-		"DTEND;TZID=" + s.TZID + ":" + end.In(loc).Format(icsWall),
 	}
+	b = append(b,
+		"DTSTART;TZID="+s.TZID+":"+s.StartsAt.In(loc).Format(icsWall),
+		"DTEND;TZID="+s.TZID+":"+end.In(loc).Format(icsWall),
+	)
 	if s.Status != "" {
 		b = append(b, "STATUS:"+s.Status)
 	}

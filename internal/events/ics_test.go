@@ -235,6 +235,44 @@ func TestICSStandaloneSingles(t *testing.T) {
 	}
 }
 
+func TestICSPersonalExpandedSeriesUsesStableDateUIDs(t *testing.T) {
+	cal := checkGolden(t, "personal-expanded.ics", Feed{
+		Name:        "My Fold calendar",
+		Host:        "church.example.org",
+		WindowStart: utc(2026, 11, 1, 0, 0),
+		WindowEnd:   utc(2027, 11, 1, 0, 0),
+		Singles: []FeedSingle{
+			{
+				EventID: 17, OriginalDate: "2026-12-01", Title: "Tuesday study", TZID: "America/Boise",
+				StartsAt:  time.Date(2026, 12, 1, 19, 0, 0, 0, time.FixedZone("MST", -7*60*60)),
+				EndsAt:    time.Date(2026, 12, 1, 20, 0, 0, 0, time.FixedZone("MST", -7*60*60)),
+				UpdatedAt: utc(2026, 11, 20, 8, 0), Status: "CONFIRMED",
+			},
+			{
+				EventID: 17, OriginalDate: "2026-12-08", Title: "Tuesday study", TZID: "America/Boise",
+				StartsAt:  time.Date(2026, 12, 8, 19, 0, 0, 0, time.FixedZone("MST", -7*60*60)),
+				EndsAt:    time.Date(2026, 12, 8, 20, 0, 0, 0, time.FixedZone("MST", -7*60*60)),
+				UpdatedAt: utc(2026, 11, 20, 8, 0), Status: "TENTATIVE",
+			},
+		},
+	})
+	evs := cal.Events()
+	if len(evs) != 2 {
+		t.Fatalf("parsed %d events, want two standalone dates", len(evs))
+	}
+	for i, wantUID := range []string{"event-17-20261201@church.example.org", "event-17-20261208@church.example.org"} {
+		if got := prop(t, evs[i], ics.ComponentPropertyUniqueId); got != wantUID {
+			t.Fatalf("standalone UID = %q, want %q", got, wantUID)
+		}
+		if evs[i].GetProperty(ics.ComponentPropertyRecurrenceId) != nil {
+			t.Fatal("expanded personal date carries a RECURRENCE-ID")
+		}
+		if evs[i].GetProperty(ics.ComponentPropertyRrule) != nil {
+			t.Fatal("expanded personal date carries an RRULE")
+		}
+	}
+}
+
 func TestICSUnsafeRuleFallsBackToSingleDates(t *testing.T) {
 	cal := checkGolden(t, "fallback.ics", Feed{
 		Name:        "Fold",

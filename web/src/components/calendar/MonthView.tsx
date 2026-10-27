@@ -4,7 +4,7 @@ import { addDays, addMonths } from "../../lib/calendar";
 import { formatDayHeading, formatDayLong, weekdayNames } from "../../lib/when";
 import { Button } from "../ui/Button";
 import { DayButton } from "../ui/DayButton";
-import { DaySection, EventChip } from "./EventRow";
+import { calendarState, calendarStateLabel, DaySection, EventChip } from "./EventRow";
 
 const MAX_CHIPS = 3;
 
@@ -83,7 +83,13 @@ export function MonthView({
                 const occs = byDay.get(d) ?? [];
                 const inMonth = d.slice(0, 7) === month;
                 const isToday = d === today;
-                const label = `${formatDayLong(d)}${isToday ? ", today" : ""}, ${occs.length} ${occs.length === 1 ? "event" : "events"}`;
+                const stateCounts = new Map<string, number>();
+                for (const occ of occs) {
+                  const label = calendarStateLabel(occ);
+                  if (label) stateCounts.set(label.toLowerCase(), (stateCounts.get(label.toLowerCase()) ?? 0) + 1);
+                }
+                const states = [...stateCounts].map(([state, count]) => `${count} ${state}`).join(", ");
+                const label = `${formatDayLong(d)}${isToday ? ", today" : ""}, ${occs.length} ${occs.length === 1 ? "event" : "events"}${states ? `, ${states}` : ""}`;
                 const number = (
                   <span
                     className={`inline-flex h-7 w-7 items-center justify-center text-sm ${isToday ? "rounded-full bg-primary text-primary-foreground" : ""}`}
@@ -104,9 +110,15 @@ export function MonthView({
                     >
                       {number}
                       <span aria-hidden="true" className="flex h-1.5 gap-0.5">
-                        {occs.slice(0, MAX_CHIPS).map((o) => (
-                          <span key={`${o.eventId}-${o.date}`} className="h-1.5 w-1.5 rounded-full bg-primary" />
-                        ))}
+                        {occs.slice(0, MAX_CHIPS).map((o) => {
+                          const state = calendarState(o);
+                          const dot = state === "going"
+                            ? "border-primary bg-primary"
+                            : state === "maybe" || state === "waitlisted" || state === "not_answered"
+                              ? "border-primary bg-transparent"
+                              : "border-border-strong bg-border-strong";
+                          return <span key={`${o.eventId}-${o.date}`} className={`h-1.5 w-1.5 rounded-full border ${dot}`} />;
+                        })}
                       </span>
                     </DayButton>
                     <div className="hidden min-h-28 sm:block">
