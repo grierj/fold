@@ -125,7 +125,7 @@ describe("RsvpButtons", () => {
 
   it("uses the shared series scope dialog, confirms bulk Can't go, and offers Undo for ten seconds", async () => {
     vi.mocked(Events.registerSeries).mockResolvedValue({ eventId: 7, scope: "this_and_following", date: "2026-12-01", status: "going", results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "waitlisted", waitlistPosition: 2 } }], refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString() });
-    vi.mocked(Events.undoSeriesRegistration).mockResolvedValue({ eventId: 7, scope: "", status: "", results: [{ occurrenceId: 1, date: "2026-12-01", before: { status: "waitlisted" }, after: { status: "going" } }], refusals: [], capacityLoss: [] });
+    vi.mocked(Events.undoSeriesRegistration).mockResolvedValue({ eventId: 7, scope: "", status: "", results: [{ occurrenceId: 1, date: "2026-12-01", before: { status: "waitlisted" }, after: { status: "waitlisted" } }], refusals: [], capacityLoss: ["2026-12-01"] });
     const onChange = vi.fn();
     render(<RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY" })} onChange={onChange} />);
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
@@ -136,12 +136,41 @@ describe("RsvpButtons", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("waitlisted for 2026-12-01");
     await userEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(Events.undoSeriesRegistration).toHaveBeenCalledWith(7, "undo-token");
-    expect(screen.getByRole("status")).toHaveTextContent("Undo: Going to 1 date");
+    expect(screen.getByRole("status")).toHaveTextContent("Undo: waitlisted for 2026-12-01 · a seat was no longer available for 2026-12-01");
 
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     await userEvent.click(screen.getByRole("button", { name: "Can't go to any" }));
     expect(confirm).toHaveBeenCalled();
     expect(Events.registerSeries).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears stale series feedback when another date reports the next action", async () => {
+    vi.mocked(Events.registerSeries).mockResolvedValue({
+      eventId: 7, scope: "all_future", status: "maybe",
+      results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "maybe" } }],
+      refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+    });
+    const instance = occurrence({ recurrenceRule: "FREQ=WEEKLY" });
+    const view = render(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedbackDate={instance.date} />);
+    await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Maybe for 1 date");
+    expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
+    view.rerender(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedbackDate="2026-12-08" />);
+    await waitFor(() => expect(screen.getByRole("status")).toBeEmptyDOMElement());
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+  });
+
+  it("announces when the ten-second Undo window ends", async () => {
+    vi.mocked(Events.registerSeries).mockResolvedValue({
+      eventId: 7, scope: "all_future", status: "maybe",
+      results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "maybe" } }],
+      refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 250).toISOString(),
+    });
+    render(<RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY" })} onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
+    expect(await screen.findByRole("button", { name: "Undo" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
+    expect(screen.getByRole("status")).toHaveTextContent("The 10-second Undo time has ended. You can change your answers again from the event.");
   });
 
   it("single events bypass the scope dialog", async () => {

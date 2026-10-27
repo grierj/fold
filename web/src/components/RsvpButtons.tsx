@@ -7,6 +7,7 @@ import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCo
 import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors } from "./ui/Field";
 import { SeriesRsvpDialog, type SeriesRsvpScope } from "./SeriesRsvpDialog";
+import { SegmentButton } from "./ui/SegmentButton";
 
 const OPTIONS: { value: RegistrationStatus; label: string }[] = [
   { value: "going", label: "Going" },
@@ -26,9 +27,13 @@ const MODES: { value: AttendanceMode; label: string }[] = [
 function SingleRsvpButtons({
   instance,
   onChange,
+  seriesFeedbackDate,
+  onSeriesFeedback,
 }: {
   instance: EventOccurrence;
   onChange: (reg: RegistrationBatch) => void;
+  seriesFeedbackDate?: string | null;
+  onSeriesFeedback?: (date: string) => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -72,9 +77,19 @@ function SingleRsvpButtons({
 
   useEffect(() => {
     if (!undo) return;
-    const timer = window.setTimeout(() => setUndo(null), Math.max(0, undo.expiresAt - Date.now()));
+    const timer = window.setTimeout(() => {
+      setUndo(null);
+      setStatusMessage((message) => `${message} · The 10-second Undo time has ended. You can change your answers again from the event.`);
+    }, Math.max(0, undo.expiresAt - Date.now()));
     return () => window.clearTimeout(timer);
   }, [undo]);
+
+  useEffect(() => {
+    if (seriesFeedbackDate && seriesFeedbackDate !== instance.date) {
+      setStatusMessage("");
+      setUndo(null);
+    }
+  }, [instance.date, seriesFeedbackDate]);
 
   const answerLabel = (status: RegistrationStatus) => status === "going" ? "Going" : status === "maybe" ? "Maybe" : "Can't go";
   const resultSummary = (result: SeriesRegistrationResponse, prefix = "") => {
@@ -104,6 +119,7 @@ function SingleRsvpButtons({
       });
       setStatusMessage(resultSummary(result));
       if (result.undoToken && result.undoExpiresAt) setUndo({ token: result.undoToken, expiresAt: new Date(result.undoExpiresAt).getTime() });
+      onSeriesFeedback?.(instance.date);
       onChange({ registration: null, people: [] });
       queueMicrotask(() => savedStatus.current?.focus());
     } catch (e) {
@@ -117,6 +133,7 @@ function SingleRsvpButtons({
     try {
       const result = await Events.undoSeriesRegistration(instance.eventId, undo.token);
       setUndo(null); setStatusMessage(resultSummary(result, "Undo: "));
+      onSeriesFeedback?.(instance.date);
       onChange({ registration: null, people: [] });
       queueMicrotask(() => savedStatus.current?.focus());
     } catch (e) { setError(errorText(e, "We couldn't undo that answer.")); }
@@ -230,7 +247,7 @@ function SingleRsvpButtons({
         </div>
       )}
       <div ref={savedStatus} role="status" tabIndex={-1} className="text-sm text-text-muted mb-2">
-        {statusMessage}{undo && <Button variant="link" disabled={busy !== null} onClick={() => void undoSeries()}>Undo</Button>}
+        {statusMessage}{undo && <Button variant="link" layout="ml-2" disabled={busy !== null} onClick={() => void undoSeries()}>Undo</Button>}
       </div>
       <div className="flex gap-2 flex-wrap items-center">
         {/* Segmented control (DEC-63): one joined row, the chosen answer filled. */}
@@ -239,16 +256,14 @@ function SingleRsvpButtons({
           const active = mine === o.value || (o.value === "going" && mine === "waitlisted");
           const disabled = busy !== null || (o.value === "going" && fullNoWaitlist);
           return (
-            <button
+            <SegmentButton
               key={o.value}
-              type="button"
-              aria-pressed={active}
+              pressed={active}
               disabled={disabled}
               onClick={() => void choose(o.value)}
-              className="segment"
             >
               {busy === o.value ? "…" : o.label}
-            </button>
+            </SegmentButton>
           );
         })}
         </div>
@@ -301,8 +316,14 @@ function SingleRsvpButtons({
 }
 
 // The household is loaded once by the page and shared across date editors.
-export function RsvpButtons({ instance, people = [], onChange }: { instance: EventOccurrence; people?: HouseholdPerson[]; onChange: (result: RegistrationBatch) => void }) {
-  if (!people.length) return <SingleRsvpButtons instance={instance} onChange={onChange} />;
+export function RsvpButtons({ instance, people = [], onChange, seriesFeedbackDate, onSeriesFeedback }: {
+  instance: EventOccurrence;
+  people?: HouseholdPerson[];
+  onChange: (result: RegistrationBatch) => void;
+  seriesFeedbackDate?: string | null;
+  onSeriesFeedback?: (date: string) => void;
+}) {
+  if (!people.length) return <SingleRsvpButtons instance={instance} onChange={onChange} seriesFeedbackDate={seriesFeedbackDate} onSeriesFeedback={onSeriesFeedback} />;
   return <HouseholdRsvp instance={instance} people={people} onChange={onChange} />;
 }
 

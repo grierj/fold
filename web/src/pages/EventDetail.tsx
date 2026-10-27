@@ -35,6 +35,7 @@ export function EventDetail() {
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [seriesFeedbackDate, setSeriesFeedbackDate] = useState<string | null>(null);
 
   // quiet refreshes in place (after an RSVP) without the Loading screen.
   const load = useCallback(async (quiet = false) => {
@@ -152,6 +153,8 @@ export function EventDetail() {
             canManage={canManage}
             onRsvp={handleRsvp}
             people={people}
+            seriesFeedbackDate={seriesFeedbackDate}
+            onSeriesFeedback={setSeriesFeedbackDate}
             onChanged={() => void load(true)}
             onNeedLogin={() => navigate("/login", { state: { from: `/events/${id}` } })}
           />
@@ -167,6 +170,8 @@ function DateRow({
   canManage,
   onRsvp,
   people,
+  seriesFeedbackDate,
+  onSeriesFeedback,
   onChanged,
   onNeedLogin,
 }: {
@@ -175,6 +180,8 @@ function DateRow({
   canManage: boolean;
   onRsvp: () => void;
   people: HouseholdPerson[];
+  seriesFeedbackDate: string | null;
+  onSeriesFeedback: (date: string) => void;
   onChanged: () => void;
   onNeedLogin: () => void;
 }) {
@@ -244,7 +251,7 @@ function DateRow({
     <div className="mt-3">
         <div>
           {loggedIn ? (
-            <RsvpButtons instance={instance} people={people} onChange={onRsvp} />
+            <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedbackDate={seriesFeedbackDate} onSeriesFeedback={onSeriesFeedback} />
           ) : instance.visibility === "public" ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />
