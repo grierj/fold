@@ -57,10 +57,11 @@ under-24px targets, under-44px RSVP targets or serious/critical Axe findings.
 The exact evidence and acceptance matrix are in
 [M1.14-VERIFICATION.md](M1.14-VERIFICATION.md).
 
-The milestone is not fully merged. Calendar/feed merged in PR #129 at `891ce26`;
-series RSVP/Undo merged in PR #130 at `7229e92` from reviewed head `5f927ce`.
-The departure PR is not open; its protected-branch `test`, `web` and `provision`
-checks and normal merge remain pending. Representative external calendar-client
+M1.14 implementation is complete on this branch. Delivery is split across
+calendar/feed #129 (`891ce26`), series RSVP/Undo #130 (`7229e92`, reviewed head
+`5f927ce`) and [departure #131](https://github.com/grierj/fold/pull/131).
+PR #131 is the final protected CI and merge receipt; local evidence does not
+substitute for those checks. Representative external calendar-client
 interoperability was not manually tested.
 
 ## Privacy decisions that must survive later work
