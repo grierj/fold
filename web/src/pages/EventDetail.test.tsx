@@ -97,6 +97,70 @@ it("uses the shared scope dialog for a recurring date", async () => {
   expect(screen.getByRole("button", { name: "Just this date" })).toHaveFocus();
 });
 
+it("serializes sibling series actions synchronously and releases after rejection or cancelled confirmation", async () => {
+  const dates = [occurrence({ recurrenceRule: "FREQ=WEEKLY" }), occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY" })];
+  vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: dates });
+  const pending = deferred<Awaited<ReturnType<typeof Events.registerSeries>>>();
+  vi.mocked(Events.registerSeries).mockReturnValue(pending.promise);
+
+  renderPage();
+  const seriesButtons = await screen.findAllByRole("button", { name: "Maybe for all" });
+  const answerGroups = screen.getAllByRole("group", { name: "Your answer" });
+  await act(() => {
+    seriesButtons[0].click();
+    seriesButtons[1].click();
+  });
+  expect(Events.registerSeries).toHaveBeenCalledTimes(1);
+  expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeDisabled();
+
+  await act(async () => pending.reject(new Error("offline")));
+  await waitFor(() => expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeEnabled());
+
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  await userEvent.click(screen.getAllByRole("button", { name: "Can't go to any" })[0]);
+  expect(confirm).toHaveBeenCalledOnce();
+  expect(Events.registerSeries).toHaveBeenCalledTimes(1);
+  expect(screen.getAllByRole("button", { name: "Maybe for all" })[1]).toBeEnabled();
+
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "maybe",
+    results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 10, status: "maybe" as const } })),
+    refusals: [],
+  });
+  await userEvent.click(screen.getAllByRole("button", { name: "Maybe for all" })[1]);
+  expect(Events.registerSeries).toHaveBeenCalledTimes(2);
+});
+
+it("blocks sibling date and Undo mutations while their requests are pending, then releases the page gate", async () => {
+  const dates = [occurrence({ recurrenceRule: "FREQ=WEEKLY" }), occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY" })];
+  vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: dates });
+  const datePending = deferred<Awaited<ReturnType<typeof Events.register>>>();
+  vi.mocked(Events.register).mockReturnValueOnce(datePending.promise);
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "maybe",
+    results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 10, status: "maybe" as const } })),
+    refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+  });
+  const undoPending = deferred<Awaited<ReturnType<typeof Events.undoSeriesRegistration>>>();
+  vi.mocked(Events.undoSeriesRegistration).mockReturnValue(undoPending.promise);
+
+  renderPage();
+  const answerGroups = await screen.findAllByRole("group", { name: "Your answer" });
+  await userEvent.click(within(answerGroups[0]).getByRole("button", { name: "Maybe" }));
+  await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
+  expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeDisabled();
+  expect(screen.getAllByRole("button", { name: "Maybe for all" })[1]).toBeDisabled();
+  await act(async () => datePending.reject(new Error("offline")));
+  await waitFor(() => expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeEnabled());
+
+  await userEvent.click(screen.getAllByRole("button", { name: "Maybe for all" })[0]);
+  const undo = await screen.findByRole("button", { name: "Undo" });
+  await userEvent.click(undo);
+  expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeDisabled();
+  await act(async () => undoPending.reject(new Error("offline")));
+  await waitFor(() => expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeEnabled());
+});
+
 it("clears a sibling card's series Undo after a one-date answer", async () => {
   const dates = [occurrence({ recurrenceRule: "FREQ=WEEKLY" }), occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY" })];
   vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: dates });

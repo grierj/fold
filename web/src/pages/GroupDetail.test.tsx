@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -28,6 +28,39 @@ it("fetches the household once and refetches all date state after a batch", asyn
   await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(2));
   expect(Households.mine).toHaveBeenCalledTimes(1);
   expect(Events.register).toHaveBeenCalledWith(7, { date: "2026-12-01", people: [{ personId: 3, status: "going", attendanceMode: "in_person", childcareRequested: false }] });
+});
+
+it("serializes household RSVP saves across sibling events and releases without resetting drafts", async () => {
+  const events = [occurrence({ eventId: 7 }), occurrence({ id: 2, eventId: 8, date: "2026-12-08" })];
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents: events });
+  const pending = deferred<Awaited<ReturnType<typeof Events.register>>>();
+  vi.mocked(Events.register).mockReturnValue(pending.promise);
+
+  open();
+  const forms = await screen.findAllByRole("form", { name: "Household answers" });
+  await userEvent.click(within(forms[0]).getByRole("checkbox", { name: "Mary" }));
+  await userEvent.selectOptions(within(forms[0]).getByLabelText("Answer for Mary"), "maybe");
+  await userEvent.click(within(forms[1]).getByRole("checkbox", { name: "Mary" }));
+  await userEvent.selectOptions(within(forms[1]).getByLabelText("Answer for Mary"), "maybe");
+
+  await act(() => {
+    within(forms[0]).getByRole("button", { name: "Save answers" }).click();
+    within(forms[1]).getByRole("button", { name: "Save answers" }).click();
+  });
+  expect(Events.register).toHaveBeenCalledTimes(1);
+  expect(within(forms[1]).getByRole("checkbox", { name: "Mary" })).toBeDisabled();
+  expect(within(forms[1]).getByLabelText("Answer for Mary")).toHaveValue("maybe");
+
+  await act(async () => pending.reject(new Error("offline")));
+  await waitFor(() => expect(within(forms[1]).getByRole("checkbox", { name: "Mary" })).toBeEnabled());
+  expect(within(forms[1]).getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  expect(within(forms[1]).getByLabelText("Answer for Mary")).toHaveValue("maybe");
+
+  vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 9, personId: 3, registeredBy: 2, status: "maybe", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }] });
+  await userEvent.click(within(forms[1]).getByRole("button", { name: "Save answers" }));
+  expect(Events.register).toHaveBeenLastCalledWith(8, {
+    date: "2026-12-08", people: [{ personId: 3, status: "maybe", attendanceMode: "in_person", childcareRequested: false }],
+  });
 });
 
 it("opens the same series scope dialog from a group date for a solo viewer", async () => {

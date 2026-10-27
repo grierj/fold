@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type APIRequestContext, type Page, type Route } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page, type Request, type Route } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { apiAs, signIn } from "./helpers";
 import { formatCalendarDay } from "../src/lib/when";
@@ -34,6 +34,35 @@ async function answerDate(request: APIRequestContext, user: string, eventId: num
 
 function answerGroups(page: Page) {
   return page.getByRole("group", { name: "Your answer" });
+}
+
+async function holdNextPostResponse(page: Page, path: string) {
+  const pattern = `**${path}`;
+  let release!: () => void;
+  let committed!: () => void;
+  let finish!: () => void;
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const mutationCommitted = new Promise<void>((resolve) => { committed = resolve; });
+  const finished = new Promise<void>((resolve) => { finish = resolve; });
+  let held = false;
+  const handler = async (route: Route) => {
+    if (route.request().method() !== "POST" || held) return route.continue();
+    held = true;
+    const response = await route.fetch();
+    committed();
+    await released;
+    await route.fulfill({ response });
+    finish();
+  };
+  await page.route(pattern, handler);
+  return {
+    committed: mutationCommitted,
+    release: async () => {
+      release();
+      await finished;
+      await page.unroute(pattern, handler);
+    },
+  };
 }
 
 async function holdNextEventRefresh(page: Page, eventId: number) {
@@ -263,6 +292,119 @@ test("non-household sibling fields refresh after a series answer and Undo withou
   expect(afterSave.occurrences[1]).toMatchObject({
     myAttendanceMode: "in_person", myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "",
   });
+});
+
+test("page-wide mutation serialization blocks sibling saves while committed Apply and household Undo responses are held", async ({ page, request }) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize({ width: 390, height: 900 });
+
+  const solo = await createEvent(request, "Held series response serialization proof", 27, "FREQ=WEEKLY;COUNT=2", {
+    guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10,
+    childcareAvailable: true, childcareCapacity: 10,
+  });
+  const sam = await apiAs(request, "sam");
+  const soloDetail = await sam("GET", `/events/${solo.id}`) as { occurrences: { date: string }[] };
+  for (const occurrence of soloDetail.occurrences) {
+    await sam("PUT", `/events/${solo.id}/registrations`, {
+      date: occurrence.date, status: "going", attendanceMode: "in_person",
+      guestCount: 0, childcareCount: 0, childcareAgesNote: "",
+    });
+  }
+  await signIn(page, "sam");
+  await page.goto(`/events/${solo.id}`);
+  await expect(answerGroups(page)).toHaveCount(2);
+  const cards = page.locator(".bg-surface.rounded-lg.border-border");
+  const firstCard = cards.first();
+  const siblingCard = cards.nth(1);
+  await firstCard.getByRole("radio", { name: "Remote" }).click();
+  await expect(firstCard.getByRole("status")).toContainText("Switched to remote");
+  await firstCard.getByLabel("Extra guests").fill("2");
+  await firstCard.getByLabel(/^Children needing childcare/).fill("2");
+  await firstCard.getByLabel(/^Ages/).fill("4 and 6");
+
+  let ordinaryRequests = 0;
+  const countSoloOrdinary = (request: Request) => {
+    if (request.method() === "PUT" && request.url().endsWith(`/api/v1/events/${solo.id}/registrations`)) ordinaryRequests += 1;
+  };
+  page.on("request", countSoloOrdinary);
+  const heldApply = await holdNextPostResponse(page, `/api/v1/events/${solo.id}/series-registrations`);
+  await firstCard.getByRole("button", { name: "Save" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
+  await heldApply.committed;
+  await expect(siblingCard.getByRole("button", { name: "Maybe", exact: true })).toBeDisabled();
+  await expect(siblingCard.getByLabel("Extra guests")).toBeDisabled();
+  await capture(page, "series-serialized-solo-apply-held-response", true, [390]);
+  await siblingCard.getByRole("button", { name: "Maybe", exact: true }).evaluate((button: HTMLButtonElement) => button.click());
+  await page.waitForTimeout(100);
+  expect(ordinaryRequests).toBe(0);
+
+  const heldApplyRefresh = await holdNextEventRefresh(page, solo.id);
+  await heldApply.release();
+  await heldApplyRefresh.started;
+  await expect(siblingCard.getByRole("button", { name: "Maybe", exact: true })).toBeEnabled();
+  await expect(siblingCard.getByRole("radio", { name: "Remote" })).toBeChecked();
+  await expect(siblingCard.getByLabel("Extra guests")).toHaveValue("2");
+  await expect(siblingCard.getByLabel(/^Children needing childcare/)).toHaveValue("2");
+  await expect(siblingCard.getByLabel(/^Ages/)).toHaveValue("4 and 6");
+  const soloSave = page.waitForRequest((request) => request.method() === "PUT"
+    && request.url().endsWith(`/api/v1/events/${solo.id}/registrations`));
+  await siblingCard.getByRole("button", { name: "Save" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Just this date" }).click();
+  expect((await soloSave).postDataJSON()).toEqual({
+    status: "going", date: soloDetail.occurrences[1].date, guestCount: 2, attendanceMode: "remote",
+    childcareCount: 2, childcareAgesNote: "4 and 6",
+  });
+  await heldApplyRefresh.release();
+  page.off("request", countSoloOrdinary);
+
+  const household = await createEvent(request, "Held household Undo serialization proof", 29, "FREQ=WEEKLY;COUNT=2");
+  const parent = await apiAs(request, "household-parent");
+  const householdDetail = await parent("GET", `/events/${household.id}`) as { occurrences: { date: string }[] };
+  await signIn(page, "household-parent");
+  await page.goto(`/events/${household.id}`);
+  const forms = page.getByRole("form", { name: "Household answers" });
+  await expect(forms).toHaveCount(2);
+  const firstForm = forms.first();
+  const siblingForm = forms.nth(1);
+  await firstForm.getByRole("checkbox", { name: "Me" }).click();
+  await firstForm.getByRole("checkbox", { name: "Mary" }).click();
+  await firstForm.getByLabel("Answer for Mary").selectOption("maybe");
+  await firstForm.getByRole("button", { name: "Going to all dates" }).click();
+  await expect(firstForm.getByRole("button", { name: "Undo" })).toBeVisible();
+
+  ordinaryRequests = 0;
+  const countHouseholdOrdinary = (request: Request) => {
+    if (request.method() === "PUT" && request.url().endsWith(`/api/v1/events/${household.id}/registrations`)) ordinaryRequests += 1;
+  };
+  page.on("request", countHouseholdOrdinary);
+  const heldUndo = await holdNextPostResponse(page, `/api/v1/events/${household.id}/series-registrations/undo`);
+  await firstForm.getByRole("button", { name: "Undo" }).click();
+  await heldUndo.committed;
+  await expect(siblingForm.getByRole("button", { name: "Save answers" })).toBeDisabled();
+  await expect(siblingForm.getByRole("checkbox", { name: "Me" })).toBeDisabled();
+  await expect(firstForm.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  await capture(page, "series-serialized-household-undo-held-response", true, [390]);
+  await expect(firstForm.getByLabel("Answer for Mary")).toHaveValue("maybe");
+  await siblingForm.getByRole("button", { name: "Save answers" }).evaluate((button: HTMLButtonElement) => button.click());
+  await page.waitForTimeout(100);
+  expect(ordinaryRequests).toBe(0);
+
+  const heldUndoRefresh = await holdNextEventRefresh(page, household.id);
+  await heldUndo.release();
+  await heldUndoRefresh.started;
+  await expect(siblingForm.getByRole("checkbox", { name: "Me" })).toBeEnabled();
+  await expect(siblingForm.getByRole("checkbox", { name: "Me" })).not.toBeChecked();
+  await expect(firstForm.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  await expect(firstForm.getByLabel("Answer for Mary")).toHaveValue("maybe");
+  await siblingForm.getByRole("checkbox", { name: "Me" }).click();
+  const householdSave = page.waitForRequest((request) => request.method() === "PUT"
+    && request.url().endsWith(`/api/v1/events/${household.id}/registrations`));
+  await siblingForm.getByRole("button", { name: "Save answers" }).click();
+  expect((await householdSave).postDataJSON()).toEqual({
+    date: householdDetail.occurrences[1].date, people: [], status: "going", attendanceMode: "in_person", guestCount: 0,
+  });
+  await heldUndoRefresh.release();
+  page.off("request", countHouseholdOrdinary);
 });
 
 test("Apply and Undo publish authoritative sibling state before delayed parent GETs for solo and household editors", async ({ page, request }) => {

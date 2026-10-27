@@ -23,6 +23,7 @@ import { Missing } from "./NotFound";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
 import { applyActorRsvpResults, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
+import { useRsvpMutationGate, type RsvpMutationGate } from "../lib/useRsvpMutationGate";
 
 const ManageRoster = lazy(() => import("../components/ManageRoster").then((module) => ({ default: module.ManageRoster })));
 
@@ -39,6 +40,7 @@ export function EventDetail() {
   const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
   const seriesFeedbackRevision = useRef(0);
   const loadRevision = useRef(0);
+  const rsvpMutationGate = useRsvpMutationGate();
 
   // Quiet refreshes keep ordinary RSVP drafts mounted. A terminal refresh
   // invalidates protected data immediately, and only the newest request may
@@ -175,6 +177,7 @@ export function EventDetail() {
             onRsvp={handleRsvp}
             people={people}
             seriesFeedback={seriesFeedback}
+            mutationGate={rsvpMutationGate}
             onSeriesFeedback={reportSeriesFeedback}
             onTerminalRefresh={() => void load(true, true)}
             onChanged={() => void load(true)}
@@ -193,6 +196,7 @@ function DateRow({
   onRsvp,
   people,
   seriesFeedback,
+  mutationGate,
   onSeriesFeedback,
   onTerminalRefresh,
   onChanged,
@@ -204,6 +208,7 @@ function DateRow({
   onRsvp: () => void;
   people: HouseholdPerson[];
   seriesFeedback: SeriesFeedbackSignal | null;
+  mutationGate: RsvpMutationGate;
   onSeriesFeedback: (eventId: number, date: string, actorResults: ActorRsvpResult[]) => void;
   onTerminalRefresh: () => void;
   onChanged: () => void;
@@ -276,7 +281,7 @@ function DateRow({
         <div>
           {loggedIn ? (
             <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
-              onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
+              mutationGate={mutationGate} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
           ) : instance.visibility === "public" ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />

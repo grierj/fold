@@ -34,6 +34,7 @@ import { Checkbox, Choices, Field, FormError, HiddenFileInput, Input, Radio, Tex
 import { FormActions } from "../components/ui/FormActions";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { applyActorRsvpResults, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
+import { useRsvpMutationGate, type RsvpMutationGate } from "../lib/useRsvpMutationGate";
 
 type Tab = "events" | "about" | "members";
 
@@ -49,6 +50,7 @@ function EventRow({
   onRsvp,
   people,
   seriesFeedback,
+  mutationGate,
   onSeriesFeedback,
   onTerminalRefresh,
   onCancelled,
@@ -65,6 +67,7 @@ function EventRow({
   onRsvp: () => void;
   people: HouseholdPerson[];
   seriesFeedback: SeriesFeedbackSignal | null;
+  mutationGate: RsvpMutationGate;
   onSeriesFeedback: (eventId: number, date: string, actorResults: ActorRsvpResult[]) => void;
   onTerminalRefresh: () => void;
   onCancelled: (eventId: number, date: string) => void;
@@ -114,7 +117,7 @@ function EventRow({
         {loggedIn && (
           <div className="mt-2">
             <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
-              onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
+              mutationGate={mutationGate} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
           </div>
         )}
         {!loggedIn && instance.visibility === "public" && (
@@ -370,6 +373,7 @@ export function GroupDetail() {
   const seriesFeedbackRevision = useRef(0);
   const coverRef = useRef<HTMLInputElement>(null);
   const loadRevision = useRef(0);
+  const rsvpMutationGate = useRsvpMutationGate();
 
   // Quiet refreshes keep ordinary RSVP drafts mounted. A terminal refresh
   // invalidates protected data immediately, and only the newest request may
@@ -839,6 +843,7 @@ export function GroupDetail() {
                     onRsvp={handleRsvp}
                     people={people}
                     seriesFeedback={seriesFeedback}
+                    mutationGate={rsvpMutationGate}
                     onSeriesFeedback={reportSeriesFeedback}
                     onTerminalRefresh={() => void load(true, true)}
                     onCancelled={handleCancelled}
