@@ -21,14 +21,14 @@ const MODES: { value: AttendanceMode; label: string }[] = [
   { value: "remote", label: "Remote" },
 ];
 
-export type SeriesFeedbackSignal = { eventId: number; date: string; revision: number };
+export type SeriesFeedbackSignal = { eventId: number; date: string; revision: number; actorDates: string[] };
 type SeriesAnswer = {
   status: RegistrationStatus;
   attendanceMode: AttendanceMode;
   guestCount: number;
   childcare?: { childcareCount: number; childcareAgesNote: string };
 };
-type SeriesFeedbackReporter = (eventId: number, date: string) => void;
+type SeriesFeedbackReporter = (eventId: number, date: string, actorDates: string[]) => void;
 
 const answerLabel = (status: RegistrationStatus) => status === "going" ? "Going" : status === "maybe" ? "Maybe" : "Can't go";
 const humanDays = (days: string[]) => days.map(formatCalendarDay).join(" and ");
@@ -93,7 +93,7 @@ function useActorSeriesRsvp({
     setStatusMessage(message);
     setUndo(null);
     setError(null);
-    onSeriesFeedback?.(instance.eventId, instance.date);
+    onSeriesFeedback?.(instance.eventId, instance.date, [instance.date]);
   }
 
   async function applySeries(answer: SeriesAnswer, scope: Exclude<SeriesRsvpScope, "just_this_date">) {
@@ -111,7 +111,7 @@ function useActorSeriesRsvp({
       });
       setStatusMessage(resultSummary(result));
       setUndo(result.undoToken && result.undoExpiresAt ? { token: result.undoToken, expiresAt: new Date(result.undoExpiresAt).getTime() } : null);
-      onSeriesFeedback?.(instance.eventId, instance.date);
+      onSeriesFeedback?.(instance.eventId, instance.date, result.results.map((row) => row.date));
       onChange({ registration: null, people: [] });
       queueMicrotask(() => statusRef.current?.focus());
     } catch (e) {
@@ -129,7 +129,7 @@ function useActorSeriesRsvp({
       const result = await Events.undoSeriesRegistration(instance.eventId, undo.token);
       setUndo(null);
       setStatusMessage(resultSummary(result, "Undo: "));
-      onSeriesFeedback?.(instance.eventId, instance.date);
+      onSeriesFeedback?.(instance.eventId, instance.date, result.results.map((row) => row.date));
       onChange({ registration: null, people: [] });
       queueMicrotask(() => statusRef.current?.focus());
     } catch (e) {
@@ -370,6 +370,16 @@ export function RsvpButtons({ instance, people = [], onChange, seriesFeedback, o
 
 type Answer = { selected: boolean; status: "going" | "maybe" | "declined"; mode: AttendanceMode; care: boolean };
 const draftAnswer = (status: string | null | undefined, mode: AttendanceMode = "in_person", care = false): Answer => ({ selected: status === "going" || status === "waitlisted" || status === "maybe", status: status === "maybe" ? "maybe" : "going", mode, care });
+type SavedActorAnswer = { status: string | null | undefined; mode: AttendanceMode; guests: number; children: number; ages: string };
+const savedActorAnswer = (instance: EventOccurrence): SavedActorAnswer => ({
+  status: instance.myRegistration,
+  mode: instance.myAttendanceMode ?? "in_person",
+  guests: instance.myGuestCount ?? 0,
+  children: instance.myChildcareCount ?? 0,
+  ages: instance.myChildcareAgesNote ?? "",
+});
+const sameSavedActorAnswer = (left: SavedActorAnswer, right: SavedActorAnswer) => left.status === right.status
+  && left.mode === right.mode && left.guests === right.guests && left.children === right.children && left.ages === right.ages;
 const ELIGIBILITY: Record<HouseholdPerson["registrationEligibility"], string> = {
   eligible: "", link_pending: "Waiting for an admin to confirm", link_unconfirmed: "Ask your church office to confirm this household link.",
   birth_date_required: "Add a birth date in Profile before signing them up.", age_mismatch: "Check their birth date and kind in Profile.",
@@ -394,12 +404,23 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
   const [guests, setGuests] = useState(instance.myGuestCount ?? 0);
   const [children, setChildren] = useState(String(instance.myChildcareCount ?? 0));
   const [ages, setAges] = useState(instance.myChildcareAgesNote ?? "");
+  const savedActor = useRef(savedActorAnswer(instance));
+  const actorRefreshRevision = useRef(seriesFeedback?.revision ?? 0);
   useEffect(() => {
-    setMe(draftAnswer(instance.myRegistration, instance.myAttendanceMode));
-    setGuests(instance.myGuestCount ?? 0);
-    setChildren(String(instance.myChildcareCount ?? 0));
-    setAges(instance.myChildcareAgesNote ?? "");
-  }, [instance]);
+    const nextSaved = savedActorAnswer(instance);
+    const savedChanged = !sameSavedActorAnswer(savedActor.current, nextSaved);
+    const feedbackChanged = seriesFeedback?.revision !== undefined && seriesFeedback.revision !== actorRefreshRevision.current;
+    const actorRefresh = !!seriesFeedback && feedbackChanged && seriesFeedback.eventId === instance.eventId
+      && seriesFeedback.actorDates.includes(instance.date);
+    savedActor.current = nextSaved;
+    if (seriesFeedback?.revision !== undefined) actorRefreshRevision.current = seriesFeedback.revision;
+    if (!savedChanged && !actorRefresh) return;
+    setMe(draftAnswer(nextSaved.status, nextSaved.mode));
+    setGuests(nextSaved.guests);
+    setChildren(String(nextSaved.children));
+    setAges(nextSaved.ages);
+  }, [instance.date, instance.eventId, instance.myAttendanceMode, instance.myChildcareAgesNote, instance.myChildcareCount,
+    instance.myGuestCount, instance.myRegistration, seriesFeedback]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");

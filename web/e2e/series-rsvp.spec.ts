@@ -36,8 +36,8 @@ function answerGroups(page: Page) {
   return page.getByRole("group", { name: "Your answer" });
 }
 
-async function capture(page: Page, name: string, fullPage = true) {
-  for (const width of [390, 768, 1280]) {
+async function capture(page: Page, name: string, fullPage = true, widths = [390, 768, 1280]) {
+  for (const width of widths) {
     await page.setViewportSize({ width, height: 900 });
     const layout = await page.evaluate(measure);
     const { violations } = await new AxeBuilder({ page })
@@ -240,6 +240,61 @@ test("a household user keeps one-date drafts while their own answer uses every s
   };
   expect(detail.occurrences.map((row) => row.myRegistration)).toEqual(["maybe", "maybe", "maybe", "maybe"]);
   expect(detail.occurrences[2].myHouseholdRegistrations?.map((row) => row.status)).toEqual(["maybe"]);
+});
+
+test("unrelated household refreshes preserve drafts and a no-op actor bulk refresh reconciles server truth", async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const event = await createEvent(request, "Household refresh boundary browser proof", 11, "FREQ=WEEKLY;COUNT=2", {
+    guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10,
+    childcareAvailable: true, childcareCapacity: 10,
+  });
+  const parent = await apiAs(request, "household-parent");
+  const detail = await parent("GET", `/events/${event.id}`) as { occurrences: { date: string }[] };
+  await parent("PUT", `/events/${event.id}/registrations`, {
+    date: detail.occurrences[0].date, status: "going", attendanceMode: "in_person",
+    guestCount: 0, childcareCount: 0, childcareAgesNote: "", people: [],
+  });
+
+  await page.setViewportSize({ width: 390, height: 900 });
+  await signIn(page, "household-parent");
+  await page.goto(`/events/${event.id}`);
+  const forms = page.getByRole("form", { name: "Household answers" });
+  await expect(forms).toHaveCount(2);
+  const first = forms.first();
+  const second = forms.nth(1);
+
+  await first.getByLabel("Answer for you").selectOption("maybe");
+  await first.getByRole("group", { name: "How you will attend" }).getByRole("radio", { name: "Remote" }).click();
+  await first.getByLabel("Extra guests").fill("2");
+  await first.getByLabel(/^Other children needing childcare/).fill("2");
+  await first.getByLabel(/^Ages/).fill("4 and 6");
+  await first.getByRole("checkbox", { name: "Mary" }).click();
+  await first.getByLabel("Answer for Mary").selectOption("maybe");
+
+  await second.getByRole("checkbox", { name: "Mary" }).click();
+  await second.getByLabel("Answer for Mary").selectOption("maybe");
+  await second.getByRole("button", { name: "Save answers" }).click();
+  await expect(second.getByRole("status").filter({ hasText: "Mary: maybe" })).toBeVisible();
+
+  await expect(first.getByLabel("Answer for you")).toHaveValue("maybe");
+  await expect(first.getByRole("group", { name: "How you will attend" }).getByRole("radio", { name: "Remote" })).toBeChecked();
+  await expect(first.getByLabel("Extra guests")).toHaveValue("2");
+  await expect(first.getByLabel(/^Other children needing childcare/)).toHaveValue("2");
+  await expect(first.getByLabel(/^Ages/)).toHaveValue("4 and 6");
+  await expect(first.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  await expect(first.getByLabel("Answer for Mary")).toHaveValue("maybe");
+
+  await second.getByRole("checkbox", { name: "Me" }).click();
+  await second.getByRole("button", { name: "Going to all dates" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Going to 2 dates" })).toBeVisible();
+  await expect(first.getByLabel("Answer for you")).toHaveValue("going");
+  await expect(first.getByRole("group", { name: "How you will attend" }).getByRole("radio", { name: "In person" })).toBeChecked();
+  await expect(first.getByLabel("Extra guests")).toHaveValue("0");
+  await expect(first.getByLabel(/^Other children needing childcare/)).toHaveValue("0");
+  await expect(first.getByLabel(/^Ages/)).toHaveValue("");
+  await expect(first.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  await expect(first.getByLabel("Answer for Mary")).toHaveValue("maybe");
+  await capture(page, "household-refresh-boundary", true, [390]);
 });
 
 test("terminal Undo after authority loss refreshes away protected event details", async ({ page, request }) => {

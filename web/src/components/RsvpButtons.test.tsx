@@ -3,9 +3,10 @@ import { useState } from "react";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { RsvpButtons } from "./RsvpButtons";
+import { RsvpButtons, type SeriesFeedbackSignal } from "./RsvpButtons";
 import { ApiError, Events } from "../api";
 import { occurrence } from "../test/occurrence";
+import type { RegistrationBatch } from "../types";
 
 vi.mock("../api", async (importActual) => ({
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
@@ -153,11 +154,11 @@ describe("RsvpButtons", () => {
       refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
     });
     const instance = occurrence({ recurrenceRule: "FREQ=WEEKLY" });
-    const view = render(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: instance.date, revision: 1 }} />);
+    const view = render(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: instance.date, revision: 1, actorDates: [instance.date] }} />);
     await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Maybe for 1 date");
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
-    view.rerender(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: "2026-12-08", revision: 2 }} />);
+    view.rerender(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: "2026-12-08", revision: 2, actorDates: ["2026-12-08"] }} />);
     await waitFor(() => expect(screen.getByRole("status")).toBeEmptyDOMElement());
     expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
   });
@@ -180,7 +181,7 @@ describe("RsvpButtons", () => {
     await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
     expect(screen.getByRole("status")).toBeEmptyDOMElement();
-    expect(onSeriesFeedback).toHaveBeenLastCalledWith(7, "2026-12-01");
+    expect(onSeriesFeedback).toHaveBeenLastCalledWith(7, "2026-12-01", ["2026-12-01"]);
   });
 
   it.each([
@@ -523,67 +524,81 @@ describe("named household answers", () => {
     expect(screen.getByLabelText("Answer for Mary")).toHaveValue("maybe");
   });
 
-  it("synchronizes refreshed actor answers across household cards without discarding proxy drafts", async () => {
+  it("preserves actor and proxy drafts on unrelated refreshes, then reconciles a no-op actor bulk refresh", async () => {
     const initial = [
       occurrence({ recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, childcareAvailable: true, guestsAllowed: 2,
-        myRegistration: "going", myAttendanceMode: "remote", myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }),
+        myRegistration: "going", myAttendanceMode: "in_person", myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "" }),
       occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, childcareAvailable: true, guestsAllowed: 2 }),
     ];
-    vi.mocked(Events.registerSeries).mockResolvedValue({
-      eventId: 7, scope: "all_future", status: "maybe",
-      results: initial.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 30, status: "maybe" as const } })),
-      refusals: [],
-    });
     vi.mocked(Events.register).mockResolvedValue({
-      registration: { registrationId: 32, userId: 3, eventId: 7, occurrenceId: 2, date: "2026-12-08", status: "maybe",
-        guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "remote" },
+      registration: null,
       people: [{ registrationId: 33, personId: mary.id, registeredBy: 3, status: "maybe", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }],
+    });
+    vi.mocked(Events.registerSeries).mockResolvedValue({
+      eventId: 7, scope: "all_future", status: "going",
+      results: initial.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 30, status: "going" as const } })),
+      refusals: [],
     });
 
     function SiblingCards() {
       const [instances, setInstances] = useState(initial);
-      const refresh = () => setInstances((rows) => rows.map((row) => ({
+      const [feedback, setFeedback] = useState<SeriesFeedbackSignal | null>(null);
+      const refresh = (result: RegistrationBatch) => setInstances((rows) => rows.map((row) => result.people.length ? { ...row } : {
         ...row,
-        myRegistration: "maybe",
-        myAttendanceMode: "remote",
+        myRegistration: "going",
+        myAttendanceMode: "in_person",
         myGuestCount: 0,
         myChildcareCount: 0,
         myChildcareAgesNote: "",
-      })));
-      return <MemoryRouter>{instances.map((instance) => <RsvpButtons key={instance.id} people={[mary]} instance={instance} onChange={refresh} />)}</MemoryRouter>;
+      }));
+      const report = (eventId: number, date: string, actorDates: string[]) => setFeedback((current) => ({ eventId, date, actorDates, revision: (current?.revision ?? 0) + 1 }));
+      return <MemoryRouter>{instances.map((instance) => <RsvpButtons key={instance.id} people={[mary]} instance={instance}
+        onChange={refresh} seriesFeedback={feedback} onSeriesFeedback={report} />)}</MemoryRouter>;
     }
 
     render(<SiblingCards />);
     let forms = screen.getAllByRole("form", { name: "Household answers" });
-    const sibling = within(forms[1]);
-    await userEvent.click(sibling.getByRole("checkbox", { name: "Mary" }));
-    await userEvent.selectOptions(sibling.getByLabelText("Answer for Mary"), "maybe");
+    const first = within(forms[0]);
+    const second = within(forms[1]);
+    await userEvent.selectOptions(first.getByLabelText("Answer for you"), "maybe");
+    await userEvent.click(within(first.getByRole("group", { name: "How you will attend" })).getByRole("radio", { name: "Remote" }));
+    await userEvent.clear(first.getByLabelText("Extra guests"));
+    await userEvent.type(first.getByLabelText("Extra guests"), "2");
+    await userEvent.clear(first.getByLabelText(/^Other children needing childcare/));
+    await userEvent.type(first.getByLabelText(/^Other children needing childcare/), "2");
+    await userEvent.type(first.getByRole("textbox", { name: /^Ages/ }), "4 and 6");
+    await userEvent.click(first.getByRole("checkbox", { name: "Mary" }));
+    await userEvent.selectOptions(first.getByLabelText("Answer for Mary"), "maybe");
 
-    await userEvent.click(within(forms[0]).getByRole("button", { name: "Maybe for all" }));
-    await waitFor(() => expect(within(screen.getAllByRole("form", { name: "Household answers" })[1]).getByRole("checkbox", { name: "Me" })).toBeChecked());
+    await userEvent.click(second.getByRole("checkbox", { name: "Mary" }));
+    await userEvent.selectOptions(second.getByLabelText("Answer for Mary"), "maybe");
+    await userEvent.click(second.getByRole("button", { name: "Save answers" }));
+    await waitFor(() => expect(Events.register).toHaveBeenCalled());
+
     forms = screen.getAllByRole("form", { name: "Household answers" });
-    for (const form of forms) {
-      const card = within(form);
-      expect(card.getByRole("checkbox", { name: "Me" })).toBeChecked();
-      expect(card.getByLabelText("Answer for you")).toHaveValue("maybe");
-      expect(within(card.getByRole("group", { name: "How you will attend" })).getByRole("radio", { name: "Remote" })).toBeChecked();
-      expect(card.getByLabelText("Extra guests")).toHaveValue(0);
-      expect(card.getByLabelText(/^Other children needing childcare/)).toHaveValue("0");
-      expect(card.getByRole("textbox", { name: /^Ages/ })).toHaveValue("");
-    }
-    expect(within(forms[1]).getByRole("checkbox", { name: "Mary" })).toBeChecked();
-    expect(within(forms[1]).getByLabelText("Answer for Mary")).toHaveValue("maybe");
+    const refreshedFirst = within(forms[0]);
+    expect(refreshedFirst.getByLabelText("Answer for you")).toHaveValue("maybe");
+    expect(within(refreshedFirst.getByRole("group", { name: "How you will attend" })).getByRole("radio", { name: "Remote" })).toBeChecked();
+    expect(refreshedFirst.getByLabelText("Extra guests")).toHaveValue(2);
+    expect(refreshedFirst.getByLabelText(/^Other children needing childcare/)).toHaveValue("2");
+    expect(refreshedFirst.getByRole("textbox", { name: /^Ages/ })).toHaveValue("4 and 6");
+    expect(refreshedFirst.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+    expect(refreshedFirst.getByLabelText("Answer for Mary")).toHaveValue("maybe");
 
-    await userEvent.click(within(forms[1]).getByRole("button", { name: "Save answers" }));
-    expect(Events.register).toHaveBeenLastCalledWith(7, {
-      date: "2026-12-08",
-      status: "maybe",
-      attendanceMode: "remote",
-      guestCount: 0,
-      childcareCount: 0,
-      childcareAgesNote: "",
-      people: [{ personId: mary.id, status: "maybe", attendanceMode: "in_person", childcareRequested: false }],
-    });
+    const refreshedSecond = within(forms[1]);
+    await userEvent.click(refreshedSecond.getByRole("checkbox", { name: "Me" }));
+    await userEvent.click(refreshedSecond.getByRole("button", { name: "Going to all dates" }));
+    await waitFor(() => expect(Events.registerSeries).toHaveBeenCalled());
+
+    forms = screen.getAllByRole("form", { name: "Household answers" });
+    const reconciledFirst = within(forms[0]);
+    expect(reconciledFirst.getByLabelText("Answer for you")).toHaveValue("going");
+    expect(within(reconciledFirst.getByRole("group", { name: "How you will attend" })).getByRole("radio", { name: "In person" })).toBeChecked();
+    expect(reconciledFirst.getByLabelText("Extra guests")).toHaveValue(0);
+    expect(reconciledFirst.getByLabelText(/^Other children needing childcare/)).toHaveValue("0");
+    expect(reconciledFirst.getByRole("textbox", { name: /^Ages/ })).toHaveValue("");
+    expect(reconciledFirst.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+    expect(reconciledFirst.getByLabelText("Answer for Mary")).toHaveValue("maybe");
   });
 
   it("keeps pending and missing-age people visible but disabled even if Me was removed", () => {

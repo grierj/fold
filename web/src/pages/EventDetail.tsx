@@ -70,8 +70,8 @@ export function EventDetail() {
 
   // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
   function handleRsvp() { void load(true); }
-  function reportSeriesFeedback(eventId: number, date: string) {
-    setSeriesFeedback((current) => ({ eventId, date, revision: (current?.revision ?? 0) + 1 }));
+  function reportSeriesFeedback(eventId: number, date: string, actorDates: string[]) {
+    setSeriesFeedback((current) => ({ eventId, date, actorDates, revision: (current?.revision ?? 0) + 1 }));
   }
 
   if (loading || authLoading) {
@@ -197,7 +197,7 @@ function DateRow({
   onRsvp: () => void;
   people: HouseholdPerson[];
   seriesFeedback: SeriesFeedbackSignal | null;
-  onSeriesFeedback: (eventId: number, date: string) => void;
+  onSeriesFeedback: (eventId: number, date: string, actorDates: string[]) => void;
   onTerminalRefresh: () => void;
   onChanged: () => void;
   onNeedLogin: () => void;
