@@ -750,7 +750,11 @@ POST /api/v1/events/:id/series-registrations  → 200 {eventId, scope, date?, st
          status: "going"|"maybe"|"declined", guestCount?, attendanceMode?,
          childcareCount?, childcareAgesNote?}
   The server freezes the selected occurrence IDs and their before/after states in
-  an actor-bound receipt. Only the latest receipt remains live for an actor.
+  an actor-bound receipt. Only the latest receipt remains live for an actor. When
+  Undo is returned, `undoExpiresAt` is 10 seconds after response preparation;
+  post-commit notification delivery and lock waits do not consume that interval.
+  A newer series action may supersede an older receipt before its response is ready,
+  in which case the older response has no Undo fields.
 POST /api/v1/events/:id/series-registrations/undo  → 200 {eventId, results, refusals, capacityLoss}   (auth)
   body: {token}
   The receipt is single-use and expires after 10 seconds. Undo refuses if answers,

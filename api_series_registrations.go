@@ -71,7 +71,17 @@ type seriesRegistrationResponse struct {
 	CapacityLoss  []string                    `json:"capacityLoss,omitempty"`
 }
 
-const seriesUndoTTL = 10 * time.Second
+const (
+	seriesUndoTTL        = 10 * time.Second
+	seriesUndoPendingTTL = 24 * time.Hour
+)
+
+func (a *App) seriesTime() time.Time {
+	if a.seriesClock != nil {
+		return a.seriesClock().UTC()
+	}
+	return time.Now().UTC()
+}
 
 type seriesUndoState struct {
 	Exists             bool       `json:"exists"`
@@ -162,7 +172,6 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	}
 	eventID := uint(eventID64)
 	actorAtRequest := apiUser(c)
-	now := time.Now().UTC()
 	response := seriesRegistrationResponse{EventID: eventID, Scope: body.Scope, Date: body.Date, Status: body.Status,
 		Results: []seriesRegistrationResult{}, Refusals: []seriesRegistrationRefusal{}}
 	var mailed []uint
@@ -171,8 +180,9 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, tokenErr.Error())
 		return
 	}
-	undoExpires := now.Add(seriesUndoTTL)
+	undoHash := hashToken(undoRaw)
 	var undoItems []seriesUndoItem
+	var undoReceiptID uint
 
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		// Compatible order with membership, event, exact-date, and manager
@@ -218,8 +228,12 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			return errSeriesUnavailable
 		}
 
+		// The series scope is chosen only after the contact, actor, group, and
+		// event locks are held. A request that waited across a start boundary
+		// must not freeze a date that has already begun.
+		selectionNow := a.seriesTime()
 		q := tx.Model(&models.EventOccurrence{}).
-			Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID, models.OccurrenceScheduled, now)
+			Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID, models.OccurrenceScheduled, selectionNow)
 		if body.Scope == seriesScopeThisAndFollowing {
 			q = q.Where("original_date >= ?", body.Date)
 		}
@@ -268,7 +282,10 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 
 		for i := range locked {
 			o := &locked[i]
-			if o.Status != models.OccurrenceScheduled || !o.StartsAt.After(now) ||
+			// Refresh after every selected occurrence is locked. This timestamp
+			// governs both date eligibility and the shared promotion cutoff path.
+			dateNow := a.seriesTime()
+			if o.Status != models.OccurrenceScheduled || !o.StartsAt.After(dateNow) ||
 				(body.Scope == seriesScopeThisAndFollowing && o.OriginalDate < body.Date) {
 				continue
 			}
@@ -286,7 +303,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 				response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: o.OriginalDate, Code: "registration_removed"})
 				continue
 			}
-			change, err := prepareRegistration(old, o, userSubject(actor.ID), body.Status, guests, mode, care, nil, now)
+			change, err := prepareRegistration(old, o, userSubject(actor.ID), body.Status, guests, mode, care, nil, dateNow)
 			if err != nil {
 				if code := seriesRefusalCode(err); code != "" {
 					response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: o.OriginalDate, Code: code})
@@ -298,7 +315,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			if err := tx.SavePoint(savepoint).Error; err != nil {
 				return err
 			}
-			ids, err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, now, actor.ID, c.ClientIP())
+			ids, err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
 			if err != nil {
 				if code := seriesRefusalCode(err); code != "" {
 					if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {
@@ -334,7 +351,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 					return err
 				}
 				if access.ID != 0 {
-					ids, err := endOccurrenceAccessIn(tx, &access, policy.OccurrenceDeclined, &actor.ID, now, c.ClientIP())
+					ids, err := endOccurrenceAccessIn(tx, &access, policy.OccurrenceDeclined, &actor.ID, dateNow, c.ClientIP())
 					if err != nil {
 						return err
 					}
@@ -347,18 +364,23 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			if err != nil {
 				return err
 			}
+			receiptNow := a.seriesTime()
 			// Only the latest receipt for an actor can still match their current
 			// state. Removing older receipts also bounds retained snapshot data;
 			// expired rows for every actor are opportunistically swept here.
-			if err := tx.Where("expires_at <= ? OR actor_id = ?", now, actor.ID).Delete(&models.SeriesUndoReceipt{}).Error; err != nil {
+			if err := tx.Where("expires_at <= ? OR actor_id = ?", receiptNow, actor.ID).Delete(&models.SeriesUndoReceipt{}).Error; err != nil {
 				return err
 			}
-			receipt := models.SeriesUndoReceipt{TokenHash: hashToken(undoRaw), ActorID: actor.ID, EventID: ev.ID,
-				Snapshot: string(snapshot), ExpiresAt: undoExpires, CreatedAt: now}
+			// The raw token is not returned until post-commit delivery finishes.
+			// A bounded pending expiry keeps the row valid while that work runs;
+			// finalizeSeriesUndoReceipt replaces it with the promised response-time
+			// window, or suppresses Undo if a later action already replaced it.
+			receipt := models.SeriesUndoReceipt{TokenHash: undoHash, ActorID: actor.ID, EventID: ev.ID,
+				Snapshot: string(snapshot), ExpiresAt: receiptNow.Add(seriesUndoPendingTTL), CreatedAt: receiptNow}
 			if err := tx.Create(&receipt).Error; err != nil {
 				return err
 			}
-			response.UndoToken, response.UndoExpiresAt = undoRaw, &undoExpires
+			undoReceiptID = receipt.ID
 		}
 		return nil
 	})
@@ -386,7 +408,43 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	sort.Slice(response.Results, func(i, j int) bool { return response.Results[i].Date < response.Results[j].Date })
 	sort.Slice(response.Refusals, func(i, j int) bool { return response.Refusals[i].Date < response.Refusals[j].Date })
 	a.deliverNotificationEmails(mailed)
+	if undoReceiptID != 0 {
+		if expires, ok := a.finalizeSeriesUndoReceipt(undoReceiptID, undoHash, actorAtRequest.ID, eventID); ok {
+			response.UndoToken, response.UndoExpiresAt = undoRaw, &expires
+		}
+	}
 	c.JSON(http.StatusOK, response)
+}
+
+// finalizeSeriesUndoReceipt starts the usable Undo interval after committed
+// notification delivery. Its row lock makes the refreshed time post-wait. The
+// full identity predicate prevents a deleted or replaced receipt from being
+// recreated or extended by an older response finishing late.
+func (a *App) finalizeSeriesUndoReceipt(receiptID uint, tokenHash string, actorID, eventID uint) (time.Time, bool) {
+	var expires time.Time
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		var receipt models.SeriesUndoReceipt
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND actor_id = ? AND event_id = ? AND used_at IS NULL", receiptID, actorID, eventID).
+			First(&receipt).Error; err != nil {
+			return err
+		}
+		if receipt.TokenHash != tokenHash {
+			return gorm.ErrRecordNotFound
+		}
+		expires = a.seriesTime().Add(seriesUndoTTL)
+		res := tx.Model(&models.SeriesUndoReceipt{}).
+			Where("id = ? AND actor_id = ? AND event_id = ? AND used_at IS NULL", receiptID, actorID, eventID).
+			Update("expires_at", expires)
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected != 1 {
+			return gorm.ErrRecordNotFound
+		}
+		return nil
+	})
+	return expires, err == nil
 }
 
 type seriesUndoInput struct {
@@ -403,7 +461,6 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		return
 	}
 	actorAtRequest := apiUser(c)
-	now := time.Now().UTC()
 	response := seriesRegistrationResponse{EventID: uint(eventID64), Results: []seriesRegistrationResult{}, Refusals: []seriesRegistrationRefusal{}, CapacityLoss: []string{}}
 	var mailed []uint
 
@@ -434,10 +491,6 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		if receipt.UsedAt != nil {
 			return errSeriesUndoUsed
 		}
-		// The ten-second window is half-open: exactly ExpiresAt is expired.
-		if !now.Before(receipt.ExpiresAt) {
-			return errSeriesUndoExpired
-		}
 		var items []seriesUndoItem
 		if err := json.Unmarshal([]byte(receipt.Snapshot), &items); err != nil || len(items) == 0 {
 			return errSeriesUndoUnavailable
@@ -462,8 +515,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		locked := make([]models.EventOccurrence, len(items))
 		for i, item := range items {
 			o, err := lockOccurrence(tx, item.OccurrenceID)
-			if err != nil || o.EventID != ev.ID || o.Status != models.OccurrenceScheduled || !o.StartsAt.After(now) ||
-				!policy.CanRegisterEvent(asPerson(&actor), viewOf(dateEvent(&ev, o), false), gp, rel) {
+			if err != nil || o.EventID != ev.ID {
 				return errSeriesUndoEnded
 			}
 			locked[i] = *o
@@ -475,13 +527,32 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 				return errSeriesUndoChanged
 			}
 		}
-		receipt.UsedAt = &now
-		if err := tx.Model(&receipt).Update("used_at", now).Error; err != nil {
+
+		// Receipt and date clocks are checked only after every lock that can
+		// make this request wait. The ten-second interval is half-open: exactly
+		// ExpiresAt is expired.
+		undoNow := a.seriesTime()
+		if !undoNow.Before(receipt.ExpiresAt) {
+			return errSeriesUndoExpired
+		}
+		for i := range locked {
+			o := &locked[i]
+			if o.Status != models.OccurrenceScheduled || !o.StartsAt.After(undoNow) ||
+				!policy.CanRegisterEvent(asPerson(&actor), viewOf(dateEvent(&ev, o), false), gp, rel) {
+				return errSeriesUndoEnded
+			}
+		}
+		receipt.UsedAt = &undoNow
+		if err := tx.Model(&receipt).Update("used_at", undoNow).Error; err != nil {
 			return err
 		}
 
 		for i, item := range items {
 			o := &locked[i]
+			dateNow := a.seriesTime()
+			if o.Status != models.OccurrenceScheduled || !o.StartsAt.After(dateNow) {
+				return errSeriesUndoEnded
+			}
 			var current models.Registration
 			if err := tx.Where("occurrence_id = ? AND user_id = ?", o.ID, actor.ID).First(&current).Error; err != nil {
 				return err
@@ -494,10 +565,10 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 			if !item.Before.Exists {
 				zero, empty := 0, ""
 				change, err := prepareRegistration(current, o, userSubject(actor.ID), models.RegDeclined, 0, current.AttendanceMode,
-					childcareRequest{ChildcareCount: &zero, ChildcareAgesNote: &empty}, nil, now)
+					childcareRequest{ChildcareCount: &zero, ChildcareAgesNote: &empty}, nil, dateNow)
 				if err == nil {
 					var ids []uint
-					ids, err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, now, actor.ID, c.ClientIP())
+					ids, err = a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
 					mailed = append(mailed, ids...)
 				}
 				if err == nil {
@@ -515,7 +586,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 			next.ChildcareCount, next.ChildcareAgesNote, next.ChildcareRequested = item.Before.ChildcareCount, item.Before.ChildcareAgesNote, item.Before.ChildcareRequested
 			next.Source, next.RegisteredBy, next.WaitlistedAt, next.PromotedAt = item.Before.Source, item.Before.RegisteredBy, item.Before.WaitlistedAt, item.Before.PromotedAt
 			change := registrationChange{old: current, next: next, found: true}
-			ids, err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, now, actor.ID, c.ClientIP())
+			ids, err := a.applyRegistrationBatch(tx, &ev, o, []registrationChange{change}, dateNow, actor.ID, c.ClientIP())
 			if err != nil {
 				if code := seriesRefusalCode(err); code != "" {
 					if rollbackErr := tx.RollbackTo(savepoint).Error; rollbackErr != nil {
@@ -549,7 +620,7 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		}
 		// Keep cleanup explicit and cheap; at most one live receipt per actor is
 		// created, and spent/expired receipts disappear on subsequent use.
-		return tx.Where("expires_at <= ?", now).Delete(&models.SeriesUndoReceipt{}).Error
+		return tx.Where("expires_at <= ?", a.seriesTime()).Delete(&models.SeriesUndoReceipt{}).Error
 	})
 	if err != nil {
 		switch {

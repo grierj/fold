@@ -1,15 +1,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"fold/internal/mail"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
+
+	"gorm.io/gorm"
 )
 
 func seedSeriesEvent(t *testing.T, app *App, g *models.Group, createdBy uint, capacity *int, waitlist bool, count int) (models.Event, []models.EventOccurrence) {
@@ -41,6 +47,87 @@ func postSeriesAnswer(c *apiClient, eventID uint, body map[string]any) *seriesRe
 	var out seriesRegistrationResponse
 	decodeJSON(c.t, w, &out)
 	return &out
+}
+
+type seriesTestClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *seriesTestClock) Time() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *seriesTestClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	c.mu.Unlock()
+}
+
+func useSeriesTestClock(app *App, now time.Time) *seriesTestClock {
+	clock := &seriesTestClock{now: now.UTC()}
+	app.seriesClock = clock.Time
+	return clock
+}
+
+func holdSeriesOccurrence(t *testing.T, app *App, occurrenceID uint) *gorm.DB {
+	t.Helper()
+	tx := app.DB.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	if _, err := lockOccurrence(tx, occurrenceID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { tx.Rollback() })
+	return tx
+}
+
+func waitSeriesOccurrenceWaiter(t *testing.T, app *App) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var count int64
+		err := app.DB.Raw(`SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'
+			AND query ILIKE '%event_occurrences%' AND query ILIKE '%FOR UPDATE%'`).Scan(&count).Error
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count > 0 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for series occurrence lock contender")
+}
+
+type blockingSeriesMailer struct {
+	next    mail.Sender
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (m *blockingSeriesMailer) Send(ctx context.Context, msg mail.Message) error {
+	m.once.Do(func() { close(m.started) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-m.release:
+		return m.next.Send(ctx, msg)
+	}
+}
+
+func awaitSeriesSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(8 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
 }
 
 func TestSeriesRegistrationThisAndFollowingPreservesEarlierAndRemoved(t *testing.T) {
@@ -182,6 +269,104 @@ func TestSeriesRegistrationUsesEffectiveDateVisibility(t *testing.T) {
 	}
 }
 
+func TestSeriesRegistrationRefreshesClockAfterContactAndOccurrenceLocks(t *testing.T) {
+	t.Run("date starts while waiting on contact gate", func(t *testing.T) {
+		app := testApp(t)
+		base := time.Now().UTC().Truncate(time.Second)
+		clock := useSeriesTestClock(app, base)
+		leader := newTestUser(t, app, "clock-start-leader", "password1234", models.RoleMember)
+		group := activeGroup(t, app, leader, "Clock start", models.VisibilityPublic, "")
+		actor := newTestUser(t, app, "clock-start-actor", "password1234", models.RoleMember)
+		addMember(t, app, actor, &group, models.MembershipMember)
+		ev, occs := seedSeriesEvent(t, app, &group, leader.ID, nil, false, 2)
+		starts := []time.Time{base.Add(time.Minute), base.Add(24 * time.Hour)}
+		for i := range occs {
+			if err := app.DB.Model(&models.EventOccurrence{}).Where("id = ?", occs[i].ID).
+				Updates(map[string]any{"starts_at": starts[i], "ends_at": starts[i].Add(time.Hour)}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		gate := holdContactGate(t, app)
+		client := loginAPI(t, app, "clock-start-actor", "password1234")
+		response := queueContact(func() *httptest.ResponseRecorder {
+			return client.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true)
+		})
+		waitContactWaiters(t, app, 1)
+		clock.Advance(2 * time.Minute)
+		if err := gate.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		w := awaitContactResponse(t, response)
+		if w.Code != http.StatusOK {
+			t.Fatalf("series answer=%d %s", w.Code, w.Body.String())
+		}
+		var out seriesRegistrationResponse
+		decodeJSON(t, w, &out)
+		if len(out.Results) != 1 || out.Results[0].OccurrenceID != occs[1].ID {
+			t.Fatalf("started date was not excluded: %+v", out.Results)
+		}
+		var count int64
+		if err := app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND user_id = ?", occs[0].ID, actor.ID).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("started date registration count=%d err=%v", count, err)
+		}
+	})
+
+	t.Run("promotion cutoff crosses while waiting on occurrence", func(t *testing.T) {
+		app := testApp(t)
+		base := time.Now().UTC().Truncate(time.Second)
+		clock := useSeriesTestClock(app, base)
+		leader := newTestUser(t, app, "clock-cutoff-leader", "password1234", models.RoleMember)
+		group := activeGroup(t, app, leader, "Clock cutoff", models.VisibilityPublic, "")
+		actor := newTestUser(t, app, "clock-cutoff-actor", "password1234", models.RoleMember)
+		waiter := newTestUser(t, app, "clock-cutoff-waiter", "password1234", models.RoleMember)
+		addMember(t, app, actor, &group, models.MembershipMember)
+		addMember(t, app, waiter, &group, models.MembershipMember)
+		ev, occs := seedSeriesEvent(t, app, &group, leader.ID, intPtr(1), true, 1)
+		start := base.Add(2*time.Hour + time.Minute)
+		if err := app.DB.Model(&models.EventOccurrence{}).Where("id = ?", occs[0].ID).
+			Updates(map[string]any{"starts_at": start, "ends_at": start.Add(time.Hour)}).Error; err != nil {
+			t.Fatal(err)
+		}
+		actorID, waiterID := actor.ID, waiter.ID
+		queuedAt := base.Add(-time.Minute)
+		if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &actorID, Status: models.RegGoing, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &waiterID, Status: models.RegWaitlisted, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb, WaitlistedAt: &queuedAt}).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		gate := holdSeriesOccurrence(t, app, occs[0].ID)
+		client := loginAPI(t, app, "clock-cutoff-actor", "password1234")
+		response := queueContact(func() *httptest.ResponseRecorder {
+			return client.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true)
+		})
+		waitSeriesOccurrenceWaiter(t, app)
+		clock.Advance(2 * time.Minute)
+		if err := gate.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		w := awaitContactResponse(t, response)
+		if w.Code != http.StatusOK {
+			t.Fatalf("series answer=%d %s", w.Code, w.Body.String())
+		}
+		if got := regStatus(t, app, actor.ID, occs[0].ID); got != models.RegMaybe {
+			t.Fatalf("actor status=%q", got)
+		}
+		if got := regStatus(t, app, waiter.ID, occs[0].ID); got != models.RegWaitlisted {
+			t.Fatalf("waiter was promoted inside cutoff: %q", got)
+		}
+		var notice models.Notification
+		if err := app.DB.Where("user_id = ? AND kind = ?", leader.ID, notify.WaitlistCutoff).First(&notice).Error; err != nil {
+			t.Fatalf("cutoff notice: %v", err)
+		}
+		if !strings.Contains(notice.Body, "within 2 hours") || !strings.Contains(notice.Body, "nobody was promoted automatically") {
+			t.Fatalf("cutoff notice body=%q", notice.Body)
+		}
+	})
+}
+
 func undoSeriesAnswer(c *apiClient, eventID uint, token string, csrf bool) *httptest.ResponseRecorder {
 	return c.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations/undo", eventID), map[string]any{"token": token}, csrf)
 }
@@ -215,6 +400,176 @@ func TestSeriesUndoRestoresNoAnswerAndIsActorBoundSingleUse(t *testing.T) {
 	}
 	if w := undoSeriesAnswer(client, ev.ID, out.UndoToken, true); w.Code != http.StatusConflict {
 		t.Fatalf("replay=%d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSeriesUndoRefreshesClockAfterOccurrenceLock(t *testing.T) {
+	app := testApp(t)
+	base := time.Now().UTC().Truncate(time.Second)
+	clock := useSeriesTestClock(app, base)
+	leader := newTestUser(t, app, "undo-clock-leader", "password1234", models.RoleMember)
+	group := activeGroup(t, app, leader, "Undo clock", models.VisibilityPublic, "")
+	actor := newTestUser(t, app, "undo-clock-actor", "password1234", models.RoleMember)
+	addMember(t, app, actor, &group, models.MembershipMember)
+	ev, occs := seedSeriesEvent(t, app, &group, leader.ID, nil, false, 1)
+	start := base.Add(time.Second)
+	if err := app.DB.Model(&models.EventOccurrence{}).Where("id = ?", occs[0].ID).
+		Updates(map[string]any{"starts_at": start, "ends_at": start.Add(time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := loginAPI(t, app, "undo-clock-actor", "password1234")
+	out := postSeriesAnswer(client, ev.ID, map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe})
+	if out == nil || out.UndoToken == "" {
+		t.Fatalf("series receipt=%+v", out)
+	}
+
+	gate := holdSeriesOccurrence(t, app, occs[0].ID)
+	response := queueContact(func() *httptest.ResponseRecorder {
+		return undoSeriesAnswer(client, ev.ID, out.UndoToken, true)
+	})
+	waitSeriesOccurrenceWaiter(t, app)
+	clock.Advance(2 * time.Second)
+	if err := gate.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	w := awaitContactResponse(t, response)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "date") {
+		t.Fatalf("undo after date start=%d %s", w.Code, w.Body.String())
+	}
+	if got := regStatus(t, app, actor.ID, occs[0].ID); got != models.RegMaybe {
+		t.Fatalf("undo mutated a started date: %q", got)
+	}
+	var receipt models.SeriesUndoReceipt
+	if err := app.DB.Where("token_hash = ?", hashToken(out.UndoToken)).First(&receipt).Error; err != nil {
+		t.Fatal(err)
+	}
+	if receipt.UsedAt != nil {
+		t.Fatalf("failed atomic Undo consumed receipt at %v", *receipt.UsedAt)
+	}
+}
+
+func TestSeriesUndoWindowStartsAtResponseReadiness(t *testing.T) {
+	app := testApp(t)
+	base := time.Now().UTC().Truncate(time.Second)
+	clock := useSeriesTestClock(app, base)
+	leader := newTestUser(t, app, "undo-window-leader", "password1234", models.RoleMember)
+	group := activeGroup(t, app, leader, "Undo window", models.VisibilityPublic, "")
+	actor := newTestUser(t, app, "undo-window-actor", "password1234", models.RoleMember)
+	waiter := newTestUser(t, app, "undo-window-waiter", "password1234", models.RoleMember)
+	addMember(t, app, actor, &group, models.MembershipMember)
+	addMember(t, app, waiter, &group, models.MembershipMember)
+	ev, occs := seedSeriesEvent(t, app, &group, leader.ID, intPtr(1), true, 1)
+	start := base.Add(4 * time.Hour)
+	if err := app.DB.Model(&models.EventOccurrence{}).Where("id = ?", occs[0].ID).
+		Updates(map[string]any{"starts_at": start, "ends_at": start.Add(time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	actorID, waiterID := actor.ID, waiter.ID
+	queuedAt := base.Add(-time.Minute)
+	if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &actorID, Status: models.RegGoing, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &waiterID, Status: models.RegWaitlisted, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb, WaitlistedAt: &queuedAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	mailer := &blockingSeriesMailer{next: app.Mailer, started: make(chan struct{}), release: make(chan struct{})}
+	app.Mailer = mailer
+
+	gate := holdContactGate(t, app)
+	client := loginAPI(t, app, "undo-window-actor", "password1234")
+	response := queueContact(func() *httptest.ResponseRecorder {
+		return client.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true)
+	})
+	waitContactWaiters(t, app, 1)
+	clock.Advance(20 * time.Second)
+	if err := gate.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	awaitSeriesSignal(t, mailer.started, "promotion email delivery")
+	clock.Advance(30 * time.Second)
+	close(mailer.release)
+	w := awaitContactResponse(t, response)
+	if w.Code != http.StatusOK {
+		t.Fatalf("series answer=%d %s", w.Code, w.Body.String())
+	}
+	var out seriesRegistrationResponse
+	decodeJSON(t, w, &out)
+	if out.UndoToken == "" || out.UndoExpiresAt == nil {
+		t.Fatalf("missing response-ready receipt: %+v", out)
+	}
+	if got := out.UndoExpiresAt.Sub(clock.Time()); got != seriesUndoTTL {
+		t.Fatalf("usable Undo window=%v want %v", got, seriesUndoTTL)
+	}
+	undo := undoSeriesAnswer(client, ev.ID, out.UndoToken, true)
+	if undo.Code != http.StatusOK {
+		t.Fatalf("Undo inside response window=%d %s", undo.Code, undo.Body.String())
+	}
+	var undone seriesRegistrationResponse
+	decodeJSON(t, undo, &undone)
+	if len(undone.CapacityLoss) != 1 || undone.CapacityLoss[0] != occs[0].OriginalDate {
+		t.Fatalf("current-capacity loss=%v", undone.CapacityLoss)
+	}
+	if got := regStatus(t, app, actor.ID, occs[0].ID); got != models.RegWaitlisted {
+		t.Fatalf("Undo forced a lost seat: %q", got)
+	}
+
+	next := postSeriesAnswer(client, ev.ID, map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe})
+	if next == nil || next.UndoToken == "" {
+		t.Fatalf("second receipt=%+v", next)
+	}
+	clock.Advance(seriesUndoTTL)
+	if expired := undoSeriesAnswer(client, ev.ID, next.UndoToken, true); expired.Code != http.StatusConflict || !strings.Contains(expired.Body.String(), "time") {
+		t.Fatalf("Undo at expiry boundary=%d %s", expired.Code, expired.Body.String())
+	}
+}
+
+func TestSeriesReceiptFinalizationDoesNotResurrectReplacedUndo(t *testing.T) {
+	app := testApp(t)
+	base := time.Now().UTC().Truncate(time.Second)
+	useSeriesTestClock(app, base)
+	leader := newTestUser(t, app, "undo-replace-leader", "password1234", models.RoleMember)
+	group := activeGroup(t, app, leader, "Undo replace", models.VisibilityPublic, "")
+	actor := newTestUser(t, app, "undo-replace-actor", "password1234", models.RoleMember)
+	waiter := newTestUser(t, app, "undo-replace-waiter", "password1234", models.RoleMember)
+	addMember(t, app, actor, &group, models.MembershipMember)
+	addMember(t, app, waiter, &group, models.MembershipMember)
+	ev, occs := seedSeriesEvent(t, app, &group, leader.ID, intPtr(1), true, 1)
+	actorID, waiterID := actor.ID, waiter.ID
+	queuedAt := base.Add(-time.Minute)
+	if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &actorID, Status: models.RegGoing, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &waiterID, Status: models.RegWaitlisted, AttendanceMode: models.AttendanceInPerson, Source: models.RegSourceWeb, WaitlistedAt: &queuedAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	mailer := &blockingSeriesMailer{next: app.Mailer, started: make(chan struct{}), release: make(chan struct{})}
+	app.Mailer = mailer
+	firstClient := loginAPI(t, app, "undo-replace-actor", "password1234")
+	firstResponse := queueContact(func() *httptest.ResponseRecorder {
+		return firstClient.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), map[string]any{"scope": seriesScopeAllFuture, "status": models.RegMaybe}, true)
+	})
+	awaitSeriesSignal(t, mailer.started, "first action email delivery")
+
+	second := postSeriesAnswer(loginAPI(t, app, "undo-replace-actor", "password1234"), ev.ID, map[string]any{"scope": seriesScopeAllFuture, "status": models.RegDeclined})
+	if second == nil || second.UndoToken == "" {
+		t.Fatalf("replacement receipt=%+v", second)
+	}
+	close(mailer.release)
+	w := awaitContactResponse(t, firstResponse)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first action=%d %s", w.Code, w.Body.String())
+	}
+	var first seriesRegistrationResponse
+	decodeJSON(t, w, &first)
+	if first.UndoToken != "" || first.UndoExpiresAt != nil {
+		t.Fatalf("older response resurrected Undo: %+v", first)
+	}
+	var receipts []models.SeriesUndoReceipt
+	if err := app.DB.Where("actor_id = ?", actor.ID).Find(&receipts).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(receipts) != 1 || receipts[0].TokenHash != hashToken(second.UndoToken) {
+		t.Fatalf("live receipts=%+v", receipts)
 	}
 }
 
