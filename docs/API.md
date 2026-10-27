@@ -79,9 +79,23 @@ church-wide dates in the next 30 days, events they host, their own answered or
 exact-access dates, and dates registered for household people) or `"all"`
 (every authorized date, with unanswered public and church-wide discovery dates
 limited to the next 30 days). Personal feeds expand dates so exclusions cannot
-be reintroduced by an RRULE. Going is `STATUS:CONFIRMED`; Maybe, Waitlisted and
-Not answered are `STATUS:TENTATIVE`; Can't go is omitted. Public and group feeds
-are unchanged. Revoking a link that is already off still answers 200.
+be reintroduced by an RRULE. Every expanded row is a standalone VEVENT whose
+immutable identity is `UID:event-<eventId>-<originalDate>@<host>`; it has no
+`RECURRENCE-ID`. A series time edit therefore changes `DTSTART` without changing
+the row's identity or its stored occurrence/registration. Date-only authority
+(for example, one public override of a hidden series) uses that same UID and
+exact-date URL, but emits no parent-series recurrence identity, description,
+hidden-group fallback, or video metadata. Going is `STATUS:CONFIRMED`; Maybe,
+Waitlisted and Not answered are `STATUS:TENTATIVE`; Can't go is omitted. Public
+and group feeds keep their series UID/RRULE/EXDATE/RECURRENCE-ID behavior.
+
+This date-specific personal UID is an intentional pre-release wire correction
+from the earlier detached `(series UID, RECURRENCE-ID)` form. Anyone who imported
+a development feed from an earlier build may see the old rows removed and the
+corrected rows added once; removing and re-adding that development subscription
+is the safest cleanup if a client retains stale rows. Representative external
+calendar clients still need manual interoperability checks. Revoking a link that
+is already off still answers 200.
 
 Profile update body: any of `{name, displayName, phone, email, timezone, hideContactFromLeaders, avatarFocal: {x, y}}`.
 `hideContactFromLeaders` is a boolean preference for the signed-in adult only,
@@ -570,8 +584,9 @@ GET  /api/v1/calendar?from=&to=&tz=&mine=1&group=&deleted=1&remote=1&childcare=1
      each row has only the viewer's myStatus and an ownScope presentation flag;
      mine=1 omits Can't go and unanswered outsider-public dates; unanswered
      church-wide dates are limited to 30 days; Everything keeps Can't go and
-     limits unanswered public/church-wide discovery dates to 30 days;
-     remote=1 keeps only events with remoteAvailable;
+     limits unanswered public/church-wide discovery dates to 30 days, including
+     for signed-out viewers; signed-out mine=1 is ignored but does not bypass
+     that window; remote=1 keeps only events with remoteAvailable;
      childcare=1 keeps only events with childcareAvailable)
 POST /api/v1/events/video/jitsi             → 200 {url}   (leader, host, or admin)
 ```
@@ -692,11 +707,11 @@ are a member of the event's group or a host. Waitlisted, declined,
 cancelled and removed dates, outsiders who haven't answered, and
 signed-out viewers never get it (`policy.CanSeeVideoLinkInFeed`).
 
-A recurring series in a personal feed is one VEVENT, so if any in-window
-date qualifies, the link rides on the whole series entry. This
-series-wide link is accepted for now; a strict per-date reveal would emit
-RECURRENCE-ID overrides for the qualifying dates and leave the link off
-the master VEVENT.
+A recurring series in a personal feed is expanded to one standalone VEVENT per
+included date. Video eligibility is therefore evaluated per date. A viewer who
+has only date-level authority to an opened hidden series receives no video link,
+even if that event's general reveal mode is `always`; series-authorized viewers
+continue to receive links on dates allowed by DEC-70.
 
 A series edit (`PUT /events/:id`) applies to every future date. Future
 means `startsAt` is strictly after now; a date already underway stays.
@@ -981,7 +996,9 @@ Feeds cover 30 days back to 12 months ahead, carry `ETag` and
 `Cache-Control: private, max-age=900` (304 on `If-None-Match`), and
 never carry attendee data. Contents follow the viewer's permissions at
 fetch time; a disabled or deleted owner's token answers the same plain
-404 as an unknown one.
+404 as an unknown one. Personal-feed standalone identity and date-only privacy
+are described with the calendar-feed token contract above. Public and group
+feeds retain recurring-series wire output.
 
 ## Conventions
 

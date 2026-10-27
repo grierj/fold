@@ -15,6 +15,10 @@ type calendarPage struct {
 	Truncated   bool                     `json:"truncated"`
 }
 
+func useCalendarTestClock(app *App, now time.Time) {
+	app.calendarClock = func() time.Time { return now.UTC() }
+}
+
 func getCalendar(t *testing.T, c *apiClient, query string, want int) (calendarPage, string) {
 	t.Helper()
 	w := c.do("GET", "/api/v1/calendar?"+query, nil, false)
@@ -50,6 +54,7 @@ func hasTitle(page calendarPage, title string) bool {
 // calendar rows carry no attendee or declined data for anyone (DEC-64).
 func TestCalendarVisibilityAndSlimRows(t *testing.T) {
 	app := testApp(t)
+	useCalendarTestClock(app, time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC))
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	admin := loginAPI(t, app, "admin", "password1234")
 
@@ -126,6 +131,7 @@ func TestCalendarVisibilityAndSlimRows(t *testing.T) {
 // the specific dates I answered going or maybe — not the whole series.
 func TestCalendarMineNarrowsPerOccurrence(t *testing.T) {
 	app := testApp(t)
+	useCalendarTestClock(app, time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC))
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	admin := loginAPI(t, app, "admin", "password1234")
 
@@ -186,16 +192,96 @@ func TestCalendarMineNarrowsPerOccurrence(t *testing.T) {
 		}
 	}
 
-	// mine is ignored when signed out: the public list is unchanged.
+	// mine is ignored when signed out: Everything still applies its window.
 	guest := newAPIClient(t, app)
-	guestPage, _ := getCalendar(t, guest, window+"&mine=1", http.StatusOK)
-	if len(guestPage.Occurrences) != 5 {
-		t.Fatalf("signed-out mine=1 should be ignored: %v", calendarTitles(guestPage))
+	guestAll, _ := getCalendar(t, guest, window, http.StatusOK)
+	guestMine, _ := getCalendar(t, guest, window+"&mine=1", http.StatusOK)
+	if got, want := strings.Join(calendarTitles(guestMine), ","), strings.Join(calendarTitles(guestAll), ","); got != want || len(guestMine.Occurrences) != 0 {
+		t.Fatalf("signed-out mine=1 changed windowed Everything: all=%v mine=%v", calendarTitles(guestAll), calendarTitles(guestMine))
+	}
+}
+
+func TestAnonymousEverythingUsesThirtyDayWindow(t *testing.T) {
+	app := testApp(t)
+	now := time.Date(2030, 1, 15, 12, 0, 0, 0, time.UTC)
+	useCalendarTestClock(app, now)
+	leader := newTestUser(t, app, "calendar boundary leader", "password1234", models.RoleMember)
+	viewer := newTestUser(t, app, "calendar boundary viewer", "password1234", models.RoleMember)
+	client := loginAPI(t, app, viewer.Name, "password1234")
+	discovery := activeGroup(t, app, leader, "Calendar discovery boundaries", models.VisibilityPublic, "")
+	own := activeGroup(t, app, leader, "Calendar own boundary", models.VisibilityPublic, "")
+	addMember(t, app, viewer, &own, models.MembershipMember)
+
+	seedNamed := func(group *models.Group, title string, startsAt time.Time) (models.Event, models.EventOccurrence) {
+		t.Helper()
+		ev, occ := seedEvent(t, app, group, leader.ID, startsAt)
+		if err := app.DB.Model(&ev).Update("title", title).Error; err != nil {
+			t.Fatal(err)
+		}
+		ev.Title = title
+		return ev, occ
+	}
+	seedChurch := func(title string, startsAt time.Time) {
+		t.Helper()
+		ev := models.Event{Title: title, Visibility: models.VisibilityPublic, StartsLocal: startsAt.UTC().Format("2006-01-02T15:04"), DurationMinutes: 60, TZID: "UTC", CreatedBy: leader.ID}
+		if err := app.DB.Create(&ev).Error; err != nil {
+			t.Fatal(err)
+		}
+		occ := models.EventOccurrence{EventID: ev.ID, OriginalDate: startsAt.UTC().Format("2006-01-02"), StartsAt: startsAt.UTC(), EndsAt: startsAt.UTC().Add(time.Hour), Status: models.OccurrenceScheduled}
+		if err := app.DB.Create(&occ).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedNamed(&discovery, "Past public", now.Add(-time.Microsecond))
+	seedNamed(&discovery, "At public boundary", now.AddDate(0, 0, 30))
+	seedNamed(&discovery, "Beyond public boundary", now.AddDate(0, 0, 30).Add(time.Microsecond))
+	seedChurch("Past church-wide", now.Add(-time.Microsecond))
+	seedChurch("At church-wide boundary", now.AddDate(0, 0, 30))
+	seedChurch("Beyond church-wide boundary", now.AddDate(0, 0, 30).Add(time.Microsecond))
+	seedNamed(&discovery, "Far public", now.AddDate(0, 0, 60))
+	answered, answeredOcc := seedNamed(&discovery, "Far answered", now.AddDate(0, 0, 60).Add(time.Hour))
+	seedNamed(&own, "Far own group", now.AddDate(0, 0, 60).Add(2*time.Hour))
+	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", answered.ID), map[string]any{"status": models.RegMaybe, "date": answeredOcc.OriginalDate}, http.StatusOK)
+
+	query := "from=2030-01-14&to=2030-03-17&tz=UTC"
+	anon := newAPIClient(t, app)
+	for _, suffix := range []string{"", "&mine=1"} {
+		page, raw := getCalendar(t, anon, query+suffix, http.StatusOK)
+		if got := calendarTitles(page); len(got) != 2 || !hasTitle(page, "At public boundary") || !hasTitle(page, "At church-wide boundary") {
+			t.Fatalf("anonymous Everything%s bypassed the fixed window: got=%v raw=%s", suffix, got, raw)
+		}
+		for _, title := range []string{"Past public", "Beyond public boundary", "Past church-wide", "Beyond church-wide boundary", "Far public", "Far answered", "Far own group"} {
+			if hasTitle(page, title) {
+				t.Fatalf("anonymous Everything%s kept %q: %s", suffix, title, raw)
+			}
+		}
+	}
+
+	all, raw := getCalendar(t, client, query, http.StatusOK)
+	for _, title := range []string{"At public boundary", "At church-wide boundary", "Far answered", "Far own group"} {
+		if !hasTitle(all, title) {
+			t.Fatalf("signed-in Everything lost %q exception: %s", title, raw)
+		}
+	}
+	for _, title := range []string{"Past public", "Beyond public boundary", "Past church-wide", "Beyond church-wide boundary", "Far public"} {
+		if hasTitle(all, title) {
+			t.Fatalf("signed-in Everything kept %q: %s", title, raw)
+		}
+	}
+	mine, raw := getCalendar(t, client, query+"&mine=1", http.StatusOK)
+	for _, title := range []string{"At church-wide boundary", "Far answered", "Far own group"} {
+		if !hasTitle(mine, title) {
+			t.Fatalf("signed-in Just mine lost %q exception: %s", title, raw)
+		}
+	}
+	if hasTitle(mine, "At public boundary") {
+		t.Fatalf("unanswered outsider public date entered Just mine: %s", raw)
 	}
 }
 
 func TestCalendarWindowGroupFilterAndZones(t *testing.T) {
 	app := testApp(t)
+	useCalendarTestClock(app, time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC))
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	admin := loginAPI(t, app, "admin", "password1234")
 	open := createGroupAs(t, admin, "Open Choir", models.VisibilityPublic)
@@ -231,6 +317,7 @@ func TestCalendarWindowGroupFilterAndZones(t *testing.T) {
 
 func TestCalendarTruncatesAt500(t *testing.T) {
 	app := testApp(t)
+	useCalendarTestClock(app, time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC))
 	leader := newTestUser(t, app, "lead", "password1234", models.RoleMember)
 	grp := activeGroup(t, app, leader, "Busy Choir", models.VisibilityPublic, "")
 	start := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
@@ -279,6 +366,7 @@ func TestCalendarShowDeletedIsAdminOnly(t *testing.T) {
 // widens visibility: a hidden group's remote event stays hidden.
 func TestCalendarRemoteFilter(t *testing.T) {
 	app := testApp(t)
+	useCalendarTestClock(app, time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC))
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	admin := loginAPI(t, app, "admin", "password1234")
 
@@ -342,6 +430,7 @@ func TestCalendarRemoteFilter(t *testing.T) {
 
 func TestCalendarChildcareFilter(t *testing.T) {
 	app := testApp(t)
+	useCalendarTestClock(app, time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC))
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	admin := loginAPI(t, app, "admin", "password1234")
 	open := createGroupAs(t, admin, "Open Nursery", models.VisibilityPublic)

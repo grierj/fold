@@ -56,9 +56,9 @@ type FeedEvent struct {
 	Occurrences        []FeedOccurrence
 }
 
-// FeedSingle is one standalone date with no series entry in this feed:
-// a personal feed's "I'm going to this one date of someone else's
-// series". Its UID carries the date for that reason (see singleUID).
+// FeedSingle is one standalone date with no series entry in this feed.
+// Its UID carries the immutable original date so expanded personal rows keep
+// their identity when a series clock changes (see singleUID).
 type FeedSingle struct {
 	EventID      uint
 	OriginalDate string
@@ -79,11 +79,6 @@ type FeedSingle struct {
 	URL                string
 	UpdatedAt          time.Time
 	Status             string // CONFIRMED or TENTATIVE, or "" to omit
-	// SeriesIdentity keeps an ordinarily visible event's established
-	// event-<id>@<host> UID when a personal feed expands it date by date.
-	// RecurrenceWall identifies an expanded date of a recurring series.
-	SeriesIdentity bool
-	RecurrenceWall string // YYYYMMDDTHHMMSS in TZID, or "" for one-time
 }
 
 type Feed struct {
@@ -290,17 +285,10 @@ func renderSingle(s *FeedSingle, host string) ([]string, *time.Location, bool) {
 	if end.IsZero() {
 		end = s.StartsAt.Add(time.Hour)
 	}
-	uid := singleUID(s.EventID, date, host)
-	if s.SeriesIdentity {
-		uid = seriesUID(s.EventID, host)
-	}
 	b := []string{
 		"BEGIN:VEVENT",
-		"UID:" + uid,
+		"UID:" + singleUID(s.EventID, date, host),
 		"DTSTAMP:" + dtstamp(s.UpdatedAt, s.StartsAt),
-	}
-	if s.RecurrenceWall != "" {
-		b = append(b, "RECURRENCE-ID;TZID="+s.TZID+":"+s.RecurrenceWall)
 	}
 	b = append(b,
 		"DTSTART;TZID="+s.TZID+":"+s.StartsAt.In(loc).Format(icsWall),

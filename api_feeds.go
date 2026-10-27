@@ -399,29 +399,33 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 			groupLoc = shown.Location
 		}
 		eff := occurrenceToJSON(ev, occ, groupLoc)
+		seriesVisible := vs.canSeeSeries(viewer, ev)
 		videoStatus := ownStatus
 		if videoStatus == "" && householdGoing[occ.ID] {
 			videoStatus = models.RegGoing
 		}
 		videoURL := ""
-		if link := videoLinkOf(ev); link != "" && policy.CanSeeVideoLinkInFeed(videoRevealOf(ev), videoStatus,
-			rel.Member || vs.Hosted[ev.ID], rel.Leader || vs.Hosted[ev.ID] || viewerAdmin) {
-			videoURL = link
-		}
-		recurrenceWall := ""
-		if ev.RRule != "" {
-			if seriesStart, _, err := events.ParseWall(ev.StartsLocal, ev.TZID); err == nil {
-				recurrenceWall = strings.ReplaceAll(occ.OriginalDate, "-", "") + seriesStart.Format("T150405")
+		if seriesVisible {
+			if link := videoLinkOf(ev); link != "" && policy.CanSeeVideoLinkInFeed(videoRevealOf(ev), videoStatus,
+				rel.Member || vs.Hosted[ev.ID], rel.Leader || vs.Hosted[ev.ID] || viewerAdmin) {
+				videoURL = link
 			}
+		}
+		description := ""
+		childcareAvailable := false
+		childcareAges := ""
+		if seriesVisible {
+			description = ev.Description
+			childcareAvailable = ev.ChildcareAvailable
+			childcareAges = ev.ChildcareAges
 		}
 		feed.Singles = append(feed.Singles, events.FeedSingle{
 			EventID: ev.ID, OriginalDate: occ.OriginalDate, Title: eff.Title,
-			Description: ev.Description, Location: eff.Location, TZID: ev.TZID,
+			Description: description, Location: eff.Location, TZID: ev.TZID,
 			StartsAt: eff.StartsAt, EndsAt: eff.EndsAt, VideoURL: videoURL,
-			RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: ev.ChildcareAvailable,
-			ChildcareAges: ev.ChildcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),
+			RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: childcareAvailable,
+			ChildcareAges: childcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),
 			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: status,
-			SeriesIdentity: true, RecurrenceWall: recurrenceWall,
 		})
 	}
 	return feed

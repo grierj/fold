@@ -80,6 +80,26 @@ func feedBody(t *testing.T, c *apiClient, path string) string {
 	return w.Body.String()
 }
 
+func feedUIDs(body string) []string {
+	var out []string
+	for _, line := range strings.Split(unfoldFeed(body), "\r\n") {
+		if strings.HasPrefix(line, "UID:") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+func feedEventWithUIDPrefix(body, prefix string) string {
+	for _, part := range strings.Split(unfoldFeed(body), "BEGIN:VEVENT\r\n")[1:] {
+		block := "BEGIN:VEVENT\r\n" + strings.SplitN(part, "END:VEVENT\r\n", 2)[0] + "END:VEVENT\r\n"
+		if strings.Contains(block, "\r\nUID:"+prefix) {
+			return block
+		}
+	}
+	return ""
+}
+
 // createFeedLink makes the signed-in client's calendar link and returns
 // the feed path.
 func createFeedLink(t *testing.T, c *apiClient, scope string) string {
@@ -240,16 +260,15 @@ func TestPersonalFeedScopes(t *testing.T) {
 	if got := strings.Count(body, "STATUS:TENTATIVE"); got < 4 {
 		t.Fatalf("unanswered own-group dates should be tentative:\n%s", body)
 	}
-	seriesUID := fmt.Sprintf("event-%d@", mid.ID)
-	goingRecurrence := "RECURRENCE-ID;TZID=UTC:" + strings.ReplaceAll(goingDate, "-", "") + "T190000"
-	if !strings.Contains(body, seriesUID) || !strings.Contains(body, goingRecurrence) || !strings.Contains(body, "STATUS:CONFIRMED") {
+	goingUID := fmt.Sprintf("UID:event-%d-%s@", mid.ID, strings.ReplaceAll(goingDate, "-", ""))
+	if !strings.Contains(body, goingUID) || !strings.Contains(body, "STATUS:CONFIRMED") {
 		t.Fatalf("mine feed is missing the one going date as a single:\n%s", body)
 	}
 	// Church-wide dates are standing own scope. The unanswered dates inside
 	// 30 days are present as tentative rather than being conflated with Going.
 	for _, other := range []string{feedDate(midStart), feedDate(midStart.AddDate(0, 0, 14))} {
-		recurrence := "RECURRENCE-ID;TZID=UTC:" + strings.ReplaceAll(other, "-", "") + "T190000"
-		if !strings.Contains(body, recurrence) {
+		uid := fmt.Sprintf("UID:event-%d-%s@", mid.ID, strings.ReplaceAll(other, "-", ""))
+		if !strings.Contains(body, uid) {
 			t.Fatalf("mine feed is missing unanswered church-wide date %s:\n%s", other, body)
 		}
 	}
@@ -265,8 +284,8 @@ func TestPersonalFeedScopes(t *testing.T) {
 	if strings.Contains(body, "RRULE:") {
 		t.Fatalf("all personal feed should also be recurrence-safe expanded dates:\n%s", body)
 	}
-	if got := strings.Count(body, goingRecurrence); got != 1 {
-		t.Fatalf("all feed should contain the answered recurrence exactly once, got %d:\n%s", got, body)
+	if got := strings.Count(body, goingUID); got != 1 {
+		t.Fatalf("all feed should contain the answered date exactly once, got %d:\n%s", got, body)
 	}
 }
 
@@ -318,6 +337,133 @@ func TestPersonalFeedScopeAndThirtyDayWindow(t *testing.T) {
 	}
 }
 
+func TestPersonalFeedOpenedHiddenSeriesDateStaysStandaloneAndPrivate(t *testing.T) {
+	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityInviteOnly)
+	viewer := newTestUser(t, app, "opened date viewer", "password1234", models.RoleMember)
+	client := loginAPI(t, app, viewer.Name, "password1234")
+	const hiddenDescription = "HIDDEN PARENT SERIES DESCRIPTION"
+	const hiddenVideo = "https://meet.example.org/hidden-parent-video"
+	if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{
+		"title": "Hidden parent series", "description": hiddenDescription,
+		"video_provider": models.VideoProviderLink, "video_url": hiddenVideo,
+		"video_reveal": models.VideoRevealAlways,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Model(&dates[0]).Updates(map[string]any{
+		"title_override": "Opened community date", "location_override": "Opened date place",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"visibility": "public"}, http.StatusOK)
+
+	path := createFeedLink(t, client, models.CalendarFeedAll)
+	dateUID := fmt.Sprintf("UID:event-%d-%s@", ev.ID, strings.ReplaceAll(dates[0].OriginalDate, "-", ""))
+	assertDateOnly := func(scope, raw string) {
+		t.Helper()
+		if strings.Count(raw, "BEGIN:VEVENT") != 1 || !strings.Contains(raw, dateUID) || !strings.Contains(raw, "SUMMARY:Opened community date") || !strings.Contains(raw, "LOCATION:Opened date place") || !strings.Contains(raw, occurrenceDatePath(ev.ID, dates[0].OriginalDate)) {
+			t.Fatalf("scope=%s did not export the one opened date as a standalone event: %s", scope, raw)
+		}
+		for _, forbidden := range []string{
+			fmt.Sprintf("UID:event-%d@", ev.ID), "RRULE:", "EXDATE", "RECURRENCE-ID",
+			"Hidden fellowship", "SECRET GROUP PLACE", "Hidden parent series", hiddenDescription, hiddenVideo,
+			strings.ReplaceAll(dates[1].OriginalDate, "-", ""), strings.ReplaceAll(dates[2].OriginalDate, "-", ""),
+		} {
+			if strings.Contains(raw, forbidden) {
+				t.Fatalf("scope=%s leaked %q: %s", scope, forbidden, raw)
+			}
+		}
+	}
+
+	allBefore := unfoldFeed(feedBody(t, client, path))
+	assertDateOnly("all before RSVP", allBefore)
+	apiDo(t, client, "PUT", "/api/v1/me/calendar-feed", map[string]any{"scope": models.CalendarFeedMine}, http.StatusOK)
+	mineBefore := unfoldFeed(feedBody(t, client, path))
+	if strings.Contains(mineBefore, "BEGIN:VEVENT") {
+		t.Fatalf("mine included an unanswered outsider date: %s", mineBefore)
+	}
+
+	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", ev.ID), map[string]any{"status": models.RegGoing, "date": dates[0].OriginalDate}, http.StatusOK)
+	mineAfter := unfoldFeed(feedBody(t, client, path))
+	assertDateOnly("mine after RSVP", mineAfter)
+	apiDo(t, client, "PUT", "/api/v1/me/calendar-feed", map[string]any{"scope": models.CalendarFeedAll}, http.StatusOK)
+	allAfter := unfoldFeed(feedBody(t, client, path))
+	assertDateOnly("all after RSVP", allAfter)
+	if got, want := strings.Join(feedUIDs(allAfter), "\n"), strings.Join(feedUIDs(allBefore), "\n"); got != want {
+		t.Fatalf("opened date identity changed after RSVP: before=%q after=%q", want, got)
+	}
+
+	var group models.Group
+	if err := app.DB.First(&group, *ev.GroupID).Error; err != nil {
+		t.Fatal(err)
+	}
+	addMember(t, app, viewer, &group, models.MembershipMember)
+	ordinary := unfoldFeed(feedBody(t, client, path))
+	if strings.Count(ordinary, dateUID) != 1 || strings.Count(ordinary, "BEGIN:VEVENT") != len(dates) || strings.Contains(ordinary, "RECURRENCE-ID") {
+		t.Fatalf("date-only to series authority created a duplicate identity: %s", ordinary)
+	}
+	seen := map[string]bool{}
+	for _, uid := range feedUIDs(ordinary) {
+		if seen[uid] {
+			t.Fatalf("ordinary series feed repeated %s: %s", uid, ordinary)
+		}
+		seen[uid] = true
+	}
+}
+
+func TestPersonalFeedDateUIDSurvivesSeriesTimeEdit(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	start := feedStart(14)
+	gid := createFeedGroup(t, admin, "Identity group", models.VisibilityPublic, "Hall")
+	series := createFeedEvent(t, admin, gid, "Identity series", start, weeklyRule(start)+";COUNT=3")
+	var group models.Group
+	if err := app.DB.First(&group, gid).Error; err != nil {
+		t.Fatal(err)
+	}
+	member, client := mkUser(t, app, &group, "identity member")
+	var occs []models.EventOccurrence
+	if err := app.DB.Where("event_id = ?", series.ID).Order("original_date").Find(&occs).Error; err != nil || len(occs) != 3 {
+		t.Fatalf("occurrences: %v count=%d", err, len(occs))
+	}
+	target := occs[1]
+	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", series.ID), map[string]any{"status": models.RegGoing, "date": target.OriginalDate}, http.StatusOK)
+	path := createFeedLink(t, client, models.CalendarFeedMine)
+	before := unfoldFeed(feedBody(t, client, path))
+	uidPrefix := fmt.Sprintf("event-%d-%s@", series.ID, strings.ReplaceAll(target.OriginalDate, "-", ""))
+	beforeBlock := feedEventWithUIDPrefix(before, uidPrefix)
+	if beforeBlock == "" || !strings.Contains(beforeBlock, "DTSTART;TZID=UTC:"+strings.ReplaceAll(target.OriginalDate, "-", "")+"T190000") || strings.Contains(before, "RECURRENCE-ID") {
+		t.Fatalf("before edit identity/clock: %s", before)
+	}
+	beforeUIDs := strings.Join(feedUIDs(before), "\n")
+
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", series.ID), map[string]any{"startsLocal": feedDate(start) + "T20:00"}, http.StatusOK)
+	after := unfoldFeed(feedBody(t, client, path))
+	afterBlock := feedEventWithUIDPrefix(after, uidPrefix)
+	if afterBlock == "" || !strings.Contains(afterBlock, "DTSTART;TZID=UTC:"+strings.ReplaceAll(target.OriginalDate, "-", "")+"T200000") || strings.Contains(after, "RECURRENCE-ID") {
+		t.Fatalf("after edit identity/clock: %s", after)
+	}
+	if afterUIDs := strings.Join(feedUIDs(after), "\n"); afterUIDs != beforeUIDs {
+		t.Fatalf("series time edit changed personal identities: before=%q after=%q", beforeUIDs, afterUIDs)
+	}
+	var moved models.EventOccurrence
+	if err := app.DB.First(&moved, target.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if moved.ID != target.ID || moved.OriginalDate != target.OriginalDate || !moved.StartsAt.Equal(target.StartsAt.Add(time.Hour)) {
+		t.Fatalf("series edit did not preserve occurrence identity: before=%+v after=%+v", target, moved)
+	}
+	var reg models.Registration
+	if err := app.DB.Where("user_id = ? AND occurrence_id = ?", member.ID, target.ID).First(&reg).Error; err != nil || reg.Status != models.RegGoing {
+		t.Fatalf("registration did not stay on the preserved occurrence: %+v err=%v", reg, err)
+	}
+	public := unfoldFeed(feedBody(t, newAPIClient(t, app), "/cal/public.ics"))
+	if !strings.Contains(public, fmt.Sprintf("UID:event-%d@", series.ID)) || !strings.Contains(public, "RRULE:") || strings.Contains(public, uidPrefix) {
+		t.Fatalf("public series feed contract changed: %s", public)
+	}
+}
+
 func TestPersonalFeedMixedRSVPStatesAreRecurrenceSafe(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
@@ -359,17 +505,17 @@ func TestPersonalFeedMixedRSVPStatesAreRecurrenceSafe(t *testing.T) {
 	if got := strings.Count(body, "STATUS:TENTATIVE"); got != 3 {
 		t.Fatalf("tentative=%d:\n%s", got, body)
 	}
-	declinedRecurrence := "RECURRENCE-ID;TZID=UTC:" + strings.ReplaceAll(occs[3].OriginalDate, "-", "") + "T190000"
-	if strings.Contains(body, declinedRecurrence) {
+	declinedUID := fmt.Sprintf("UID:event-%d-%s@", series.ID, strings.ReplaceAll(occs[3].OriginalDate, "-", ""))
+	if strings.Contains(body, declinedUID) {
 		t.Fatalf("Can't go date remained in feed:\n%s", body)
 	}
-	unansweredRecurrence := "RECURRENCE-ID;TZID=UTC:" + strings.ReplaceAll(occs[4].OriginalDate, "-", "") + "T190000"
-	if !strings.Contains(body, unansweredRecurrence) {
+	unansweredUID := fmt.Sprintf("UID:event-%d-%s@", series.ID, strings.ReplaceAll(occs[4].OriginalDate, "-", ""))
+	if !strings.Contains(body, unansweredUID) {
 		t.Fatalf("own-group Not answered date missing:\n%s", body)
 	}
 
 	// Existing subscriptions update in place: changing one answer changes the
-	// ETag and STATUS while retaining the established series UID/recurrence ID.
+	// ETag and STATUS while retaining the immutable date-specific UID.
 	etag := first.Header().Get("ETag")
 	apiDo(t, client, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", series.ID), map[string]any{"status": "maybe", "date": occs[0].OriginalDate}, http.StatusOK)
 	updated := fetchFeedIf(t, anon, path, etag)
@@ -377,8 +523,8 @@ func TestPersonalFeedMixedRSVPStatesAreRecurrenceSafe(t *testing.T) {
 		t.Fatalf("updated feed cache response: %d old=%q new=%q", updated.Code, etag, updated.Header().Get("ETag"))
 	}
 	updatedBody := updated.Body.String()
-	firstRID := "RECURRENCE-ID;TZID=UTC:" + strings.ReplaceAll(occs[0].OriginalDate, "-", "") + "T190000"
-	if !strings.Contains(updatedBody, fmt.Sprintf("UID:event-%d@", series.ID)) || !strings.Contains(updatedBody, firstRID) || strings.Count(updatedBody, "STATUS:CONFIRMED") != 0 || strings.Count(updatedBody, "STATUS:TENTATIVE") != 4 {
+	firstUID := fmt.Sprintf("UID:event-%d-%s@", series.ID, strings.ReplaceAll(occs[0].OriginalDate, "-", ""))
+	if !strings.Contains(updatedBody, firstUID) || strings.Contains(updatedBody, "RECURRENCE-ID") || strings.Count(updatedBody, "STATUS:CONFIRMED") != 0 || strings.Count(updatedBody, "STATUS:TENTATIVE") != 4 {
 		t.Fatalf("updated subscription lost identity or status:\n%s", updatedBody)
 	}
 }

@@ -47,6 +47,13 @@ type calendarOccurrenceJSON struct {
 // when there were more (truncated), so nothing is silently dropped.
 const maxCalendarOccurrences = 500
 
+func (a *App) calendarTime() time.Time {
+	if a.calendarClock != nil {
+		return a.calendarClock().UTC()
+	}
+	return time.Now().UTC()
+}
+
 func (a *App) apiCalendar(c *gin.Context) {
 	me := apiUser(c)
 	from, to, ok := parseDateWindow(c)
@@ -107,7 +114,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 	}
 	out := []calendarOccurrenceJSON{}
 	byID, groups, rels, hosted, visibleIDs := vs.ByID, vs.Groups, vs.Rels, vs.Hosted, vs.IDs
-	now := time.Now().UTC()
+	now := a.calendarTime()
 	scoped, err := a.scopedOccurrenceReads(me, a.DB.Where("starts_at >= ? AND starts_at < ? AND event_id IN (?)",
 		windowStart.UTC(), windowEnd.UTC(), q.Model(&models.Event{}).Select("id")), now)
 	if err != nil {
@@ -162,10 +169,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 		}
 		_, rel := groupAndRel(ev, groups, rels)
 		status := scopeFacts.ownStatus[occ.ID]
-		decision := policy.CalendarDecision{Include: true}
-		if me != nil {
-			decision = calendarScopeDecision(scope, true, ev, occ, rel, hosted[ev.ID], scopeFacts.household[occ.ID], exact, status, now)
-		}
+		decision := calendarScopeDecision(scope, true, ev, occ, rel, hosted[ev.ID], scopeFacts.household[occ.ID], exact, status, now)
 		if !decision.Include {
 			continue
 		}

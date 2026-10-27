@@ -29,6 +29,17 @@ func TestDecideCalendar(t *testing.T) {
 		{"public at all boundary", CalendarScopeAll, withCalendar(base, func(f *CalendarFacts) { f.StartsAt = now.AddDate(0, 0, 30) }), CalendarDecision{Include: true}},
 		{"public one instant past boundary", CalendarScopeAll, withCalendar(base, func(f *CalendarFacts) { f.StartsAt = now.AddDate(0, 0, 30).Add(time.Nanosecond) }), CalendarDecision{}},
 		{"past unanswered public omitted", CalendarScopeAll, withCalendar(base, func(f *CalendarFacts) { f.StartsAt = now.Add(-time.Nanosecond) }), CalendarDecision{}},
+		{"anonymous church-wide at all boundary", CalendarScopeAll, withCalendar(base, func(f *CalendarFacts) { f.PublicDate = false; f.ChurchWide = true; f.StartsAt = now.AddDate(0, 0, 30) }), CalendarDecision{Include: true, OwnScope: true}},
+		{"anonymous church-wide past omitted", CalendarScopeAll, withCalendar(base, func(f *CalendarFacts) {
+			f.PublicDate = false
+			f.ChurchWide = true
+			f.StartsAt = now.Add(-time.Nanosecond)
+		}), CalendarDecision{OwnScope: true}},
+		{"anonymous church-wide beyond boundary omitted", CalendarScopeAll, withCalendar(base, func(f *CalendarFacts) {
+			f.PublicDate = false
+			f.ChurchWide = true
+			f.StartsAt = now.AddDate(0, 0, 30).Add(time.Nanosecond)
+		}), CalendarDecision{OwnScope: true}},
 		{"visible private date remains in all", CalendarScopeAll, withCalendar(base, func(f *CalendarFacts) { f.PublicDate = false; f.StartsAt = now.AddDate(0, 0, 90) }), CalendarDecision{Include: true}},
 	}
 	for _, tc := range tests {
