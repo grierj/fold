@@ -1,10 +1,11 @@
 # Fold: product and delivery summary
 
-Reconciled October 27, 2026 against merged work through `1a3f077` and the
-locally accepted, unmerged M1.14 head `754a2f6`. [PLAN.md](PLAN.md) owns product
-decisions; [STATUS.md](../../STATUS.md) tracks merges and publication state;
-[DOCUMENTATION-REVIEW.md](DOCUMENTATION-REVIEW.md) lists open product conflicts.
-Local acceptance does not mean published, merged, deployed or production-ready.
+Reconciled October 27, 2026 against merged work through M1.14 calendar/feed
+PR #129 (`891ce26`) and the locally accepted integrated M1.14 head `754a2f6`.
+[PLAN.md](PLAN.md) owns product decisions; [STATUS.md](../../STATUS.md) tracks
+merges and publication state; [DOCUMENTATION-REVIEW.md](DOCUMENTATION-REVIEW.md)
+lists open product conflicts. Local acceptance does not mean fully published,
+merged, deployed or production-ready.
 
 ## Product
 
@@ -36,7 +37,7 @@ matter more than novel design.
 - M1.13: per-date visibility with preview/confirmation, safe discovery/feed
   output and series preserve/reset (#123). Future consumers still need wiring.
 
-## Locally accepted, publication pending
+## Locally accepted, publication in progress
 
 M1.14 implementation is complete and accepted locally at `754a2f6`: RSVP-aware
 calendar and personal-feed scope, series answers with Undo, and group-departure
@@ -47,9 +48,12 @@ the later UI/R5 review, and the final R6 database review approved their assigned
 domains. The exact evidence and acceptance matrix are in
 [M1.14-VERIFICATION.md](M1.14-VERIFICATION.md).
 
-This is not merged work. Reviewable feature PRs, protected-branch `test`, `web`
-and `provision` checks, and merge are still pending. Representative external
-calendar-client interoperability was not manually tested.
+The milestone is not fully merged. Calendar/feed merged in PR #129 at
+`891ce26`; series RSVP/Undo is open in PR #130 at `9025b2c`; departure was
+reconstructed locally at `ef04966`, exactly matching accepted target `43ca702`
+before this docs-only status update. The departure PR, its protected-branch
+`test`, `web` and `provision` checks, publication review and merge are pending.
+Representative external calendar-client interoperability was not manually tested.
 
 ## Privacy decisions that must survive later work
 
@@ -73,7 +77,7 @@ calendar-client interoperability was not manually tested.
 
 | Phase | Remaining scope |
 |---|---|
-| M1.14 | Publish the locally accepted calendar/feed, series RSVP/Undo and departure boundaries; run protected-branch CI and merge |
+| M1.14 | Finish the publication stack: merge open series PR #130, publish and review the locally prepared departure PR, run its protected-branch CI, and merge it |
 | Phase 2 | Rooms, booking conflicts, visibility-aware suggestions |
 | Phase 3 | Durable jobs, messaging composer/relay, provider adapters, reminders, optional SMS, notification preferences |
 | Phase 4 | Encrypted settings, resumable setup/CLI, CSV import, private/S3 assets, admin TOTP |

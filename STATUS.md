@@ -2,7 +2,7 @@
 
 Claim a milestone here (in its own PR or commit) before starting it.
 
-Reconciled against merged history through `1a3f077` (Oct 25, 2026) and the locally accepted, unmerged M1.14 publication head `754a2f6` (Oct 27, 2026). “Merged” is not a production deployment, and local acceptance is not publication, protected-branch CI or merge. Product scope lives in [PLAN.md](docs/plan/PLAN.md); remaining conflicts are in [DOCUMENTATION-REVIEW.md](docs/plan/DOCUMENTATION-REVIEW.md).
+Reconciled against merged history through M1.14 calendar/feed PR #129 (`891ce26`, Oct 27, 2026) and the locally accepted integrated M1.14 implementation head `754a2f6`. “Merged” is not a production deployment, and local acceptance is not publication, protected-branch CI or merge. Product scope lives in [PLAN.md](docs/plan/PLAN.md); remaining conflicts are in [DOCUMENTATION-REVIEW.md](docs/plan/DOCUMENTATION-REVIEW.md).
 
 | Milestone | Status | Owner | Branch/PR |
 | --- | --- | --- | --- |
@@ -26,7 +26,7 @@ Reconciled against merged history through `1a3f077` (Oct 25, 2026) and the local
 | M1.11 Contact privacy and direct-contact requests | done (merged #122; M1.11-VERIFICATION.md) | Wright | `orchestrate/207252f0-d74a-467e-83c4-314a924143cd` |
 | M1.12 Frontend toolchain upgrades (Vite 8 + plugin-react 6, React 19, Tailwind 4, Node 24) | done (merged, #59) | Grok | `m1.12-toolchain` |
 | M1.13 Per-date event visibility (DEC-46) | merged #123; existing consumers verified, absent search/reminder/room consumers deferred | Wright | `m1.13-date-visibility` |
-| M1.14 Series RSVP and RSVP-aware calendar | implementation accepted locally at `754a2f6`: calendar/feed, series RSVP/Undo and membership departure are complete; all 12 integrated gates, focused security/concurrency/stress checks and required independent domain reviews are green. Publication is still pending: no feature PR, protected-branch CI or merge is claimed. See [verification](docs/plan/M1.14-VERIFICATION.md) and [finish tasks](docs/plan/M1.14-FINISH-TASKS.md). | Parent + gpt-5.6-sol via pi-subagents | `m1.14-finish`; preserved recovery history: `26ef2d2`, `79fa47b`, `7f1a214`, `orchestrate/b7eae0cf-c293-4968-ad97-51783bb7b1af` |
+| M1.14 Series RSVP and RSVP-aware calendar | implementation accepted locally at `754a2f6`: all 12 integrated gates, focused security/concurrency/stress checks and required independent domain reviews are green. Publication is in progress: calendar/feed merged in #129 (`891ce26`); series RSVP/Undo is open in #130 at `9025b2c`; departure is reconstructed locally at `ef04966` with its PR, protected-branch CI and publication review still pending. The milestone as a whole is not yet merged. See [verification](docs/plan/M1.14-VERIFICATION.md) and [finish tasks](docs/plan/M1.14-FINISH-TASKS.md). | Parent + gpt-5.6-sol via pi-subagents | #129 merged; #130 open; `m1.14-departure` local; preserved recovery history: `26ef2d2`, `79fa47b`, `7f1a214`, `orchestrate/b7eae0cf-c293-4968-ad97-51783bb7b1af` |
 | Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | done (merged, #43) | Wright | `simplicity` |
 
 ## Other merged work (not milestones)
