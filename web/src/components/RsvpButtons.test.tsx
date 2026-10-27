@@ -1,9 +1,10 @@
 import { MemoryRouter } from "react-router-dom";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RsvpButtons, type SeriesFeedbackSignal } from "./RsvpButtons";
+import { Button } from "./ui/Button";
 import { ApiError, Events } from "../api";
 import { occurrence } from "../test/occurrence";
 import type { RegistrationBatch } from "../types";
@@ -237,6 +238,174 @@ describe("RsvpButtons", () => {
   });
 });
 
+
+describe("single RSVP series refreshes", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  const initialDates = () => [
+    occurrence({ recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, remoteCapacity: 10, childcareAvailable: true,
+      guestsAllowed: 2, myRegistration: "going", myAttendanceMode: "in_person", myGuestCount: 0,
+      myChildcareCount: 0, myChildcareAgesNote: "" }),
+    occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY", remoteAvailable: true, remoteCapacity: 10,
+      childcareAvailable: true, guestsAllowed: 2, myRegistration: "going", myAttendanceMode: "in_person",
+      myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "" }),
+  ];
+  const appliedDates = () => initialDates().map((row) => ({ ...row, myAttendanceMode: "remote" as const,
+    myGuestCount: 2, myChildcareCount: 2, myChildcareAgesNote: "4 and 6" }));
+
+  function SiblingCards({ undo = false }: { undo?: boolean }) {
+    const initial = useRef(initialDates()).current;
+    const applied = useRef(appliedDates()).current;
+    const [instances, setInstances] = useState(initial);
+    const [feedback, setFeedback] = useState<SeriesFeedbackSignal | null>(null);
+    const bulkRefreshes = useRef(0);
+    const refresh = (result: RegistrationBatch) => {
+      if (result.registration) return;
+      bulkRefreshes.current += 1;
+      setInstances(undo && bulkRefreshes.current === 2 ? initial : applied);
+    };
+    const report = (eventId: number, date: string, actorDates: string[]) => setFeedback((current) => ({
+      eventId, date, actorDates, revision: (current?.revision ?? 0) + 1,
+    }));
+    return <>{instances.map((instance) => <section key={instance.id} aria-label={`RSVP ${instance.date}`}>
+      <RsvpButtons instance={instance} onChange={refresh} seriesFeedback={feedback} onSeriesFeedback={report} />
+    </section>)}</>;
+  }
+
+  it("reconciles remote, guest, and childcare values on affected sibling dates before their next save", async () => {
+    const dates = initialDates();
+    vi.mocked(Events.registerSeries).mockResolvedValue({
+      eventId: 7, scope: "all_future", status: "going",
+      results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 30, status: "going" as const } })),
+      refusals: [],
+    });
+    vi.mocked(Events.register).mockResolvedValue({ people: [], registration: {
+      registrationId: 32, userId: 3, eventId: 7, occurrenceId: 2, date: "2026-12-08", status: "going",
+      guestCount: 2, childcareCount: 2, childcareAgesNote: "4 and 6", waitlistPosition: null, attendanceMode: "remote",
+    } });
+
+    render(<SiblingCards />);
+    const first = within(screen.getByRole("region", { name: "RSVP 2026-12-01" }));
+    const second = within(screen.getByRole("region", { name: "RSVP 2026-12-08" }));
+    await userEvent.click(first.getByRole("radio", { name: "Remote" }));
+    await userEvent.clear(first.getByLabelText("Extra guests"));
+    await userEvent.type(first.getByLabelText("Extra guests"), "2");
+    await userEvent.clear(first.getByLabelText(/^Children needing childcare/));
+    await userEvent.type(first.getByLabelText(/^Children needing childcare/), "2");
+    await userEvent.type(first.getByLabelText(/^Ages/), "4 and 6");
+    await userEvent.click(first.getByRole("button", { name: "Save" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
+
+    await waitFor(() => expect(second.getByRole("radio", { name: "Remote" })).toBeChecked());
+    expect(second.getByLabelText("Extra guests")).toHaveValue(2);
+    expect(second.getByLabelText(/^Children needing childcare/)).toHaveValue("2");
+    expect(second.getByLabelText(/^Ages/)).toHaveValue("4 and 6");
+
+    await userEvent.click(second.getByRole("button", { name: "Save" }));
+    await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
+    expect(Events.register).toHaveBeenLastCalledWith(7, {
+      status: "going", date: "2026-12-08", guestCount: 2, attendanceMode: "remote",
+      childcareCount: 2, childcareAgesNote: "4 and 6",
+    });
+  });
+
+  it("reconciles affected sibling fields after Undo before the next save", async () => {
+    const dates = initialDates();
+    vi.mocked(Events.registerSeries).mockResolvedValue({
+      eventId: 7, scope: "all_future", status: "going",
+      results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 30, status: "going" as const } })),
+      refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+    });
+    vi.mocked(Events.undoSeriesRegistration).mockResolvedValue({
+      eventId: 7, scope: "", status: "",
+      results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: { status: "going" as const }, after: { status: "going" as const } })),
+      refusals: [],
+    });
+    vi.mocked(Events.register).mockResolvedValue({ people: [], registration: {
+      registrationId: 32, userId: 3, eventId: 7, occurrenceId: 2, date: "2026-12-08", status: "going",
+      guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "in_person",
+    } });
+
+    render(<SiblingCards undo />);
+    const first = within(screen.getByRole("region", { name: "RSVP 2026-12-01" }));
+    const second = within(screen.getByRole("region", { name: "RSVP 2026-12-08" }));
+    await userEvent.click(first.getByRole("radio", { name: "Remote" }));
+    await userEvent.clear(first.getByLabelText("Extra guests"));
+    await userEvent.type(first.getByLabelText("Extra guests"), "2");
+    await userEvent.clear(first.getByLabelText(/^Children needing childcare/));
+    await userEvent.type(first.getByLabelText(/^Children needing childcare/), "2");
+    await userEvent.type(first.getByLabelText(/^Ages/), "4 and 6");
+    await userEvent.click(first.getByRole("button", { name: "Save" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
+    await userEvent.click(await first.findByRole("button", { name: "Undo" }));
+
+    await waitFor(() => expect(second.getByRole("radio", { name: "In person" })).toBeChecked());
+    expect(second.getByLabelText("Extra guests")).toHaveValue(0);
+    expect(second.getByLabelText(/^Children needing childcare/)).toHaveValue("0");
+    expect(second.getByLabelText(/^Ages/)).toHaveValue("");
+
+    await userEvent.click(second.getByRole("button", { name: "Save" }));
+    await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
+    expect(Events.register).toHaveBeenLastCalledWith(7, {
+      status: "going", date: "2026-12-08", guestCount: 0, attendanceMode: "in_person",
+      childcareCount: 0, childcareAgesNote: "",
+    });
+  });
+
+  it("preserves unrelated drafts but reconciles a no-op affected actor-date revision", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ people: [], registration: {
+      registrationId: 31, userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going",
+      guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "remote",
+    } });
+    function RefreshBoundary() {
+      const [instances, setInstances] = useState(initialDates());
+      const [feedback, setFeedback] = useState<SeriesFeedbackSignal | null>(null);
+      const revision = useRef(0);
+      const signal = (eventId: number, actorDates: string[]) => setFeedback({
+        eventId, date: "2026-12-08", actorDates, revision: ++revision.current,
+      });
+      return <>
+        <Button variant="secondary" onClick={() => setInstances((rows) => rows.map((row) => ({ ...row })))}>Quiet refresh</Button>
+        <Button variant="secondary" onClick={() => signal(7, ["2026-12-15"])}>Out of scope</Button>
+        <Button variant="secondary" onClick={() => signal(99, ["2026-12-01"])}>Other event</Button>
+        <Button variant="secondary" onClick={() => signal(7, ["2026-12-01"])}>No-op affected</Button>
+        {instances.map((instance) => <section key={instance.id} aria-label={`RSVP ${instance.date}`}>
+          <RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={feedback} />
+        </section>)}
+      </>;
+    }
+
+    render(<RefreshBoundary />);
+    const first = within(screen.getByRole("region", { name: "RSVP 2026-12-01" }));
+    const second = within(screen.getByRole("region", { name: "RSVP 2026-12-08" }));
+    for (const card of [first, second]) {
+      await userEvent.click(card.getByRole("radio", { name: "Remote" }));
+      await userEvent.clear(card.getByLabelText("Extra guests"));
+      await userEvent.type(card.getByLabelText("Extra guests"), "2");
+      await userEvent.clear(card.getByLabelText(/^Children needing childcare/));
+      await userEvent.type(card.getByLabelText(/^Children needing childcare/), "2");
+      await userEvent.type(card.getByLabelText(/^Ages/), "draft ages");
+    }
+
+    for (const action of ["Quiet refresh", "Out of scope", "Other event"]) {
+      await userEvent.click(screen.getByRole("button", { name: action }));
+      expect(first.getByRole("radio", { name: "Remote" })).toBeChecked();
+      expect(first.getByLabelText("Extra guests")).toHaveValue(2);
+      expect(first.getByLabelText(/^Children needing childcare/)).toHaveValue("2");
+      expect(first.getByLabelText(/^Ages/)).toHaveValue("draft ages");
+    }
+
+    await userEvent.click(screen.getByRole("button", { name: "No-op affected" }));
+    expect(first.getByRole("radio", { name: "In person" })).toBeChecked();
+    expect(first.getByLabelText("Extra guests")).toHaveValue(0);
+    expect(first.getByLabelText(/^Children needing childcare/)).toHaveValue("0");
+    expect(first.getByLabelText(/^Ages/)).toHaveValue("");
+    expect(second.getByRole("radio", { name: "Remote" })).toBeChecked();
+    expect(second.getByLabelText("Extra guests")).toHaveValue(2);
+    expect(second.getByLabelText(/^Children needing childcare/)).toHaveValue("2");
+    expect(second.getByLabelText(/^Ages/)).toHaveValue("draft ages");
+  });
+});
 
 describe("remote attendance changes", () => {
   beforeEach(() => vi.resetAllMocks());
