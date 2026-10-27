@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { badgeParts, formatTime, formatWhen, heldIn, zoneNote } from "./when";
+import { badgeParts, formatCalendarDay, formatTime, formatWhen, heldIn, zoneNote } from "./when";
 
 // Saturday Oct 17 2026, 7:00 PM in Los Angeles (PDT, UTC-7) = 02:00 UTC Sunday.
 const laSat7pm = "2026-10-18T02:00:00Z";
@@ -35,6 +35,12 @@ describe("formatWhen", () => {
     expect(formatTime("2026-10-28T23:00:00Z", "Europe/London")).toBe("11:00 PM");
     expect(formatTime("2026-11-05T00:00:00Z", "Europe/London")).toBe("12:00 AM");
     expect(formatTime("2026-11-05T00:00:00Z", "America/New_York")).toBe("7:00 PM");
+  });
+});
+
+describe("formatCalendarDay", () => {
+  it("formats stored days without shifting or exposing ISO text", () => {
+    expect(formatCalendarDay("2026-11-07")).toBe("Nov 7");
   });
 });
 

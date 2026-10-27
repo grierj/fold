@@ -133,10 +133,12 @@ describe("RsvpButtons", () => {
     expect(screen.getByRole("button", { name: "Just this date" })).toHaveFocus();
     await userEvent.click(screen.getByRole("button", { name: "This and following dates" }));
     expect(Events.registerSeries).toHaveBeenCalledWith(7, expect.objectContaining({ date: "2026-12-01", scope: "this_and_following", status: "going" }));
-    expect(await screen.findByRole("status")).toHaveTextContent("waitlisted for 2026-12-01");
+    expect(await screen.findByRole("status")).toHaveTextContent("waitlisted for Dec 1");
+    expect(screen.getByRole("status")).not.toHaveTextContent("2026-12-01");
     await userEvent.click(screen.getByRole("button", { name: "Undo" }));
     expect(Events.undoSeriesRegistration).toHaveBeenCalledWith(7, "undo-token");
-    expect(screen.getByRole("status")).toHaveTextContent("Undo: waitlisted for 2026-12-01 · a seat was no longer available for 2026-12-01");
+    expect(screen.getByRole("status")).toHaveTextContent("Undo: waitlisted for Dec 1 · a seat was no longer available for Dec 1");
+    expect(screen.getByRole("status")).not.toHaveTextContent("2026-12-01");
 
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     await userEvent.click(screen.getByRole("button", { name: "Can't go to any" }));
@@ -151,13 +153,57 @@ describe("RsvpButtons", () => {
       refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
     });
     const instance = occurrence({ recurrenceRule: "FREQ=WEEKLY" });
-    const view = render(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedbackDate={instance.date} />);
+    const view = render(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: instance.date, revision: 1 }} />);
     await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Maybe for 1 date");
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
-    view.rerender(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedbackDate="2026-12-08" />);
+    view.rerender(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: "2026-12-08", revision: 2 }} />);
     await waitFor(() => expect(screen.getByRole("status")).toBeEmptyDOMElement());
     expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+  });
+
+  it("clears its own series result after a successful one-date answer", async () => {
+    vi.mocked(Events.registerSeries).mockResolvedValue({
+      eventId: 7, scope: "all_future", status: "maybe",
+      results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "maybe" } }],
+      refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+    });
+    vi.mocked(Events.register).mockResolvedValue({ people: [], registration: {
+      registrationId: 4, userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "going",
+      guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "in_person",
+    } });
+    const onSeriesFeedback = vi.fn();
+    render(<RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY" })} onChange={() => {}} onSeriesFeedback={onSeriesFeedback} />);
+    await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
+    expect(await screen.findByRole("button", { name: "Undo" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Going" }));
+    await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(onSeriesFeedback).toHaveBeenLastCalledWith(7, "2026-12-01");
+  });
+
+  it.each([
+    ["undo_changed", true],
+    ["undo_authority_revoked", true],
+    ["undo_date_ended", true],
+    ["undo_not_found", true],
+    ["undo_expired", false],
+  ] as const)("clears terminal %s Undo and refreshes when current access or answers may have changed", async (code, refreshes) => {
+    vi.mocked(Events.registerSeries).mockResolvedValue({
+      eventId: 7, scope: "all_future", status: "maybe",
+      results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "maybe" } }],
+      refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+    });
+    vi.mocked(Events.undoSeriesRegistration).mockRejectedValue(new ApiError(409, "terminal", { code }));
+    const onTerminalRefresh = vi.fn();
+    render(<RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY" })} onChange={() => {}} onTerminalRefresh={onTerminalRefresh} />);
+    await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
+    await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("status")).toHaveFocus());
+    expect(onTerminalRefresh).toHaveBeenCalledTimes(refreshes ? 1 : 0);
   });
 
   it("announces when the ten-second Undo window ends", async () => {
@@ -436,6 +482,45 @@ describe("named household answers", () => {
     expect(screen.getByRole("checkbox", { name: "Childcare for Kit" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: "Kit" })).toHaveFocus();
     expect(screen.getByLabelText(/^Other children needing childcare/)).toHaveValue("0");
+  });
+
+  it("keeps household drafts while account-only scopes submit just this, following, and all future dates", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ registration: {
+      registrationId: 31, userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "maybe",
+      guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "in_person",
+    }, people: [] });
+    vi.mocked(Events.registerSeries).mockResolvedValue({
+      eventId: 7, scope: "this_and_following", status: "maybe",
+      results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 31, status: "maybe" } }],
+      refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+    });
+    family(occurrence({ recurrenceRule: "FREQ=WEEKLY" }));
+    await userEvent.click(screen.getByRole("checkbox", { name: "Me" }));
+    await userEvent.selectOptions(screen.getByLabelText("Answer for you"), "maybe");
+    await userEvent.click(screen.getByRole("checkbox", { name: "Mary" }));
+    await userEvent.selectOptions(screen.getByLabelText("Answer for Mary"), "maybe");
+
+    await userEvent.click(screen.getByRole("button", { name: "Choose dates for my answer" }));
+    await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
+    expect(Events.register).toHaveBeenLastCalledWith(7, {
+      status: "maybe", date: "2026-12-01", guestCount: 0, attendanceMode: undefined,
+    });
+    expect(screen.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+    expect(screen.getByLabelText("Answer for Mary")).toHaveValue("maybe");
+
+    await userEvent.click(screen.getByRole("button", { name: "Choose dates for my answer" }));
+    await userEvent.click(screen.getByRole("button", { name: "This and following dates" }));
+    expect(Events.registerSeries).toHaveBeenLastCalledWith(7, expect.objectContaining({
+      status: "maybe", scope: "this_and_following", date: "2026-12-01", guestCount: 0,
+    }));
+    expect(Events.registerSeries).toHaveBeenLastCalledWith(7, expect.not.objectContaining({ people: expect.anything() }));
+    expect(screen.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+
+    await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
+    expect(Events.registerSeries).toHaveBeenLastCalledWith(7, expect.objectContaining({
+      status: "maybe", scope: "all_future", guestCount: 0,
+    }));
+    expect(screen.getByLabelText("Answer for Mary")).toHaveValue("maybe");
   });
 
   it("keeps pending and missing-age people visible but disabled even if Me was removed", () => {

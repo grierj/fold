@@ -2,6 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { apiAs, signIn } from "./helpers";
+import { formatCalendarDay } from "../src/lib/when";
 // @ts-expect-error plain JS measurement shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
@@ -158,6 +159,92 @@ test("all three series scopes submit, keyboard focus is contained, bulk Can't go
   await capture(page, "single-date-bypass-result");
 });
 
+test("a household user keeps one-date drafts while their own answer uses every series scope", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const event = await createEvent(request, "Household series browser proof", 9, "FREQ=WEEKLY;COUNT=4", {
+    guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10,
+    childcareAvailable: true, childcareCapacity: 10,
+  });
+
+  await page.setViewportSize({ width: 390, height: 900 });
+  await signIn(page, "household-parent");
+  await page.goto(`/events/${event.id}`);
+  const forms = page.getByRole("form", { name: "Household answers" });
+  await expect(forms).toHaveCount(4);
+  const first = forms.first();
+  await first.getByRole("checkbox", { name: "Me" }).click();
+  await first.getByLabel("Answer for you").selectOption("maybe");
+  await first.getByRole("checkbox", { name: "Mary" }).click();
+  await first.getByLabel("Answer for Mary").selectOption("maybe");
+  await first.getByLabel("Extra guests").fill("1");
+  await first.getByLabel(/^Other children needing childcare/).fill("1");
+  await first.getByLabel(/^Ages/).fill("4");
+
+  await first.getByRole("button", { name: "Choose dates for my answer" }).click();
+  await expect(page.getByRole("dialog", { name: /How far should “Maybe” apply/ })).toBeVisible();
+  await capture(page, "household-series-scope-dialog", false);
+  await page.getByRole("button", { name: "Just this date" }).click();
+  await expect(first.getByRole("status").filter({ hasText: "You: maybe" })).toBeVisible();
+  await expect(first.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  await expect(first.getByLabel("Answer for Mary")).toHaveValue("maybe");
+
+  const second = forms.nth(1);
+  await second.getByRole("checkbox", { name: "Me" }).click();
+  await second.getByLabel("Extra guests").fill("2");
+  await second.getByLabel(/^Other children needing childcare/).fill("1");
+  await second.getByLabel(/^Ages/).fill("5");
+  await second.getByRole("button", { name: "Choose dates for my answer" }).click();
+  await page.getByRole("button", { name: "This and following dates" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Going to 3 dates" })).toHaveCount(1);
+  await expect(first.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  const parent = await apiAs(request, "household-parent");
+  const afterFollowing = await parent("GET", `/events/${event.id}`) as {
+    occurrences: { myRegistration: string | null; myGuestCount: number; myChildcareCount: number; myChildcareAgesNote: string; myHouseholdRegistrations?: unknown[] }[];
+  };
+  expect(afterFollowing.occurrences.slice(1).map((row) => [row.myRegistration, row.myGuestCount, row.myChildcareCount, row.myChildcareAgesNote]))
+    .toEqual([["going", 2, 1, "5"], ["going", 2, 1, "5"], ["going", 2, 1, "5"]]);
+  expect(afterFollowing.occurrences.flatMap((row) => row.myHouseholdRegistrations ?? [])).toEqual([]);
+
+  await first.getByRole("button", { name: "Maybe for all" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Maybe for 4 dates" })).toHaveCount(1);
+  await expect(first.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  await expect(first.getByLabel("Answer for Mary")).toHaveValue("maybe");
+  await capture(page, "household-series-all-future-result");
+
+  const detail = await parent("GET", `/events/${event.id}`) as {
+    occurrences: { myRegistration: string | null; myGuestCount: number; myChildcareCount: number; myChildcareAgesNote: string; myHouseholdRegistrations?: unknown[] }[];
+  };
+  expect(detail.occurrences.map((row) => row.myRegistration)).toEqual(["maybe", "maybe", "maybe", "maybe"]);
+  expect(detail.occurrences.flatMap((row) => row.myHouseholdRegistrations ?? [])).toEqual([]);
+});
+
+test("terminal Undo after authority loss refreshes away protected event details", async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const admin = await apiAs(request, "grier");
+  const { users } = await admin("GET", "/admin/users") as { users: { id: number; email: string }[] };
+  const sam = users.find((user) => user.email === "sam@example.com");
+  expect(sam).toBeTruthy();
+  const { group } = await admin("POST", "/groups", {
+    name: "Undo authority browser proof", description: "", tags: [], location: "", visibility: "invite_only", memberLimit: null,
+  }) as { group: { id: number } };
+  await admin("POST", `/admin/groups/${group.id}/members`, { userId: sam!.id, role: "member" });
+  const { event } = await admin("POST", `/groups/${group.id}/events`, {
+    title: "Protected Undo browser proof", startsLocal: `${day(15)}T18:00`, durationMinutes: 60,
+    tzid: "UTC", recurrenceRule: "FREQ=WEEKLY;COUNT=2", visibility: "invite_only",
+  }) as { event: { id: number } };
+
+  await signIn(page, "sam");
+  await page.goto(`/events/${event.id}`);
+  await page.getByRole("button", { name: "Maybe for all" }).first().click();
+  await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
+
+  const { departure } = await admin("GET", `/groups/${group.id}/members/${sam!.id}/departure-preview`) as { departure: { snapshot: string } };
+  await admin("POST", `/groups/${group.id}/members/${sam!.id}/departure`, { snapshot: departure.snapshot, keepOccurrenceIds: [] });
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.getByRole("heading", { name: "Event not found" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Protected Undo browser proof" })).toHaveCount(0);
+});
+
 test("mixed results, Undo seat loss, and Undo expiry are visible in the real browser", async ({ page, request }) => {
   test.setTimeout(180_000);
   const mixed = await createEvent(request, "Mixed series outcome browser proof", 12, "FREQ=WEEKLY;COUNT=3", { capacity: 1, waitlistEnabled: true });
@@ -176,7 +263,8 @@ test("mixed results, Undo seat loss, and Undo expiry are visible in the real bro
   await answerGroups(page).first().getByRole("button", { name: "Going" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
   const mixedStatus = page.getByRole("status").filter({ hasText: /Going to 1 date/ });
-  await expect(mixedStatus).toContainText(`waitlisted for ${dates[1].date}`);
+  await expect(mixedStatus).toContainText(`waitlisted for ${formatCalendarDay(dates[1].date)}`);
+  await expect(mixedStatus).not.toContainText(dates[1].date);
   await expect(mixedStatus).toContainText("1 date was left unchanged");
   await expect(answerGroups(page).first().getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
   await expect(answerGroups(page).nth(1).getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
@@ -195,8 +283,9 @@ test("mixed results, Undo seat loss, and Undo expiry are visible in the real bro
   await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
   await page.getByRole("button", { name: "Undo" }).click();
   const undoStatus = page.getByRole("status").filter({ hasText: /Undo:/ });
-  await expect(undoStatus).toContainText(`waitlisted for ${seatDate}`);
-  await expect(undoStatus).toContainText(`a seat was no longer available for ${seatDate}`);
+  await expect(undoStatus).toContainText(`waitlisted for ${formatCalendarDay(seatDate)}`);
+  await expect(undoStatus).toContainText(`a seat was no longer available for ${formatCalendarDay(seatDate)}`);
+  await expect(undoStatus).not.toContainText(seatDate);
   await expect(page.getByText(/Waitlisted/).first()).toBeVisible();
   await capture(page, "series-undo-seat-loss-result");
 
@@ -220,6 +309,9 @@ test("mixed results, Undo seat loss, and Undo expiry are visible in the real bro
       "mixed-outcomes=going,waitlisted,removed-refusal",
       "undo=success-with-seat-loss,expiry-message",
       "single-date=dialog-bypassed",
+      "household=account-only-scopes-with-proxy-drafts-preserved",
+      "terminal-undo=protected-parent-refreshed-away",
+      "summary-dates=human-readable-no-iso",
       "widths=390,768,1280",
     ].join("\n") + "\n");
   }

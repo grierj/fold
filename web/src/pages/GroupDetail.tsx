@@ -16,7 +16,7 @@ import { Attendance } from "../components/Attendance";
 import { Menu } from "../components/ui/Menu";
 import { EventVisibilityControl, visibilityRank } from "../components/EventVisibility";
 import { GroupVisibilityReview } from "../components/GroupVisibilityReview";
-import { RsvpButtons } from "../components/RsvpButtons";
+import { RsvpButtons, type SeriesFeedbackSignal } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
@@ -47,6 +47,9 @@ function EventRow({
   loggedIn,
   onRsvp,
   people,
+  seriesFeedback,
+  onSeriesFeedback,
+  onTerminalRefresh,
   onCancelled,
   onChanged,
 }: {
@@ -60,6 +63,9 @@ function EventRow({
   loggedIn: boolean;
   onRsvp: () => void;
   people: HouseholdPerson[];
+  seriesFeedback: SeriesFeedbackSignal | null;
+  onSeriesFeedback: (eventId: number, date: string) => void;
+  onTerminalRefresh: () => void;
   onCancelled: (eventId: number, date: string) => void;
   onChanged: () => void;
 }) {
@@ -106,7 +112,8 @@ function EventRow({
         )}
         {loggedIn && (
           <div className="mt-2">
-            <RsvpButtons instance={instance} people={people} onChange={onRsvp} />
+            <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
+              onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
           </div>
         )}
         {!loggedIn && instance.visibility === "public" && (
@@ -358,10 +365,11 @@ export function GroupDetail() {
   const [inviteOverLimit, setInviteOverLimit] = useState(false);
   const [inviteStatus, setInviteStatus] = useState<string | null>(null);
   const [memberError, setMemberError] = useState<string | null>(null);
+  const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
   const coverRef = useRef<HTMLInputElement>(null);
 
   // quiet refreshes in place (after an RSVP) without the Loading screen.
-  const load = useCallback(async (quiet = false) => {
+  const load = useCallback(async (quiet = false, failClosed = false) => {
     if (!id) return;
     if (!quiet) setLoading(true);
     setError(null);
@@ -370,6 +378,7 @@ export function GroupDetail() {
       const d = await Groups.get(id);
       setDetail(d);
     } catch (e) {
+      if (failClosed) setDetail(null);
       if (e instanceof ApiError && e.status === 404) setNotFound(true);
       else setError(errorText(e, "We couldn't load this group."));
     } finally {
@@ -442,6 +451,9 @@ export function GroupDetail() {
 
   // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
   function handleRsvp() { void load(true); }
+  function reportSeriesFeedback(eventId: number, date: string) {
+    setSeriesFeedback((current) => ({ eventId, date, revision: (current?.revision ?? 0) + 1 }));
+  }
 
   function handleCancelled(eventId: number, date: string) {
     setDetail((d) =>
@@ -809,7 +821,10 @@ export function GroupDetail() {
                     moreDates={(datesPerEvent.get(m.eventId) ?? 1) - 1}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}
-            people={people}
+                    people={people}
+                    seriesFeedback={seriesFeedback}
+                    onSeriesFeedback={reportSeriesFeedback}
+                    onTerminalRefresh={() => void load(true, true)}
                     onCancelled={handleCancelled}
                     onChanged={() => void load(true)}
                   />

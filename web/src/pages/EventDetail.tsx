@@ -13,7 +13,7 @@ import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { ExternalLinkIcon } from "../components/icons";
 import { EventVisibilityControl } from "../components/EventVisibility";
-import { RsvpButtons } from "../components/RsvpButtons";
+import { RsvpButtons, type SeriesFeedbackSignal } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { formatTime, heldIn } from "../lib/when";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, HouseholdPerson } from "../types";
@@ -35,10 +35,10 @@ export function EventDetail() {
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
-  const [seriesFeedbackDate, setSeriesFeedbackDate] = useState<string | null>(null);
+  const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
 
   // quiet refreshes in place (after an RSVP) without the Loading screen.
-  const load = useCallback(async (quiet = false) => {
+  const load = useCallback(async (quiet = false, failClosed = false) => {
     if (!id) return;
     if (!quiet) setLoading(true);
     setError(null);
@@ -46,6 +46,7 @@ export function EventDetail() {
     try {
       setPage(await Events.get(id));
     } catch (e) {
+      if (failClosed) setPage(null);
       if (e instanceof ApiError && e.status === 404) setNotFound(true);
       else setError(errorText(e, "We couldn't load this event."));
     } finally {
@@ -59,6 +60,9 @@ export function EventDetail() {
 
   // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
   function handleRsvp() { void load(true); }
+  function reportSeriesFeedback(eventId: number, date: string) {
+    setSeriesFeedback((current) => ({ eventId, date, revision: (current?.revision ?? 0) + 1 }));
+  }
 
   if (loading || authLoading) {
     return (
@@ -153,8 +157,9 @@ export function EventDetail() {
             canManage={canManage}
             onRsvp={handleRsvp}
             people={people}
-            seriesFeedbackDate={seriesFeedbackDate}
-            onSeriesFeedback={setSeriesFeedbackDate}
+            seriesFeedback={seriesFeedback}
+            onSeriesFeedback={reportSeriesFeedback}
+            onTerminalRefresh={() => void load(true, true)}
             onChanged={() => void load(true)}
             onNeedLogin={() => navigate("/login", { state: { from: `/events/${id}` } })}
           />
@@ -170,8 +175,9 @@ function DateRow({
   canManage,
   onRsvp,
   people,
-  seriesFeedbackDate,
+  seriesFeedback,
   onSeriesFeedback,
+  onTerminalRefresh,
   onChanged,
   onNeedLogin,
 }: {
@@ -180,8 +186,9 @@ function DateRow({
   canManage: boolean;
   onRsvp: () => void;
   people: HouseholdPerson[];
-  seriesFeedbackDate: string | null;
-  onSeriesFeedback: (date: string) => void;
+  seriesFeedback: SeriesFeedbackSignal | null;
+  onSeriesFeedback: (eventId: number, date: string) => void;
+  onTerminalRefresh: () => void;
   onChanged: () => void;
   onNeedLogin: () => void;
 }) {
@@ -251,7 +258,8 @@ function DateRow({
     <div className="mt-3">
         <div>
           {loggedIn ? (
-            <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedbackDate={seriesFeedbackDate} onSeriesFeedback={onSeriesFeedback} />
+            <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
+              onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
           ) : instance.visibility === "public" ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />

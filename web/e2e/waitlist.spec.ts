@@ -52,5 +52,5 @@ test("the waitlist arc: capacity 1, position 1, cancel, promoted", async ({ page
   await expect(bell).toHaveAccessibleName(/unread/);
   await bell.click();
   const panel = page.locator("#notif-panel");
-  await expect(panel.getByText(/You're in/)).toBeVisible();
+  await expect(panel.getByText("You're in: Tiny supper", { exact: true })).toBeVisible();
 });

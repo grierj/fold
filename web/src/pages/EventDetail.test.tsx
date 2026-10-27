@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Events, Households } from "../api";
+import { ApiError, Events, Households } from "../api";
 import type { EventDetailResponse } from "../types";
 import { occurrence } from "../test/occurrence";
 import { EventDetail } from "./EventDetail";
@@ -12,7 +12,7 @@ vi.mock("../api", async (importActual) => ({
   ...(await importActual<typeof import("../api")>()),
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
   Households: { mine: vi.fn().mockResolvedValue({ household: null }) },
-  Events: { get: vi.fn(), updateOccurrence: vi.fn(), register: vi.fn() },
+  Events: { get: vi.fn(), updateOccurrence: vi.fn(), register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() },
 }));
 
 const page: EventDetailResponse = {
@@ -88,6 +88,46 @@ it("uses the shared scope dialog for a recurring date", async () => {
   await userEvent.click((await screen.findAllByRole("button", { name: "Maybe" }))[0]);
   expect(screen.getByRole("dialog", { name: /How far should “Maybe” apply/ })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Just this date" })).toHaveFocus();
+});
+
+it("clears a sibling card's series Undo after a one-date answer", async () => {
+  const dates = [occurrence({ recurrenceRule: "FREQ=WEEKLY" }), occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY" })];
+  vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: dates });
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "maybe",
+    results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 10, status: "maybe" as const } })),
+    refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+  });
+  vi.mocked(Events.register).mockResolvedValue({ registration: {
+    registrationId: 12, userId: 2, eventId: 7, occurrenceId: 2, date: "2026-12-08", status: "going",
+    guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "in_person",
+  }, people: [] });
+  renderPage();
+  await userEvent.click((await screen.findAllByRole("button", { name: "Maybe for all" }))[0]);
+  expect(await screen.findByRole("button", { name: "Undo" })).toBeInTheDocument();
+  const answerGroups = screen.getAllByRole("group", { name: "Your answer" });
+  await userEvent.click(within(answerGroups[1]).getByRole("button", { name: "Going" }));
+  await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
+});
+
+it("fails closed when terminal Undo refresh loses event authority", async () => {
+  const recurring = { ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: [occurrence({ recurrenceRule: "FREQ=WEEKLY" })] };
+  vi.mocked(Events.get)
+    .mockResolvedValueOnce(recurring)
+    .mockResolvedValueOnce(recurring)
+    .mockRejectedValueOnce(new ApiError(404, "hidden", { code: "not_found" }));
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "maybe",
+    results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "maybe" } }],
+    refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
+  });
+  vi.mocked(Events.undoSeriesRegistration).mockRejectedValue(new ApiError(409, "revoked", { code: "undo_authority_revoked" }));
+  renderPage();
+  await userEvent.click(await screen.findByRole("button", { name: "Maybe for all" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
+  expect(await screen.findByRole("heading", { name: "Event not found" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "Hybrid study" })).not.toBeInTheDocument();
 });
 
 it("shows the public childcare ages and notes", async () => {
