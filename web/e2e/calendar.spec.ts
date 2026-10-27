@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { apiAs, signIn, signOut } from "./helpers";
 
 // The calendar (M1.6): a smoke test per view, Just mine, invite-only
@@ -13,6 +14,18 @@ async function proveView(page: Page, name: string) {
       .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"])
       .analyze();
     expect(violations.filter((v) => v.impact === "serious" || v.impact === "critical"), `${name}@${width} axe`).toEqual([]);
+    if (width === 390) {
+      const targets = await page.locator("main a[href], main button, main select").evaluateAll((controls) => controls.flatMap((control) => {
+        const rect = control.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0 || getComputedStyle(control).visibility === "hidden") return [];
+        return [{ name: control.getAttribute("aria-label") || control.textContent?.trim().replace(/\s+/g, " ").slice(0, 60) || control.tagName, width: Math.round(rect.width), height: Math.round(rect.height) }];
+      }));
+      expect(targets.filter((target) => target.width < 44 || target.height < 44), `${name}@390 calendar targets`).toEqual([]);
+      if (process.env.SCREENS_DIR) {
+        mkdirSync(process.env.SCREENS_DIR, { recursive: true });
+        writeFileSync(`${process.env.SCREENS_DIR}/calendar-${name}-targets-390.json`, JSON.stringify(targets, null, 2));
+      }
+    }
     if (process.env.SCREENS_DIR) {
       await page.screenshot({ path: `${process.env.SCREENS_DIR}/calendar-${name}-${width}.png`, fullPage: true, animations: "disabled" });
     }
