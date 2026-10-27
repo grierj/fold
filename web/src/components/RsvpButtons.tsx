@@ -193,6 +193,36 @@ function SeriesScopeDialog({ series, onJustThisDate }: {
   }} />;
 }
 
+type SavedActorAnswer = { status: string | null | undefined; mode: AttendanceMode; guests: number; children: number; ages: string };
+const savedActorAnswer = (instance: EventOccurrence): SavedActorAnswer => ({
+  status: instance.myRegistration,
+  mode: instance.myAttendanceMode ?? "in_person",
+  guests: instance.myGuestCount ?? 0,
+  children: instance.myChildcareCount ?? 0,
+  ages: instance.myChildcareAgesNote ?? "",
+});
+const sameSavedActorAnswer = (left: SavedActorAnswer, right: SavedActorAnswer) => left.status === right.status
+  && left.mode === right.mode && left.guests === right.guests && left.children === right.children && left.ages === right.ages;
+
+function useActorDraftReconciliation(instance: EventOccurrence, seriesFeedback: SeriesFeedbackSignal | null | undefined,
+  reconcile: (saved: SavedActorAnswer) => void) {
+  const savedActor = useRef(savedActorAnswer(instance));
+  const actorRefreshRevision = useRef(seriesFeedback?.revision ?? 0);
+  const reconcileRef = useRef(reconcile);
+  reconcileRef.current = reconcile;
+  useEffect(() => {
+    const nextSaved = savedActorAnswer(instance);
+    const savedChanged = !sameSavedActorAnswer(savedActor.current, nextSaved);
+    const feedbackChanged = seriesFeedback?.revision !== undefined && seriesFeedback.revision !== actorRefreshRevision.current;
+    const actorRefresh = !!seriesFeedback && feedbackChanged && seriesFeedback.eventId === instance.eventId
+      && seriesFeedback.actorDates.includes(instance.date);
+    savedActor.current = nextSaved;
+    if (seriesFeedback?.revision !== undefined) actorRefreshRevision.current = seriesFeedback.revision;
+    if (savedChanged || actorRefresh) reconcileRef.current(nextSaved);
+  }, [instance.date, instance.eventId, instance.myAttendanceMode, instance.myChildcareAgesNote, instance.myChildcareCount,
+    instance.myGuestCount, instance.myRegistration, seriesFeedback]);
+}
+
 // Registration for one event date, as a Going / Maybe / Can't go
 // segmented control. Knows the M1.5
 // states: going, waitlisted with position, full with no waitlist, and
@@ -222,6 +252,12 @@ function SingleRsvpButtons({
   const [ages, setAges] = useState(instance.myChildcareAgesNote ?? "");
   const [childcareError, setChildcareError] = useState<string | null>(null);
   const [childcareFullError, setChildcareFullError] = useState(false);
+  useActorDraftReconciliation(instance, seriesFeedback, (saved) => {
+    setGuests(saved.guests);
+    setMode(saved.mode);
+    setChildren(String(saved.children));
+    setAges(saved.ages);
+  });
   const series = useActorSeriesRsvp({ instance, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh });
 
   const mine = instance.myRegistration;
@@ -370,16 +406,6 @@ export function RsvpButtons({ instance, people = [], onChange, seriesFeedback, o
 
 type Answer = { selected: boolean; status: "going" | "maybe" | "declined"; mode: AttendanceMode; care: boolean };
 const draftAnswer = (status: string | null | undefined, mode: AttendanceMode = "in_person", care = false): Answer => ({ selected: status === "going" || status === "waitlisted" || status === "maybe", status: status === "maybe" ? "maybe" : "going", mode, care });
-type SavedActorAnswer = { status: string | null | undefined; mode: AttendanceMode; guests: number; children: number; ages: string };
-const savedActorAnswer = (instance: EventOccurrence): SavedActorAnswer => ({
-  status: instance.myRegistration,
-  mode: instance.myAttendanceMode ?? "in_person",
-  guests: instance.myGuestCount ?? 0,
-  children: instance.myChildcareCount ?? 0,
-  ages: instance.myChildcareAgesNote ?? "",
-});
-const sameSavedActorAnswer = (left: SavedActorAnswer, right: SavedActorAnswer) => left.status === right.status
-  && left.mode === right.mode && left.guests === right.guests && left.children === right.children && left.ages === right.ages;
 const ELIGIBILITY: Record<HouseholdPerson["registrationEligibility"], string> = {
   eligible: "", link_pending: "Waiting for an admin to confirm", link_unconfirmed: "Ask your church office to confirm this household link.",
   birth_date_required: "Add a birth date in Profile before signing them up.", age_mismatch: "Check their birth date and kind in Profile.",
@@ -404,23 +430,12 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
   const [guests, setGuests] = useState(instance.myGuestCount ?? 0);
   const [children, setChildren] = useState(String(instance.myChildcareCount ?? 0));
   const [ages, setAges] = useState(instance.myChildcareAgesNote ?? "");
-  const savedActor = useRef(savedActorAnswer(instance));
-  const actorRefreshRevision = useRef(seriesFeedback?.revision ?? 0);
-  useEffect(() => {
-    const nextSaved = savedActorAnswer(instance);
-    const savedChanged = !sameSavedActorAnswer(savedActor.current, nextSaved);
-    const feedbackChanged = seriesFeedback?.revision !== undefined && seriesFeedback.revision !== actorRefreshRevision.current;
-    const actorRefresh = !!seriesFeedback && feedbackChanged && seriesFeedback.eventId === instance.eventId
-      && seriesFeedback.actorDates.includes(instance.date);
-    savedActor.current = nextSaved;
-    if (seriesFeedback?.revision !== undefined) actorRefreshRevision.current = seriesFeedback.revision;
-    if (!savedChanged && !actorRefresh) return;
-    setMe(draftAnswer(nextSaved.status, nextSaved.mode));
-    setGuests(nextSaved.guests);
-    setChildren(String(nextSaved.children));
-    setAges(nextSaved.ages);
-  }, [instance.date, instance.eventId, instance.myAttendanceMode, instance.myChildcareAgesNote, instance.myChildcareCount,
-    instance.myGuestCount, instance.myRegistration, seriesFeedback]);
+  useActorDraftReconciliation(instance, seriesFeedback, (saved) => {
+    setMe(draftAnswer(saved.status, saved.mode));
+    setGuests(saved.guests);
+    setChildren(String(saved.children));
+    setAges(saved.ages);
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState("");

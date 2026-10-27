@@ -159,6 +159,83 @@ test("all three series scopes submit, keyboard focus is contained, bulk Can't go
   await capture(page, "single-date-bypass-result");
 });
 
+test("non-household sibling fields refresh after a series answer and Undo without stale save payloads", async ({ page, request }) => {
+  test.setTimeout(180_000);
+  const event = await createEvent(request, "Single RSVP refresh browser proof", 8, "FREQ=WEEKLY;COUNT=2", {
+    guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10,
+    childcareAvailable: true, childcareCapacity: 10,
+  });
+  const sam = await apiAs(request, "sam");
+  const before = await sam("GET", `/events/${event.id}`) as { occurrences: { date: string }[] };
+  for (const occurrence of before.occurrences) {
+    await sam("PUT", `/events/${event.id}/registrations`, {
+      date: occurrence.date, status: "going", attendanceMode: "in_person",
+      guestCount: 0, childcareCount: 0, childcareAgesNote: "",
+    });
+  }
+
+  await page.setViewportSize({ width: 390, height: 900 });
+  await signIn(page, "sam");
+  await page.goto(`/events/${event.id}`);
+  await expect(page.getByRole("form", { name: "Household answers" })).toHaveCount(0);
+  await expect(answerGroups(page)).toHaveCount(2);
+  const cards = page.locator(".bg-surface.rounded-lg.border-border");
+  const first = cards.first();
+  const second = cards.nth(1);
+
+  await first.getByLabel("Extra guests").fill("2");
+  await first.getByRole("radio", { name: "Remote" }).click();
+  await expect(first.getByRole("status")).toContainText("Switched to remote");
+  await first.getByLabel(/^Children needing childcare/).fill("2");
+  await first.getByLabel(/^Ages/).fill("4 and 6");
+  await first.getByRole("button", { name: "Save" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
+  await expect(first.getByRole("button", { name: "Undo" })).toBeVisible();
+
+  for (const card of [first, second]) {
+    await expect(card.getByRole("radio", { name: "Remote" })).toBeChecked();
+    await expect(card.getByLabel("Extra guests")).toHaveValue("2");
+    await expect(card.getByLabel(/^Children needing childcare/)).toHaveValue("2");
+    await expect(card.getByLabel(/^Ages/)).toHaveValue("4 and 6");
+  }
+  const applied = await sam("GET", `/events/${event.id}`) as {
+    occurrences: { myAttendanceMode: string; myGuestCount: number; myChildcareCount: number; myChildcareAgesNote: string }[];
+  };
+  expect(applied.occurrences.map((row) => [row.myAttendanceMode, row.myGuestCount, row.myChildcareCount, row.myChildcareAgesNote]))
+    .toEqual([["remote", 2, 2, "4 and 6"], ["remote", 2, 2, "4 and 6"]]);
+  await capture(page, "single-rsvp-series-refreshed", true, [390]);
+
+  await first.getByRole("button", { name: "Undo" }).click();
+  await expect(first.getByRole("status")).toContainText("Undo:");
+  await expect(second.getByRole("radio", { name: "In person" })).toBeChecked();
+  await expect(second.getByLabel("Extra guests")).toHaveValue("0");
+  await expect(second.getByLabel(/^Children needing childcare/)).toHaveValue("0");
+  await expect(second.getByLabel(/^Ages/)).toHaveValue("");
+  const undone = await sam("GET", `/events/${event.id}`) as {
+    occurrences: { myAttendanceMode: string; myGuestCount: number; myChildcareCount: number; myChildcareAgesNote: string }[];
+  };
+  expect(undone.occurrences[1]).toMatchObject({
+    myAttendanceMode: "in_person", myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "",
+  });
+  await capture(page, "single-rsvp-series-undone", true, [390]);
+
+  const subsequentRequest = page.waitForRequest((request) => request.method() === "PUT"
+    && request.url().endsWith(`/api/v1/events/${event.id}/registrations`));
+  await second.getByRole("button", { name: "Save" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Just this date" }).click();
+  expect((await subsequentRequest).postDataJSON()).toEqual({
+    status: "going", date: before.occurrences[1].date, guestCount: 0, attendanceMode: "in_person",
+    childcareCount: 0, childcareAgesNote: "",
+  });
+  await expect(second.getByRole("status")).toContainText("Saved: going, no childcare");
+  const afterSave = await sam("GET", `/events/${event.id}`) as {
+    occurrences: { myAttendanceMode: string; myGuestCount: number; myChildcareCount: number; myChildcareAgesNote: string }[];
+  };
+  expect(afterSave.occurrences[1]).toMatchObject({
+    myAttendanceMode: "in_person", myGuestCount: 0, myChildcareCount: 0, myChildcareAgesNote: "",
+  });
+});
+
 test("a household user keeps one-date drafts while their own answer uses every series scope", async ({ page, request }) => {
   test.setTimeout(180_000);
   const event = await createEvent(request, "Household series browser proof", 9, "FREQ=WEEKLY;COUNT=4", {
@@ -403,6 +480,7 @@ test("mixed results, Undo seat loss, and Undo expiry are visible in the real bro
       "undo=success-with-seat-loss,expiry-message",
       "single-date=dialog-bypassed",
       "household=account-only-scopes-with-proxy-drafts-preserved",
+      "single-rsvp-refresh=remote-guests-childcare-payload-and-undo",
       "terminal-undo=protected-parent-refreshed-away",
       "summary-dates=human-readable-no-iso",
       "widths=390,768,1280",
