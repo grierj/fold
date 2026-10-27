@@ -3,8 +3,9 @@ import { Button } from "./ui/Button";
 
 export type SeriesRsvpScope = "just_this_date" | "this_and_following" | "all_future";
 
-export function SeriesRsvpDialog({ answer, onChoose, onCancel }: {
+export function SeriesRsvpDialog({ answer, disabled = false, onChoose, onCancel }: {
   answer: "Going" | "Maybe" | "Can't go";
+  disabled?: boolean;
   onChoose: (scope: SeriesRsvpScope) => void;
   onCancel: () => void;
 }) {
@@ -45,9 +46,9 @@ export function SeriesRsvpDialog({ answer, onChoose, onCancel }: {
       <h2 id={titleId} className="text-xl font-bold">How far should “{answer}” apply?</h2>
       <p className="text-sm text-text-muted">Choose which dates in this series you want to answer.</p>
       <div className="grid gap-2">
-        <Button variant="secondary" layout="w-full min-h-11 justify-start text-left" onClick={() => onChoose("just_this_date")}>Just this date</Button>
-        <Button variant="secondary" layout="w-full min-h-11 justify-start text-left" onClick={() => onChoose("this_and_following")}>This and following dates</Button>
-        <Button variant="secondary" layout="w-full min-h-11 justify-start text-left" onClick={() => onChoose("all_future")}>All future dates</Button>
+        <Button variant="secondary" layout="w-full min-h-11 justify-start text-left" disabled={disabled} onClick={() => onChoose("just_this_date")}>Just this date</Button>
+        <Button variant="secondary" layout="w-full min-h-11 justify-start text-left" disabled={disabled} onClick={() => onChoose("this_and_following")}>This and following dates</Button>
+        <Button variant="secondary" layout="w-full min-h-11 justify-start text-left" disabled={disabled} onClick={() => onChoose("all_future")}>All future dates</Button>
       </div>
       <Button variant="secondary" layout="w-full" onClick={onCancel}>Cancel</Button>
     </div>

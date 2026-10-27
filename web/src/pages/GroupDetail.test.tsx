@@ -40,6 +40,39 @@ it("fetches the household once and refetches all date state after a batch", asyn
   expect(Events.register).toHaveBeenCalledWith(7, { date: "2026-12-01", people: [{ personId: 3, status: "going", attendanceMode: "in_person", childcareRequested: false }] });
 });
 
+it("serializes household RSVP saves across sibling events and releases without resetting drafts", async () => {
+  const events = [occurrence({ eventId: 7 }), occurrence({ id: 2, eventId: 8, date: "2026-12-08" })];
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents: events });
+  const pending = deferred<Awaited<ReturnType<typeof Events.register>>>();
+  vi.mocked(Events.register).mockReturnValue(pending.promise);
+
+  open();
+  const forms = await screen.findAllByRole("form", { name: "Household answers" });
+  await userEvent.click(within(forms[0]).getByRole("checkbox", { name: "Mary" }));
+  await userEvent.selectOptions(within(forms[0]).getByLabelText("Answer for Mary"), "maybe");
+  await userEvent.click(within(forms[1]).getByRole("checkbox", { name: "Mary" }));
+  await userEvent.selectOptions(within(forms[1]).getByLabelText("Answer for Mary"), "maybe");
+
+  await act(() => {
+    within(forms[0]).getByRole("button", { name: "Save answers" }).click();
+    within(forms[1]).getByRole("button", { name: "Save answers" }).click();
+  });
+  expect(Events.register).toHaveBeenCalledTimes(1);
+  expect(within(forms[1]).getByRole("checkbox", { name: "Mary" })).toBeDisabled();
+  expect(within(forms[1]).getByLabelText("Answer for Mary")).toHaveValue("maybe");
+
+  await act(async () => pending.reject(new Error("offline")));
+  await waitFor(() => expect(within(forms[1]).getByRole("checkbox", { name: "Mary" })).toBeEnabled());
+  expect(within(forms[1]).getByRole("checkbox", { name: "Mary" })).toBeChecked();
+  expect(within(forms[1]).getByLabelText("Answer for Mary")).toHaveValue("maybe");
+
+  vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 9, personId: 3, registeredBy: 2, status: "maybe", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }] });
+  await userEvent.click(within(forms[1]).getByRole("button", { name: "Save answers" }));
+  expect(Events.register).toHaveBeenLastCalledWith(8, {
+    date: "2026-12-08", people: [{ personId: 3, status: "maybe", attendanceMode: "in_person", childcareRequested: false }],
+  });
+});
+
 it("opens the same series scope dialog from a group date for a solo viewer", async () => {
   vi.mocked(Households.mine).mockResolvedValue({ household: null });
   vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents: [occurrence({ recurrenceRule: "FREQ=WEEKLY" })] });
@@ -62,6 +95,29 @@ it("keeps account-only series scope available on a group date with household peo
   await userEvent.click(screen.getByRole("button", { name: "This and following dates" }));
   expect(Events.registerSeries).toHaveBeenCalledWith(7, expect.objectContaining({ scope: "this_and_following", date: "2026-12-01", status: "going" }));
   expect(screen.getByRole("checkbox", { name: "Mary" })).toBeChecked();
+});
+
+it("shows the authoritative series result on a group card while its parent GET is held", async () => {
+  vi.mocked(Households.mine).mockResolvedValue({ household: null });
+  const initial = { ...page, upcomingEvents: [occurrence({ recurrenceRule: "FREQ=WEEKLY", myRegistration: null })] };
+  const held = deferred<GroupDetailResponse>();
+  vi.mocked(Groups.get).mockResolvedValueOnce(initial).mockReturnValueOnce(held.promise);
+  vi.mocked(Events.registerSeries).mockResolvedValue({
+    eventId: 7, scope: "all_future", status: "waitlisted",
+    results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: {
+      registrationId: 4, status: "waitlisted", waitlistPosition: 3, attendanceMode: "in_person",
+      guestCount: 0, childcareCount: 0, childcareAgesNote: "",
+    } }], refusals: [],
+  });
+
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "Going to all dates" }));
+  await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByText(/Waitlisted — position 3/)).toBeInTheDocument();
+  await act(async () => held.resolve({ ...initial, upcomingEvents: [occurrence({ recurrenceRule: "FREQ=WEEKLY",
+    myRegistration: "waitlisted", myWaitlistPosition: 3, myAttendanceMode: "in_person", myGuestCount: 0 })] }));
+  expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
 });
 
 it("clears protected group data while a terminal Undo refresh is still pending", async () => {

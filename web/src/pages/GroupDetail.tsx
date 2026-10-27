@@ -17,7 +17,7 @@ import { Menu } from "../components/ui/Menu";
 import { EventVisibilityControl, visibilityRank } from "../components/EventVisibility";
 import { GroupVisibilityReview } from "../components/GroupVisibilityReview";
 import { GroupDepartureDialog } from "../components/GroupDepartureDialog";
-import { RsvpButtons, type SeriesFeedbackSignal } from "../components/RsvpButtons";
+import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
@@ -34,6 +34,8 @@ import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, HiddenFileInput, Input, Radio, Textarea } from "../components/ui/Field";
 import { FormActions } from "../components/ui/FormActions";
 import { Button, ButtonLink } from "../components/ui/Button";
+import { applyActorRsvpResults, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
+import { useRsvpMutationGate, type RsvpMutationGate } from "../lib/useRsvpMutationGate";
 
 type Tab = "events" | "about" | "members";
 
@@ -49,6 +51,7 @@ function EventRow({
   onRsvp,
   people,
   seriesFeedback,
+  mutationGate,
   onSeriesFeedback,
   onTerminalRefresh,
   onCancelled,
@@ -65,7 +68,8 @@ function EventRow({
   onRsvp: () => void;
   people: HouseholdPerson[];
   seriesFeedback: SeriesFeedbackSignal | null;
-  onSeriesFeedback: (eventId: number, date: string, actorDates: string[]) => void;
+  mutationGate: RsvpMutationGate;
+  onSeriesFeedback: (eventId: number, date: string, actorResults: ActorRsvpResult[]) => void;
   onTerminalRefresh: () => void;
   onCancelled: (eventId: number, date: string) => void;
   onChanged: () => void;
@@ -114,7 +118,7 @@ function EventRow({
         {loggedIn && (
           <div className="mt-2">
             <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
-              onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
+              mutationGate={mutationGate} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
           </div>
         )}
         {!loggedIn && instance.visibility === "public" && (
@@ -369,8 +373,10 @@ export function GroupDetail() {
   const [departureTarget, setDepartureTarget] = useState<{ subjectId?: number; allowNote: boolean } | null>(null);
   const [departureStatus, setDepartureStatus] = useState<string | null>(null);
   const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
+  const seriesFeedbackRevision = useRef(0);
   const coverRef = useRef<HTMLInputElement>(null);
   const loadRevision = useRef(0);
+  const rsvpMutationGate = useRsvpMutationGate();
 
   // Quiet refreshes keep ordinary RSVP drafts mounted. Authority-changing
   // refreshes invalidate protected data immediately, and only the newest
@@ -494,8 +500,13 @@ export function GroupDetail() {
 
   // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
   function handleRsvp() { void load({ quiet: true }); }
-  function reportSeriesFeedback(eventId: number, date: string, actorDates: string[]) {
-    setSeriesFeedback((current) => ({ eventId, date, actorDates, revision: (current?.revision ?? 0) + 1 }));
+  function reportSeriesFeedback(eventId: number, date: string, actorResults: ActorRsvpResult[]) {
+    const signal = { eventId, date, actorResults, revision: ++seriesFeedbackRevision.current };
+    setDetail((current) => current ? {
+      ...current,
+      upcomingEvents: (current.upcomingEvents ?? []).map((instance) => applyActorRsvpResults(instance, eventId, actorResults)),
+    } : current);
+    setSeriesFeedback(signal);
   }
 
   function handleCancelled(eventId: number, date: string) {
@@ -858,6 +869,7 @@ export function GroupDetail() {
                     onRsvp={handleRsvp}
                     people={people}
                     seriesFeedback={seriesFeedback}
+                    mutationGate={rsvpMutationGate}
                     onSeriesFeedback={reportSeriesFeedback}
                     onTerminalRefresh={() => void load({ quiet: true, failClosed: true })}
                     onCancelled={handleCancelled}

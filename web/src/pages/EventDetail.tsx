@@ -13,7 +13,7 @@ import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { ExternalLinkIcon } from "../components/icons";
 import { EventVisibilityControl } from "../components/EventVisibility";
-import { RsvpButtons, type SeriesFeedbackSignal } from "../components/RsvpButtons";
+import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { formatTime, heldIn } from "../lib/when";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, HouseholdPerson } from "../types";
@@ -22,6 +22,8 @@ import { ErrorNotice } from "../components/ErrorNotice";
 import { Missing } from "./NotFound";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
+import { applyActorRsvpResults, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
+import { useRsvpMutationGate, type RsvpMutationGate } from "../lib/useRsvpMutationGate";
 
 const ManageRoster = lazy(() => import("../components/ManageRoster").then((module) => ({ default: module.ManageRoster })));
 
@@ -36,7 +38,9 @@ export function EventDetail() {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
+  const seriesFeedbackRevision = useRef(0);
   const loadRevision = useRef(0);
+  const rsvpMutationGate = useRsvpMutationGate();
 
   // Quiet refreshes keep ordinary RSVP drafts mounted. A terminal refresh
   // invalidates protected data immediately, and only the newest request may
@@ -70,8 +74,13 @@ export function EventDetail() {
 
   // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
   function handleRsvp() { void load(true); }
-  function reportSeriesFeedback(eventId: number, date: string, actorDates: string[]) {
-    setSeriesFeedback((current) => ({ eventId, date, actorDates, revision: (current?.revision ?? 0) + 1 }));
+  function reportSeriesFeedback(eventId: number, date: string, actorResults: ActorRsvpResult[]) {
+    const signal = { eventId, date, actorResults, revision: ++seriesFeedbackRevision.current };
+    setPage((current) => current ? {
+      ...current,
+      occurrences: current.occurrences.map((instance) => applyActorRsvpResults(instance, eventId, actorResults)),
+    } : current);
+    setSeriesFeedback(signal);
   }
 
   if (loading || authLoading) {
@@ -168,6 +177,7 @@ export function EventDetail() {
             onRsvp={handleRsvp}
             people={people}
             seriesFeedback={seriesFeedback}
+            mutationGate={rsvpMutationGate}
             onSeriesFeedback={reportSeriesFeedback}
             onTerminalRefresh={() => void load(true, true)}
             onChanged={() => void load(true)}
@@ -186,6 +196,7 @@ function DateRow({
   onRsvp,
   people,
   seriesFeedback,
+  mutationGate,
   onSeriesFeedback,
   onTerminalRefresh,
   onChanged,
@@ -197,7 +208,8 @@ function DateRow({
   onRsvp: () => void;
   people: HouseholdPerson[];
   seriesFeedback: SeriesFeedbackSignal | null;
-  onSeriesFeedback: (eventId: number, date: string, actorDates: string[]) => void;
+  mutationGate: RsvpMutationGate;
+  onSeriesFeedback: (eventId: number, date: string, actorResults: ActorRsvpResult[]) => void;
   onTerminalRefresh: () => void;
   onChanged: () => void;
   onNeedLogin: () => void;
@@ -269,7 +281,7 @@ function DateRow({
         <div>
           {loggedIn ? (
             <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
-              onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
+              mutationGate={mutationGate} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
           ) : instance.visibility === "public" ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />

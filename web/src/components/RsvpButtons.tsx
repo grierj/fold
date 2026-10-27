@@ -3,12 +3,16 @@ import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequest
 import { Button } from "./ui/Button";
 import { useEffect, useId, useRef, useState } from "react";
 import { Events } from "../api";
-import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, HouseholdAnswer, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson, SeriesRegistrationResponse } from "../types";
+import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, HouseholdAnswer, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson, SeriesRegistrationResponse, SeriesRegistrationState } from "../types";
 import { errorCode, errorText } from "../lib/errors";
-import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors } from "./ui/Field";
+import { Checkbox, Choices, Field, focusFirstInvalid, FormError, Input, Radio, Select, showFieldErrors } from "./ui/Field";
 import { SeriesRsvpDialog, type SeriesRsvpScope } from "./SeriesRsvpDialog";
 import { SegmentButton } from "./ui/SegmentButton";
 import { formatCalendarDay } from "../lib/when";
+import { actorResultFromRegistration, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
+import { useRsvpMutationGate, type RsvpMutationGate } from "../lib/useRsvpMutationGate";
+
+export type { SeriesFeedbackSignal } from "../lib/rsvpFeedback";
 
 const OPTIONS: { value: RegistrationStatus; label: string }[] = [
   { value: "going", label: "Going" },
@@ -21,14 +25,13 @@ const MODES: { value: AttendanceMode; label: string }[] = [
   { value: "remote", label: "Remote" },
 ];
 
-export type SeriesFeedbackSignal = { eventId: number; date: string; revision: number; actorDates: string[] };
 type SeriesAnswer = {
   status: RegistrationStatus;
   attendanceMode: AttendanceMode;
   guestCount: number;
   childcare?: { childcareCount: number; childcareAgesNote: string };
 };
-type SeriesFeedbackReporter = (eventId: number, date: string, actorDates: string[]) => void;
+type SeriesFeedbackReporter = (eventId: number, date: string, actorResults: ActorRsvpResult[]) => void;
 
 const answerLabel = (status: RegistrationStatus) => status === "going" ? "Going" : status === "maybe" ? "Maybe" : "Can't go";
 const humanDays = (days: string[]) => days.map(formatCalendarDay).join(" and ");
@@ -59,14 +62,15 @@ function useActorSeriesRsvp({
   seriesFeedback,
   onSeriesFeedback,
   onTerminalRefresh,
+  mutationGate,
 }: {
   instance: EventOccurrence;
   onChange: (reg: RegistrationBatch) => void;
   seriesFeedback?: SeriesFeedbackSignal | null;
   onSeriesFeedback?: SeriesFeedbackReporter;
   onTerminalRefresh?: () => void;
+  mutationGate: RsvpMutationGate;
 }) {
-  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState("");
   const [pending, setPending] = useState<SeriesAnswer | null>(null);
@@ -89,16 +93,17 @@ function useActorSeriesRsvp({
     }
   }, [instance.date, instance.eventId, seriesFeedback]);
 
-  function reportDateMutation(message = "") {
+  function reportDateMutation(registration: RegistrationResponse, message = "") {
     setStatusMessage(message);
     setUndo(null);
     setError(null);
-    onSeriesFeedback?.(instance.eventId, instance.date, [instance.date]);
+    onSeriesFeedback?.(instance.eventId, instance.date, [actorResultFromRegistration(registration)]);
   }
 
   async function applySeries(answer: SeriesAnswer, scope: Exclude<SeriesRsvpScope, "just_this_date">) {
     if (answer.status === "declined" && !window.confirm("Can't go to these dates? They will be removed from your calendar and personal feed.")) return;
-    setBusy(answer.status);
+    const release = mutationGate.acquire();
+    if (!release) return;
     setError(null);
     try {
       const result = await Events.registerSeries(instance.eventId, {
@@ -111,25 +116,26 @@ function useActorSeriesRsvp({
       });
       setStatusMessage(resultSummary(result));
       setUndo(result.undoToken && result.undoExpiresAt ? { token: result.undoToken, expiresAt: new Date(result.undoExpiresAt).getTime() } : null);
-      onSeriesFeedback?.(instance.eventId, instance.date, result.results.map((row) => row.date));
+      onSeriesFeedback?.(instance.eventId, instance.date, result.results.map(({ date, after }) => ({ date, after })));
       onChange({ registration: null, people: [] });
       queueMicrotask(() => statusRef.current?.focus());
     } catch (e) {
       setError(errorText(e, "We couldn't save your series answer."));
     } finally {
-      setBusy(null);
+      release();
     }
   }
 
   async function undoSeries() {
     if (!undo) return;
-    setBusy("undo");
+    const release = mutationGate.acquire();
+    if (!release) return;
     setError(null);
     try {
       const result = await Events.undoSeriesRegistration(instance.eventId, undo.token);
       setUndo(null);
       setStatusMessage(resultSummary(result, "Undo: "));
-      onSeriesFeedback?.(instance.eventId, instance.date, result.results.map((row) => row.date));
+      onSeriesFeedback?.(instance.eventId, instance.date, result.results.map(({ date, after }) => ({ date, after })));
       onChange({ registration: null, people: [] });
       queueMicrotask(() => statusRef.current?.focus());
     } catch (e) {
@@ -142,12 +148,12 @@ function useActorSeriesRsvp({
       setError(errorText(e, "We couldn't undo that answer."));
       if (REFRESH_UNDO_CODES.has(code)) onTerminalRefresh?.();
     } finally {
-      setBusy(null);
+      release();
     }
   }
 
   return {
-    busy, error, pending, setPending, statusMessage, statusRef, undo,
+    error, mutationBusy: mutationGate.busy, pending, setPending, statusMessage, statusRef, undo,
     applySeries, undoSeries, reportDateMutation,
     announce(message: string) { setStatusMessage(message); queueMicrotask(() => statusRef.current?.focus()); },
   };
@@ -158,7 +164,7 @@ type SeriesController = ReturnType<typeof useActorSeriesRsvp>;
 function SeriesFeedback({ series }: { series: SeriesController }) {
   return <>
     <div ref={series.statusRef} role="status" tabIndex={-1} className="text-sm text-text-muted mb-2">
-      {series.statusMessage}{series.undo && <Button variant="link" layout="ml-2" disabled={series.busy !== null} onClick={() => void series.undoSeries()}>Undo</Button>}
+      {series.statusMessage}{series.undo && <Button variant="link" layout="ml-2" disabled={series.mutationBusy} onClick={() => void series.undoSeries()}>Undo</Button>}
     </div>
     {series.error && <FormError layout="mt-1">{series.error}</FormError>}
   </>;
@@ -184,7 +190,7 @@ function SeriesScopeDialog({ series, onJustThisDate }: {
   onJustThisDate: (answer: SeriesAnswer) => void;
 }) {
   if (!series.pending) return null;
-  return <SeriesRsvpDialog answer={answerLabel(series.pending.status)} onCancel={() => series.setPending(null)} onChoose={(scope) => {
+  return <SeriesRsvpDialog answer={answerLabel(series.pending.status)} disabled={series.mutationBusy} onCancel={() => series.setPending(null)} onChoose={(scope) => {
     const answer = series.pending;
     series.setPending(null);
     if (!answer) return;
@@ -201,6 +207,13 @@ const savedActorAnswer = (instance: EventOccurrence): SavedActorAnswer => ({
   children: instance.myChildcareCount ?? 0,
   ages: instance.myChildcareAgesNote ?? "",
 });
+const savedActorAnswerFromState = (state: SeriesRegistrationState): SavedActorAnswer => ({
+  status: state.status ?? null,
+  mode: state.status ? state.attendanceMode ?? "in_person" : "in_person",
+  guests: state.status ? state.guestCount ?? 0 : 0,
+  children: state.status ? state.childcareCount ?? 0 : 0,
+  ages: state.status ? state.childcareAgesNote ?? "" : "",
+});
 const sameSavedActorAnswer = (left: SavedActorAnswer, right: SavedActorAnswer) => left.status === right.status
   && left.mode === right.mode && left.guests === right.guests && left.children === right.children && left.ages === right.ages;
 
@@ -211,11 +224,13 @@ function useActorDraftReconciliation(instance: EventOccurrence, seriesFeedback: 
   const reconcileRef = useRef(reconcile);
   reconcileRef.current = reconcile;
   useEffect(() => {
-    const nextSaved = savedActorAnswer(instance);
-    const savedChanged = !sameSavedActorAnswer(savedActor.current, nextSaved);
     const feedbackChanged = seriesFeedback?.revision !== undefined && seriesFeedback.revision !== actorRefreshRevision.current;
-    const actorRefresh = !!seriesFeedback && feedbackChanged && seriesFeedback.eventId === instance.eventId
-      && seriesFeedback.actorDates.includes(instance.date);
+    const actorResult = seriesFeedback?.eventId === instance.eventId
+      ? seriesFeedback.actorResults.find((row) => row.date === instance.date)
+      : undefined;
+    const actorRefresh = !!actorResult && feedbackChanged;
+    const nextSaved = actorRefresh ? savedActorAnswerFromState(actorResult.after) : savedActorAnswer(instance);
+    const savedChanged = !sameSavedActorAnswer(savedActor.current, nextSaved);
     savedActor.current = nextSaved;
     if (seriesFeedback?.revision !== undefined) actorRefreshRevision.current = seriesFeedback.revision;
     if (savedChanged || actorRefresh) reconcileRef.current(nextSaved);
@@ -233,12 +248,14 @@ function SingleRsvpButtons({
   seriesFeedback,
   onSeriesFeedback,
   onTerminalRefresh,
+  mutationGate,
 }: {
   instance: EventOccurrence;
   onChange: (reg: RegistrationBatch) => void;
   seriesFeedback?: SeriesFeedbackSignal | null;
   onSeriesFeedback?: SeriesFeedbackReporter;
   onTerminalRefresh?: () => void;
+  mutationGate: RsvpMutationGate;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -258,7 +275,7 @@ function SingleRsvpButtons({
     setChildren(String(saved.children));
     setAges(saved.ages);
   });
-  const series = useActorSeriesRsvp({ instance, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh });
+  const series = useActorSeriesRsvp({ instance, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh, mutationGate });
 
   const mine = instance.myRegistration;
   const removed = mine === "removed";
@@ -275,7 +292,7 @@ function SingleRsvpButtons({
     : instance.waitlistEnabled
       ? "Remote seats are full. You can still come in person, or join the remote waitlist."
       : "Remote seats are full. You can still come in person.";
-  const disabled = busy !== null || series.busy !== null;
+  const disabled = mutationGate.busy;
 
   const answerFor = (status: RegistrationStatus, attendanceMode = mode,
     childcare?: { childcareCount: number; childcareAgesNote: string }): SeriesAnswer => ({
@@ -287,10 +304,13 @@ function SingleRsvpButtons({
       series.setPending(answer);
       return;
     }
+    const release = mutationGate.acquire();
+    if (!release) return;
     setBusy(answer.status);
     setError(null);
     setChildcareError(null);
     setChildcareFullError(false);
+    let focusChildcareError = false;
     try {
       const result = await Events.register(instance.eventId, {
         status: answer.status, date: instance.date, guestCount: answer.status === "going" ? answer.guestCount : 0,
@@ -301,7 +321,7 @@ function SingleRsvpButtons({
       });
       const registration: RegistrationResponse | null = result.registration;
       if (!registration) return;
-      series.reportDateMutation();
+      series.reportDateMutation(registration);
       onChange(result);
       if (switching) {
         series.announce(registration.status === "waitlisted"
@@ -324,6 +344,7 @@ function SingleRsvpButtons({
           setChildcareError(errorText(e, "We couldn't save your childcare request."));
           setChildcareFullError(true);
         });
+        focusChildcareError = true;
         return;
       }
       setError(answer.attendanceMode === "remote" && errorCode(e) === "event_full"
@@ -331,6 +352,8 @@ function SingleRsvpButtons({
         : errorText(e, "We couldn't save your answer."));
     } finally {
       setBusy(null);
+      release();
+      if (focusChildcareError) queueMicrotask(() => focusFirstInvalid(root.current));
     }
   }
 
@@ -372,7 +395,7 @@ function SingleRsvpButtons({
         })}
       </div>
       {instance.guestsAllowed > 0 && <Field label="Extra guests" hint={`Up to ${instance.guestsAllowed}.`}>
-        <Input type="number" min={0} max={instance.guestsAllowed} value={guests}
+        <Input type="number" min={0} max={instance.guestsAllowed} value={guests} disabled={disabled}
           onChange={(e) => setGuests(Math.max(0, Math.min(instance.guestsAllowed, Number(e.target.value))))} layout="w-28" />
       </Field>}
     </div>
@@ -392,16 +415,19 @@ function SingleRsvpButtons({
 }
 
 // The household is loaded once by the page and shared across date editors.
-export function RsvpButtons({ instance, people = [], onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh }: {
+export function RsvpButtons({ instance, people = [], onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh, mutationGate }: {
   instance: EventOccurrence;
   people?: HouseholdPerson[];
   onChange: (result: RegistrationBatch) => void;
   seriesFeedback?: SeriesFeedbackSignal | null;
   onSeriesFeedback?: SeriesFeedbackReporter;
   onTerminalRefresh?: () => void;
+  mutationGate?: RsvpMutationGate;
 }) {
-  if (!people.length) return <SingleRsvpButtons instance={instance} onChange={onChange} seriesFeedback={seriesFeedback} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />;
-  return <HouseholdRsvp instance={instance} people={people} onChange={onChange} seriesFeedback={seriesFeedback} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />;
+  const localMutationGate = useRsvpMutationGate();
+  const activeMutationGate = mutationGate ?? localMutationGate;
+  if (!people.length) return <SingleRsvpButtons instance={instance} onChange={onChange} seriesFeedback={seriesFeedback} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} mutationGate={activeMutationGate} />;
+  return <HouseholdRsvp instance={instance} people={people} onChange={onChange} seriesFeedback={seriesFeedback} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} mutationGate={activeMutationGate} />;
 }
 
 type Answer = { selected: boolean; status: "going" | "maybe" | "declined"; mode: AttendanceMode; care: boolean };
@@ -412,13 +438,14 @@ const ELIGIBILITY: Record<HouseholdPerson["registrationEligibility"], string> = 
   converted: "This person now has an account.", registration_holder_unavailable: "Ask your church office to check the responsible account.",
 };
 
-function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh }: {
+function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh, mutationGate }: {
   instance: EventOccurrence;
   people: HouseholdPerson[];
   onChange: (result: RegistrationBatch) => void;
   seriesFeedback?: SeriesFeedbackSignal | null;
   onSeriesFeedback?: SeriesFeedbackReporter;
   onTerminalRefresh?: () => void;
+  mutationGate: RsvpMutationGate;
 }) {
   const root = useRef<HTMLFormElement>(null);
   const own: MyHouseholdRegistration[] = instance.myHouseholdRegistrations ?? [];
@@ -443,8 +470,8 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
   const group = useId();
   const patch = (id: number, values: Partial<Answer>) => setDrafts((d) => ({ ...d, [id]: { ...d[id], ...values } }));
   const offersRemote = instance.remoteAvailable && instance.remoteCapacity !== 0;
-  const series = useActorSeriesRsvp({ instance, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh });
-  const disabled = busy || series.busy !== null;
+  const series = useActorSeriesRsvp({ instance, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh, mutationGate });
+  const disabled = mutationGate.busy;
   const answerFor = (status: RegistrationStatus = me.selected ? me.status : "declined"): SeriesAnswer => ({
     status,
     attendanceMode: me.mode,
@@ -479,6 +506,8 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
   }
 
   async function saveActorDate(answer: SeriesAnswer) {
+    const release = mutationGate.acquire();
+    if (!release) return;
     setBusy(true);
     setError(null);
     try {
@@ -490,8 +519,8 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
         ...(answer.status === "going" && instance.childcareAvailable ? answer.childcare : {}),
       });
       if (!result.registration) return;
-      series.reportDateMutation();
       const registration = result.registration;
+      series.reportDateMutation(registration);
       setMessage(registration.status === "waitlisted" ? `You: waitlist position ${registration.waitlistPosition}`
         : `You: ${registration.status === "going" ? `going ${registration.attendanceMode === "remote" ? "remotely" : "in person"}` : registration.status === "declined" ? "can't go" : "maybe"}`);
       onChange(result);
@@ -499,6 +528,7 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
       setError(errorText(e, "We couldn't save your answer."));
     } finally {
       setBusy(false);
+      release();
     }
   }
 
@@ -522,22 +552,29 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
       if (d.selected || ["going", "waitlisted", "maybe"].includes(saved?.status ?? "")) answers.push({ personId: person.id, status: d.selected ? d.status : "declined", attendanceMode: d.mode, childcareRequested: d.care });
     }
     if (!command.status && !command.people?.length) { setError("Choose at least one person to save an answer."); return; }
+    const release = mutationGate.acquire();
+    if (!release) return;
     setBusy(true);
+    let personToFocus: number | undefined;
     try {
       const result = await Events.register(instance.eventId, command);
       const describe = (name: string, status: string, mode: AttendanceMode, position: number | null) => status === "waitlisted" ? name + ": waitlist position " + position : name + ": " + (status === "going" ? "going " + (mode === "remote" ? "remotely" : "in person") : status === "declined" ? "can't go" : "maybe");
       const outcomes = result.people.map((r: HouseholdRegistration) => describe(people.find((p) => p.id === r.personId)?.name ?? "Household member", r.status, r.attendanceMode, r.waitlistPosition));
       if (result.registration) { const r = result.registration; outcomes.unshift(describe("You", r.status, r.attendanceMode, r.waitlistPosition)); }
-      if (command.status) series.reportDateMutation();
+      if (command.status && result.registration) series.reportDateMutation(result.registration);
       setMessage(outcomes.join("; ")); onChange(result);
     } catch (e) {
       setError(errorText(e, "We couldn't save your answers."));
       const personId = e && typeof e === "object" && "data" in e && e.data && typeof e.data === "object" && "personId" in e.data ? e.data.personId : undefined;
       if (typeof personId === "number") {
         showFieldErrors(root.current, () => setBusy(false));
-        root.current?.querySelector<HTMLElement>(`[data-household-person="${personId}"] input`)?.focus();
+        personToFocus = personId;
       }
-    } finally { setBusy(false); }
+    } finally {
+      setBusy(false);
+      release();
+      if (personToFocus !== undefined) queueMicrotask(() => root.current?.querySelector<HTMLElement>(`[data-household-person="${personToFocus}"] input`)?.focus());
+    }
   }
 
   const controls = (name: string, d: Answer, change: (patch: Partial<Answer>) => void, child = false) => <div className="space-y-3 mt-2">
@@ -555,7 +592,7 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
       {instance.myRegistration === "removed" ? <p>A leader or host removed your registration for this date. Ask them to add you back.</p> : <>
         <Checkbox label="Me" checked={me.selected} disabled={disabled} onChange={(e) => setMe({ ...me, selected: e.target.checked })} />
         {me.selected && <>{controls("you", me, (values) => setMe({ ...me, ...values }))}
-          {instance.guestsAllowed > 0 && <Field label="Extra guests" hint={"Up to " + instance.guestsAllowed + "."}><Input type="number" min={0} max={instance.guestsAllowed} value={guests} onChange={(e) => setGuests(Number(e.target.value))} /></Field>}
+          {instance.guestsAllowed > 0 && <Field label="Extra guests" hint={"Up to " + instance.guestsAllowed + "."}><Input type="number" min={0} max={instance.guestsAllowed} value={guests} disabled={disabled} onChange={(e) => setGuests(Number(e.target.value))} /></Field>}
           {instance.childcareAvailable && <ChildcareRequestField count={children} ages={ages} onCount={setChildren} onAges={setAges} error={childcareError} disabled={disabled} full={instance.childcareFull} named />}
         </>}
         {instance.recurrenceRule && <div className="mt-3">
