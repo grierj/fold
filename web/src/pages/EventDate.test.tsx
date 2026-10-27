@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -60,8 +60,9 @@ it("keeps native keyboard activation and blocks disabled segment answers", async
   maybe.focus();
   await userEvent.keyboard("{Enter}");
   expect(Dates.register).toHaveBeenCalledWith("7", "2026-12-01", { status: "maybe", attendanceMode: "remote", guestCount: 1 });
+  await waitFor(() => expect(Dates.get).toHaveBeenCalledTimes(2));
 
-  fireEvent.change(screen.getByLabelText("Guests"), { target: { value: "4" } });
+  fireEvent.change(await screen.findByLabelText("Guests"), { target: { value: "4" } });
   const going = screen.getByRole("button", { name: "Going" });
   expect(going).toBeDisabled();
   await userEvent.click(going);
