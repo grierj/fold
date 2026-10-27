@@ -5,51 +5,73 @@ import { CheckIcon, ClockIcon } from "../icons";
 import { RemoteBadge } from "../RemoteBadge";
 import { ChildcareBadge } from "../ChildcareBadge";
 
-const STATUS = { going: "Going", maybe: "Maybe", waitlisted: "Waitlisted" } as const;
+export type CalendarState = "going" | "maybe" | "waitlisted" | "declined" | "not_answered" | null;
 
-// My answer, never by color alone: always the word, and Going and
-// Waitlisted have an icon too.
-function StatusBadge({ status }: { status: CalendarOccurrence["myStatus"] }) {
-  if (status === "going") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-sm bg-primary-subtle px-2 text-xs font-semibold text-primary-on-subtle">
-        <CheckIcon className="w-3 h-3" />
-        Going
-      </span>
-    );
-  }
-  if (status === "maybe") {
-    return <span className="rounded-sm bg-sunken px-2 text-xs font-semibold text-text-muted">Maybe</span>;
-  }
-  if (status === "waitlisted") {
-    return (
-      <span className="inline-flex items-center gap-1 rounded-sm bg-sunken px-2 text-xs font-semibold text-text-muted">
-        <ClockIcon className="w-3 h-3" />
-        Waitlisted
-      </span>
-    );
-  }
-  return null;
+const STATUS: Record<Exclude<CalendarState, null>, string> = {
+  going: "Going",
+  maybe: "Maybe",
+  waitlisted: "Waitlisted",
+  declined: "Can't go",
+  not_answered: "Not answered",
+};
+
+export function calendarState(occ: CalendarOccurrence): CalendarState {
+  if (occ.myStatus) return occ.myStatus;
+  return occ.ownScope ? "not_answered" : null;
+}
+
+export function calendarStateLabel(occ: CalendarOccurrence): string | null {
+  const state = calendarState(occ);
+  return state ? STATUS[state] : null;
+}
+
+function ghosted(state: CalendarState) {
+  return state === "maybe" || state === "waitlisted" || state === "not_answered";
+}
+
+function StatusBadge({ state, solid = false }: { state: CalendarState; solid?: boolean }) {
+  if (!state) return null;
+  const label = STATUS[state];
+  const cls = solid
+    ? "border border-primary-foreground text-primary-foreground"
+    : state === "declined"
+      ? "border border-border-strong bg-surface text-text"
+      : "border border-primary bg-surface text-text";
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-sm px-2 py-0.5 text-xs font-semibold ${cls}`} aria-label={label}>
+      {state === "going" && <CheckIcon className="h-3 w-3" />}
+      {state === "waitlisted" && <ClockIcon className="h-3 w-3" />}
+      {label}
+    </span>
+  );
 }
 
 // One occurrence as a full-width link (Agenda, Week on phones, day panel).
-// No attendance and no RSVP here: the event page has those.
+// Own-scope state is communicated by border/fill and by an explicit label;
+// text is never faded with opacity.
 export function EventRow({ occ }: { occ: CalendarOccurrence }) {
+  const state = calendarState(occ);
+  const solid = state === "going";
+  const stateClass = solid
+    ? "border-primary bg-primary text-primary-foreground"
+    : ghosted(state)
+      ? "border-primary border-dashed bg-sunken text-text"
+      : "border-border bg-surface text-text";
   return (
     <Link
       to={occ.dateUrl || `/events/${occ.eventId}`}
-      className="block min-h-11 rounded-lg border border-border bg-surface p-4 hover:border-border-strong"
+      className={`block min-h-11 rounded-lg border p-4 hover:border-border-strong ${stateClass}`}
     >
       <span className="flex flex-wrap items-center gap-2">
-        <span className="tabular-nums text-sm text-text-muted">
+        <span className={`tabular-nums text-sm ${solid ? "text-primary-foreground" : "text-text-muted"}`}>
           {formatTime(occ.startsAt)} – {formatTime(occ.endsAt)}
         </span>
-        <StatusBadge status={occ.myStatus} />
+        <StatusBadge state={state} solid={solid} />
         {occ.remoteAvailable && <RemoteBadge />}
         {occ.childcareAvailable && <ChildcareBadge />}
       </span>
-      <span className="mt-1 block font-semibold text-text">{occ.title || occ.groupName}</span>
-      <span className="mt-1 flex min-w-0 items-center gap-1 text-sm text-text-muted">
+      <span className={`mt-1 block font-semibold ${solid ? "text-primary-foreground" : "text-text"}`}>{occ.title || occ.groupName}</span>
+      <span className={`mt-1 flex min-w-0 items-center gap-1 text-sm ${solid ? "text-primary-foreground" : "text-text-muted"}`}>
         {occ.churchWide ? (
           <span className="shrink-0 rounded-full bg-inverse px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-inverse-foreground">
             Church-wide
@@ -70,54 +92,58 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
   );
 }
 
-// A compact link for the week and month grids. Its accessible name says
-// what the chip abbreviates. In the month grid the chips are a pointer
-// shortcut (tabIndex -1): keyboard users move by day and use the panel.
-// `stacked` (the week view) puts the time on its own line and lets the
-// title run to two lines.
+// Compact week/month entry. RSVP state remains visible text and part of the
+// accessible name; outside-own-scope entries keep the ordinary treatment.
 export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurrence; pointerOnly?: boolean; stacked?: boolean }) {
   const time = formatTime(occ.startsAt);
   const title = occ.title || occ.groupName || "";
-  // The name reads in the chip's visible order (time, title, badges) so the
-  // visible text is part of it (axe label-content-name-mismatch).
-  const name = [`${time} ${title}`, occ.remoteAvailable && "Remote", occ.childcareAvailable && "Childcare", occ.churchWide ? "Church-wide" : occ.groupName, occ.groupDeleted && "deleted group", occ.myStatus && STATUS[occ.myStatus]]
+  const state = calendarState(occ);
+  const label = calendarStateLabel(occ);
+  const name = [`${time} ${title}`, occ.remoteAvailable && "Remote", occ.childcareAvailable && "Childcare", occ.churchWide ? "Church-wide" : occ.groupName, occ.groupDeleted && "deleted group", label]
     .filter(Boolean)
     .join(", ");
+  const stateClass = state === "going"
+    ? "border-primary bg-primary text-primary-foreground"
+    : ghosted(state)
+      ? "border-primary border-dashed bg-sunken text-text"
+      : "border-transparent bg-primary-subtle text-primary-on-subtle";
   return (
     <Link
       to={occ.dateUrl || `/events/${occ.eventId}`}
       title={name}
-      aria-label={name}
       tabIndex={pointerOnly ? -1 : undefined}
-      className={
-        stacked
-          ? "block rounded-sm bg-primary-subtle px-2 py-1.5 text-primary-on-subtle hover:underline"
-          : "flex min-h-6 items-center gap-1 truncate rounded-sm bg-primary-subtle px-2 py-1 text-xs text-primary-on-subtle hover:underline"
-      }
+      className={`${stacked ? "block" : "block min-h-6 text-xs"} rounded-sm border px-2 py-1.5 hover:underline ${stateClass}`}
     >
       {stacked ? (
         <>
-          <span className="flex items-center gap-1 text-xs text-text-muted tabular-nums">
-            {occ.myStatus === "going" && <CheckIcon className="w-3 h-3 shrink-0" />}
+          <span className={`flex items-center gap-1 text-xs tabular-nums ${state === "going" ? "text-primary-foreground" : "text-text-muted"}`}>
+            {state === "going" && <CheckIcon className="h-3 w-3 shrink-0" />}
             {time}
-          </span>{" "}
+          </span>
           <span className="line-clamp-2 text-sm">{title}</span>
+          {label && <span className="mt-1 block text-xs font-semibold">{label}</span>}
         </>
       ) : (
         <>
-          {occ.myStatus === "going" && <CheckIcon className="w-3 h-3 shrink-0" />}
-          <span className="truncate">
-            <span className="tabular-nums">{time}</span> {title}
+          <span className="flex items-center gap-1">
+            {state === "going" && <CheckIcon className="h-3 w-3 shrink-0" />}
+            <span className="truncate"><span className="tabular-nums">{time}</span> {title}</span>
           </span>
+          {(label || occ.remoteAvailable || occ.childcareAvailable) && (
+            <span className="mt-0.5 flex flex-wrap items-center gap-1">
+              {label && <span className="font-semibold">{label}</span>}
+              {occ.remoteAvailable && <RemoteBadge />}
+              {occ.childcareAvailable && <ChildcareBadge />}
+            </span>
+          )}
         </>
       )}
-      {occ.remoteAvailable && <> <RemoteBadge /></>}
-      {occ.childcareAvailable && <> <ChildcareBadge /></>}
+      {stacked && occ.remoteAvailable && <> <RemoteBadge /></>}
+      {stacked && occ.childcareAvailable && <> <ChildcareBadge /></>}
     </Link>
   );
 }
 
-// A day's heading and its rows; empty says so.
 export function DaySection({ heading, occs, sticky }: { heading: string; occs: CalendarOccurrence[]; sticky?: boolean }) {
   return (
     <section>
@@ -126,11 +152,7 @@ export function DaySection({ heading, occs, sticky }: { heading: string; occs: C
         <p className="text-sm text-text-muted">Nothing on this day.</p>
       ) : (
         <ul className="space-y-2">
-          {occs.map((o) => (
-            <li key={`${o.eventId}-${o.date}`}>
-              <EventRow occ={o} />
-            </li>
-          ))}
+          {occs.map((o) => <li key={`${o.eventId}-${o.date}`}><EventRow occ={o} /></li>)}
         </ul>
       )}
     </section>

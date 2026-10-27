@@ -8,7 +8,8 @@ import { MonthView } from "./MonthView";
 
 const occs: CalendarOccurrence[] = [1, 2].map((n) => ({
   eventId: n, date: "2026-10-21", startsAt: "2026-10-21T18:00:00Z", endsAt: "2026-10-21T19:00:00Z",
-  title: `Event ${n}`, location: "", churchWide: true, remoteAvailable: false, childcareAvailable: false, myStatus: null,
+  title: `Event ${n}`, location: "", churchWide: true, remoteAvailable: false, childcareAvailable: false,
+  myStatus: n === 1 ? "going" : null, ownScope: true,
 }));
 
 describe("MonthView", () => {
@@ -21,11 +22,14 @@ describe("MonthView", () => {
       </MemoryRouter>
     );
     expect(screen.getByRole("table", { name: "October 2026" })).toBeInTheDocument();
-    const [phone] = screen.getAllByRole("button", { name: "Wednesday, October 21, 2 events" });
+    const [phone] = screen.getAllByRole("button", { name: "Wednesday, October 21, 2 events, 1 going, 1 not answered" });
     await userEvent.click(phone);
     expect(onSelect).toHaveBeenCalledWith("2026-10-21");
     expect(screen.getAllByRole("button", { name: /^Monday, October 19, today, 0 events$/ })[0]).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("Nothing on this day.")).toBeInTheDocument();
+    const dots = phone.querySelectorAll("[aria-hidden=true] span");
+    expect(dots[0]).toHaveClass("bg-primary");
+    expect(dots[1]).toHaveClass("bg-transparent", "border-primary");
   });
 
   it("moves by arrow keys with one day in the Tab order, and turns the month off the grid", async () => {

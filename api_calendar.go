@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"fold/internal/events"
+	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -32,9 +33,11 @@ type calendarOccurrenceJSON struct {
 	RemoteAvailable    bool      `json:"remoteAvailable"`
 	ChildcareAvailable bool      `json:"childcareAvailable"`
 	HostedBy           string    `json:"hostedBy,omitempty"`
-	// MyStatus is the viewer's own answer for this date: going, maybe or
-	// waitlisted. Anything else (including "can't go") reads as null.
+	// MyStatus is only the viewer's own answer. Household answers never
+	// populate it. Declined is serialized so Everything can label Can't go.
 	MyStatus *string `json:"myStatus"`
+	// OwnScope drives RSVP-aware styling without granting any access.
+	OwnScope bool `json:"ownScope"`
 	// GroupDeleted marks a deleted group's event, sent only to an admin
 	// who asked for deleted events (DEC-68).
 	GroupDeleted bool `json:"groupDeleted,omitempty"`
@@ -128,42 +131,45 @@ func (a *App) apiCalendar(c *gin.Context) {
 		return occs[i].StartsAt.Before(occs[j].StartsAt)
 	})
 
-	// The viewer's own answers, for myStatus and the per-occurrence
-	// "Just mine" rule.
-	mineStatus := map[uint]string{}
-	householdDates := map[uint]bool{}
-	if me != nil && len(occs) > 0 {
-		occIDs := make([]uint, len(occs))
-		for i := range occs {
-			occIDs[i] = occs[i].ID
-		}
-		var rows []models.Registration
-		a.DB.Where("user_id = ? AND occurrence_id IN ? AND status IN ?", me.ID, occIDs,
-			[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Find(&rows)
-		for _, r := range rows {
-			mineStatus[r.OccurrenceID] = r.Status
-		}
-		var householdRows []models.Registration
-		a.DB.Joins(listedRegistrations()).Where("registrations.registered_by = ? AND registrations.occurrence_id IN ? AND registrations.status IN ?", me.ID, occIDs, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Find(&householdRows)
-		for _, r := range householdRows {
-			householdDates[r.OccurrenceID] = true
-		}
+	occIDs := make([]uint, len(occs))
+	for i := range occs {
+		occIDs[i] = occs[i].ID
 	}
-
-	// "Just mine" (signed in only; ignored otherwise): my groups' events,
-	// events I host, and the specific dates I answered going, maybe or
-	// waitlisted — not the whole series.
+	scopeFacts, err := a.loadCalendarScopeBatch(me, occIDs)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
+		return
+	}
+	// mine is ignored for signed-out discovery, as before.
 	justMine := me != nil && c.Query("mine") == "1"
+	scope := policy.CalendarScopeAll
+	if justMine {
+		scope = policy.CalendarScopeMine
+	}
 
 	truncated := false
 	for i := range occs {
 		occ := &occs[i]
 		ev := byID[occ.EventID]
-		if !vs.canSeeDate(me, ev, occ) {
-			read := scoped[occ.ID]
-			if read == nil {
-				continue
-			}
+		ordinary := vs.canSeeDate(me, ev, occ)
+		read := scoped[occ.ID]
+		exact := read != nil
+		if !ordinary && !exact {
+			continue
+		}
+		if ev == nil && read != nil {
+			ev = &read.Event
+		}
+		_, rel := groupAndRel(ev, groups, rels)
+		status := scopeFacts.ownStatus[occ.ID]
+		decision := policy.CalendarDecision{Include: true}
+		if me != nil {
+			decision = calendarScopeDecision(scope, true, ev, occ, rel, hosted[ev.ID], scopeFacts.household[occ.ID], exact, status, now)
+		}
+		if !decision.Include {
+			continue
+		}
+		if !ordinary {
 			date := presentOccurrenceDate(&read.Event, occ, "", false, false, false, read.Registration, read, now)
 			if c.Query("remote") == "1" && !date.RemoteAvailable {
 				continue
@@ -172,18 +178,18 @@ func (a *App) apiCalendar(c *gin.Context) {
 				truncated = true
 				break
 			}
-			status := read.Registration.Status
+			var myStatus *string
+			if status != "" {
+				s := status
+				myStatus = &s
+			}
 			out = append(out, calendarOccurrenceJSON{EventID: date.EventID, Date: date.Date, DateURL: date.DateURL,
 				StartsAt: date.StartsAt, EndsAt: date.EndsAt, Title: date.Title, Location: date.Location,
-				ChurchWide:      read.Event.GroupID == nil,
-				RemoteAvailable: date.RemoteAvailable, ChildcareAvailable: read.Event.ChildcareAvailable, MyStatus: &status})
+				ChurchWide: read.Event.GroupID == nil, RemoteAvailable: date.RemoteAvailable,
+				ChildcareAvailable: read.Event.ChildcareAvailable, MyStatus: myStatus, OwnScope: decision.OwnScope})
 			continue
 		}
 		grp, rel := groupAndRel(ev, groups, rels)
-		status, answered := mineStatus[occ.ID]
-		if justMine && !rel.Member && !hosted[ev.ID] && !answered && !householdDates[occ.ID] {
-			continue
-		}
 		shown := a.groupShownTo(me, grp, rel)
 		groupLoc := ""
 		if shown != nil {
@@ -222,10 +228,11 @@ func (a *App) apiCalendar(c *gin.Context) {
 			// nobody: it is hosted by the church (DEC-17).
 			row.HostedBy = a.siteName()
 		}
-		if answered {
+		if status != "" {
 			s := status
 			row.MyStatus = &s
 		}
+		row.OwnScope = decision.OwnScope
 		out = append(out, row)
 	}
 	c.JSON(http.StatusOK, gin.H{"occurrences": out, "truncated": truncated})

@@ -102,8 +102,8 @@ func TestCalendarVisibilityAndSlimRows(t *testing.T) {
 		}
 	}
 
-	// The goer's own row says they are going; the decliner's does not
-	// say anything.
+	// Each viewer gets only their own answer. Can't go remains visible in
+	// Everything so they can find and change it.
 	page, _ = getCalendar(t, goer, window, http.StatusOK)
 	for _, o := range page.Occurrences {
 		if o.Title == "Rehearsal" && (o.MyStatus == nil || *o.MyStatus != "going") {
@@ -112,9 +112,13 @@ func TestCalendarVisibilityAndSlimRows(t *testing.T) {
 	}
 	page, _ = getCalendar(t, decliner, window, http.StatusOK)
 	for _, o := range page.Occurrences {
-		if o.Title == "Rehearsal" && o.MyStatus != nil {
-			t.Fatalf("decliner's row should have no status: %+v", o)
+		if o.Title == "Rehearsal" && (o.MyStatus == nil || *o.MyStatus != models.RegDeclined || !o.OwnScope) {
+			t.Fatalf("decliner's Everything row should say Can't go via their own status: %+v", o)
 		}
+	}
+	page, _ = getCalendar(t, decliner, window+"&mine=1", http.StatusOK)
+	if hasTitle(page, "Rehearsal") {
+		t.Fatalf("Can't go should disappear from Just mine: %+v", page.Occurrences)
 	}
 }
 
@@ -161,8 +165,8 @@ func TestCalendarMineNarrowsPerOccurrence(t *testing.T) {
 
 	const window = "from=2026-12-01&to=2026-12-31&tz=UTC"
 	all, _ := getCalendar(t, member, window, http.StatusOK)
-	if got := calendarTitles(all); len(got) != 5 {
-		t.Fatalf("everything view: want 5 rows, got %v", got)
+	if got := calendarTitles(all); len(got) != 4 {
+		t.Fatalf("everything view: the out-of-window unanswered public date should be omitted, got %v", got)
 	}
 
 	only, _ := getCalendar(t, member, window+"&mine=1", http.StatusOK)
@@ -380,7 +384,7 @@ func TestHouseholdOnlyCalendarDoesNotOverwriteOwnStatus(t *testing.T) {
 	_, c, spouse, _ := householdFamily(t, app, admin, "calendarholder")
 	batchAnswer(t, c, eventID, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going"}}}, http.StatusOK)
 	page, raw := getCalendar(t, c, "from="+date+"&to="+date+"&tz=UTC&mine=1", http.StatusOK)
-	if len(page.Occurrences) != 1 || page.Occurrences[0].EventID != eventID || page.Occurrences[0].MyStatus != nil {
+	if len(page.Occurrences) != 1 || page.Occurrences[0].EventID != eventID || page.Occurrences[0].MyStatus != nil || !page.Occurrences[0].OwnScope {
 		t.Fatalf("household-only calendar %s", raw)
 	}
 	for _, secret := range []string{"Mary", "householdPerson", "careNotes", "birthDate"} {
@@ -428,6 +432,75 @@ func TestCalendarScopedInvitationIsOneSlimGoingDate(t *testing.T) {
 	page, _ = getCalendar(t, f.client, window, 200)
 	if len(page.Occurrences) != 1 || page.Occurrences[0].Location != "" {
 		t.Fatal("hidden fallback", page)
+	}
+}
+
+func TestCalendarOwnScopeStatusAndThirtyDayWindow(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	now := time.Now().UTC()
+	near := time.Date(now.Year(), now.Month(), now.Day(), 19, 0, 0, 0, time.UTC).AddDate(0, 0, 7)
+	far := near.AddDate(0, 0, 24) // 31 days from today.
+
+	mineID := createFeedGroup(t, admin, "Scope members", models.VisibilityPublic, "")
+	var mineGroup models.Group
+	if err := app.DB.First(&mineGroup, mineID).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, member := mkUser(t, app, &mineGroup, "scopeviewer")
+	createFeedEvent(t, admin, mineID, "Own far date", far, "")
+
+	otherID := createFeedGroup(t, admin, "Scope discovery", models.VisibilityPublic, "")
+	createFeedEvent(t, admin, otherID, "Near public unanswered", near, "")
+	createFeedEvent(t, admin, otherID, "Far public unanswered", far, "")
+	maybe := createFeedEvent(t, admin, otherID, "Far public maybe", far.Add(time.Hour), "")
+	declined := createFeedEvent(t, admin, otherID, "Near public declined", near.Add(time.Hour), "")
+	apiDo(t, member, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", maybe.ID), map[string]any{"status": "maybe", "date": feedDate(far)}, http.StatusOK)
+	apiDo(t, member, "PUT", fmt.Sprintf("/api/v1/events/%d/registrations", declined.ID), map[string]any{"status": "declined", "date": feedDate(near)}, http.StatusOK)
+
+	church := func(title string, start time.Time) {
+		w := admin.do("POST", "/api/v1/events", map[string]any{"title": title, "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC"}, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", title, w.Code, w.Body.String())
+		}
+	}
+	church("Near church-wide", near.Add(2*time.Hour))
+	church("Far church-wide", far.Add(2*time.Hour))
+
+	query := "from=" + now.Format("2006-01-02") + "&to=" + far.AddDate(0, 0, 1).Format("2006-01-02") + "&tz=UTC"
+	all, raw := getCalendar(t, member, query, http.StatusOK)
+	for _, title := range []string{"Own far date", "Near public unanswered", "Far public maybe", "Near public declined", "Near church-wide"} {
+		if !hasTitle(all, title) {
+			t.Fatalf("Everything missing %q: %s", title, raw)
+		}
+	}
+	for _, title := range []string{"Far public unanswered", "Far church-wide"} {
+		if hasTitle(all, title) {
+			t.Fatalf("Everything kept out-of-window %q: %s", title, raw)
+		}
+	}
+	mine, raw := getCalendar(t, member, query+"&mine=1", http.StatusOK)
+	for _, title := range []string{"Own far date", "Far public maybe", "Near church-wide"} {
+		if !hasTitle(mine, title) {
+			t.Fatalf("Just mine missing %q: %s", title, raw)
+		}
+	}
+	for _, title := range []string{"Near public unanswered", "Far public unanswered", "Near public declined", "Far church-wide"} {
+		if hasTitle(mine, title) {
+			t.Fatalf("Just mine kept %q: %s", title, raw)
+		}
+	}
+	for _, row := range all.Occurrences {
+		if row.Title == "Near public unanswered" && row.OwnScope {
+			t.Fatalf("outsider discovery row marked own: %+v", row)
+		}
+		if row.Title == "Own far date" && (!row.OwnScope || row.MyStatus != nil) {
+			t.Fatalf("own unanswered row: %+v", row)
+		}
+		if row.Title == "Far public maybe" && (!row.OwnScope || row.MyStatus == nil || *row.MyStatus != models.RegMaybe) {
+			t.Fatalf("maybe row: %+v", row)
+		}
 	}
 }
 

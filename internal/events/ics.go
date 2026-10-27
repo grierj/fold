@@ -79,6 +79,11 @@ type FeedSingle struct {
 	URL                string
 	UpdatedAt          time.Time
 	Status             string // CONFIRMED or TENTATIVE, or "" to omit
+	// SeriesIdentity keeps an ordinarily visible event's established
+	// event-<id>@<host> UID when a personal feed expands it date by date.
+	// RecurrenceWall identifies an expanded date of a recurring series.
+	SeriesIdentity bool
+	RecurrenceWall string // YYYYMMDDTHHMMSS in TZID, or "" for one-time
 }
 
 type Feed struct {
@@ -285,13 +290,22 @@ func renderSingle(s *FeedSingle, host string) ([]string, *time.Location, bool) {
 	if end.IsZero() {
 		end = s.StartsAt.Add(time.Hour)
 	}
+	uid := singleUID(s.EventID, date, host)
+	if s.SeriesIdentity {
+		uid = seriesUID(s.EventID, host)
+	}
 	b := []string{
 		"BEGIN:VEVENT",
-		"UID:" + singleUID(s.EventID, date, host),
+		"UID:" + uid,
 		"DTSTAMP:" + dtstamp(s.UpdatedAt, s.StartsAt),
-		"DTSTART;TZID=" + s.TZID + ":" + s.StartsAt.In(loc).Format(icsWall),
-		"DTEND;TZID=" + s.TZID + ":" + end.In(loc).Format(icsWall),
 	}
+	if s.RecurrenceWall != "" {
+		b = append(b, "RECURRENCE-ID;TZID="+s.TZID+":"+s.RecurrenceWall)
+	}
+	b = append(b,
+		"DTSTART;TZID="+s.TZID+":"+s.StartsAt.In(loc).Format(icsWall),
+		"DTEND;TZID="+s.TZID+":"+end.In(loc).Format(icsWall),
+	)
 	if s.Status != "" {
 		b = append(b, "STATUS:"+s.Status)
 	}

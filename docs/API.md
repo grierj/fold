@@ -74,9 +74,14 @@ DELETE /api/v1/admin/users/:id/calendar-feed → 200 {calendarFeed}  (admin)
 Calendar feed (M1.7, plan 8.2): one secret link per person. Only the
 token's SHA-256 is stored, so `url` (with the raw token) comes back only
 from POST; POST also remakes the link, which revokes the old one.
-`scope` is `"mine"` (default: my groups' events, events I host, and the
-dates I'm going or waitlisted for) or `"all"` (everything I can see).
-Revoking a link that is already off still answers 200.
+`scope` is `"mine"` (default: dates in the viewer's own scope: their groups,
+church-wide dates in the next 30 days, events they host, their own answered or
+exact-access dates, and dates registered for household people) or `"all"`
+(every authorized date, with unanswered public and church-wide discovery dates
+limited to the next 30 days). Personal feeds expand dates so exclusions cannot
+be reintroduced by an RRULE. Going is `STATUS:CONFIRMED`; Maybe, Waitlisted and
+Not answered are `STATUS:TENTATIVE`; Can't go is omitted. Public and group feeds
+are unchanged. Revoking a link that is already off still answers 200.
 
 Profile update body: any of `{name, displayName, phone, email, timezone, hideContactFromLeaders, avatarFocal: {x, y}}`.
 `hideContactFromLeaders` is a boolean preference for the signed-in adult only,
@@ -562,6 +567,10 @@ PUT  /api/v1/events/:id/occurrences/:date   → 200 {occurrence}  (leader, host,
      body: any of {startsLocal, durationMinutes, location, title, capacityOverride, visibility, reason, confirm} — this date only; see Per-date visibility below
 GET  /api/v1/calendar?from=&to=&tz=&mine=1&group=&deleted=1&remote=1&childcare=1
   → {occurrences: [calendarOccurrence], truncated}   (slim rows, no attendance;
+     each row has only the viewer's myStatus and an ownScope presentation flag;
+     mine=1 omits Can't go and unanswered outsider-public dates; unanswered
+     church-wide dates are limited to 30 days; Everything keeps Can't go and
+     limits unanswered public/church-wide discovery dates to 30 days;
      remote=1 keeps only events with remoteAvailable;
      childcare=1 keeps only events with childcareAvailable)
 POST /api/v1/events/video/jitsi             → 200 {url}   (leader, host, or admin)

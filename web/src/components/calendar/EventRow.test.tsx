@@ -15,6 +15,7 @@ const occ = (o: Partial<CalendarOccurrence>): CalendarOccurrence => ({
   groupName: "Room 201 class",
   churchWide: false, remoteAvailable: false, childcareAvailable: false,
   myStatus: null,
+  ownScope: false,
   ...o,
 });
 const wrap = (ui: React.ReactNode) => render(<MemoryRouter>{ui}</MemoryRouter>);
@@ -37,12 +38,25 @@ describe("EventRow", () => {
     expect(link).toHaveTextContent("Room 201 class · Room 201");
   });
 
-  it("says Going in words beside the check, and Maybe in words", () => {
-    const { unmount } = wrap(<EventRow occ={occ({ myStatus: "going" })} />);
-    expect(screen.getByText("Going")).toBeInTheDocument();
-    unmount();
-    wrap(<EventRow occ={occ({ myStatus: "maybe" })} />);
-    expect(screen.getByText("Maybe")).toBeInTheDocument();
+  it.each([
+    ["going", "Going"], ["maybe", "Maybe"], ["waitlisted", "Waitlisted"], ["declined", "Can't go"],
+  ] as const)("labels the viewer's %s answer", (myStatus, label) => {
+    wrap(<EventRow occ={occ({ myStatus, ownScope: true })} />);
+    expect(screen.getByText(label)).toBeInTheDocument();
+  });
+
+  it("labels unanswered own-scope dates and ghosts them without fading text", () => {
+    wrap(<EventRow occ={occ({ ownScope: true })} />);
+    const link = screen.getByRole("link");
+    expect(screen.getByText("Not answered")).toBeInTheDocument();
+    expect(link).toHaveClass("border-dashed", "bg-sunken", "text-text");
+    expect(link.className).not.toMatch(/opacity/);
+  });
+
+  it("keeps outside-own-scope events ordinary", () => {
+    wrap(<EventRow occ={occ({ ownScope: false })} />);
+    expect(screen.queryByText("Not answered")).not.toBeInTheDocument();
+    expect(screen.getByRole("link")).toHaveClass("bg-surface");
   });
 
   it("marks church-wide events", () => {
@@ -58,15 +72,15 @@ describe("EventChip", () => {
     expect(screen.getByRole("link")).toHaveAccessibleName(/Remote/);
   });
   it("spells out what the chip abbreviates", () => {
-    wrap(<EventChip occ={occ({ myStatus: "going" })} />);
-    expect(screen.getByRole("link").getAttribute("aria-label")).toMatch(/Thursday class, Room 201 class, Going$/);
+    wrap(<EventChip occ={occ({ myStatus: "going", ownScope: true })} />);
+    expect(screen.getByRole("link")).toHaveAccessibleName(/Thursday class.*Going/);
   });
 
   it("stacks the time over a two-line title in the week view, keeping the full name", () => {
     wrap(<EventChip occ={occ({ title: "A very long evening of hymns and fellowship" })} stacked />);
     const link = screen.getByRole("link");
     expect(screen.getByText("A very long evening of hymns and fellowship")).toHaveClass("line-clamp-2");
-    expect(link.getAttribute("aria-label")).toMatch(/A very long evening of hymns and fellowship, Room 201 class$/);
+    expect(link).toHaveAccessibleName(/A very long evening of hymns and fellowship/);
   });
 });
 
