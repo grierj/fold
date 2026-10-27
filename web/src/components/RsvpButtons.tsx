@@ -1,11 +1,12 @@
 import { Link } from "react-router-dom";
 import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequestField";
 import { Button } from "./ui/Button";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Events } from "../api";
-import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, HouseholdAnswer, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson } from "../types";
+import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, HouseholdAnswer, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson, SeriesRegistrationResponse } from "../types";
 import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors } from "./ui/Field";
+import { SeriesRsvpDialog, type SeriesRsvpScope } from "./SeriesRsvpDialog";
 
 const OPTIONS: { value: RegistrationStatus; label: string }[] = [
   { value: "going", label: "Going" },
@@ -43,6 +44,8 @@ function SingleRsvpButtons({
   const [ages, setAges] = useState(instance.myChildcareAgesNote ?? "");
   const [childcareError, setChildcareError] = useState<string | null>(null);
   const [childcareFullError, setChildcareFullError] = useState(false);
+  const [pendingSeries, setPendingSeries] = useState<null | { status: RegistrationStatus; attendanceMode: AttendanceMode; childcare?: { childcareCount: number; childcareAgesNote: string } }>(null);
+  const [undo, setUndo] = useState<null | { token: string; expiresAt: number }>(null);
 
   const mine = instance.myRegistration;
   const removed = mine === "removed";
@@ -67,8 +70,65 @@ function SingleRsvpButtons({
       ? "Remote seats are full. You can still come in person, or join the remote waitlist."
       : "Remote seats are full. You can still come in person.";
 
-  async function choose(status: RegistrationStatus, attendanceMode = mode, switching = false,
+  useEffect(() => {
+    if (!undo) return;
+    const timer = window.setTimeout(() => setUndo(null), Math.max(0, undo.expiresAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [undo]);
+
+  const answerLabel = (status: RegistrationStatus) => status === "going" ? "Going" : status === "maybe" ? "Maybe" : "Can't go";
+  const resultSummary = (result: SeriesRegistrationResponse, prefix = "") => {
+    const going = result.results.filter((row) => row.after.status === "going").length;
+    const maybe = result.results.filter((row) => row.after.status === "maybe").length;
+    const declined = result.results.filter((row) => row.after.status === "declined").length;
+    const waitlisted = result.results.filter((row) => row.after.status === "waitlisted").map((row) => row.date);
+    const parts = [going ? `Going to ${going} ${going === 1 ? "date" : "dates"}` : "", maybe ? `Maybe for ${maybe} ${maybe === 1 ? "date" : "dates"}` : "", declined ? `Can't go to ${declined} ${declined === 1 ? "date" : "dates"}` : ""].filter(Boolean);
+    if (waitlisted.length) parts.push(`waitlisted for ${waitlisted.join(" and ")}`);
+    if (result.refusals.length) parts.push(`${result.refusals.length} ${result.refusals.length === 1 ? "date was" : "dates were"} left unchanged`);
+    if (result.capacityLoss?.length) parts.push(`a seat was no longer available for ${result.capacityLoss.join(" and ")}`);
+    const fallback = prefix && result.results.length ? `Restored previous answers for ${result.results.length} ${result.results.length === 1 ? "date" : "dates"}.` : "No dates changed.";
+    return `${prefix}${parts.join(" · ") || fallback}`;
+  };
+
+  async function applySeries(status: RegistrationStatus, scope: Exclude<SeriesRsvpScope, "just_this_date">, attendanceMode = mode,
     childcare?: { childcareCount: number; childcareAgesNote: string }) {
+    if (status === "declined" && !window.confirm("Can't go to these dates? They will be removed from your calendar and personal feed.")) return;
+    setBusy(status); setError(null); setStatusMessage(""); setUndo(null);
+    try {
+      const result = await Events.registerSeries(instance.eventId, {
+        status: status as "going" | "maybe" | "declined", scope,
+        ...(scope === "this_and_following" ? { date: instance.date } : {}),
+        guestCount: status === "going" ? guests : 0,
+        attendanceMode: instance.remoteAvailable ? attendanceMode : undefined,
+        ...(status === "going" && instance.childcareAvailable ? childcare ?? (mine !== "going" ? { childcareCount: 0, childcareAgesNote: "" } : {}) : {}),
+      });
+      setStatusMessage(resultSummary(result));
+      if (result.undoToken && result.undoExpiresAt) setUndo({ token: result.undoToken, expiresAt: new Date(result.undoExpiresAt).getTime() });
+      onChange({ registration: null, people: [] });
+      queueMicrotask(() => savedStatus.current?.focus());
+    } catch (e) {
+      setError(errorText(e, "We couldn't save your series answer."));
+    } finally { setBusy(null); }
+  }
+
+  async function undoSeries() {
+    if (!undo) return;
+    setBusy("undo"); setError(null);
+    try {
+      const result = await Events.undoSeriesRegistration(instance.eventId, undo.token);
+      setUndo(null); setStatusMessage(resultSummary(result, "Undo: "));
+      onChange({ registration: null, people: [] });
+      queueMicrotask(() => savedStatus.current?.focus());
+    } catch (e) { setError(errorText(e, "We couldn't undo that answer.")); }
+    finally { setBusy(null); }
+  }
+
+  async function choose(status: RegistrationStatus, attendanceMode = mode, switching = false,
+    childcare?: { childcareCount: number; childcareAgesNote: string }, singleDate = false) {
+    if (instance.recurrenceRule && !switching && !singleDate) {
+      setPendingSeries({ status, attendanceMode, childcare });
+      return;
+    }
     setBusy(status);
     setError(null);
     setChildcareError(null);
@@ -137,10 +197,9 @@ function SingleRsvpButtons({
 
   return (
     <div ref={root}>
-      {waitlisted && instance.myWaitlistPosition != null && (
+      {waitlisted && (
         <div className="text-sm font-semibold text-text-muted mb-2">
-          You&apos;re on the waitlist — position {instance.myWaitlistPosition}. We&apos;ll email you if a spot
-          opens.
+          Waitlisted{instance.myWaitlistPosition != null ? ` — position ${instance.myWaitlistPosition}` : ""}. We&apos;ll email you if a spot opens.
         </div>
       )}
       {remoteFull ? (
@@ -170,12 +229,14 @@ function SingleRsvpButtons({
           </div>
         </div>
       )}
-      <div ref={savedStatus} role="status" tabIndex={-1} className="text-sm text-text-muted mb-2">{statusMessage}</div>
+      <div ref={savedStatus} role="status" tabIndex={-1} className="text-sm text-text-muted mb-2">
+        {statusMessage}{undo && <Button variant="link" disabled={busy !== null} onClick={() => void undoSeries()}>Undo</Button>}
+      </div>
       <div className="flex gap-2 flex-wrap items-center">
         {/* Segmented control (DEC-63): one joined row, the chosen answer filled. */}
         <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
         {OPTIONS.map((o) => {
-          const active = mine === o.value;
+          const active = mine === o.value || (o.value === "going" && mine === "waitlisted");
           const disabled = busy !== null || (o.value === "going" && fullNoWaitlist);
           return (
             <button
@@ -204,6 +265,15 @@ function SingleRsvpButtons({
           </Field>
         )}
       </div>
+      {instance.recurrenceRule && <div className="mt-3 border-t border-border pt-3">
+        <p className="text-sm font-semibold mb-2">Answer the whole series</p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" disabled={busy !== null} onClick={() => void applySeries("going", "all_future")}>Going to all dates</Button>
+          <Button variant="secondary" disabled={busy !== null} onClick={() => void applySeries("maybe", "all_future")}>Maybe for all</Button>
+          <Button variant="danger-outline" disabled={busy !== null} onClick={() => void applySeries("declined", "all_future")}>Can&apos;t go to any</Button>
+        </div>
+        <p className="text-sm text-text-muted mt-2">New dates added later won&apos;t be answered for you.</p>
+      </div>}
       {instance.childcareAvailable && mine === "going" && (
         <div className="mt-3 space-y-3">
           <ChildcareRequestField count={children} ages={ages} onCount={setChildren} onAges={setAges}
@@ -220,6 +290,12 @@ function SingleRsvpButtons({
         </div>
       )}
       {error && <FormError layout="mt-1">{error}</FormError>}
+      {pendingSeries && <SeriesRsvpDialog answer={answerLabel(pendingSeries.status)} onCancel={() => setPendingSeries(null)} onChoose={(scope) => {
+        const pending = pendingSeries;
+        setPendingSeries(null);
+        if (scope === "just_this_date") void choose(pending.status, pending.attendanceMode, false, pending.childcare, true);
+        else void applySeries(pending.status, scope, pending.attendanceMode, pending.childcare);
+      }} />}
     </div>
   );
 }

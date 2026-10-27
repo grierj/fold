@@ -100,7 +100,6 @@ function DateDetail({ id, date }: { id: string; date: string }) {
       {error && <FormError>{error}</FormError>}
       {(occurrence.canDecline || occurrence.canRegister) && <DateAnswer occurrence={occurrence} busy={busy} onAnswer={answer} />}
       <div className="flex flex-wrap gap-2">
-        {occurrence.canRegister && !occurrence.canDecline && <Button variant="secondary" disabled={busy} onClick={() => void answer("declined", {})}>Can't go</Button>}
         {occurrence.canDecline && <Button variant="danger-outline" disabled={busy} onClick={() => void end("decline")}>Can't go</Button>}
         {occurrence.canBlock && <Button variant="danger-outline" disabled={busy} onClick={() => void end("block")}>Don't add me again</Button>}
       </div>
@@ -123,6 +122,10 @@ function DateAnswer({ occurrence, busy, onAnswer }: { occurrence: EventDate; bus
       <Radio name={modeName} label="Remote" description={!occurrence.remoteAvailable ? "No longer available. Choose in person to change your answer." : undefined} checked={mode === "remote"} disabled={busy || !occurrence.remoteAvailable} onChange={() => setMode("remote")} />
     </Choices>}
     {showGuests && <Field label="Guests" hint={`Whole number from 0 to ${guestMax}. Guests use spaces too.`} error={!guestValid ? `Enter a whole number from 0 to ${guestMax}.` : undefined}><Input type="number" min={0} max={guestMax} step={1} value={guests} disabled={busy} onChange={(e) => setGuests(e.target.value)} /></Field>}
-    <div className="flex flex-wrap gap-2"><Button variant="primary" disabled={busy || (showGuests && !guestValid)} onClick={() => void onAnswer("going", options)}>Going</Button><Button variant="secondary" disabled={busy || (showGuests && !guestValid)} onClick={() => void onAnswer("maybe", options)}>Maybe</Button></div>
+    <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
+      <button type="button" className="segment" aria-pressed={occurrence.myRegistration === "going" || occurrence.myRegistration === "waitlisted"} disabled={busy || (showGuests && !guestValid)} onClick={() => void onAnswer("going", options)}>Going</button>
+      <button type="button" className="segment" aria-pressed={occurrence.myRegistration === "maybe"} disabled={busy || (showGuests && !guestValid)} onClick={() => void onAnswer("maybe", options)}>Maybe</button>
+      {occurrence.canRegister && !occurrence.canDecline && <button type="button" className="segment" aria-pressed={occurrence.myRegistration === "declined"} disabled={busy} onClick={() => void onAnswer("declined", {})}>Can't go</button>}
+    </div>
   </div>;
 }

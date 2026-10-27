@@ -308,6 +308,41 @@ export interface EventDetailResponse {
   canSetVisibility: boolean;
 }
 
+export interface SeriesRegistrationState {
+  registrationId?: number;
+  status?: RegistrationStatus;
+  guestCount?: number;
+  attendanceMode?: AttendanceMode;
+  childcareCount?: number;
+  childcareAgesNote?: string;
+  waitlistPosition?: number;
+}
+
+export interface SeriesRegistrationResult {
+  occurrenceId: number;
+  date: string;
+  before: SeriesRegistrationState;
+  after: SeriesRegistrationState;
+}
+
+export interface SeriesRegistrationRefusal {
+  occurrenceId: number;
+  date: string;
+  code: string;
+}
+
+export interface SeriesRegistrationResponse {
+  eventId: number;
+  scope: "all_future" | "this_and_following" | "";
+  date?: string;
+  status: RegistrationStatus | "";
+  results: SeriesRegistrationResult[];
+  refusals: SeriesRegistrationRefusal[];
+  undoToken?: string;
+  undoExpiresAt?: string;
+  capacityLoss?: string[];
+}
+
 // A group the person being deleted leads alone, and who may take over (DEC-36).
 export interface SoleLedGroup {
   id: number;

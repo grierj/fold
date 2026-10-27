@@ -24,6 +24,14 @@ it("fetches the household once and refetches all date state after a batch", asyn
   expect(Events.register).toHaveBeenCalledWith(7, { date: "2026-12-01", people: [{ personId: 3, status: "going", attendanceMode: "in_person", childcareRequested: false }] });
 });
 
+it("opens the same series scope dialog from a group date for a solo viewer", async () => {
+  vi.mocked(Households.mine).mockResolvedValue({ household: null });
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents: [occurrence({ recurrenceRule: "FREQ=WEEKLY" })] });
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "Going" }));
+  expect(screen.getByRole("dialog", { name: /How far should “Going” apply/ })).toBeInTheDocument();
+});
+
 it.each([null, { id: 2, accountType: "teen", hideContactFromLeaders: true } as User])("does not fetch household data for an unsigned or teen viewer", async (user) => {
   actor.user = user; open(); await screen.findByRole("heading", { name: "Family group" });
   expect(Households.mine).not.toHaveBeenCalled();

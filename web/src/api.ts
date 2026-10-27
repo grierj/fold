@@ -131,6 +131,10 @@ import type {
   NotificationFilter,
   OpenedDecision,
   RegistrationBatch,
+  SeriesRegistrationRefusal,
+  SeriesRegistrationResponse,
+  SeriesRegistrationResult,
+  SeriesRegistrationState,
   SoleLedGroup,
   User,
   TeenConsent,
@@ -370,6 +374,17 @@ export const Events = {
   generateJitsi: () => api<{ url: string }>("/events/video/jitsi", { method: "POST", body: {} }),
   register: (id: number, data: RegistrationCommand) =>
     api<RegistrationBatch>(`/events/${id}/registrations`, { method: "PUT", body: data }),
+  registerSeries: (id: number, data: {
+    date?: string;
+    scope: "all_future" | "this_and_following";
+    status: "going" | "maybe" | "declined";
+    guestCount?: number;
+    attendanceMode?: AttendanceMode;
+    childcareCount?: number;
+    childcareAgesNote?: string;
+  }) => api<SeriesRegistrationResponse & { results: (SeriesRegistrationResult & { before: SeriesRegistrationState; after: SeriesRegistrationState })[]; refusals: SeriesRegistrationRefusal[] }>(`/events/${id}/series-registrations`, { method: "POST", body: data }),
+  undoSeriesRegistration: (id: number, token: string) =>
+    api<SeriesRegistrationResponse & { results: (SeriesRegistrationResult & { before: SeriesRegistrationState; after: SeriesRegistrationState })[]; refusals: SeriesRegistrationRefusal[] }>(`/events/${id}/series-registrations/undo`, { method: "POST", body: { token } }),
   // Pruning and hand promotion (M1.5): leaders and hosts remove anyone,
   // promote one waitlisted row by hand, or add someone directly.
   removeRegistration: (id: number, date: string, registrationId: number, note?: string) =>

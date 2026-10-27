@@ -9,7 +9,7 @@ import { occurrence } from "../test/occurrence";
 
 vi.mock("../api", async (importActual) => ({
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
-  Events: { register: vi.fn() },
+  Events: { register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() },
 }));
 
 
@@ -25,6 +25,16 @@ describe("RsvpButtons", () => {
     expect(screen.getByText("This event is full.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Going" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Maybe" })).not.toBeDisabled();
+  });
+
+  it.each([
+    ["going", "Going"], ["maybe", "Maybe"], ["declined", "Can't go"], ["waitlisted", "Going"], [null, null],
+  ] as const)("maps %s to the selected RSVP answer", (status, selected) => {
+    render(<RsvpButtons instance={occurrence({ myRegistration: status })} onChange={() => {}} />);
+    for (const name of ["Going", "Maybe", "Can't go"]) {
+      expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", String(name === selected));
+    }
+    if (status === "waitlisted") expect(screen.getByText(/Waitlisted/)).toBeInTheDocument();
   });
 
   it("shows the waitlisted state with the position", () => {
@@ -111,6 +121,35 @@ describe("RsvpButtons", () => {
     await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
     expect(screen.getByText("Remote seats are full. You can still come in person.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Going" })).toBeDisabled();
+  });
+
+  it("uses the shared series scope dialog, confirms bulk Can't go, and offers Undo for ten seconds", async () => {
+    vi.mocked(Events.registerSeries).mockResolvedValue({ eventId: 7, scope: "this_and_following", date: "2026-12-01", status: "going", results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "waitlisted", waitlistPosition: 2 } }], refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString() });
+    vi.mocked(Events.undoSeriesRegistration).mockResolvedValue({ eventId: 7, scope: "", status: "", results: [{ occurrenceId: 1, date: "2026-12-01", before: { status: "waitlisted" }, after: { status: "going" } }], refusals: [], capacityLoss: [] });
+    const onChange = vi.fn();
+    render(<RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY" })} onChange={onChange} />);
+    await userEvent.click(screen.getByRole("button", { name: "Going" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Just this date" })).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "This and following dates" }));
+    expect(Events.registerSeries).toHaveBeenCalledWith(7, expect.objectContaining({ date: "2026-12-01", scope: "this_and_following", status: "going" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("waitlisted for 2026-12-01");
+    await userEvent.click(screen.getByRole("button", { name: "Undo" }));
+    expect(Events.undoSeriesRegistration).toHaveBeenCalledWith(7, "undo-token");
+    expect(screen.getByRole("status")).toHaveTextContent("Undo: Going to 1 date");
+
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await userEvent.click(screen.getByRole("button", { name: "Can't go to any" }));
+    expect(confirm).toHaveBeenCalled();
+    expect(Events.registerSeries).toHaveBeenCalledTimes(1);
+  });
+
+  it("single events bypass the scope dialog", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ people: [], registration: { registrationId: 31, userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "maybe", guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "in_person" } });
+    render(<RsvpButtons instance={occurrence({ recurrenceRule: "" })} onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(Events.register).toHaveBeenCalledOnce();
   });
 
   it("shows the guest count input when guests are allowed", () => {
@@ -306,7 +345,7 @@ describe("childcare RSVP", () => {
     vi.mocked(Events.register).mockResolvedValue({ people: [], registration: { ...registration, status: "waitlisted", waitlistPosition: 1 } });
     render(<SavedRsvp initial={occurrence({ childcareAvailable: true, waitlistEnabled: true })} />);
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
-    expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("You're on the in-person waitlist.");
   });

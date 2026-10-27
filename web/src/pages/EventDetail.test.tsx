@@ -82,6 +82,14 @@ describe("EventDetail remote seats", () => {
   });
 });
 
+it("uses the shared scope dialog for a recurring date", async () => {
+  vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: [occurrence({ recurrenceRule: "FREQ=WEEKLY" })] });
+  renderPage();
+  await userEvent.click((await screen.findAllByRole("button", { name: "Maybe" }))[0]);
+  expect(screen.getByRole("dialog", { name: /How far should “Maybe” apply/ })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Just this date" })).toHaveFocus();
+});
+
 it("shows the public childcare ages and notes", async () => {
   vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, childcareAvailable: true, childcareAges: "2–5", childcareNotes: "Check in at the nursery." } });
   renderPage();

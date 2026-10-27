@@ -21,9 +21,11 @@ it("renders only date disclosures, never hidden parent/group/host/roster/househo
   vi.mocked(Dates.get).mockResolvedValue({ occurrence: row });
   mount(); await screen.findByText("One invited date");
   expect(screen.getByText("Your answer: Going")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-pressed", "false");
   expect(screen.queryByText(/SECRET/)).not.toBeInTheDocument();
   expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["/calendar", "https://example.com/private-call"]);
-  expect(screen.queryByRole("button", { name: /Manage|household|contact/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Manage|household|contact|all dates|Maybe for all|Can't go to any/i })).not.toBeInTheDocument();
 });
 
 it("saves only own scoped answer/mode/guest fields, preserves unsupported care by omission and reflects server waitlisting", async () => {
@@ -35,6 +37,7 @@ it("saves only own scoped answer/mode/guest fields, preserves unsupported care b
   await userEvent.click(screen.getByRole("button", { name: "Going" }));
   expect(Dates.register).toHaveBeenCalledWith("7", "2026-12-01", { status: "going", attendanceMode: "in_person", guestCount: 2 });
   await screen.findByText("Your answer: Waitlisted");
+  expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.queryByRole("link", { name: /Join video call/ })).not.toBeInTheDocument();
   expect(screen.getByLabelText("Guests")).toHaveValue(2);
 });
