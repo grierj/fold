@@ -868,13 +868,7 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 }
 
 func (a *App) apiAdminRemoveMember(c *gin.Context) {
-	id, _ := strconv.Atoi(c.Param("id"))
-	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "group not found")
-		return
-	}
-	a.removeMember(c, &g)
+	a.apiRemoveGroupMemberConfirmed(c)
 }
 
 func (a *App) apiDeletionRequests(c *gin.Context) {

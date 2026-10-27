@@ -74,7 +74,7 @@ func TestDatabaseLoggerKeepsContactValuesOutOfSQL(t *testing.T) {
 		// protect it, not just writes made directly by contact API endpoints.
 		pending := f.create(t, "both", privateReason)
 		output.Reset()
-		if w := f.sc.do("POST", "/api/v1/groups/"+itoa(f.group.ID)+"/leave", nil, true); w.Code != http.StatusOK {
+		if w := confirmDeparture(t, f.sc, "POST", "/api/v1/groups/"+itoa(f.group.ID)+"/leave", "/api/v1/groups/"+itoa(f.group.ID)+"/departure-preview", ""); w.Code != http.StatusOK {
 			t.Fatalf("leave: %d", w.Code)
 		}
 		assertLog(t, output.String(), "SLOW SQL >= 200ms", `UPDATE "contact_requests"`, "$1")

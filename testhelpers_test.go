@@ -86,7 +86,7 @@ func testApp(t *testing.T) *App {
 	return &App{
 		DB:      db,
 		Store:   store,
-		Config:  Config{Env: "dev", Port: "8080"},
+		Config:  Config{Env: "dev", Port: "8080", SessionSecret: []byte("test-session-secret-at-least-32-bytes")},
 		Uploads: uploads,
 		Mailer:  mail.NewDevOutbox(db, "Fold <noreply@example.com>"),
 		// Inline, so a test can read the outbox right after a request.
@@ -373,6 +373,34 @@ func boolInt(b bool) int {
 
 // M0.3b: leaders remove members (DEC-35), sole-leader handoff (DEC-36),
 // security headers and dependency scanning (DEC-37).
+
+func departureConfirmBody(t *testing.T, c *apiClient, previewPath string) map[string]any {
+	t.Helper()
+	w := c.do("GET", previewPath, nil, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("departure preview %s: %d %s", previewPath, w.Code, w.Body.String())
+	}
+	var response struct {
+		Departure departurePreviewJSON `json:"departure"`
+	}
+	decodeJSON(t, w, &response)
+	keep := make([]uint, 0, response.Departure.DefaultKeepCount)
+	for _, date := range response.Departure.Dates {
+		if date.DefaultKeep {
+			keep = append(keep, date.OccurrenceID)
+		}
+	}
+	return map[string]any{"snapshot": response.Departure.Snapshot, "keepOccurrenceIds": keep}
+}
+
+func confirmDeparture(t *testing.T, c *apiClient, method, mutationPath, previewPath string, note string) *httptest.ResponseRecorder {
+	t.Helper()
+	body := departureConfirmBody(t, c, previewPath)
+	if note != "" {
+		body["note"] = note
+	}
+	return c.do(method, mutationPath, body, true)
+}
 
 type auditMeta struct {
 	UserID          uint   `json:"userId"`

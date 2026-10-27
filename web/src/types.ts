@@ -78,6 +78,49 @@ export interface Member {
   admin: boolean; // church admin: labeled on rosters, never removable by leaders
 }
 
+/** One safe, account-owned date that may be retained during group departure. */
+export interface DepartureKeepableDate {
+  occurrenceId: number;
+  date: string;
+  title: string;
+  startsAt: string;
+  endsAt: string;
+  status: "going" | "maybe" | "waitlisted";
+  visibility: Visibility;
+  defaultKeep: boolean;
+  keepReason: "underway" | "cutoff" | "public";
+}
+
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
+export interface DeparturePreview {
+  action: "leave" | "remove";
+  groupId: number;
+  groupName: string;
+  subjectId: number;
+  subjectName: string;
+  affectedCount: number;
+  goingCount: number;
+  maybeCount: number;
+  waitlistedCount: number;
+  keepableCount: number;
+  defaultKeepCount: number;
+  dates: DepartureKeepableDate[];
+  snapshot: string;
+}
+
+/** @public Go JSON contract, checked by TestWebTypesMatchGoJSON. */
+export interface DepartureConfirmation {
+  action: "leave" | "remove";
+  groupId: number;
+  subjectId: number;
+  keptCount: number;
+  endedCount: number;
+}
+
+export interface DepartureConfirmationResponse {
+  departure: DepartureConfirmation;
+}
+
 // A stored notification (5.12). Text is plain and rendered by the server;
 // link is always an internal path. waiting: an open task, counted in the
 // badge until someone resolves it.

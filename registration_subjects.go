@@ -459,7 +459,7 @@ func (a *App) attendeeNames(kept []models.EventOccurrence, show, childcare, mana
 		models.Registration
 		LeaderAdded bool
 	}
-	a.DB.Model(&models.Registration{}).Select("registrations.*, EXISTS (SELECT 1 FROM occurrence_accesses oa WHERE oa.registration_id = registrations.id AND oa.status = 'active') AS leader_added").Joins(listedRegistrations()).Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).Order("registrations.waitlisted_at ASC NULLS FIRST, registrations.id").Find(&rows)
+	a.DB.Model(&models.Registration{}).Select("registrations.*, EXISTS (SELECT 1 FROM occurrence_accesses oa WHERE oa.registration_id = registrations.id AND oa.status = 'active' AND oa.origin = ?) AS leader_added", policy.OccurrenceOriginManagerAdd).Joins(listedRegistrations()).Where("registrations.occurrence_id IN ? AND registrations.status <> ?", ids, models.RegCancelled).Order("registrations.waitlisted_at ASC NULLS FIRST, registrations.id").Find(&rows)
 	registrations := make([]models.Registration, 0, len(rows))
 	for _, row := range rows {
 		registrations = append(registrations, row.Registration)

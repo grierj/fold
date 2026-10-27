@@ -359,6 +359,9 @@ type Membership struct {
 	Role     string `gorm:"default:member"` // leader | member
 	Status   string `gorm:"default:active"`
 	JoinedAt time.Time
+	// Tenure changes when a removed row is reactivated; JoinedAt remains the
+	// first-ever join time shown in the roster.
+	Tenure uint `gorm:"not null;default:1"`
 }
 
 // Registration is a user's response to one occurrence (renamed from RSVP).
@@ -801,29 +804,32 @@ type ContactGrant struct {
 	EndedBy       *uint
 }
 
-// OccurrenceAccess is exact-date invitation AND provenance for every manager
-// account add (including ordinary visible dates). Source on Registration remains
-// web/admin/guest_form; it is not authority. No live-domain FK may cascade this
-// record away. Ending is irreversible; partial uniqueness permits only one
-// active subject/date. A new approved ask may create fresh access after an end,
-// but replay, direct re-add and ordinary RSVP cannot reopen the ended record.
-// Current read authorization reloads subject, occurrence and organizer; issuer
-// role loss ends pending requests, NOT accepted attendance.
+// OccurrenceAccess is the exact-date access/provenance family. Manager-add
+// rows retain their issuer/request safeguards; departure rows instead retain
+// the membership and actor that authorized a self-leave or removal. Source on
+// Registration remains web/admin/guest_form; it is not authority. No live-domain
+// FK may cascade this history away. Ending is irreversible; partial uniqueness
+// permits only one active subject/date. Current read authorization reloads the
+// subject, occurrence and organizer, but membership departure alone never ends
+// an accepted row.
 type OccurrenceAccess struct {
-	ID             uint      `gorm:"primaryKey"`
-	SubjectUserID  uint      `gorm:"not null"`
-	OccurrenceID   uint      `gorm:"not null"`
-	EventID        uint      `gorm:"not null"`
-	OrganizerType  string    `gorm:"not null"`
-	OrganizerID    uint      `gorm:"not null"`
-	IssuerID       uint      `gorm:"not null"`
-	RequestID      *uint     `gorm:"unique"`
-	RegistrationID uint      `gorm:"not null"`
-	Status         string    `gorm:"not null;default:active"`
-	GrantedAt      time.Time `gorm:"not null;default:now()"`
-	EndedAt        *time.Time
-	EndReason      string `gorm:"not null;default:''"`
-	EndedBy        *uint
+	ID                    uint   `gorm:"primaryKey"`
+	SubjectUserID         uint   `gorm:"not null"`
+	OccurrenceID          uint   `gorm:"not null"`
+	EventID               uint   `gorm:"not null"`
+	OrganizerType         string `gorm:"not null"`
+	OrganizerID           uint   `gorm:"not null"`
+	Origin                string `gorm:"not null;default:manager_add"`
+	IssuerID              *uint
+	RequestID             *uint `gorm:"unique"`
+	RegistrationID        uint  `gorm:"not null"`
+	DepartureMembershipID *uint
+	DepartureActorID      *uint
+	Status                string    `gorm:"not null;default:active"`
+	GrantedAt             time.Time `gorm:"not null;default:now()"`
+	EndedAt               *time.Time
+	EndReason             string `gorm:"not null;default:''"`
+	EndedBy               *uint
 }
 
 // ManagerAddBlock prevents NEW manager date adds/completions in one organizer

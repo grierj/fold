@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"fold/internal/events"
+	"fold/internal/policy"
 	"fold/models"
 	"gorm.io/gorm"
 )
@@ -60,8 +61,9 @@ func seedReadInvitation(t *testing.T, app *App, issuer, subject *models.User, ev
 		if ev.GroupID != nil {
 			organizer, organizerID = "group", *ev.GroupID
 		}
+		issuerID := issuer.ID
 		access = models.OccurrenceAccess{SubjectUserID: subject.ID, OccurrenceID: occ.ID, EventID: ev.ID,
-			OrganizerType: organizer, OrganizerID: organizerID, IssuerID: issuer.ID, RequestID: &request.ID,
+			OrganizerType: organizer, OrganizerID: organizerID, Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuerID, RequestID: &request.ID,
 			RegistrationID: reg.ID, Status: "active", GrantedAt: now}
 		return tx.Create(&access).Error
 	})
@@ -97,6 +99,70 @@ func newOccurrenceReadFixture(t *testing.T) occurrenceReadFixture {
 }
 
 func dateReadPath(ev uint, date string) string { return "/api/v1" + occurrenceDatePath(ev, date) }
+
+// newDepartureReadFixture inserts departure provenance while the subject's
+// membership is active (the T2 database contract), then removes only that
+// membership. It deliberately does not use a departure route, which belongs to
+// T4, and therefore exercises the retained reader/lifecycle seam directly.
+func newDepartureReadFixture(t *testing.T, visibility, status, origin string) occurrenceReadFixture {
+	t.Helper()
+	app := testApp(t)
+	issuer := newTestUser(t, app, "departure actor", "password1234", models.RoleAdmin)
+	recipient := newTestUser(t, app, "departed recipient", "password1234", models.RoleMember)
+	other := newTestUser(t, app, "departure outsider", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, issuer.Name, "password1234")
+	group := createFeedGroup(t, admin, "Retained hidden group", visibility, "Retained group place")
+	ev := createFeedEvent(t, admin, group, "Retained hidden series", feedStart(7), "FREQ=WEEKLY;COUNT=3")
+	// Private groups remain discoverable to signed-in people. Make the event
+	// itself invite-only so the exact-date reader, not ordinary series policy,
+	// is what authorizes the retained private-group fixture.
+	if visibility == models.VisibilityPrivate {
+		if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+			t.Fatal(err)
+		}
+		ev.Visibility = models.VisibilityInviteOnly
+	}
+	var dates []models.EventOccurrence
+	if err := app.DB.Where("event_id = ?", ev.ID).Order("starts_at").Find(&dates).Error; err != nil || len(dates) != 3 {
+		t.Fatal(err, len(dates))
+	}
+	title, location := "Retained date title", "Retained date place"
+	if err := app.DB.Model(&dates[1]).Updates(map[string]any{"title_override": title, "location_override": location}).Error; err != nil {
+		t.Fatal(err)
+	}
+	membership := models.Membership{UserID: recipient.ID, GroupID: group, Role: models.MembershipMember, Status: "active"}
+	var access models.OccurrenceAccess
+	if err := app.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&membership).Error; err != nil {
+			return err
+		}
+		reg := models.Registration{UserID: &recipient.ID, OccurrenceID: dates[1].ID, Status: status, Source: models.RegSourceAdmin, AttendanceMode: models.AttendanceInPerson}
+		if status == models.RegWaitlisted {
+			at := time.Now().UTC().Add(-time.Minute)
+			reg.WaitlistedAt = &at
+		}
+		if err := tx.Create(&reg).Error; err != nil {
+			return err
+		}
+		actorID := recipient.ID
+		if origin == policy.OccurrenceOriginDepartureRemoval {
+			actorID = issuer.ID
+		}
+		access = models.OccurrenceAccess{SubjectUserID: recipient.ID, OccurrenceID: dates[1].ID, EventID: ev.ID,
+			OrganizerType: policy.ContactGroup, OrganizerID: group, Origin: origin, RegistrationID: reg.ID,
+			DepartureMembershipID: &membership.ID, DepartureActorID: &actorID, Status: policy.OccurrenceAccessActive, GrantedAt: time.Now().UTC()}
+		return tx.Create(&access).Error
+	}); err != nil {
+		t.Fatal("seed validated departure access:", err)
+	}
+	if err := app.contactMutation(contactChange{UserID: recipient.ID}, func(tx *gorm.DB) error {
+		return tx.Model(&models.Membership{}).Where("id = ? AND status = ?", membership.ID, "active").Update("status", "removed").Error
+	}); err != nil {
+		t.Fatal("remove retained membership:", err)
+	}
+	return occurrenceReadFixture{app: app, issuer: issuer, recipient: recipient, other: other, admin: admin,
+		client: loginAPI(t, app, recipient.Name, "password1234"), stranger: loginAPI(t, app, other.Name, "password1234"), group: group, event: ev, dates: dates, access: access}
+}
 
 func TestOccurrenceDateReadExactAuthorityAndAllowlist(t *testing.T) {
 	f := newOccurrenceReadFixture(t)
@@ -358,8 +424,8 @@ func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if reason != facts.endReason(row) {
-				t.Fatalf("reason batch=%q scalar=%q row=%+v", facts.endReason(row), reason, row)
+			if reason != facts.endReason(row, now) {
+				t.Fatalf("reason batch=%q scalar=%q row=%+v", facts.endReason(row, now), reason, row)
 			}
 			live, err := liveOccurrenceInvitationIn(f.app.DB, row, now)
 			if err != nil {
@@ -418,5 +484,140 @@ func TestOccurrenceInvitationBatchMatchesScalarAndFailsClosed(t *testing.T) {
 	}
 	if _, err := f.app.reconcileOccurrenceAccesses(f.app.DB, now, contactChange{EventID: f.event.ID}); err == nil {
 		t.Fatal("lifecycle fact error ignored")
+	}
+}
+
+func TestDepartureOccurrenceAccessRetainsOnlyTheSanitizedDate(t *testing.T) {
+	for _, tc := range []struct {
+		visibility string
+		status     string
+		origin     string
+	}{
+		{models.VisibilityPrivate, models.RegGoing, policy.OccurrenceOriginDepartureSelf},
+		{models.VisibilityInviteOnly, models.RegMaybe, policy.OccurrenceOriginDepartureRemoval},
+		{models.VisibilityInviteOnly, models.RegWaitlisted, policy.OccurrenceOriginDepartureSelf},
+	} {
+		t.Run(tc.visibility+"/"+tc.status+"/"+tc.origin, func(t *testing.T) {
+			f := newDepartureReadFixture(t, tc.visibility, tc.status, tc.origin)
+			if savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessActive {
+				t.Fatal("membership departure ended retained access")
+			}
+			if err := f.app.DB.Create(&models.ManagerAddBlock{SubjectUserID: f.recipient.ID, OrganizerType: policy.ContactGroup, OrganizerID: f.group}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := f.app.sweepContacts(t.Context(), time.Now().UTC()); err != nil || savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessActive {
+				t.Fatal("standing departure access was ended by a manager-add block", err)
+			}
+			path := dateReadPath(f.event.ID, f.dates[1].OriginalDate)
+			w := f.client.do("GET", path, nil, false)
+			if w.Code != http.StatusOK {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			raw := w.Body.String()
+			for _, forbidden := range []string{"Retained hidden group", "Retained hidden series", "departure actor", "issuer", "departureActor", "groupId", "recurrenceRule", "attendees\"", "canManage"} {
+				if strings.Contains(raw, forbidden) {
+					t.Fatalf("retained date leaked %q: %s", forbidden, raw)
+				}
+			}
+			if !strings.Contains(raw, `"title":"Retained date title"`) || !strings.Contains(raw, `"location":"Retained date place"`) || !strings.Contains(raw, `"myRegistration":"`+tc.status+`"`) {
+				t.Fatal("sanitized retained date incomplete", raw)
+			}
+			for _, hidden := range []string{f.dates[0].OriginalDate, f.dates[2].OriginalDate} {
+				apiDo(t, f.client, "GET", dateReadPath(f.event.ID, hidden), nil, http.StatusNotFound)
+			}
+			apiDo(t, f.client, "GET", fmt.Sprintf("/api/v1/events/%d", f.event.ID), nil, http.StatusNotFound)
+			if tc.visibility == models.VisibilityInviteOnly {
+				for _, parent := range []string{fmt.Sprintf("/api/v1/groups/%d", f.group), fmt.Sprintf("/api/v1/groups/%d/members", f.group), fmt.Sprintf("/api/v1/groups/%d/events", f.group)} {
+					apiDo(t, f.client, "GET", parent, nil, http.StatusNotFound)
+				}
+			}
+
+			page, calendarRaw := getCalendar(t, f.client, "from="+f.dates[0].OriginalDate+"&to="+f.dates[2].OriginalDate+"&tz=UTC&mine=1", http.StatusOK)
+			if len(page.Occurrences) != 1 || page.Occurrences[0].Date != f.dates[1].OriginalDate || page.Occurrences[0].MyStatus == nil || *page.Occurrences[0].MyStatus != tc.status {
+				t.Fatalf("retained calendar=%+v raw=%s", page.Occurrences, calendarRaw)
+			}
+			if strings.Contains(calendarRaw, "Retained hidden group") || strings.Contains(calendarRaw, "Retained hidden series") || strings.Contains(calendarRaw, "groupId") {
+				t.Fatal("calendar leaked retained parent", calendarRaw)
+			}
+			feed := f.app.buildFeed(f.recipient, feedOptions{personal: true, scope: models.CalendarFeedMine}, time.Now().UTC())
+			feedRaw := string(events.RenderFeed(feed))
+			if len(feed.Events) != 0 || len(feed.Singles) != 1 || !strings.Contains(feedRaw, "Retained date title") || strings.Contains(feedRaw, "Retained hidden group") || strings.Contains(feedRaw, "Retained hidden series") {
+				t.Fatalf("retained personal feed widened: %s", feedRaw)
+			}
+			publicRaw := string(events.RenderFeed(f.app.buildFeed(nil, feedOptions{name: "Public"}, time.Now().UTC())))
+			gid := f.group
+			groupRaw := string(events.RenderFeed(f.app.buildFeed(nil, feedOptions{name: "Group", onlyGroupID: &gid}, time.Now().UTC())))
+			if strings.Contains(publicRaw+groupRaw, "Retained date title") {
+				t.Fatal("exact-date authority changed a public/group feed")
+			}
+
+			apiDo(t, f.client, "PUT", path+"/registration", map[string]any{"status": models.RegGoing}, http.StatusOK)
+			if savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessActive || regStatus(t, f.app, f.recipient.ID, f.dates[1].ID) != models.RegGoing {
+				t.Fatal("own RSVP did not retain departure authority")
+			}
+		})
+	}
+}
+
+func TestDepartureOccurrenceAccessExactEndAndMoveCannotResurrect(t *testing.T) {
+	f := newDepartureReadFixture(t, models.VisibilityInviteOnly, models.RegGoing, policy.OccurrenceOriginDepartureSelf)
+	boundary := f.dates[1].EndsAt
+	before, err := occurrenceInvitationReadsIn(f.app.DB, []models.OccurrenceAccess{f.access}, boundary.Add(-time.Nanosecond))
+	if err != nil || before[f.access.ID] == nil {
+		t.Fatal("departure access ended before boundary", err)
+	}
+	at, err := occurrenceInvitationReadsIn(f.app.DB, []models.OccurrenceAccess{f.access}, boundary)
+	if err != nil || at[f.access.ID] != nil {
+		t.Fatal("departure access survived exact end", err, at)
+	}
+	if err := f.app.sweepContacts(t.Context(), boundary); err != nil {
+		t.Fatal(err)
+	}
+	ended := savedOccurrenceAccess(t, f)
+	if ended.Status != policy.OccurrenceAccessEnded || ended.EndReason != policy.OccurrenceEnded || ended.EndedAt == nil || !ended.EndedAt.Equal(boundary) {
+		t.Fatalf("expiry not persisted at boundary: %+v", ended)
+	}
+	future := boundary.AddDate(0, 0, 30)
+	if err := f.app.contactMutation(contactChange{EventID: f.event.ID}, func(tx *gorm.DB) error {
+		return tx.Model(&models.EventOccurrence{}).Where("id = ?", f.dates[1].ID).Updates(map[string]any{"starts_at": future, "ends_at": future.Add(time.Hour)}).Error
+	}); err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, http.StatusNotFound)
+	if savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessEnded {
+		t.Fatal("reschedule resurrected retained access")
+	}
+
+	// Model a process that missed the daily sweep: reads close immediately at
+	// the old end, and the event-edit transaction persists that expiry before
+	// moving the occurrence into the future.
+	missed := newDepartureReadFixture(t, models.VisibilityInviteOnly, models.RegGoing, policy.OccurrenceOriginDepartureRemoval)
+	past := time.Now().UTC().Add(-time.Hour)
+	if err := missed.app.DB.Model(&models.EventOccurrence{}).Where("id = ?", missed.dates[1].ID).Updates(map[string]any{"starts_at": past.Add(-time.Hour), "ends_at": past}).Error; err != nil {
+		t.Fatal(err)
+	}
+	reads, err := missed.app.scopedOccurrenceReads(missed.recipient, missed.app.DB.Where("id = ?", missed.dates[1].ID), time.Now().UTC())
+	if err != nil || len(reads) != 0 {
+		t.Fatal("read-time expiry stayed open before persistence", err, reads)
+	}
+	future = time.Now().UTC().AddDate(0, 0, 30)
+	if err := missed.app.contactMutation(contactChange{EventID: missed.event.ID}, func(tx *gorm.DB) error {
+		return tx.Model(&models.EventOccurrence{}).Where("id = ?", missed.dates[1].ID).Updates(map[string]any{"starts_at": future, "ends_at": future.Add(time.Hour)}).Error
+	}); err != nil {
+		t.Fatal(err)
+	}
+	moved := savedOccurrenceAccess(t, missed)
+	if moved.Status != policy.OccurrenceAccessEnded || moved.EndReason != policy.OccurrenceEnded {
+		t.Fatalf("move resurrected unswept expiry: %+v", moved)
+	}
+}
+
+func TestManagerOccurrenceAccessKeepsEstablishedPostDateSemantics(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	if err := f.app.sweepContacts(t.Context(), f.dates[1].EndsAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if savedOccurrenceAccess(t, f).Status != policy.OccurrenceAccessActive {
+		t.Fatal("M1.14 retroactively expired a manager invitation")
 	}
 }

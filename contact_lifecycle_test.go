@@ -196,6 +196,10 @@ func TestContactAuthorityMutationWinsReveal(t *testing.T) {
 			if err := f.app.DB.Create(&models.Membership{UserID: f.admin.ID, GroupID: f.group.ID, Role: models.MembershipLeader, Status: "active"}).Error; err != nil {
 				t.Fatal(err)
 			}
+			var memberLossBody map[string]any
+			if mutation == "member-loss" {
+				memberLossBody = departureConfirmBody(t, f.sc, "/api/v1/groups/"+itoa(f.group.ID)+"/departure-preview")
+			}
 			gate := holdContactGate(t, f.app)
 			first := queueContact(func() *httptest.ResponseRecorder {
 				switch mutation {
@@ -210,7 +214,7 @@ func TestContactAuthorityMutationWinsReveal(t *testing.T) {
 				case "role-loss":
 					return f.ac.do("PUT", "/api/v1/groups/"+itoa(f.group.ID)+"/members/"+itoa(f.leader.ID)+"/role", map[string]any{"role": "member"}, true)
 				case "member-loss":
-					return f.sc.do("POST", "/api/v1/groups/"+itoa(f.group.ID)+"/leave", nil, true)
+					return f.sc.do("POST", "/api/v1/groups/"+itoa(f.group.ID)+"/leave", memberLossBody, true)
 				default:
 					// Force sole-leader handoff, preserving the account-deletion user's prefix.
 					return f.ac.do("DELETE", "/api/v1/admin/users/"+itoa(f.leader.ID), map[string]any{"successors": map[string]uint{itoa(f.group.ID): f.admin.ID}}, true)

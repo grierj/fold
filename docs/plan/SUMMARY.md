@@ -1,9 +1,10 @@
 # Fold: product and delivery summary
 
-Reconciled October 25, 2026 against merged work through `1a3f077`.
-[PLAN.md](PLAN.md) owns product decisions; [STATUS.md](../../STATUS.md) tracks
-merges; [DOCUMENTATION-REVIEW.md](DOCUMENTATION-REVIEW.md) lists open conflicts.
-Merged does not mean deployed or production-ready.
+Reconciled October 27, 2026 against merged work through `1a3f077` and the
+locally accepted, unmerged M1.14 head `754a2f6`. [PLAN.md](PLAN.md) owns product
+decisions; [STATUS.md](../../STATUS.md) tracks merges and publication state;
+[DOCUMENTATION-REVIEW.md](DOCUMENTATION-REVIEW.md) lists open product conflicts.
+Local acceptance does not mean published, merged, deployed or production-ready.
 
 ## Product
 
@@ -35,9 +36,20 @@ matter more than novel design.
 - M1.13: per-date visibility with preview/confirmation, safe discovery/feed
   output and series preserve/reset (#123). Future consumers still need wiring.
 
-M1.14 is **partial**, not complete: only the exact-date invitation prerequisite
-landed with M1.11. RSVP-aware calendar styling, series answers/Undo, join/leave
-cleanup and the unanswered church-wide window remain deferred.
+## Locally accepted, publication pending
+
+M1.14 implementation is complete and accepted locally at `754a2f6`: RSVP-aware
+calendar and personal-feed scope, series answers with Undo, and group-departure
+preview/cleanup/retained-date access are implemented. All 12 integrated local
+gates passed, including 509 component tests and 77 browser tests with 6 existing
+conditional skips. Independent departure-security and series/calendar reviews,
+the later UI/R5 review, and the final R6 database review approved their assigned
+domains. The exact evidence and acceptance matrix are in
+[M1.14-VERIFICATION.md](M1.14-VERIFICATION.md).
+
+This is not merged work. Reviewable feature PRs, protected-branch `test`, `web`
+and `provision` checks, and merge are still pending. Representative external
+calendar-client interoperability was not manually tested.
 
 ## Privacy decisions that must survive later work
 
@@ -61,7 +73,7 @@ cleanup and the unanswered church-wide window remain deferred.
 
 | Phase | Remaining scope |
 |---|---|
-| M1.14 | Complete series RSVP and calendar/feed scope behavior |
+| M1.14 | Publish the locally accepted calendar/feed, series RSVP/Undo and departure boundaries; run protected-branch CI and merge |
 | Phase 2 | Rooms, booking conflicts, visibility-aware suggestions |
 | Phase 3 | Durable jobs, messaging composer/relay, provider adapters, reminders, optional SMS, notification preferences |
 | Phase 4 | Encrypted settings, resumable setup/CLI, CSV import, private/S3 assets, admin TOTP |

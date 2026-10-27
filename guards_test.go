@@ -78,6 +78,9 @@ var tsContracts = []struct {
 	{userJSON{}, "User"},
 	{groupSummaryJSON{}, "GroupSummary"},
 	{memberJSON{}, "Member"},
+	{departureKeepableDateJSON{}, "DepartureKeepableDate"},
+	{departurePreviewJSON{}, "DeparturePreview"},
+	{departureConfirmationJSON{}, "DepartureConfirmation"},
 	{notificationJSON{}, "Notification"},
 	{resolutionJSON{}, "NotificationResolution"},
 	{occurrenceJSON{}, "EventOccurrence"}, // Includes the public childcareFull flag; totals stay optional.

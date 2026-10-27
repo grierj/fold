@@ -50,6 +50,7 @@ func occurrenceFactsIn(tx *gorm.DB, eventID, occurrenceID uint) (policy.Occurren
 		return f, err
 	}
 	f.Scheduled = occ.Status == models.OccurrenceScheduled
+	f.EndsAt = occ.EndsAt
 	return f, nil
 }
 
@@ -171,7 +172,7 @@ func (a *App) reconcileOccurrenceAccesses(tx *gorm.DB, now time.Time, change con
 	var mailed []uint
 	for i := range rows {
 		row := &rows[i]
-		reason := facts.endReason(*row)
+		reason := facts.endReason(*row, now)
 		if reason == "" {
 			continue
 		}
@@ -235,6 +236,9 @@ func (a *App) occurrenceAccessEndReason(tx *gorm.DB, row models.OccurrenceAccess
 	if occ.Status != models.OccurrenceScheduled {
 		return policy.OccurrenceCancelled, nil
 	}
+	if row.Origin != policy.OccurrenceOriginManagerAdd && !occ.EndsAt.IsZero() && !now.Before(occ.EndsAt) {
+		return policy.OccurrenceEnded, nil
+	}
 	var reg models.Registration
 	if err := tx.Where("id = ? AND user_id = ? AND occurrence_id = ? AND status IN ?", row.RegistrationID, row.SubjectUserID, row.OccurrenceID, []string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).Limit(1).Find(&reg).Error; err != nil {
 		return "", err
@@ -246,6 +250,18 @@ func (a *App) occurrenceAccessEndReason(tx *gorm.DB, row models.OccurrenceAccess
 }
 
 func endOccurrenceAccessIn(tx *gorm.DB, row *models.OccurrenceAccess, reason string, actor *uint, now time.Time, ip string) ([]uint, error) {
+	return endOccurrenceAccess(tx, row, reason, actor, now, ip, true)
+}
+
+// endOccurrenceAccessWithoutNoticeIn is for a larger summarized operation,
+// such as group departure. It preserves the irreversible lifecycle row and
+// audit without generating one recipient notice per date.
+func endOccurrenceAccessWithoutNoticeIn(tx *gorm.DB, row *models.OccurrenceAccess, reason string, actor *uint, now time.Time, ip string) error {
+	_, err := endOccurrenceAccess(tx, row, reason, actor, now, ip, false)
+	return err
+}
+
+func endOccurrenceAccess(tx *gorm.DB, row *models.OccurrenceAccess, reason string, actor *uint, now time.Time, ip string, sendNotice bool) ([]uint, error) {
 	if row.Status != policy.OccurrenceAccessActive || row.EndedAt != nil {
 		return nil, nil
 	}
@@ -256,6 +272,9 @@ func endOccurrenceAccessIn(tx *gorm.DB, row *models.OccurrenceAccess, reason str
 	if err := audit.Write(tx, audit.Entry{Actor: actor, Action: audit.OccurrenceAccessEnded, TargetType: "occurrence_access", TargetID: row.ID, IP: ip,
 		Meta: map[string]any{"subjectUserId": row.SubjectUserID, "eventId": row.EventID, "occurrenceId": row.OccurrenceID, "outcome": row.Status}}); err != nil {
 		return nil, err
+	}
+	if !sendNotice {
+		return nil, nil
 	}
 	var subject models.User
 	if err := tx.Where("id = ? AND status = ? AND password_hash IS NOT NULL", row.SubjectUserID, models.UserActive).Limit(1).Find(&subject).Error; err != nil {
@@ -631,7 +650,7 @@ func (a *App) recordManagerOccurrenceAdd(tx *gorm.DB, ev *models.Event, occ *mod
 	if ev.GroupID != nil {
 		organizer = policy.OrganizerScope{Type: policy.ContactGroup, ID: *ev.GroupID}
 	}
-	row := models.OccurrenceAccess{SubjectUserID: *reg.UserID, OccurrenceID: occ.ID, EventID: ev.ID, OrganizerType: organizer.Type, OrganizerID: organizer.ID, IssuerID: issuer, RequestID: request, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: now}
+	row := models.OccurrenceAccess{SubjectUserID: *reg.UserID, OccurrenceID: occ.ID, EventID: ev.ID, OrganizerType: organizer.Type, OrganizerID: organizer.ID, Origin: policy.OccurrenceOriginManagerAdd, IssuerID: &issuer, RequestID: request, RegistrationID: reg.ID, Status: policy.OccurrenceAccessActive, GrantedAt: now}
 	if err := tx.Create(&row).Error; err != nil {
 		return nil, err
 	}

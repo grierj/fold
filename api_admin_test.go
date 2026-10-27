@@ -171,8 +171,8 @@ func TestAdminGroupMembers(t *testing.T) {
 	}
 	// Cannot remove the current leader.
 	w = admin.do("DELETE", membersPath+"/"+itoa2(other.ID), nil, true)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("remove leader: got %d, want 400", w.Code)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("remove leader: got %d, want 409", w.Code)
 	}
 	// Removing a regular member works.
 	var oldLeader models.User
@@ -184,7 +184,7 @@ func TestAdminGroupMembers(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("add old leader as member: %d %s", w.Code, w.Body.String())
 	}
-	w = admin.do("DELETE", membersPath+"/"+itoa2(oldLeader.ID), nil, true)
+	w = confirmDeparture(t, admin, "DELETE", membersPath+"/"+itoa2(oldLeader.ID), "/api/v1/groups/"+itoa2(g.ID)+"/members/"+itoa2(oldLeader.ID)+"/departure-preview", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("remove member: %d %s", w.Code, w.Body.String())
 	}

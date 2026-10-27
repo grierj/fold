@@ -11,7 +11,7 @@ vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1 }, loading: false, i
 vi.mock("../api", async (actual) => ({
   ...(await actual<typeof import("../api")>()),
   People: { search: vi.fn() },
-  Groups: { members: vi.fn().mockResolvedValue({ members: [] }) },
+  Groups: { members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() },
   AdminGroups: { list: vi.fn(), addMember: vi.fn() },
   Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }) },
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }) },
@@ -30,6 +30,9 @@ const request: AccountRequest = {
 beforeEach(() => {
   vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [request] });
   vi.mocked(AdminAccountRequests.approve).mockReset();
+  vi.mocked(Groups.members).mockReset().mockResolvedValue({ members: [] });
+  vi.mocked(Groups.memberDeparturePreview).mockReset();
+  vi.mocked(Groups.confirmMemberDeparture).mockReset();
 });
 
 it.each([
@@ -70,6 +73,51 @@ it("uses name selection on admin add with the existing role and over-limit choic
   expect(AdminGroups.addMember).toHaveBeenNthCalledWith(1, 3, { selectionId: "opaque" }, "leader");
   expect(AdminGroups.addMember).toHaveBeenLastCalledWith(3, { selectionId: "opaque" }, "leader", true);
   expect(Groups.members).toHaveBeenCalledWith(3);
+});
+
+it("uses the canonical departure preview and POST for an admin removal", async () => {
+  const group = { id: 3, name: "Choir", description: "", memberCount: 1, status: "active", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", nextEventAt: null, leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null } as import("../types").GroupSummary;
+  const member = { id: 9, name: "Pat Person", avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", joinedAt: "2026-10-01T00:00:00Z", admin: false };
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group] });
+  vi.mocked(Groups.members).mockResolvedValueOnce({ members: [member] }).mockResolvedValue({ members: [] });
+  vi.mocked(Groups.memberDeparturePreview).mockResolvedValue({ departure: { action: "remove", groupId: 3, groupName: "Choir", subjectId: 9, subjectName: "Pat Person", affectedCount: 0, goingCount: 0, maybeCount: 0, waitlistedCount: 0, keepableCount: 0, defaultKeepCount: 0, dates: [], snapshot: "admin-remove" } });
+  vi.mocked(Groups.confirmMemberDeparture).mockResolvedValue({ departure: { action: "remove", groupId: 3, subjectId: 9, keptCount: 0, endedCount: 0 } });
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: "Manage members" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Remove" }));
+  expect(await screen.findByRole("dialog", { name: "Remove Pat Person?" })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Remove from group" }));
+  expect(Groups.confirmMemberDeparture).toHaveBeenCalledWith(3, 9, "admin-remove", [], undefined);
+  expect(await screen.findByText("0 dates kept · 0 dates ended.")).toHaveAttribute("role", "status");
+});
+
+it.each([401, 403, 404])("clears the protected roster and collapses the manager after departure authority fails with %s", async (status) => {
+  const group = { id: 3, name: "Choir", description: "", memberCount: 1, status: "active", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", nextEventAt: null, leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null } as import("../types").GroupSummary;
+  const member = { id: 9, name: "Pat Protected", email: "pat-protected@example.com", phone: "555-0109", avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", joinedAt: "2026-10-01T00:00:00Z", admin: false };
+  const denied = new ApiError(status, "private", { code: status === 401 ? "signed_out" : "invalid" });
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group] });
+  vi.mocked(Groups.members).mockReset().mockResolvedValueOnce({ members: [member] }).mockRejectedValueOnce(denied);
+  vi.mocked(Groups.memberDeparturePreview).mockReset()
+    .mockResolvedValueOnce({ departure: { action: "remove", groupId: 3, groupName: "Choir", subjectId: 9, subjectName: "Pat Protected", affectedCount: 0, goingCount: 0, maybeCount: 0, waitlistedCount: 0, keepableCount: 0, defaultKeepCount: 0, dates: [], snapshot: "admin-denied" } })
+    .mockRejectedValueOnce(denied);
+  vi.mocked(Groups.confirmMemberDeparture).mockReset().mockRejectedValue(
+    status === 401 ? new ApiError(409, "private", { code: "departure_unavailable" }) : denied
+  );
+
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: "Manage members" }));
+  expect(await screen.findByText("Pat Protected")).toBeInTheDocument();
+  expect(screen.getByText(/pat-protected@example\.com/)).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Remove from group" }));
+
+  expect(await screen.findByRole("heading", { name: "Departure unavailable" })).toBeInTheDocument();
+  expect(screen.queryByText("Pat Protected")).not.toBeInTheDocument();
+  expect(screen.queryByText(/pat-protected@example\.com/)).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Manage members" })).toHaveFocus();
+  expect(screen.queryByText("Pat Protected")).not.toBeInTheDocument();
 });
 
 it("offers a teen Ask to add without a leader-role shortcut", async () => {

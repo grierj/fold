@@ -112,6 +112,8 @@ import type {
   EventDetailResponse,
   EventHostRow,
   CalendarOccurrence,
+  DepartureConfirmationResponse,
+  DeparturePreview,
   EventOccurrence,
   EventSeries,
   GroupDetailResponse,
@@ -198,16 +200,20 @@ export const Groups = {
   visibilityImpact: (id: number | string, visibility: Visibility) =>
     api<VisibilityImpact>(`/groups/${id}/visibility-impact?visibility=${encodeURIComponent(visibility)}`),
   join: (id: number | string) => api<unknown>(`/groups/${id}/join`, { method: "POST" }),
-  leave: (id: number | string) => api<unknown>(`/groups/${id}/leave`, { method: "POST" }),
+  departurePreview: (id: number | string) =>
+    api<{ departure: DeparturePreview }>(`/groups/${id}/departure-preview`),
+  confirmDeparture: (id: number | string, snapshot: string, keepOccurrenceIds: number[]) =>
+    api<DepartureConfirmationResponse>(`/groups/${id}/leave`, { method: "POST", body: { snapshot, keepOccurrenceIds } }),
+  memberDeparturePreview: (id: number | string, userId: number) =>
+    api<{ departure: DeparturePreview }>(`/groups/${id}/members/${userId}/departure-preview`),
+  confirmMemberDeparture: (id: number | string, userId: number, snapshot: string, keepOccurrenceIds: number[], note?: string) =>
+    api<DepartureConfirmationResponse>(`/groups/${id}/members/${userId}/departure`, { method: "POST", body: { snapshot, keepOccurrenceIds, note } }),
   // Make a member a leader, or a leader a member again (audited; admins are notified).
   setRole: (id: number | string, userId: number, role: "leader" | "member") =>
     api<{ members: Member[] }>(`/groups/${id}/members/${userId}/role`, { method: "PUT", body: { role } }),
   // overLimit: add even though the group is full (an explicit, audited choice; DEC-39).
   addMember: (id: number | string, target: string | { selectionId: string }, overLimit = false) =>
     api<unknown>(`/groups/${id}/members`, { method: "POST", body: { ...(typeof target === "string" ? { email: target } : target), overLimit } }),
-  // Leaders and admins remove someone (audited; DEC-35). The note stays in the audit log.
-  removeMember: (id: number | string, userId: number, note?: string) =>
-    api<{ members: Member[] }>(`/groups/${id}/members/${userId}`, { method: "DELETE", body: { note } }),
   requestDeletion: (id: number | string) =>
     api<{ group: GroupSummary }>(`/groups/${id}/deletion-request`, { method: "POST" }),
   cancelDeletion: (id: number | string) =>
@@ -616,8 +622,6 @@ export const AdminGroups = {
   list: () => api<{ groups: GroupSummary[] }>("/admin/groups"),
   addMember: (id: number | string, target: number | { selectionId: string }, role: "leader" | "member" = "member", overLimit = false) =>
     api<unknown>(`/admin/groups/${id}/members`, { method: "POST", body: { ...(typeof target === "number" ? { userId: target } : target), role, overLimit } }),
-  removeMember: (id: number | string, userId: number) =>
-    api<unknown>(`/admin/groups/${id}/members/${userId}`, { method: "DELETE" }),
 };
 
 export interface HouseholdPersonInput {

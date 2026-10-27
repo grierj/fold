@@ -36,6 +36,8 @@ const (
 	GroupPending            = "group.pending"
 	GroupDeletion           = "group.deletion"
 	LeadershipChanged       = "group.leadership_changed"
+	MembershipDeparture     = "membership.departure"
+	MembershipLeft          = "membership.left"
 	MemberNotRestored       = "membership.not_restored"
 	OccurrenceCancelled     = "event.cancelled"
 	RegistrationCancelled   = "registration.cancelled"
@@ -81,6 +83,8 @@ type Vars struct {
 	GroupVis   string // the group's visibility, in words
 	Note       string // a short reason the actor gave
 	Count      int    // set by Send: how many events this row covers
+	KeptCount  int    // departure summary: exact dates retained
+	EndedCount int    // departure summary: upcoming registrations ended
 	Teen       bool   // the subject is a teen account (badge in words; no contact details ever)
 	// ManageURL is a full signed URL the recipient can act on (for
 	// example a registration manage link). It appears in the email body
@@ -269,6 +273,21 @@ func init() {
 				title = actor + " removed " + person + " as a leader"
 			}
 			return title, v.Group
+		},
+	})
+	register(Kind{
+		Key: MembershipDeparture, Category: CatGroups, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return "Your group membership ended", fmt.Sprintf("%d upcoming dates were kept and %d ended. Open Fold to review your upcoming dates.", v.KeptCount, v.EndedCount)
+		},
+		RenderEmailSafe: func(v Vars) (string, string) {
+			return "Your group membership ended", fmt.Sprintf("%d upcoming dates were kept and %d ended. Sign in to Fold to review your upcoming dates.", v.KeptCount, v.EndedCount)
+		},
+	})
+	register(Kind{
+		Key: MembershipLeft, Category: CatGroups, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return or(v.Person, "Someone") + " left " + or(v.Group, "your group"), "Their group membership has ended."
 		},
 	})
 	register(Kind{

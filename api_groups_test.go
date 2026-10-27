@@ -174,13 +174,13 @@ func TestJoinLeaveAndRSVP(t *testing.T) {
 	}
 
 	// Leave.
-	w = sam.do("POST", "/api/v1/groups/"+gid+"/leave", map[string]any{}, true)
+	w = confirmDeparture(t, sam, "POST", "/api/v1/groups/"+gid+"/leave", "/api/v1/groups/"+gid+"/departure-preview", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("leave: %d", w.Code)
 	}
-	app.DB.Model(&models.Membership{}).Where("group_id = ?", created.Group.ID).Count(&n)
+	app.DB.Model(&models.Membership{}).Where("group_id = ? AND status = ?", created.Group.ID, "active").Count(&n)
 	if n != 1 {
-		t.Fatalf("expected 1 membership after leave, got %d", n)
+		t.Fatalf("expected 1 active membership after leave, got %d", n)
 	}
 }
 
@@ -209,13 +209,13 @@ func TestLeaderCannotLeave(t *testing.T) {
 	admin.do("POST", "/api/v1/admin/groups/"+gid+"/approve", map[string]any{}, true)
 
 	w = admin.do("POST", "/api/v1/groups/"+gid+"/leave", map[string]any{}, true)
-	if w.Code != http.StatusBadRequest {
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"departure_unavailable"`) {
 		t.Fatalf("leader leave: got %d %s", w.Code, w.Body.String())
 	}
 
 	sam := loginAPI(t, app, "sam", "password1234")
 	sam.do("POST", "/api/v1/groups/"+gid+"/join", map[string]any{}, true)
-	w = sam.do("POST", "/api/v1/groups/"+gid+"/leave", map[string]any{}, true)
+	w = confirmDeparture(t, sam, "POST", "/api/v1/groups/"+gid+"/leave", "/api/v1/groups/"+gid+"/departure-preview", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("member leave: got %d %s", w.Code, w.Body.String())
 	}
@@ -460,7 +460,7 @@ func TestLeadershipAndDeletion(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("make sam a leader: %d %s", w.Code, w.Body.String())
 	}
-	if w := leader.do("POST", "/api/v1/groups/"+gid+"/leave", map[string]any{}, true); w.Code != http.StatusOK {
+	if w := confirmDeparture(t, leader, "POST", "/api/v1/groups/"+gid+"/leave", "/api/v1/groups/"+gid+"/departure-preview", ""); w.Code != http.StatusOK {
 		t.Fatalf("old leader leave: %d %s", w.Code, w.Body.String())
 	}
 	var detail struct {
@@ -596,10 +596,10 @@ func TestLeadershipChangesAreAuditedAndNotified(t *testing.T) {
 	if w := bobC.do("PUT", rolePath(bob), map[string]any{"role": "member"}, true); w.Code != http.StatusBadRequest {
 		t.Fatalf("last leader demotes self: %d", w.Code)
 	}
-	if w := bobC.do("POST", "/api/v1/groups/"+gid+"/leave", map[string]any{}, true); w.Code != http.StatusBadRequest {
+	if w := bobC.do("POST", "/api/v1/groups/"+gid+"/leave", map[string]any{}, true); w.Code != http.StatusConflict {
 		t.Fatalf("last leader leaves: %d", w.Code)
 	}
-	if w := adminC.do("DELETE", "/api/v1/admin/groups/"+gid+"/members/"+itoa(bob.ID), nil, true); w.Code != http.StatusBadRequest {
+	if w := adminC.do("DELETE", "/api/v1/admin/groups/"+gid+"/members/"+itoa(bob.ID), nil, true); w.Code != http.StatusConflict {
 		t.Fatalf("admin removes last leader: %d", w.Code)
 	}
 	// Ann (a member now) can't change roles.
@@ -760,10 +760,10 @@ func TestLeadersRemoveMembers(t *testing.T) {
 
 	// A member and a co-leader, each audited with actor, group, person,
 	// old role and IP; the note stays in the audit row.
-	if w := leader.do("DELETE", path+itoa(sam.ID), map[string]string{"note": "asked to leave the choir"}, true); w.Code != http.StatusOK {
+	if w := confirmDeparture(t, leader, "DELETE", path+itoa(sam.ID), path+itoa(sam.ID)+"/departure-preview", "asked to leave the choir"); w.Code != http.StatusOK {
 		t.Fatalf("remove member: %d %s", w.Code, w.Body.String())
 	}
-	if w := leader.do("DELETE", path+itoa(co.ID), nil, true); w.Code != http.StatusOK {
+	if w := confirmDeparture(t, leader, "DELETE", path+itoa(co.ID), path+itoa(co.ID)+"/departure-preview", ""); w.Code != http.StatusOK {
 		t.Fatalf("remove co-leader: %d %s", w.Code, w.Body.String())
 	}
 	rows, metas := auditRows(t, app, audit.MemberRemoved)
@@ -782,8 +782,8 @@ func TestLeadersRemoveMembers(t *testing.T) {
 	}
 
 	// A leader can't remove or demote an admin, or remove themselves.
-	if w := leader.do("DELETE", path+itoa(adminUser.ID), nil, true); w.Code != http.StatusBadRequest {
-		t.Fatalf("remove admin: got %d, want 400", w.Code)
+	if w := leader.do("DELETE", path+itoa(adminUser.ID), nil, true); w.Code != http.StatusConflict {
+		t.Fatalf("remove admin: got %d, want 409", w.Code)
 	}
 	if w := leader.do("PUT", path+itoa(adminUser.ID)+"/role", map[string]string{"role": "member"}, true); w.Code != http.StatusBadRequest {
 		t.Fatalf("demote admin: got %d, want 400", w.Code)
@@ -797,11 +797,11 @@ func TestLeadersRemoveMembers(t *testing.T) {
 	if w := admin.do("PUT", path+itoa(adminUser.ID)+"/role", map[string]string{"role": "member"}, true); w.Code != http.StatusOK {
 		t.Fatalf("admin demotes admin co-leader: %d %s", w.Code, w.Body.String())
 	}
-	if w := admin.do("DELETE", path+itoa(lead.ID), nil, true); w.Code != http.StatusBadRequest {
-		t.Fatalf("remove last leader: got %d, want 400", w.Code)
+	if w := admin.do("DELETE", path+itoa(lead.ID), nil, true); w.Code != http.StatusConflict {
+		t.Fatalf("remove last leader: got %d, want 409", w.Code)
 	}
-	if w := admin.do("DELETE", "/api/v1/admin/groups/"+itoa(g.ID)+"/members/"+itoa(lead.ID), nil, true); w.Code != http.StatusBadRequest {
-		t.Fatalf("admin route, last leader: got %d, want 400", w.Code)
+	if w := admin.do("DELETE", "/api/v1/admin/groups/"+itoa(g.ID)+"/members/"+itoa(lead.ID), nil, true); w.Code != http.StatusConflict {
+		t.Fatalf("admin route, last leader: got %d, want 409", w.Code)
 	}
 
 	// 404 for a group the caller can't see, 403 for a visible one they don't lead.

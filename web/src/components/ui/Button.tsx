@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode, Ref } from "react";
 import { Link } from "react-router-dom";
 
 // The one button (ENFORCEMENT.md A). Color comes only from `variant`; there
@@ -8,6 +8,7 @@ export type ButtonVariant = "primary" | "secondary" | "danger" | "danger-outline
 
 type Props = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "className" | "style"> & {
   variant: ButtonVariant;
+  ref?: Ref<HTMLButtonElement>;
   // "sm" (36px tall) is for table rows only; everything else is 44px.
   size?: "md" | "sm";
   layout?: string;

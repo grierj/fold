@@ -618,9 +618,10 @@ func (a *App) promoteRows(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 
 // registrationChange is prepared before the batch writes anything.
 type registrationChange struct {
-	old   models.Registration
-	next  models.Registration
-	found bool
+	old         models.Registration
+	next        models.Registration
+	found       bool
+	auditAction string
 }
 
 func prepareRegistration(old models.Registration, o *models.EventOccurrence, subject registrationSubject, want string, guests int, mode string, care childcareRequest, namedCare *bool, now time.Time) (registrationChange, error) {
@@ -762,7 +763,11 @@ func (a *App) applyRegistrationBatch(tx *gorm.DB, ev *models.Event, o *models.Ev
 		} else if err := a.registerLocked(tx, ev, o, ch, now); err != nil {
 			return nil, err
 		}
-		if err := auditRegistration(tx, actor, audit.RegistrationChanged, ev.ID, ch.old, ch.next, ip); err != nil {
+		action := ch.auditAction
+		if action == "" {
+			action = audit.RegistrationChanged
+		}
+		if err := auditRegistration(tx, actor, action, ev.ID, ch.old, ch.next, ip); err != nil {
 			return nil, err
 		}
 	}

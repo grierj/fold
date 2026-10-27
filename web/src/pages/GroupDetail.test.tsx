@@ -1,6 +1,6 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError, Events, Groups, Households, People } from "../api";
 import type { GroupDetailResponse, Household, User } from "../types";
@@ -9,17 +9,27 @@ import { GroupDetail } from "./GroupDetail";
 
 const actor = vi.hoisted(() => ({ user: { id: 2, accountType: "adult", hideContactFromLeaders: false } as User | null }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, isAdmin: false }) }));
-vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), People: { search: vi.fn() }, Groups: { get: vi.fn(), addMember: vi.fn() }, Events: { register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() }, Households: { mine: vi.fn() } }));
+vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), People: { search: vi.fn() }, Groups: { get: vi.fn(), addMember: vi.fn(), join: vi.fn(), departurePreview: vi.fn(), confirmDeparture: vi.fn(), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() }, Events: { register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() }, Households: { mine: vi.fn() } }));
 const family: Household = { id: 1, name: "Family", address: "", createdBy: 2, accounts: [], people: [{ id: 3, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary", kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] };
 const page: GroupDetailResponse = { group: { id: 1, name: "Family group", description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Hall", leaderName: "Leader", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null }, members: [], upcomingEvents: [occurrence({})], canManage: false, isMember: true };
 function open() { render(<MemoryRouter initialEntries={["/groups/1"]}><Routes><Route path="/groups/:id" element={<GroupDetail />} /></Routes></MemoryRouter>); }
+function GroupRouteWithSwitcher() {
+  const navigate = useNavigate();
+  return <><button onClick={() => navigate("/groups/2")}>Open next group</button><GroupDetail /></>;
+}
+function openWithSwitcher() {
+  render(<MemoryRouter initialEntries={["/groups/1"]}><Routes>
+    <Route path="/groups/:id" element={<GroupRouteWithSwitcher />} />
+    <Route path="/my-groups" element={<h1>My groups destination</h1>} />
+  </Routes></MemoryRouter>);
+}
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
   const promise = new Promise<T>((accept, decline) => { resolve = accept; reject = decline; });
   return { promise, resolve, reject };
 }
-beforeEach(() => { vi.resetAllMocks(); actor.user = { id: 2, accountType: "adult", hideContactFromLeaders: false } as User; vi.mocked(Groups.get).mockResolvedValue(page); vi.mocked(Households.mine).mockResolvedValue({ household: family }); });
+beforeEach(() => { vi.resetAllMocks(); actor.user = { id: 2, accountType: "adult", hideContactFromLeaders: false } as User; vi.mocked(Groups.get).mockResolvedValue(page); vi.mocked(Households.mine).mockResolvedValue({ household: family }); vi.mocked(Groups.departurePreview).mockResolvedValue({ departure: { action: "leave", groupId: 1, groupName: "Family group", subjectId: 2, subjectName: "Member", affectedCount: 0, goingCount: 0, maybeCount: 0, waitlistedCount: 0, keepableCount: 0, defaultKeepCount: 0, dates: [], snapshot: "self" } }); vi.mocked(Groups.confirmDeparture).mockResolvedValue({ departure: { action: "leave", groupId: 1, subjectId: 2, keptCount: 0, endedCount: 0 } }); });
 
 it("fetches the household once and refetches all date state after a batch", async () => {
   vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 9, personId: 3, registeredBy: 2, status: "going", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }] });
@@ -153,6 +163,84 @@ it("offers an explicit Ask to add for a selected teen instead of direct add", as
   await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
   expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
   expect(Groups.addMember).not.toHaveBeenCalled();
+});
+
+it("routes self-leave through preview and explicit snapshot confirmation", async () => {
+  vi.mocked(Groups.get).mockResolvedValueOnce(page).mockResolvedValueOnce({ ...page, isMember: false });
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "Leave group" }));
+  const dialog = await screen.findByRole("dialog", { name: "Leave Family group?" });
+  expect(Groups.confirmDeparture).not.toHaveBeenCalled();
+  await userEvent.click(within(dialog).getByRole("button", { name: "Leave group" }));
+  expect(Groups.confirmDeparture).toHaveBeenCalledWith("1", "self", []);
+  expect(await screen.findByText("0 dates kept · 0 dates ended.")).toHaveAttribute("role", "status");
+});
+
+it("does not let a deferred pre-leave refresh restore protected group authority", async () => {
+  const leader = { id: 2, name: "Current Leader", email: "leader@example.com", phone: "208-555-0101", avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "leader" as const, joinedAt: "2026-10-01T00:00:00Z", admin: false };
+  const protectedMember = { ...leader, id: 4, name: "Protected Member", email: "protected@example.com", role: "member" as const };
+  const privileged = { ...page, canManage: true, isMember: true, members: [leader, protectedMember] };
+  const departed = { ...page, canManage: false, isMember: false, members: [], upcomingEvents: [] };
+  const oldRefresh = deferred<GroupDetailResponse>();
+  const postDeparture = deferred<GroupDetailResponse>();
+  vi.mocked(Groups.get)
+    .mockResolvedValueOnce(privileged)
+    .mockReturnValueOnce(oldRefresh.promise)
+    .mockReturnValueOnce(postDeparture.promise);
+  vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [{ registrationId: 9, personId: 3, registeredBy: 2, status: "going", attendanceMode: "in_person", waitlistPosition: null, childcareRequested: false }] });
+
+  open();
+  await userEvent.click(await screen.findByRole("checkbox", { name: "Mary" }));
+  await userEvent.click(screen.getByRole("button", { name: "Save answers" }));
+  await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(2));
+  await userEvent.click(screen.getByRole("button", { name: "More group actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Leave group" }));
+  await userEvent.click(within(await screen.findByRole("dialog", { name: "Leave Family group?" })).getByRole("button", { name: "Leave group" }));
+  await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(3));
+  expect(screen.queryByRole("heading", { name: "Family group" })).not.toBeInTheDocument();
+
+  await act(async () => postDeparture.resolve(departed));
+  expect(await screen.findByRole("button", { name: "Join this group" })).toBeInTheDocument();
+  await act(async () => oldRefresh.resolve(privileged));
+  expect(screen.getByRole("button", { name: "Join this group" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Leave group" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Protected Member")).not.toBeInTheDocument();
+  expect(screen.queryByText("protected@example.com")).not.toBeInTheDocument();
+});
+
+it("does not let a stale post-leave rejection redirect a newer group view", async () => {
+  const postDeparture = deferred<GroupDetailResponse>();
+  const nextGroup = { ...page, group: { ...page.group, id: 2, name: "Newer group view" }, isMember: false, upcomingEvents: [] };
+  vi.mocked(Groups.get)
+    .mockResolvedValueOnce(page)
+    .mockReturnValueOnce(postDeparture.promise)
+    .mockResolvedValueOnce(nextGroup);
+
+  openWithSwitcher();
+  await userEvent.click(await screen.findByRole("button", { name: "Leave group" }));
+  await userEvent.click(within(await screen.findByRole("dialog", { name: "Leave Family group?" })).getByRole("button", { name: "Leave group" }));
+  await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(2));
+  await userEvent.click(screen.getByRole("button", { name: "Open next group" }));
+  expect(await screen.findByRole("heading", { name: "Newer group view" })).toBeInTheDocument();
+
+  await act(async () => postDeparture.reject(new ApiError(404, "hidden", { code: "not_found" })));
+  expect(screen.getByRole("heading", { name: "Newer group view" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { name: "My groups destination" })).not.toBeInTheDocument();
+});
+
+it("routes leader removal through the same chooser and preserves its optional note", async () => {
+  const member = { id: 3, name: "Pat Person", avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", joinedAt: "2026-10-01T00:00:00Z", admin: false };
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true, members: [member] });
+  vi.mocked(Groups.memberDeparturePreview).mockResolvedValue({ departure: { action: "remove", groupId: 1, groupName: "Family group", subjectId: 3, subjectName: "Pat Person", affectedCount: 0, goingCount: 0, maybeCount: 0, waitlistedCount: 0, keepableCount: 0, defaultKeepCount: 0, dates: [], snapshot: "remove" } });
+  vi.mocked(Groups.confirmMemberDeparture).mockResolvedValue({ departure: { action: "remove", groupId: 1, subjectId: 3, keptCount: 0, endedCount: 0 } });
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "members" }));
+  await userEvent.click(screen.getByRole("button", { name: "More for Pat Person" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Remove from group" }));
+  const dialog = await screen.findByRole("dialog", { name: "Remove Pat Person?" });
+  await userEvent.type(within(dialog).getByLabelText("Note for church admins (optional)"), "Requested by pastor");
+  await userEvent.click(within(dialog).getByRole("button", { name: "Remove from group" }));
+  await waitFor(() => expect(Groups.confirmMemberDeparture).toHaveBeenCalledWith("1", 3, "remove", [], "Requested by pastor"));
 });
 
 it("keeps the date visibility note in the content column rather than another horizontal column", async () => {

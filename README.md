@@ -92,6 +92,16 @@ Useful env vars:
 | `COOKIE_SECURE` | true in prod | Set `false` only for plain-http local testing |
 | `SITE_URL` | — | Public base URL, e.g. `https://groups.example.org` |
 
+### Schema downgrades
+
+`fold migrate down-one` is an offline, quiesced maintenance command. Stop every
+Fold app instance and worker before running it, and keep membership writes
+stopped until the rollback is complete or the database has been re-upgraded.
+Do not use schema downgrade as a live rollback path. This pre-release milestone
+has no live users; if a rollback guard refuses a test database, reset that test
+database instead. Production rollback restores the pre-upgrade backup as
+specified in `docs/DEPLOY-DIGITALOCEAN.md`.
+
 ## Tests
 
 ```bash

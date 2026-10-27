@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Groups } from "../api";
 import type { GroupSummary } from "../types";
 import { GroupCard } from "../components/GroupCard";
@@ -15,6 +15,8 @@ import { ButtonLink } from "../components/ui/Button";
 export function MyGroups() {
   const { user, loading: authLoading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const departureStatus = (location.state as { departureStatus?: string } | null)?.departureStatus;
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +64,7 @@ export function MyGroups() {
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">My groups</h1>
+      {departureStatus && <p role="status" className="mb-4 rounded-lg border border-border bg-sunken px-4 py-3 text-sm">{departureStatus}</p>}
       {loading && (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           <Skeleton kind="cards" count={3} />

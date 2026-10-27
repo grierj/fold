@@ -195,8 +195,9 @@ func TestCanFinalizeAddRequest(t *testing.T) {
 
 func accessFixture() (ContactAccount, OccurrenceAccess, OccurrenceFacts, time.Time) {
 	_, f, _ := addFixture()
+	f.Occurrence.EndsAt = f.Now.Add(time.Hour)
 	a := OccurrenceAccess{SubjectUserID: 2, OccurrenceID: 4, EventID: 3, Organizer: f.Occurrence.Organizer,
-		IssuerID: 1, RegistrationID: 6, RequestID: 7, Status: OccurrenceAccessActive, GrantedAt: f.Now.Add(-time.Minute)}
+		Origin: OccurrenceOriginManagerAdd, IssuerID: 1, RegistrationID: 6, RequestID: 7, Status: OccurrenceAccessActive, GrantedAt: f.Now.Add(-time.Minute)}
 	return f.Subject, a, f.Occurrence, f.Now
 }
 
@@ -254,11 +255,89 @@ func TestOccurrenceAccessCurrent(t *testing.T) {
 			*now = a.GrantedAt.Add(-time.Nanosecond)
 		}, false},
 		{"at grant", func(_ *ContactAccount, a *OccurrenceAccess, _ *OccurrenceFacts, now *time.Time) { *now = a.GrantedAt }, true},
+		{"manager add keeps established post-date lifecycle", func(_ *ContactAccount, _ *OccurrenceAccess, f *OccurrenceFacts, now *time.Time) { *now = f.EndsAt }, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			p, a, f, now := accessFixture()
 			tt.change(&p, &a, &f, &now)
 			if got := OccurrenceAccessCurrent(p, a, f, now); got != tt.want {
+				t.Fatalf("got %v want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOccurrenceAccessOriginsAndDepartureAuthorization(t *testing.T) {
+	p, manager, f, now := accessFixture()
+	self := manager
+	self.Origin, self.IssuerID, self.RequestID = OccurrenceOriginDepartureSelf, 0, 0
+	self.DepartureMembershipID, self.DepartureActorID = 8, self.SubjectUserID
+	removed := self
+	removed.Origin, removed.DepartureActorID = OccurrenceOriginDepartureRemoval, 9
+	atEnd := now
+	atEnd = f.EndsAt
+	if OccurrenceAccessCurrent(p, self, f, atEnd) || OccurrenceAccessCurrent(p, removed, f, atEnd) {
+		t.Fatal("departure access survived the exact occurrence end")
+	}
+	beforeEnd := f.EndsAt.Add(-time.Nanosecond)
+	if !OccurrenceAccessCurrent(p, self, f, beforeEnd) || !OccurrenceAccessCurrent(p, removed, f, beforeEnd) {
+		t.Fatal("departure access ended before the occurrence boundary")
+	}
+	for _, tt := range []struct {
+		name   string
+		access OccurrenceAccess
+		want   bool
+	}{
+		{"manager add", manager, true},
+		{"self departure", self, true},
+		{"manager removal", removed, true},
+		{"unknown origin", func() OccurrenceAccess { a := manager; a.Origin = "other"; return a }(), false},
+		{"manager missing issuer", func() OccurrenceAccess { a := manager; a.IssuerID = 0; return a }(), false},
+		{"manager forged departure facts", func() OccurrenceAccess { a := manager; a.DepartureActorID = 9; return a }(), false},
+		{"self forged issuer", func() OccurrenceAccess { a := self; a.IssuerID = 9; return a }(), false},
+		{"self forged request", func() OccurrenceAccess { a := self; a.RequestID = 7; return a }(), false},
+		{"self wrong actor", func() OccurrenceAccess { a := self; a.DepartureActorID = 9; return a }(), false},
+		{"removal by subject", func() OccurrenceAccess { a := removed; a.DepartureActorID = a.SubjectUserID; return a }(), false},
+		{"departure missing membership", func() OccurrenceAccess { a := removed; a.DepartureMembershipID = 0; return a }(), false},
+		{"departure churchwide", func() OccurrenceAccess { a := removed; a.Organizer = OrganizerScope{ContactEvent, a.EventID}; return a }(), false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ValidOccurrenceAccessOrigin(tt.access); got != tt.want {
+				t.Fatalf("origin valid=%v want %v", got, tt.want)
+			}
+			if got := OccurrenceAccessCurrent(p, tt.access, f, now); got != tt.want {
+				t.Fatalf("current=%v want %v", got, tt.want)
+			}
+		})
+	}
+
+	member, leader := Rel{Member: true}, Rel{Member: true, Leader: true}
+	subject := &Person{ID: 2}
+	admin := &Person{ID: 9, Admin: true}
+	groupLeader := &Person{ID: 10}
+	for _, tt := range []struct {
+		name                 string
+		origin               string
+		actor, subject       *Person
+		actorRel, subjectRel Rel
+		leaders              int
+		want                 bool
+	}{
+		{"member self leave", OccurrenceOriginDepartureSelf, subject, subject, member, member, 1, true},
+		{"co-leader self leave", OccurrenceOriginDepartureSelf, subject, subject, leader, leader, 2, true},
+		{"sole leader self leave", OccurrenceOriginDepartureSelf, subject, subject, leader, leader, 1, false},
+		{"other actor cannot self leave", OccurrenceOriginDepartureSelf, admin, subject, Rel{}, member, 1, false},
+		{"leader removal", OccurrenceOriginDepartureRemoval, groupLeader, subject, leader, member, 1, true},
+		{"admin removal", OccurrenceOriginDepartureRemoval, admin, subject, Rel{}, member, 1, true},
+		{"member removal refused", OccurrenceOriginDepartureRemoval, groupLeader, subject, member, member, 1, false},
+		{"leader cannot remove admin", OccurrenceOriginDepartureRemoval, groupLeader, &Person{ID: 2, Admin: true}, leader, member, 1, false},
+		{"admin removes admin", OccurrenceOriginDepartureRemoval, admin, &Person{ID: 2, Admin: true}, Rel{}, member, 1, true},
+		{"sole leader removal refused", OccurrenceOriginDepartureRemoval, admin, subject, Rel{}, leader, 1, false},
+		{"self is not removal", OccurrenceOriginDepartureRemoval, subject, subject, leader, member, 1, false},
+		{"manager origin is not departure", OccurrenceOriginManagerAdd, admin, subject, Rel{}, member, 1, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanRetainOccurrenceAfterDeparture(tt.origin, tt.actor, tt.subject, tt.actorRel, tt.subjectRel, tt.leaders); got != tt.want {
 				t.Fatalf("got %v want %v", got, tt.want)
 			}
 		})

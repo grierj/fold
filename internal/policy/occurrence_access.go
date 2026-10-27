@@ -10,18 +10,23 @@ const (
 	RequestGroupAdd      = "group_add"
 	RequestOccurrenceAdd = "occurrence_add"
 
-	OccurrenceAccessActive   = "active"
-	OccurrenceAccessEnded    = "ended"
-	OccurrenceDeclined       = "declined"
-	OccurrenceBlocked        = "blocked"
-	OccurrenceRemoved        = "removed"
-	OccurrenceAlreadyAdded   = "already_added"
-	OccurrenceCancelled      = "occurrence_cancelled"
-	OccurrenceDeleted        = "occurrence_deleted"
-	OccurrenceEventDeleted   = "event_deleted"
-	OccurrenceGroupDeleted   = "group_deleted"
-	OccurrenceConsentLost    = "consent_lost"
-	OccurrenceContextChanged = "context_changed"
+	OccurrenceAccessActive           = "active"
+	OccurrenceAccessEnded            = "ended"
+	OccurrenceOriginManagerAdd       = "manager_add"
+	OccurrenceOriginDepartureSelf    = "departure_self"
+	OccurrenceOriginDepartureRemoval = "departure_removal"
+	OccurrenceDeclined               = "declined"
+	OccurrenceBlocked                = "blocked"
+	OccurrenceRemoved                = "removed"
+	OccurrenceDepartureSuperseded    = "departure_superseded"
+	OccurrenceAlreadyAdded           = "already_added"
+	OccurrenceCancelled              = "occurrence_cancelled"
+	OccurrenceEnded                  = "occurrence_ended"
+	OccurrenceDeleted                = "occurrence_deleted"
+	OccurrenceEventDeleted           = "event_deleted"
+	OccurrenceGroupDeleted           = "group_deleted"
+	OccurrenceConsentLost            = "consent_lost"
+	OccurrenceContextChanged         = "context_changed"
 )
 
 // OrganizerScope is internal identity, NOT a safe recipient DTO. Group events
@@ -215,6 +220,7 @@ type OccurrenceFacts struct {
 	Organizer     OrganizerScope
 	ContextActive bool
 	Scheduled     bool
+	EndsAt        time.Time
 }
 
 func (f OccurrenceFacts) live() bool {
@@ -223,30 +229,78 @@ func (f OccurrenceFacts) live() bool {
 }
 
 type OccurrenceAccess struct {
-	SubjectUserID  uint
-	OccurrenceID   uint
-	EventID        uint
-	Organizer      OrganizerScope
-	IssuerID       uint
-	RequestID      uint // zero for a direct, ordinarily eligible adult add
-	RegistrationID uint
-	Status         string
-	GrantedAt      time.Time
-	EndedAt        *time.Time
+	SubjectUserID         uint
+	OccurrenceID          uint
+	EventID               uint
+	Organizer             OrganizerScope
+	Origin                string
+	IssuerID              uint
+	RequestID             uint // zero for a direct adult add or any departure origin
+	RegistrationID        uint
+	DepartureMembershipID uint
+	DepartureActorID      uint
+	Status                string
+	GrantedAt             time.Time
+	EndedAt               *time.Time
 }
 
-// OccurrenceAccessCurrent intentionally ignores issuer status/management and
-// organizer blocks: they stop NEW adds, not already accepted attendance. It
+// ValidOccurrenceAccessOrigin validates immutable provenance shape only. The
+// database validates the locked live membership and actor authority when a
+// departure row is inserted. Reads must not require that membership to remain
+// active: leaving is the reason this date-only access exists.
+func ValidOccurrenceAccessOrigin(a OccurrenceAccess) bool {
+	switch a.Origin {
+	case OccurrenceOriginManagerAdd:
+		return a.IssuerID > 0 && a.IssuerID != a.SubjectUserID && a.DepartureMembershipID == 0 && a.DepartureActorID == 0
+	case OccurrenceOriginDepartureSelf:
+		return a.Organizer.Type == ContactGroup && a.IssuerID == 0 && a.RequestID == 0 &&
+			a.DepartureMembershipID > 0 && a.DepartureActorID == a.SubjectUserID
+	case OccurrenceOriginDepartureRemoval:
+		return a.Organizer.Type == ContactGroup && a.IssuerID == 0 && a.RequestID == 0 &&
+			a.DepartureMembershipID > 0 && a.DepartureActorID > 0 && a.DepartureActorID != a.SubjectUserID
+	default:
+		return false
+	}
+}
+
+// CanRetainOccurrenceAfterDeparture is the pure membership authorization T4
+// must re-check under its departure locks. The caller chooses the matching
+// origin and then persists the locked membership ID and actor ID; the database
+// independently verifies those facts before accepting access provenance.
+func CanRetainOccurrenceAfterDeparture(origin string, actor, subject *Person, actorRel, subjectRel Rel, leaders int) bool {
+	if actor == nil || subject == nil || actor.ID == 0 || subject.ID == 0 {
+		return false
+	}
+	switch origin {
+	case OccurrenceOriginDepartureSelf:
+		return actor.ID == subject.ID && CanLeaveGroup(subjectRel, leaders)
+	case OccurrenceOriginDepartureRemoval:
+		return actor.ID != subject.ID && CanRemoveMember(actor, actorRel, subject, subjectRel, leaders)
+	default:
+		return false
+	}
+}
+
+// OccurrenceAccessCurrent intentionally ignores issuer status/management,
+// departure membership status and organizer blocks: they stop NEW manager adds
+// or authorize the departure transaction, not already accepted attendance. It
 // requires the recipient's active authenticated account (current consent), not
 // an acting guardian/proxy. Lifecycle writes must persist an irreversible end
 // on disable/consent loss/deletion/cancellation BEFORE committing that mutation;
 // live checks close the cleanup window, but cannot detect a historical disable
 // followed by reenable unless the end was recorded.
 func OccurrenceAccessCurrent(actor ContactAccount, a OccurrenceAccess, f OccurrenceFacts, now time.Time) bool {
-	return actor.Active && actor.Person != nil && actor.Person.ID > 0 && actor.Person.ID == a.SubjectUserID &&
-		a.IssuerID > 0 && a.IssuerID != a.SubjectUserID && a.RegistrationID > 0 &&
-		a.Status == OccurrenceAccessActive && a.EndedAt == nil && !a.GrantedAt.IsZero() && !now.IsZero() && !now.Before(a.GrantedAt) &&
-		f.live() && a.OccurrenceID == f.ID && a.EventID == f.EventID && a.Organizer == f.Organizer
+	if !actor.Active || actor.Person == nil || actor.Person.ID == 0 || actor.Person.ID != a.SubjectUserID ||
+		!ValidOccurrenceAccessOrigin(a) || a.RegistrationID == 0 ||
+		a.Status != OccurrenceAccessActive || a.EndedAt != nil || a.GrantedAt.IsZero() || now.IsZero() || now.Before(a.GrantedAt) ||
+		!f.live() || a.OccurrenceID != f.ID || a.EventID != f.EventID || a.Organizer != f.Organizer {
+		return false
+	}
+	// DEC-74 retained-departure authority ends exactly with the occurrence.
+	// A manager invitation selected at departure is first superseded by a new
+	// departure-origin row; unrelated manager invitations keep their established
+	// lifecycle.
+	return a.Origin == OccurrenceOriginManagerAdd || (!f.EndsAt.IsZero() && now.Before(f.EndsAt))
 }
 
 // CanSeeOccurrence never changes CanSeeEvent or series/group/roster/contact/
