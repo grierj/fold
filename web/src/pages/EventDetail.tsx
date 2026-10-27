@@ -1,6 +1,6 @@
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
-import { lazy, Suspense, useCallback, useEffect, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
 import { useAuth } from "../auth";
@@ -22,6 +22,8 @@ import { ErrorNotice } from "../components/ErrorNotice";
 import { Missing } from "./NotFound";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton } from "../components/ui/Skeleton";
+import { applyActorRsvpResults, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
+import { useRsvpMutationGate, type RsvpMutationGate } from "../lib/useRsvpMutationGate";
 
 const ManageRoster = lazy(() => import("../components/ManageRoster").then((module) => ({ default: module.ManageRoster })));
 
@@ -35,20 +37,34 @@ export function EventDetail() {
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
+  const seriesFeedbackRevision = useRef(0);
+  const loadRevision = useRef(0);
+  const rsvpMutationGate = useRsvpMutationGate();
 
-  // quiet refreshes in place (after an RSVP) without the Loading screen.
-  const load = useCallback(async (quiet = false) => {
+  // Quiet refreshes keep ordinary RSVP drafts mounted. A terminal refresh
+  // invalidates protected data immediately, and only the newest request may
+  // commit page, error, not-found or loading state.
+  const load = useCallback(async (quiet = false, failClosed = false) => {
     if (!id) return;
-    if (!quiet) setLoading(true);
+    const revision = ++loadRevision.current;
+    if (failClosed) {
+      setPage(null);
+      setLoading(true);
+    } else if (!quiet) {
+      setLoading(true);
+    }
     setError(null);
     setNotFound(false);
     try {
-      setPage(await Events.get(id));
+      const next = await Events.get(id);
+      if (loadRevision.current === revision) setPage(next);
     } catch (e) {
+      if (loadRevision.current !== revision) return;
       if (e instanceof ApiError && e.status === 404) setNotFound(true);
       else setError(errorText(e, "We couldn't load this event."));
     } finally {
-      setLoading(false);
+      if (loadRevision.current === revision) setLoading(false);
     }
   }, [id]);
 
@@ -58,6 +74,14 @@ export function EventDetail() {
 
   // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
   function handleRsvp() { void load(true); }
+  function reportSeriesFeedback(eventId: number, date: string, actorResults: ActorRsvpResult[]) {
+    const signal = { eventId, date, actorResults, revision: ++seriesFeedbackRevision.current };
+    setPage((current) => current ? {
+      ...current,
+      occurrences: current.occurrences.map((instance) => applyActorRsvpResults(instance, eventId, actorResults)),
+    } : current);
+    setSeriesFeedback(signal);
+  }
 
   if (loading || authLoading) {
     return (
@@ -152,6 +176,10 @@ export function EventDetail() {
             canManage={canManage}
             onRsvp={handleRsvp}
             people={people}
+            seriesFeedback={seriesFeedback}
+            mutationGate={rsvpMutationGate}
+            onSeriesFeedback={reportSeriesFeedback}
+            onTerminalRefresh={() => void load(true, true)}
             onChanged={() => void load(true)}
             onNeedLogin={() => navigate("/login", { state: { from: `/events/${id}` } })}
           />
@@ -167,6 +195,10 @@ function DateRow({
   canManage,
   onRsvp,
   people,
+  seriesFeedback,
+  mutationGate,
+  onSeriesFeedback,
+  onTerminalRefresh,
   onChanged,
   onNeedLogin,
 }: {
@@ -175,6 +207,10 @@ function DateRow({
   canManage: boolean;
   onRsvp: () => void;
   people: HouseholdPerson[];
+  seriesFeedback: SeriesFeedbackSignal | null;
+  mutationGate: RsvpMutationGate;
+  onSeriesFeedback: (eventId: number, date: string, actorResults: ActorRsvpResult[]) => void;
+  onTerminalRefresh: () => void;
   onChanged: () => void;
   onNeedLogin: () => void;
 }) {
@@ -244,7 +280,8 @@ function DateRow({
     <div className="mt-3">
         <div>
           {loggedIn ? (
-            <RsvpButtons instance={instance} people={people} onChange={onRsvp} />
+            <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
+              mutationGate={mutationGate} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
           ) : instance.visibility === "public" ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />

@@ -688,6 +688,10 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/events/:id/cancel", a.apiAuth(), a.apiCancelOccurrence)
 	v1.PUT("/events/:id/occurrences/:date", a.apiAuth(), a.apiUpdateOccurrence)
 	v1.PUT("/events/:id/registrations", a.apiAuth(), a.apiRegister)
+	// Actor-only bulk responses freeze the currently generated future dates;
+	// occurrences extended later remain unanswered (M1.14).
+	v1.POST("/events/:id/series-registrations", a.apiAuth(), a.apiRegisterSeries)
+	v1.POST("/events/:id/series-registrations/undo", a.apiAuth(), a.apiUndoSeriesRegistration)
 	// Pruning and hand promotion (M1.5, DEC-20, DEC-30): leaders and hosts
 	// remove anyone, promote one waitlisted row by hand, or add someone
 	// directly (over capacity only by explicit choice).

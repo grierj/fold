@@ -149,6 +149,11 @@ export function formatPeriod(view: "week" | "month", first: string, last: string
   return `${md(first)} – ${Number(last.slice(8))}, ${ly}`;
 }
 
+// "Nov 7", for a stored calendar day such as a series RSVP result.
+export function formatCalendarDay(day: string): string {
+  return fmt(asDate(day), "UTC", { month: "short", day: "numeric" });
+}
+
 // "May 4, 2016", for a birth date stored as YYYY-MM-DD.
 export function formatBirthDate(day: string): string {
   return fmt(asDate(day), "UTC", { month: "long", day: "numeric", year: "numeric" });

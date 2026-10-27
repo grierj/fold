@@ -46,6 +46,10 @@ type App struct {
 	// leaves it nil and reads the current UTC time.
 	calendarClock func() time.Time
 
+	// seriesClock is a per-App clock seam for lock-boundary tests. Production
+	// leaves it nil and reads the current UTC time.
+	seriesClock func() time.Time
+
 	// setupDone is set once any user exists. The wizard cannot be re-entered
 	// without a process restart after that, which is the normal case.
 	setupMu   sync.RWMutex

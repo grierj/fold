@@ -33,6 +33,8 @@ import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, HiddenFileInput, Input, Radio, Textarea } from "../components/ui/Field";
 import { FormActions } from "../components/ui/FormActions";
 import { Button, ButtonLink } from "../components/ui/Button";
+import { applyActorRsvpResults, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
+import { useRsvpMutationGate, type RsvpMutationGate } from "../lib/useRsvpMutationGate";
 
 type Tab = "events" | "about" | "members";
 
@@ -47,6 +49,10 @@ function EventRow({
   loggedIn,
   onRsvp,
   people,
+  seriesFeedback,
+  mutationGate,
+  onSeriesFeedback,
+  onTerminalRefresh,
   onCancelled,
   onChanged,
 }: {
@@ -60,6 +66,10 @@ function EventRow({
   loggedIn: boolean;
   onRsvp: () => void;
   people: HouseholdPerson[];
+  seriesFeedback: SeriesFeedbackSignal | null;
+  mutationGate: RsvpMutationGate;
+  onSeriesFeedback: (eventId: number, date: string, actorResults: ActorRsvpResult[]) => void;
+  onTerminalRefresh: () => void;
   onCancelled: (eventId: number, date: string) => void;
   onChanged: () => void;
 }) {
@@ -106,7 +116,8 @@ function EventRow({
         )}
         {loggedIn && (
           <div className="mt-2">
-            <RsvpButtons instance={instance} people={people} onChange={onRsvp} />
+            <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
+              mutationGate={mutationGate} onSeriesFeedback={onSeriesFeedback} onTerminalRefresh={onTerminalRefresh} />
           </div>
         )}
         {!loggedIn && instance.visibility === "public" && (
@@ -358,22 +369,35 @@ export function GroupDetail() {
   const [inviteOverLimit, setInviteOverLimit] = useState(false);
   const [inviteStatus, setInviteStatus] = useState<string | null>(null);
   const [memberError, setMemberError] = useState<string | null>(null);
+  const [seriesFeedback, setSeriesFeedback] = useState<SeriesFeedbackSignal | null>(null);
+  const seriesFeedbackRevision = useRef(0);
   const coverRef = useRef<HTMLInputElement>(null);
+  const loadRevision = useRef(0);
+  const rsvpMutationGate = useRsvpMutationGate();
 
-  // quiet refreshes in place (after an RSVP) without the Loading screen.
-  const load = useCallback(async (quiet = false) => {
+  // Quiet refreshes keep ordinary RSVP drafts mounted. A terminal refresh
+  // invalidates protected data immediately, and only the newest request may
+  // commit detail, error, not-found or loading state.
+  const load = useCallback(async (quiet = false, failClosed = false) => {
     if (!id) return;
-    if (!quiet) setLoading(true);
+    const revision = ++loadRevision.current;
+    if (failClosed) {
+      setDetail(null);
+      setLoading(true);
+    } else if (!quiet) {
+      setLoading(true);
+    }
     setError(null);
     setNotFound(false);
     try {
-      const d = await Groups.get(id);
-      setDetail(d);
+      const next = await Groups.get(id);
+      if (loadRevision.current === revision) setDetail(next);
     } catch (e) {
+      if (loadRevision.current !== revision) return;
       if (e instanceof ApiError && e.status === 404) setNotFound(true);
       else setError(errorText(e, "We couldn't load this group."));
     } finally {
-      setLoading(false);
+      if (loadRevision.current === revision) setLoading(false);
     }
   }, [id]);
 
@@ -442,6 +466,14 @@ export function GroupDetail() {
 
   // Refetch the whole date after a batch; counts and mixed outcomes come from the server.
   function handleRsvp() { void load(true); }
+  function reportSeriesFeedback(eventId: number, date: string, actorResults: ActorRsvpResult[]) {
+    const signal = { eventId, date, actorResults, revision: ++seriesFeedbackRevision.current };
+    setDetail((current) => current ? {
+      ...current,
+      upcomingEvents: (current.upcomingEvents ?? []).map((instance) => applyActorRsvpResults(instance, eventId, actorResults)),
+    } : current);
+    setSeriesFeedback(signal);
+  }
 
   function handleCancelled(eventId: number, date: string) {
     setDetail((d) =>
@@ -809,7 +841,11 @@ export function GroupDetail() {
                     moreDates={(datesPerEvent.get(m.eventId) ?? 1) - 1}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}
-            people={people}
+                    people={people}
+                    seriesFeedback={seriesFeedback}
+                    mutationGate={rsvpMutationGate}
+                    onSeriesFeedback={reportSeriesFeedback}
+                    onTerminalRefresh={() => void load(true, true)}
                     onCancelled={handleCancelled}
                     onChanged={() => void load(true)}
                   />

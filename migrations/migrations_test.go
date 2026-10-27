@@ -172,6 +172,41 @@ func TestContactRequestsConstraints(t *testing.T) {
 	}
 }
 
+func TestSeriesUndoReceiptMigrationAndRollback(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, true))
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	exec(`INSERT INTO users(id,email) VALUES(91001,'undo-migration@example.com')`)
+	exec(`INSERT INTO events(id,title,description,visibility,starts_local,duration_minutes,tzid,rrule,location,created_by) VALUES(91002,'Undo','','public','2026-10-01T10:00',60,'UTC','','',91001)`)
+	exec(`INSERT INTO series_undo_receipts(token_hash,actor_id,event_id,snapshot,created_at,expires_at) VALUES('ok',91001,91002,'[]','2026-10-01 10:00Z','2026-10-01 10:00:10Z')`)
+	for _, q := range []string{
+		`INSERT INTO series_undo_receipts(token_hash,actor_id,event_id,snapshot,created_at,expires_at) VALUES('object',91001,91002,'{}','2026-10-01 10:00Z','2026-10-01 10:00:10Z')`,
+		`INSERT INTO series_undo_receipts(token_hash,actor_id,event_id,snapshot,created_at,expires_at) VALUES('expired',91001,91002,'[]','2026-10-01 10:00Z','2026-10-01 10:00Z')`,
+	} {
+		if _, err := db.Exec(q); err == nil {
+			t.Fatalf("invalid receipt accepted: %s", q)
+		}
+	}
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DownTo(context.Background(), 32); err != nil {
+		t.Fatal(err)
+	}
+	var table *string
+	if err := db.QueryRow(`SELECT to_regclass('public.series_undo_receipts')`).Scan(&table); err != nil || table != nil {
+		t.Fatalf("table remains after down: %v %v", table, err)
+	}
+	if _, err := p.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMigrateEmptyDatabase(t *testing.T) {
 	db := openSQL(t, testdb.Fresh(t, false))
 	p, err := migrations.NewProvider(db)

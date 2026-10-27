@@ -745,6 +745,21 @@ PUT /api/v1/events/:id/registrations   → 200 {registration, people}   (auth)
   body: {date: "YYYY-MM-DD", status?: "going"|"maybe"|"declined", guestCount?,
          attendanceMode?, childcareCount?, childcareAgesNote?,
          people?: [{personId, status, attendanceMode?, childcareRequested?}]}
+POST /api/v1/events/:id/series-registrations  → 200 {eventId, scope, date?, status, results, refusals, undoToken?, undoExpiresAt?}   (auth)
+  body: {scope: "all_future"|"this_and_following", date?,
+         status: "going"|"maybe"|"declined", guestCount?, attendanceMode?,
+         childcareCount?, childcareAgesNote?}
+  The server freezes the selected occurrence IDs and their before/after states in
+  an actor-bound receipt. Only the latest receipt remains live for an actor. When
+  Undo is returned, `undoExpiresAt` is 10 seconds after response preparation;
+  post-commit notification delivery and lock waits do not consume that interval.
+  A newer series action may supersede an older receipt before its response is ready,
+  in which case the older response has no Undo fields.
+POST /api/v1/events/:id/series-registrations/undo  → 200 {eventId, results, refusals, capacityLoss}   (auth)
+  body: {token}
+  The receipt is single-use and expires after 10 seconds. Undo refuses if answers,
+  authority, or date availability changed. Restoring Going uses current capacity;
+  capacityLoss lists only the signed-in person's dates that could not regain a seat.
 POST /api/v1/events/:id/registrations/remove  → 200 {} | 403 | 404  (leader/host)
   body: {date: "YYYY-MM-DD", registrationId, note?}
 POST /api/v1/events/:id/registrations/promote → 200 {} | 403 | 404 | 409  (leader/host)
@@ -761,6 +776,22 @@ be a scheduled occurrence. The caller must be allowed to see the event;
 otherwise the response is 404. Seeing an opened event does not require
 seeing its group, and registering does not add a membership. A disabled
 account's registration is kept and hidden from the counts.
+
+The series endpoint is actor-only: it never accepts household people, proxy
+subjects, or manager additions. `this_and_following` requires `date`; `all_future`
+means every currently generated scheduled occurrence whose `startsAt` is strictly
+after the transaction clock. Candidate IDs are frozen and locked in
+`original_date, id` order, so dates generated later remain unanswered. Every
+authorized date uses the normal registration, capacity, waitlist, promotion,
+audit, and notification path. `results` contains only the caller's own before and
+after registration state. A date hidden by its effective visibility is omitted;
+a removed date is returned in `refusals` with `registration_removed`, and ordinary
+capacity/attendance/childcare refusals use their existing stable codes. One
+opened or explicitly invited date never grants series authority. The lock order
+is contact gate, actor, group (when present), event, then occurrence rows. That
+keeps membership and event authority stable, follows the existing group-first and
+event-first mutation protocols, and retains the actor/occurrence order shared by
+single-date registration. A database failure rolls back every affected date.
 
 Capacity (M1.5): one seat bucket per date. `guestCount` (0 to the event's
 `guestsAllowed`) counts extra seats with the party. Going past a set

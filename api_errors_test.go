@@ -109,6 +109,8 @@ func TestErrorBody(t *testing.T) {
 		{http.StatusNotFound, "group not found", "not_found"},
 		{http.StatusBadRequest, "invalid request body", "invalid"},
 		{http.StatusForbidden, "forbidden", "not_allowed"},
+		{http.StatusBadRequest, "scope must be all_future or this_and_following", "series_scope_invalid"},
+		{http.StatusConflict, "this series has no future dates to answer", "series_no_dates"},
 	}
 	for _, tc := range cases {
 		b := errorBody(tc.status, tc.msg)
