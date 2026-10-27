@@ -1,11 +1,12 @@
 # Fold: product and delivery summary
 
-Reconciled October 27, 2026 against merged work through M1.14 calendar/feed
-PR #129 (`891ce26`) and the locally accepted integrated M1.14 head `754a2f6`.
-[PLAN.md](PLAN.md) owns product decisions; [STATUS.md](../../STATUS.md) tracks
-merges and publication state; [DOCUMENTATION-REVIEW.md](DOCUMENTATION-REVIEW.md)
-lists open product conflicts. Local acceptance does not mean fully published,
-merged, deployed or production-ready.
+Reconciled October 27, 2026 against merged work through M1.14 series RSVP/Undo
+PR #130 (merge `7229e92`, reviewed head `5f927ce`) and the locally validated
+departure publication head `deb093d`. [PLAN.md](PLAN.md) owns product decisions;
+[STATUS.md](../../STATUS.md) tracks merges and publication state;
+[DOCUMENTATION-REVIEW.md](DOCUMENTATION-REVIEW.md) lists open product conflicts.
+Local validation does not mean protected-branch CI, merge, deployment or
+production readiness.
 
 ## Product
 
@@ -39,21 +40,28 @@ matter more than novel design.
 
 ## Locally accepted, publication in progress
 
-M1.14 implementation is complete and accepted locally at `754a2f6`: RSVP-aware
+M1.14 implementation was originally accepted locally at `754a2f6`: RSVP-aware
 calendar and personal-feed scope, series answers with Undo, and group-departure
-preview/cleanup/retained-date access are implemented. All 12 integrated local
-gates passed, including 509 component tests and 77 browser tests with 6 existing
-conditional skips. Independent departure-security and series/calendar reviews,
-the later UI/R5 review, and the final R6 database review approved their assigned
-domains. The exact evidence and acceptance matrix are in
+preview/cleanup/retained-date access are implemented. That historical run passed
+all 12 integrated gates with 509 component tests and 77 browser passes plus 6
+conditional skips. Publication follow-ups `30d48c3`, `09b1260` and `5f927ce`
+then repaired single-date draft reconciliation, atomic RSVP response feedback and
+page-wide mutation serialization. Independent review approved the final PR #130
+head, and all three protected checks passed before normal merge `7229e92`.
+
+The departure publication boundary is locally prepared and independently approved
+at exact source head `deb093d`. A fresh run passed all 12 repository gates, 520
+component tests and 80 browser tests with 6 conditional skips. The retained 390px
+atomic-feedback/page-gate proofs report no overflow, clipping, cut-off controls,
+under-24px targets, under-44px RSVP targets or serious/critical Axe findings.
+The exact evidence and acceptance matrix are in
 [M1.14-VERIFICATION.md](M1.14-VERIFICATION.md).
 
-The milestone is not fully merged. Calendar/feed merged in PR #129 at
-`891ce26`; series RSVP/Undo is open in PR #130 at `9025b2c`; departure was
-reconstructed locally at `ef04966`, exactly matching accepted target `43ca702`
-before this docs-only status update. The departure PR, its protected-branch
-`test`, `web` and `provision` checks, publication review and merge are pending.
-Representative external calendar-client interoperability was not manually tested.
+The milestone is not fully merged. Calendar/feed merged in PR #129 at `891ce26`;
+series RSVP/Undo merged in PR #130 at `7229e92` from reviewed head `5f927ce`.
+The departure PR is not open; its protected-branch `test`, `web` and `provision`
+checks and normal merge remain pending. Representative external calendar-client
+interoperability was not manually tested.
 
 ## Privacy decisions that must survive later work
 
@@ -77,7 +85,7 @@ Representative external calendar-client interoperability was not manually tested
 
 | Phase | Remaining scope |
 |---|---|
-| M1.14 | Finish the publication stack: merge open series PR #130, publish and review the locally prepared departure PR, run its protected-branch CI, and merge it |
+| M1.14 | Finish the publication stack: open the independently approved departure PR at `deb093d`, run its protected-branch CI, and merge it normally |
 | Phase 2 | Rooms, booking conflicts, visibility-aware suggestions |
 | Phase 3 | Durable jobs, messaging composer/relay, provider adapters, reminders, optional SMS, notification preferences |
 | Phase 4 | Encrypted settings, resumable setup/CLI, CSV import, private/S3 assets, admin TOTP |
