@@ -123,6 +123,10 @@ export const ERROR_COPY = {
   invalid_remote_capacity: "The remote seat limit needs to be a whole number from 1 to 100,000, or leave it empty for no limit.",
   invalid_remote_capacity_override: "The remote seat limit for this date needs to be a whole number from 0 to 100,000, or leave it empty to use the event’s limit.",
   remote_capacity_zero: "Uncheck remote attendance instead of a 0 remote seat limit.",
+  series_answer_invalid: "Choose Going, Maybe, or Can't go and try again.",
+  series_scope_invalid: "Choose which future dates this answer should cover, then try again.",
+  series_date_invalid: "That starting date isn't valid. Refresh the event and try again.",
+  series_no_dates: "This series has no upcoming dates to answer. Refresh the event to see its current dates.",
 
   // Uploads
   file_too_large: "That picture is too big. Please use one under 5 MB.",

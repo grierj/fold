@@ -133,6 +133,10 @@ var errorCodes = map[string]string{
 	"remote seat limit must be a whole number from 1 to 100000, or empty for no limit":   "invalid_remote_capacity",
 	"remote seat limit for this date must be a whole number from 0 to 100000, or empty":  "invalid_remote_capacity_override",
 	"Uncheck remote attendance instead of a 0 remote seat limit":                         "remote_capacity_zero",
+	"status and scope are required":                                                      "series_answer_invalid",
+	"scope must be all_future or this_and_following":                                     "series_scope_invalid",
+	"date must be YYYY-MM-DD":                                                            "series_date_invalid",
+	"this series has no future dates to answer":                                          "series_no_dates",
 
 	// Households and guardian links (M1.9, DEC-32)
 	"kind must be child, teen, or adult":                "invalid_kind",
