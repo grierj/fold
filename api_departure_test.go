@@ -1147,8 +1147,8 @@ func TestDepartureSelfLeaveRejoinRejectsOldSnapshotAndNotifiesAgain(t *testing.T
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if _, err := provider.UpTo(context.Background(), 37); err != nil {
-			t.Errorf("restore migration 37: %v", err)
+		if _, err := provider.Up(context.Background()); err != nil {
+			t.Errorf("restore latest migrations: %v", err)
 		}
 	})
 	if _, err := provider.DownTo(context.Background(), 35); err == nil || !strings.Contains(err.Error(), "advanced membership tenure exists; cannot downgrade safely") {
