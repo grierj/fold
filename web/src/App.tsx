@@ -4,27 +4,27 @@ import { Layout } from "./components/Layout";
 import { Home } from "./pages/Home";
 import { Login } from "./pages/Login";
 import { GroupDetail } from "./pages/GroupDetail";
-import { NewGroup } from "./pages/NewGroup";
-import { NewEvent } from "./pages/NewEvent";
-import { NewChurchEvent } from "./pages/NewChurchEvent";
 import { EventDetail } from "./pages/EventDetail";
 import { MyGroups } from "./pages/MyGroups";
-import { ProfilePage } from "./pages/Profile";
 import { Skeleton } from "./components/ui/Skeleton";
 import { NotificationsPage } from "./pages/Notifications";
-import { ForgotPassword } from "./pages/ForgotPassword";
-import { ResetPassword } from "./pages/ResetPassword";
-import { Invite } from "./pages/Invite";
-import { VerifyEmail } from "./pages/VerifyEmail";
-import { Join } from "./pages/Join";
-import { SetPassword } from "./pages/SetPassword";
-import { GuestConfirm } from "./pages/GuestConfirm";
-import { GuestManage } from "./pages/GuestManage";
 import { CalendarPage } from "./pages/Calendar";
 import { NotFound } from "./pages/NotFound";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 
+const NewGroup = lazy(() => import("./pages/NewGroup").then((m) => ({ default: m.NewGroup })));
+const NewEvent = lazy(() => import("./pages/NewEvent").then((m) => ({ default: m.NewEvent })));
+const NewChurchEvent = lazy(() => import("./pages/NewChurchEvent").then((m) => ({ default: m.NewChurchEvent })));
+const ProfilePage = lazy(() => import("./pages/Profile").then((m) => ({ default: m.ProfilePage })));
+const ForgotPassword = lazy(() => import("./pages/ForgotPassword").then((m) => ({ default: m.ForgotPassword })));
+const ResetPassword = lazy(() => import("./pages/ResetPassword").then((m) => ({ default: m.ResetPassword })));
+const Invite = lazy(() => import("./pages/Invite").then((m) => ({ default: m.Invite })));
+const VerifyEmail = lazy(() => import("./pages/VerifyEmail").then((m) => ({ default: m.VerifyEmail })));
+const Join = lazy(() => import("./pages/Join").then((m) => ({ default: m.Join })));
+const SetPassword = lazy(() => import("./pages/SetPassword").then((m) => ({ default: m.SetPassword })));
+const GuestConfirm = lazy(() => import("./pages/GuestConfirm").then((m) => ({ default: m.GuestConfirm })));
+const GuestManage = lazy(() => import("./pages/GuestManage").then((m) => ({ default: m.GuestManage })));
 const GuardianConsentPage = lazy(() => import("./pages/GuardianConsent").then((m) => ({ default: m.GuardianConsentPage })));
 const ContactHistoryPage = lazy(() => import("./pages/ContactHistory").then((m) => ({ default: m.ContactHistoryPage })));
 const AdminPage = lazy(() => import("./pages/Admin").then((module) => ({ default: module.AdminPage })));
@@ -58,6 +58,7 @@ export default function App() {
     // survives. Routes wait for the session check so pages fetch once.
     <Layout key={user ? `${user.id}:${user.status}` : "anon"}>
       {loading ? null : (
+      <Suspense fallback={<Skeleton kind="page" label="Loading page…" />}>
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
@@ -89,6 +90,7 @@ export default function App() {
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
+      </Suspense>
       )}
     </Layout>
   );
