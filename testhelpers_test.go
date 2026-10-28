@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/sessions"
 	"gorm.io/gorm"
 )
 
@@ -71,14 +70,7 @@ func testApp(t *testing.T) *App {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	db := testdb.Shared(t)
-	store := sessions.NewCookieStore([]byte("test-secret"))
-	store.Options = &sessions.Options{
-		Path:     "/",
-		MaxAge:   86400 * 7,
-		HttpOnly: true,
-		Secure:   false,
-		SameSite: http.SameSiteLaxMode,
-	}
+	store := newSessionStore([]byte("test-secret"), false)
 	uploads, err := storage.NewLocalStore(t.TempDir(), "/uploads")
 	if err != nil {
 		t.Fatalf("upload store: %v", err)

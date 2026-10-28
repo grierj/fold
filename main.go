@@ -58,6 +58,17 @@ type App struct {
 
 const sessionName = "fold-session"
 
+// newSessionStore applies the same lifetime to browser cookies and the signed
+// codec. Options.MaxAge alone does not change the codec's 30-day default.
+func newSessionStore(secret []byte, secure bool) *sessions.CookieStore {
+	store := sessions.NewCookieStore(secret)
+	store.Options = &sessions.Options{
+		Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode,
+	}
+	store.MaxAge(86400 * 7)
+	return store
+}
+
 // serve runs the web server until SIGINT or SIGTERM.
 func serve(stderr io.Writer) int {
 	cfg, err := LoadConfig()
@@ -90,14 +101,7 @@ func serve(stderr io.Writer) int {
 		log.Fatalf("Upload storage failed: %v", err)
 	}
 
-	store := sessions.NewCookieStore(cfg.SessionSecret)
-	store.Options = &sessions.Options{
-		Path:     "/",
-		MaxAge:   86400 * 7, // 7 days
-		HttpOnly: true,
-		Secure:   cfg.CookieSecure,
-		SameSite: http.SameSiteLaxMode,
-	}
+	store := newSessionStore(cfg.SessionSecret, cfg.CookieSecure)
 
 	app := &App{
 		DB: db, Store: store, Config: cfg, Uploads: uploads,

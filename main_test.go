@@ -2,6 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/gob"
+	"fmt"
 	"fold/models"
 	"github.com/gin-gonic/gin"
 	"net/http"
@@ -12,9 +17,39 @@ import (
 	"strings"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 // --- tests ---
+
+func TestSessionCookieExpiresOnServerAfterSevenDays(t *testing.T) {
+	secret := []byte("test-session-secret-at-least-32-bytes")
+	store := newSessionStore(secret, true)
+	if store.Options.MaxAge != 7*86400 || !store.Options.Secure || !store.Options.HttpOnly || store.Options.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("cookie options: %+v", store.Options)
+	}
+	// Sign historical cookies using securecookie's documented wire format.
+	// A valid six-day cookie proves failure isn't a bad signature or payload.
+	for _, days := range []int{6, 8} {
+		var payload bytes.Buffer
+		if err := gob.NewEncoder(&payload).Encode(map[interface{}]interface{}{"user_id": uint(1)}); err != nil {
+			t.Fatal(err)
+		}
+		body := fmt.Sprintf("%d|%s", time.Now().Add(-time.Duration(days)*24*time.Hour).Unix(), base64.URLEncoding.EncodeToString(payload.Bytes()))
+		mac := hmac.New(sha256.New, secret)
+		mac.Write([]byte(sessionName + "|" + body))
+		value := base64.URLEncoding.EncodeToString(append([]byte(body+"|"), mac.Sum(nil)...))
+		req := httptest.NewRequest("GET", "/", nil)
+		req.AddCookie(&http.Cookie{Name: sessionName, Value: value})
+		session, err := store.Get(req, sessionName)
+		if days == 6 && (err != nil || session.IsNew) {
+			t.Fatalf("six-day cookie rejected: %v", err)
+		}
+		if days == 8 && (err == nil || !strings.Contains(err.Error(), "expired timestamp")) {
+			t.Fatalf("eight-day cookie should expire, got %v", err)
+		}
+	}
+}
 
 func TestSetupWizardCreatesAdmin(t *testing.T) {
 	app := testApp(t)
