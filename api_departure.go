@@ -683,7 +683,9 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			return departureConfirmationJSON{}, err
 		}
 		zero, empty := 0, ""
-		status := models.RegDeclined
+		// Leaving cancels the answer; it is not an explicit Can't go RSVP.
+		// Unlike a manager removal, it must allow a later public self-RSVP.
+		status := models.RegCancelled
 		if facts.Origin == policy.OccurrenceOriginDepartureRemoval {
 			status = models.RegRemoved
 		}

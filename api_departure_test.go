@@ -571,7 +571,7 @@ func TestDepartureConfirmationSelfKeepsCleansAndNotifies(t *testing.T) {
 	if got := regStatus(t, f.app, f.subject.ID, past.ID); got != models.RegGoing {
 		t.Fatalf("past registration=%q", got)
 	}
-	if got := regStatus(t, f.app, f.subject.ID, ended.ID); got != models.RegDeclined {
+	if got := regStatus(t, f.app, f.subject.ID, ended.ID); got != models.RegCancelled {
 		t.Fatalf("ended registration=%q", got)
 	}
 	var refreshed models.OccurrenceAccess
@@ -1019,10 +1019,10 @@ func TestDepartureConfirmationReleasesCapacityChildcareAndPromotes(t *testing.T)
 	if w.Code != http.StatusOK {
 		t.Fatalf("confirm: %d %s", w.Code, w.Body.String())
 	}
-	if regStatus(t, f.app, f.subject.ID, occ.ID) != models.RegDeclined || regStatus(t, f.app, waiting.ID, occ.ID) != models.RegGoing {
+	if regStatus(t, f.app, f.subject.ID, occ.ID) != models.RegCancelled || regStatus(t, f.app, waiting.ID, occ.ID) != models.RegGoing {
 		t.Fatalf("statuses subject=%s waiting=%s", regStatus(t, f.app, f.subject.ID, occ.ID), regStatus(t, f.app, waiting.ID, occ.ID))
 	}
-	if regStatus(t, f.app, f.subject.ID, cutoffOcc.ID) != models.RegDeclined || regStatus(t, f.app, cutoffWaiting.ID, cutoffOcc.ID) != models.RegWaitlisted {
+	if regStatus(t, f.app, f.subject.ID, cutoffOcc.ID) != models.RegCancelled || regStatus(t, f.app, cutoffWaiting.ID, cutoffOcc.ID) != models.RegWaitlisted {
 		t.Fatalf("cutoff statuses subject=%s waiting=%s", regStatus(t, f.app, f.subject.ID, cutoffOcc.ID), regStatus(t, f.app, cutoffWaiting.ID, cutoffOcc.ID))
 	}
 	var cutoffNotices int64
@@ -1108,6 +1108,34 @@ func TestDepartureConfirmationConcurrentNewRSVPStalesPreview(t *testing.T) {
 	}
 	if membershipStatus(f.app, f.subject, f.group) != "active" || regStatus(t, f.app, f.subject.ID, occ.ID) != models.RegGoing {
 		t.Fatal("race lost the new registration or membership")
+	}
+}
+
+func TestDepartureSelfLeaveCancelsRatherThanDeclines(t *testing.T) {
+	f := newDepartureTestFixture(t)
+	if err := f.app.DB.Model(f.group).Update("visibility", models.VisibilityPublic).Error; err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now().UTC().AddDate(0, 0, 60)
+	occ, _ := addDepartureRegistration(t, f, f.subject, "Ended public answer", models.VisibilityPublic, nil, start, start.Add(time.Hour), models.OccurrenceScheduled, models.RegGoing)
+	path := "/api/v1/groups/" + itoa(f.group.ID)
+	preview := getDeparturePreview(t, f.subjectC, path+"/departure-preview", http.StatusOK)
+	if w := confirmDeparturePreview(t, f.subjectC, "POST", path+"/leave", preview, nil, ""); w.Code != http.StatusOK {
+		t.Fatalf("leave: %d %s", w.Code, w.Body.String())
+	}
+	if got := regStatus(t, f.app, f.subject.ID, occ.ID); got != models.RegCancelled {
+		t.Fatalf("leave recorded %s instead of cancelling the answer", got)
+	}
+	w := f.subjectC.do("GET", "/api/v1/calendar?from="+start.AddDate(0, 0, -1).Format("2006-01-02")+"&to="+start.AddDate(0, 0, 1).Format("2006-01-02"), nil, false)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "Ended public answer") {
+		t.Fatalf("cancelled answer bypassed discovery window: %d %s", w.Code, w.Body.String())
+	}
+	if countRegs(t, f.app, occ.ID, models.RegDeclined) != 0 {
+		t.Fatal("leave counted as Can't go on leader roster")
+	}
+	// Public self-registration is allowed again, not manager-only Removed.
+	if code, body := registerAs(f.subjectC, occ.EventID, occ.OriginalDate, models.RegGoing, nil); code != http.StatusOK {
+		t.Fatalf("public self-RSVP after leave: %d %s", code, body)
 	}
 }
 
