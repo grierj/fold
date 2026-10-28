@@ -246,7 +246,12 @@ func testLayoutViolations(path string, exists func(string) bool) []string {
 		sources = []string{strings.TrimSuffix(base, "_test.go") + ".go"}
 	case strings.Contains(base, ".test."):
 		stem := base[:strings.Index(base, ".test.")]
-		sources = []string{stem + ".ts", stem + ".tsx"}
+		switch ext := filepath.Ext(base); ext {
+		case ".js", ".mjs", ".cjs":
+			sources = []string{stem + ext}
+		default:
+			sources = []string{stem + ".ts", stem + ".tsx"}
+		}
 	default:
 		return out
 	}
@@ -290,13 +295,16 @@ func TestTestFilesSitNextToTheirSource(t *testing.T) {
 // The layout check catches the files this rule replaced.
 func TestTestLayoutGuardCatchesMilestoneFiles(t *testing.T) {
 	none := func(string) bool { return false }
-	for _, p := range []string{"m11b_test.go", "m03b_limit_test.go", "web/e2e/m12.spec.ts", "milestone_test.go", "tz_guard_test.go", "web/src/Orphan.test.tsx"} {
+	for _, p := range []string{"m11b_test.go", "m03b_limit_test.go", "web/e2e/m12.spec.ts", "milestone_test.go", "tz_guard_test.go", "web/src/Orphan.test.tsx", "web/scripts/orphan.test.mjs"} {
 		if len(testLayoutViolations(p, none)) == 0 {
 			t.Errorf("%s passed the layout check", p)
 		}
 	}
 	if v := testLayoutViolations("api_events_test.go", func(p string) bool { return p == "api_events.go" }); len(v) != 0 {
 		t.Errorf("api_events_test.go flagged: %v", v)
+	}
+	if v := testLayoutViolations("web/scripts/bundle-size.test.mjs", func(p string) bool { return p == "web/scripts/bundle-size.mjs" }); len(v) != 0 {
+		t.Errorf("bundle-size.test.mjs flagged: %v", v)
 	}
 	if v := testLayoutViolations("web/e2e/events.spec.ts", none); len(v) != 0 {
 		t.Errorf("events.spec.ts flagged: %v", v)
