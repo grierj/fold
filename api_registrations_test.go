@@ -514,6 +514,46 @@ func TestCapacityChangePromotesAndNeverRemoves(t *testing.T) {
 	}
 }
 
+func TestRemovalPromotesOnlyWhenCapacityHasRoom(t *testing.T) {
+	for _, going := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("going-before-removal=%d", going), func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "Removal promotion")
+			eid, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+			var g models.Group
+			app.DB.First(&g, "id = ?", gid)
+			var occ models.EventOccurrence
+			app.DB.Where("event_id = ? AND original_date = ?", eid, date).First(&occ)
+			var removedID uint
+			var waiter models.User
+			for i := 0; i <= going; i++ {
+				u := newTestUser(t, app, fmt.Sprintf("party%d", i), "pw", models.RoleMember)
+				addMember(t, app, u, &g, models.MembershipMember)
+				status := models.RegGoing
+				if i == going {
+					status, waiter = models.RegWaitlisted, *u
+				}
+				now := time.Now().UTC()
+				r := models.Registration{OccurrenceID: occ.ID, UserID: &u.ID, Status: status, AttendanceMode: models.AttendanceInPerson, WaitlistedAt: &now}
+				if err := app.DB.Create(&r).Error; err != nil {
+					t.Fatal(err)
+				}
+				if i == 0 {
+					removedID = r.ID
+				}
+			}
+			apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", eid), map[string]any{"date": date, "registrationId": removedID}, http.StatusOK)
+			want := models.RegWaitlisted
+			if going == 1 {
+				want = models.RegGoing
+			}
+			if got := regStatus(t, app, waiter.ID, occ.ID); got != want {
+				t.Fatalf("waiter status=%s want=%s", got, want)
+			}
+		})
+	}
+}
+
 // Hand promotion seats one waitlisted person when a seat is free, and
 // tells them.
 func TestPromoteActionSeatsWaitlisted(t *testing.T) {
@@ -538,8 +578,11 @@ func TestPromoteActionSeatsWaitlisted(t *testing.T) {
 	var occ models.EventOccurrence
 	app.DB.Where("event_id = ?", eventID).First(&occ)
 
-	// The leader prunes hp1 (no auto-promotion on remove), then hand
-	// promotes hp2 into the freed seat.
+	// Inside the cutoff pruning cannot auto-promote, but the leader can
+	// still hand-promote hp2 into the freed seat.
+	if err := app.DB.Model(&occ).Update("starts_at", time.Now().UTC().Add(time.Hour)).Error; err != nil {
+		t.Fatal(err)
+	}
 	w := admin.do("POST", fmt.Sprintf("/api/v1/events/%d/registrations/remove", eventID),
 		map[string]any{"date": date, "registrationId": registrationIDFor(t, app, u1.ID, eventID, date)}, true)
 	if w.Code != http.StatusOK {
