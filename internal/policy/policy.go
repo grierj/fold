@@ -45,7 +45,8 @@ type Rel struct {
 	Member bool // any active membership, leaders included
 	Leader bool // active membership with role=leader
 	// Removed: a leader or admin removed this person (DEC-35). They aren't a
-	// member and can't rejoin on their own.
+	// member and can't rejoin on their own. A voluntary left row sets neither
+	// Member nor Removed, so ordinary visibility/capacity rules apply (DEC-86).
 	Removed bool
 }
 

@@ -716,8 +716,12 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 	}
 
 	oldRole := facts.SubjectMembership.Role
+	membershipStatus := memberRemoved
+	if facts.Origin == policy.OccurrenceOriginDepartureSelf {
+		membershipStatus = models.MembershipLeft
+	}
 	membershipUpdate := tx.Model(&models.Membership{}).Where("id = ? AND status = ?", facts.SubjectMembership.ID, "active").
-		Updates(map[string]any{"status": memberRemoved, "role": models.MembershipMember})
+		Updates(map[string]any{"status": membershipStatus, "role": models.MembershipMember})
 	if membershipUpdate.Error != nil {
 		return departureConfirmationJSON{}, membershipUpdate.Error
 	}

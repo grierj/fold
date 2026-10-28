@@ -19,6 +19,11 @@ const (
 	MembershipMember = "member"
 )
 
+// Membership statuses.
+const (
+	MembershipLeft = "left"
+)
+
 // Group statuses.
 const (
 	GroupPending  = "pending"
@@ -352,9 +357,9 @@ type Membership struct {
 	GroupID  uint   `gorm:"not null;uniqueIndex:idx_user_group"`
 	Group    Group  `gorm:"foreignKey:GroupID"`
 	Role     string `gorm:"default:member"` // leader | member
-	Status   string `gorm:"default:active"`
+	Status   string `gorm:"default:active"` // active | left | removed
 	JoinedAt time.Time
-	// Tenure changes when a removed row is reactivated; JoinedAt remains the
+	// Tenure changes on any nonactive reactivation; JoinedAt remains the
 	// first-ever join time shown in the roster.
 	Tenure uint `gorm:"not null;default:1"`
 }

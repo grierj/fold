@@ -82,6 +82,14 @@ test("a delayed pre-leave group response cannot restore leader controls or roste
   expect(violations.filter((item) => item.impact === "serious" || item.impact === "critical").map((item) => item.id)).toEqual([]);
   await screenshot(page, "departure-refresh-boundary-390");
   await page.unroute(groupRoute);
+
+  // A voluntary leaver rejoins themselves, without a manager restoring them.
+  await page.getByRole("button", { name: "Join this group" }).click();
+  await expect(page.getByRole("button", { name: "Leave group", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Schedule event" })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Leave group", exact: true })).toBeVisible();
+  await screenshot(page, "departure-self-rejoined-390");
 });
 
 test("departure chooser handles self, leader and admin paths, kept private access, zero dates, cancel and stale recovery", async ({ page, request }) => {

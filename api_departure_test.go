@@ -130,14 +130,6 @@ func confirmDeparturePreview(t *testing.T, c *apiClient, method, mutationPath st
 	return c.do(method, mutationPath, body, true)
 }
 
-func readdDepartureAdult(t *testing.T, f departureTestFixture) {
-	t.Helper()
-	w := f.leaderC.do("POST", "/api/v1/groups/"+itoa(f.group.ID)+"/members", map[string]any{"email": f.subject.Email}, true)
-	if w.Code != http.StatusOK {
-		t.Fatalf("re-add adult: %d %s", w.Code, w.Body.String())
-	}
-}
-
 func readdDepartureTeen(t *testing.T, f departureTestFixture, adminC *apiClient) {
 	t.Helper()
 	token, err := f.app.newPeopleSelection(f.leader.ID, f.subject.ID, time.Now().UTC())
@@ -565,8 +557,8 @@ func TestDepartureConfirmationSelfKeepsCleansAndNotifies(t *testing.T) {
 	if response.Departure.Action != "leave" || response.Departure.KeptCount != 2 || response.Departure.EndedCount != 1 {
 		t.Fatalf("result: %+v", response.Departure)
 	}
-	if membershipStatus(f.app, f.subject, f.group) != memberRemoved {
-		t.Fatal("membership was not removed")
+	if membershipStatus(f.app, f.subject, f.group) != models.MembershipLeft {
+		t.Fatal("voluntary departure was not marked left")
 	}
 	if got := regStatus(t, f.app, f.subject.ID, past.ID); got != models.RegGoing {
 		t.Fatalf("past registration=%q", got)
@@ -1139,6 +1131,150 @@ func TestDepartureSelfLeaveCancelsRatherThanDeclines(t *testing.T) {
 	}
 }
 
+func TestDepartureLeftMigrationRepairsOnlyAuditedSelfLeaves(t *testing.T) {
+	f := newDepartureTestFixture(t)
+	managerRemoved := newTestUser(t, f.app, "historical manager removal", "password1234", models.RoleMember)
+	unknown := newTestUser(t, f.app, "historical unknown departure", "password1234", models.RoleMember)
+	for _, user := range []*models.User{managerRemoved, unknown} {
+		addMember(t, f.app, user, f.group, models.MembershipMember)
+	}
+	selfAudit := func(user *models.User) {
+		t.Helper()
+		if err := audit.Write(f.app.DB, audit.Entry{Actor: &user.ID, Action: audit.RoleChanged,
+			TargetType: "group", TargetID: f.group.ID, Meta: map[string]any{
+				"userId": user.ID, "oldRole": "member", "newRole": "none", "keptCount": 0, "endedCount": 0,
+			}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selfAudit(f.subject)
+	selfAudit(managerRemoved)
+	if err := audit.Write(f.app.DB, audit.Entry{Actor: &f.leader.ID, Action: audit.MemberRemoved,
+		TargetType: "group", TargetID: f.group.ID, Meta: map[string]any{"userId": managerRemoved.ID, "oldRole": "member"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.Model(&models.Membership{}).Where("group_id = ? AND user_id IN ?", f.group.ID,
+		[]uint{f.subject.ID, managerRemoved.ID, unknown.ID}).Update("status", memberRemoved).Error; err != nil {
+		t.Fatal(err)
+	}
+	var original models.Membership
+	if err := f.app.DB.Where("user_id = ? AND group_id = ?", f.subject.ID, f.group.ID).First(&original).Error; err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := f.app.DB.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := migrations.NewProvider(sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := provider.Up(context.Background()); err != nil {
+			t.Errorf("restore latest migrations: %v", err)
+		}
+	})
+	if _, err := provider.DownTo(context.Background(), 38); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := provider.UpTo(context.Background(), 39); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		user   *models.User
+		status string
+	}{{f.subject, models.MembershipLeft}, {managerRemoved, memberRemoved}, {unknown, memberRemoved}, {f.leader, "active"}} {
+		if got := membershipStatus(f.app, tc.user, f.group); got != tc.status {
+			t.Fatalf("user %d status=%q, want %q", tc.user.ID, got, tc.status)
+		}
+	}
+	var corrected models.Membership
+	if err := f.app.DB.First(&corrected, original.ID).Error; err != nil || corrected.Tenure != original.Tenure || !corrected.JoinedAt.Equal(original.JoinedAt) {
+		t.Fatalf("migration changed membership identity/tenure: %+v err=%v", corrected, err)
+	}
+	var logs []models.AuditLog
+	if err := f.app.DB.Where("action = ?", "membership.departure_corrected").Find(&logs).Error; err != nil || len(logs) != 1 || logs[0].ActorID != nil {
+		t.Fatalf("correction audit=%+v err=%v", logs, err)
+	}
+	if _, err := provider.DownTo(context.Background(), 38); err == nil || !strings.Contains(err.Error(), "left memberships exist; cannot downgrade safely") {
+		t.Fatalf("unsafe downgrade allowed: %v", err)
+	}
+	if version, err := provider.GetDBVersion(context.Background()); err != nil || version != 39 {
+		t.Fatalf("version after refused downgrade=%d err=%v", version, err)
+	}
+}
+
+func TestDepartureSelfRejoinKeepsNormalGroupRules(t *testing.T) {
+	for _, tc := range []struct {
+		name, visibility string
+		removed, full    bool
+		want             int
+	}{
+		{"public", models.VisibilityPublic, false, false, http.StatusOK},
+		{"private", models.VisibilityPrivate, false, false, http.StatusOK},
+		{"invite only", models.VisibilityInviteOnly, false, false, http.StatusNotFound},
+		{"full", models.VisibilityPublic, false, true, http.StatusConflict},
+		{"manager removal", models.VisibilityPublic, true, false, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newDepartureTestFixture(t)
+			if err := f.app.DB.Model(f.group).Update("visibility", tc.visibility).Error; err != nil {
+				t.Fatal(err)
+			}
+			if tc.full {
+				if err := f.app.DB.Model(f.group).Update("member_limit", 1).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			var original models.Membership
+			if err := f.app.DB.Where("user_id = ? AND group_id = ?", f.subject.ID, f.group.ID).First(&original).Error; err != nil {
+				t.Fatal(err)
+			}
+			client := f.subjectC
+			base := "/api/v1/groups/" + itoa(f.group.ID)
+			previewPath, confirmPath := base+"/departure-preview", base+"/leave"
+			wantStatus := models.MembershipLeft
+			if tc.removed {
+				client = f.leaderC
+				previewPath = base + "/members/" + itoa(f.subject.ID) + "/departure-preview"
+				confirmPath = base + "/members/" + itoa(f.subject.ID) + "/departure"
+				wantStatus = memberRemoved
+			}
+			preview := getDeparturePreview(t, client, previewPath, http.StatusOK)
+			if w := confirmDeparturePreview(t, client, "POST", confirmPath, preview, nil, ""); w.Code != http.StatusOK {
+				t.Fatalf("departure: %d %s", w.Code, w.Body.String())
+			}
+			var left models.Membership
+			if err := f.app.DB.First(&left, original.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			rel := membershipRel(left)
+			if left.Status != wantStatus || left.Tenure != original.Tenure || !left.JoinedAt.Equal(original.JoinedAt) ||
+				rel.Member || rel.Leader || rel.Removed != tc.removed {
+				t.Fatalf("departure facts: membership=%+v rel=%+v", left, rel)
+			}
+			w := f.subjectC.do("POST", base+"/join", nil, true)
+			if w.Code != tc.want {
+				t.Fatalf("rejoin: %d %s, want %d", w.Code, w.Body.String(), tc.want)
+			}
+			var after models.Membership
+			if err := f.app.DB.First(&after, original.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if !after.JoinedAt.Equal(original.JoinedAt) {
+				t.Fatal("rejoin changed first-ever join date")
+			}
+			if tc.want == http.StatusOK {
+				if after.Status != "active" || after.Role != models.MembershipMember || after.Tenure != original.Tenure+1 {
+					t.Fatalf("reactivation: %+v", after)
+				}
+			} else if after.Status != wantStatus || after.Tenure != original.Tenure {
+				t.Fatalf("refused rejoin changed membership: %+v", after)
+			}
+		})
+	}
+}
+
 func TestDepartureSelfLeaveRejoinRejectsOldSnapshotAndNotifiesAgain(t *testing.T) {
 	f := newDepartureTestFixture(t)
 	secondLeader := newTestUser(t, f.app, "departure repeat co-leader", "password1234", models.RoleMember)
@@ -1154,7 +1290,9 @@ func TestDepartureSelfLeaveRejoinRejectsOldSnapshotAndNotifiesAgain(t *testing.T
 	if w := confirmDeparturePreview(t, f.subjectC, "POST", leavePath, old, nil, ""); w.Code != http.StatusOK {
 		t.Fatalf("first leave: %d %s", w.Code, w.Body.String())
 	}
-	readdDepartureAdult(t, f)
+	if w := f.subjectC.do("POST", "/api/v1/groups/"+itoa(f.group.ID)+"/join", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("self-rejoin: %d %s", w.Code, w.Body.String())
+	}
 
 	var reactivated models.Membership
 	if err := f.app.DB.Where("user_id = ? AND group_id = ?", f.subject.ID, f.group.ID).First(&reactivated).Error; err != nil {
@@ -1163,7 +1301,7 @@ func TestDepartureSelfLeaveRejoinRejectsOldSnapshotAndNotifiesAgain(t *testing.T
 	if reactivated.ID != original.ID || !reactivated.JoinedAt.Equal(original.JoinedAt) || reactivated.Tenure != original.Tenure+1 {
 		t.Fatalf("reactivation tenure/identity: before=%+v after=%+v", original, reactivated)
 	}
-	// The real provider may roll back newer migration 37 first, but migration 36
+	// The real provider may roll back newer migrations first, but migration 36
 	// must preserve tenure 2 and its version before this old tenure-1 snapshot is
 	// tested through the ordinary confirmation endpoint.
 	sqlDB, err := f.app.DB.DB()
@@ -1189,7 +1327,7 @@ func TestDepartureSelfLeaveRejoinRejectsOldSnapshotAndNotifiesAgain(t *testing.T
 	if err := f.app.DB.First(&reactivated, reactivated.ID).Error; err != nil || reactivated.Tenure != original.Tenure+1 {
 		t.Fatalf("tenure after refused rollback=%d err=%v", reactivated.Tenure, err)
 	}
-	if _, err := provider.UpTo(context.Background(), 37); err != nil {
+	if _, err := provider.Up(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	beforeReplay := departureWriteCounts(t, f.app)

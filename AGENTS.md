@@ -100,7 +100,9 @@ Postgres (`login_throttles`, see `api_auth.go`).
   to do next. DEC-52 decides what is never an error at all.
 - Membership rules live in `internal/policy`: removal (`CanRemoveMember`),
   handoff (`CanBeSuccessor`), role changes. A removed membership keeps its
-  row with `status=removed` (DEC-35).
+  row with `status=removed` (DEC-35). Voluntary departure instead keeps
+  `status=left`, permits ordinary self-rejoining, and preserves tenure history
+  (DEC-86); neither state counts as active.
   Adding anyone to a group goes through `changeRole`, which locks the
   group row and checks `policy.GroupHasRoom` (member limit, DEC-39).
 - Migrations: every schema change is a **new** goose file in `migrations/`
