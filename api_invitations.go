@@ -319,6 +319,11 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 	}
 	var userID uint
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		// Share the lifecycle gate with demotion/removal/disable before taking
+		// domain locks. Acceptance must not race an inviter losing authority.
+		if err := lockContacts(tx); err != nil {
+			return err
+		}
 		inv, err := liveInvitation(tx, body.Token)
 		if err != nil {
 			return err
@@ -353,11 +358,33 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			if g.Status != models.GroupActive {
 				return errGroupNotActive
 			}
-			count = memberCount(tx, g.ID)
-			if !policy.GroupHasRoom(g.MemberLimit, int(count)) && !inv.OverLimit {
+			group = &g
+		}
+		var inviter models.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("status = ?", models.UserActive).First(&inviter, inv.InvitedBy).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errTokenInvalid
+			}
+			return err
+		}
+		leadsTarget, leadsAnywhere := false, false
+		if group != nil {
+			leadsTarget = relIn(tx, inviter.ID, group.ID).Leader
+		} else {
+			var n int64
+			if err := tx.Model(&models.Membership{}).Where("user_id = ? AND role = ? AND status = 'active'", inviter.ID, models.MembershipLeader).Count(&n).Error; err != nil {
+				return err
+			}
+			leadsAnywhere = n > 0
+		}
+		if !policy.CanInvite(asPerson(&inviter), group != nil, leadsTarget, leadsAnywhere) {
+			return errTokenInvalid
+		}
+		if group != nil {
+			count = memberCount(tx, group.ID)
+			if !policy.GroupHasRoom(group.MemberLimit, int(count)) && !inv.OverLimit {
 				return errGroupFull // the token stays live: this can be retried
 			}
-			group = &g
 		}
 		u := models.User{Email: inv.Email, Name: name, Role: models.RoleMember, Status: models.UserActive}
 		if guestRow {
