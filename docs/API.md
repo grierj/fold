@@ -1538,13 +1538,18 @@ remoteAvailable, guestsAllowed,
 myRegistration, myAttendanceMode?, myGuestCount?,
 videoProvider, videoUrl?, videoHidden,
 canSeeVideo, canSeeAttendees, canDecline, canBlock,
-visibility?, hostedBy?, canRegister?
+visibility?, hostedBy?, groupId?, groupName?, canRegister?
 ```
 
-Times/title/place are effective for that date. An invitation-only response
-never falls back to a hidden group's place. There are no group IDs/names,
-host identities, attendee/contact details, counts, capacities, series title,
-series start, RRULE/until, sibling dates, or management controls. `myRegistration`
+Times/title/place are effective for that date. Only ordinary-visibility reads
+include `visibility` and organizer presentation: `groupId`/`groupName` when the
+viewer may independently see the group, otherwise `hostedBy` with the church
+name (including the privacy-safe fallback for an opened hidden-group date).
+This does not authorize the parent series. Invitation-only responses omit all
+of these organizer/ordinary-visibility keys and never fall back to a hidden
+group's place. Neither response includes host identities, attendee/contact
+details, counts, capacities, series title, series start, RRULE/until, sibling
+dates, or management controls. `myRegistration`
 is the viewer's own status or null. Video is gated by that date's own RSVP and
 current policy; an invitation does not inherit manager video authority.
 `canSeeAttendees` is always false for invitation-only access, and this endpoint

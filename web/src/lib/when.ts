@@ -41,6 +41,13 @@ export function formatWhen(iso: string, zone = browserTimeZone(), now = new Date
   return `${fmt(iso, zone, { weekday: "short", month: "short", day: "numeric" })} at ${time}`;
 }
 
+export function formatWhenRange(start: string, end: string, zone = browserTimeZone(), now = new Date()): string {
+  if (ymd(new Date(start), zone) === ymd(new Date(end), zone)) {
+    return `${formatWhen(start, zone, now)} – ${formatTime(end, zone)}`;
+  }
+  return `${formatWhen(start, zone, now)} – ${formatWhen(end, zone, now)}`;
+}
+
 // The month and day for a date badge, in the viewer's zone.
 export function badgeParts(iso: string, zone = browserTimeZone()): { month: string; day: string } {
   return { month: fmt(iso, zone, { month: "short" }), day: fmt(iso, zone, { day: "numeric" }) };

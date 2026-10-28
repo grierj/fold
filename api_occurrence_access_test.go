@@ -621,3 +621,73 @@ func TestManagerOccurrenceAccessKeepsEstablishedPostDateSemantics(t *testing.T) 
 		t.Fatal("M1.14 retroactively expired a manager invitation")
 	}
 }
+
+func TestOccurrenceDateOrganizerFollowsOrdinaryGroupVisibility(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	read := func() dateOccurrenceJSON {
+		t.Helper()
+		w := f.client.do("GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("read date: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Occurrence dateOccurrenceJSON `json:"occurrence"`
+		}
+		decodeJSON(t, w, &body)
+		return body.Occurrence
+	}
+	// An exact-date invitation alone still carries no parent-group metadata.
+	invited := read()
+	if invited.Visibility != "" || invited.GroupID != nil || invited.GroupName != "" || invited.HostedBy != "" {
+		t.Fatalf("invitation widened organizer disclosures: %+v", invited)
+	}
+	// Opening this date does not open the group or the rest of the series.
+	if err := f.app.DB.Model(&f.dates[1]).Update("visibility_override", models.VisibilityPublic).Error; err != nil {
+		t.Fatal(err)
+	}
+	opened := read()
+	if opened.Visibility != models.VisibilityPublic || opened.GroupID != nil || opened.GroupName != "" || opened.HostedBy != f.app.siteName() {
+		t.Fatalf("hidden group must retain the church fallback: %+v", opened)
+	}
+	apiDo(t, f.client, "GET", fmt.Sprintf("/api/v1/groups/%d", f.group), nil, http.StatusNotFound)
+	apiDo(t, f.client, "GET", fmt.Sprintf("/api/v1/events/%d", f.event.ID), nil, http.StatusNotFound)
+	// Independent group membership permits attribution, even while the same
+	// person also has an exact-date invitation. The invite itself grants none.
+	membership := models.Membership{UserID: f.recipient.ID, GroupID: f.group, Role: models.MembershipMember, Status: "active"}
+	if err := f.app.DB.Create(&membership).Error; err != nil {
+		t.Fatal(err)
+	}
+	member := read()
+	if member.GroupID == nil || *member.GroupID != f.group || member.GroupName != "Hidden group identity" || member.HostedBy != "" || !member.CanDecline {
+		t.Fatalf("ordinary group member organizer: %+v", member)
+	}
+}
+
+func TestOccurrenceDateChurchWideOrganizer(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	w := f.admin.do("POST", "/api/v1/events", map[string]any{
+		"title": "Church gathering", "startsLocal": feedStart(10).Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC",
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create church event: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	var date models.EventOccurrence
+	if err := f.app.DB.Where("event_id = ?", created.Event.ID).Order("starts_at").First(&date).Error; err != nil {
+		t.Fatal(err)
+	}
+	w = newAPIClient(t, f.app).do("GET", dateReadPath(created.Event.ID, date.OriginalDate), nil, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("public church date: %d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Occurrence dateOccurrenceJSON `json:"occurrence"`
+	}
+	decodeJSON(t, w, &body)
+	if row := body.Occurrence; row.HostedBy != f.app.siteName() || row.GroupID != nil || row.GroupName != "" {
+		t.Fatalf("church-wide organizer: %+v", row)
+	}
+}

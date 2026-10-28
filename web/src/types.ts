@@ -760,6 +760,8 @@ export interface EventDate {
  canRegister?: boolean;
  visibility?: Visibility;
  hostedBy?: string;
+ groupId?: number;
+ groupName?: string;
   id: number;
   eventId: number;
   date: string;

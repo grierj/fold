@@ -28,6 +28,16 @@ it("renders only date disclosures, never hidden parent/group/host/roster/househo
   expect(screen.queryByRole("button", { name: /Manage|household|contact|all dates|Maybe for all|Can't go to any/i })).not.toBeInTheDocument();
 });
 
+it("shows an authorized ordinary group's intro under the single page heading", async () => {
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ visibility: "private", groupId: 88, groupName: "Choir" }) });
+  mount();
+  expect(await screen.findByRole("heading", { level: 1, name: "One invited date" })).toBeInTheDocument();
+  expect(screen.queryByRole("heading", { level: 2, name: "One invited date" })).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Choir" })).toHaveAttribute("href", "/groups/88");
+  expect(screen.getByRole("link", { name: "Back to calendar" })).toHaveAttribute("href", "/calendar");
+  expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+});
+
 it("saves only own scoped answer/mode/guest fields, preserves unsupported care by omission and reflects server waitlisting", async () => {
   mount(); await screen.findByText("One invited date");
   expect(screen.getByLabelText("Remote")).toBeChecked(); expect(screen.getByLabelText("Guests")).toHaveValue(1);
