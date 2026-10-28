@@ -117,6 +117,9 @@ type SMTPSender struct {
 	password string
 	from     string
 	implicit bool
+	// AllowInsecure permits plaintext to a non-loopback relay that does not
+	// advertise STARTTLS. It never disables TLS certificate verification.
+	AllowInsecure bool
 	// tlsConfig overrides the TLS client config (tests only); production
 	// verifies the server certificate against host.
 	tlsConfig *tls.Config
@@ -225,6 +228,8 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 			if err := c.StartTLS(s.tlsCfg()); err != nil {
 				return fmt.Errorf("mail: starttls: %w", err)
 			}
+		} else if !s.AllowInsecure && !strings.EqualFold(s.host, "localhost") && !net.ParseIP(s.host).IsLoopback() {
+			return errors.New("mail: server does not offer STARTTLS; use an encrypted SMTP relay or explicitly set FOLD_SMTP_ALLOW_INSECURE=true for a trusted relay")
 		}
 	}
 	if s.username != "" {

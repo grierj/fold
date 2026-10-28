@@ -148,6 +148,7 @@ func newMailer(cfg Config, db *gorm.DB) mail.Sender {
 	if err != nil {
 		log.Fatalf("FOLD_SMTP_URL: %v", err)
 	}
+	s.AllowInsecure = cfg.SMTPAllowInsecure
 	return s
 }
 

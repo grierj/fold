@@ -89,6 +89,9 @@ func (f *fakeSMTP) serve() {
 	say("220 fake ESMTP")
 	for {
 		cmd := line()
+		if cmd == "" {
+			return
+		}
 		upper := strings.ToUpper(cmd)
 		switch {
 		case strings.HasPrefix(upper, "EHLO"), strings.HasPrefix(upper, "HELO"):
@@ -145,6 +148,31 @@ func TestSMTPSendsThroughTestServer(t *testing.T) {
 	}
 	if !strings.Contains(fake.data, "Content-Type: text/plain") {
 		t.Fatalf("not plain text: %q", fake.data)
+	}
+}
+
+func TestSMTPRequiresEncryptionOutsideLoopback(t *testing.T) {
+	for _, allow := range []bool{false, true} {
+		t.Run(fmt.Sprintf("allow-insecure=%v", allow), func(t *testing.T) {
+			fake := newFakeSMTP(t)
+			s, err := NewSMTP("smtp://relay.example.com:587", "Fold <noreply@example.com>")
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Connect to the fixture but retain the configured non-loopback
+			// identity used for TLS policy and certificate verification.
+			s.addr = fake.addr()
+			s.AllowInsecure = allow
+			err = s.Send(context.Background(), Message{To: "sam@example.com", Subject: "Secret link", Text: "token"})
+			<-fake.done
+			if allow {
+				if err != nil || !strings.Contains(fake.data, "token") {
+					t.Fatalf("explicit opt-out: err=%v data=%q", err, fake.data)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "STARTTLS") || fake.from != "" || fake.to != "" || fake.data != "" {
+				t.Fatalf("plaintext escaped: err=%v from=%q to=%q data=%q", err, fake.from, fake.to, fake.data)
+			}
+		})
 	}
 }
 

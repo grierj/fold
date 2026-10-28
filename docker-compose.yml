@@ -29,6 +29,7 @@ services:
       COOKIE_SECURE: "true" # TLS is terminated at Caddy; browsers still see https
       SITE_URL: https://${DOMAIN:?Set DOMAIN in .env}
       FOLD_SMTP_URL: ${FOLD_SMTP_URL:-}
+      FOLD_SMTP_ALLOW_INSECURE: ${FOLD_SMTP_ALLOW_INSECURE:-false}
       FOLD_EMAIL_FROM: ${FOLD_EMAIL_FROM:-}
       # Only Caddy, on the fixed subnet below, may set X-Forwarded-For (C17).
       FOLD_TRUSTED_PROXIES: ${FOLD_TRUSTED_PROXIES:-172.30.0.0/24}
