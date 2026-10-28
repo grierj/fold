@@ -334,6 +334,45 @@ func TestChangesEndOtherSessions(t *testing.T) {
 // M1.2 acceptance: password reset answers uniformly for known and unknown
 // addresses, the token is single use and expires, the raw token is never
 // stored, and confirming signs the user in with the new password.
+func TestPasswordResetTargetHourlyAndDailyCaps(t *testing.T) {
+	app := testApp(t)
+	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	anon := newAPIClient(t, app)
+	anon.fetchCSRF()
+	request := func() {
+		t.Helper()
+		w := anon.do("POST", "/api/v1/auth/password-reset", map[string]string{"email": user.Email}, true)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), resetRequestMessage) {
+			t.Fatalf("non-uniform answer: %d %s", w.Code, w.Body.String())
+		}
+	}
+	for range targetHourLimit {
+		request()
+	}
+	lastToken := tokenInEmail(t, latestEmail(t, app, user.Email))
+	request()
+	if n := mailsTo(app, user.Email); n != targetHourLimit {
+		t.Fatalf("hourly cap: sent %d", n)
+	}
+	var token models.AccountToken
+	app.DB.Where("kind = ? AND user_id = ?", models.TokenPasswordReset, user.ID).First(&token)
+	if token.TokenHash != hashToken(lastToken) {
+		t.Fatal("throttled request invalidated the last emailed link")
+	}
+	// Move only the hourly/IP windows back; the target's daily count persists.
+	for range targetDayLimit {
+		if err := app.DB.Exec("UPDATE login_throttles SET window_start = now() - interval '2 hours' WHERE key LIKE 'pwreset:ip:%' OR key = ?", "pwreset:addr:"+user.Email+":h").Error; err != nil {
+			t.Fatal(err)
+		}
+		request()
+	}
+	if n := mailsTo(app, user.Email); n != targetDayLimit-1 {
+		// The rejected fourth hourly attempt also counts toward the daily
+		// budget, just as it does for every other targetAllow caller.
+		t.Fatalf("daily cap: sent %d, want %d", n, targetDayLimit-1)
+	}
+}
+
 func TestPasswordResetUniformAndSingleUse(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "alice", "password1234", models.RoleMember)

@@ -276,11 +276,10 @@ func (a *App) apiMyGroups(c *gin.Context) {
 // known or not, so the endpoint can't be used to enumerate accounts.
 const resetRequestMessage = "If that email has an account, we've sent a link"
 
-// resetThrottle limits: per client IP and per target address, per hour.
+// Password-reset requests also use the shared hourly/daily target mail caps.
 const (
-	resetIPLimit      = 10
-	resetAddressLimit = 5
-	resetWindow       = time.Hour
+	resetIPLimit = 10
+	resetWindow  = time.Hour
 )
 
 // throttleAllow counts one hit for key and reports whether it stays under
@@ -343,7 +342,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	ipOK, err := a.throttleAllow(ctx, "pwreset:ip:"+c.ClientIP(), resetIPLimit, resetWindow)
 	addrOK := true
 	if err == nil {
-		addrOK, err = a.throttleAllow(ctx, "pwreset:addr:"+email, resetAddressLimit, resetWindow)
+		addrOK, err = a.targetAllow(ctx, "pwreset:addr:"+email)
 	}
 	throttled := err != nil || !ipOK || !addrOK
 

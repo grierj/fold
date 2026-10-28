@@ -38,7 +38,7 @@ POST /api/v1/auth/password-reset/confirm {token, password} → 200 {user} | 400 
 Password reset (M1.2): the request answers `200 {"message":"If that email
 has an account, we've sent a link"}` for every address, known or not, after
 one bcrypt comparison on a miss (no account enumeration). Per-IP (10/hour)
-and per-address (5/hour) throttles live in `login_throttles`; throttled
+and per-address (3/hour, 10/day) throttles live in `login_throttles`; throttled
 requests still answer uniformly. Tokens are 32 random bytes, stored as
 SHA-256, single use, and expire after 24 hours. Confirming sets the password
 (≥ 10 chars), ends every other session, and signs the browser in.
