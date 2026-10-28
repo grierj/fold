@@ -940,7 +940,7 @@ func TestNotificationCategoriesMatch(t *testing.T) {
 
 // --- One list filter for event visibility ---
 //
-// Series lists go through visibleEvents; date lists load eventCandidates then
+// Series lists go through eventCandidates; date lists load dateCandidates then
 // apply visibleSet.canSeeDate. Candidate parents never authorize a series.
 // Both paths skip missing groups; policy loops elsewhere duplicate the filter.
 
@@ -973,7 +973,7 @@ func TestOneEventVisibilityFilter(t *testing.T) {
 				ast.Inspect(body, func(m ast.Node) bool {
 					if call, ok := m.(*ast.CallExpr); ok {
 						if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CanSeeEvent" {
-							t.Errorf("%s: %s filters a list with policy.CanSeeEvent; use visibleEvents", fset.Position(call.Pos()), fn.Name.Name)
+							t.Errorf("%s: %s filters a list with policy.CanSeeEvent; use eventCandidates for series, or dateCandidates and canSeeDate for dates", fset.Position(call.Pos()), fn.Name.Name)
 						}
 					}
 					return true

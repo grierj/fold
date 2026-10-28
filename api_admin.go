@@ -901,10 +901,6 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 	}})
 }
 
-func (a *App) apiAdminRemoveMember(c *gin.Context) {
-	a.apiRemoveGroupMemberConfirmed(c)
-}
-
 func (a *App) apiDeletionRequests(c *gin.Context) {
 	var groups []models.Group
 	a.DB.Where("deletion_requested = ?", true).Order("updated_at").Find(&groups)

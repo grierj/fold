@@ -43,7 +43,7 @@ func occurrenceAccessPolicy(row models.OccurrenceAccess) policy.OccurrenceAccess
 	return out
 }
 
-// scopedOccurrenceReads loads exact candidates independently of visibleEvents.
+// scopedOccurrenceReads loads exact candidates independently of series-filtered eventCandidates.
 // q selects occurrence IDs (window/date and event filters). Parent IDs NEVER
 // enter the ordinary visible set. All related facts are batched, including live
 // registration provenance; no attendee/contact directory is loaded here.

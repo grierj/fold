@@ -3,7 +3,7 @@
 DEV_COMPOSE := docker compose -f deploy/docker-compose.dev.yml
 DEV_DATABASE_URL := postgres://fold:fold@localhost:5432/fold?sslmode=disable
 
-.PHONY: dev test lint lint-go lint-web devdb e2e lint-sh provision-dry-run
+.PHONY: dev test lint lint-go lint-web devdb e2e lint-sh provision-dry-run deadcode
 
 # Start the dev database and wait until it accepts connections.
 devdb:
@@ -46,6 +46,15 @@ lint-go:
 	go vet ./...
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 	go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+
+# Production reachability gate (tests excluded). Allow only the test database
+# package and the two registry inspection seams used by tests and tooling.
+deadcode:
+	@report=$$(mktemp); trap 'rm -f "$$report"' EXIT; \
+	go run golang.org/x/tools/cmd/deadcode@v0.52.0 ./... > "$$report" || exit $$?; \
+	if grep -Ev -f .deadcode-allow "$$report"; then \
+		echo 'Unexpected unreachable production code; remove it or add a caller.' >&2; exit 1; \
+	else status=$$?; [ "$$status" -eq 1 ]; fi
 
 # Unused files, exports and dependencies in web/ (knip, pinned in package.json).
 lint-web:

@@ -863,6 +863,8 @@ func (a *App) apiLeaveGroupConfirmed(c *gin.Context) {
 	a.departureConfirm(c, apiUser(c).ID)
 }
 
+// Both POST and legacy DELETE routes use this preview-bound confirmation path;
+// a missing snapshot is refused rather than bypassing cleanup.
 func (a *App) apiRemoveGroupMemberConfirmed(c *gin.Context) {
 	subjectID64, err := strconv.ParseUint(c.Param("userId"), 10, 64)
 	if err != nil || subjectID64 == 0 {

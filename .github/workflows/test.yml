@@ -37,7 +37,7 @@ jobs:
           go-version-file: go.mod
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
-      - run: make lint-sh lint-go
+      - run: make lint-sh lint-go deadcode
       # Known vulnerabilities in reachable Go code (DEC-37). Pinned version.
       - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
       # Includes the schema drift check (migrations/migrations_test.go).

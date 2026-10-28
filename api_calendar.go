@@ -99,7 +99,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 	}
 	// remote=1 keeps only events that offer remote attendance (M1.8
 	// slice 2). Filtering on the event row here means a hidden event is
-	// dropped by visibleEvents exactly as without the filter.
+	// dropped by eventCandidates exactly as without the filter.
 	if c.Query("remote") == "1" {
 		q = q.Where("remote_available = ?", true)
 	}

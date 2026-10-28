@@ -376,24 +376,7 @@ func TestOccurrenceAccessBoundaries(t *testing.T) {
 	}
 }
 
-func TestManagerOccurrenceAddAndRecipientControls(t *testing.T) {
-	s, f, r := addFixture()
-	if CanDirectManagerOccurrenceAdd(s, f) {
-		t.Fatal("direct teen bypass")
-	}
-	adultAdd(&f, &r)
-	if !CanDirectManagerOccurrenceAdd(s, f) {
-		t.Fatal("eligible adult direct add refused")
-	}
-	end := f.Now.Add(-2 * time.Hour)
-	f.LatestAccessEndedAt = &end
-	if CanDirectManagerOccurrenceAdd(s, f) || !CanCreateAddRequest(s, f, 0) {
-		t.Fatal("ended history must require a new ask, never direct re-add")
-	}
-	f.Block = &ManagerAddBlock{2, f.Occurrence.Organizer}
-	if CanDirectManagerOccurrenceAdd(s, f) || CanCreateAddRequest(s, f, 0) {
-		t.Fatal("legacy direct add bypassed block")
-	}
+func TestOccurrenceRecipientControls(t *testing.T) {
 	p, a, _, _ := accessFixture()
 	for _, tt := range []struct {
 		name                string

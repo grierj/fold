@@ -886,10 +886,3 @@ func memberCount(db *gorm.DB, groupID uint) int64 {
 		Where("memberships.group_id = ? AND memberships.status = ?", groupID, "active").Count(&n)
 	return n
 }
-
-// apiRemoveGroupMember routes the legacy DELETE through the same preview-bound
-// confirmation transaction as the POST departure endpoint. A missing snapshot
-// is therefore refused rather than bypassing cleanup.
-func (a *App) apiRemoveGroupMember(c *gin.Context) {
-	a.apiRemoveGroupMemberConfirmed(c)
-}
