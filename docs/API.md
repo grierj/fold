@@ -402,7 +402,8 @@ GET  /api/v1/groups/:id/members → {members: [...]}  (auth; members and admins;
 
 Join returns 404 when the group is not visible, and 403 when it is
 invite-only and the caller is not already a member. A full group answers 409
-"This group is full" (no waitlist), and someone whose return is pending gets 409. A deletion request is
+"This group is full" (no waitlist). A disabled account re-enabled into a full
+group is left out and told to ask a leader; there is no pending-return state. A deletion request is
 accepted only from a leader who is the group's only active member. Adding
 a member clears a pending request.
 
