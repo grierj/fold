@@ -36,7 +36,7 @@ func (a *App) apiLogin(c *gin.Context) {
 		return
 	}
 	email := normalizeEmail(body.Email)
-	keys := []string{"email:" + email, "ip:" + c.ClientIP()}
+	keys := []string{"email:" + email, "ip:" + rateLimitIP(c.ClientIP())}
 	ctx := c.Request.Context()
 	// The attempt is counted before the password check, atomically per key,
 	// so a burst of parallel requests can't all pass the check before any
@@ -339,7 +339,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	}
 	email := normalizeEmail(body.Email)
 	ctx := c.Request.Context()
-	ipOK, err := a.throttleAllow(ctx, "pwreset:ip:"+c.ClientIP(), resetIPLimit, resetWindow)
+	ipOK, err := a.throttleAllow(ctx, "pwreset:ip:"+rateLimitIP(c.ClientIP()), resetIPLimit, resetWindow)
 	addrOK := true
 	if err == nil {
 		addrOK, err = a.targetAllow(ctx, "pwreset:addr:"+email)

@@ -158,17 +158,13 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 			"Ask a parent or guardian to register you. Guests registering on their own must be 18 or older.")
 		return
 	}
-	if strings.TrimSpace(body.Website) != "" {
-		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
-		return
-	}
 	var occ models.EventOccurrence
 	if err := a.DB.Where("event_id = ? AND original_date = ? AND status = ?",
 		ev.ID, strings.TrimSpace(body.Date), models.OccurrenceScheduled).First(&occ).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return
 	}
-	hits, err := a.throttleHit(c.Request.Context(), "guestreg:ip:"+c.ClientIP(), time.Hour)
+	hits, err := a.throttleHit(c.Request.Context(), "guestreg:ip:"+rateLimitIP(c.ClientIP()), time.Hour)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your registration")
 		return
@@ -177,6 +173,15 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		// No 429 here (DEC-52): refusing out loud would confirm the
 		// address is being mailed. The emails simply stop.
 		log.Printf("guest registration rate limited: ip=%s", c.ClientIP())
+		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		return
+	}
+	if ok, err := a.throttleAllow(c.Request.Context(), "guestreg:site", publicSignupSiteLimit, time.Hour); err != nil || !ok {
+		log.Printf("guest registration site limit: err=%v", err)
+		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		return
+	}
+	if strings.TrimSpace(body.Website) != "" {
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return
 	}

@@ -13,6 +13,7 @@ import (
 	"image"
 	"image/png"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -198,7 +199,7 @@ func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.R
 	}
 	req := httptest.NewRequest(method, path, rdr)
 	if c.ip != "" {
-		req.RemoteAddr = c.ip + ":1234"
+		req.RemoteAddr = net.JoinHostPort(c.ip, "1234")
 	}
 	if jsonBody != nil {
 		req.Header.Set("Content-Type", "application/json")

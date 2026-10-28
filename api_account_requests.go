@@ -117,7 +117,7 @@ func (a *App) toAccountRequestJSON(r *models.AccountRequest) accountRequestJSON 
 // accountRequestHit counts one public-form submission from ip and
 // reports the running count in the last hour (login_throttles, own key).
 func (a *App) accountRequestHit(ctx context.Context, ip string) (int, error) {
-	return a.throttleHit(ctx, "acctreq:ip:"+ip, time.Hour)
+	return a.throttleHit(ctx, "acctreq:ip:"+rateLimitIP(ip), time.Hour)
 }
 
 // throttleHit counts one hit against key and reports the running count
@@ -223,6 +223,11 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return false
 	}
+	if ok, err := a.throttleAllow(ctx, "acctreq:site", publicSignupSiteLimit, time.Hour); err != nil || !ok {
+		log.Printf("account request site limit: source=%s err=%v", source, err)
+		a.answerAccountRequest(c, source)
+		return false
+	}
 	// Per-address limit (#91): rotating IPs can't flood one inbox, or the
 	// admins, with requests for that address. Same answer, nothing stored
 	// or sent.
@@ -248,11 +253,13 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		}
 		// Same answer and about the same cost as a stored request; the
 		// hint travels by email instead (10.1).
-		a.runInBackground(func() {
-			if err := a.sendAlreadyHaveAccountEmail(v.email); err != nil {
-				log.Printf("account-exists email to %s: %v", v.email, err)
-			}
-		})
+		if !v.honeypot {
+			a.runInBackground(func() {
+				if err := a.sendAlreadyHaveAccountEmail(v.email); err != nil {
+					log.Printf("account-exists email to %s: %v", v.email, err)
+				}
+			})
+		}
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return false
 	}
@@ -295,7 +302,7 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 	// A duplicate of a pending request is stored and flagged on the bell,
 	// but sends nothing: the requester and the admins were already
 	// emailed about the first one (#91).
-	if !flags.Duplicate {
+	if !flags.Duplicate && !flags.Honeypot {
 		a.runInBackground(func() {
 			a.deliverNotificationEmails(emailed)
 			if source == models.RequestSelfSignup {
