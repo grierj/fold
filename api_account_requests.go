@@ -236,6 +236,9 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 	// is the normal upgrade path, not the already-have-an-account path.
 	hasAccount := a.DB.Where("email = ?", v.email).Limit(1).Find(&existing).RowsAffected == 1 &&
 		existing.Status != models.UserGuest
+	// Both paths pay the same password-check cost. SMTP work is deferred on
+	// both paths so the number of admins cannot disclose account existence.
+	(&models.User{}).CheckPassword("not a real password")
 	if hasAccount {
 		if source == models.RequestMemberInvite {
 			// An authenticated member learns what an inviter learns
@@ -245,10 +248,11 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		}
 		// Same answer and about the same cost as a stored request; the
 		// hint travels by email instead (10.1).
-		(&models.User{}).CheckPassword("not a real password")
-		if err := a.sendAlreadyHaveAccountEmail(v.email); err != nil {
-			log.Printf("account-exists email to %s: %v", v.email, err)
-		}
+		a.runInBackground(func() {
+			if err := a.sendAlreadyHaveAccountEmail(v.email); err != nil {
+				log.Printf("account-exists email to %s: %v", v.email, err)
+			}
+		})
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return false
 	}
@@ -292,12 +296,14 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 	// but sends nothing: the requester and the admins were already
 	// emailed about the first one (#91).
 	if !flags.Duplicate {
-		a.deliverNotificationEmails(emailed)
-		if source == models.RequestSelfSignup {
-			if err := a.sendRequestReceivedEmail(v.email); err != nil {
-				log.Printf("request-received email to %s: %v", v.email, err)
+		a.runInBackground(func() {
+			a.deliverNotificationEmails(emailed)
+			if source == models.RequestSelfSignup {
+				if err := a.sendRequestReceivedEmail(v.email); err != nil {
+					log.Printf("request-received email to %s: %v", v.email, err)
+				}
 			}
-		}
+		})
 	}
 	a.answerAccountRequest(c, source)
 	return true

@@ -9,6 +9,35 @@ import (
 	"time"
 )
 
+func TestAccountRequestsDeferAllMailForExistingAndNewAddresses(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	member := newTestUser(t, app, "member", "pw", models.RoleMember)
+	var jobs []func()
+	app.background = func(f func()) { jobs = append(jobs, f) }
+	anon := anonClient(t, app, "10.1.0.1")
+	for _, email := range []string{member.Email, "new@example.com"} {
+		w := anon.do("POST", "/api/v1/account-requests", signupBody("Person", email, "adult", ""), true)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), signupThanks) {
+			t.Fatalf("%s: %d %s", email, w.Code, w.Body.String())
+		}
+		if n := mailsTo(app, email); n != 0 {
+			t.Fatalf("response waited on mail for %s: %d", email, n)
+		}
+	}
+	if len(jobs) != 2 || mailsTo(app, admin.Email) != 0 {
+		t.Fatalf("want two deferred batches and no admin mail, jobs=%d", len(jobs))
+	}
+	for _, job := range jobs {
+		job()
+	}
+	for _, email := range []string{member.Email, "new@example.com", admin.Email} {
+		if n := mailsTo(app, email); n != 1 {
+			t.Fatalf("background mail for %s: %d", email, n)
+		}
+	}
+}
+
 // M1.3 acceptance: self-signup creates a pending request; nobody can
 // sign in until an admin approves; approval emails a set-password link
 // and confirming it signs the new adult in.
