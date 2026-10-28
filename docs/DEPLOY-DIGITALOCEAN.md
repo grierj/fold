@@ -218,13 +218,9 @@ dig +short TXT <selector>._domainkey.groups.example.org
 dig +short CNAME pm-bounces.groups.example.org
 ```
 
-**Current Compose gap:** the checked-in `docker-compose.yml` does not pass
-`FOLD_SMTP_URL` or `FOLD_EMAIL_FROM` to the app. Compose's `.env` is interpolation
-input, not automatically the container environment. These values alone will not
-enable email. Before relying on invites or resets, explicitly pass both through
-the app service's environment in an operator-managed Compose override, then
-recreate the app and verify delivery. This documentation pass does not change
-the Compose configuration.
+The checked-in Compose app service passes `FOLD_SMTP_URL` and
+`FOLD_EMAIL_FROM` from `.env` into the container. Recreate the app after changing
+these values and verify delivery before relying on invitations or resets.
 
 Put the SMTP URL in `/opt/fold/.env` (Postmark's host is
 `smtp.postmarkapp.com`, port 587):
@@ -234,9 +230,8 @@ FOLD_SMTP_URL=smtp://SERVER_TOKEN:SERVER_TOKEN@smtp.postmarkapp.com:587
 FOLD_EMAIL_FROM=Fold <noreply@groups.example.org>
 ```
 
-After adding the environment pass-through, run Compose with the same override
-file(s) to recreate the app. `sudo docker compose --project-directory /opt/fold
-up -d` by itself cannot load values the service does not reference.
+Run `sudo docker compose --project-directory /opt/fold up -d` to recreate the
+app with the changed mail configuration.
 SMS is not implemented yet; do not provision texting just to run this version.
 
 `SESSION_SECRET` must be at least 32 characters. The script generates one

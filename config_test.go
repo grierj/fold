@@ -4,12 +4,30 @@ import (
 	"fold/models"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestComposePassesTransactionalMailEnvironment(t *testing.T) {
+	data, err := os.ReadFile("docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, app, ok := strings.Cut(string(data), "\n  app:\n")
+	if !ok {
+		t.Fatal("no app service")
+	}
+	app, _, _ = strings.Cut(app, "\n  caddy:\n")
+	for _, key := range []string{"FOLD_SMTP_URL", "FOLD_EMAIL_FROM"} {
+		if !strings.Contains(app, "\n      "+key+": ${"+key+":-}\n") {
+			t.Errorf("app service must pass through %s", key)
+		}
+	}
+}
 
 func TestShortSessionSecretRefusedOutsideDev(t *testing.T) {
 	t.Setenv("APP_ENV", "prod")

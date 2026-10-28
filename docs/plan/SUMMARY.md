@@ -107,9 +107,8 @@ also needs DNS, email configuration and a tested backup/restore procedure.
 
 The DigitalOcean provisioner, smoke checks, host-cron dumps and upgrade helper
 exist. Published release images, the backup service and pre-migration backup
-refusal gate do not yet. Current Compose also needs an explicit SMTP environment
-pass-through before setting `FOLD_SMTP_URL` in `.env` can affect the container;
-that configuration gap is recorded, not fixed by this documentation pass.
+refusal gate do not yet. Compose passes the SMTP URL and From address from
+`.env` into the app; recreate the app after changes and verify delivery.
 
 ## Still to decide
 

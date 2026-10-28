@@ -48,15 +48,11 @@ shipped behavior, not permission to silently reverse an owner decision.
 
 These were **not fixed in code or configuration** by this pass.
 
-### Mail configuration in Compose — deployment blocker for email-dependent flows
+### Mail configuration in Compose — resolved (#146)
 
-`config.go` reads `FOLD_SMTP_URL` and `FOLD_EMAIL_FROM`, and the provisioner can
-write them into `.env`. The checked-in `docker-compose.yml` app environment
-passes neither. Compose does not automatically inject its interpolation file.
-The deployment guide now warns that an explicit environment pass-through is
-needed before recreating the app and verifying delivery. Review/fix the shipped
-configuration separately; do not claim invitations or resets work merely
-because those keys exist in `.env`.
+The app service now explicitly passes `FOLD_SMTP_URL` and `FOLD_EMAIL_FROM`
+from `.env`. Recreate the app after editing them and verify delivery. Mail
+provider setup and a successful real delivery are still operator checks.
 
 ### Seat-only pruning and waitlist promotion — behavior conflict
 

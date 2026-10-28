@@ -121,9 +121,9 @@ make e2e    # Playwright browser tests (first run: cd web && npx playwright inst
   [DigitalOcean deployment](docs/DEPLOY-DIGITALOCEAN.md).
 - [AGENTS.md](AGENTS.md): development and review rules.
 
-Current Compose does not pass `FOLD_SMTP_URL`/`FOLD_EMAIL_FROM` into the app;
-setting them only in `.env` is insufficient. See the deployment guide's mail
-warning before relying on invitations or password resets.
+Set `FOLD_SMTP_URL` and `FOLD_EMAIL_FROM` in `.env`, then recreate the app
+with `docker compose up -d` to enable transactional email. Follow the deployment
+guide to verify delivery before relying on invitations or password resets.
 
 ## Layout
 

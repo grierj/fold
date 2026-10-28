@@ -2242,7 +2242,7 @@ not a reason to call this merged implementation unclaimed.
 - Tests: upgrade test in CI.
 
 **M5.4 Deployment docs (Compose)**
-- Status: partial groundwork exists in `docs/DEPLOY-DIGITALOCEAN.md`, AGENTS.md and the provision/smoke/upgrade scripts. The full release workflow below depends on unbuilt M5.1–M5.3 and `fold setup`; its acceptance remains open. Fix the documented Compose SMTP pass-through gap before relying on email flows.
+- Status: partial groundwork exists in `docs/DEPLOY-DIGITALOCEAN.md`, AGENTS.md and the provision/smoke/upgrade scripts. The full release workflow below depends on unbuilt M5.1–M5.3 and `fold setup`; its acceptance remains open. Compose passes mail configuration through from `.env`; recreate the app after changes and verify delivery before relying on email flows.
 - Depends on: M5.1–M5.3
 - Scope: `docs/DEPLOY.md` for humans, and the AGENTS.md Deployment section (Appendix A).
 - Acceptance:
