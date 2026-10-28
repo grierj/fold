@@ -454,86 +454,54 @@ func (a *App) setupRequired() gin.HandlerFunc {
 // --- Setup wizard ---
 
 func (a *App) showSetup(c *gin.Context) {
-	var n int64
-	a.DB.Model(&models.User{}).Count(&n)
-	if n > 0 {
+	ready, err := a.setupComplete()
+	if err != nil {
+		log.Printf("Setup availability check failed: %v", err)
+		a.html(c, http.StatusServiceUnavailable, "setup.html", (setupInput{}).pageData(nil, "Setup isn't available right now. Try again in a moment."))
+		return
+	}
+	if ready {
 		c.Redirect(http.StatusSeeOther, "/")
 		return
 	}
-	a.html(c, http.StatusOK, "setup.html", nil)
+	a.html(c, http.StatusOK, "setup.html", (setupInput{}).pageData(nil, ""))
 }
 
 func (a *App) handleSetup(c *gin.Context) {
-	var n int64
-	a.DB.Model(&models.User{}).Count(&n)
-	if n > 0 {
+	in := readSetupInput(c)
+	ready, err := a.setupComplete()
+	if err != nil {
+		log.Printf("Setup availability check failed: %v", err)
+		a.html(c, http.StatusServiceUnavailable, "setup.html", in.pageData(nil, "Setup isn't available right now. Try again in a moment."))
+		return
+	}
+	if ready {
 		c.Redirect(http.StatusSeeOther, "/")
 		return
 	}
-
-	siteName := strings.TrimSpace(c.PostForm("site_name"))
-	timezone := strings.TrimSpace(c.PostForm("timezone"))
-	name := strings.TrimSpace(c.PostForm("name"))
-	email := normalizeEmail(c.PostForm("email"))
-	password := c.PostForm("password")
-	confirm := c.PostForm("password_confirm")
-
-	fail := func(msg string) {
-		// Keep the fields that passed validation so the user doesn't have
-		// to retype them. Never echo back secrets (passwords) or payment
-		// details — only non-sensitive fields are preserved.
-		a.html(c, http.StatusBadRequest, "setup.html", gin.H{
-			"Error":           msg,
-			"EnteredSiteName": siteName,
-			"EnteredTimezone": timezone,
-			"EnteredName":     name,
-			"EnteredEmail":    email,
-		})
-	}
-
-	if siteName == "" || timezone == "" || name == "" || email == "" || password == "" {
-		fail("All fields are required.")
-		return
-	}
-	if _, err := events.LoadZone(timezone); err != nil {
-		fail("Time zone must be an IANA name, for example America/Denver.")
-		return
-	}
-	if !validEmail(email) {
-		fail("Enter a valid email address.")
-		return
-	}
-	if len(password) < minPasswordLength {
-		fail("Password must be at least 10 characters.")
-		return
-	}
-	if password != confirm {
-		fail("Passwords do not match.")
+	if fields := in.fieldErrors(); len(fields) > 0 {
+		a.html(c, http.StatusBadRequest, "setup.html", in.pageData(fields, ""))
 		return
 	}
 
-	if c.PostForm("age_band") != "adult" {
-		fail("The first administrator must confirm they are 18 or older.")
-		return
-	}
-	admin := models.User{AccountType: models.AccountAdult, Email: email, Name: name, Role: models.RoleAdmin, Status: models.UserActive}
-	err := admin.SetPassword(password)
+	admin := models.User{AccountType: models.AccountAdult, Email: in.Email, Name: in.Name, Role: models.RoleAdmin, Status: models.UserActive}
+	err = admin.SetPassword(in.Password)
 	if err == nil {
 		err = a.DB.Create(&admin).Error
 	}
 	if err != nil {
 		log.Printf("Setup failed creating admin: %v", err)
-		fail("Could not create the admin account.")
+		a.html(c, http.StatusBadRequest, "setup.html", in.pageData(nil, "We couldn't create your account. Try again."))
 		return
 	}
 	a.DB.Where(models.Setting{Key: "site_name"}).
-		Assign(models.Setting{Value: siteName}).
+		Assign(models.Setting{Value: in.SiteName}).
 		FirstOrCreate(&models.Setting{})
 	a.DB.Where(models.Setting{Key: settingTimezone}).
-		Assign(models.Setting{Value: timezone}).
+		Assign(models.Setting{Value: in.Timezone}).
 		FirstOrCreate(&models.Setting{})
 
-	log.Printf("Setup complete: site=%q timezone=%q", siteName, timezone)
+	log.Printf("Setup complete: site=%q timezone=%q", in.SiteName, in.Timezone)
 	c.Redirect(http.StatusSeeOther, "/login")
 }
 

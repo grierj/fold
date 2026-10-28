@@ -16,16 +16,26 @@
         {{if .Error}}
         <p class="mt-4 rounded-lg border border-danger-border bg-danger-subtle p-4 text-danger-on-subtle" role="alert">{{.Error}}</p>
         {{end}}
-        <form method="POST" action="/setup" class="mt-6 space-y-4 rounded-lg border border-border bg-surface p-card shadow-sm sm:p-card-lg">
+        {{if .ErrorSummary}}
+        <div class="mt-4 rounded-lg border border-danger-border bg-danger-subtle p-4 text-danger-on-subtle" role="alert">
+            <p>Check the fields below.</p>
+            <ul class="mt-2 list-disc pl-5">
+                {{range .ErrorSummary}}<li><a class="inline-flex min-h-11 items-center underline sm:min-h-6" href="#{{.ID}}">{{.Message}}</a></li>{{end}}
+            </ul>
+        </div>
+        {{end}}
+        <form method="POST" action="/setup" novalidate class="mt-6 space-y-4 rounded-lg border border-border bg-surface p-card shadow-sm sm:p-card-lg">
             {{ .csrfField }}
             <div>
-                <label class="label" for="site_name">Church / site name</label>
-                <input class="input" id="site_name" type="text" name="site_name" value="{{.EnteredSiteName}}" required>
+                <label class="label" for="site_name">Church name</label>
+                <input class="input" id="site_name" type="text" name="site_name" value="{{.EnteredSiteName}}" required {{with index .FieldErrors "site_name"}}aria-invalid="true" aria-describedby="site_name-error" {{end}}{{if eq .FirstError "site_name"}}autofocus {{end}}>
+                {{with index .FieldErrors "site_name"}}<p class="mt-1 flex items-center gap-1 text-sm text-danger" id="site_name-error"><span aria-hidden="true">⚠</span>{{.}}</p>{{end}}
             </div>
             <div>
                 <label class="label" for="timezone">Church time zone</label>
-                <input class="input" id="timezone" type="text" name="timezone" value="{{.EnteredTimezone}}" list="timezones" aria-describedby="tz-hint" required>
-                <p class="mt-1 text-sm text-text-muted" id="tz-hint">IANA name, for example America/Denver. A 7:00 PM event stays at 7:00 PM when daylight saving changes.</p>
+                <p class="mt-1 text-sm text-text-muted" id="tz-hint">Where your church meets, so event times are right. Start typing a city, for example Denver, then choose a suggestion.</p>
+                <input class="input" id="timezone" type="text" name="timezone" value="{{.EnteredTimezone}}" list="timezones" aria-describedby="tz-hint{{with index .FieldErrors "timezone"}} timezone-error{{end}}" required {{with index .FieldErrors "timezone"}}aria-invalid="true" {{end}}{{if eq .FirstError "timezone"}}autofocus {{end}}>
+                {{with index .FieldErrors "timezone"}}<p class="mt-1 flex items-center gap-1 text-sm text-danger" id="timezone-error"><span aria-hidden="true">⚠</span>{{.}}</p>{{end}}
                 <datalist id="timezones">
                     <option value="America/New_York"></option>
                     <option value="America/Chicago"></option>
@@ -40,25 +50,32 @@
             </div>
             <div>
                 <label class="label" for="name">Your name</label>
-                <input class="input" id="name" type="text" name="name" value="{{.EnteredName}}" autocomplete="name" required>
+                <input class="input" id="name" type="text" name="name" value="{{.EnteredName}}" autocomplete="name" required {{with index .FieldErrors "name"}}aria-invalid="true" aria-describedby="name-error" {{end}}{{if eq .FirstError "name"}}autofocus {{end}}>
+                {{with index .FieldErrors "name"}}<p class="mt-1 flex items-center gap-1 text-sm text-danger" id="name-error"><span aria-hidden="true">⚠</span>{{.}}</p>{{end}}
             </div>
             <div>
                 <label class="label" for="email">Your email (you sign in with it)</label>
-                <input class="input" id="email" type="email" name="email" value="{{.EnteredEmail}}" autocomplete="email" required>
+                <input class="input" id="email" type="email" name="email" value="{{.EnteredEmail}}" autocomplete="email" required {{with index .FieldErrors "email"}}aria-invalid="true" aria-describedby="email-error" {{end}}{{if eq .FirstError "email"}}autofocus {{end}}>
+                {{with index .FieldErrors "email"}}<p class="mt-1 flex items-center gap-1 text-sm text-danger" id="email-error"><span aria-hidden="true">⚠</span>{{.}}</p>{{end}}
             </div>
             <div>
                 <label class="label" for="password">Password</label>
-                <input class="input" id="password" type="password" name="password" autocomplete="new-password" aria-describedby="password-hint" required>
-                <p class="mt-1 text-sm text-text-muted" id="password-hint">Password must be at least 10 characters.</p>
+                <p class="mt-1 text-sm text-text-muted" id="password-hint">At least {{.PasswordMinimum}} characters.</p>
+                <input class="input" id="password" type="password" name="password" autocomplete="new-password" aria-describedby="password-hint{{with index .FieldErrors "password"}} password-error{{end}}" required {{with index .FieldErrors "password"}}aria-invalid="true" {{end}}{{if eq .FirstError "password"}}autofocus {{end}}>
+                {{with index .FieldErrors "password"}}<p class="mt-1 flex items-center gap-1 text-sm text-danger" id="password-error"><span aria-hidden="true">⚠</span>{{.}}</p>{{end}}
             </div>
             <div>
                 <label class="label" for="password_confirm">Confirm password</label>
-                <input class="input" id="password_confirm" type="password" name="password_confirm" autocomplete="new-password" required>
+                <input class="input" id="password_confirm" type="password" name="password_confirm" autocomplete="new-password" required {{with index .FieldErrors "password_confirm"}}aria-invalid="true" aria-describedby="password_confirm-error" {{end}}{{if eq .FirstError "password_confirm"}}autofocus {{end}}>
+                {{with index .FieldErrors "password_confirm"}}<p class="mt-1 flex items-center gap-1 text-sm text-danger" id="password_confirm-error"><span aria-hidden="true">⚠</span>{{.}}</p>{{end}}
             </div>
-            <label class="flex min-h-11 items-center gap-3" for="age_band">
-                <input id="age_band" type="checkbox" name="age_band" value="adult" required>
-                I am 18 or older. The first administrator must be an adult.
-            </label>
+            <div>
+                <label class="flex min-h-11 items-center gap-3" for="age_band">
+                    <input id="age_band" type="checkbox" name="age_band" value="adult" required {{if .AdultConfirmed}}checked {{end}}{{with index .FieldErrors "age_band"}}aria-invalid="true" aria-describedby="age_band-error" {{end}}{{if eq .FirstError "age_band"}}autofocus {{end}}>
+                    I am 18 or older. The first administrator must be an adult.
+                </label>
+                {{with index .FieldErrors "age_band"}}<p class="mt-1 flex items-center gap-1 text-sm text-danger" id="age_band-error"><span aria-hidden="true">⚠</span>{{.}}</p>{{end}}
+            </div>
             <button class="btn-primary w-full" type="submit">Create site</button>
         </form>
     </main>
