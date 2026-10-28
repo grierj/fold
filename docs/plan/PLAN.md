@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan, reconciled against merged work through M1.14 series RSVP/Undo PR #130 (merge `7229e92`, reviewed head `5f927ce`, 2026-10-27), plus locally validated departure publication head `deb093d`. Departure has fresh 12-gate and independent-review approval and is published in [PR #131](https://github.com/grierj/fold/pull/131), which records final protected CI and merge status. Decisions run through DEC-83. Local validation is not full publication, merge, deployment or production readiness.
+Status: active product plan, reconciled against merged work through M1.14 series RSVP/Undo PR #130 (merge `7229e92`, reviewed head `5f927ce`, 2026-10-27), plus locally validated departure publication head `deb093d`. Departure has fresh 12-gate and independent-review approval and is published in [PR #131](https://github.com/grierj/fold/pull/131), which records final protected CI and merge status. Decisions run through DEC-84. Local validation is not full publication, merge, deployment or production readiness.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-83; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-84; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-83) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-84) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
