@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { AdminAccountRequests, AdminGroups, AdminUsers, Groups, People, ApiError } from "../api";
+import { AdminAccountRequests, AdminGroups, AdminUsers, Groups, People, Site, ApiError } from "../api";
 import { ERROR_COPY } from "../lib/errors";
 import type { AccountRequest, User } from "../types";
 import { AdminPage } from "./Admin";
@@ -28,11 +28,58 @@ const request: AccountRequest = {
 };
 
 beforeEach(() => {
+  vi.mocked(Site.get).mockClear();
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [] });
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [] });
   vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [request] });
   vi.mocked(AdminAccountRequests.approve).mockReset();
   vi.mocked(Groups.members).mockReset().mockResolvedValue({ members: [] });
   vi.mocked(Groups.memberDeparturePreview).mockReset();
   vi.mocked(Groups.confirmMemberDeparture).mockReset();
+});
+
+it("keeps daily work above settings and opens the settings forms only on demand", async () => {
+  render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+  await screen.findByText(request.name);
+  expect(screen.getByRole("button", { name: /^Approvals/ })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.queryByRole("combobox", { name: "Church time zone" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Schedule a church-wide event" })).not.toBeInTheDocument();
+  expect(Site.get).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(await screen.findByRole("combobox", { name: "Church time zone" })).toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "Self-signup" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Schedule a church-wide event" })).toHaveAttribute("href", "/events/new");
+  expect(screen.getByRole("button", { name: "Settings" })).toHaveAttribute("aria-pressed", "true");
+  await userEvent.click(screen.getByRole("button", { name: "Users" }));
+  expect(screen.queryByRole("combobox", { name: "Church time zone" })).not.toBeInTheDocument();
+});
+
+it("opens a bookmarked settings tab and falls back to approvals for unknown tabs", async () => {
+  const view = render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByRole("heading", { name: "Church settings" })).toBeInTheDocument();
+  view.unmount();
+  render(<MemoryRouter initialEntries={["/admin?tab=not-a-tab"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText(request.name)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Approvals/ })).toHaveAttribute("aria-pressed", "true");
+});
+
+it("shows plain account badges rather than stored status and role codes", async () => {
+  const teen: User = { id: 42, name: "Tess Teen", displayName: "Tess", email: "tess@example.com", phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "pending_consent", hasPassword: true, accountType: "teen", timezone: "UTC" };
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [teen] });
+  render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText("Waiting for parent consent")).toBeInTheDocument();
+  expect(screen.getByText("Member", { exact: true })).toBeInTheDocument();
+  expect(screen.getByText("Teen", { exact: true })).toBeInTheDocument();
+  expect(screen.queryByText("pending_consent")).not.toBeInTheDocument();
+});
+
+it("labels group metadata and uses the shared size for every group action", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [{ id: 3, name: "Choir", memberCount: 1, status: "active", leaderName: "Pat Leader" } as import("../types").GroupSummary] });
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText("Active", { exact: true })).toBeInTheDocument();
+  expect(screen.getByText("1 member · Organized by Pat Leader")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Open & edit" })).toHaveClass("btn-secondary");
+  expect(screen.getByRole("link", { name: "Open & edit" })).not.toHaveClass("text-sm");
 });
 
 it.each([

@@ -5,6 +5,8 @@ import { ContactDetails } from "../components/ContactDetails";
 import { GroupDepartureDialog } from "../components/GroupDepartureDialog";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
+import { Chip } from "../components/ui/Chip";
+import { roleLabel, accountStatusLabel, groupStatusLabel } from "../lib/status";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
 import { ZonePicker } from "../components/ui/ZonePicker";
@@ -24,7 +26,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 
-type AdminTab = "approvals" | "groups" | "users" | "invite";
+type AdminTab = "approvals" | "groups" | "users" | "invite" | "settings";
 
 const TeenConsentPanel = lazy(() => import("../components/TeenConsentPanel"));
 
@@ -479,7 +481,7 @@ function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
                       Admin
                     </span>
                   )}
-                  <span className="text-xs text-text-muted capitalize">· {m.role}</span>
+                  <span className="text-xs text-text-muted">· {roleLabel(m.role)}</span>
                   <ContactDetails email={m.email} phone={m.phone} />
                 </div>
                 <Button variant="danger-outline" onClick={() => remove(m)} disabled={busy || departureMember !== null}>
@@ -586,7 +588,7 @@ function GroupsTab({ users }: { users: User[] }) {
               </Link>
               <div className="text-xs text-text-muted mt-0.5">
                 <span
-                  className={`inline-block rounded-full px-2 py-0.5 font-semibold uppercase tracking-wide ${
+                  className={`inline-block rounded-full px-2 py-0.5 font-semibold ${
                     g.status === "active"
                       ? "bg-success-subtle text-success-on-subtle"
                       : g.status === "pending"
@@ -594,14 +596,16 @@ function GroupsTab({ users }: { users: User[] }) {
                         : "bg-sunken text-text-muted"
                   }`}
                 >
-                  {g.status}
+                  {groupStatusLabel(g.status)}
                 </span>
                 {g.visibility === "invite_only" && (
-                  <span className="ml-1.5 inline-block rounded-full px-2 py-0.5 font-semibold uppercase tracking-wide bg-inverse text-inverse-foreground">
+                  <span className="ml-1.5 inline-block rounded-full px-2 py-0.5 font-semibold bg-inverse text-inverse-foreground">
                     Invite only
                   </span>
-                )}{" "}
-                · {g.memberCount} members · {g.leaderName || "no leader"}
+                )}
+                <p className="mt-1">
+                  {g.memberCount} {g.memberCount === 1 ? "member" : "members"} · {g.leaderName ? `Organized by ${g.leaderName}` : "No leader assigned"}
+                </p>
               </div>
             </div>
             <Button
@@ -614,9 +618,7 @@ function GroupsTab({ users }: { users: User[] }) {
             >
               {openMembers === g.id ? "Hide members" : "Manage members"}
             </Button>
-            <Link to={`/groups/${g.id}`} className="btn-secondary py-1.5! px-3! text-sm">
-              Open & edit
-            </Link>
+            <ButtonLink to={`/groups/${g.id}`} variant="secondary">Open & edit</ButtonLink>
             <Button variant="danger-outline" onClick={() => deleteGroup(g)} disabled={deletingId === g.id}>
               {deletingId === g.id ? "…" : "Delete"}
             </Button>
@@ -926,11 +928,11 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                       u.role === "admin" ? "bg-primary-subtle text-primary-on-subtle" : "bg-sunken text-text-muted"
                     }`}
                   >
-                    {u.role}
+                    {roleLabel(u.role)}
                   </span>
                   {u.status !== "active" && (
                     <span className="ml-1 inline-block rounded-full px-2 py-0.5 text-xs font-semibold bg-warning-subtle text-warning-on-subtle">
-                      {u.status}
+                      {accountStatusLabel(u.status)}
                     </span>
                   )}
                   {u.accountType === "teen" && (
@@ -1195,7 +1197,9 @@ function SelfSignupSetting() {
 export function AdminPage() {
   const { user, loading: authLoading, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
-  const tab = (searchParams.get("tab") as AdminTab) || "approvals";
+  const requestedTab = searchParams.get("tab");
+  const tab: AdminTab = requestedTab && ["approvals", "groups", "users", "invite", "settings"].includes(requestedTab)
+    ? requestedTab as AdminTab : "approvals";
   const [pendingCount, setPendingCount] = useState(0);
   const [users, setUsers] = useState<User[]>([]);
   const [usersLoading, setUsersLoading] = useState(true);
@@ -1230,28 +1234,19 @@ export function AdminPage() {
     { id: "groups", label: "Groups" },
     { id: "users", label: "Users" },
     { id: "invite", label: "Invite" },
+    { id: "settings", label: "Settings" },
   ];
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">Admin</h1>
-      <ChurchTimezone />
-      <SelfSignupSetting />
-      <p className="mb-6">
-        <Link to="/events/new" className="inline-flex items-center min-h-11 text-primary font-semibold">
-          Schedule a church-wide event
-        </Link>
-      </p>
-      <div className="flex gap-1 border-b border-border mb-6">
+      <nav aria-label="Admin sections" className="flex flex-wrap gap-2 border-b border-border pb-4 mb-6">
         {tabs.map((t) => (
-          <button
+          <Chip
             key={t.id}
+            selected={tab === t.id}
+            aria-label={t.badge ? `${t.label}, ${t.badge} waiting` : t.label}
             onClick={() => setSearchParams(t.id === "approvals" ? {} : { tab: t.id })}
-            className={`min-h-11 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px ${
-              tab === t.id
-                ? "border-primary text-primary"
-                : "border-transparent text-text-muted hover:text-text"
-            }`}
           >
             {t.label}
             {t.badge ? (
@@ -1259,9 +1254,15 @@ export function AdminPage() {
                 {t.badge}
               </span>
             ) : null}
-          </button>
+          </Chip>
         ))}
-      </div>
+      </nav>
+      {tab === "settings" && <section aria-labelledby="admin-settings-heading">
+        <h2 id="admin-settings-heading" className="text-xl font-bold mb-4">Church settings</h2>
+        <ChurchTimezone />
+        <SelfSignupSetting />
+        <ButtonLink to="/events/new" variant="secondary">Schedule a church-wide event</ButtonLink>
+      </section>}
       {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} />}
       {tab === "groups" && <GroupsTab users={users} />}
       {tab === "users" && (
