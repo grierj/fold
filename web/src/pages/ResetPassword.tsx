@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Auth as AuthApi } from "../api";
@@ -64,7 +65,7 @@ export function ResetPassword() {
   return (
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-6">Choose a new password</h1>
-      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
         {error && <FormError>{error}</FormError>}
         <Field id="rp-password" label="New password" hint="Must be at least 10 characters.">
           <Input
@@ -87,7 +88,7 @@ export function ResetPassword() {
         <Button variant="primary" layout="w-full" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Set new password"}
         </Button>
-      </form>
+      </Form>
     </div>
   );
 }

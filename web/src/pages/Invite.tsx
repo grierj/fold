@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Invitations as InvitationsApi } from "../api";
@@ -120,7 +121,7 @@ export function Invite() {
         </p>
       )}
       {!invitation?.groupName && <div className="mb-6" />}
-      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
         {error && <FormError>{error}</FormError>}
         <Field id="invite-your-name" label="Your name" hint={invitation?.conversion ? "You can change it later in your profile." : undefined}>
           <Input
@@ -147,7 +148,7 @@ export function Invite() {
         <Button variant="primary" layout="w-full" type="submit" disabled={busy || (!invitation?.conversion && ageBand === "under13")}>
           {busy ? "Creating account…" : "Create my account"}
         </Button>
-      </form>
+      </Form>
     </div>
   );
 }

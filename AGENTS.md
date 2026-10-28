@@ -88,7 +88,7 @@ Postgres (`login_throttles`, see `api_auth.go`).
   `web/src/index.css` (`bg-primary`, `text-text-muted`, `.btn-primary`,
   `.input`, `.chip`). Pick the role by meaning, not by the color you want.
 - UI controls (PLAN DEC-60–DEC-66): new controls use `components/ui` (`Button`,
-  `Chip`, `Field` with `Input`/`Textarea`/`Select`, `EmptyState`); the
+  `Chip`, `Form`, `Field` with `Input`/`Textarea`/`Select`, `EmptyState`); the
   ratchets below stop new raw ones. Judgment the checks can't make:
   one primary action per view; `danger-outline` beside a main action and
   solid `danger` only when destruction is the point of the dialog; empty
@@ -346,6 +346,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | No sideways scroll, no clipped select, no target under 24px (hard gates since PR 5); kinds of control under 44px at 390 only go down | `web/e2e/layout.spec.ts` with `web/e2e/ui-baseline.json` |
 | No new raw controls, `!` overrides, misused danger color, literal `style=` or date formatting outside `lib/when.ts` | `TestUIRatchets` (`guards_test.go`, counts in `ui-ratchet.json`; lower them when a page gets better), self-tested by `TestUIRatchetsCatchPastMistakes` |
 | Selected chips are stronger than unselected; fields are labelled and their errors are announced | `Chip` and `Field` in `web/src/components/ui`, `Chip.test.tsx`, `Field.test.tsx` |
+| React forms use the shared `Form`: no browser bubbles, persistent errors under fields, first invalid field focused; secret whitespace is never trimmed | `TestReactFormsUseCustomValidation`, `TestReactFormValidationGuard` (`guards_test.go`), `components/ui/Form.test.tsx` |
 | A photo-less group's cover comes from `coverSrc` (its own image, else one of six patterns by id, DEC-66); empty states are the neutral `EmptyState`, never red | `web/src/lib/covers.test.ts`, `web/src/components/ui/EmptyState.test.tsx`; the danger ratchet in `TestUIRatchets` |
 | Work reaches master only through a pull request with the `test`, `web` and `provision` checks green; branch pushes use an exact refspec (`HEAD:refs/heads/<branch>`) | GitHub branch protection on `master` (Oct 20, 2026): PR required, those three status checks required, admins included, no force-push or deletion. It replaced the opt-in pre-push hook from #74 |
 | The entry JS chunk stays under its gzip budget; libraries few pages need are loaded with `import()` | `web/scripts/bundle-size.mjs` (`npm run bundle-size`, run in CI after the build) |

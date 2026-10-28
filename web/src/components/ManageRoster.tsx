@@ -1,3 +1,4 @@
+import { Form } from "./ui/Form";
 import { AddRequestForm } from "./AddRequestForm";
 import { PeoplePicker } from "./ui/PeoplePicker";
 import { useEffect, useState } from "react";
@@ -98,9 +99,9 @@ export function ManageRoster({ instance, onChanged, onClose }: { instance: Event
         <div className="min-w-0 w-full sm:flex-1"><AttendeeDetails attendee={a} childcare={false} showAccountType /></div><Button variant="secondary" aria-label={`Add back ${a.name}`} disabled={busy !== null} onClick={() => void action(a, "restore")}>Add back</Button>
       </li>)}</ul>
     </section>}
-    <form onSubmit={add} className="space-y-3">
+    <Form noValidate onSubmit={add} className="space-y-3">
       {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={selection} disabled={busy !== null} onChange={(person) => { setSelection(person); setApprovalRequired(null); setAskPerson(null); setEmail(""); setError(null); }} /></Field>}
-      <Field label="Add someone" hint="Or use their email address"><Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setSelection(null); setApprovalRequired(null); setAskPerson(null); }} /></Field><Button type="submit" variant="secondary" disabled={busy !== null || (!selection && !email.trim())}>{busy === "add" ? "Adding…" : selection && (selection.teen || approvalRequired) ? "Ask to add" : "Add"}</Button></form>
+      <Field label="Add someone" hint="Or use their email address"><Input type="email" value={email} onChange={(e) => { setEmail(e.target.value); setSelection(null); setApprovalRequired(null); setAskPerson(null); }} /></Field><Button type="submit" variant="secondary" disabled={busy !== null || (!selection && !email.trim())}>{busy === "add" ? "Adding…" : selection && (selection.teen || approvalRequired) ? "Ask to add" : "Add"}</Button></Form>
     {askPerson && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askPerson.person.selectionId} person={askPerson.person} scope={{ contextType: "event", contextId: instance.eventId, occurrenceId: instance.id, overCapacity: askPerson.overCapacity }} full={instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0} onClose={() => setAskPerson(null)} />}
   </section>;
 }

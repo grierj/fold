@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { ChildcareField, childcareBody, childcareProblem, emptyChildcare, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "../components/ChildcareField";
 import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
@@ -192,7 +193,7 @@ export function NewEvent() {
       <p className="text-text-muted mb-6">
         for <span className="font-semibold">{groupName}</span>
       </p>
-      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
+      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
         {error && <FormError>{error}</FormError>}
         <Field id="event-title" label="Title" optional hint="Leave it blank to use the group's name.">
           <Input
@@ -292,7 +293,7 @@ export function NewEvent() {
             Cancel
           </Link>
         </FormActions>
-      </form>
+      </Form>
     </div>
   );
 }

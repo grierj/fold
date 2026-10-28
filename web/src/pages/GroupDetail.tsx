@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { DateEditor } from "../components/DateEditor";
 import { AddRequestForm } from "../components/AddRequestForm";
 import { PeoplePicker } from "../components/ui/PeoplePicker";
@@ -212,7 +213,7 @@ function GroupForm({
   const [error, setError] = useState<string | null>(null);
 
   return (
-    <form
+    <Form noValidate
       className="bg-surface rounded-lg border border-border p-6 space-y-6"
       onSubmit={async (e) => {
         e.preventDefault();
@@ -309,7 +310,7 @@ function GroupForm({
           Cancel
         </Button>
       </FormActions>
-    </form>
+    </Form>
   );
 }
 
@@ -975,7 +976,7 @@ export function GroupDetail() {
                     )}
                     {canManage && (
                       <>
-                      <form onSubmit={inviteMember} className="mt-4 flex gap-2 flex-wrap items-end">
+                      <Form noValidate onSubmit={inviteMember} className="mt-4 flex gap-2 flex-wrap items-end">
                         <div className="grow min-w-48">
                           <Field id="invite-member" label="Invite someone to Fold">
                             <Input
@@ -1000,9 +1001,9 @@ export function GroupDetail() {
                             />
                           </div>
                         )}
-                      </form>
+                      </Form>
                       {inviteStatus && <p className="text-success text-sm mt-2">{inviteStatus}</p>}
-                      <form onSubmit={addMember} className="mt-4 space-y-3">
+                      <Form noValidate onSubmit={addMember} className="mt-4 space-y-3">
                         {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={memberSelection} disabled={memberBusy} onChange={(person) => { setMemberSelection(person); setAskMember(null); setMemberEmail(""); setMemberError(null); }} /></Field>}
                         <div className="grow min-w-48">
                           <Field id="add-member" label="Add a member by email">
@@ -1018,7 +1019,7 @@ export function GroupDetail() {
                         <Button variant="secondary" type="submit" disabled={memberBusy || (!memberSelection && !memberEmail.trim())}>
                           {memberBusy ? "Adding…" : memberSelection?.teen ? "Ask to add" : "Add member"}
                         </Button>
-                      </form>
+                      </Form>
                       {askMember && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askMember.selectionId} person={askMember} scope={{ contextType: "group", contextId: Number(id) }} full={group.memberLimit !== null && group.memberCount >= group.memberLimit} onClose={() => setAskMember(null)} />}
                       </>
                     )}

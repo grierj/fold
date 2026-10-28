@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { ChildcareField, childcareBody, childcareProblem, emptyChildcare, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "../components/ChildcareField";
 import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
@@ -151,7 +152,7 @@ export function NewChurchEvent() {
     <div className="max-w-xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-2">Schedule a church-wide event</h1>
       <p className="text-text-muted mb-6">You are a host. Add another host if someone else should run it.</p>
-      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
+      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
         {error && <FormError>{error}</FormError>}
         <Field id="church-event-title" label="Title">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
@@ -250,7 +251,7 @@ export function NewChurchEvent() {
             Cancel
           </Link>
         </FormActions>
-      </form>
+      </Form>
     </div>
   );
 }

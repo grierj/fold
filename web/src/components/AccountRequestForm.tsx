@@ -1,3 +1,4 @@
+import { Form } from "./ui/Form";
 import { useState } from "react";
 import { type AccountRequestInput } from "../api";
 import type { AgeBand } from "../types";
@@ -69,7 +70,7 @@ export function AccountRequestForm({
   }
 
   return (
-    <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+    <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
       {error && <FormError>{error}</FormError>}
       <Field id="arq-name" label="Full name">
         <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} autoComplete="name" required />
@@ -93,6 +94,6 @@ export function AccountRequestForm({
           {busy ? "Sending…" : submitLabel}
         </Button>
       )}
-    </form>
+    </Form>
   );
 }

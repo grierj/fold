@@ -869,7 +869,79 @@ func TestUIRatchetsCatchPastMistakes(t *testing.T) {
 // control gets a programmatic label, the hint above it and the error under
 // it. Pages and other components use those instead of raw controls.
 
-var rawFormControl = regexp.MustCompile(`<(input|select|textarea)\b`)
+var (
+	reactFormStart      = regexp.MustCompile(`<form(?:\s|>)`)
+	reactFormNoValidate = regexp.MustCompile(`^<form\s+noValidate(?:\s|>)`)
+	rawFormControl      = regexp.MustCompile(`<(input|select|textarea)\b`)
+)
+
+func reactFormValidationViolations(files map[string]string) []string {
+	const sharedFormPath = "web/src/components/ui/Form.tsx"
+	var out []string
+	for p, src := range files {
+		for _, loc := range reactFormStart.FindAllStringIndex(src, -1) {
+			line := strings.Count(src[:loc[0]], "\n") + 1
+			if p != sharedFormPath {
+				out = append(out, fmt.Sprintf("%s:%d: raw `<form>`; use <Form> from components/ui/Form", p, line))
+				continue
+			}
+			if !reactFormNoValidate.MatchString(src[loc[0]:]) {
+				out = append(out, fmt.Sprintf("%s:%d: the shared native form must start with `<form noValidate ` (or `<form noValidate>`)", p, line))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestReactFormsUseCustomValidation(t *testing.T) {
+	files := map[string]string{}
+	err := filepath.WalkDir("web/src", func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(p, ".tsx") || strings.HasSuffix(p, ".test.tsx") {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(p)] = string(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range reactFormValidationViolations(files) {
+		t.Error(v)
+	}
+}
+
+func TestReactFormValidationGuard(t *testing.T) {
+	const sharedFormPath = "web/src/components/ui/Form.tsx"
+	badSharedForms := map[string]string{
+		"missing":     `<form onSubmit={save}>`,
+		"not first":   `<form className="box" noValidate>`,
+		"true value":  `<form noValidate={true}>`,
+		"false value": `<form noValidate={false}>`,
+	}
+	for name, src := range badSharedForms {
+		if got := reactFormValidationViolations(map[string]string{sharedFormPath: src}); len(got) != 1 {
+			t.Errorf("%s: want one violation, got %v", name, got)
+		}
+	}
+	if got := reactFormValidationViolations(map[string]string{"web/src/pages/Login.tsx": `<form noValidate>`}); len(got) != 1 {
+		t.Errorf("raw form outside the shared component: want one violation, got %v", got)
+	}
+	good := map[string]string{
+		sharedFormPath:             "<form noValidate onSubmit={save}>\n<form\n  noValidate\n  onSubmit={save}\n>",
+		"web/src/pages/Format.tsx": `<format /> </form>`,
+	}
+	if got := reactFormValidationViolations(good); len(got) != 0 {
+		t.Errorf("valid shared forms or non-forms were flagged: %v", got)
+	}
+}
 
 func rawFormControlViolations(files map[string]string) []string {
 	var out []string

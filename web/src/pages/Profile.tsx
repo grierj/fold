@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { AccountRequests, CalendarFeeds, Profile as ProfileApi } from "../api";
@@ -223,7 +224,7 @@ export function ProfilePage() {
         )}
       </div>}
 
-      <form onSubmit={save} className="space-y-6">
+      <Form noValidate onSubmit={save} className="space-y-6">
         {error && <FormError>{error}</FormError>}
         {saved && <div className="text-success text-sm">Profile saved.</div>}
 
@@ -279,9 +280,9 @@ export function ProfilePage() {
             {saving ? "Saving…" : "Save profile"}
           </Button>
         </div>
-      </form>
+      </Form>
 
-      <form onSubmit={changeEmail} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
+      <Form noValidate onSubmit={changeEmail} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
         <h2 className="text-xl font-bold">Change sign-in email</h2>
         {emailError && <FormError>{emailError}</FormError>}
         {emailStatus && <div className="text-success text-sm">{emailStatus}</div>}
@@ -297,9 +298,9 @@ export function ProfilePage() {
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={emailSaving}>
           {emailSaving ? "Sending…" : "Send verification link"}
         </Button>
-      </form>
+      </Form>
 
-      <form onSubmit={changePassword} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
+      <Form noValidate onSubmit={changePassword} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-6">
         <h2 className="text-xl font-bold">Change password</h2>
         {passwordError && <FormError>{passwordError}</FormError>}
         {passwordSaved && <div className="text-success text-sm">Password changed.</div>}
@@ -338,7 +339,7 @@ export function ProfilePage() {
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={passwordSaving}>
           {passwordSaving ? "Saving…" : "Change password"}
         </Button>
-      </form>
+      </Form>
 
       <CalendarFeedCard />
 

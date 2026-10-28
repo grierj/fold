@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../auth";
@@ -46,7 +47,7 @@ export function Login() {
   return (
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-6">Log in to Fold</h1>
-      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
         {error && (waiting
           ? <p role="status" className="rounded-md border border-border bg-sunken p-3 text-text">{error}</p>
           : <FormError>{error}</FormError>)}
@@ -76,7 +77,7 @@ export function Login() {
             Forgot your password?
           </Link>
         </p>
-      </form>
+      </Form>
       {waiting && <ButtonLink variant="secondary" to="/calendar" layout="mt-4 w-full">Browse public events</ButtonLink>}
       <p className="text-sm text-text-muted mt-4 text-center">
         New here?{" "}

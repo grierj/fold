@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { AddRequestForm } from "../components/AddRequestForm";
 import { PeoplePicker } from "../components/ui/PeoplePicker";
 import type { PersonSearchResult } from "../types";
@@ -700,7 +701,7 @@ function UserForm({
   }
 
   return (
-    <form onSubmit={save} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-4">
+    <Form noValidate onSubmit={save} className="bg-surface rounded-lg border border-border p-6 space-y-4 mt-4">
       {error && <FormError>{error}</FormError>}
       <div className="grid sm:grid-cols-2 gap-4">
         <Field id="admin-email" label="Email (signs in with it)">
@@ -747,7 +748,7 @@ function UserForm({
           Cancel
         </Button>
       </FormActions>
-    </form>
+    </Form>
   );
 }
 
@@ -783,7 +784,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
   }
 
   return (
-    <form onSubmit={reset} className="mt-2 max-w-xl space-y-4">
+    <Form noValidate onSubmit={reset} className="mt-2 max-w-xl space-y-4">
       {error && <FormError>{error}</FormError>}
       <Field id="admin-new-password-for" label={`New password for ${user.email}`} hint="Must be at least 10 characters.">
         <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
@@ -796,7 +797,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
           Cancel
         </Button>
       </FormActions>
-    </form>
+    </Form>
   );
 }
 
@@ -1023,7 +1024,7 @@ function ChurchTimezone() {
   }
 
   return (
-    <form onSubmit={save} className="mb-6 max-w-xl space-y-4">
+    <Form noValidate onSubmit={save} className="mb-6 max-w-xl space-y-4">
       <Field id="church-tz" label="Church time zone" hint="New events start in this time zone; leaders can pick another when they schedule.">
         <ZonePicker
           forChurchSetting
@@ -1041,7 +1042,7 @@ function ChurchTimezone() {
         {ok && <span className="text-sm text-text-muted">Saved</span>}
       </FormActions>
       {error && <FormError>{error}</FormError>}
-    </form>
+    </Form>
   );
 }
 
@@ -1085,7 +1086,7 @@ function InviteTab() {
   }
 
   return (
-    <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4 max-w-xl">
+    <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4 max-w-xl">
       {error && <FormError>{error}</FormError>}
       {status && <div className="text-success text-sm">{status}</div>}
       <p className="text-sm text-text-muted">
@@ -1123,7 +1124,7 @@ function InviteTab() {
       <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
         {busy ? "Sending…" : "Send invitation"}
       </Button>
-    </form>
+    </Form>
   );
 }
 
@@ -1168,7 +1169,7 @@ function SelfSignupSetting() {
   }
 
   return (
-    <form onSubmit={save} className="mb-6 max-w-xl space-y-4">
+    <Form noValidate onSubmit={save} className="mb-6 max-w-xl space-y-4">
       <Choices legend="Self-signup" hint="People ask for an account on /join. Turning this off never removes existing accounts.">
         <Radio
           name="self-signup"
@@ -1190,7 +1191,7 @@ function SelfSignupSetting() {
         {ok && <span className="text-sm text-text-muted">Saved</span>}
       </FormActions>
       {error && <FormError>{error}</FormError>}
-    </form>
+    </Form>
   );
 }
 

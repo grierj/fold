@@ -1,3 +1,4 @@
+import { Form } from "./ui/Form";
 import { useState } from "react";
 import { Guests } from "../api";
 import type { EventOccurrence } from "../types";
@@ -64,7 +65,7 @@ export function GuestRegistrationForm({ instance }: { instance: Pick<EventOccurr
   }
 
   return (
-    <form onSubmit={submit} className="rounded-md border border-border p-4 space-y-3 max-w-md">
+    <Form noValidate onSubmit={submit} className="rounded-md border border-border p-4 space-y-3 max-w-md">
       <p className="text-sm font-semibold">Register as a guest</p>
       {error && <FormError>{error}</FormError>}
       <Field id={`${p}-name`} label="Full name" hint="Shown on the attendee list.">
@@ -79,6 +80,7 @@ export function GuestRegistrationForm({ instance }: { instance: Pick<EventOccurr
           description="Guests registering on their own must be 18 or older; a parent or guardian can register a younger person from their own account."
           checked={over18}
           onChange={(e) => setOver18(e.target.checked)}
+          required
         />
         <Checkbox
           label="Also ask for a Fold account"
@@ -96,6 +98,6 @@ export function GuestRegistrationForm({ instance }: { instance: Pick<EventOccurr
           Never mind
         </Button>
       </FormActions>
-    </form>
+    </Form>
   );
 }

@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -361,7 +362,7 @@ function HostEditor({
           </li>
         ))}
       </ul>
-      <form onSubmit={add} className="flex flex-col gap-3 sm:flex-row sm:items-end">
+      <Form noValidate onSubmit={add} className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <div className="min-w-0 flex-1">
           <Field label="Host email" hint="They must already have an account.">
             <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
@@ -370,7 +371,7 @@ function HostEditor({
         <Button variant="secondary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           Add host
         </Button>
-      </form>
+      </Form>
     </div>
   );
 }

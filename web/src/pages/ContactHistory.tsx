@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useLocation, useParams } from "react-router-dom";
 import { ApiError } from "../api";
@@ -152,7 +153,7 @@ function HistoryView({ initialId }: { initialId: string }) {
     <ButtonLink variant="link" to="/admin?tab=users">Back to users</ButtonLink>
     <h1 className="text-2xl font-bold">Contact access history</h1>
     <p className="text-text-muted">Review retained contact and add activity by person ID, including deleted accounts. IDs record provenance, not permission to open a group, event or request. Names and contact details are not included.</p>
-    <form aria-label="History filters" className="space-y-4" onSubmit={(event) => {
+    <Form noValidate aria-label="History filters" className="space-y-4" onSubmit={(event) => {
       event.preventDefault(); clear();
       const personId = retainedPersonId(person);
       if (!personId) {
@@ -172,7 +173,7 @@ function HistoryView({ initialId }: { initialId: string }) {
         <Field label="Until" optional hint="Exclusive. RFC3339 with timezone, e.g. 2026-11-01T09:00:00+02:00 or 2026-11-01T07:00:00Z. Must be after From."><Input value={draft.until} maxLength={64} onChange={(e) => setDraft({ ...draft, until: e.target.value })} /></Field>
       </div>
       <Button variant="primary" type="submit">Apply filters</Button>
-    </form>
+    </Form>
     {selection && <section aria-label="Submitted history" className="space-y-3">
       <h2 className="text-xl font-bold wrap-anywhere">History for person #{selection.personId}</h2>
       <p className="text-sm text-text-muted wrap-anywhere">Applied: {purposeLabels[selection.filters.purpose] || "All purposes"} · {actions[selection.filters.action] || "All actions"}{selection.filters.from && ` · From ${selection.filters.from} (inclusive)`}{selection.filters.until && ` · Until ${selection.filters.until} (exclusive)`}</p>

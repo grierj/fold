@@ -62,7 +62,7 @@ describe("Choices, Radio and Checkbox rows", () => {
 });
 
 describe("focusFirstInvalid", () => {
-  it("focuses the first field marked invalid, or a fieldset's first control", () => {
+  it("focuses the first field marked invalid, or a fieldset's first enabled control", () => {
     const { container, rerender } = render(
       <form>
         <Field label="A"><Input /></Field>
@@ -74,7 +74,10 @@ describe("focusFirstInvalid", () => {
     expect(screen.getByLabelText("B")).toHaveFocus();
     rerender(
       <form>
-        <Choices legend="Age" error="Pick one"><Radio name="a" label="Adult" /></Choices>
+        <Choices legend="Age" error="Pick one">
+          <Radio name="a" label="Unavailable" disabled />
+          <Radio name="a" label="Adult" />
+        </Choices>
       </form>,
     );
     focusFirstInvalid(container.querySelector("form"));

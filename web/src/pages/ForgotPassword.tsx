@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Auth as AuthApi } from "../api";
@@ -40,7 +41,7 @@ export function ForgotPassword() {
           </p>
         </div>
       ) : (
-        <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+        <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
           {error && <FormError>{error}</FormError>}
           <p className="text-sm text-text-muted">
             Enter the email you sign in with and we'll send you a reset link.
@@ -57,7 +58,7 @@ export function ForgotPassword() {
           <Button variant="primary" layout="w-full" type="submit" disabled={busy}>
             {busy ? "Sending…" : "Send reset link"}
           </Button>
-        </form>
+        </Form>
       )}
     </div>
   );
