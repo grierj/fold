@@ -15,6 +15,71 @@ import (
 	"gorm.io/gorm"
 )
 
+func TestGroupListReadBudgetsAndSummaryValues(t *testing.T) {
+	for _, path := range []string{"/api/v1/groups", "/api/v1/me/groups", "/api/v1/admin/groups", "/api/v1/admin/pending", "/api/v1/admin/deletions"} {
+		t.Run(path, func(t *testing.T) {
+			app := testApp(t)
+			leader := newTestUser(t, app, "leader", "pw", models.RoleAdmin)
+			member := newTestUser(t, app, "member", "pw", models.RoleMember)
+			disabled := newTestUser(t, app, "disabled", "pw", models.RoleMember)
+			if err := app.DB.Model(disabled).Update("status", models.UserDisabled).Error; err != nil {
+				t.Fatal(err)
+			}
+			client := loginAPI(t, app, "leader", "pw")
+			start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Second)
+			var baseline int64
+			for i := 1; i <= 30; i++ {
+				status := models.GroupActive
+				if path == "/api/v1/admin/pending" {
+					status = models.GroupPending
+				}
+				g := newTestGroup(t, app, leader, fmt.Sprintf("Group %02d", i), status)
+				if err := app.DB.Model(g).Updates(map[string]any{"visibility": models.VisibilityPublic, "deletion_requested": true}).Error; err != nil {
+					t.Fatal(err)
+				}
+				addMember(t, app, member, g, models.MembershipMember)
+				addMember(t, app, disabled, g, models.MembershipMember)
+				ev := models.Event{GroupID: &g.ID, Title: "Next", Visibility: models.VisibilityPublic, StartsLocal: start.Format("2006-01-02T15:04"), TZID: "UTC", DurationMinutes: 60, CreatedBy: leader.ID}
+				if err := app.DB.Create(&ev).Error; err != nil {
+					t.Fatal(err)
+				}
+				o := models.EventOccurrence{EventID: ev.ID, OriginalDate: start.Format("2006-01-02"), StartsAt: start, EndsAt: start.Add(time.Hour), Status: models.OccurrenceScheduled}
+				if err := app.DB.Create(&o).Error; err != nil {
+					t.Fatal(err)
+				}
+				if i != 3 && i != 30 {
+					continue
+				}
+				counter := countDBReads(t, app.DB)
+				w := client.do("GET", path, nil, false)
+				reads := counter.Reads()
+				counter.Stop()
+				if w.Code != http.StatusOK {
+					t.Fatalf("list: %d %s", w.Code, w.Body.String())
+				}
+				var body struct {
+					Groups []groupSummaryJSON `json:"groups"`
+				}
+				decodeJSON(t, w, &body)
+				if len(body.Groups) != i {
+					t.Fatalf("got %d groups, want %d", len(body.Groups), i)
+				}
+				for _, summary := range body.Groups {
+					if summary.MemberCount != 2 || summary.LeaderName != leader.PublicName() || summary.NextEventAt == nil || !summary.NextEventAt.Equal(start) {
+						t.Fatalf("incorrect summary: %+v", summary)
+					}
+				}
+				if i == 3 {
+					baseline = reads
+				}
+				if reads != baseline || reads > 12 {
+					t.Fatalf("%d groups: %d reads, baseline=%d, cap=12", i, reads, baseline)
+				}
+			}
+		})
+	}
+}
+
 func TestMeetingInstancesAreChronological(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)

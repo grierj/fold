@@ -256,16 +256,16 @@ func (a *App) apiMyGroups(c *gin.Context) {
 	var memberships []models.Membership
 	a.DB.Preload("Group").Where("user_id = ? AND status = ?", u.ID, "active").
 		Order("joined_at").Find(&memberships)
-	out := make([]groupSummaryJSON, 0, len(memberships))
+	groups := make([]models.Group, 0, len(memberships))
 	for i := range memberships {
 		// Include pending and archived groups this person still belongs to.
 		// The directory (GET /groups) stays limited to active groups.
 		if memberships[i].Group.ID == 0 {
 			continue
 		}
-		out = append(out, a.groupSummary(&memberships[i].Group))
+		groups = append(groups, memberships[i].Group)
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": out})
+	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
 }
 
 // ---------------------------------------------------------------------------

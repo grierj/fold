@@ -51,11 +51,7 @@ func (a *App) apiListGroups(c *gin.Context) {
 	}
 	query.Order("name").Find(&groups)
 
-	out := make([]groupSummaryJSON, 0, len(groups))
-	for i := range groups {
-		out = append(out, a.groupSummary(&groups[i]))
-	}
-	c.JSON(http.StatusOK, gin.H{"groups": out})
+	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
 }
 
 func (a *App) apiCreateGroup(c *gin.Context) {
