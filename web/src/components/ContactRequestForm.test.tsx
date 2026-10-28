@@ -19,7 +19,8 @@ it("creates an adult request with the exact context and optional reason, without
   await userEvent.click(screen.getByRole("button", { name: "Send request" }));
   expect(Contacts.create).toHaveBeenCalledWith({ subjectUserId: 2, contextType: "group", contextId: 3, fields: "both", reason: "To coordinate rides" });
   expect(await screen.findByRole("link", { name: "View request" })).toHaveAttribute("href", "/contact-requests/12");
-  expect(screen.queryByText(/Email:/)).not.toBeInTheDocument();
+  expect(screen.getAllByRole("link")).toHaveLength(1); // only View request, never a contact-detail link
+  expect(screen.queryByText(/Email:|@/)).not.toBeInTheDocument();
 });
 
 it("preserves field selection and reason on server failure and shows friendly error copy", async () => {

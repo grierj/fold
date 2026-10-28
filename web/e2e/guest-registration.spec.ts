@@ -21,7 +21,7 @@ test("guest form: age gate keeps the typed fields, then the uniform thanks", asy
   });
 
   await page.goto(`/events/${event.id}`);
-  await expect(page.getByRole("heading", { name: "Guest welcome night" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Guest welcome night", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: "Register as a guest" }).click();
   await page.getByLabel("Full name").fill("Browser Gail");
   await page.getByLabel("Email").fill("gail-e2e@example.com");

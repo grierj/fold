@@ -176,10 +176,10 @@ function SeriesWholeActions({ disabled, onApply }: {
 }) {
   return <div className="mt-3 border-t border-border pt-3">
     <p className="text-sm font-semibold mb-2">Answer the whole series</p>
-    <div className="flex flex-wrap gap-2">
-      <Button variant="secondary" disabled={disabled} onClick={() => onApply("going")}>Going to all dates</Button>
-      <Button variant="secondary" disabled={disabled} onClick={() => onApply("maybe")}>Maybe for all</Button>
-      <Button variant="danger-outline" disabled={disabled} onClick={() => onApply("declined")}>Can&apos;t go to any</Button>
+    <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2">
+      <Button variant="secondary" layout="w-full sm:w-auto" disabled={disabled} onClick={() => onApply("going")}>Going to all dates</Button>
+      <Button variant="secondary" layout="w-full sm:w-auto" disabled={disabled} onClick={() => onApply("maybe")}>Maybe for all</Button>
+      <Button variant="danger-outline" layout="w-full sm:w-auto" disabled={disabled} onClick={() => onApply("declined")}>Can&apos;t go to any</Button>
     </div>
     <p className="text-sm text-text-muted mt-2">New dates added later won&apos;t be answered for you.</p>
   </div>;

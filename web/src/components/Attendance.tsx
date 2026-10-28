@@ -19,6 +19,12 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
   const coming = instance.attendeesVisible
     ? (instance.attendees ?? []).filter((a) => a.status === "going" || a.status === "maybe")
     : [];
+  // These section counts describe visible names, not the total seats above.
+  const sections = [
+    { label: "Going", people: coming.filter((a) => a.status === "going") },
+    { label: "Maybe", people: coming.filter((a) => a.status === "maybe") },
+    { label: "Can't go", people: cant },
+  ];
   return (
     <div className="mt-1 text-sm text-text-muted">
       <div>
@@ -31,7 +37,7 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
           instance.remoteCapacity > 0 &&
           ` · ${seatsLeft(instance.remoteSpotsLeft ?? 0, instance.remoteCapacity, "remote ")}`}
       </div>
-      {instance.remoteAvailable && instance.remoteCapacity !== 0 && <div>Remote attendance available</div>}
+      {instance.remoteAvailable && instance.remoteCapacity === null && <div>Remote attendance available</div>}
       {instance.childcareFull && <div>Childcare is full for this date</div>}
       {instance.childcareAvailable && instance.childcareUsed != null && (
         <div>{instance.childcareCapacity == null
@@ -45,16 +51,16 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
             {open ? "Hide names" : "Show who's coming"}
           </Button>
           {open && (
-            <ul id={listId} className="space-y-0.5">
-              {coming.map((a) => (
-                <li key={a.registrationId}>
-                  <AttendeeDetails attendee={a} childcare={instance.childcareAvailable} />
-                  {a.status === "maybe" && " (maybe)"}
-                </li>
+            <div id={listId} className="space-y-3">
+              {sections.filter((section) => section.people.length > 0).map((section) => (
+                <section key={section.label} aria-label={`${section.label} names`}>
+                  <h4 className="font-semibold">{section.label} ({section.people.length})</h4>
+                  <ul className="space-y-2">
+                    {section.people.map((a) => <li key={a.registrationId}><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} /></li>)}
+                  </ul>
+                </section>
               ))}
-              {cant.length > 0 && <li className="pt-1 font-medium">Can&apos;t go</li>}
-              {cant.map((a) => <li key={a.registrationId}><AttendeeDetails attendee={a} childcare={instance.childcareAvailable} /></li>)}
-            </ul>
+            </div>
           )}
         </>
       )}

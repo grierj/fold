@@ -184,9 +184,11 @@ it("shows supplied roster contact without reconstructing hidden members' details
   ] });
   open();
   await userEvent.click(await screen.findByRole("button", { name: "Members" }));
-  expect(screen.getByText("Email: visible@example.com")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "visible@example.com" })).toBeInTheDocument();
   expect(screen.getByText("Phone: 208-555-0100")).toBeInTheDocument();
-  expect(screen.getAllByText(/Email:/)).toHaveLength(1);
+  expect(screen.getAllByRole("link", { name: /@/ })).toHaveLength(1);
+  expect(screen.getAllByText(/@/)).toHaveLength(1); // no plain-text fallback for hidden contacts either
+  expect(screen.queryByText(/Email:/)).not.toBeInTheDocument();
   expect(screen.getAllByText(/Phone:/)).toHaveLength(1);
   expect(screen.getByText("Hidden adult")).toBeInTheDocument();
   expect(screen.getByText("Teen member")).toBeInTheDocument();

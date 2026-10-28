@@ -19,10 +19,33 @@ describe("Attendance", () => {
       attendees: [{ registrationId: 31, userId: 3, name: "Sam", status: "going", guestCount: 0, attendanceMode: "remote" }],
     })} />);
     expect(screen.getByText(/4 of 5 remote seats left/)).toBeInTheDocument();
-    expect(screen.getByText("Remote attendance available")).toBeInTheDocument();
+    expect(screen.queryByText("Remote attendance available")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Show who's coming" }));
     expect(screen.getByText("Remote")).toHaveClass("bg-sunken", "text-text-muted");
     expect(screen.queryByText(/\(remote\)/)).not.toBeInTheDocument();
+  });
+
+  it("advertises remote attendance when the date has no remote seat limit", () => {
+    render(<Attendance instance={occurrence({ remoteAvailable: true, remoteCapacity: null })} />);
+    expect(screen.getByText("Remote attendance available")).toBeInTheDocument();
+  });
+
+  it("labels visible going, maybe and declined names without inventing private people", async () => {
+    render(<Attendance instance={occurrence({
+      registrations: { going: 3, maybe: 1, declined: 1, waitlisted: 0 }, attendeesVisible: true,
+      attendees: [
+        { registrationId: 1, userId: 1, name: "Sam", status: "going", guestCount: 0, attendanceMode: "in_person" },
+        { registrationId: 2, userId: 2, name: "Pat", status: "maybe", guestCount: 0, attendanceMode: "in_person" },
+        { registrationId: 3, userId: 3, name: "Quinn", status: "declined", guestCount: 0, attendanceMode: "in_person" },
+      ],
+    })} />);
+    expect(screen.getByText(/3 going · 1 maybe/)).toBeInTheDocument();
+    expect(screen.getByText("Some people's names are private.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show who's coming" }));
+    for (const name of ["Going (1)", "Maybe (1)", "Can't go (1)"]) {
+      expect(screen.getByRole("heading", { name, level: 4 })).toBeInTheDocument();
+    }
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
   });
 
   it("does not advertise remote attendance on a date with zero remote seats", () => {

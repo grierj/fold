@@ -178,7 +178,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
 
   const keptDate = underwayAt.slice(0, 10);
   await page.goto(`/events/${underway.id}/dates/${keptDate}`);
-  await expect(page.getByRole("heading", { name: "Kept underway private date" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Kept underway private date", level: 1 })).toBeVisible();
   await expect(page.getByRole("button", { name: "Going", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.goto(`/events/${underway.id}`);
   await expect(page.getByRole("heading", { name: "Event not found" })).toBeVisible();

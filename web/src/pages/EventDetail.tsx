@@ -4,7 +4,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
 import { useAuth } from "../auth";
-import { DateBadge } from "../components/DateBadge";
+import { OccurrenceCard } from "../components/OccurrenceCard";
 import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
 import { DateEditor } from "../components/DateEditor";
@@ -119,7 +119,7 @@ export function EventDetail() {
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-2">{title}</h1>
       <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} />
-      {event.location && <p className="text-text-muted mt-1">{event.location}</p>}
+      {event.location && <p className="text-text-muted mt-1 wrap-anywhere">{event.location}</p>}
       {event.childcareAvailable && <div className="mt-3 text-text-muted">
         <p>Childcare available{event.childcareAges && ` · ${event.childcareAges}`}</p>
         {event.childcareNotes && <p className="whitespace-pre-wrap">{event.childcareNotes}</p>}
@@ -235,19 +235,22 @@ function DateRow({
   }
 
   return (
-    // Badge, details and More on top; the answer and any open panel span the
-    // card below, so the RSVP is full width on phones (PR #66 review N1).
-    <div className="bg-surface rounded-lg border border-border p-4">
-      {canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
-    <div className="flex gap-4">
-      <DateBadge at={instance.startsAt} />
-      <div className="grow min-w-0">
-        <div className="font-bold">{instance.title || "Church event"}</div>
-        <div className="text-sm text-text-muted">
-          {time}
-          {instance.location ? ` · ${instance.location}` : ""}
-        </div>
+    <OccurrenceCard at={instance.startsAt} title={instance.title || "Church event"}
+      notice={canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
+      meta={<>
+        <div className="text-sm text-text-muted">{time}{instance.location ? ` · ${instance.location}` : ""}</div>
         {held && <div className="text-sm text-text-muted">{held}</div>}
+      </>}
+      menu={canManage && <Menu
+        tone="quiet"
+        label={`More for ${instance.date}`}
+        items={[
+          { label: "Edit this date", onSelect: () => setEditingDate((v) => !v) },
+          { label: "Manage sign-ups", onSelect: () => setManaging((v) => !v) },
+          { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
+        ]}
+      />}
+    >
         {instance.videoUrl ? (
           <div>
             <ButtonLink to={instance.videoUrl} external variant="secondary">
@@ -263,22 +266,7 @@ function DateRow({
           <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
         )}
         <Attendance instance={instance} />
-      </div>
-      {canManage && (
-        <div className="shrink-0">
-          <Menu
-            tone="quiet"
-            label={`More for ${instance.date}`}
-            items={[
-              { label: "Edit this date", onSelect: () => setEditingDate((v) => !v) },
-              { label: "Manage sign-ups", onSelect: () => setManaging((v) => !v) },
-              { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
-            ]}
-          />
-        </div>
-      )}
-    </div>
-    <div className="mt-3">
+    <div>
         <div>
           {loggedIn ? (
             <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
@@ -309,7 +297,7 @@ function DateRow({
         )}
         {canManage && managing && <Suspense fallback={<Skeleton kind="lines" />}><ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} /></Suspense>}
     </div>
-    </div>
+    </OccurrenceCard>
   );
 }
 

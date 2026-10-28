@@ -21,7 +21,7 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
       location: "Room 201", recurrenceRule: "FREQ=WEEKLY;COUNT=4",
     })) as { event: { id: number; title: string } });
   }
-  const heading = (name: string) => (p: Page) => p.getByRole("heading", { name });
+  const heading = (name: string) => (p: Page) => p.getByRole("heading", { name, level: 1 });
   return [
     { id: "home-signed-out", who: null, path: "/", ready: (p) => p.getByText("Room 201 class").first() },
     { id: "login", who: null, path: "/login", ready: heading("Log in to Fold") },
