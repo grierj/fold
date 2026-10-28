@@ -22,7 +22,7 @@ test("a confirmed guardian manages teen account and scope consent", async ({ pag
   await admin("POST", "/admin/users", { name: "Guardian proof adult", email: email("guardian-proof"), password: PASSWORD, ageBand: "adult" });
   await admin("POST", "/admin/users", { name: "Guardian proof teen", email: email("guardian-proof-teen"), password: PASSWORD, ageBand: "teen", birthDate: "2011-01-01" });
   await signIn(page, "guardian-proof");
-  await page.goto("/profile");
+  await page.goto("/profile/guardian");
   const section = page.getByRole("region", { name: "Teen consent", exact: true });
   await section.getByLabel("Teen's email").fill(email("guardian-proof-teen"));
   await section.getByRole("button", { name: "Request guardian link", exact: true }).click();
@@ -33,7 +33,7 @@ test("a confirmed guardian manages teen account and scope consent", async ({ pag
   await card.getByLabel("How did you check?").fill("Guardian came to the office with their teen");
   await card.getByRole("button", { name: "Confirm link", exact: true }).click();
   await expect(card).toHaveCount(0);
-  await signIn(page, "guardian-proof"); await page.goto("/profile");
+  await signIn(page, "guardian-proof"); await page.goto("/profile/guardian");
   await expect(section.getByRole("heading", { name: "Guardian proof teen" })).toBeVisible();
   await proof(page, "guardian-confirmed");
   await section.getByRole("button", { name: "Grant consent", exact: true }).click();
@@ -47,7 +47,7 @@ test("a confirmed guardian manages teen account and scope consent", async ({ pag
   await signIn(page, "guardian-proof-teen");
   await expect(page.getByRole("heading", { name: "Waiting for consent" })).toHaveCount(0);
   expect((await page.request.get("/api/v1/groups")).status()).toBe(200);
-  await signIn(page, "guardian-proof"); await page.goto("/profile");
+  await signIn(page, "guardian-proof"); await page.goto("/profile/guardian");
   page.once("dialog", (d) => d.accept());
   await section.getByRole("button", { name: "Revoke consent", exact: true }).click();
   await expect(section.getByText("Account consent revoked.", { exact: true })).toBeVisible();
@@ -62,7 +62,7 @@ test("a consent email previews before its explicit one-use grant", async ({ page
   const admin = await apiAs(request, "grier");
   await admin("POST", "/admin/users", { name: "Email guardian", email: email("email-guardian-proof"), password: PASSWORD, ageBand: "adult" });
   const { user: teen } = await admin("POST", "/admin/users", { name: "Email consent teen", email: email("email-teen-proof"), password: PASSWORD, ageBand: "teen", birthDate: "2011-01-01" });
-  await signIn(page, "email-guardian-proof"); await page.goto("/profile");
+  await signIn(page, "email-guardian-proof"); await page.goto("/profile/guardian");
   await page.getByLabel("Teen's email").fill(email("email-teen-proof"));
   await page.getByRole("button", { name: "Request guardian link", exact: true }).click();
   await expect(page.getByText("If that teen has an account, an admin will review your guardian request.")).toBeVisible();

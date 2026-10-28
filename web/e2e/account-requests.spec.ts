@@ -53,11 +53,10 @@ test("login page links to the request form", async ({ page }) => {
 
 test("invite a friend speaks about them, then the admin queue decides", async ({ page }) => {
   await signIn(page, "sam");
-  await page.goto("/profile");
-  await expect(page.getByRole("heading", { name: "Invite a friend" })).toBeVisible();
+  await page.goto("/profile/invite");
+  await expect(page.getByRole("heading", { name: "Invite someone", level: 1 })).toBeVisible();
   await expect(page.getByText("This is the address they will sign in with.")).toBeVisible();
   await expect(page.getByText("Their age")).toBeVisible();
-  // The invite form is the last one on the profile page.
   await page.getByLabel("Full name").last().fill("Friend Fran");
   await page.getByLabel("Email").last().fill("fran-e2e@example.com");
   await page.getByRole("button", { name: "Ask an admin to invite them" }).click();

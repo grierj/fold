@@ -30,7 +30,7 @@ or eligible teen to use their own email. Teens need a birth date showing
 they are 13 to 17 and a confirmed household guardian link. Children under
 13 cannot have accounts.
 
-1. Open Profile, then My household. Choose Create their own account beside the person.
+1. Open Profile, then Household. Choose Create their own account beside the person.
 2. Enter their email address and choose Send account invitation. The email must have no existing account or open invitation.
 3. They open the email link within 24 hours and choose a password. Their details and sign-ups stay with the household while an admin reviews the request.
 4. For an adult, approval moves every past and upcoming sign-up to their new account. For a teen, the move also waits for account consent and a new guardian check.
@@ -70,12 +70,12 @@ account can name a parent or guardian's email. The church office checks
 the relationship. Naming an email never grants permission by itself.
 
 A guardian needs an active adult account. If the teen already has an
-account, open Profile, find Teen consent, enter the Teen's email, and
-choose Request guardian link. An admin must confirm every link, including
+account, open Profile, then Parent or guardian link. Under Teen consent,
+enter the Teen's email and choose Request guardian link. An admin must confirm every link, including
 links from your own household. A pending link cannot give consent.
 
-Once confirmed, open Profile and Teen consent. Choose Account access, SMS,
-or Photos, then Grant consent or Revoke consent. You can also use the
+Once confirmed, open Profile, then Parent or guardian link. Under Teen
+consent, choose Account access, SMS, or Photos, then Grant consent or Revoke consent. You can also use the
 account-consent email. Opening that signed link shows a review page.
 Choose Grant account consent to submit the decision. The link expires
 after 24 hours and works once. If it expires, use Profile to request a
@@ -126,8 +126,8 @@ retries at startup and the next church-local midnight.
 
 ## Choose who sees your contact details
 
-If you are an adult, open Profile and select **Hide my contact info from group
-leaders**, then save your profile. This choice is off by default: leaders of
+If you are an adult, open **Profile**, then **Privacy**. Select **Hide my
+contact info from group leaders**, then choose **Save privacy**. This choice is off by default: leaders of
 your groups and hosts of events you attend can otherwise see your email and
 phone. Turning it on hides both from those leaders and hosts, not from admins.
 It does not hide your name from the name picker. Teens' contact details are
@@ -144,8 +144,8 @@ To ask for hidden details as a leader or host:
 3. Choose **Send request**. A hidden adult decides alone. A teen and an admin
    must both approve; either can deny. A guardian cannot approve for the teen.
 
-Open **Direct contact requests and access** on Profile, or follow your notice,
-to review a request. Opening an email link does not approve anything: sign in,
+Open **Profile**, then **Requests** and **Contact requests and access**, or
+follow your notice, to review a request. Opening an email link does not approve anything: sign in,
 review it, then choose **Approve sharing** or **Deny request**. The requester can
 choose **Withdraw request** while it is pending. Requests expire after **14
 days**. You can have **10 open requests** across direct contact and Ask to add,
@@ -193,8 +193,8 @@ single-date options and send it. A reason is optional, at most **1000 Unicode
 characters**. Known-email adding remains available, but cannot bypass approval
 or a recipient's block.
 
-Open **Add request history** on Profile or follow your notice. Choose **Approve
-adding** or **Deny ask**. Teens and admins decide separately; both approvals
+Open **Profile**, then **Requests** and **Add request history**, or follow your
+notice. Choose **Approve adding** or **Deny ask**. Teens and admins decide separately; both approvals
 are needed, and either denial ends the ask. A guardian cannot decide in place
 of the teen. The sender can withdraw a pending ask. Group previews may withhold
 the group's details; date previews show only the title and requested time.

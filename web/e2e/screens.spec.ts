@@ -50,7 +50,7 @@ test("capture the main pages", async ({ page, request }) => {
   await expect(page.getByLabel("Group name")).toBeVisible();
   await shoot(page, "new-group");
   await page.goto("/profile");
-  await expect(page.getByLabel("Time zone for emails")).not.toHaveValue("");
+  await expect(page.getByRole("heading", { name: "Your profile", level: 1 })).toBeVisible();
   await shoot(page, "profile");
   await page.goto("/notifications");
   await shoot(page, "notifications");
@@ -64,10 +64,10 @@ test("capture the main pages", async ({ page, request }) => {
 
 test("capture household selected answers, metadata editor and long care disclosures", async ({ page, request }) => {
   const { uiPages, open } = await import("./ui-pages");
-  for (const ui of (await uiPages(request)).filter((p) => ["profile", "event", "event-leader"].includes(p.id))) {
+  for (const ui of (await uiPages(request)).filter((p) => ["profile-household", "event", "event-leader"].includes(p.id))) {
     await signIn(page, ui.who!);
     await open(page, ui);
-    await shoot(page, `household-${ui.id}`);
+    await shoot(page, ui.id === "profile-household" ? "household-profile" : `household-${ui.id}`);
     if (ui.id === "event-leader") {
       await page.getByRole("button", { name: "Show full care notes for Kit" }).click();
       await shoot(page, "household-care-expanded");

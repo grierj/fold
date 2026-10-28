@@ -62,7 +62,8 @@ test("group teen ask uses opaque selection, both approvals and neutral hidden pr
   expect((await page.request.get(`/api/v1/groups/${group.id}`)).status()).toBe(200);
   const grants = await (await page.request.get("/api/v1/contact-grants")).json(); expect(grants.grants).toEqual([]);
   await capture(page, "teen-added");
-  await page.goto("/profile"); await page.getByRole("link", { name: "Add request history" }).click();
+  await page.goto("/profile/requests");
+  await page.getByRole("link", { name: "Add request history" }).click();
   await expect(page.getByRole("link", { name: /Review ask #/ })).toBeVisible();
   await capture(page, "add-history");
 });

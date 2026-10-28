@@ -13,7 +13,7 @@ An adult requests a guardian link from Profile. An admin checks the link before 
 ## How to get to it (user POV)
 
 - Open **Join**, choose **13 to 17**, and enter **Parent or guardian's email**.
-- As an adult, open **Profile**, then **Teen consent**.
+- As an adult, open **Profile**, then **Parent or guardian link**.
 - As an admin, open **Admin**, then the pending guardian link in **Approvals**.
 - Open the guardian consent email after an admin confirms the link, or choose **Email me a consent link** from Profile.
 
@@ -21,9 +21,9 @@ An adult requests a guardian link from Profile. An admin checks the link before 
 
 Preconditions: launch an isolated instance with `verify-fold up`, complete setup, and create an adult and a teen through Admin. Give the teen a password and a birth date aged 13 to 17. Sign in through the real forms when switching people.
 
-- **Request a link.** On the adult's Profile, use `page.getByLabel("Teen's email").fill(teenEmail)` and click `page.getByRole("button", { name: "Request guardian link", exact: true })`. Expect **If that teen has an account, an admin will review your guardian request.** The pending teen has no consent controls yet.
+- **Request a link.** Open the adult's **Profile**, then **Parent or guardian link**. Under **Teen consent**, use `page.getByLabel("Teen's email").fill(teenEmail)` and click `page.getByRole("button", { name: "Request guardian link", exact: true })`. Expect **If that teen has an account, an admin will review your guardian request.** The pending teen has no consent controls yet.
 - **Confirm the link.** On Admin, locate `page.locator("[data-link-card]").filter({ hasText: teenName })`. Fill **How did you check?** and click **Confirm link**. Expect the pending card to disappear.
-- **Grant consent.** Return to the adult's Profile. In `page.getByRole("region", { name: "Teen consent", exact: true })`, choose **Account** in **Consent**, then click **Grant consent**. Expect **Account consent granted.** Choose **SMS** or **Photos** to manage those scopes independently.
+- **Grant consent.** Return to the adult's **Profile**, then **Parent or guardian link**. In `page.getByRole("region", { name: "Teen consent", exact: true })`, choose **Account** in **Consent**, then click **Grant consent**. Expect **Account consent granted.** Choose **SMS** or **Photos** to manage those scopes independently.
 - **Revoke consent.** Click **Revoke consent** and accept the confirmation dialog. Expect **Account consent revoked.** A teen session loses access; SMS and photo decisions stay as they were.
 - **Review the email.** Open the emailed `/guardian-consent?token=...` URL. Expect the teen's name, **Grant account consent**, and the explanation that opening the page has not given consent. The admin consent history is unchanged before the click.
 - **Submit the email.** Click **Grant account consent**. Expect **Account consent granted.** Reload the email URL and expect the expired-link message.

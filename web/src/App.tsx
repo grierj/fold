@@ -7,8 +7,6 @@ import { GroupDetail } from "./pages/GroupDetail";
 import { EventDetail } from "./pages/EventDetail";
 import { MyGroups } from "./pages/MyGroups";
 import { Skeleton } from "./components/ui/Skeleton";
-import { NotificationsPage } from "./pages/Notifications";
-import { CalendarPage } from "./pages/Calendar";
 import { NotFound } from "./pages/NotFound";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
@@ -17,6 +15,8 @@ const NewGroup = lazy(() => import("./pages/NewGroup").then((m) => ({ default: m
 const NewEvent = lazy(() => import("./pages/NewEvent").then((m) => ({ default: m.NewEvent })));
 const NewChurchEvent = lazy(() => import("./pages/NewChurchEvent").then((m) => ({ default: m.NewChurchEvent })));
 const ProfilePage = lazy(() => import("./pages/Profile").then((m) => ({ default: m.ProfilePage })));
+const NotificationsPage = lazy(() => import("./pages/Notifications").then((m) => ({ default: m.NotificationsPage })));
+const CalendarPage = lazy(() => import("./pages/Calendar").then((m) => ({ default: m.CalendarPage })));
 const ForgotPassword = lazy(() => import("./pages/ForgotPassword").then((m) => ({ default: m.ForgotPassword })));
 const ResetPassword = lazy(() => import("./pages/ResetPassword").then((m) => ({ default: m.ResetPassword })));
 const Invite = lazy(() => import("./pages/Invite").then((m) => ({ default: m.Invite })));
@@ -79,7 +79,7 @@ export default function App() {
         <Route path="/events/:id/dates/:date" element={<Suspense fallback={<Skeleton kind="page" label="Loading this date…" />}><EventDatePage /></Suspense>} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/my-groups" element={<MyGroups />} />
-        <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/profile/:section?" element={<ProfilePage />} />
         <Route path="/add-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading add requests…" />}><AddRequestsPage /></Suspense>} />
         <Route path="/add-requests/:id" element={<Suspense fallback={<Skeleton kind="page" label="Loading add request…" />}><AddRequestsPage /></Suspense>} />
         <Route path="/contact-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact requests…" />}><ContactRequestsPage /></Suspense>} />

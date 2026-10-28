@@ -30,7 +30,7 @@ test("a household keeps its teen's sign-up until approval, consent, and the new 
   await admin("POST", `/admin/guardian-links/${person.guardianLinkId}/confirm`, { checkNote: "Known original household" });
   const registered = await parentApi("PUT", `/events/${event.id}/registrations`, { date: start.slice(0, 10), people: [{ personId: person.id, status: "going" }] });
   const registrationId = registered.people[0].registrationId;
-  await page.goto("/profile");
+  await page.goto("/profile/household");
   await page.getByRole("button", { name: "Create their own account" }).click();
   await expect(page.getByText(/The guardian link for the new account needs a fresh admin check/)).toBeVisible();
   await page.getByLabel("Their email address").fill(email(ownName));
@@ -58,7 +58,7 @@ test("a household keeps its teen's sign-up until approval, consent, and the new 
   const teen = users.find((row: { email: string }) => row.email === email(ownName));
   expect(teen).toMatchObject({ accountType: "teen", status: "pending_consent" });
   await signIn(page, parentName);
-  await page.goto("/profile");
+  await page.goto("/profile/household");
   await expect(page.getByText("Account waiting for consent and guardian confirmation", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove Taylor Conversion" })).toBeDisabled();
   await shoot(page, "teen-conversion-household-waiting");
@@ -85,7 +85,7 @@ test("a household keeps its teen's sign-up until approval, consent, and the new 
   const roster = await admin("GET", `/events/${event.id}`);
   expect(roster.occurrences[0].attendees).toEqual(expect.arrayContaining([expect.objectContaining({ userId: teen.id, registrationId, status: "going", accountType: "teen" })]));
   await signIn(page, parentName);
-  await page.goto("/profile");
+  await page.goto("/profile/household");
   await expect(page.getByText("Account waiting for consent and guardian confirmation")).toHaveCount(0);
   const household = await parentApi("GET", "/me/household");
   expect(household.household.people.some((row: { id: number }) => row.id === person.id)).toBe(false);

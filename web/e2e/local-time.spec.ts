@@ -44,6 +44,6 @@ test("event times follow the browser's zone, with one 'held in' line on the even
 
 test("the profile keeps a time zone for emails", async ({ page }) => {
   await signIn(page, "grier");
-  await page.goto("/profile");
+  await page.goto("/profile/details");
   await expect(page.getByLabel("Time zone for emails")).not.toHaveValue("");
 });
