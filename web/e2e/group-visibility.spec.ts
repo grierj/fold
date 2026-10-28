@@ -52,7 +52,7 @@ test("making a group invite-only reviews its events before saving", async ({ pag
 
   await page.context().clearCookies();
   await signIn(page, "quinn");
-  await page.getByRole("button", { name: "Notifications" }).click();
+  await page.getByRole("button", { name: "Alerts" }).click();
   await expect(page.getByText("Registration cancelled: Soup night")).toBeVisible();
   await expect(page.getByText("Supper club")).toHaveCount(0);
   await expect(page.getByText("Fellowship hall")).toHaveCount(0);

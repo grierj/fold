@@ -237,11 +237,11 @@ func TestTeenSignupPendingConsent(t *testing.T) {
 		t.Fatal("teen confirm did not report pendingConsent")
 	}
 	w = fresh.do("GET", "/api/v1/auth/me", nil, false)
-	if w.Code != http.StatusOK {
-		t.Fatalf("teen missing restricted session: %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("teen password setup created a login: %d", w.Code)
 	}
-	if w := fresh.do("GET", "/api/v1/groups", nil, false); w.Code != http.StatusForbidden {
-		t.Fatalf("pending teen got ordinary access: %d", w.Code)
+	if w := fresh.do("GET", "/api/v1/groups", nil, false); w.Code != http.StatusOK {
+		t.Fatalf("pending teen could not browse publicly: %d", w.Code)
 	}
 }
 

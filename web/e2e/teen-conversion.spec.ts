@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { apiAs, email, PASSWORD, signIn, signOut } from "./helpers";
+import { apiAs, attemptPendingSignIn, email, PASSWORD, signIn, signOut } from "./helpers";
 
 async function shoot(page: Page, name: string) {
   if (!process.env.SCREENS_DIR) return;
@@ -75,12 +75,11 @@ test("a household keeps its teen's sign-up until approval, consent, and the new 
   const { guardianLinks } = await admin("GET", "/admin/guardian-links");
   const freshLink = guardianLinks.find((row: { teenUserId?: number; guardianUserId: number }) => row.teenUserId === teen.id && row.guardianUserId === parent.id);
   expect(freshLink).toMatchObject({ status: "pending" });
-  await signIn(page, ownName);
-  await expect(page.getByRole("heading", { name: "Waiting for consent" })).toBeVisible();
-  expect((await page.request.get("/api/v1/events")).status()).toBe(403);
+  await attemptPendingSignIn(page, ownName);
+  expect((await page.request.get("/api/v1/events")).status()).toBe(200);
   await admin("POST", `/admin/guardian-links/${freshLink.id}/confirm`, { checkNote: "Fresh teen-account guardian check" });
-  await page.getByRole("button", { name: "Check account status" }).click();
-  await expect(page.getByRole("heading", { name: "Waiting for consent" })).toHaveCount(0);
+  await signIn(page, ownName);
+  expect((await page.request.get("/api/v1/auth/me")).status()).toBe(200);
   const after = await (await page.request.get(`/api/v1/events/${event.id}`)).json();
   expect(after.occurrences[0].myRegistration).toBe("going");
   const roster = await admin("GET", `/events/${event.id}`);

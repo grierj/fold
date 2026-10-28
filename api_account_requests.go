@@ -682,7 +682,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 }
 
 // apiConfirmAccountSetup redeems the emailed set-password link. An
-// adult gets a full session; a teen gets the restricted waiting session.
+// active account gets a login; a pending teen gets the public consent explanation.
 func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 	var body struct {
 		Token    string `json:"token"`

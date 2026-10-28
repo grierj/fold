@@ -1,6 +1,6 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import { writeFile } from "node:fs/promises";
-import { apiAs, email, fromMore, PASSWORD, signIn } from "./helpers";
+import { apiAs, attemptPendingSignIn, email, fromMore, PASSWORD, signIn } from "./helpers";
 
 async function capture(page: Page, name: string) {
   if (!process.env.SCREENS_DIR) return;
@@ -44,12 +44,11 @@ test("a consented teen joins general events with restricted roles, private ident
   const { event } = await admin("POST", `/groups/${group.id}/events`, { ...details, title: "Community gardening" });
   const { event: churchEvent } = await admin("POST", "/events", { ...details, title: "Church community supper", visibility: "public", hosts: [email("acceptance-host")] });
 
-  await signIn(page, "acceptance-teen");
-  await expect(page.getByRole("heading", { name: "Waiting for consent" })).toBeVisible();
-  expect((await page.request.get(`/api/v1/events/${event.id}`)).status()).toBe(403);
+  await attemptPendingSignIn(page, "acceptance-teen");
+  expect((await page.request.get(`/api/v1/events/${event.id}`)).status()).toBe(200);
   await admin("POST", `/admin/users/${teen.id}/teen-consents`, { scope: "account", status: "granted", evidenceText: "Parent signed account consent at the church office" });
-  await page.getByRole("button", { name: "Check account status" }).click();
-  await expect(page.getByRole("heading", { name: "Waiting for consent" })).toHaveCount(0);
+  await signIn(page, "acceptance-teen");
+  expect((await page.request.get("/api/v1/auth/me")).status()).toBe(200);
   await page.goto(`/groups/${group.id}`);
   await page.getByRole("button", { name: "Join this group", exact: true }).click();
   await expect(page.getByRole("button", { name: "Leave group", exact: true })).toBeVisible();
@@ -101,7 +100,7 @@ test("a consented teen joins general events with restricted roles, private ident
       if (role === "member") {
         await expect(viewer.getByText(teenName, { exact: true })).toHaveCount(0);
         await expect(viewer.getByText("Teen", { exact: true })).toHaveCount(0);
-        await expect(viewer.getByText("Some attendees appear only in the count.", { exact: true })).toBeVisible();
+        await expect(viewer.getByText("Some people's names are private.", { exact: true })).toBeVisible();
       } else {
         await fromMore(viewer, "Manage sign-ups", /^More for \d{4}-/);
         const roster = viewer.getByRole("region", { name: "Manage sign-ups", exact: true });

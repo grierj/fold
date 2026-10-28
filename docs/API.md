@@ -41,12 +41,14 @@ one bcrypt comparison on a miss (no account enumeration). Per-IP (10/hour)
 and per-address (3/hour, 10/day) throttles live in `login_throttles`; throttled
 requests still answer uniformly. Tokens are 32 random bytes, stored as
 SHA-256, single use, and expire after 24 hours. Confirming sets the password
-(≥ 10 chars), ends every other session, and signs the browser in.
+(≥ 10 chars), ends every other session, and signs the browser in only if the account is active. A pending-consent teen stays signed out.
 
 Sign-in is by email in any letter case (`users.email` is `citext`, unique).
 Ordinary access requires an `active` account with a password. A teen in
-`pending_consent` may authenticate but gets only the restricted waiting/session
-routes, not ordinary app access (M1.10). Every failure, whether
+`pending_consent` cannot establish a login. With a verified password, login
+answers `403 consent_required` and explains the consent requirement; no
+account privileges are stored in the cookie. Pending teens browse public
+groups and events as signed-out visitors (DEC-85). Every other failure, whether
 the email is unknown, the password is wrong, or the account is invited or
 disabled, answers `401 {"error":"invalid email or password"}` after one
 bcrypt comparison, so the response doesn't reveal whether an account
@@ -469,7 +471,7 @@ per rolling day; the 21st gets 429 and is audited
 (`invitation.rate_limited`).
 
 Tokens are 32 random bytes, stored as SHA-256, single use, and expire after
-24 hours. Ordinary accept body: `{token, name, password, ageBand: "adult"|"teen"|"under13", birthDate?}` (password ≥ 10 chars). A teen needs a real birth date aged 13 to 17 on the church-local date. Missing or inconsistent ages answer 400. Under-13 input is not stored and the token remains usable. Adults start active; teens start pending consent with a restricted session. Household conversion acceptance still uses its saved adult birth date. Accepting into a full group joins over
+24 hours. Ordinary accept body: `{token, name, password, ageBand: "adult"|"teen"|"under13", birthDate?}` (password ≥ 10 chars). A teen needs a real birth date aged 13 to 17 on the church-local date. Missing or inconsistent ages answer 400. Under-13 input is not stored and the token remains usable. Adults start active; teens start pending consent without a login and may browse public groups and events as signed-out visitors. Household conversion acceptance still uses its saved adult birth date. Accepting into a full group joins over
 `member_limit` only when the inviter set `overLimit` (an explicit, audited
 choice, DEC-39); otherwise it answers `409 {"error":"This group is
 full","full":true}` without consuming the token. The over-limit join is
@@ -478,7 +480,7 @@ audited as `membership.added_over_limit`.
 `invitation`: `{id, email, name, groupId?, groupName?, expiresAt, conversion, accountType}`.
 Ordinary invitations have `conversion: false`. Conversion invitations have
 no group and explain the transfer on the accept page. Household adult or teen acceptance waits for approval without a session. Teen transfer also waits for consent and a fresh guardian check.
-Ordinary acceptance creates a full adult session or a restricted pending-teen session.
+Ordinary acceptance signs in active accounts only; pending teens get the public consent explanation without a login.
 
 ### Account requests
 
@@ -519,8 +521,8 @@ set-password link (24 hours) to
 `/set-password`; approval creates the account only, never a group
 membership. Confirming sets the password and preserves consent or suspension
 decisions made since approval. Adults and active teens sign in; teens still
-awaiting consent or household conversion prerequisites enter a restricted
-waiting session (`pendingConsent: true`).
+awaiting consent or household conversion prerequisites stay signed out
+(`pendingConsent: true` signals the public consent explanation only).
 Disabled accounts cannot complete setup. Rejection emails
 the person too, with the admin's optional note. Requests expire after
 30 days (checked lazily in the queue and daily); deciding an expired
@@ -979,8 +981,8 @@ Account revocation disables the teen and ends their sessions. Their kept
 memberships and registrations stop counting, and freed event seats promote
 waiters. A later grant restores places only when they fit. Initial
 `pending_consent` teens already count on rosters, so their first grant does
-not restore or recount their places. It preserves their restricted session
-so **Check account status** can enter the app.
+not restore or recount their places. After consent is granted, they can log
+in normally; there is no restricted waiting session (DEC-85).
 
 An administrator's suspension is separate from revoked consent. Granting
 consent keeps an independently suspended account disabled. Admin **Enable**
@@ -1082,11 +1084,11 @@ feeds retain recurring-series wire output.
   camera=(), microphone=(), geolocation=()`. `Strict-Transport-Security` is
   added when `COOKIE_SECURE` is on.
 
-### Teen age and restricted-session boundaries (M1.10)
+### Teen age and login boundaries (M1.10, DEC-85)
 
 Initial setup requires `age_band=adult` to confirm the first administrator is 18 or older. Admin `POST /admin/users` additionally requires `ageBand` and accepts `birthDate` as on ordinary invitation acceptance. Under-13 or inconsistent ages create no account. Teen accounts cannot be admins, and always start `pending_consent`, even when the admin supplies a password. Adults keep the active-with-password or invited-without-password behavior.
 
-A pending-consent teen with a password can authenticate. Its cookie is accepted only at `GET /auth/me`, `GET /auth/csrf`, and `POST /auth/logout`. Every other `/api/v1` route answers `403 consent_required`, including otherwise public group, event, calendar, guest, and site routes. Signed-out visitors keep their normal public access. Responses use `Cache-Control: no-store`. The SPA displays only Waiting for consent, Check account status, and Log out, including on direct navigation and reload. Account consent activates an approved teen account. A staged household conversion also needs its confirmed household guardian relationship before activation and transfer.
+A pending-consent teen cannot establish an authenticated session (DEC-85). Correct credentials answer `403 consent_required` with a consent explanation; wrong credentials keep the usual `401 bad_credentials` response. Password setup, password reset and invitation acceptance never log a pending teen in. Any existing pending cookie is treated as anonymous: public site, group, event and calendar reads work normally, while account-only routes answer `401`. The public consent explanation stays inside the normal church-branded shell and links to public events and login; it does not intercept other routes. Responses use `Cache-Control: no-store`. After account consent activates an approved teen account, they can log in. A staged household conversion also needs its confirmed household guardian relationship before activation and transfer. Age checks, guest-registration eligibility, private-data access and guardian authority are unchanged.
 
 ### Church-local age rollover
 
@@ -1300,8 +1302,8 @@ answers (`going`, `maybe`, `declined`) retain an actual registration relationshi
 and do not take the contact gate; registration pruning/cancellation does.
 
 Pre-domain refusals on the exact POST routes above are also audited once:
-CSRF failure, missing/invalid authentication, and a restricted pending-consent
-session. The existing abort sites call a narrow hook **before** writing their
+CSRF failure and missing/invalid authentication (including legacy pending-consent
+cookies, which are treated as signed out). The existing abort sites call a narrow hook **before** writing their
 401/403 response. No CSRF exemption or auth bypass is added. These rows use
 `target_type=contact_endpoint`, no claimed target ID, and only generic reason,
 HTTP method and route template metadata. The actor is nil unless established

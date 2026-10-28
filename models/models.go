@@ -195,12 +195,7 @@ func (u *User) CheckPassword(password string) bool {
 
 // CanSignIn: an active account with a password.
 func (u *User) CanSignIn() bool {
-	return u.Status == UserActive && u.PasswordHash != nil
-}
-
-// CanAuthenticate includes a restricted session while a teen waits for consent.
-func (u *User) CanAuthenticate() bool {
-	return u != nil && u.PasswordHash != nil && (u.Status == UserActive || (u.Status == UserPendingConsent && u.AccountType == AccountTeen))
+	return u != nil && u.Status == UserActive && u.PasswordHash != nil
 }
 
 // Group is an ongoing entity (a small group, ministry, or activity) —

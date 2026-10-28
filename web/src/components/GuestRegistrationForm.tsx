@@ -67,10 +67,10 @@ export function GuestRegistrationForm({ instance }: { instance: Pick<EventOccurr
     <form onSubmit={submit} className="rounded-md border border-border p-4 space-y-3 max-w-md">
       <p className="text-sm font-semibold">Register as a guest</p>
       {error && <FormError>{error}</FormError>}
-      <Field id={`${p}-name`} label="Full name" hint="Shown on the attendee list. At most 100 characters.">
+      <Field id={`${p}-name`} label="Full name" hint="Shown on the attendee list.">
         <Input value={name} onChange={(e) => setName(e.target.value)} maxLength={100} autoComplete="name" required />
       </Field>
-      <Field id={`${p}-email`} label="Email" hint="We email you a link to confirm, and later a link to cancel. Registering again with the same email reuses the same guest record.">
+      <Field id={`${p}-email`} label="Email" hint="We'll email you a link to confirm. Use the same email next time to keep your sign-ups together.">
         <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
       </Field>
       <div>

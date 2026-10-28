@@ -50,7 +50,6 @@ export default function App() {
   }, [navigate, location.pathname]);
 
   if (loading) return null;
-  if (user?.status === "pending_consent") return <Suspense fallback={null}><WaitingForConsent key={`${user.id}:${user.status}`} /></Suspense>;
 
   return (
     // Keyed by user: signing in as someone else remounts every page and the
@@ -62,6 +61,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/waiting-for-consent" element={<WaitingForConsent />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/invite" element={<Invite />} />

@@ -92,12 +92,12 @@ test("clean adult request approves inline from the bell", async ({ page }) => {
   await expect(page.getByText(/check your email/i)).toBeVisible();
 
   await signIn(page, "grier");
-  await page.getByRole("button", { name: /Notifications/ }).click();
+  await page.getByRole("button", { name: /Alerts/ }).click();
   const row = page.locator("li", { hasText: "Clean Carl requested an account" });
   await expect(row).toBeVisible();
   await row.getByRole("button", { name: "Approve" }).click();
   await expect(row).toContainText(/You approved this|Already approved/);
-  await page.getByRole("button", { name: /Notifications/ }).click(); // close the panel
+  await page.getByRole("button", { name: /Alerts/ }).click(); // close the panel
   await markAllRead(page);
 });
 

@@ -63,7 +63,7 @@ export function badgeLabel(b: Badge): string {
   const parts = [];
   if (b.unread > 0) parts.push(`${b.unread} unread`);
   if (b.waiting > 0) parts.push(`${b.waiting} waiting on you`);
-  return parts.length ? `Notifications, ${parts.join(", ")}` : "Notifications";
+  return parts.length ? `Alerts, ${parts.join(", ")}` : "Alerts";
 }
 
 export function badgeText(b: Badge): string {

@@ -62,7 +62,7 @@ export function Invite() {
       setPassword("");
       if (result.pendingApproval) { setWaiting(true); return; }
       await refresh();
-      navigate("/", { replace: true });
+      navigate(result.pendingConsent ? "/waiting-for-consent" : "/", { replace: true });
     } catch (e) {
       // "That email already has an account" (email_taken) stays: the
       // person holding the invitation can act on it by signing in.

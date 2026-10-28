@@ -373,6 +373,23 @@ func TestPasswordResetTargetHourlyAndDailyCaps(t *testing.T) {
 	}
 }
 
+func TestPendingTeenPasswordResetDoesNotCreateALogin(t *testing.T) {
+	app := testApp(t)
+	teen := newTestUser(t, app, "waiting-teen", "password1234", models.RoleMember)
+	newTestUser(t, app, "adult", "password1234", models.RoleMember)
+	client := loginAPI(t, app, "adult", "password1234")
+	apiDo(t, client, "POST", "/api/v1/auth/password-reset", map[string]string{"email": teen.Email}, 200)
+	token := tokenInEmail(t, latestEmail(t, app, teen.Email))
+	app.DB.Model(teen).Updates(map[string]any{"account_type": models.AccountTeen, "status": models.UserPendingConsent})
+	apiDo(t, client, "POST", "/api/v1/auth/password-reset/confirm", map[string]string{"token": token, "password": "newpassword1234"}, 200)
+	apiDo(t, client, "GET", "/api/v1/auth/me", nil, 401)
+	apiDo(t, client, "GET", "/api/v1/groups", nil, 200)
+	app.DB.First(teen, teen.ID)
+	if teen.Status != models.UserPendingConsent || !teen.CheckPassword("newpassword1234") {
+		t.Fatal("password reset bypassed consent or did not set the password")
+	}
+}
+
 func TestPasswordResetUniformAndSingleUse(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "alice", "password1234", models.RoleMember)

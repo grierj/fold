@@ -83,9 +83,11 @@ fresh email or manage consent directly.
 
 Account consent lets an approved teen use Fold. A household conversion
 also waits for the new guardian check described above. After choosing a
-password, a teen can sign in to Waiting for consent, check account status,
-or log out. Check account status enters Fold after the requirements are
-complete. Teens can join groups and sign up for events they can see. They
+password, a teen still needs consent before logging in. Until then, they
+can browse public groups and events without logging in. A login attempt
+explains the consent requirement; your church office can help. Once the
+requirements are complete, the teen can log in, join groups and sign up
+for events they can see. They
 cannot lead groups, host events, or become admins.
 
 Account, SMS, and photo consent are separate. An admin can record consent

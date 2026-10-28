@@ -61,7 +61,8 @@ func (a *App) apiLogin(c *gin.Context) {
 	} else if res.RowsAffected == 1 {
 		user = &found
 	}
-	if !user.CheckPassword(body.Password) || !user.CanAuthenticate() {
+	waiting := user != nil && user.Status == models.UserPendingConsent && user.AccountType == models.AccountTeen
+	if !user.CheckPassword(body.Password) || (!user.CanSignIn() && !waiting) {
 		if err := a.lockLoginKeysAtLimit(ctx, keys); err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not sign in")
 			return
@@ -74,15 +75,14 @@ func (a *App) apiLogin(c *gin.Context) {
 	// Success clears the email's counter. The IP counter stays, so one
 	// working account can't be used to reset it.
 	a.DB.Where("key = ?", keys[0]).Delete(&models.LoginThrottle{})
-	session, err := a.Store.Get(c.Request, sessionName)
-	if err != nil {
+	if err := a.signInSession(c, user); err != nil {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
 	}
-	session.Values["userID"] = user.ID
-	session.Values["sessionVersion"] = user.SessionVersion
-	if err := session.Save(c.Request, c.Writer); err != nil {
-		jsonError(c, http.StatusInternalServerError, "session error")
+	if waiting {
+		// Only a verified password earns this explanation; no account status
+		// is disclosed for an unknown address or a wrong password.
+		jsonError(c, http.StatusForbidden, "your account is waiting for consent")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(user)})
@@ -486,13 +486,20 @@ func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh)})
 }
 
-// signInSession stores the login in the session cookie.
+// signInSession stores only an eligible login. Password setup/reset can also
+// reach here for pending teens: clear authentication (including a previous
+// account's login), while keeping CSRF so public browsing remains available.
 func (a *App) signInSession(c *gin.Context, u *models.User) error {
 	session, err := a.Store.Get(c.Request, sessionName)
 	if err != nil {
 		return err
 	}
-	session.Values["userID"] = u.ID
-	session.Values["sessionVersion"] = u.SessionVersion
+	if u.CanSignIn() {
+		session.Values["userID"] = u.ID
+		session.Values["sessionVersion"] = u.SessionVersion
+	} else {
+		delete(session.Values, "userID")
+		delete(session.Values, "sessionVersion")
+	}
 	return session.Save(c.Request, c.Writer)
 }

@@ -468,11 +468,9 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not accept invitation")
 		return
 	}
-	if fresh.CanAuthenticate() {
-		if err := a.signInSession(c, &fresh); err != nil {
-			jsonError(c, http.StatusInternalServerError, "session error")
-			return
-		}
+	if err := a.signInSession(c, &fresh); err != nil {
+		jsonError(c, http.StatusInternalServerError, "session error")
+		return
 	}
 	c.JSON(http.StatusOK, invitationAcceptanceJSON{User: userJSONPtr(a.toUserJSON(&fresh)), PendingConsent: fresh.Status == models.UserPendingConsent})
 }

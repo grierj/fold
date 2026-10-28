@@ -159,7 +159,7 @@ function StatusLine({ feed }: { feed: Feed }) {
   if (feed.error && feed.loadedAt) {
     return (
       <p className="px-4 py-1 text-xs text-text-muted">
-        Couldn't refresh. Showing notifications from {at} ·{" "}
+        Couldn't refresh. Showing alerts from {at} ·{" "}
         <button className="underline" onClick={feed.reload}>
           Try again
         </button>
@@ -206,7 +206,7 @@ export function FeedBody({
   if (feed.error && !feed.loadedAt) {
     return (
       <div className="px-4 py-6 text-center text-sm">
-        <p className="text-text-muted">Couldn't load notifications.</p>
+        <p className="text-text-muted">Couldn't load alerts.</p>
         <Button variant="secondary" layout="mt-2" onClick={feed.reload}>
           Try again
         </Button>
@@ -314,7 +314,7 @@ export function NotificationBell() {
     const now = Date.now();
     if (last.current.count >= 0 && count > last.current.count && now - last.current.at > 60_000) {
       const more = count - last.current.count;
-      setAnnounce(`${more} new notification${more === 1 ? "" : "s"}`);
+      setAnnounce(`${more} new alert${more === 1 ? "" : "s"}`);
       last.current.at = now;
     }
     last.current.count = count;
@@ -361,7 +361,7 @@ export function NotificationBell() {
         aria-label={`${count > 0 ? `${badgeText(badge)} ` : ""}${badgeLabel(badge)}`}
         aria-expanded={open}
         aria-controls="notif-panel"
-        title="Notifications"
+        title="Alerts"
       >
         <BellIcon />
         {count > 0 && (
@@ -384,7 +384,7 @@ export function NotificationBell() {
         >
           <div className="px-4 py-3 border-b border-border flex items-center gap-3">
             <h2 id="notif-panel-heading" ref={headingRef} tabIndex={-1} className="font-bold text-sm mr-auto outline-hidden">
-              Notifications
+              Alerts
             </h2>
             <button
               className="inline-flex items-center min-h-11 text-sm text-primary font-semibold hover:underline aria-disabled:text-text-muted aria-disabled:no-underline"
@@ -403,7 +403,7 @@ export function NotificationBell() {
             onClick={() => setOpen(false)}
             className="block px-4 py-2.5 border-t border-border text-sm text-center text-primary font-semibold hover:underline"
           >
-            See all notifications
+            See all alerts
           </Link>
         </section>
       )}
@@ -419,7 +419,7 @@ export function NotificationTab({ className }: { className: (a: { isActive: bool
   const badge = useBadge(pathname + search);
   const count = badge.unread + badge.waiting;
   return (
-    <NavLink to="/notifications" className={className} aria-label={`${count > 0 ? `${badgeText(badge)} ` : ""}Alerts: ${badgeLabel(badge)}`}>
+    <NavLink to="/notifications" className={className} aria-label={`${count > 0 ? `${badgeText(badge)} ` : ""}${badgeLabel(badge)}`}>
       <span className="relative">
         <BellIcon />
         {count > 0 && (

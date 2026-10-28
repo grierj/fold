@@ -38,7 +38,7 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
           ? `${instance.childcareUsed} children in childcare`
           : `${Math.max(0, instance.childcareCapacity - instance.childcareUsed)} of ${instance.childcareCapacity} childcare spots left`}</div>
       )}
-      {going + maybe > coming.length && <p>Some attendees appear only in the count.</p>}
+      {going + maybe > coming.length && <p>Some people's names are private.</p>}
       {coming.length + cant.length > 0 && (
         <>
           <Button variant="link" aria-expanded={open} aria-controls={listId} onClick={() => setOpen((v) => !v)}>

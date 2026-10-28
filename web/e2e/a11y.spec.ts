@@ -29,7 +29,7 @@ test("main pages have no serious or critical axe issues", async ({ page, request
   // pages only this check covers.
   const extra: UIPage[] = [
     { id: "forgot-password", who: null, path: "/forgot-password", ready: (p) => p.getByRole("heading", { name: "Reset your password" }) },
-    { id: "notifications", who: "grier", path: "/notifications", ready: (p) => p.getByRole("heading", { name: "Notifications" }) },
+    { id: "notifications", who: "grier", path: "/notifications", ready: (p) => p.getByRole("heading", { name: "Alerts" }) },
     { id: "admin groups", who: "grier", path: "/admin?tab=groups", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
     { id: "admin invite", who: "grier", path: "/admin?tab=invite", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
   ];

@@ -29,9 +29,11 @@ export function SetPassword() {
     setBusy(true);
     setError(null);
     try {
-      await AccountRequests.confirm(token, password);
+      const result = await AccountRequests.confirm(token, password);
+      setPassword("");
+      setConfirm("");
       await refresh();
-      navigate("/", { replace: true });
+      navigate(result.pendingConsent ? "/waiting-for-consent" : "/", { replace: true });
     } catch (err) {
       setError(
         errorCode(err) === "link_expired"

@@ -117,14 +117,14 @@ for (const kind of ["requests", "grants"] as const) {
   const olderButton = () => screen.getByRole("button", { name: `Load older ${kind}` });
   const row = (id: number) => screen.queryByText(`Lee → ${kind} person ${id}`);
 
-  it.each(["button", "focus"])(`discards stale ${kind} pagination after %s refresh and keeps the refreshed cursor`, async (trigger) => {
+  it(`discards stale ${kind} pagination after focus refresh and keeps the refreshed cursor`, async () => {
     const old = deferred<number[]>();
     const page = historyPages().mockResolvedValueOnce(firstIds).mockReturnValueOnce(old.promise).mockResolvedValueOnce(refreshedIds).mockResolvedValueOnce([201]);
     mount("/contact-requests");
     await userEvent.click(await screen.findByRole("button", { name: `Load older ${kind}` }));
     expect(page).toHaveBeenLastCalledWith(201);
-    if (trigger === "button") await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
-    else fireEvent.focus(window);
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+    fireEvent.focus(window);
     expect(await screen.findByText(`Lee → ${kind} person 301`)).toBeInTheDocument();
     await act(async () => { old.resolve([200, 199]); });
     expect(row(200)).not.toBeInTheDocument();
@@ -140,7 +140,7 @@ for (const kind of ["requests", "grants"] as const) {
     historyPages().mockResolvedValueOnce(firstIds).mockReturnValueOnce(old.promise).mockResolvedValueOnce(refreshedIds).mockReturnValueOnce(current.promise);
     mount("/contact-requests");
     await userEvent.click(await screen.findByRole("button", { name: `Load older ${kind}` }));
-    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.focus(window);
     await userEvent.click(await screen.findByRole("button", { name: `Load older ${kind}` }));
     expect(olderButton()).toBeDisabled();
     await act(async () => {
@@ -159,7 +159,7 @@ for (const kind of ["requests", "grants"] as const) {
     const old = deferred<number[]>();
     historyPages().mockReturnValueOnce(old.promise).mockResolvedValueOnce(refreshedIds);
     mount("/contact-requests");
-    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    fireEvent.focus(window);
     expect(await screen.findByText(`Lee → ${kind} person 301`)).toBeInTheDocument();
     await act(async () => { old.resolve(firstIds); });
     expect(row(301)).toBeInTheDocument();

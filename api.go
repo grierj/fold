@@ -337,7 +337,7 @@ func (a *App) authenticatedSessionUser(c *gin.Context) (*models.User, bool) {
 	if err := a.DB.First(&user, uid).Error; err != nil {
 		return nil, false
 	}
-	if sessionVersion(session) != user.SessionVersion || !user.CanAuthenticate() {
+	if sessionVersion(session) != user.SessionVersion || !user.CanSignIn() {
 		return nil, false
 	}
 	c.Set("sessionUser", &user)
@@ -358,28 +358,6 @@ func (a *App) sessionAuth() gin.HandlerFunc {
 			return
 		}
 		c.Set("apiUser", user)
-		c.Next()
-	}
-}
-
-// restrictedSession keeps pending teens outside every ordinary API, including public reads.
-func (a *App) restrictedSession() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		user, ok := a.authenticatedSessionUser(c)
-		if ok && user.Status == models.UserPendingConsent {
-			switch c.FullPath() {
-			case "/api/v1/auth/csrf", "/api/v1/auth/me", "/api/v1/auth/logout":
-			default:
-				if err := a.auditContactRejection(c, "restricted_session"); err != nil {
-					jsonError(c, http.StatusInternalServerError, "could not complete contact operation")
-					c.Abort()
-					return
-				}
-				jsonError(c, http.StatusForbidden, "your account is waiting for consent")
-				c.Abort()
-				return
-			}
-		}
 		c.Next()
 	}
 }
@@ -557,7 +535,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// API responses carry per-user data: never store them in the HTTP cache
 	// or let back/forward replay them after logout.
 	v1.Use(func(c *gin.Context) { c.Header("Cache-Control", "no-store") })
-	v1.Use(a.restrictedSession())
 
 	// Auth (csrf token endpoint is public; login/logout need the token).
 	v1.GET("/auth/csrf", a.apiGetCSRF)

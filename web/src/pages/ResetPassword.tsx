@@ -29,9 +29,11 @@ export function ResetPassword() {
     setBusy(true);
     setError(null);
     try {
-      await AuthApi.confirmPasswordReset(token, password);
+      const result = await AuthApi.confirmPasswordReset(token, password);
+      setPassword("");
+      setConfirm("");
       await refresh();
-      navigate("/", { replace: true });
+      navigate(result.user.status === "pending_consent" ? "/waiting-for-consent" : "/", { replace: true });
     } catch (e) {
       setError(
         errorCode(e) === "link_expired"

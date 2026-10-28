@@ -38,7 +38,7 @@ test("making one event invite-only previews and confirms", async ({ page, reques
 
   await page.context().clearCookies();
   await signIn(page, "quinn");
-  await page.getByRole("button", { name: "Notifications" }).click();
+  await page.getByRole("button", { name: "Alerts" }).click();
   await expect(page.getByText("Registration cancelled: Seed swap")).toBeVisible();
 });
 

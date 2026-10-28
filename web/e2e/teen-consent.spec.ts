@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
-import { apiAs, fromMore, PASSWORD, signIn } from "./helpers";
+import { apiAs, attemptPendingSignIn, fromMore, PASSWORD, signIn } from "./helpers";
 // @ts-expect-error shared browser measurement is plain JavaScript
 import { measure } from "./ui-measure.mjs";
 
@@ -22,15 +22,14 @@ async function shoot(page: Page, name: string) {
 
 const birthDate = `${new Date().getUTCFullYear() - 15}-01-01`;
 
-test("admin scoped consent activates a waiting session, revokes it, and keeps history", async ({ page, request, browser }) => {
+test("admin scoped consent enables sign-in, revokes it, and keeps history", async ({ page, request, browser }) => {
   test.setTimeout(process.env.SCREENS_DIR ? 90_000 : 30_000);
   const admin = await apiAs(request, "grier");
   const { user } = await admin("POST", "/admin/users", { name: "Consent Casey", email: "consent-casey@example.com", password: PASSWORD, ageBand: "teen", birthDate });
   const teenContext = await browser.newContext();
   const teenPage = await teenContext.newPage();
   try {
-    await signIn(teenPage, "consent-casey");
-    await expect(teenPage.getByRole("heading", { name: "Waiting for consent" })).toBeVisible();
+    await attemptPendingSignIn(teenPage, "consent-casey");
     await signIn(page, "grier");
     await page.goto("/admin?tab=users");
     await fromMore(page, "Manage consent", "More for Consent Casey");
@@ -42,14 +41,13 @@ test("admin scoped consent activates a waiting session, revokes it, and keeps hi
     await panel.getByLabel("Consent evidence").fill("Parent signed SMS form at church office");
     await panel.getByRole("button", { name: "Grant consent" }).click();
     await expect(panel.getByRole("status")).toHaveText("SMS consent granted.");
-    await teenPage.getByRole("button", { name: "Check account status" }).click();
-    await expect(teenPage.getByRole("heading", { name: "Waiting for consent" })).toBeVisible();
+    await attemptPendingSignIn(teenPage, "consent-casey");
     await panel.getByRole("radio", { name: "Account access" }).click();
     await panel.getByLabel("Consent evidence").fill("Parent signed account form at church office");
     await panel.getByRole("button", { name: "Grant consent" }).click();
     await expect(panel.getByRole("status")).toHaveText("Account access consent granted.");
-    await teenPage.getByRole("button", { name: "Check account status" }).click();
-    await expect(teenPage.getByRole("heading", { name: "Waiting for consent" })).toHaveCount(0);
+    await signIn(teenPage, "consent-casey");
+    expect((await teenPage.request.get("/api/v1/auth/me")).status()).toBe(200);
     expect((await teenPage.request.get("/api/v1/groups")).status()).toBe(200);
     await panel.getByText("Consent history (2)").click();
     await expect(panel.getByText("Parent signed account form at church office")).toBeVisible();

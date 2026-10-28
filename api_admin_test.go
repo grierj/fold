@@ -615,12 +615,12 @@ func TestAdminEditCannotBypassTeenConsent(t *testing.T) {
 	if u := reload(); u.Status != models.UserPendingConsent {
 		t.Fatalf("re-enabled teen: %s, want pending_consent", u.Status)
 	}
-	if code, _ := tryLogin(t, app, "", teen.Email, "password1234"); code != http.StatusOK {
-		t.Fatalf("teen restricted sign-in: %d", code)
+	if code, _ := tryLogin(t, app, "", teen.Email, "password1234"); code != http.StatusForbidden {
+		t.Fatalf("teen signed in without consent: %d", code)
 	}
-	pending := loginAPI(t, app, teen.Email, "password1234")
-	if w := pending.do("GET", "/api/v1/groups", nil, false); w.Code != http.StatusForbidden {
-		t.Fatalf("pending teen got ordinary access: %d", w.Code)
+	pending := newAPIClient(t, app)
+	if w := pending.do("GET", "/api/v1/groups", nil, false); w.Code != http.StatusOK {
+		t.Fatalf("pending teen could not browse publicly: %d", w.Code)
 	}
 
 	// An adult member can still be promoted and re-enabled as before.

@@ -33,7 +33,7 @@ export function AddRequestsPage() {
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   return <div className="max-w-2xl mx-auto px-4 py-6 space-y-5">
     <h1 className="text-2xl font-bold">Add requests</h1>
-    <p className="text-text-muted">Review asks to add someone to a group or one event date. These do not share contact details.</p>
+    <p className="text-text-muted">Requests to add someone to a group or event date. Contact details stay private.</p>
     {id ? <AddRequestDetail key={`${user.id}:${id}`} id={Number(id)} /> : <AddRequestList key={user.id} />}
   </div>;
 }
@@ -70,8 +70,7 @@ function AddRequestList() {
     finally { if (current === generation.current) setBusy(false); }
   }
   return <>
-    <Button variant="secondary" onClick={refresh}>Refresh</Button>
-    {error && <FormError>{error}</FormError>}
+    {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={refresh}>Try again</Button></>}
     {!loaded && !error && <p role="status">Loading add requests…</p>}
     {loaded && !requests.length && <EmptyState title="No add requests yet" body="Asks you send or can review will appear here. To send an ask, select a person by name in a group or event date you manage." />}
     <ul className="space-y-3">{requests.map((r) => <li key={r.id} className="border border-border rounded-lg bg-surface p-4 space-y-2 wrap-anywhere">
@@ -123,8 +122,8 @@ function AddRequestDetail({ id }: { id: number }) {
   }
   const pending = request?.status === "pending";
   return <>
-    <div className="flex flex-wrap gap-2"><ButtonLink variant="link" to="/add-requests">All add requests</ButtonLink><Button variant="secondary" onClick={() => setRevision((n) => n + 1)}>Refresh</Button></div>
-    {error && <FormError>{error}</FormError>}
+    <ButtonLink variant="link" to="/add-requests">All add requests</ButtonLink>
+    {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={() => setRevision((n) => n + 1)}>Try again</Button></>}
     {!loaded && !error && <p role="status">Loading ask…</p>}
     {loaded && !request && <EmptyState title="This ask is not available" body="It may have ended or may not be yours to review. Open your add request history to see what is available to you." />}
     {request && <section aria-label="Ask to add review" className="bg-surface border border-border rounded-lg p-4 space-y-4 wrap-anywhere">
