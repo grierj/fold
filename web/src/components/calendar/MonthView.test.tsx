@@ -14,6 +14,11 @@ const occs: CalendarOccurrence[] = statuses.map((myStatus, index) => ({
 }));
 
 describe("MonthView", () => {
+  it("uses a quiet hollow neutral dot for Can't go", () => {
+    render(<MemoryRouter><MonthView weeks={monthGrid("2026-10-01")} month="2026-10" byDay={new Map([["2026-10-21", [{ ...occs[0], myStatus: "declined" }]]])} today="2026-10-19" selected="2026-10-19" onSelect={() => {}} onNavigate={() => {}} caption="October 2026" /></MemoryRouter>);
+    const [phone] = screen.getAllByRole("button", { name: /Wednesday, October 21, 1 event, 1 can't go/ });
+    expect(phone.querySelector("[aria-hidden=true] span")).toHaveClass("border-border-strong", "bg-transparent");
+  });
   it("names each day button with its event count and selects on click", async () => {
     const onSelect = vi.fn();
     render(
@@ -33,6 +38,7 @@ describe("MonthView", () => {
     expect(dots[0]).toHaveClass("bg-primary");
     expect(dots[1]).toHaveClass("bg-transparent", "border-primary");
     expect(dots[2]).toHaveClass("bg-transparent", "border-primary");
+    expect(screen.getByRole("group", { name: "Calendar key" })).toHaveTextContent("GoingNot answered, Maybe or WaitlistedCan't goOther events");
   });
 
   it("moves by arrow keys with one day in the Tab order, and turns the month off the grid", async () => {

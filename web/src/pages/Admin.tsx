@@ -1219,6 +1219,7 @@ export function AdminPage() {
   if (!authLoading && (!user || !isAdmin)) {
     return (
       <div className="max-w-4xl mx-auto px-4 py-12 text-center text-text-muted">
+        <h1 className="text-3xl font-bold mb-6">Admin</h1>
         This page is for church admins only.
       </div>
     );
@@ -1246,7 +1247,7 @@ export function AdminPage() {
           <button
             key={t.id}
             onClick={() => setSearchParams(t.id === "approvals" ? {} : { tab: t.id })}
-            className={`px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px ${
+            className={`min-h-11 px-4 py-2.5 text-sm font-semibold border-b-2 -mb-px ${
               tab === t.id
                 ? "border-primary text-primary"
                 : "border-transparent text-text-muted hover:text-text"

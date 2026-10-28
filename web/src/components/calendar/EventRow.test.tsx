@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import type { CalendarOccurrence } from "../../types";
-import { EventChip, EventRow } from "./EventRow";
+import { DaySection, EventChip, EventRow } from "./EventRow";
 
 const occ = (o: Partial<CalendarOccurrence>): CalendarOccurrence => ({
   eventId: 7,
@@ -19,6 +19,11 @@ const occ = (o: Partial<CalendarOccurrence>): CalendarOccurrence => ({
   ...o,
 });
 const wrap = (ui: React.ReactNode) => render(<MemoryRouter>{ui}</MemoryRouter>);
+
+it("uses second-level day headings directly below the calendar page heading", () => {
+  wrap(<DaySection heading="Thursday" occs={[]} />);
+  expect(screen.getByRole("heading", { name: "Thursday", level: 2 })).toBeInTheDocument();
+});
 
 describe("EventRow", () => {
   it("marks events with remote seats using the neutral badge", () => {
@@ -88,7 +93,8 @@ describe("EventChip", () => {
     wrap(<EventChip occ={occ({ myStatus: "declined", ownScope: true })} />);
     const link = screen.getByRole("link");
     expect(link).toHaveAccessibleName(/Thursday class.*Can't go/);
-    expect(link).not.toHaveClass("border-dashed");
+    expect(link).not.toHaveClass("border-dashed", "bg-primary-subtle");
+    expect(link).toHaveClass("border-border", "bg-surface", "text-text-muted");
   });
 
   it("keeps compact context in visible-text order without overriding its content name", () => {

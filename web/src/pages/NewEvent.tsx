@@ -162,6 +162,7 @@ export function NewEvent() {
   if (!user) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+        <h1 className="text-3xl font-bold mb-6">Schedule an event</h1>
         <Link to="/login" state={{ from: `/groups/${id}/events/new` }} className="text-primary font-semibold">
           Log in
         </Link>{" "}
@@ -173,6 +174,7 @@ export function NewEvent() {
   if (!canManage) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+        <h1 className="text-3xl font-bold mb-6">Schedule an event</h1>
         <p className="text-text-muted">
           Only the group leader or an admin can schedule events for{" "}
           <span className="font-semibold">{groupName || "this group"}</span>.

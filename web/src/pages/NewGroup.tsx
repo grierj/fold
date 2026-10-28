@@ -72,7 +72,7 @@ export function NewGroup() {
         </div>
       ) : (
         <>
-          <h1 className="text-3xl font-bold mb-2">Start a new group</h1>
+          <h1 className="text-3xl font-bold mb-2">Start a group</h1>
           {!isAdmin && (
             <p className="text-text-muted mb-6">
               New groups are reviewed by a church admin before they appear in the directory.

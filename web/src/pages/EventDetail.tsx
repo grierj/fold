@@ -96,6 +96,7 @@ export function EventDetail() {
   if (!page) {
     return (
       <div className="max-w-xl mx-auto px-4 py-12 sm:py-16">
+        <h1 className="text-3xl font-bold mb-6">Event unavailable</h1>
         <ErrorNotice message={error ?? "We couldn't load this event."} onRetry={() => void load()} />
       </div>
     );
@@ -285,17 +286,15 @@ function DateRow({
           ) : instance.visibility === "public" ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />
-              <p className="text-sm text-text-muted">
-                Already have an account?{" "}
-                <button type="button" onClick={onNeedLogin} className="text-primary font-semibold">
-                  Log in to register
-                </button>
-              </p>
+              <p className="text-sm text-text-muted">Already have an account?</p>
+              <Button variant="secondary" onClick={onNeedLogin} layout="w-full sm:w-auto">
+                Log in to register
+              </Button>
             </div>
           ) : (
-            <button type="button" onClick={onNeedLogin} className="text-sm text-primary font-semibold">
+            <Button variant="secondary" onClick={onNeedLogin} layout="w-full sm:w-auto">
               Log in to register
-            </button>
+            </Button>
           )}
         </div>
         {editingDate && (

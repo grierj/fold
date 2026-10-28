@@ -130,6 +130,7 @@ export function NewChurchEvent() {
   if (!user) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+        <h1 className="text-3xl font-bold mb-6">Schedule a church-wide event</h1>
         <Link to="/login" state={{ from: "/events/new" }} className="text-primary font-semibold">
           Log in
         </Link>{" "}
@@ -140,6 +141,7 @@ export function NewChurchEvent() {
   if (!isAdmin) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center text-text-muted">
+        <h1 className="text-3xl font-bold mb-6">Schedule a church-wide event</h1>
         Only an admin can schedule a church-wide event.
       </div>
     );

@@ -53,6 +53,7 @@ export function ProfilePage() {
   if (!user) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+        <h1 className="text-3xl font-bold mb-6">Your profile</h1>
         <Link to="/login" state={{ from: "/profile" }} className="text-primary font-semibold">
           Log in
         </Link>{" "}

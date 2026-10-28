@@ -51,6 +51,7 @@ export function MyGroups() {
   if (!authLoading && !user) {
     return (
       <div className="max-w-6xl mx-auto px-4 py-12 text-center">
+        <h1 className="text-3xl font-bold mb-6">My groups</h1>
         <p className="text-text-muted">
           <Link to="/login" className="text-primary font-semibold">
             Log in
@@ -94,6 +95,7 @@ export function MyGroups() {
             <GroupCard
               key={g.id}
               group={g}
+              headingLevel={2}
               onTagClick={(tag) => navigate(`/?tag=${encodeURIComponent(tag)}`)}
             />
           ))}

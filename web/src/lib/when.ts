@@ -139,14 +139,15 @@ export function weekdayNames(): string[] {
 
 // The period title: "October 2026" for a month, "Oct 18 – 24, 2026" for a
 // week (both ends named when the week crosses a month or year).
-export function formatPeriod(view: "week" | "month", first: string, last: string): string {
+export function formatPeriod(view: "week" | "month", first: string, last: string, referenceDay?: string): string {
   if (view === "month") return fmt(asDate(first), "UTC", { month: "long", year: "numeric" });
   const [fy, fm] = [first.slice(0, 4), first.slice(5, 7)];
   const [ly, lm] = [last.slice(0, 4), last.slice(5, 7)];
   const md = (d: string) => fmt(asDate(d), "UTC", { month: "short", day: "numeric" });
   if (fy !== ly) return `${md(first)}, ${fy} – ${md(last)}, ${ly}`;
-  if (fm !== lm) return `${md(first)} – ${md(last)}, ${ly}`;
-  return `${md(first)} – ${Number(last.slice(8))}, ${ly}`;
+  const year = referenceDay?.slice(0, 4) === ly ? "" : `, ${ly}`;
+  if (fm !== lm) return `${md(first)} – ${md(last)}${year}`;
+  return `${md(first)} – ${Number(last.slice(8))}${year}`;
 }
 
 // "Nov 7", for a stored calendar day such as a series RSVP result.

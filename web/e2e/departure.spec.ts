@@ -69,7 +69,7 @@ test("a delayed pre-leave group response cannot restore leader controls or roste
   await page.getByRole("dialog").getByRole("button", { name: "Leave group" }).click();
   await expect(page.getByRole("button", { name: "Join this group" })).toBeVisible();
   await expect(page.getByText("0 dates kept · 1 date ended.")).toBeVisible();
-  await page.getByRole("button", { name: "members" }).click();
+  await page.getByRole("button", { name: "Members", exact: true }).click();
   await expect(page.getByText("Continuing Leader", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Schedule event" })).toHaveCount(0);
 
@@ -192,7 +192,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   await page.getByRole("button", { name: "Show who's coming" }).click();
   await expect(page.getByText("Proxy Child")).toBeVisible();
   await page.goto(`/groups/${selfGroup.id}`);
-  await page.getByRole("button", { name: "members" }).click();
+  await page.getByRole("button", { name: "Members", exact: true }).click();
   await expect(page.getByText("Departure Member")).toHaveCount(0);
 
   // Leader removal keeps the note in the dialog and uses the same canonical confirmation.
@@ -203,7 +203,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   const removeEvent = await createEvent(leaderGroup.id, "Leader removal public date", removeAt, "public");
   await (await apiAs(request, removedLogin))("PUT", `/events/${removeEvent.id}/registrations`, { date: removeAt.slice(0, 10), status: "going", attendanceMode: "in_person", people: [] });
   await page.goto(`/groups/${leaderGroup.id}`);
-  await page.getByRole("button", { name: "members" }).click();
+  await page.getByRole("button", { name: "Members", exact: true }).click();
   await fromMore(page.getByText("Leader Removal Target", { exact: true }).locator("../.."), "Remove from group");
   const leaderDialog = page.getByRole("dialog", { name: "Remove Leader Removal Target?" });
   await expect(leaderDialog).toBeVisible();

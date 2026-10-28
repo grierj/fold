@@ -21,9 +21,13 @@ function renderCard(props: Partial<Parameters<typeof GroupCard>[0]> = {}) {
 }
 
 describe("GroupCard", () => {
+  it("can use h2 directly under the My groups page title", () => {
+    renderCard({ headingLevel: 2 });
+    expect(screen.getByRole("heading", { level: 2 })).toHaveTextContent(group.name);
+  });
   it("links to the group and shows its name and badges", () => {
     renderCard();
-    expect(screen.getByRole("heading", { name: "Tuesday Bible Study" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Tuesday Bible Study", level: 3 })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Tuesday Bible Study/ })).toHaveAttribute("href", "/groups/7");
     expect(screen.getByText("Invite only")).toBeInTheDocument();
     expect(screen.queryByText("Pending approval")).not.toBeInTheDocument();
@@ -51,13 +55,13 @@ describe("GroupCard", () => {
     await userEvent.click(screen.getByRole("button", { name: /bible-study/ }));
     expect(onTagClick).toHaveBeenCalledWith("bible-study");
     expect(screen.getByRole("button", { name: "adults" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "adults" })).toHaveTextContent("✓adults");
-    expect(screen.getByRole("button", { name: "bible-study" })).not.toHaveTextContent("✓");
+    expect(screen.getByRole("button", { name: "adults" })).toHaveClass("chip", "min-h-11", "min-w-11");
+    expect(screen.getByRole("button", { name: "bible-study" })).toHaveAttribute("aria-pressed", "false");
   });
 
   it("marks a selected tag whatever its case, like the filter", () => {
     renderCard({ onTagClick: vi.fn(), selectedTags: ["ADULTS"] });
     expect(screen.getByRole("button", { name: "adults" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "adults" })).toHaveTextContent("✓adults");
+    expect(screen.getByRole("button", { name: "adults" })).toHaveClass("chip");
   });
 });

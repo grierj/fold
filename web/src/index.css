@@ -156,7 +156,7 @@
   .tabular { font-variant-numeric: tabular-nums; }          /* dates, times, counts */
   /* A focused field scrolls clear of the sticky header and, on phones, the
      bottom tab bar (UI makeover PR 5). */
-  html { scroll-padding-top: 5rem; }
+  html { scroll-padding-top: calc(var(--fold-header-height, 4rem) + 1rem); }
   @media (width < 40rem) {
     html { scroll-padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
   }

@@ -437,6 +437,7 @@ export function GroupDetail() {
   if (!detail) {
     return (
       <div className="max-w-xl mx-auto px-4 py-12 sm:py-16">
+        <h1 className="text-3xl font-bold mb-6">Group unavailable</h1>
         <ErrorNotice message={error ?? "We couldn't load this group."} onRetry={() => void load()} />
       </div>
     );
@@ -810,18 +811,18 @@ export function GroupDetail() {
           <>
             {/* Tabs */}
             <div className="border-b border-border mb-6">
-              <nav className="flex gap-6">
+              <nav aria-label="Group sections" className="flex gap-6">
                 {(["events", "about", "members"] as Tab[]).map((t) => (
                   <button
                     key={t}
                     onClick={() => setTab(t)}
                     className={
                       tab === t
-                        ? "pb-3 border-b-2 border-primary text-primary font-semibold capitalize"
-                        : "pb-3 text-text-muted hover:text-text font-medium capitalize"
+                        ? "min-h-11 pb-3 border-b-2 border-primary text-primary font-semibold"
+                        : "min-h-11 pb-3 text-text-muted hover:text-text font-medium"
                     }
                   >
-                    {t === "events" ? "Upcoming events" : t}
+                    {t === "events" ? "Upcoming events" : t === "about" ? "About" : "Members"}
                   </button>
                 ))}
               </nav>

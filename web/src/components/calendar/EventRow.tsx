@@ -108,7 +108,9 @@ export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurren
     ? "border-primary bg-primary text-primary-foreground"
     : ghosted(state)
       ? "border-primary border-dashed bg-sunken text-text"
-      : "border-transparent bg-primary-subtle text-primary-on-subtle";
+      : state === "declined"
+        ? "border-border bg-surface text-text-muted"
+        : "border-transparent bg-primary-subtle text-primary-on-subtle";
   return (
     <Link
       to={occ.dateUrl || `/events/${occ.eventId}`}
@@ -149,7 +151,7 @@ export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurren
 export function DaySection({ heading, occs, sticky }: { heading: string; occs: CalendarOccurrence[]; sticky?: boolean }) {
   return (
     <section>
-      <h3 className={`py-2 font-semibold text-text ${sticky ? "sticky top-16 z-0 bg-page sm:static" : ""}`}>{heading}</h3>
+      <h2 className={`py-2 font-semibold text-text ${sticky ? "sticky top-[var(--fold-header-height,4rem)] z-0 bg-page sm:static" : ""}`}>{heading}</h2>
       {occs.length === 0 ? (
         <p className="text-sm text-text-muted">Nothing on this day.</p>
       ) : (

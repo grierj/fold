@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { badgeParts, formatCalendarDay, formatTime, formatWhen, heldIn, zoneNote } from "./when";
+import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, heldIn, zoneNote } from "./when";
 
 // Saturday Oct 17 2026, 7:00 PM in Los Angeles (PDT, UTC-7) = 02:00 UTC Sunday.
 const laSat7pm = "2026-10-18T02:00:00Z";
+
+it("shortens current-year phone week titles but keeps other years explicit", () => {
+  expect(formatPeriod("week", "2026-10-25", "2026-10-31", "2026-10-28")).toBe("Oct 25 – 31");
+  expect(formatPeriod("week", "2027-10-24", "2027-10-30", "2026-10-28")).toBe("Oct 24 – 30, 2027");
+  expect(formatPeriod("week", "2026-12-27", "2027-01-02", "2026-10-28")).toBe("Dec 27, 2026 – Jan 2, 2027");
+});
 
 describe("formatWhen", () => {
   it("converts to the viewer's zone", () => {
