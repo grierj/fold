@@ -462,6 +462,74 @@ func TestEmailChangeRateLimited(t *testing.T) {
 	}
 }
 
+func TestEmailChangeExistingAccountConflictsConsumeActorLimit(t *testing.T) {
+	app := testApp(t)
+	alice := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	known := newTestUser(t, app, "known", "password1234", models.RoleMember)
+	ac := loginAPI(t, app, "alice", "password1234")
+
+	for i := 0; i < targetHourLimit; i++ {
+		apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"email": known.Email}, http.StatusConflict)
+	}
+	for _, address := range []string{known.Email, "new@example.com"} {
+		w := ac.do("PUT", "/api/v1/me", map[string]string{"email": address}, true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("limited request for %s: %d %s", address, w.Code, w.Body.String())
+		}
+		var body struct {
+			VerificationSent bool `json:"verificationSent"`
+		}
+		decodeJSON(t, w, &body)
+		if !body.VerificationSent {
+			t.Fatalf("limited request for %s was not uniform: %s", address, w.Body.String())
+		}
+	}
+
+	var tokens, mails int64
+	app.DB.Model(&models.AccountToken{}).Where("kind = ? AND user_id = ?", models.TokenEmailVerify, alice.ID).Count(&tokens)
+	app.DB.Model(&models.MailOutbox{}).Count(&mails)
+	if tokens != 0 || mails != 0 {
+		t.Fatalf("refused changes mutated tokens or outbox: tokens=%d mails=%d", tokens, mails)
+	}
+}
+
+func TestExhaustedEmailChangeActorDoesNotSpendFreshTargetLimit(t *testing.T) {
+	app := testApp(t)
+	alice := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	known := newTestUser(t, app, "known", "password1234", models.RoleMember)
+	ac := loginAPI(t, app, "alice", "password1234")
+
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"email": "pending@example.com"}, http.StatusOK)
+	var before models.AccountToken
+	if err := app.DB.Where("kind = ? AND user_id = ? AND used_at IS NULL", models.TokenEmailVerify, alice.ID).First(&before).Error; err != nil {
+		t.Fatalf("pending verification token: %v", err)
+	}
+	for i := 1; i < targetHourLimit; i++ {
+		apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"email": known.Email}, http.StatusConflict)
+	}
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"email": "fresh@example.com"}, http.StatusOK)
+
+	var after models.AccountToken
+	if err := app.DB.Where("kind = ? AND user_id = ? AND used_at IS NULL", models.TokenEmailVerify, alice.ID).First(&after).Error; err != nil {
+		t.Fatalf("live verification token after limited request: %v", err)
+	}
+	if after.ID != before.ID || after.TokenHash != before.TokenHash || after.Payload != before.Payload {
+		t.Fatalf("limited request replaced live token: before=%+v after=%+v", before, after)
+	}
+	if n := mailsTo(app, "fresh@example.com"); n != 0 {
+		t.Fatalf("exhausted actor sent %d fresh-address emails", n)
+	}
+
+	newTestUser(t, app, "bob", "password1234", models.RoleMember)
+	bc := loginAPI(t, app, "bob", "password1234")
+	for i := 0; i < targetHourLimit; i++ {
+		apiDo(t, bc, "PUT", "/api/v1/me", map[string]string{"email": "fresh@example.com"}, http.StatusOK)
+	}
+	if n := mailsTo(app, "fresh@example.com"); n != targetHourLimit {
+		t.Fatalf("fresh address got %d emails from second actor, want %d", n, targetHourLimit)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // My household (M1.9 slice 1)
 // ---------------------------------------------------------------------------

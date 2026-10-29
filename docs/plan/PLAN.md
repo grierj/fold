@@ -280,7 +280,7 @@ The field lists show the important columns, not every column. Every table has `i
   - Sign-in requires an active account and a password. Pending-consent teens cannot establish a login; they browse public groups and events as signed-out visitors (DEC-85). Guests cannot sign in; an approved upgrade reuses their row.
   - There is no `username` column (DEC-23).
 - `AccountRequest(name, email, phone, account_type, birth_date?, message, source self_signup|member_invite|guest_upgrade, requested_by?, group_id?, status pending|approved|rejected|expired|withdrawn, decided_by, decided_at, decision_note, expires_at)`. Only admins approve. Approval creates or upgrades the `User` and emails a set-password link. Requests expire after 30 days (DEC-4). A request for an email that already has an account gets the same on-screen answer as any other request ("Thanks; check your email"), and the email says "you already have an account; sign in or reset your password". The form never reveals whether an email is registered (10.1).
-- `Invitation(email, phone, invited_by, role, account_type, group_id?, token_hash, expires_at, accepted_at)`. Created only by admins and leaders. A leader's invitation may name only a group they lead. Accepting creates an active account with no admin approval, except that a teen account starts `pending_consent` (DEC-4, DEC-8). A leader may send at most 20 invitations a day (default, set by admins; 10.1).
+- `Invitation(email, phone, invited_by, role, account_type, group_id?, token_hash, expires_at, accepted_at)`. Created only by admins and leaders. A leader's invitation may name only a group they lead. Accepting creates an active account with no admin approval, except that a teen account starts `pending_consent` (DEC-4, DEC-8). A leader may make at most 20 valid invitation attempts a day, including refusals for existing accounts or pending invitations (default, set by admins; 10.1). Refusals spend only the actor allowance, not a recipient's mail allowance.
 - `PasswordReset(user_id, token_hash, expires_at, used_at)`.
 - `Household(name, address?, created_by)`.
 - `HouseholdAccount(household_id, user_id, relation guardian|adult|teen)`: people in the household who have their own account. An account belongs to at most one household.
@@ -1009,7 +1009,7 @@ Implementation note for agents: keep the counting-usage test in one function, `r
   - Rate limits on public endpoints (guest signup, account requests), with a hidden honeypot field instead of a third-party CAPTCHA. Limits apply per IP and per target, with these defaults (admins can change them):
     - guest verification emails: 3 per address per hour and 10 per day, as well as per IP (M1.4);
     - account requests and guest sign-ups: separate site-wide 100/hour caps; honeypot-flagged submissions send no receipt, account hint or admin email (Grier, Oct 28, 2026; #159). These site caps are fixed constants until settings controls exist;
-    - leader invitations: 20 per leader per day (M1.2);
+    - leader invitations: 20 valid attempts per leader per rolling day, including existing-account and duplicate-invitation refusals; actor allowance is checked before address lookup (M1.2, #157);
     - HELP and other automatic SMS replies: 1 HELP reply per number per 10 minutes and 5 automatic replies per number per day (7.4, M3.7);
     - phone verification texts: 3 per number per day (7.4, M3.7);
     - direct-contact requests: 10 open per leader (5.11, M1.11).

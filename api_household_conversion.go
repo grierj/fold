@@ -185,21 +185,26 @@ func conversionError(c *gin.Context, err error) {
 }
 
 // Conversion mail uses the invitation limit, including resends. Audits are
-// durable counters; the actor advisory lock serializes different households.
+// durable counters; refused ordinary invitations spend only the actor budget.
+// The actor advisory lock serializes different households and invite targets.
 func conversionSendAllowed(tx *gorm.DB, actor uint, email string) (bool, error) {
 	if err := tx.Exec("SELECT pg_advisory_xact_lock(7316194, ?)", actor).Error; err != nil {
 		return false, err
 	}
 	var byActor, byEmail int64
-	kinds := []string{audit.InvitationCreated, audit.InvitationResent}
-	if err := tx.Model(&models.AuditLog{}).Where("actor_id = ? AND action IN ? AND at > now() - interval '24 hours'", actor, kinds).Count(&byActor).Error; err != nil {
+	mailKinds := []string{audit.InvitationCreated, audit.InvitationResent}
+	actorKinds := []string{audit.InvitationCreated, audit.InvitationResent, audit.InvitationRefused}
+	if err := tx.Model(&models.AuditLog{}).Where("actor_id = ? AND action IN ? AND at > now() - interval '24 hours'", actor, actorKinds).Count(&byActor).Error; err != nil {
 		return false, err
+	}
+	if byActor >= leaderInviteDailyLimit {
+		return false, nil
 	}
 	// Join the invitation instead of putting destination email in conversion audits.
-	if err := tx.Model(&models.AuditLog{}).Joins("JOIN invitations ON invitations.id = audit_logs.target_id AND audit_logs.target_type = 'invitation'").Where("invitations.email = ? AND audit_logs.action IN ? AND audit_logs.at > now() - interval '24 hours'", email, kinds).Count(&byEmail).Error; err != nil {
+	if err := tx.Model(&models.AuditLog{}).Joins("JOIN invitations ON invitations.id = audit_logs.target_id AND audit_logs.target_type = 'invitation'").Where("invitations.email = ? AND audit_logs.action IN ? AND audit_logs.at > now() - interval '24 hours'", email, mailKinds).Count(&byEmail).Error; err != nil {
 		return false, err
 	}
-	return byActor < leaderInviteDailyLimit && byEmail < leaderInviteDailyLimit, nil
+	return byEmail < leaderInviteDailyLimit, nil
 }
 
 func (a *App) apiCreateHouseholdConversion(c *gin.Context) { a.issueHouseholdConversion(c, false) }
@@ -224,15 +229,12 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			return
 		}
 	}
-	raw, hash, err := createInvitationToken()
-	if err != nil {
-		conversionError(c, err)
-		return
-	}
+	var raw string
+	var refusal error
 	var inv models.Invitation
 	actor := *apiUser(c)
 	send := false
-	err = a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, actor.ID).Error; err != nil {
 			return err
 		}
@@ -272,12 +274,8 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 		if err := lockInvitationEmail(tx, body.Email); err != nil {
 			return err
 		}
-		if err := conversionEmailAvailable(tx, body.Email, inv.ID); err != nil {
-			return err
-		}
-		if !resend && inv.ID != 0 && inv.ExpiresAt.After(time.Now()) {
-			return nil
-		}
+		// Household address checks use the same actor gate before looking up
+		// an address. Otherwise this sibling could bypass the ordinary limit.
 		allowed, err = conversionSendAllowed(tx, actor.ID, body.Email)
 		if err != nil {
 			return err
@@ -292,6 +290,23 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 			}
 			return nil
 		}
+		if err := conversionEmailAvailable(tx, body.Email, inv.ID); err != nil {
+			if !errors.Is(err, errConversionEmail) {
+				return err
+			}
+			refusal = err
+			return writeInvitationRefusal(tx, actor.ID, "household_email_unavailable", c.ClientIP())
+		}
+		if !resend && inv.ID != 0 && inv.ExpiresAt.After(time.Now()) {
+			// Idempotent create keeps its token/mail unchanged, but its address
+			// check still spends an actor attempt rather than becoming free.
+			return writeInvitationRefusal(tx, actor.ID, "household_invitation_open", c.ClientIP())
+		}
+		token, hash, err := createInvitationToken()
+		if err != nil {
+			return err
+		}
+		raw = token
 		if !resend && inv.ID != 0 {
 			if err := revokeConversionInvitation(tx, &inv, actor.ID, c.ClientIP()); err != nil {
 				return err
@@ -316,6 +331,10 @@ func (a *App) issueHouseholdConversion(c *gin.Context, resend bool) {
 	})
 	if err != nil {
 		conversionError(c, err)
+		return
+	}
+	if refusal != nil {
+		conversionError(c, refusal)
 		return
 	}
 	if send {

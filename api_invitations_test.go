@@ -239,6 +239,40 @@ func TestLeaderInviteDailyLimit(t *testing.T) {
 	}
 }
 
+func TestLeaderInviteRefusalsConsumeDailyLimit(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "lead", "password1234", models.RoleMember)
+	newTestGroup(t, app, leader, "Crew", models.GroupActive)
+	existing := newTestUser(t, app, "existing", "password1234", models.RoleMember)
+	lc := loginAPI(t, app, "lead", "password1234")
+
+	for i := 0; i < leaderInviteDailyLimit; i++ {
+		w := lc.do("POST", "/api/v1/invitations", map[string]any{"email": existing.Email}, true)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("existing-account refusal %d: %d %s", i, w.Code, w.Body.String())
+		}
+	}
+	for _, address := range []string{existing.Email, "new@example.com"} {
+		w := lc.do("POST", "/api/v1/invitations", map[string]any{"email": address}, true)
+		if w.Code != http.StatusTooManyRequests {
+			t.Fatalf("limited invite for %s: %d %s, want 429", address, w.Code, w.Body.String())
+		}
+	}
+
+	var refused, created, resent, invitations, mails int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND actor_id = ?", audit.InvitationRefused, leader.ID).Count(&refused)
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND actor_id = ?", audit.InvitationCreated, leader.ID).Count(&created)
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND actor_id = ?", audit.InvitationResent, leader.ID).Count(&resent)
+	app.DB.Model(&models.Invitation{}).Where("email IN ?", []string{existing.Email, "new@example.com"}).Count(&invitations)
+	app.DB.Model(&models.MailOutbox{}).Where("to_address IN ?", []string{existing.Email, "new@example.com"}).Count(&mails)
+	if refused != leaderInviteDailyLimit {
+		t.Fatalf("durable refusal audits: got %d, want %d", refused, leaderInviteDailyLimit)
+	}
+	if created != 0 || resent != 0 || invitations != 0 || mails != 0 {
+		t.Fatalf("refusals created side effects: created=%d resent=%d invitations=%d mails=%d", created, resent, invitations, mails)
+	}
+}
+
 // M1.2 acceptance (DEC-39): accepting an invitation into a full group joins
 // over member_limit only when the inviter explicitly chose to go over it,
 // and the over-limit join is audited.

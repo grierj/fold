@@ -137,8 +137,11 @@ const (
 	// InvitationCreated: an admin or leader invited someone (M1.2, DEC-4).
 	// Target is the invitation; meta has email and the optional groupId and
 	// overLimit.
-	InvitationCreated        = "invitation.created"
-	InvitationResent         = "invitation.resent"
+	InvitationCreated = "invitation.created"
+	InvitationResent  = "invitation.resent"
+	// InvitationRefused counts an ordinary or household invitation address
+	// check that sends no mail (#157). Target: actor; meta: reason/limit, no address.
+	InvitationRefused        = "invitation.refused"
 	InvitationRevoked        = "invitation.revoked"
 	HouseholdPersonConverted = "household.person_converted"
 
@@ -147,7 +150,7 @@ const (
 	InvitationAccepted = "invitation.accepted"
 
 	// InvitationRateLimited: a leader hit the daily invitation limit (10.1).
-	// Target is the leader's user row; meta has email and the limit.
+	// Target is the leader's user row; meta has reason and limit, no address.
 	InvitationRateLimited = "invitation.rate_limited"
 
 	// PasswordResetRequested / PasswordResetCompleted: a password reset was

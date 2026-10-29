@@ -113,7 +113,7 @@ the old one, and the response carries `verificationSent: true`. The change
 applies only after `POST /me/email/verify` redeems the (single-use,
 24-hour) token; every other session then ends, while the verifying browser
 stays logged in. Sending the current address (any case) is accepted and
-changes nothing. Changing to an address another account uses answers 409.
+changes nothing. Within the actor allowance, changing to an address another account uses answers 409. All valid change attempts, including these account checks, consume the actor's limit of 3/hour and 10/day. An exhausted actor receives the normal 200 with `verificationSent: true` without any address lookup, recipient-budget use, token change or email. Actual verification sends also respect the recipient's 3/hour and 10/day allowance.
 
 `POST /me/password` body: `{current, password}`. `password` is at least 10
 characters. The current browser stays logged in. Every other session for
@@ -255,8 +255,11 @@ roster rules. Event managers see them with a teen badge; unrelated members
 do not see their names.
 
 Creation and resend share the 20-per-rolling-day invitation limit by sender
-and destination, including resends. Counters live in Postgres audit rows.
-Conversion sends over the limit return the normal acknowledgement and log
+and destination, including resends. Sender allowance is checked before address
+availability; unavailable-address and idempotent live-invitation checks count as
+`invitation.refused` attempts, without spending a destination's mail allowance.
+These actor counters are shared with ordinary leader invitations. Counters live
+in Postgres audit rows. Conversion sends over the limit return the normal acknowledgement and log
 the suppression. A suppressed resend keeps the previous link live. Delivery
 failure keeps a retryable invitation. Errors use `household_conversion_email`
 for any unavailable destination, `household_conversion_open` for a different
@@ -466,8 +469,8 @@ leaders invite only into groups they lead or none (403 otherwise); members,
 teens, and guests get 403, signed-out visitors 401. There is no approval
 step for adults: the person confirms their age and sets a password on acceptance. Teens start `pending_consent`.
 Create body: `{email, name?, phone?, groupId?, overLimit?}`. The invitee chooses their age when accepting; the inviter cannot activate a teen. 409 when the email already has
-an account or a pending invitation. Leaders are limited to 20 invitations
-per rolling day; the 21st gets 429 and is audited
+an account or a pending invitation. Leaders are limited to 20 valid invitation
+attempts per rolling day, including refused existing-account and duplicate-invitation checks. Refusals are durable `invitation.refused` actor counters, not sent-mail counters; they do not consume a recipient's mail allowance. The actor allowance is checked under its transaction gate before the address lookup. The 21st attempt gets 429 and is audited
 (`invitation.rate_limited`).
 
 Tokens are 32 random bytes, stored as SHA-256, single use, and expire after
