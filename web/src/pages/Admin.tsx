@@ -1299,7 +1299,7 @@ export function AdminPage() {
           >
             {t.label}
             {t.badge ? (
-              <span className="ml-1.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-xs">
+              <span aria-hidden="true" className="ml-1.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-xs">
                 {t.badge}
               </span>
             ) : null}
