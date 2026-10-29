@@ -244,26 +244,6 @@ func (a *App) presentContactRequest(tx *gorm.DB, op *contactOperation, r models.
 	return contactRequestJSON{ID: r.ID, RequesterID: r.RequesterID, RequesterName: nameIn(tx, r.RequesterID), SubjectUserID: r.SubjectUserID, SubjectName: nameIn(tx, r.SubjectUserID), ContextType: r.ContextType, ContextID: contextID, Fields: r.Fields, Reason: r.Reason, NeedsAdmin: r.NeedsAdmin, SubjectDecision: r.SubjectDecision, SubjectDecidedBy: r.SubjectDecidedBy, SubjectDecidedAt: r.SubjectDecidedAt, AdminDecision: r.AdminDecision, AdminDecidedBy: r.AdminDecidedBy, AdminDecidedAt: r.AdminDecidedAt, Status: r.Status, CreatedAt: r.CreatedAt, ExpiresAt: r.ExpiresAt, CompletedAt: r.CompletedAt, EndReason: r.EndReason,
 		CanSubjectDecide: policy.ContactRequestStatusAfterDecision(actor, policy.ContactSubject, policy.ContactApproved, p, f) != "", CanAdminDecide: policy.ContactRequestStatusAfterDecision(actor, policy.ContactAdmin, policy.ContactApproved, p, f) != "", CanWithdraw: policy.CanWithdrawContactRequest(actor, p, op.now)}, nil
 }
-func (a *App) presentContactGrant(tx *gorm.DB, op *contactOperation, g models.ContactGrant, r models.ContactRequest) (contactGrantJSON, error) {
-	if r.Purpose != policy.RequestContact {
-		return contactGrantJSON{}, errors.New("not a contact request")
-	}
-	f, _, err := a.loadContactFacts(tx, contactScope(r), op.now)
-	if err != nil {
-		return contactGrantJSON{}, err
-	}
-	guardian, err := contactConfirmedGuardian(tx, op.actor.ID, r.SubjectUserID)
-	if err != nil {
-		return contactGrantJSON{}, err
-	}
-	actor := contactAccount(op.actor, op.now, op.zone)
-	p := contactGrantPolicy(g, r)
-	contextID, err := a.contactContextVisible(tx, op.actor, r)
-	if err != nil {
-		return contactGrantJSON{}, err
-	}
-	return contactGrantJSON{ID: g.ID, RequestID: r.ID, RequesterID: r.RequesterID, RequesterName: nameIn(tx, r.RequesterID), SubjectUserID: r.SubjectUserID, SubjectName: nameIn(tx, r.SubjectUserID), ContextType: r.ContextType, ContextID: contextID, Fields: r.Fields, NeedsAdmin: r.NeedsAdmin, GrantedAt: g.GrantedAt, EndedAt: g.EndedAt, EndReason: g.EndReason, EndedBy: g.EndedBy, CanReveal: policy.CanRevealContactGrant(actor, contactScope(r), p, f), CanRevoke: policy.ContactGrantRevocationReason(actor, guardian, p) != ""}, nil
-}
 func (a *App) apiCreateContactRequest(c *gin.Context) {
 	var body struct {
 		SubjectUserID uint   `json:"subjectUserId"`
@@ -363,16 +343,9 @@ func (a *App) readContactRequests(c *gin.Context, single bool) {
 		if err := q.Find(&rs).Error; err != nil {
 			return err
 		}
-		for _, r := range rs {
-			if policy.CanViewContactRequest(actor, contactRequestPolicy(r)) {
-				j, err := a.presentContactRequest(tx, op, r)
-				if err != nil {
-					return err
-				}
-				out = append(out, j)
-			}
-		}
-		return nil
+		var err error
+		out, err = a.presentContactRequests(tx, op, rs)
+		return err
 	})
 	if c.Writer.Written() {
 		return
@@ -527,30 +500,9 @@ func (a *App) apiListContactGrants(c *gin.Context) {
 		if err := q.Find(&gs).Error; err != nil {
 			return err
 		}
-		for _, g := range gs {
-			var r models.ContactRequest
-			if err := tx.Where("purpose = ?", policy.RequestContact).First(&r, g.RequestID).Error; err != nil {
-				return err
-			}
-			guardian, err := contactConfirmedGuardian(tx, op.actor.ID, r.SubjectUserID)
-			if err != nil {
-				return err
-			}
-			f, _, err := a.loadContactFacts(tx, contactScope(r), op.now)
-			if err != nil {
-				return err
-			}
-			teen := f.Subject.Person != nil && f.Subject.Person.Teen && f.Subject.AgeYears != nil && *f.Subject.AgeYears >= 13 && *f.Subject.AgeYears < 18
-			if !policy.CanViewContactGrant(actor, guardian, teen, contactGrantPolicy(g, r)) {
-				continue
-			}
-			j, err := a.presentContactGrant(tx, op, g, r)
-			if err != nil {
-				return err
-			}
-			out = append(out, j)
-		}
-		return nil
+		var err error
+		out, err = a.presentContactGrants(tx, op, gs)
+		return err
 	})
 	if !c.Writer.Written() {
 		c.JSON(http.StatusOK, gin.H{"grants": out})
