@@ -14,7 +14,10 @@
         <p class="mt-2 text-text-muted">This only appears once. Create your church's site and its first
         administrator account.</p>
         {{if .Error}}
-        <p class="mt-4 rounded-lg border border-danger-border bg-danger-subtle p-4 text-danger-on-subtle" role="alert">{{.Error}}</p>
+        <div id="setup-error" class="mt-4 rounded-lg border border-danger-border bg-danger-subtle p-4 text-danger-on-subtle" role="alert" tabindex="-1" autofocus>
+            <p>{{.Error}}</p>
+            <a class="inline-flex min-h-11 items-center underline" href="#setup-form">Return to the setup form to try again</a>
+        </div>
         {{end}}
         {{if .ErrorSummary}}
         <div class="mt-4 rounded-lg border border-danger-border bg-danger-subtle p-4 text-danger-on-subtle" role="alert">
@@ -24,7 +27,7 @@
             </ul>
         </div>
         {{end}}
-        <form method="POST" action="/setup" novalidate class="mt-6 space-y-4 rounded-lg border border-border bg-surface p-card shadow-sm sm:p-card-lg">
+        <form id="setup-form" tabindex="-1" {{if .Error}}aria-describedby="setup-error" {{end}}method="POST" action="/setup" novalidate class="mt-6 space-y-4 rounded-lg border border-border bg-surface p-card shadow-sm sm:p-card-lg">
             {{ .csrfField }}
             <div>
                 <label class="label" for="site_name">Church name</label>

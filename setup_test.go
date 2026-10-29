@@ -195,6 +195,13 @@ func TestSetupUnavailableDoesNotCreateAnAdmin(t *testing.T) {
 	if out.Code != http.StatusServiceUnavailable {
 		t.Fatalf("setup count failure: %d %s", out.Code, out.Body.String())
 	}
+	assertSetupGenericErrorRecovery(t, out.Body.String())
+	get := httptest.NewRecorder()
+	app.setupRouter().ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/setup", nil))
+	if get.Code != http.StatusServiceUnavailable {
+		t.Fatalf("setup GET failure: %d", get.Code)
+	}
+	assertSetupGenericErrorRecovery(t, get.Body.String())
 	var users int64
 	if err := app.DB.Raw("SELECT COUNT(*) FROM users").Scan(&users).Error; err != nil || users != 0 {
 		t.Fatalf("created an admin without verifying setup eligibility: %d, %v", users, err)
@@ -217,5 +224,50 @@ func TestSetupRespectsCachedCompletion(t *testing.T) {
 	app.setupRouter().ServeHTTP(out, httptest.NewRequest(http.MethodGet, "/setup", nil))
 	if out.Code != http.StatusSeeOther || out.Header().Get("Location") != "/" {
 		t.Fatalf("setup reopened after cached completion: %d", out.Code)
+	}
+}
+
+func assertSetupGenericErrorRecovery(t *testing.T, body string) {
+	t.Helper()
+	for _, want := range []string{
+		`id="setup-error"`, `role="alert" tabindex="-1" autofocus`,
+		`href="#setup-form"`, `id="setup-form" tabindex="-1" aria-describedby="setup-error"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("generic setup error missing %s", want)
+		}
+	}
+	if strings.Count(body, "autofocus") != 1 {
+		t.Error("generic setup error must receive the only autofocus")
+	}
+}
+
+func TestSetupCreateFailureOffersFocusedRecovery(t *testing.T) {
+	app := testApp(t)
+	const callback = "test_setup_create_failure"
+	if err := app.DB.Callback().Create().Before("gorm:create").Register(callback, func(db *gorm.DB) {
+		if _, ok := db.Statement.Model.(*models.User); ok {
+			db.AddError(errors.New("forced setup create failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.DB.Callback().Create().Remove(callback) })
+	out := postSetupForm(t, app, url.Values{
+		"site_name": {"Grace Church"}, "timezone": {"America/Denver"},
+		"name": {"Root"}, "email": {"root@example.com"}, "age_band": {"adult"},
+		"password": {"password123"}, "password_confirm": {"password123"},
+	})
+	if out.Code != http.StatusBadRequest {
+		t.Fatalf("setup create failure: %d %s", out.Code, out.Body.String())
+	}
+	assertSetupGenericErrorRecovery(t, out.Body.String())
+	if !strings.Contains(setupControl(t, out.Body.String(), "site_name"), `value="Grace Church"`) {
+		t.Error("generic setup error lost valid answers")
+	}
+	for _, id := range []string{"password", "password_confirm"} {
+		if strings.Contains(setupControl(t, out.Body.String(), id), "value=") {
+			t.Errorf("password control %s has a value", id)
+		}
 	}
 }
