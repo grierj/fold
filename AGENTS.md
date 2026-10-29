@@ -333,7 +333,7 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Public forms never show a rate limit or reveal an account (DEC-52); only sign-in and a leader's invitation limit answer 429 | `TestOnlyLoginAndInvitesAnswer429` (`guards_test.go`); `TestGuestExistingEmailHintIsRateLimited`, `TestPasswordResetSkipsGuests` |
 | Colors come from theme tokens: no hex outside `@theme`, no Tailwind palette or scale-step classes (DEC-60) | `TestColorsComeFromThemeTokens` (`guards_test.go`); a line that must keep a hex says why with `color-ok:` |
 | Pages never show the server's error text; every API error code has wording | `TestPagesNeverShowServerErrorText`, `TestWebErrorCopyCoversEveryCode`, `TestErrorCodesKeysAreUsed` (`guards_test.go`, `api_errors_test.go`); `web/e2e/friendly-errors.spec.ts` |
-| Main pages (including event, scheduling, Join and My groups) have no serious or critical axe issues at 390 and 1280 px; every field is labelled | `web/e2e/a11y.spec.ts` over `web/e2e/ui-pages.ts`, setup page in `web/e2e/seed.setup.ts` (run by `make e2e`) |
+| Main pages (including event, scheduling, Join and My groups) have no moderate, serious or critical axe issues at 390 and 1280 px; every field is labelled | `web/e2e/a11y.spec.ts` over `web/e2e/ui-pages.ts`, setup page in `web/e2e/seed.setup.ts` (run by `make e2e`) |
 | Tests sit next to the code they test; no milestone-named test files | `TestTestFilesSitNextToTheirSource` (`guards_test.go`, run by `make test` in CI); its error names the file to move to |
 | Every state-changing route goes through CSRF, except the exact list in `csrfExemptRoutes` | `TestCSRFExemptRoutesAreExact` |
 | Schema changes are new goose files; GORM models match them | `migrations/migrations_test.go` drift check |

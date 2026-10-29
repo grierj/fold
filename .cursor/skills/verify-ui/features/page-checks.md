@@ -1,11 +1,11 @@
 # Page checks
 
-Every main page renders at phone, tablet and desktop widths without sideways scroll, clipped selects, controls under 24px, or serious or critical axe issues, and with a screenshot for review.
+Every main page renders at phone, tablet and desktop widths without sideways scroll, clipped selects, controls under 24px, or moderate, serious or critical axe issues, and with a screenshot for review.
 
 ## Sub-features
 - `overflow`: no horizontal scroll at 390/768/1280.
 - `targets`: no control under 24×24 px; under-44px controls at 390 are listed.
-- `axe`: no serious or critical axe violations.
+- `axe`: no moderate, serious or critical axe violations.
 - `screens`: a full-page PNG per page and width.
 
 ## How to get to it (user POV)

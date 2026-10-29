@@ -11,8 +11,11 @@ setup("first-run setup and seed data", async ({ page, request }) => {
   await page.goto("/setup");
   // The setup page is only reachable now, so its axe scan and screenshots
   // (when SCREENS_DIR is set, as in screens.spec.ts) happen here.
-  const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze();
-  expect(violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => v.id)).toEqual([]);
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
+    expect(violations.filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical").map((v) => v.id), `setup at ${width}px`).toEqual([]);
+  }
   if (process.env.SCREENS_DIR) {
     for (const w of [390, 768, 1280]) {
       await page.setViewportSize({ width: w, height: 900 });
@@ -23,10 +26,30 @@ setup("first-run setup and seed data", async ({ page, request }) => {
   await page.locator("[name=timezone]").fill("America/Boise");
   await page.locator("[name=name]").fill("Grier");
   await page.locator("[name=email]").fill(email("grier"));
+  await page.locator("[name=age_band]").check();
+  // A bcrypt failure reaches the same generic recovery UI as an unavailable
+  // database, without interrupting Postgres or storing an administrator.
+  await page.locator("[name=password]").fill("p".repeat(73));
+  await page.locator("[name=password_confirm]").fill("p".repeat(73));
+  await page.getByRole("button", { name: "Create site" }).click();
+  const alert = page.getByRole("alert");
+  await expect(alert).toContainText("We couldn't create your account. Try again.");
+  await expect(alert).toBeFocused();
+  await expect(page.locator("form")).toHaveAttribute("aria-describedby", "setup-error");
+  await expect(page.locator("[name=password]")).toHaveValue("");
+  await expect(page.locator("[name=password_confirm]")).toHaveValue("");
+  await expect(page.locator("[name=site_name]")).toHaveValue("Fold e2e");
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
+    expect(violations.filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical").map((v) => v.id), `generic setup error at ${width}px`).toEqual([]);
+    if (process.env.SCREENS_DIR) await page.screenshot({ path: `${process.env.SCREENS_DIR}/setup-generic-error-${width}.png`, fullPage: true });
+  }
+  await page.getByRole("link", { name: "Return to the setup form to try again" }).click();
+  await expect(page.locator("form")).toBeFocused();
   await page.locator("[name=password]").fill(PASSWORD);
   await page.locator("[name=password_confirm]").fill(PASSWORD);
-  await page.locator("[name=age_band]").check();
-  await page.getByRole("button").click();
+  await page.getByRole("button", { name: "Create site" }).click();
   await expect(page).not.toHaveURL(/\/setup/);
 
   const admin = await apiAs(request, "grier");
