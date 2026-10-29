@@ -1632,7 +1632,7 @@ func TestChangeRoleRechecksActorAfterContactGate(t *testing.T) {
 }
 
 func TestChangeRoleRechecksTargetAfterContactGate(t *testing.T) {
-	for _, mutation := range []string{"promote-teen", "demote-admin", "admin-add-teen"} {
+	for _, mutation := range []string{"promote-teen", "demote-admin", "admin-add-teen", "promote-disabled", "demote-disabled", "admin-add-disabled"} {
 		t.Run(mutation, func(t *testing.T) {
 			app := testApp(t)
 			actor := newTestUser(t, app, "leader", "pw", models.RoleMember)
@@ -1645,12 +1645,12 @@ func TestChangeRoleRechecksTargetAfterContactGate(t *testing.T) {
 			updates := map[string]any{"account_type": models.AccountTeen, "birth_date": time.Now().AddDate(-15, 0, 0)}
 			want := http.StatusBadRequest
 			switch mutation {
-			case "demote-admin":
+			case "demote-admin", "demote-disabled":
 				role = models.MembershipMember
 				body["role"] = role
 				updates = map[string]any{"role": models.RoleAdmin}
 				addMember(t, app, target, g, models.MembershipLeader)
-			case "admin-add-teen":
+			case "admin-add-teen", "admin-add-disabled":
 				if err := app.DB.Model(actor).Update("role", models.RoleAdmin).Error; err != nil {
 					t.Fatal(err)
 				}
@@ -1658,6 +1658,14 @@ func TestChangeRoleRechecksTargetAfterContactGate(t *testing.T) {
 				body["userId"] = target.ID
 			default:
 				addMember(t, app, target, g, models.MembershipMember)
+			}
+			if mutation == "admin-add-teen" {
+				// Request membership so teen-add approval, not teen leadership, is checked.
+				body["role"] = models.MembershipMember
+				want = http.StatusConflict
+			}
+			if strings.HasSuffix(mutation, "-disabled") {
+				updates = map[string]any{"status": models.UserDisabled}
 			}
 			client := loginAPI(t, app, actor.Email, "pw")
 			gate := holdContactGate(t, app)
@@ -1675,7 +1683,8 @@ func TestChangeRoleRechecksTargetAfterContactGate(t *testing.T) {
 				t.Fatalf("ineligible target: %d %s, want %d", w.Code, w.Body.String(), want)
 			}
 			rel := relIn(app.DB, target.ID, g.ID)
-			if (mutation == "demote-admin" && !rel.Leader) || (mutation != "demote-admin" && rel.Leader) || (mutation == "admin-add-teen" && rel.Member) {
+			demoting := strings.HasPrefix(mutation, "demote-")
+			if (demoting && !rel.Leader) || (!demoting && rel.Leader) || (strings.HasPrefix(mutation, "admin-add-") && rel.Member) {
 				t.Fatal("queued mutation used stale target eligibility")
 			}
 			if contactCount(t, app, &models.AuditLog{}, "1=1") != 0 || contactCount(t, app, &models.Notification{}, "1=1") != 0 {

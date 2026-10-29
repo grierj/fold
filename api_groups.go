@@ -726,6 +726,9 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 			return err
 		}
 	}
+	if (newRole == models.MembershipLeader || newRole == models.MembershipMember) && target.Status != models.UserActive {
+		return errRoleRefused
+	}
 	if add != nil {
 		fresh, err := peopleAddActor(tx, actor)
 		if err != nil {
@@ -758,20 +761,9 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 	// Adding someone (or bringing them back) needs room under the member
 	// limit, or an explicit over-limit choice, which is audited (DEC-39).
 	adding := !targetRel.Member && (newRole == models.MembershipLeader || newRole == models.MembershipMember)
-	if adding {
-		// A guest (M1.4) has no account to hold a membership with:
-		// they join a group only after an account upgrade or an
-		// invitation turns the guest row into one.
-		if target.Status == models.UserGuest {
-			return errRoleRefused
-		}
-		if add != nil {
-			if target.Status != models.UserActive {
-				return errRoleRefused
-			}
-			if policy.TeenAddNeedsApproval(asPerson(target)) && (add.approved == nil || !a.verifiedGroupAddIn(tx, add.approved, actor.ID, userID, g.ID)) {
-				return errTeenAddApproval
-			}
+	if adding && add != nil {
+		if policy.TeenAddNeedsApproval(asPerson(target)) && (add.approved == nil || !a.verifiedGroupAddIn(tx, add.approved, actor.ID, userID, g.ID)) {
+			return errTeenAddApproval
 		}
 	}
 	count := 0
