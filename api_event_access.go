@@ -133,9 +133,9 @@ func (a *App) groupShownTo(me *models.User, g *models.Group, rel policy.Rel) *mo
 
 // presentGroup hides a group the viewer cannot see. An opened invite-only
 // event then says it is hosted by the church and names nobody (DEC-17).
-func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Group, me *models.User, rel policy.Rel) {
+func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Group, me *models.User, rel policy.Rel, siteName string) {
 	if ev.GroupID == nil {
-		inst.HostedBy = a.siteName()
+		inst.HostedBy = siteName
 		return
 	}
 	if shown := a.groupShownTo(me, g, rel); shown != nil {
@@ -145,7 +145,7 @@ func (a *App) presentGroup(inst *occurrenceJSON, ev *models.Event, g *models.Gro
 		inst.GroupVisibility = shown.Visibility
 		return
 	}
-	inst.HostedBy = a.siteName()
+	inst.HostedBy = siteName
 }
 
 func (a *App) presentEvent(ev *models.Event, me *models.User, f eventFacts) eventJSON {

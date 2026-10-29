@@ -806,3 +806,23 @@ func (c *apiClient) doMultipart(method, path, field, filename string, data []byt
 	}
 	return rec
 }
+
+func countSiteNameReads(t *testing.T, db *gorm.DB) *int {
+	t.Helper()
+	n := new(int)
+	name := fmt.Sprintf("test:site_name_reads:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Table == "settings" {
+			for _, v := range tx.Statement.Vars {
+				if v == "site_name" {
+					*n++
+					break
+				}
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Query().Remove(name) })
+	return n
+}

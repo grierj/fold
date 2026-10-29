@@ -214,6 +214,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		}
 	}
 
+	siteName := a.siteName()
 	for i := range kept {
 		o := &kept[i]
 		ev := byID[o.EventID]
@@ -289,7 +290,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 				inst.Attendees = kept
 			}
 		}
-		a.presentGroup(&inst, ev, g, me, rel)
+		a.presentGroup(&inst, ev, g, me, rel, siteName)
 		if !vs.canSeeSeries(me, ev) {
 			inst.hideSeries = true
 			inst.DateURL = occurrenceDatePath(ev.ID, o.OriginalDate)

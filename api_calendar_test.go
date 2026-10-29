@@ -611,3 +611,56 @@ func TestCalendarScopedInvitationLoadingIsBatched(t *testing.T) {
 	}
 	t.Logf("calendar reads with 1 or 3 scoped dates: %d", one)
 }
+
+func TestCalendarHiddenGroupSiteNameReadBudget(t *testing.T) {
+	app := testApp(t)
+	creator := newTestUser(t, app, "creator", "pw", models.RoleAdmin)
+	g := newTestGroup(t, app, creator, "Hidden", models.GroupActive)
+	if err := app.DB.Model(g).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Create(&models.Setting{Key: "site_name", Value: "Our Church"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := newAPIClient(t, app)
+	client.do("GET", "/api/v1/calendar", nil, false) // Warm the setup-complete cache.
+	settings := countSiteNameReads(t, app.DB)
+	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Minute)
+	var baseline int64
+	for i := 1; i <= 30; i++ {
+		ev, _ := seedEvent(t, app, g, creator.ID, start)
+		if err := app.DB.Model(&ev).Update("visibility", models.VisibilityPublic).Error; err != nil {
+			t.Fatal(err)
+		}
+		if i != 3 && i != 30 {
+			continue
+		}
+		*settings = 0
+		counter := countDBReads(t, app.DB)
+		w := client.do("GET", "/api/v1/calendar?tz=UTC&from="+start.Format("2006-01-02")+"&to="+start.Format("2006-01-02"), nil, false)
+		reads := counter.Reads()
+		counter.Stop()
+		if w.Code != http.StatusOK {
+			t.Fatalf("calendar: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Occurrences []calendarOccurrenceJSON `json:"occurrences"`
+		}
+		decodeJSON(t, w, &body)
+		if len(body.Occurrences) != i {
+			t.Fatalf("got %d dates, want %d", len(body.Occurrences), i)
+		}
+		for _, row := range body.Occurrences {
+			if row.HostedBy != "Our Church" || row.GroupID != nil || row.GroupName != "" {
+				t.Fatalf("hidden group host: %+v", row)
+			}
+		}
+		if i == 3 {
+			baseline = reads
+		}
+		if reads != baseline || *settings != 1 {
+			t.Fatalf("%d dates: %d reads (baseline=%d), site_name=%d", i, reads, baseline, *settings)
+		}
+		t.Logf("%d dates: %d reads, site_name=%d", i, reads, *settings)
+	}
+}

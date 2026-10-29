@@ -155,6 +155,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 	}
 
 	truncated := false
+	siteName := a.siteName()
 	for i := range occs {
 		occ := &occs[i]
 		ev := byID[occ.EventID]
@@ -230,7 +231,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 		} else if ev.GroupID != nil {
 			// An opened event of a group this viewer can't see names
 			// nobody: it is hosted by the church (DEC-17).
-			row.HostedBy = a.siteName()
+			row.HostedBy = siteName
 		}
 		if status != "" {
 			s := status
