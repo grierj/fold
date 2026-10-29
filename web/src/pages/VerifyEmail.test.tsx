@@ -27,7 +27,7 @@ beforeEach(() => {
 
 it("keeps the expired-link profile action phone-sized within ordinary prose", async () => {
   render(<MemoryRouter initialEntries={["/verify-email"]}><VerifyEmail /></MemoryRouter>);
-  const link = await screen.findByRole("link", { name: "profile", exact: true });
+  const link = await screen.findByRole("link", { name: "profile" });
   expect(link).toHaveAttribute("href", "/profile");
   expect(link).toHaveClass("inline-flex", "min-h-11", "items-center");
   expect(link.parentElement?.className).not.toMatch(/leading-/);
