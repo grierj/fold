@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan, reconciled against merged M1.14 through [departure PR #131](https://github.com/grierj/fold/pull/131) (merge `a18902e`, Oct 27, 2026). The protected `test`, `web` and `provision` checks passed before merge. Decisions run through DEC-85. A merge is not a production deployment or a claim of production readiness.
+Status: active product plan, reconciled against [PR #163](https://github.com/grierj/fold/pull/163) (merge `62629fb`, Oct 29, 2026), with post-merge source inspected through `6d689bb`. Decisions run through DEC-87. Historical milestone checks are recorded below; this reconciliation is not fresh full-suite acceptance, a production deployment, or a claim of production readiness.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-85; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-87; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-85) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-87) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -1075,34 +1075,41 @@ Implementation note for agents: keep the counting-usage test in one function, `r
 
 ### 10.6 Hardening checklist (Fold is on the public internet)
 
-DEC-30's "trust the church body" covers workflow only: no approval gates on sign-ups. It never weakens these controls. Each item has an owner milestone, and a release is not done until every item that applies to it is checked.
+DEC-30's "trust the church body" covers workflow only: no approval gates on sign-ups. It never weakens these controls. Each item has an owner milestone, and a release is not done until every item that applies to it is checked. Checked Phase-1 items reflect implemented controls and repository tests, not a fresh security audit or a verified live deployment. Mixed items are split so future providers and deployment work are not marked complete with Phase 1.
 
-- [ ] Account approval: self-signup and member "invite a friend" need admin approval (DEC-4; M1.3)
-- [ ] Authentication: bcrypt, email login, single-use hashed reset and invite tokens, other sessions ended on password, email, or role change and on disable, Secure/HttpOnly/SameSite cookies (M0.3, M1.2)
+- [x] Account approval: self-signup and member "invite a friend" need admin approval (DEC-4; M1.3)
+- [x] Authentication: bcrypt, email login, single-use hashed reset and invite tokens, other sessions ended on password, email, or role change and on disable, Secure/HttpOnly/SameSite cookies (M0.3, M1.2; seven-day decoding lifetime fixed in #163)
 - [ ] Admin two-factor sign-in (TOTP), required for every admin from v0.5 (M4.9)
 - [x] Login throttling by email and client IP, stored in Postgres (M0.3)
-- [ ] Rate limits and a honeypot on public forms, per IP and per target address; per-leader invitation limits; caps on HELP and automatic SMS replies and on phone verification texts; open direct-contact request limits; per-author and per-recipient message limits (M1.2, M1.3, M1.4, M1.11, M3.7, M3.8)
+- [x] Public-form IP/target budgets, signup honeypot and site-wide abuse caps; per-leader invitation limits; open direct-contact request limits; current-password proof budgets (M1.2, M1.3, M1.4, M1.11; #163, #168–#170)
+- [ ] Caps on HELP, automatic SMS replies and phone verification texts; per-author and per-recipient message limits (M3.7, M3.8)
 - [x] CSRF on every state-changing route except signature- or token-authenticated hooks and one-click unsubscribe (M0.1)
 - [x] Trusted proxies set to the compose network only (M0.1)
-- [ ] Input validation and output sanitizing: server-side validation on every API field, bluemonday on rich text, SSRF guard on URL fetch (all milestones; M3.4)
-- [ ] Uploads: type sniffing, size limits, private assets behind policy checks (M4.7)
+- [x] Server-side validation on current plain-text APIs; React escapes output; uploaded images only, with no server fetch of user-supplied image URLs (all shipped milestones, DEC-49)
+- [ ] Rich-text sanitizing with bluemonday and SSRF guard on URL fetch when those surfaces are built (M3.4)
+- [x] Uploads: type sniffing and size limits on current public avatars and group covers
+- [ ] Private assets behind policy checks (M4.7)
 - [ ] Secrets: provider secrets encrypted at rest, never returned to the browser, `.env` mode 600 (M4.1)
 - [x] Least-privilege permissions: every check in `internal/policy` with table tests; invite-only stays 404 to outsiders (M0.2)
-- [ ] Audit log for admin actions, sends, consent, roles, settings, secrets, links of minors, and every contact-access attempt; the table is created in M0.2, and rows about contact access, minors, consent, and roles are never purged (M0.2 onward)
+- [x] Transactional audit rows for shipped admin actions, password-reset/invitation actions, consent, roles, settings, links of minors, and contact-access attempts; rows about contact access, minors, consent, and roles are never purged (M0.2 through Phase 1)
+- [ ] Extend audit coverage to future message sends, provider secrets and new settings as those surfaces land (M3 onward)
 - [x] Leaders remove members (never an admin or the last leader) and sole-leader accounts hand off to a chosen successor before deletion or disabling; both audited (M0.3b, DEC-35, DEC-36)
-- [ ] TLS everywhere (Caddy) plus security headers: HSTS, CSP, `nosniff`, frame, referrer, and permissions policies, set by the app in M0.3b (DEC-37); Caddy and image-level headers in M5.1
+- [x] App security headers: HSTS, CSP, `nosniff`, frame, referrer, and permissions policies (M0.3b, DEC-37)
+- [ ] Live TLS everywhere (Caddy), plus Caddy and image-level header checks for release deployment (M5.1)
 - [ ] Webhook signature checks on every provider, including inbound mail (M3.2, M3.7, M3.11)
-- [ ] No account enumeration: sign-up, guest registration, password reset, and login give the same response whether or not an email has an account; the email carries the hint (M0.3, M1.2, M1.3, M1.4)
-- [ ] Email change: current-password proof starts a newest-only verification/cancellation pair; the new address is verified before it takes effect, the old address can cancel a pending change and end all subject sessions, and no GET mutates the account (DEC-87, M1.2)
+- [x] No account enumeration: sign-up, guest registration, password reset, and failed login use uniform public answers; account-specific hints go by email. Public-form throttles are silent (M0.3, M1.2, M1.3, M1.4, DEC-52; #163, #168, #169)
+- [x] Email change: current-password proof starts a newest-only verification/cancellation pair; the new address is verified before it takes effect, the old address can cancel a pending change and end all subject sessions, and no GET mutates the account (DEC-87, M1.2; #154 in #163)
 - [ ] SMS opt-in only after proof of phone ownership: a texted code or a YES reply (M3.7)
-- [ ] Contact privacy: leaders and hosts never get teens' contact details; hidden adults' details only with their grant; every contact-access attempt audited; replies relayed through Fold (M1.11, M3.11)
-- [ ] Guardian and household links of teens and children confirmed only by an admin (M1.9, M1.10)
+- [x] Contact privacy: hidden adults' details need their grant; teens' details need both teen and admin approval; contact-access attempts are audited (M1.11, DEC-31)
+- [ ] Replies relayed through Fold (M3.11)
+- [x] Guardian and household links of teens and children confirmed only by an admin (M1.9, M1.10, DEC-32, DEC-79)
 - [x] An opened invite-only event never reveals the group's members or leaders (M1.1b)
 - [x] Leader grants audited, with an in-app notice to admins (M0.2)
-- [ ] Notifications carry names and in-app links only. Sensitive kinds use link-only email. The client keeps them in memory only. Inline actions are allow-listed on the server (5.12; M1.1c, M1.2)
+- [x] Notifications carry names and in-app links only. Sensitive kinds use link-only email. The client keeps them in memory only. Inline actions are allow-listed on the server (5.12; M1.1c, M1.2)
 - [ ] Later, not v1: durable, tamper-evident audit log for the most important events (DEC-33, 10.7, M6.14). The regular `AuditLog` covers them until then.
 - [ ] Backups: nightly, retained, restore-tested in CI, offsite encrypted with `age`; backup check before migrations (M5.2, M5.3)
-- [ ] Dependency updates: Dependabot for Go modules, npm, GitHub Actions, and base images, and `govulncheck` and `npm audit` in CI (M0.3b, DEC-37); pinned image digests in releases (M5.1)
+- [x] Dependency automation: Dependabot for Go modules, npm, GitHub Actions and base images; `govulncheck` and `npm audit` in CI (M0.3b, DEC-37)
+- [ ] Pinned image digests in releases (M5.1)
 - [ ] Server: unattended OS security updates and a firewall allowing only 22, 80, and 443 (Appendix A)
 
 ### 10.7 Durable audit log (later, DEC-33)
@@ -1803,7 +1810,7 @@ M0 and M1.1–M1.14 have merged. M1.14's calendar/feed boundary merged in #129, 
 - Tests: policy table for every row in section 6 on teens; API tests; fake-clock tests.
 
 **M1.11 Contact privacy and direct-contact requests**
-- Delivery: merged in #122 (Oct 25, 2026), including the authorized DEC-75 one-date dependency with read filtering and lifecycle protections. Broader M1.14 remains deferred. Contact, group-add and occurrence-add requests share machinery, never authority; an approved add never grants contact access.
+- Delivery: merged in #122 (Oct 25, 2026), including the authorized DEC-75 one-date dependency with read filtering and lifecycle protections. Broader M1.14 was delivered later in #129–#131, as recorded below. Contact, group-add and occurrence-add requests share machinery, never authority; an approved add never grants contact access.
 - Depends on: M1.10, M1.2
 - Scope: 5.11 (DEC-31): leaders and hosts never get teen contact details; the adult setting "Hide my contact info from group leaders" (off by default); `ContactRequest` and `ContactGrant`; approval rules (a hidden adult decides alone; for a teen, an admin and the teen must both approve); revocation by the person, an admin, or a teen's confirmed guardian; automatic end of grants; audit rows for every attempt; the admin contact-access history and CSV export.
 - **Add people by name (DEC-78).** Leaders and hosts add people to their groups and events by searching names, with no email needed, because teens' and hidden adults' emails are never shown to them (5.11), and email-only selection could not reach people who most need adding (teens joining an invite-only youth group, adults who hide their contact info).
@@ -1830,7 +1837,7 @@ M0 and M1.1–M1.14 have merged. M1.14's calendar/feed boundary merged in #129, 
   - [x] Under 2 characters the picker shows a hint ("Type at least 2 letters"), and when rate-limited it shows a calm message ("Too many searches. Try again in a minute.") instead of an error
   - [x] The no-results message never says why someone is missing: "No one found. An admin can add people who aren't listed."
 - Tests: policy tables for the 5.11 rows of section 6; API tests on every path; fake-clock tests for expiry and age; search result key and exclusion tests.
-- Acceptance and merge: all 16 existing-surface criteria accepted locally, then merged in #122 (`99764d0`). [M1.11-VERIFICATION.md](M1.11-VERIFICATION.md) retains the matrix, independent reviews, integrated gates and mail/UI proof. Future messaging recipient-list composition was not tested or built; broader M1.14 and production deployment are not claimed.
+- Acceptance and merge: all 16 existing-surface criteria accepted locally, then merged in #122 (`99764d0`). [M1.11-VERIFICATION.md](M1.11-VERIFICATION.md) retains the matrix, independent reviews, integrated gates and mail/UI proof. Future messaging recipient-list composition was not tested or built; this M1.11 acceptance did not claim broader M1.14 (delivered later below) or production deployment.
 
 **M1.12 Frontend toolchain upgrades**
 - Depends on: M0.4. Best done **before M1.6**, the first large new UI, so new screens are written once against the new stack. It's independent of the other Phase 1 milestones and can run in parallel.
@@ -1916,12 +1923,11 @@ not a reason to call this merged implementation unclaimed.
     - Maybe, Not answered and Waitlisted: ghosted, each with its own label ("Maybe", "Not answered", "Waitlisted"). They get the same visual treatment and keep every detail (time, place, description, and the video link where DEC-70 allows).
     - Can't go: removed from Just mine, with an optional "Show can't go" chip following the "Show deleted events" pattern (#84, DEC-68). The chip is optional (DEC-71 says "may"): it is not required for M1.14 acceptance and its absence is not a deferral of anything else in this milestone. In Everything the date stays, labelled "Can't go", so it is easy to find and change.
   - **Invite model (DEC-72 to DEC-75).** "Own scope" means: dates of groups I belong to (my standing invite), church-wide dates (everyone, via the invisible church-wide group), events I host, and dates I answered. A public event of another group joins my own scope only once I answer Maybe or Going (DEC-73); unanswered, it is not in Just mine or my personal feed. Joining a group adds its upcoming dates as Not answered; leaving takes me off the group's upcoming dates, Going included, after a confirmation that can keep dates underway or inside the cutoff and public dates I chose; past sign-ups and attendance stay (DEC-74). A leader or host can add one person who already has an account to a single date (DEC-75). Unanswered church-wide dates are limited in Just mine so they don't flood it (rule below). Discovery of public events is still open (DEC-76).
-  - **Gaps in today's code, built here:**
-    - Leaving a group does not touch registrations today (`apiLeaveGroup` only ends the membership). M1.14 ends the leaver's registrations on that group's upcoming dates (not past ones, and not the dates kept in the confirmation), under the occurrence lock, with promotion and audit rows. The confirmation needs a preview endpoint that returns the counts and the keepable dates.
+  - **Delivered departure behavior (#131; voluntary rejoining refined in #163, DEC-86):** Leaving or removal ends the person's registrations on the group's upcoming dates, except dates kept in the confirmation; past attendance stays. A read-only preview returns counts and keepable dates, and confirmation applies registration cleanup, promotion, exact-date access and audit writes under the occurrence locks. Voluntary departure keeps a `left` membership that can rejoin normally; leader/admin removal keeps `removed` and blocks ordinary self-rejoining.
   - **Kept dates after departure (DEC-74, decided Oct 26, 2026).** A date kept in the confirmation stays attended even when it is private or invite-only and the person is no longer a member. Keeping it records explicit exact-date access for that one occurrence, in the same provenance family as a DEC-75 invitation — extend that shipped mechanism, do not relax `policy.CanSeeEvent` and do not build a parallel visibility rule. The access is sanitized and date-only: the person can open that one date, change their own answer or choose Can't go, and the date shows in their Just mine and personal feed with their answer. It grants no group page, roster, series, other dates, or management access. It ends when the date ends or is cancelled, when the person chooses Can't go (or "Don't add me again" on that date), when a leader or host removes that registration, or when the account is disabled or deleted; losing the membership alone never ends it. Household and proxy registrations are untouched by this rule and keep their existing lifecycle.
   - **Departure notices (DEC-74, decided Oct 26, 2026).** Notices are stored rows, one per recipient, written in the same transaction as the membership change and its audit row (`notify.Send`). On a leader or admin removal, the removed person gets one summarized, names-free notice saying how many upcoming dates were kept and how many ended — never one notice per date, and no group name for a group they can no longer see. On a self-leave, the leaver gets no notice, but every group leader gets one notice that the person left the group. Promoted waitlisters keep their usual "you're in" notices, and the existing leadership-change notice still fires when a leader leaves or is removed. Where the removed person is a teen, confirmed guardians get the same safe, names-free copy as the M1.11 exact-date notices. Notice text never carries an email address or phone number.
-    - Church-wide events have no group (`group_id` null). M1.14 adds the invisible church-wide group (or an equivalent "everyone" rule in the scope query); pick the simpler one at build time.
-    - The personal feed's `all` scope and the calendar's Just mine include unanswered public events of other groups in places; M1.14 applies DEC-73 to both.
+    - Church-wide events keep `group_id` null. The shipped scope query uses an equivalent "everyone" rule; no synthetic group or membership rows are created.
+    - Calendar and personal-feed scope now enforce DEC-73: unanswered public events of other groups never enter Just mine or `mine`; `all` and Everything apply the unanswered-date window (DEC-77).
     - The DEC-75 exact-date prerequisite is now implemented in M1.11 s4 as described above: ordinary eligible adult adds and approved purpose-bound asks mint explicit invitation provenance, not relaxed series visibility. The narrow recipient/guardian notice and block controls are not general messaging copies or full M1.14 completion.
   - **Unanswered-date window (N8 rule, DEC-77).** The window limits dates the viewer has not answered, and DEC-73 still wins inside the viewer's own scope: (a) in Just mine and the personal feed's `mine` scope, an unanswered public date of a group the viewer doesn't belong to never shows, at any distance (DEC-73); unanswered church-wide dates show only within the next 30 days; (b) in the Everything view and the personal feed's `all` scope, unanswered public and church-wide dates show only within the next 30 days. Later unanswered dates appear once they come within 30 days, and any date the person answered (Going, Maybe, Waitlisted, or Can't go where it is shown) always shows, subject to current visibility. Dates of the person's own groups are not limited this way. The window becomes an admin setting later (M4.2).
   - **Ghosted visual spec (WCAG 1.4.1 and AA).** Ghosted is a dashed or outline border with a lighter stone fill. Text keeps full token contrast and opacity is never used on text. Every chip's accessible name includes its status word. Phone month view: hollow dots for ghosted dates and filled dots for going. The day button's accessible name carries the status (for example "Oct 31, 2 events, 1 going").
