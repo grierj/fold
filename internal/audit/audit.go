@@ -56,6 +56,9 @@ const (
 	// MemberAdded records an actual manager-initiated ordinary member addition.
 	MemberAdded = "membership.added"
 
+	// UserCreated: an admin created an account. Target is the new user.
+	UserCreated = "user.created"
+
 	// UserDeleted: an admin deleted an account. Target is the user. Any
 	// sole-leader handoff is recorded as RoleChanged rows with reason
 	// "account_deleted" (DEC-36).

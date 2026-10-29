@@ -468,7 +468,32 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 	if kind == models.AccountTeen {
 		u.Status = models.UserPendingConsent
 	}
-	if err := a.DB.Create(&u).Error; err != nil {
+	me := apiUser(c)
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockContacts(tx); err != nil {
+			return err
+		}
+		var actor models.User
+		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, me.ID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errSecuritySession
+			}
+			return err
+		}
+		if !actor.CanSignIn() || actor.SessionVersion != me.SessionVersion || !policy.IsAdmin(asPerson(&actor)) {
+			return errSecuritySession
+		}
+		if err := tx.Create(&u).Error; err != nil {
+			return err
+		}
+		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.UserCreated,
+			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
+	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err != nil {
 		if emailTaken(err) {
 			jsonError(c, http.StatusConflict, "an account with that email already exists")
 			return

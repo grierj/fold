@@ -1030,6 +1030,7 @@ GET  /api/v1/admin/users/:id/sole-leader-groups → {groups: [{id, name, status,
 POST /api/v1/admin/users                    → 201 {user}                (admin)
      body: {email, name, password? (≥10 chars), role, displayName?, phone?}
      — without a password the account is `invited` and can't sign in; 409 if the email is taken (any case)
+     — rechecks the acting admin's session and authority at insertion; 401 if revoked while the request was in flight; creation and its audit commit together, with no notification or email
 PUT  /api/v1/admin/users/:id               → 200 {user}                (admin; profile fields, email, role, status)
      body: any of {name, displayName, email, phone, role, status: "active"|"disabled", successors}
 POST /api/v1/admin/users/:id/password      → 200 {}                    (admin; also activates an invited account)

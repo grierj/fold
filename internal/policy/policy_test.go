@@ -980,3 +980,22 @@ func TestEffectiveVisibility(t *testing.T) {
 		}
 	}
 }
+
+func TestIsAdmin(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		person *Person
+		want   bool
+	}{
+		{"admin", admin, true},
+		{"member", adult, false},
+		{"teen", teen, false},
+		{"signed out", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsAdmin(tc.person); got != tc.want {
+				t.Fatalf("IsAdmin = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
