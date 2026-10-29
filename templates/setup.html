@@ -20,7 +20,7 @@
         <div class="mt-4 rounded-lg border border-danger-border bg-danger-subtle p-4 text-danger-on-subtle" role="alert">
             <p>Check the fields below.</p>
             <ul class="mt-2 list-disc pl-5">
-                {{range .ErrorSummary}}<li><a class="inline-flex min-h-11 items-center underline sm:min-h-6" href="#{{.ID}}">{{.Message}}</a></li>{{end}}
+                {{range .ErrorSummary}}<li><a class="inline-flex min-h-11 items-center underline" href="#{{.ID}}">{{.Message}}</a></li>{{end}}
             </ul>
         </div>
         {{end}}

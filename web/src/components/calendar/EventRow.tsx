@@ -116,7 +116,7 @@ export function EventChip({ occ, pointerOnly, stacked }: { occ: CalendarOccurren
       to={occ.dateUrl || `/events/${occ.eventId}`}
       title={name}
       tabIndex={pointerOnly ? -1 : undefined}
-      className={`${stacked ? "block" : "block min-h-6 text-xs"} rounded-sm border px-2 py-1.5 hover:underline ${stateClass}`}
+      className={`block min-h-11 ${stacked ? "" : "text-xs"} rounded-sm border px-2 py-1.5 hover:underline ${stateClass}`}
     >
       {stacked ? (
         <>

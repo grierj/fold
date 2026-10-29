@@ -10,7 +10,7 @@ import { FoldMark } from "./FoldMark";
 
 // The app shell (UI makeover PR 5): a header with the church's name, a top
 // nav from the sm breakpoint up, and a bottom tab bar on phones (Home,
-// Calendar, My groups, Notifications, Me). Every control is at least 44px. The bars sit
+// Calendar, My groups, Notifications, Me). Every shell control is at least 44px. The bars sit
 // inside the safe areas (viewport-fit=cover in index.html), and the page
 // keeps room under the tab bar so it never covers a focused field
 // (scroll-padding in index.css).

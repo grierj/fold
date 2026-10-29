@@ -71,6 +71,10 @@ describe("EventRow", () => {
 });
 
 describe("EventChip", () => {
+  it.each([false, true])("keeps a 44px target when stacked=%s", (stacked) => {
+    wrap(<EventChip occ={occ({})} stacked={stacked} />);
+    expect(screen.getByRole("link")).toHaveClass("min-h-11");
+  });
   it("names remote attendance in compact calendar entries too", () => {
     wrap(<EventChip occ={occ({ remoteAvailable: true })} />);
     expect(screen.getByText("Remote")).toHaveClass("bg-sunken");
