@@ -339,7 +339,7 @@ func (a *App) cancelDateLosers(c *gin.Context, tx *gorm.DB, ev *models.Event, ne
 		// Losing visibility ends the bearer credential as well as the seat:
 		// a retained history row must not expose later private date edits.
 		// Ordinary self-cancellation keeps its separate idempotent token path.
-		if err := tx.Model(&r).Updates(map[string]any{"status": models.RegCancelled, "waitlisted_at": nil, "promoted_at": nil, "manage_token_hash": ""}).Error; err != nil {
+		if err := tx.Model(&r).Updates(map[string]any{"status": models.RegCancelled, "waitlisted_at": nil, "promoted_at": nil}).Error; err != nil {
 			return nil, err
 		}
 		meta := registrationMeta(r)

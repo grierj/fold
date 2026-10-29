@@ -989,3 +989,132 @@ func TestGuestManageCancellationRechecksTokenAndScopeUnderGate(t *testing.T) {
 		})
 	}
 }
+
+func TestGuestManageReauthorizesCancelledLinks(t *testing.T) {
+	for _, cancelledFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelledFirst), func(t *testing.T) {
+			app := testApp(t)
+			newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			admin := loginAPI(t, app, "admin", "password1234")
+			gid := createGroupAs(t, admin, "Manage access", models.VisibilityPublic)
+			ev := scheduleGroupEvent(t, admin, gid, "Public picnic")
+			anon := anonClient(t, app, "10.4.0.33")
+			_, token := guestConfirm(t, app, anon, ev.ID, "Guest", "manage@example.com", false)
+			path := "/api/v1/guest-registrations/manage/" + token
+			if cancelledFirst {
+				apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusOK)
+				apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusOK)
+			}
+			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID), map[string]any{"visibility": "private", "confirm": true}, http.StatusOK)
+			apiDo(t, anon, "GET", path, nil, http.StatusNotFound)
+			apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusNotFound)
+			u := guestUser(t, app, "manage@example.com")
+			reg := guestRegistrationRow(t, app, u.ID)
+			if reg.Status != models.RegCancelled || reg.ManageTokenHash != hashToken(token) {
+				t.Fatalf("denial changed retained registration: %+v", reg)
+			}
+			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID), map[string]any{"visibility": "public"}, http.StatusOK)
+			apiDo(t, anon, "GET", path, nil, http.StatusOK)
+			apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusOK)
+		})
+	}
+}
+
+func TestGuestManageReauthorizesDateOverride(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Date manage access", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Public picnic")
+	anon := anonClient(t, app, "10.4.0.34")
+	_, token := guestConfirm(t, app, anon, ev.ID, "Guest", "date-manage@example.com", false)
+	path := "/api/v1/guest-registrations/manage/" + token
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, guestDate), map[string]any{"visibility": "private", "confirm": true}, http.StatusOK)
+	apiDo(t, anon, "GET", path, nil, http.StatusNotFound)
+	apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusNotFound)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, guestDate), map[string]any{"visibility": "public"}, http.StatusOK)
+	apiDo(t, anon, "GET", path, nil, http.StatusOK)
+}
+
+func TestGuestManagePromotedMemberCurrentAccess(t *testing.T) {
+	f := newPromotedContactCancellationFixture(t)
+	if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.eventID).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/guest-registrations/manage/" + f.token
+	apiDo(t, f.anon, "GET", path, nil, http.StatusOK)
+	if err := f.app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", f.subject.ID, f.group.ID).Update("status", models.MembershipLeft).Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, f.anon, "GET", path, nil, http.StatusNotFound)
+	apiDo(t, f.anon, "POST", path+"/cancel", nil, http.StatusNotFound)
+	if err := f.app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", f.subject.ID, f.group.ID).Update("status", "active").Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, f.anon, "GET", path, nil, http.StatusOK)
+	apiDo(t, f.anon, "POST", path+"/cancel", nil, http.StatusOK)
+}
+
+func TestGuestManageRechecksAuthorizationUnderGate(t *testing.T) {
+	for _, method := range []string{"GET", "POST"} {
+		t.Run(method, func(t *testing.T) {
+			f := newPromotedContactCancellationFixture(t)
+			if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.eventID).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+				t.Fatal(err)
+			}
+			gate := holdContactGate(t, f.app)
+			path := "/api/v1/guest-registrations/manage/" + f.token
+			if method == "POST" {
+				path += "/cancel"
+			}
+			response := queueContact(func() *httptest.ResponseRecorder { return f.anon.do(method, path, nil, true) })
+			waitContactWaiters(t, f.app, 1)
+			if err := gate.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", f.subject.ID, f.group.ID).Update("status", models.MembershipLeft).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := gate.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			if w := awaitContactResponse(t, response); w.Code != http.StatusNotFound {
+				t.Fatalf("stale authority: %d %s", w.Code, w.Body.String())
+			}
+			if regStatus(t, f.app, f.subject.ID, f.occ.ID) != models.RegGoing {
+				t.Fatal("denial cancelled registration")
+			}
+		})
+	}
+}
+
+func TestGuestManageFailsClosedOnMembershipRead(t *testing.T) {
+	f := newPromotedContactCancellationFixture(t)
+	name := "guest:test_membership_failure"
+	if err := f.app.DB.Callback().Query().Before("gorm:query").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Table == "memberships" {
+			tx.AddError(errors.New("membership lookup failed"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.app.DB.Callback().Query().Remove(name) })
+	path := "/api/v1/guest-registrations/manage/" + f.token
+	apiDo(t, f.anon, "GET", path, nil, http.StatusNotFound)
+	apiDo(t, f.anon, "POST", path+"/cancel", nil, http.StatusNotFound)
+}
+
+func TestGuestManageMemberExactDateAccess(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	raw, hash, err := createInvitationToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.Model(&models.Registration{}).Where("id = ?", f.access.RegistrationID).Update("manage_token_hash", hash).Error; err != nil {
+		t.Fatal(err)
+	}
+	anon := anonClient(t, f.app, "10.4.0.35")
+	path := "/api/v1/guest-registrations/manage/" + raw
+	apiDo(t, anon, "GET", path, nil, http.StatusOK)
+	apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusOK)
+	// Cancellation ends the independent date capability, so replay no longer
+	// has current authority even though the hash remains stored.
+	apiDo(t, anon, "GET", path, nil, http.StatusNotFound)
+}

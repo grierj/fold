@@ -719,3 +719,13 @@ func EffectiveVisibility(series string, override *string) string {
 	}
 	return series
 }
+
+// CanManageGuestRegistration rechecks the subject's CURRENT date authority.
+// A guest token never acts as a signed-in person. Promoted account holders may
+// also have independently authorized exact-date access, never series access.
+func CanManageGuestRegistration(p *Person, guest, active bool, ev EventView, g Group, r Rel, exactDateAccess bool) bool {
+	if guest {
+		return CanRegisterGuest(ev, g)
+	}
+	return active && p != nil && (CanRegisterEvent(p, ev, g, r) || exactDateAccess)
+}

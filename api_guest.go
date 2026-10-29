@@ -474,8 +474,8 @@ func createGuestUpgradeRequest(tx *gorm.DB, signup *models.GuestSignup) ([]uint,
 }
 
 // liveTokenManage finds the registration a manage token controls. The
-// token is the credential: it serves guests (M1.4) and promoted members
-// (M1.5) through the one manage page and cancel endpoint. It stops
+// token identifies a credential: authorizedTokenManage also checks current
+// subject access for guests, promoted members and household rows. It stops
 // working once the date has ended: there is nothing left to manage, and
 // a bearer link should not outlive its purpose (DEC-55).
 func liveTokenManage(db *gorm.DB, raw string) (*models.Registration, *models.EventOccurrence, *models.Event, *models.Group, error) {
@@ -490,31 +490,131 @@ func liveTokenManage(db *gorm.DB, raw string) (*models.Registration, *models.Eve
 		return nil, nil, nil, nil, errTokenInvalid
 	}
 	occ := reg.Occurrence
-	if occ.ID == 0 || time.Now().UTC().After(occ.EndsAt) || (reg.HouseholdPersonID != nil && occ.Status != models.OccurrenceScheduled) {
+	if occ.ID == 0 || time.Now().UTC().After(occ.EndsAt) || occ.Status != models.OccurrenceScheduled {
 		return nil, nil, nil, nil, errTokenInvalid
 	}
 	ev := occ.Event
 	var grp *models.Group
 	if ev.GroupID != nil {
 		var g models.Group
-		if err := db.First(&g, *ev.GroupID).Error; err == nil {
-			grp = &g
+		if err := db.First(&g, *ev.GroupID).Error; err != nil {
+			return nil, nil, nil, nil, err
 		}
+		grp = &g
 	}
 	return &reg, &occ, &ev, grp, nil
 }
 
+// authorizedTokenManage runs under the contact gate. The holder-first lock
+// prefix matches registration writes; the occurrence lock protects both reads
+// and idempotent cancellations against a concurrent visibility change.
+func (a *App) authorizedTokenManage(tx *gorm.DB, raw string) (*models.Registration, *models.EventOccurrence, *models.Event, *models.Group, error) {
+	reg, occ, _, _, err := liveTokenManage(tx, raw)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if err := lockRegistrationHolder(tx, reg.ID, occ.ID); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if _, err := lockOccurrence(tx, occ.ID); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	reg, occ, ev, grp, err := liveTokenManage(tx, raw)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if err := a.authorizeRegistrationLink(tx, reg, occ, ev, grp); err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return reg, occ, ev, grp, nil
+}
+
+// authorizeRegistrationLink loads current authority, not authority at token
+// issuance. Denial never clears the hash: reopening a date can restore access.
+// Every fact lookup fails closed; a failed query is never an empty relationship.
+func (a *App) authorizeRegistrationLink(tx *gorm.DB, reg *models.Registration, occ *models.EventOccurrence, ev *models.Event, grp *models.Group) error {
+	var holder models.User
+	if err := tx.First(&holder, registrationHolder(*reg)).Error; err != nil {
+		return err
+	}
+	gp, rel := policy.Group{}, policy.Rel{}
+	if grp != nil {
+		gp = asGroup(grp)
+		var membership models.Membership
+		if err := tx.Where("user_id = ? AND group_id = ?", holder.ID, grp.ID).Limit(1).Find(&membership).Error; err != nil {
+			return err
+		}
+		rel = membershipRel(membership)
+	}
+	guest := holder.Status == models.UserGuest
+	var person *policy.Person
+	if !guest {
+		person = asPerson(&holder)
+	}
+	exact := false
+	if !guest && reg.UserID != nil {
+		var accesses []models.OccurrenceAccess
+		if err := tx.Where("registration_id = ? AND subject_user_id = ? AND occurrence_id = ? AND status = ?", reg.ID, holder.ID, occ.ID, policy.OccurrenceAccessActive).Find(&accesses).Error; err != nil {
+			return err
+		}
+		reads, err := occurrenceInvitationReadsIn(tx, accesses, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		exact = len(reads) > 0
+	}
+	allowed := policy.CanManageGuestRegistration(person, guest, holder.CanSignIn(), viewOf(dateEvent(ev, occ), false), gp, rel, exact)
+	if !allowed {
+		return errTokenInvalid
+	}
+	if reg.HouseholdPersonID != nil {
+		var person models.HouseholdPerson
+		if err := tx.First(&person, *reg.HouseholdPersonID).Error; err != nil {
+			return err
+		}
+		var account models.HouseholdAccount
+		if err := tx.Where("user_id = ? AND household_id = ?", holder.ID, person.HouseholdID).First(&account).Error; err != nil {
+			return err
+		}
+		var links []models.GuardianLink
+		if err := tx.Where("person_id = ?", person.ID).Find(&links).Error; err != nil {
+			return err
+		}
+		zone, err := contactZone(tx)
+		if err != nil {
+			return err
+		}
+		hr := householdRelOf(account, true)
+		if policy.CanRegisterHouseholdPerson(asPerson(&holder), asPerson(&holder), hr, hr, householdFacts(&person, links, time.Now().In(zone)), holder.CanSignIn(), allowed, allowed) != "" {
+			return errTokenInvalid
+		}
+	}
+	return nil
+}
+
 func (a *App) apiGetGuestRegistration(c *gin.Context) {
-	reg, occ, ev, grp, err := liveTokenManage(a.DB, c.Param("token"))
+	var display guestRegistrationJSON
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockContacts(tx); err != nil {
+			return err
+		}
+		reg, occ, ev, grp, err := a.authorizedTokenManage(tx, c.Param("token"))
+		if err != nil {
+			return err
+		}
+		display = a.guestDisplay(reg, occ, ev, grp)
+		if reg.Status == models.RegWaitlisted {
+			pos, err := waitlistPosition(tx, occ.ID, reg.ID)
+			if err != nil {
+				return err
+			}
+			display.WaitlistPosition = &pos
+		}
+		return nil
+	})
 	if err != nil {
 		jsonError(c, http.StatusNotFound, "registration not found")
 		return
-	}
-	display := a.guestDisplay(reg, occ, ev, grp)
-	if reg.Status == models.RegWaitlisted {
-		if pos, perr := waitlistPosition(a.DB, occ.ID, reg.ID); perr == nil {
-			display.WaitlistPosition = &pos
-		}
 	}
 	c.JSON(http.StatusOK, gin.H{"registration": display})
 }
@@ -530,14 +630,11 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 	var display guestRegistrationJSON
 	var emailed []uint
 	err = a.contactMutation(contactChange{EventID: scope.ID}, func(tx *gorm.DB) error {
-		reg, occ, ev, grp, err := liveTokenManage(tx, c.Param("token"))
+		reg, occ, ev, grp, err := a.authorizedTokenManage(tx, c.Param("token"))
 		if err != nil {
 			return err
 		}
 		if ev.ID != scope.ID {
-			return errTokenInvalid
-		}
-		if err := lockRegistrationHolder(tx, reg.ID, occ.ID); err != nil {
 			return errTokenInvalid
 		}
 		before := reg.Status
@@ -547,19 +644,8 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 			display = a.guestDisplay(reg, occ, ev, grp)
 			return nil
 		}
-		// The occurrence stays locked through the cancel and the
-		// promotion check that follows, so the freed seat cannot be
-		// taken twice (DEC-38).
-		locked, err := lockOccurrence(tx, occ.ID)
-		if err != nil {
-			return err
-		}
-		fresh, _, _, _, err := liveTokenManage(tx, c.Param("token"))
-		if err != nil {
-			return err
-		}
-		reg = fresh
-		before = reg.Status
+		// authorizedTokenManage keeps the occurrence locked through the
+		// cancel and promotion check, so a freed seat cannot be taken twice.
 		res := tx.Model(&models.Registration{}).
 			Where("id = ? AND status IN ?", reg.ID,
 				[]string{models.RegGoing, models.RegMaybe, models.RegWaitlisted}).
@@ -567,8 +653,8 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 			// The manage token stays live: cancel is idempotent (a second
 			// POST with the same link is a 200 no-op), and the token can
 			// then only ever show or re-cancel this dead registration.
-			// It still dies at the date end, and any new manage email
-			// rotates it. Removal (not cancel) is what kills the link.
+			// Current date authority is still required on every replay.
+			// It dies at the date end, and a new manage email rotates it.
 		if res.Error != nil {
 			return res.Error
 		}
@@ -588,7 +674,7 @@ func (a *App) apiCancelGuestRegistration(c *gin.Context) {
 			return err
 		}
 		if before == models.RegGoing {
-			ids, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), nil)
+			ids, err := a.promoteLocked(tx, ev, occ, time.Now().UTC(), nil)
 			if err != nil {
 				return err
 			}

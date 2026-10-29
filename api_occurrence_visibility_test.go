@@ -440,7 +440,11 @@ func TestVisibilityCancellationRevokesPromotedAccountManageToken(t *testing.T) {
 	}
 	var reg models.Registration
 	app.DB.Where("user_id = ? AND occurrence_id = ?", user.ID, dates[0].ID).First(&reg)
-	if reg.Status != models.RegCancelled || reg.ManageTokenHash != "" {
-		t.Fatalf("history or revocation: %+v", reg)
+	if reg.Status != models.RegCancelled || reg.ManageTokenHash != hashToken(raw) {
+		t.Fatalf("history or retained credential: %+v", reg)
 	}
+	// The hash survives tightening; only current authorization denies it.
+	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public"}, 200)
+	apiDo(t, anon, "GET", manage, nil, 200)
+	apiDo(t, anon, "POST", manage+"/cancel", nil, 200)
 }

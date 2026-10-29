@@ -1028,3 +1028,33 @@ func TestCanSetGroupStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestCanManageGuestRegistration(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		guest, active, member, exact bool
+		visibility                   string
+		want                         bool
+	}{
+		{"public guest", true, false, false, false, Public, true},
+		{"private guest", true, false, false, false, Private, false},
+		{"guest never uses membership", true, false, true, false, InviteOnly, false},
+		{"guest never uses exact access", true, false, false, true, InviteOnly, false},
+		{"promoted private", false, true, false, false, Private, true},
+		{"promoted loses membership", false, true, false, false, InviteOnly, false},
+		{"promoted member", false, true, true, false, InviteOnly, true},
+		{"promoted exact access", false, true, false, true, InviteOnly, true},
+		{"inactive account", false, false, true, true, Public, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Person{ID: 1}
+			if tc.guest {
+				p = nil
+			}
+			got := CanManageGuestRegistration(p, tc.guest, tc.active, EventView{Visibility: tc.visibility}, Group{Status: GroupActive}, Rel{Member: tc.member}, tc.exact)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
