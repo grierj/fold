@@ -38,6 +38,9 @@ type Config struct {
 	// "smtp://user:pass@smtp.example.org:587". Empty means devoutbox in
 	// dev, and no sender (sends fail loudly) in prod.
 	SMTPURL string
+	// SMTPAllowInsecure permits plaintext for a trusted non-loopback relay.
+	// Default false; TLS verification is never disabled.
+	SMTPAllowInsecure bool
 	// EmailFrom is the From address on transactional email.
 	EmailFrom string
 }
@@ -138,16 +141,17 @@ func LoadConfig() (Config, error) {
 	}
 
 	return Config{
-		Env:            env,
-		Port:           getEnv("PORT", "8080"),
-		SessionSecret:  []byte(secret),
-		DatabaseURL:    dbURL,
-		CookieSecure:   getEnvBool("COOKIE_SECURE", !isDev),
-		SiteURL:        os.Getenv("SITE_URL"),
-		UploadDir:      getEnv("UPLOAD_DIR", "./data/uploads"),
-		TrustedProxies: proxies,
-		SMTPURL:        os.Getenv("FOLD_SMTP_URL"),
-		EmailFrom:      getEnv("FOLD_EMAIL_FROM", "Fold <noreply@localhost>"),
+		Env:               env,
+		Port:              getEnv("PORT", "8080"),
+		SessionSecret:     []byte(secret),
+		DatabaseURL:       dbURL,
+		CookieSecure:      getEnvBool("COOKIE_SECURE", !isDev),
+		SiteURL:           os.Getenv("SITE_URL"),
+		UploadDir:         getEnv("UPLOAD_DIR", "./data/uploads"),
+		TrustedProxies:    proxies,
+		SMTPURL:           os.Getenv("FOLD_SMTP_URL"),
+		SMTPAllowInsecure: getEnvBool("FOLD_SMTP_ALLOW_INSECURE", false),
+		EmailFrom:         getEnv("FOLD_EMAIL_FROM", "Fold <noreply@localhost>"),
 	}, nil
 }
 

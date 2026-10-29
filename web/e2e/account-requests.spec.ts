@@ -53,11 +53,10 @@ test("login page links to the request form", async ({ page }) => {
 
 test("invite a friend speaks about them, then the admin queue decides", async ({ page }) => {
   await signIn(page, "sam");
-  await page.goto("/profile");
-  await expect(page.getByRole("heading", { name: "Invite a friend" })).toBeVisible();
+  await page.goto("/profile/invite");
+  await expect(page.getByRole("heading", { name: "Invite someone", level: 1 })).toBeVisible();
   await expect(page.getByText("This is the address they will sign in with.")).toBeVisible();
   await expect(page.getByText("Their age")).toBeVisible();
-  // The invite form is the last one on the profile page.
   await page.getByLabel("Full name").last().fill("Friend Fran");
   await page.getByLabel("Email").last().fill("fran-e2e@example.com");
   await page.getByRole("button", { name: "Ask an admin to invite them" }).click();
@@ -66,10 +65,14 @@ test("invite a friend speaks about them, then the admin queue decides", async ({
 
   await signIn(page, "grier");
   await page.goto("/admin");
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.getByRole("button", { name: "Settings" })).toHaveAttribute("aria-pressed", "true");
   // Self-signup is two radio rows (DEC-65), On chosen.
   const mode = page.getByRole("group", { name: "Self-signup" });
   await expect(mode).toBeVisible();
   await expect(mode.getByRole("radio", { name: /^On/ })).toBeChecked();
+  await page.getByRole("button", { name: /^Approvals/ }).click();
+  await expect(page.getByRole("button", { name: /^Approvals/ })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("Account requests")).toBeVisible();
   await expect(page.getByText("Friend Fran")).toBeVisible();
   await expect(page.getByText(/Invited by Sam/)).toBeVisible();
@@ -92,12 +95,12 @@ test("clean adult request approves inline from the bell", async ({ page }) => {
   await expect(page.getByText(/check your email/i)).toBeVisible();
 
   await signIn(page, "grier");
-  await page.getByRole("button", { name: /Notifications/ }).click();
+  await page.getByRole("button", { name: /Alerts/ }).click();
   const row = page.locator("li", { hasText: "Clean Carl requested an account" });
   await expect(row).toBeVisible();
   await row.getByRole("button", { name: "Approve" }).click();
   await expect(row).toContainText(/You approved this|Already approved/);
-  await page.getByRole("button", { name: /Notifications/ }).click(); // close the panel
+  await page.getByRole("button", { name: /Alerts/ }).click(); // close the panel
   await markAllRead(page);
 });
 

@@ -45,7 +45,8 @@ type Rel struct {
 	Member bool // any active membership, leaders included
 	Leader bool // active membership with role=leader
 	// Removed: a leader or admin removed this person (DEC-35). They aren't a
-	// member and can't rejoin on their own.
+	// member and can't rejoin on their own. A voluntary left row sets neither
+	// Member nor Removed, so ordinary visibility/capacity rules apply (DEC-86).
 	Removed bool
 }
 
@@ -182,14 +183,6 @@ func CanRequestDeletion(p *Person, r Rel, otherMembers int64) bool {
 // CanCancelDeletion: the group's leaders and admins.
 func CanCancelDeletion(p *Person, r Rel) bool { return CanManageGroup(p, r) }
 
-// CanRegister: signed-in people register for events of active groups they
-// can see. Guest registration comes in M1.4. Group events that are open
-// wider than the group use CanRegisterEvent, which does not require seeing
-// the group.
-func CanRegister(p *Person, g Group, r Rel) bool {
-	return p != nil && g.Status == GroupActive && CanSeeGroup(p, g, r)
-}
-
 // EventView is what policy needs to know about an event. Host is true only
 // for a church-wide event this person hosts; a host row on a group event
 // grants nothing (DEC-7).
@@ -305,21 +298,6 @@ func CanSeeAttendeeNames(p *Person, ev EventView, g Group, r Rel) bool {
 		return false
 	}
 	return true
-}
-
-// CanMessageEvent: the same people who can manage the event may message its
-// registrants (section 6). The composer arrives in M3; this is the rule.
-func CanMessageEvent(p *Person, ev EventView, r Rel) bool {
-	if p == nil {
-		return false
-	}
-	if p.Admin {
-		return true
-	}
-	if ev.ChurchWide {
-		return ev.Host
-	}
-	return r.Leader
 }
 
 // CanSeeChildcare protects childcare totals and other people's requests.
@@ -449,10 +427,6 @@ func GroupHasRoom(limit *int, count int) bool {
 // leaders and admins who use it get no shortcut either. Teens may not
 // (section 6); guests use self-signup instead.
 func CanInviteFriend(p *Person) bool { return p != nil && !p.Teen }
-
-// CanDecideAccountRequest: only admins approve or reject account
-// requests (5.10, DEC-4).
-func CanDecideAccountRequest(p *Person) bool { return IsAdmin(p) }
 
 // InlineApproveAccountOK reports whether an account request may be
 // approved inline from an admin's bell (DEC-44): an adult request with

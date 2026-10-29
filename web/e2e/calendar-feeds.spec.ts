@@ -26,8 +26,8 @@ test("personal calendar link serves my events and remaking it kills the old one"
   });
 
   await signIn(page, "sam");
-  await page.goto("/profile");
-  await expect(page.getByRole("heading", { name: "Calendar feed" })).toBeVisible();
+  await page.goto("/profile/calendar");
+  await expect(page.getByRole("heading", { name: "Calendar feed", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: "Create calendar link" }).click();
   const linkField = page.getByLabel("Your calendar link");
   await expect(linkField).toBeVisible();

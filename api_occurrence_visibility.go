@@ -14,7 +14,7 @@ import (
 )
 
 // canSeeDate is the ordinary, batched date filter. Candidate parents are never
-// series authority: callers must separately use visibleEvents/loadVisibleEvent.
+// series authority: callers must separately use eventCandidates/loadVisibleEvent.
 func (vs visibleSet) canSeeDate(viewer *models.User, ev *models.Event, occ *models.EventOccurrence) bool {
 	if ev == nil {
 		return false

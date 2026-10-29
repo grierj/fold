@@ -9,7 +9,7 @@ test("household profile, pending link, independent answers, privacy and recovery
   const { group } = await admin("POST", "/groups", { name: "Household flow", visibility: "public", description: "Family dates", tags: [], location: "Hall" });
   const start = new Date(Date.now() + 6 * 3600_000).toISOString().slice(0, 16);
   const { event } = await admin("POST", `/groups/${group.id}/events`, { title: "Family gathering", startsLocal: start, durationMinutes: 60, tzid: "UTC", capacity: 2, waitlistEnabled: true, remoteAvailable: true, remoteCapacity: 1, childcareAvailable: true, childcareCapacity: 1 });
-  await signIn(page, "household-flow"); await page.goto("/profile");
+  await signIn(page, "household-flow"); await page.goto("/profile/household");
   await page.getByRole("button", { name: "Add a household member" }).click();
   await page.getByLabel("First name", { exact: true }).fill("Mary");
   await page.getByRole("radio", { name: "Adult", exact: true }).check();

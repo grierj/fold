@@ -1,5 +1,5 @@
 import { api, authenticatedCSV } from "./api";
-import type { ContactHistoryResponse } from "./types";
+import type { ContactHistoryPeopleResponse, ContactHistoryResponse } from "./types";
 
 export interface ContactHistoryFilters {
   purpose: string;
@@ -28,6 +28,14 @@ function historyPath(personId: string, filters: ContactHistoryFilters, csv: bool
 }
 
 export const ContactHistory = {
+  people: (params: { q?: string; id?: string; email?: string }) => {
+    const query = new URLSearchParams();
+    for (const key of ["q", "id", "email"] as const) {
+      if (params[key]) query.set(key, params[key]);
+    }
+    const suffix = query.size ? `?${query}` : "";
+    return api<ContactHistoryPeopleResponse>(`/admin/contact-history/people${suffix}`);
+  },
   list: (personId: string, filters: ContactHistoryFilters, before?: string) =>
     api<ContactHistoryResponse>(historyPath(personId, filters, false, before)),
   csv: (personId: string, filters: ContactHistoryFilters) =>

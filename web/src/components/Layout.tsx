@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
-import { Site } from "../api";
+import { useSiteName } from "../lib/useSiteName";
+import { usePageTitle } from "../lib/usePageTitle";
 import { useAuth } from "../auth";
 import { Avatar } from "./Avatar";
 import { CalendarIcon, GroupsIcon, HomeIcon, MeIcon, PlusIcon } from "./icons";
@@ -14,43 +15,49 @@ import { FoldMark } from "./FoldMark";
 // keeps room under the tab bar so it never covers a focused field
 // (scroll-padding in index.css).
 const topLink = ({ isActive }: { isActive: boolean }) =>
-  `inline-flex items-center min-h-11 px-2 rounded-md ${isActive ? "text-primary" : "text-text-muted hover:text-primary"}`;
+  `inline-flex items-center min-h-11 px-2 rounded-md whitespace-nowrap ${isActive ? "text-primary" : "text-text-muted hover:text-primary"}`;
 const iconLink = ({ isActive }: { isActive: boolean }) =>
   `inline-flex items-center justify-center min-h-11 min-w-11 rounded-full ${isActive ? "text-primary" : "text-text-muted hover:text-primary"}`;
 const tab = ({ isActive }: { isActive: boolean }) =>
   `flex flex-1 flex-col items-center justify-center gap-0.5 min-h-14 whitespace-nowrap text-xs font-medium ${isActive ? "text-primary" : "text-text-muted"}`;
 
-function useSiteName() {
-  const [name, setName] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    Site.get().then(
-      (s) => setName(s.name),
-      () => setName("")
-    );
-  }, []);
-  return name;
-}
-
 export function Layout({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
   const { user, loading, logout, isAdmin } = useAuth();
   const site = useSiteName();
+  usePageTitle(site, pathname);
+  const header = useRef<HTMLElement>(null);
+  useLayoutEffect(() => {
+    const element = header.current;
+    if (!element) return;
+    const update = () => document.documentElement.style.setProperty("--fold-header-height", `${element.getBoundingClientRect().height}px`);
+    update();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    observer?.observe(element);
+    return () => { observer?.disconnect(); document.documentElement.style.removeProperty("--fold-header-height"); };
+  }, []);
   const signedIn = !loading && !!user;
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="bg-surface border-b border-border sticky top-0 z-10 pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
-        <div className="max-w-6xl mx-auto px-4 h-16 flex items-center gap-4">
+      <a href="#main" onClick={(event) => {
+        event.preventDefault();
+        const main = document.getElementById("main");
+        main?.focus({ preventScroll: true });
+        main?.scrollIntoView({ block: "start" });
+      }} className="fixed top-2 left-2 z-50 -translate-y-[200%] focus:translate-y-0 rounded-md bg-surface p-3 min-h-11 text-primary focus:outline-2 focus:outline-focus">Skip to main content</a>
+      <header ref={header} className="bg-surface border-b border-border sticky top-0 z-10 pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
+        <div className="max-w-6xl mx-auto px-4 min-h-16 py-2 flex items-center gap-3 sm:gap-4">
           <Link
             to="/"
             aria-label={site === undefined ? "Home" : undefined}
-            className="flex min-h-11 min-w-0 flex-col justify-center leading-tight"
+            className="flex flex-1 sm:flex-initial min-h-11 min-w-0 flex-col justify-center leading-tight"
           >
             {site === undefined ? (
               <span aria-hidden="true" className="bg-sunken rounded-md h-6 w-32" />
             ) : site && site !== "Fold" ? (
               <>
-                <span className="text-xl font-bold text-primary tracking-tight truncate">{site}</span>
+                <span className="text-lg sm:text-xl font-bold text-primary tracking-tight leading-tight line-clamp-2 sm:line-clamp-none">{site}</span>
                 <span className="inline-flex items-center gap-1 text-xs text-text-subtle whitespace-nowrap">
                   <FoldMark className="w-3 h-3" />
                   powered by Fold
@@ -63,7 +70,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
               </span>
             )}
           </Link>
-          <nav aria-label="Main" className="flex items-center gap-2 ml-auto text-sm font-medium">
+          <nav aria-label="Main" className="flex shrink-0 items-center gap-2 ml-auto text-sm font-medium">
             {loading ? null : user ? (
               <>
                 <div className="hidden sm:flex items-center gap-2">
@@ -73,11 +80,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <NavLink to="/groups/new" className={topLink}>Start a group</NavLink>
                   {isAdmin && <NavLink to="/admin" className={topLink}>Admin</NavLink>}
                 </div>
-                {/* On phones, New group is a labeled header link, Admin is a row on
-                    the Me page, and the rest are tabs (PR #65 review F2). */}
-                <NavLink to="/groups/new" className={(a) => `sm:hidden shrink-0 whitespace-nowrap gap-1 px-2 text-sm font-medium ${iconLink(a)}`}>
+                {/* On phones, keep room for the church's name; Admin is on Me. */}
+                <NavLink to="/groups/new" aria-label="Start a group" title="Start a group" className={(a) => `sm:hidden shrink-0 ${iconLink(a)}`}>
                   <PlusIcon />
-                  New group
                 </NavLink>
                 <div className="hidden sm:flex items-center gap-2">
                   <NotificationBell />
@@ -99,22 +104,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
               </>
             ) : (
               <>
-                <NavLink to="/calendar" className={topLink}>Calendar</NavLink>
+                <div className="hidden sm:block"><NavLink to="/calendar" className={topLink}>Calendar</NavLink></div>
                 <NavLink to="/join" className={topLink}>Join</NavLink>
                 {/* On an invitation the form is the main action, and a waiting teen
                     can't sign in yet, so Log in steps back (PR 111 N3). */}
-                <NavLink to="/login" className={`${pathname.startsWith("/invite") ? "btn-secondary" : "btn-primary"} text-sm`}>Log in</NavLink>
+                <NavLink to="/login" className={`${pathname.startsWith("/invite") ? "btn-secondary" : "btn-primary"} text-sm whitespace-nowrap`}>Log in</NavLink>
               </>
             )}
           </nav>
         </div>
       </header>
-      <main className={`flex-1 ${signedIn ? "pb-[calc(3.5rem+env(safe-area-inset-bottom))] sm:pb-0" : ""}`}>{children}</main>
-      <footer className={`bg-surface border-t border-border mt-12 ${signedIn ? "mb-[calc(3.5rem+env(safe-area-inset-bottom))] sm:mb-0" : ""}`}>
-        <div className="max-w-6xl mx-auto px-4 py-6 text-sm text-text-muted">
-          {site && site !== "Fold" ? "Powered by Fold" : "Fold — gather your church community."}
-        </div>
-      </footer>
+      <main id="main" tabIndex={-1} className={`flex-1 scroll-mt-[calc(var(--fold-header-height,4rem)+1rem)] ${signedIn ? "pb-[calc(3.5rem+env(safe-area-inset-bottom))] sm:pb-0" : ""}`}>{children}</main>
       {signedIn && (
         <nav
           aria-label="Tabs"

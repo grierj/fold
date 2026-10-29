@@ -1,3 +1,4 @@
+import { Form } from "./ui/Form";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Households, type HouseholdPersonInput } from "../api";
 import type { Household, HouseholdAccount, HouseholdPerson } from "../types";
@@ -78,7 +79,7 @@ function PersonForm({ initial, onSave, onCancel, heading, careVisible = true, id
   }
 
   return (
-    <form ref={formRef} onSubmit={submit} noValidate aria-label={heading} className="space-y-4 mt-4 rounded-lg border border-border p-4">
+    <Form noValidate ref={formRef} onSubmit={submit} aria-label={heading} className="space-y-4 mt-4 rounded-lg border border-border p-4">
       <h3 className="font-semibold">{heading}</h3>
       {identityLocked && <p className="text-sm text-text-muted">The account is waiting for consent and guardian confirmation. You can update care notes and photo settings here. Ask your church office for help with identity changes.</p>}
       <Field label="First name" error={shown.firstName}>
@@ -104,7 +105,7 @@ function PersonForm({ initial, onSave, onCancel, heading, careVisible = true, id
         <Button variant="primary" type="submit" disabled={busy}>{busy ? "Saving…" : "Save"}</Button>
         <Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button>
       </div>
-    </form>
+    </Form>
   );
 }
 
@@ -293,12 +294,12 @@ function ConversionForm({ person, onCancel, onSent }: { person: HouseholdPerson;
     catch (e) { showFieldErrors(ref.current, () => setError(errorText(e, "We couldn't send this invitation. Try again."))); }
     finally { setBusy(false); }
   }
-  return <form ref={ref} onSubmit={submit} className="mt-3 space-y-3" aria-label={`Create an account for ${person.name}`}>
+  return <Form noValidate ref={ref} onSubmit={submit} className="mt-3 space-y-3" aria-label={`Create an account for ${person.name}`}>
     <p className="text-sm">Use their own email address. All past and upcoming sign-ups move after {person.kind === "teen" ? "an admin approves the account, consent is granted, and an admin confirms the new guardian link" : "an admin approves"}. Group memberships do not move.</p>
     <p className="text-sm">{person.kind === "teen" ? "Your household keeps managing their sign-ups until all checks are complete. The guardian link for the new account needs a fresh admin check." : "A church admin will approve their account before they can sign in."}</p>
     <Field label="Their email address" hint="Required. Use an email that has no account or open invitation." error={error ?? undefined}><Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="off" /></Field>
     <div className="flex flex-wrap gap-3"><Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>{busy ? "Sending…" : "Send account invitation"}</Button><Button variant="secondary" layout="w-full sm:w-auto" onClick={onCancel} disabled={busy}>Cancel</Button></div>
-  </form>;
+  </Form>;
 }
 
 function ConversionActions({ person, onChanged }: { person: HouseholdPerson; onChanged: (message: string) => Promise<void> }) {
@@ -333,10 +334,10 @@ function HouseholdForm({ household, onSave, onCancel }: { household: Household; 
     try { await onSave(name.trim(), address.trim()); }
     catch (e) { setError(errorText(e, "We couldn't save your household.")); setBusy(false); }
   }
-  return <form ref={root} aria-label="Edit household" onSubmit={save} className="mt-3 space-y-3 rounded-lg border border-border p-4">
+  return <Form noValidate ref={root} aria-label="Edit household" onSubmit={save} className="mt-3 space-y-3 rounded-lg border border-border p-4">
     <Field label="Household name" hint="Required. Up to 100 characters." error={nameError}><Input value={name} onChange={(e) => setName(e.target.value)} required maxLength={100} /></Field>
     <Field label="Address" optional hint="Optional. Up to 500 characters."><Textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={3} maxLength={500} /></Field>
     {error && <FormError>{error}</FormError>}
     <div className="flex flex-wrap gap-3"><Button variant="primary" type="submit" disabled={busy}>{busy ? "Saving…" : "Save household"}</Button><Button variant="secondary" onClick={onCancel} disabled={busy}>Cancel</Button></div>
-  </form>;
+  </Form>;
 }

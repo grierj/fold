@@ -87,7 +87,7 @@ func (a *App) apiClaimTeenGuardian(c *gin.Context) {
 		return
 	}
 	email := normalizeEmail(body.Email)
-	hits, err := a.throttleHit(c.Request.Context(), "guardian:ip:"+c.ClientIP(), time.Hour)
+	hits, err := a.throttleHit(c.Request.Context(), "guardian:ip:"+rateLimitIP(c.ClientIP()), time.Hour)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save your request")
 		return

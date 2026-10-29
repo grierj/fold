@@ -43,7 +43,7 @@ func occurrenceAccessPolicy(row models.OccurrenceAccess) policy.OccurrenceAccess
 	return out
 }
 
-// scopedOccurrenceReads loads exact candidates independently of visibleEvents.
+// scopedOccurrenceReads loads exact candidates independently of series-filtered eventCandidates.
 // q selects occurrence IDs (window/date and event filters). Parent IDs NEVER
 // enter the ordinary visible set. All related facts are batched, including live
 // registration provenance; no attendee/contact directory is loaded here.
@@ -218,8 +218,9 @@ func occurrenceDatePath(eventID uint, date string) string {
 	return "/events/" + strconv.FormatUint(uint64(eventID), 10) + "/dates/" + date
 }
 
-// dateOccurrenceJSON deliberately cannot hold group, host, series, attendee,
-// contact or management data. Both ordinary and invitation readers use it.
+// dateOccurrenceJSON never carries host people, series, attendee, contact or
+// management data. Only ordinary reads may attach a group label/link, after an
+// independent groupShownTo check; invitation-only reads omit that metadata.
 type dateOccurrenceJSON struct {
 	ID               uint      `json:"id"`
 	EventID          uint      `json:"eventId"`
@@ -248,6 +249,8 @@ type dateOccurrenceJSON struct {
 	Visibility       string    `json:"visibility,omitempty"`
 	CanRegister      bool      `json:"canRegister,omitempty"`
 	HostedBy         string    `json:"hostedBy,omitempty"`
+	GroupID          *uint     `json:"groupId,omitempty"`
+	GroupName        string    `json:"groupName,omitempty"`
 }
 
 func presentOccurrenceDate(ev *models.Event, occ *models.EventOccurrence, groupLocation string, ordinary, manager, attendees bool, reg models.Registration, invited *occurrenceRead, now time.Time) dateOccurrenceJSON {
@@ -316,10 +319,12 @@ func (a *App) apiGetOccurrenceDate(c *gin.Context) {
 	}
 	var reg models.Registration
 	groupLocation, manager, attendees := "", false, false
+	var shownGroup *models.Group
 	if ordinary {
 		grp, rel := groupAndRel(ev, vs.Groups, vs.Rels)
-		if shown := a.groupShownTo(me, grp, rel); shown != nil {
-			groupLocation = shown.Location
+		shownGroup = a.groupShownTo(me, grp, rel)
+		if shownGroup != nil {
+			groupLocation = shownGroup.Location
 		}
 		gp := policy.Group{}
 		if grp != nil {
@@ -338,7 +343,14 @@ func (a *App) apiGetOccurrenceDate(c *gin.Context) {
 	if ordinary {
 		out.CanRegister = me != nil && a.canRegisterDateIn(a.DB, me, ev, occ.ID)
 		out.Visibility = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride)
-		out.HostedBy = a.siteName()
+		if shownGroup != nil {
+			out.GroupID = &shownGroup.ID
+			out.GroupName = shownGroup.Name
+		} else {
+			// Match event pages: the church is the privacy-safe fallback for
+			// an opened date of a hidden group as well as church-wide dates.
+			out.HostedBy = a.siteName()
+		}
 	}
 	c.JSON(http.StatusOK, gin.H{"occurrence": out})
 }

@@ -5,6 +5,19 @@ import { ContactHistory, retainedPersonId } from "./contact-history-api";
 const filters = { purpose: "contact", action: "contact.reveal", from: "2026-10-01T09:00:00+02:00", until: "2026-11-01T07:00:00Z" };
 afterEach(() => { vi.unstubAllGlobals(); setOnUnauthorized(null); });
 
+it("encodes people lookup parameters while preserving exact IDs and email values", async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ people: [{ id: "9007199254740993", name: "Pat", email: "Pat+tag@example.com" }] })));
+  vi.stubGlobal("fetch", fetcher);
+  await expect(ContactHistory.people({ q: "Pat + Lee", id: "9007199254740993", email: "Pat+tag@example.com" })).resolves.toEqual({
+    people: [{ id: "9007199254740993", name: "Pat", email: "Pat+tag@example.com" }],
+  });
+  const url = new URL(fetcher.mock.calls[0][0], "https://fold.example");
+  expect(url.pathname).toBe("/api/v1/admin/contact-history/people");
+  expect([...url.searchParams.entries()]).toEqual([
+    ["q", "Pat + Lee"], ["id", "9007199254740993"], ["email", "Pat+tag@example.com"],
+  ]);
+});
+
 it("keeps signed-bigint person IDs/cursors exact and encodes timezone offsets", async () => {
   const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ entries: [], nextBefore: "9007199254740993" })));
   vi.stubGlobal("fetch", fetcher);

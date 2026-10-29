@@ -35,7 +35,7 @@ function orSeparator(i: number, n: number): string {
 }
 
 export function Home() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [retry, setRetry] = useState(0);
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedTags = tagsFromParams(searchParams);
@@ -149,6 +149,7 @@ export function Home() {
             Small groups, ministries, and activities — all in one place. Join a group and show
             up.
           </p>
+          {!authLoading && !user && <ButtonLink variant="secondary" to="/calendar" layout="mt-4 sm:hidden">Browse public events</ButtonLink>}
           <div className="mt-6 max-w-xl">
             <SearchBox id="group-search" label="Search groups" value={search} onChange={setSearch} />
           </div>

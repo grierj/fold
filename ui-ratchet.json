@@ -3,7 +3,6 @@
     "web/src/components/DeleteUserPanel.tsx": 3,
     "web/src/components/GroupVisibilityReview.tsx": 2,
     "web/src/components/Notifications.tsx": 1,
-    "web/src/pages/Admin.tsx": 0,
     "web/src/pages/EventDetail.tsx": 2
   },
   "dateFormatting": {
@@ -14,18 +13,13 @@
   },
   "importantOverrides": {
     "web/src/components/Notifications.tsx": 2,
-    "web/src/pages/Admin.tsx": 2,
     "web/src/pages/GroupDetail.tsx": 3,
     "web/src/pages/Profile.tsx": 1
   },
   "rawControls": {
-    "web/src/components/GroupCard.tsx": 1,
-    "web/src/components/GuestRegistrationForm.tsx": 0,
     "web/src/components/Layout.tsx": 1,
     "web/src/components/Notifications.tsx": 8,
-    "web/src/components/RsvpButtons.tsx": 0,
-    "web/src/pages/Admin.tsx": 2,
-    "web/src/pages/EventDetail.tsx": 4,
+    "web/src/pages/EventDetail.tsx": 2,
     "web/src/pages/GroupDetail.tsx": 3,
     "web/src/pages/Home.tsx": 6,
     "web/src/pages/NewChurchEvent.tsx": 1,

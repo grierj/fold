@@ -8,7 +8,7 @@ test("left-out account is told to ask a leader, who adds them over the limit", a
   page.on("dialog", (d) => d.accept());
 
   await signIn(page, "pat");
-  await page.getByRole("button", { name: "Notifications" }).click();
+  await page.getByRole("button", { name: "Alerts" }).click();
   await expect(page.getByText("You're not back in Room 201 class yet")).toBeVisible();
   await expect(page.getByText("Ask a leader to add you.")).toBeVisible();
 

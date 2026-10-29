@@ -4,12 +4,46 @@ import (
 	"fold/models"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestComposePassesTransactionalMailEnvironment(t *testing.T) {
+	data, err := os.ReadFile("docker-compose.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, app, ok := strings.Cut(string(data), "\n  app:\n")
+	if !ok {
+		t.Fatal("no app service")
+	}
+	app, _, _ = strings.Cut(app, "\n  caddy:\n")
+	if !strings.Contains(app, "\n      FOLD_SMTP_ALLOW_INSECURE: ${FOLD_SMTP_ALLOW_INSECURE:-false}\n") {
+		t.Error("app service must pass through the explicit SMTP plaintext opt-out")
+	}
+	for _, key := range []string{"FOLD_SMTP_URL", "FOLD_EMAIL_FROM"} {
+		if !strings.Contains(app, "\n      "+key+": ${"+key+":-}\n") {
+			t.Errorf("app service must pass through %s", key)
+		}
+	}
+}
+
+func TestSMTPInsecureRequiresExplicitOptOut(t *testing.T) {
+	t.Setenv("APP_ENV", "prod")
+	t.Setenv("SESSION_SECRET", "test-session-secret-at-least-32-bytes")
+	t.Setenv("DATABASE_URL", "postgres://unused")
+	for _, value := range []string{"", "false", "true", "invalid"} {
+		t.Setenv("FOLD_SMTP_ALLOW_INSECURE", value)
+		cfg, err := LoadConfig()
+		if err != nil || cfg.SMTPAllowInsecure != (value == "true") {
+			t.Fatalf("%q: config=%+v err=%v", value, cfg, err)
+		}
+	}
+}
 
 func TestShortSessionSecretRefusedOutsideDev(t *testing.T) {
 	t.Setenv("APP_ENV", "prod")

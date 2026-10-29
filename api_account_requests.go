@@ -117,7 +117,7 @@ func (a *App) toAccountRequestJSON(r *models.AccountRequest) accountRequestJSON 
 // accountRequestHit counts one public-form submission from ip and
 // reports the running count in the last hour (login_throttles, own key).
 func (a *App) accountRequestHit(ctx context.Context, ip string) (int, error) {
-	return a.throttleHit(ctx, "acctreq:ip:"+ip, time.Hour)
+	return a.throttleHit(ctx, "acctreq:ip:"+rateLimitIP(ip), time.Hour)
 }
 
 // throttleHit counts one hit against key and reports the running count
@@ -223,6 +223,11 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return false
 	}
+	if ok, err := a.throttleAllow(ctx, "acctreq:site", publicSignupSiteLimit, time.Hour); err != nil || !ok {
+		log.Printf("account request site limit: source=%s err=%v", source, err)
+		a.answerAccountRequest(c, source)
+		return false
+	}
 	// Per-address limit (#91): rotating IPs can't flood one inbox, or the
 	// admins, with requests for that address. Same answer, nothing stored
 	// or sent.
@@ -236,6 +241,9 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 	// is the normal upgrade path, not the already-have-an-account path.
 	hasAccount := a.DB.Where("email = ?", v.email).Limit(1).Find(&existing).RowsAffected == 1 &&
 		existing.Status != models.UserGuest
+	// Both paths pay the same password-check cost. SMTP work is deferred on
+	// both paths so the number of admins cannot disclose account existence.
+	(&models.User{}).CheckPassword("not a real password")
 	if hasAccount {
 		if source == models.RequestMemberInvite {
 			// An authenticated member learns what an inviter learns
@@ -245,9 +253,12 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		}
 		// Same answer and about the same cost as a stored request; the
 		// hint travels by email instead (10.1).
-		(&models.User{}).CheckPassword("not a real password")
-		if err := a.sendAlreadyHaveAccountEmail(v.email); err != nil {
-			log.Printf("account-exists email to %s: %v", v.email, err)
+		if !v.honeypot {
+			a.runInBackground(func() {
+				if err := a.sendAlreadyHaveAccountEmail(v.email); err != nil {
+					log.Printf("account-exists email to %s: %v", v.email, err)
+				}
+			})
 		}
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return false
@@ -291,13 +302,15 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 	// A duplicate of a pending request is stored and flagged on the bell,
 	// but sends nothing: the requester and the admins were already
 	// emailed about the first one (#91).
-	if !flags.Duplicate {
-		a.deliverNotificationEmails(emailed)
-		if source == models.RequestSelfSignup {
-			if err := a.sendRequestReceivedEmail(v.email); err != nil {
-				log.Printf("request-received email to %s: %v", v.email, err)
+	if !flags.Duplicate && !flags.Honeypot {
+		a.runInBackground(func() {
+			a.deliverNotificationEmails(emailed)
+			if source == models.RequestSelfSignup {
+				if err := a.sendRequestReceivedEmail(v.email); err != nil {
+					log.Printf("request-received email to %s: %v", v.email, err)
+				}
 			}
-		}
+		})
 	}
 	a.answerAccountRequest(c, source)
 	return true
@@ -669,7 +682,7 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 }
 
 // apiConfirmAccountSetup redeems the emailed set-password link. An
-// adult gets a full session; a teen gets the restricted waiting session.
+// active account gets a login; a pending teen gets the public consent explanation.
 func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 	var body struct {
 		Token    string `json:"token"`
@@ -683,54 +696,39 @@ func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "password must be at least 10 characters")
 		return
 	}
-	var userID uint
+	var fresh models.User
 	var pendingConsent bool
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		// Discover the holder before taking locks. Consent changes acquire
-		// user locks before tokens, so setup uses that order too.
-		var initial models.AccountToken
-		if err := tx.Where("kind = ? AND token_hash = ?", models.TokenAccountSetup, hashToken(body.Token)).First(&initial).Error; err != nil {
-			return errTokenInvalid
-		}
-		var u models.User
-		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&u, initial.UserID).Error; err != nil || u.Status == models.UserDisabled {
-			return errTokenInvalid
-		}
-		tok, err := consumeAccountToken(tx, models.TokenAccountSetup, body.Token)
-		if err != nil {
-			return err
-		}
-		if tok.UserID != u.ID {
-			return errTokenInvalid
-		}
-		if err := u.SetPassword(body.Password); err != nil {
-			return err
-		}
-		userID = u.ID
-		pendingConsent = u.Status == models.UserPendingConsent
-		updates := map[string]any{
-			"password_hash":   *u.PasswordHash,
-			"session_version": gorm.Expr("session_version + 1"),
-		}
-		if u.Status == models.UserInvited {
-			updates["status"] = models.UserActive
-		}
-		if err := tx.Model(&u).Updates(updates).Error; err != nil {
-			return err
-		}
-		return audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.AccountSetupCompleted,
-			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
-	})
+	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), models.TokenAccountSetup, body.Token, body.Password)
+	if err == nil {
+		err = a.DB.Transaction(func(tx *gorm.DB) error {
+			u, err := lockAccountTokenUser(tx, models.TokenAccountSetup, body.Token)
+			if err != nil {
+				return err
+			}
+			tok, err := consumeAccountToken(tx, models.TokenAccountSetup, body.Token)
+			if err != nil {
+				return err
+			}
+			if tok.UserID != u.ID {
+				return errTokenInvalid
+			}
+			pendingConsent = u.Status == models.UserPendingConsent
+			if err := replacePasswordIn(tx, u, passwordHash); err != nil {
+				return err
+			}
+			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.AccountSetupCompleted,
+				TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+				return err
+			}
+			fresh = *u
+			return nil
+		})
+	}
 	if errors.Is(err, errTokenInvalid) {
 		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
 		return
 	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not set your password")
-		return
-	}
-	var fresh models.User
-	if err := a.DB.First(&fresh, userID).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not set your password")
 		return
 	}

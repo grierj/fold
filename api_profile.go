@@ -55,6 +55,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 		Name                   *string `json:"name"`
 		DisplayName            *string `json:"displayName"`
 		Email                  *string `json:"email"`
+		CurrentPassword        string  `json:"currentPassword"`
 		Phone                  *string `json:"phone"`
 		Timezone               *string `json:"timezone"`
 		HideContactFromLeaders *bool   `json:"hideContactFromLeaders"`
@@ -151,7 +152,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	// Refresh the request-scoped user so later handlers see the update.
 	c.Set("apiUser", &updated)
 	if emailChange != nil {
-		a.apiRequestEmailChange(c, &updated, normalizeEmail(*emailChange))
+		a.apiRequestEmailChange(c, u, normalizeEmail(*emailChange), body.CurrentPassword)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&updated)})
@@ -161,24 +162,51 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 // verification link goes to the new address, a notice to the old one. The
 // change applies only after verification, and then ends every other
 // session.
-func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail string) {
+func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail, currentPassword string) {
 	if !validEmail(newEmail) {
 		jsonError(c, http.StatusBadRequest, "enter a valid email address")
 		return
 	}
-	var taken int64
-	a.DB.Model(&models.User{}).Where("email = ? AND id <> ?", newEmail, u.ID).Count(&taken)
-	if taken > 0 {
-		jsonError(c, http.StatusConflict, "an account with that email already exists")
+	if !u.CheckPassword(currentPassword) {
+		jsonError(c, http.StatusBadRequest, "current password is incorrect")
 		return
 	}
+	// Validate the proof against locked credentials before any address lookup.
+	// Quotas retain their independently committed transactions; token issuance
+	// below rechecks this exact epoch, without nesting a second DB connection.
+	var validated *models.User
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		validated, err = lockCurrentCredentials(tx, u)
+		return err
+	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not start email change")
+		return
+	}
+	u = validated
 	// Per-user and per-target limits (#92): a member can't use the change
 	// form to spam an address, and the target gets at most a few links.
 	// Past the limit the answer is the same; nothing is sent.
 	ctx := c.Request.Context()
 	userOK, err := a.targetAllow(ctx, "emailchange:user:"+strconv.FormatUint(uint64(u.ID), 10))
 	addrOK := false
-	if err == nil {
+	if err == nil && userOK {
+		// Account checks consume the actor budget too (#157). An exhausted
+		// actor never looks up another address or spends its target budget.
+		var taken int64
+		if err := a.DB.Model(&models.User{}).Where("email = ? AND id <> ?", newEmail, u.ID).Count(&taken).Error; err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not start email change")
+			return
+		}
+		if taken > 0 {
+			jsonError(c, http.StatusConflict, "an account with that email already exists")
+			return
+		}
 		addrOK, err = a.targetAllow(ctx, "emailchange:addr:"+normalizeEmail(newEmail))
 	}
 	if err != nil {
@@ -192,11 +220,18 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 		return
 	}
 	oldEmail := u.Email
-	var raw string
+	var raw, cancelRaw string
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		if _, err := lockCurrentCredentials(tx, u); err != nil {
+			return err
+		}
 		var err error
 		raw, err = createAccountToken(tx, models.TokenEmailVerify, u.ID,
 			map[string]any{"new_email": newEmail}, tokenTTL)
+		if err != nil {
+			return err
+		}
+		cancelRaw, err = createAccountToken(tx, models.TokenEmailChangeCancel, u.ID, nil, tokenTTL)
 		if err != nil {
 			return err
 		}
@@ -204,6 +239,10 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 			TargetType: "user", TargetID: u.ID,
 			Meta: map[string]any{"oldEmail": oldEmail, "newEmail": newEmail}, IP: c.ClientIP()})
 	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not start email change")
 		return
@@ -211,7 +250,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail str
 	if err := a.sendEmailVerification(newEmail, raw); err != nil {
 		log.Printf("email verification to %s: %v", newEmail, err)
 	}
-	if err := a.sendEmailChangeNotice(oldEmail, newEmail); err != nil {
+	if err := a.sendEmailChangeNotice(oldEmail, newEmail, cancelRaw); err != nil {
 		log.Printf("email change notice to %s: %v", oldEmail, err)
 	}
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(u), "verificationSent": true})
@@ -234,7 +273,8 @@ The change takes effect only after you use the link. If that wasn't you, you can
 }
 
 // sendEmailChangeNotice tells the old address what's happening (10.1).
-func (a *App) sendEmailChangeNotice(to, newEmail string) error {
+func (a *App) sendEmailChangeNotice(to, newEmail, cancelRaw string) error {
+	link := a.emailBaseURL() + "/cancel-email-change?token=" + cancelRaw
 	return a.Mailer.Send(context.Background(), mail.Message{
 		To:      to,
 		Subject: "Your Fold sign-in email is changing",
@@ -242,8 +282,11 @@ func (a *App) sendEmailChangeNotice(to, newEmail string) error {
 
 The change takes effect only after the new address is verified.
 
-If this wasn't you, contact your church office right away.`,
-			a.siteName(), newEmail),
+If this wasn't you, cancel the pending change and end every current sign-in here:
+%s
+
+Opening the link does not change anything until you confirm. After cancelling, reset your password and contact your church office. This link works once and expires in 24 hours.`,
+			a.siteName(), newEmail, link),
 	})
 }
 
@@ -259,8 +302,15 @@ func (a *App) apiVerifyEmailChange(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "token is required")
 		return
 	}
-	var userID uint
+	var fresh models.User
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		u, err := lockAccountTokenUser(tx, models.TokenEmailVerify, body.Token)
+		if err != nil {
+			return err
+		}
+		if !u.CanSignIn() {
+			return errTokenInvalid
+		}
 		tok, err := consumeAccountToken(tx, models.TokenEmailVerify, body.Token)
 		if err != nil {
 			return err
@@ -271,26 +321,33 @@ func (a *App) apiVerifyEmailChange(c *gin.Context) {
 		if err := json.Unmarshal([]byte(tok.Payload), &payload); err != nil || !validEmail(payload.NewEmail) {
 			return errTokenInvalid
 		}
-		var u models.User
-		if err := tx.First(&u, tok.UserID).Error; err != nil || u.Status == models.UserDisabled {
+		if tok.UserID != u.ID {
 			return errTokenInvalid
 		}
 		var taken int64
-		tx.Model(&models.User{}).Where("email = ? AND id <> ?", payload.NewEmail, u.ID).Count(&taken)
+		if err := tx.Model(&models.User{}).Where("email = ? AND id <> ?", payload.NewEmail, u.ID).Count(&taken).Error; err != nil {
+			return err
+		}
 		if taken > 0 {
 			return errEmailTaken
 		}
 		oldEmail := u.Email
-		userID = u.ID
-		if err := tx.Model(&u).Updates(map[string]any{
+		if err := tx.Model(u).Updates(map[string]any{
 			"email":           payload.NewEmail,
 			"session_version": gorm.Expr("session_version + 1"),
 		}).Error; err != nil {
 			return err
 		}
-		return audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.EmailChanged,
+		if err := revokeAccountTokens(tx, u.ID); err != nil {
+			return err
+		}
+		if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.EmailChanged,
 			TargetType: "user", TargetID: u.ID,
-			Meta: map[string]any{"oldEmail": oldEmail, "newEmail": payload.NewEmail}, IP: c.ClientIP()})
+			Meta: map[string]any{"oldEmail": oldEmail, "newEmail": payload.NewEmail}, IP: c.ClientIP()}); err != nil {
+			return err
+		}
+		// Capture this commit's epoch, never a later password reset's epoch.
+		return tx.First(&fresh, u.ID).Error
 	})
 	switch {
 	case errors.Is(err, errTokenInvalid):
@@ -300,11 +357,6 @@ func (a *App) apiVerifyEmailChange(c *gin.Context) {
 		jsonError(c, http.StatusConflict, "an account with that email already exists")
 		return
 	case err != nil:
-		jsonError(c, http.StatusInternalServerError, "could not verify email")
-		return
-	}
-	var fresh models.User
-	if err := a.DB.First(&fresh, userID).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not verify email")
 		return
 	}

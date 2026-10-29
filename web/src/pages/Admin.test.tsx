@@ -1,13 +1,15 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { AdminAccountRequests, AdminGroups, AdminUsers, Groups, People, ApiError } from "../api";
+import { AdminAccountRequests, AdminGroups, AdminUsers, Groups, People, Site, ApiError } from "../api";
 import { ERROR_COPY } from "../lib/errors";
+import { ContactHistory } from "../contact-history-api";
 import type { AccountRequest, User } from "../types";
 import { AdminPage } from "./Admin";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1 }, loading: false, isAdmin: true }) }));
+vi.mock("../contact-history-api", async (actual) => ({ ...await actual<typeof import("../contact-history-api")>(), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
 vi.mock("../api", async (actual) => ({
   ...(await actual<typeof import("../api")>()),
   People: { search: vi.fn() },
@@ -17,8 +19,13 @@ vi.mock("../api", async (actual) => ({
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }) },
   AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
   AdminAccountRequests: { list: vi.fn(), approve: vi.fn() },
-  Site: { get: vi.fn().mockResolvedValue({ timezone: "America/Boise", selfSignup: "request" }) },
+  Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off" }) },
 }));
+
+function HistoryDestination() {
+  const { id } = useParams();
+  return <p>Person history {id}</p>;
+}
 
 const request: AccountRequest = {
   id: 7, name: "Pat Smith", email: "pat@example.com", phone: "", accountType: "adult",
@@ -28,11 +35,59 @@ const request: AccountRequest = {
 };
 
 beforeEach(() => {
+  vi.mocked(Site.get).mockClear();
+  vi.mocked(ContactHistory.people).mockReset().mockResolvedValue({ people: [] });
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [] });
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [] });
   vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [request] });
   vi.mocked(AdminAccountRequests.approve).mockReset();
   vi.mocked(Groups.members).mockReset().mockResolvedValue({ members: [] });
   vi.mocked(Groups.memberDeparturePreview).mockReset();
   vi.mocked(Groups.confirmMemberDeparture).mockReset();
+});
+
+it("keeps daily work above settings and opens the settings forms only on demand", async () => {
+  render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+  await screen.findByText(request.name);
+  expect(screen.getByRole("button", { name: /^Approvals/ })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.queryByRole("combobox", { name: "Church time zone" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Schedule a church-wide event" })).not.toBeInTheDocument();
+  expect(Site.get).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(await screen.findByRole("combobox", { name: "Church time zone" })).toBeInTheDocument();
+  expect(screen.getByRole("group", { name: "Self-signup" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Schedule a church-wide event" })).toHaveAttribute("href", "/events/new");
+  expect(screen.getByRole("button", { name: "Settings" })).toHaveAttribute("aria-pressed", "true");
+  await userEvent.click(screen.getByRole("button", { name: "Users" }));
+  expect(screen.queryByRole("combobox", { name: "Church time zone" })).not.toBeInTheDocument();
+});
+
+it("opens a bookmarked settings tab and falls back to approvals for unknown tabs", async () => {
+  const view = render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByRole("heading", { name: "Church settings" })).toBeInTheDocument();
+  view.unmount();
+  render(<MemoryRouter initialEntries={["/admin?tab=not-a-tab"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText(request.name)).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: /^Approvals/ })).toHaveAttribute("aria-pressed", "true");
+});
+
+it("shows plain account badges rather than stored status and role codes", async () => {
+  const teen: User = { id: 42, name: "Tess Teen", displayName: "Tess", email: "tess@example.com", phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "pending_consent", hasPassword: true, accountType: "teen", timezone: "UTC" };
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [teen] });
+  render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText("Waiting for parent consent")).toBeInTheDocument();
+  expect(screen.getByText("Member", { exact: true })).toBeInTheDocument();
+  expect(screen.getByText("Teen", { exact: true })).toBeInTheDocument();
+  expect(screen.queryByText("pending_consent")).not.toBeInTheDocument();
+});
+
+it("labels group metadata and uses the shared size for every group action", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [{ id: 3, name: "Choir", memberCount: 1, status: "active", leaderName: "Pat Leader" } as import("../types").GroupSummary] });
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText("Active", { exact: true })).toBeInTheDocument();
+  expect(screen.getByText("1 member · Organized by Pat Leader")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Open & edit" })).toHaveClass("btn-secondary");
+  expect(screen.getByRole("link", { name: "Open & edit" })).not.toHaveClass("text-sm");
 });
 
 it.each([
@@ -134,15 +189,43 @@ it("offers a teen Ask to add without a leader-role shortcut", async () => {
   expect(AdminGroups.addMember).not.toHaveBeenCalled();
 });
 
-it("opens person history from the existing user menu and offers retained-ID history", async () => {
-  const person: User = { id: 42, name: "Pat History", displayName: "Pat", email: "pat-history@example.com", phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
+it("opens person history with the exact ID returned for the current email", async () => {
+  const person: User = { id: Number("9007199254740993"), name: "Pat History", displayName: "Pat", email: "pat-history@example.com", phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
   vi.mocked(AdminUsers.list).mockResolvedValue({ users: [person] });
+  vi.mocked(ContactHistory.people).mockResolvedValue({ people: [{ id: "9007199254740993", name: "Pat", email: person.email }] });
   render(<MemoryRouter initialEntries={["/admin?tab=users"]}><Routes>
     <Route path="/admin" element={<AdminPage />} />
-    <Route path="/admin/users/:id/contact-history" element={<p>Person history destination</p>} />
+    <Route path="/admin/users/:id/contact-history" element={<HistoryDestination />} />
   </Routes></MemoryRouter>);
-  expect(await screen.findByRole("link", { name: "Contact access history by ID" })).toHaveAttribute("href", "/admin/contact-history");
+  expect(await screen.findByRole("link", { name: "Find contact access history" })).toHaveAttribute("href", "/admin/contact-history");
   await userEvent.click(await screen.findByRole("button", { name: "More for Pat" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Contact access history" }));
-  expect(screen.getByText("Person history destination")).toBeInTheDocument();
+  expect(await screen.findByText("Person history 9007199254740993")).toBeInTheDocument();
+  expect(ContactHistory.people).toHaveBeenCalledWith({ email: "pat-history@example.com" });
+});
+
+it("copies and always shows the exact returned person ID as a fallback", async () => {
+  const person: User = { id: Number("9007199254740993"), name: "Pat History", displayName: "Pat", email: "pat-history@example.com", phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
+  const writeText = vi.fn().mockRejectedValue(new DOMException("denied"));
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [person] });
+  vi.mocked(ContactHistory.people).mockResolvedValue({ people: [{ id: "9007199254740993", name: "Pat Public", email: person.email }] });
+  render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: "More for Pat" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Copy person ID" }));
+  const status = await screen.findByRole("status");
+  expect(status).toHaveTextContent("Person ID for Pat Public: 9007199254740993");
+  expect(status).not.toHaveTextContent("pat-history@example.com");
+  expect(writeText).toHaveBeenCalledWith("9007199254740993");
+});
+
+it("does not fall back to the first user when the selected row has no email", async () => {
+  const other: User = { id: 41, name: "First User", displayName: "First", email: "first@example.com", phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
+  const person: User = { id: 42, name: "No Email", displayName: "No Email", email: "", phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [other, person] });
+  render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: "More for No Email" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Contact access history" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Refresh the user list");
+  expect(ContactHistory.people).not.toHaveBeenCalled();
 });

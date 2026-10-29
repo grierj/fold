@@ -23,7 +23,7 @@ export function ContactRequestsPage() {
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   return <div className="max-w-2xl mx-auto px-4 py-6 space-y-5">
     <h1 className="text-2xl font-bold">Direct contact</h1>
-    <p className="text-text-muted">Review requests and manage shared contact access. Opening a request never reveals contact details.</p>
+    <p className="text-text-muted">Review requests and manage shared contact access. Contact details stay private.</p>
     {id ? <ContactRequestDetail key={`${user.id}:${id}`} id={Number(id)} /> : <ContactRequestLists key={user.id} />}
   </div>;
 }
@@ -69,8 +69,7 @@ function ContactRequestLists() {
     finally { if (generation.current === current) setBusy(false); }
   }
   return <>
-    <Button variant="secondary" onClick={refresh}>Refresh</Button>
-    {error && <FormError>{error}</FormError>}
+    {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={refresh}>Try again</Button></>}
     {!loaded && !error && <p role="status">Loading your contact requests…</p>}
     {loaded && <>
       <section aria-label="Request history" className="space-y-3"><h2 className="text-xl font-bold">Request history</h2>
@@ -141,8 +140,8 @@ function ContactRequestDetail({ id }: { id: number }) {
     finally { setBusy(false); }
   }
   return <>
-    <div className="flex flex-wrap gap-2"><ButtonLink variant="link" to="/contact-requests">All contact requests</ButtonLink><Button variant="secondary" onClick={() => setRevision((n) => n + 1)}>Refresh</Button></div>
-    {error && <FormError>{error}</FormError>}
+    <ButtonLink variant="link" to="/contact-requests">All contact requests</ButtonLink>
+    {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={() => setRevision((n) => n + 1)}>Try again</Button></>}
     {!loaded && !error && <p role="status">Loading request…</p>}
     {loaded && !request && !grants.length && <EmptyState title="Contact access is not available" body="This request or grant may have ended, or may not be yours to review. Open your contact history to see what is available to you." />}
     {loaded && request && <section aria-label="Contact request review" className="bg-surface border border-border rounded-lg p-4 space-y-3 wrap-anywhere">

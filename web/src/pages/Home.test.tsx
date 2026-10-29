@@ -22,7 +22,8 @@ const all = [
 
 // Same rules as the API: search narrows, and any selected tag matches (OR,
 // case-insensitive).
-const { list } = vi.hoisted(() => ({ list: vi.fn() }));
+const { list, auth } = vi.hoisted(() => ({ list: vi.fn(), auth: vi.fn() }));
+vi.mock("../auth", () => ({ useAuth: auth }));
 vi.mock("../api", async (importActual) => ({
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
   Groups: { list },
@@ -58,8 +59,22 @@ const summary = () => screen.getByText(/Showing groups tagged/);
 
 describe("Home tag filters", () => {
   beforeEach(() => {
+    auth.mockReturnValue({ user: null, loading: false });
     list.mockReset();
     list.mockImplementation(listLikeTheAPI);
+  });
+
+  it("offers public calendar browsing only after auth resolves signed out", async () => {
+    auth.mockReturnValue({ user: null, loading: true });
+    const { rerender } = renderHome();
+    await chips();
+    expect(screen.queryByRole("link", { name: "Browse public events" })).not.toBeInTheDocument();
+    auth.mockReturnValue({ user: null, loading: false });
+    rerender(<MemoryRouter><Home /></MemoryRouter>);
+    expect(screen.getByRole("link", { name: "Browse public events" })).toHaveAttribute("href", "/calendar");
+    auth.mockReturnValue({ user: { id: 1 }, loading: false });
+    rerender(<MemoryRouter><Home /></MemoryRouter>);
+    expect(screen.queryByRole("link", { name: "Browse public events" })).not.toBeInTheDocument();
   });
 
   it("shows no summary or markers before a tag is chosen", async () => {

@@ -131,16 +131,16 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 				}
 				mailed = append(mailed, ids...)
 			}
-			updates := map[string]any{"status": status}
-			// A restricted waiting session becomes usable when consent is
-			// granted. Revocation and returns from disabled rotate sessions.
-			if teen.Status != models.UserPendingConsent || status != models.UserActive {
-				updates["session_version"] = gorm.Expr("session_version + 1")
-			}
+			// Every account-status transition ends old sessions, including
+			// legacy pending cookies. A newly consented teen logs in afresh.
+			updates := map[string]any{"status": status, "session_version": gorm.Expr("session_version + 1")}
 			if err := tx.Model(teen).Updates(updates).Error; err != nil {
 				return nil, err
 			}
 			if status == models.UserDisabled {
+				if err := revokeAccountTokens(tx, teen.ID); err != nil {
+					return nil, err
+				}
 				ids, err := a.promoteOnDisable(tx, teen.ID)
 				if err != nil {
 					return nil, err

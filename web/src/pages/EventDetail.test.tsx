@@ -50,6 +50,13 @@ async function editDate() {
   return screen.getByRole("textbox", { name: /^Remote seat limit for this date/ });
 }
 
+it("wraps a long unbroken header location", async () => {
+  const location = "L".repeat(160);
+  vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, location } });
+  renderPage();
+  expect(await screen.findByText(location)).toHaveClass("wrap-anywhere");
+});
+
 describe("EventDetail remote seats", () => {
   beforeEach(() => {
     vi.resetAllMocks();

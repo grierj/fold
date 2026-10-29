@@ -156,7 +156,7 @@
   .tabular { font-variant-numeric: tabular-nums; }          /* dates, times, counts */
   /* A focused field scrolls clear of the sticky header and, on phones, the
      bottom tab bar (UI makeover PR 5). */
-  html { scroll-padding-top: 5rem; }
+  html { scroll-padding-top: calc(var(--fold-header-height, 4rem) + 1rem); }
   @media (width < 40rem) {
     html { scroll-padding-bottom: calc(4.5rem + env(safe-area-inset-bottom)); }
   }
@@ -182,9 +182,11 @@
 }
 
 @layer components {
-  .btn-primary   { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-primary px-5 font-semibold text-primary-foreground transition-colors hover:bg-primary-hover active:bg-primary-active disabled:bg-sunken disabled:text-text-muted disabled:cursor-not-allowed; }
+  /* Primary and danger change both text and fill when disabled; cross-fading
+     those contrasting endpoints creates low-contrast intermediate frames. */
+  .btn-primary   { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-primary px-5 font-semibold text-primary-foreground hover:bg-primary-hover active:bg-primary-active disabled:bg-sunken disabled:text-text-muted disabled:cursor-not-allowed; }
   .btn-secondary { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md border border-border-strong bg-surface px-5 font-semibold text-text transition-colors hover:bg-sunken; }
-  .btn-danger    { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-danger px-5 font-semibold text-danger-foreground transition-colors hover:bg-danger-hover disabled:bg-sunken disabled:text-text-muted disabled:cursor-not-allowed; }
+  .btn-danger    { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-danger px-5 font-semibold text-danger-foreground hover:bg-danger-hover disabled:bg-sunken disabled:text-text-muted disabled:cursor-not-allowed; }
   /* A destructive action that sits beside the main one (Reject, Remove). */
   .btn-danger-outline { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md border border-danger bg-surface px-5 font-semibold text-danger transition-colors hover:bg-danger-subtle; }
   .btn-ghost     { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md px-3 font-semibold text-primary hover:bg-primary-subtle; }

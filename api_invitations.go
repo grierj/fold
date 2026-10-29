@@ -30,6 +30,14 @@ import (
 // until then it is a constant.
 const leaderInviteDailyLimit = 20
 
+// writeInvitationRefusal spends only the actor allowance for a valid address
+// check that sent no invitation. Ordinary and household invitations share it.
+func writeInvitationRefusal(tx *gorm.DB, actor uint, reason, ip string) error {
+	return audit.Write(tx, audit.Entry{Actor: &actor, Action: audit.InvitationRefused,
+		TargetType: "user", TargetID: actor,
+		Meta: map[string]any{"reason": reason, "limit": leaderInviteDailyLimit}, IP: ip})
+}
+
 // errEmailTaken: the address got an account after the invitation was sent.
 var errEmailTaken = errors.New("email taken")
 
@@ -133,50 +141,33 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 		return
 	}
 
-	if !asPerson(me).Admin {
-		var n int64
-		a.DB.Model(&models.AuditLog{}).
-			Where("actor_id = ? AND action IN ? AND at > now() - interval '24 hours'", me.ID, []string{audit.InvitationCreated, audit.InvitationResent}).
-			Count(&n)
-		if n >= leaderInviteDailyLimit {
-			_ = audit.Write(a.DB, audit.Entry{Actor: &me.ID, Action: audit.InvitationRateLimited,
-				TargetType: "user", TargetID: me.ID,
-				Meta: map[string]any{"email": email, "limit": leaderInviteDailyLimit},
-				IP:   c.ClientIP()})
-			jsonError(c, http.StatusTooManyRequests, "invitation limit reached (20 per day)")
-			return
-		}
-	}
-
-	var existing models.User
-	// A guest row (M1.4) may be invited: accepting upgrades it in place.
-	if a.DB.Where("email = ?", email).Limit(1).Find(&existing).RowsAffected == 1 &&
-		existing.Status != models.UserGuest {
-		jsonError(c, http.StatusConflict, "an account with that email already exists")
-		return
-	}
-	var dup models.Invitation
-	if a.DB.Where("email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email).
-		Limit(1).Find(&dup).RowsAffected == 1 {
-		jsonError(c, http.StatusConflict, "that email was already invited")
-		return
-	}
-
-	raw, hash, err := createInvitationToken()
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not create invitation")
-		return
-	}
+	var raw string
+	var refusal error
 	overLimit := body.OverLimit && g != nil
 	inv := models.Invitation{
 		Email: email, Phone: phone, Name: name, InvitedBy: me.ID,
 		Role: models.MembershipMember, AccountType: "adult",
 		GroupID: body.GroupID, OverLimit: overLimit,
-		TokenHash: hash, ExpiresAt: time.Now().UTC().Add(tokenTTL),
+		ExpiresAt: time.Now().UTC().Add(tokenTTL),
 	}
-	err = a.DB.Transaction(func(tx *gorm.DB) error {
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockInvitationEmail(tx, email); err != nil {
 			return err
+		}
+		// Refusals spend the actor's allowance without pretending mail was
+		// sent. Commit this audit instead of rolling the counter back with
+		// the public conflict response. Admin invitations stay exempt.
+		refuse := func(cause error, reason string) error {
+			refusal = cause
+			if asPerson(me).Admin {
+				return nil
+			}
+			if errors.Is(cause, errInvitationLimit) {
+				return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.InvitationRateLimited,
+					TargetType: "user", TargetID: me.ID,
+					Meta: map[string]any{"reason": reason, "limit": leaderInviteDailyLimit}, IP: c.ClientIP()})
+			}
+			return writeInvitationRefusal(tx, me.ID, reason, c.ClientIP())
 		}
 		if !asPerson(me).Admin {
 			allowed, err := conversionSendAllowed(tx, me.ID, email)
@@ -184,7 +175,7 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 				return err
 			}
 			if !allowed {
-				return errInvitationLimit
+				return refuse(errInvitationLimit, "daily_limit")
 			}
 		}
 		var existing models.User
@@ -192,22 +183,27 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 			return err
 		}
 		if existing.ID != 0 && (existing.Status != models.UserGuest || existing.DeletedAt.Valid) {
-			return errEmailTaken
+			return refuse(errEmailTaken, "existing_account")
 		}
 		var pending int64
 		if err := tx.Model(&models.AccountRequest{}).Where("email = ? AND source = ? AND status = ?", email, models.RequestHouseholdConversion, models.RequestPending).Count(&pending).Error; err != nil {
 			return err
 		}
 		if pending != 0 {
-			return errConversionEmail
+			return refuse(errConversionEmail, "pending_conversion")
 		}
 		var n int64
 		if err := tx.Model(&models.Invitation{}).Where("email = ? AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at > now()", email).Count(&n).Error; err != nil {
 			return err
 		}
 		if n > 0 {
-			return errConversionEmail
+			return refuse(errConversionEmail, "pending_invitation")
 		}
+		token, hash, err := createInvitationToken()
+		if err != nil {
+			return err
+		}
+		raw, inv.TokenHash = token, hash
 		if err := tx.Create(&inv).Error; err != nil {
 			return err
 		}
@@ -219,14 +215,20 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 			TargetType: "invitation", TargetID: inv.ID, Meta: meta, IP: c.ClientIP()})
 	})
 	if err != nil {
-		if errors.Is(err, errInvitationLimit) {
-			jsonError(c, http.StatusTooManyRequests, "invitation limit reached (20 per day)")
-			return
-		}
-		if errors.Is(err, errEmailTaken) || errors.Is(err, errConversionEmail) {
-			jsonError(c, http.StatusConflict, "that email was already invited")
-			return
-		}
+		jsonError(c, http.StatusInternalServerError, "could not create invitation")
+		return
+	}
+	switch {
+	case errors.Is(refusal, errInvitationLimit):
+		jsonError(c, http.StatusTooManyRequests, "invitation limit reached (20 per day)")
+		return
+	case errors.Is(refusal, errEmailTaken):
+		jsonError(c, http.StatusConflict, "an account with that email already exists")
+		return
+	case errors.Is(refusal, errConversionEmail):
+		jsonError(c, http.StatusConflict, "that email was already invited")
+		return
+	case refusal != nil:
 		jsonError(c, http.StatusInternalServerError, "could not create invitation")
 		return
 	}
@@ -319,6 +321,11 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 	}
 	var userID uint
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		// Share the lifecycle gate with demotion/removal/disable before taking
+		// domain locks. Acceptance must not race an inviter losing authority.
+		if err := lockContacts(tx); err != nil {
+			return err
+		}
 		inv, err := liveInvitation(tx, body.Token)
 		if err != nil {
 			return err
@@ -353,11 +360,33 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			if g.Status != models.GroupActive {
 				return errGroupNotActive
 			}
-			count = memberCount(tx, g.ID)
-			if !policy.GroupHasRoom(g.MemberLimit, int(count)) && !inv.OverLimit {
+			group = &g
+		}
+		var inviter models.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("status = ?", models.UserActive).First(&inviter, inv.InvitedBy).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errTokenInvalid
+			}
+			return err
+		}
+		leadsTarget, leadsAnywhere := false, false
+		if group != nil {
+			leadsTarget = relIn(tx, inviter.ID, group.ID).Leader
+		} else {
+			var n int64
+			if err := tx.Model(&models.Membership{}).Where("user_id = ? AND role = ? AND status = 'active'", inviter.ID, models.MembershipLeader).Count(&n).Error; err != nil {
+				return err
+			}
+			leadsAnywhere = n > 0
+		}
+		if !policy.CanInvite(asPerson(&inviter), group != nil, leadsTarget, leadsAnywhere) {
+			return errTokenInvalid
+		}
+		if group != nil {
+			count = memberCount(tx, group.ID)
+			if !policy.GroupHasRoom(group.MemberLimit, int(count)) && !inv.OverLimit {
 				return errGroupFull // the token stays live: this can be retried
 			}
-			group = &g
 		}
 		u := models.User{Email: inv.Email, Name: name, Role: models.RoleMember, Status: models.UserActive}
 		if guestRow {
@@ -374,6 +403,9 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		}
 		if guestRow {
 			if err := tx.Save(&u).Error; err != nil {
+				return err
+			}
+			if err := revokeAccountTokens(tx, u.ID); err != nil {
 				return err
 			}
 		} else if err := tx.Create(&u).Error; err != nil {
@@ -441,11 +473,9 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not accept invitation")
 		return
 	}
-	if fresh.CanAuthenticate() {
-		if err := a.signInSession(c, &fresh); err != nil {
-			jsonError(c, http.StatusInternalServerError, "session error")
-			return
-		}
+	if err := a.signInSession(c, &fresh); err != nil {
+		jsonError(c, http.StatusInternalServerError, "session error")
+		return
 	}
 	c.JSON(http.StatusOK, invitationAcceptanceJSON{User: userJSONPtr(a.toUserJSON(&fresh)), PendingConsent: fresh.Status == models.UserPendingConsent})
 }

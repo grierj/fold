@@ -19,6 +19,11 @@ const (
 	MembershipMember = "member"
 )
 
+// Membership statuses.
+const (
+	MembershipLeft = "left"
+)
+
 // Group statuses.
 const (
 	GroupPending  = "pending"
@@ -195,12 +200,7 @@ func (u *User) CheckPassword(password string) bool {
 
 // CanSignIn: an active account with a password.
 func (u *User) CanSignIn() bool {
-	return u.Status == UserActive && u.PasswordHash != nil
-}
-
-// CanAuthenticate includes a restricted session while a teen waits for consent.
-func (u *User) CanAuthenticate() bool {
-	return u != nil && u.PasswordHash != nil && (u.Status == UserActive || (u.Status == UserPendingConsent && u.AccountType == AccountTeen))
+	return u != nil && u.Status == UserActive && u.PasswordHash != nil
 }
 
 // Group is an ongoing entity (a small group, ministry, or activity) —
@@ -357,9 +357,9 @@ type Membership struct {
 	GroupID  uint   `gorm:"not null;uniqueIndex:idx_user_group"`
 	Group    Group  `gorm:"foreignKey:GroupID"`
 	Role     string `gorm:"default:member"` // leader | member
-	Status   string `gorm:"default:active"`
+	Status   string `gorm:"default:active"` // active | left | removed
 	JoinedAt time.Time
-	// Tenure changes when a removed row is reactivated; JoinedAt remains the
+	// Tenure changes on any nonactive reactivation; JoinedAt remains the
 	// first-ever join time shown in the roster.
 	Tenure uint `gorm:"not null;default:1"`
 }
@@ -497,19 +497,20 @@ type CalendarToken struct {
 
 // Account token kinds (10.1): single-use hashed tokens, valid 24 hours.
 const (
-	TokenPasswordReset = "password_reset"
-	TokenEmailVerify   = "email_verify"
-	TokenAccountSetup  = "account_setup"
-	TokenTeenConsent   = "teen_consent"
+	TokenPasswordReset     = "password_reset"
+	TokenEmailVerify       = "email_verify"
+	TokenAccountSetup      = "account_setup"
+	TokenTeenConsent       = "teen_consent"
+	TokenEmailChangeCancel = "email_change_cancel"
 )
 
-// AccountToken is a single-use hashed token for a password reset or an
-// email-change verification (10.1, M1.2). The raw token goes to the
-// person's email; only its SHA-256 is stored. payload carries the new
-// email for an email_verify token.
+// AccountToken is a single-use hashed token for a password reset, email
+// verification or cancellation, account setup, or teen consent (10.1, M1.2).
+// The raw token goes to the person's email; only its SHA-256 is stored.
+// Payload carries the new email for an email_verify token.
 type AccountToken struct {
 	ID        uint      `gorm:"primaryKey"`
-	Kind      string    `gorm:"not null"` // password_reset | email_verify
+	Kind      string    `gorm:"not null"` // password_reset | email_verify | account_setup | teen_consent | email_change_cancel
 	UserID    uint      `gorm:"not null;index"`
 	User      User      `gorm:"foreignKey:UserID"`
 	TokenHash string    `gorm:"not null;uniqueIndex:idx_account_tokens_token_hash"`

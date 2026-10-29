@@ -115,7 +115,8 @@ export function CalendarPage() {
               <ChevronLeftIcon />
             </Button>
             <h2 aria-live="polite" className="min-w-0 flex-1 text-center font-semibold text-text sm:min-w-44">
-              {title}
+              <span className="sm:hidden">{view === "week" ? formatPeriod("week", weekDays[0], weekDays[6], today) : title}</span>
+              <span className="hidden sm:inline">{title}</span>
             </h2>
             <Button variant="secondary" aria-label={`Next ${unit}`} onClick={() => step(1)}>
               <ChevronRightIcon />

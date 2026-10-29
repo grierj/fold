@@ -1,5 +1,6 @@
 import { createContext, useContext, useId, type InputHTMLAttributes, type ReactNode, type Ref, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { flushSync } from "react-dom";
+import { FormErrorsContext } from "./FormContext";
 
 // The one form pattern (DEC-65, PR7-SPEC): the label sits above the
 // control, the hint sits under the label and above the control (so it's
@@ -22,9 +23,10 @@ type FieldProps = {
   children: ReactNode;
 };
 
-export function Field({ label, hint, error, optional, id: fixed, children }: FieldProps) {
+export function Field({ label, hint, error: providedError, optional, id: fixed, children }: FieldProps) {
   const auto = useId();
   const id = fixed ?? auto;
+  const error = useContext(FormErrorsContext).get(id) ?? providedError;
   const hintId = hint ? `${id}-hint` : undefined;
   const errorId = error ? `${id}-error` : undefined;
   const describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
@@ -105,13 +107,14 @@ export function HiddenFileInput({ ref, ...props }: Omit<InputHTMLAttributes<HTML
 // together sit in <Choices legend="…">, a fieldset whose legend looks like
 // a field label.
 
-export function Choices({ legend, hint, error, optional, children }: { legend: ReactNode; hint?: ReactNode; error?: ReactNode; optional?: boolean; children: ReactNode }) {
+export function Choices({ legend, hint, error: providedError, optional, children }: { legend: ReactNode; hint?: ReactNode; error?: ReactNode; optional?: boolean; children: ReactNode }) {
   const id = useId();
+  const error = useContext(FormErrorsContext).get(id) ?? providedError;
   const hintId = hint ? `${id}-hint` : undefined;
   const errorId = error ? `${id}-error` : undefined;
   const describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
   return (
-    <fieldset aria-describedby={describedBy} aria-invalid={error ? true : undefined}>
+    <fieldset id={id} aria-describedby={describedBy} aria-invalid={error ? true : undefined}>
       <legend className="label">
         {legend}
         {optional && <span className="font-normal text-text-muted"> (optional)</span>}
@@ -128,15 +131,23 @@ type RowProps = Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "className"
   description?: ReactNode;
 };
 
-function Row({ type, label, description, ...input }: RowProps & { type: "radio" | "checkbox" }) {
+function Row({ type, label, description, id: fixed, ...input }: RowProps & { type: "radio" | "checkbox" }) {
+  const auto = useId();
+  const id = fixed ?? auto;
+  const error = useContext(FormErrorsContext).get(id);
+  const errorId = error ? `${id}-error` : undefined;
+  const describedBy = [input["aria-describedby"], errorId].filter(Boolean).join(" ") || undefined;
   return (
-    <label className="choice-row">
-      <input type={type} className="choice-control" {...input} />
-      <span className="min-w-0">
-        <span className="block">{label}</span>
-        {description && <span className="block text-sm text-text-muted">{description}</span>}
-      </span>
-    </label>
+    <div>
+      <label className="choice-row">
+        <input type={type} className="choice-control" {...input} id={id} aria-invalid={error ? true : input["aria-invalid"]} aria-describedby={describedBy} />
+        <span className="min-w-0">
+          <span className="block">{label}</span>
+          {description && <span className="block text-sm text-text-muted">{description}</span>}
+        </span>
+      </label>
+      {error && <FieldError id={errorId}>{error}</FieldError>}
+    </div>
   );
 }
 
@@ -148,7 +159,7 @@ export const Checkbox = (p: RowProps) => <Row type="checkbox" {...p} />;
 export function focusFirstInvalid(form: HTMLElement | null): boolean {
   const el = form?.querySelector<HTMLElement>('[aria-invalid="true"]');
   if (!el) return false;
-  const target = el.tagName === "FIELDSET" ? el.querySelector<HTMLElement>("input, select, textarea") : el;
+  const target = el.tagName === "FIELDSET" ? el.querySelector<HTMLElement>('input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled)') : el;
   target?.focus();
   return !!target;
 }

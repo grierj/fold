@@ -1,7 +1,7 @@
 package main
 
 import (
-	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,39 +50,49 @@ func TestAdminCreationAgeGate(t *testing.T) {
 	}
 }
 
-func TestPendingTeenSessionRestrictedAcrossAllAPIs(t *testing.T) {
+func TestPendingTeenBrowsesPubliclyWithoutAnAuthenticatedSession(t *testing.T) {
 	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
 	teen := newTestUser(t, app, "teen", "password1234", models.RoleMember)
+	legacy := loginAPI(t, app, "teen", "password1234")
 	app.DB.Model(teen).Updates(map[string]any{"account_type": models.AccountTeen, "status": models.UserPendingConsent})
-	client := loginAPI(t, app, "teen", "password1234")
-	for _, path := range []string{"/api/v1/auth/me", "/api/v1/auth/csrf"} {
-		w := client.do("GET", path, nil, false)
-		if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
-			t.Fatalf("session route %s: %d %s", path, w.Code, w.Body.String())
-		}
+	public := activeGroup(t, app, admin, "Public study", models.VisibilityPublic, "")
+	private := activeGroup(t, app, admin, "Private study", models.VisibilityPrivate, "")
+	event, _ := seedEvent(t, app, &public, admin.ID, time.Now().Add(24*time.Hour))
+	client := newAPIClient(t, app)
+	client.fetchCSRF()
+	if w := client.do("POST", "/api/v1/auth/login", map[string]string{"email": teen.Email, "password": "wrong"}, true); w.Code != 401 {
+		t.Fatalf("wrong password disclosed consent: %d %s", w.Code, w.Body.String())
 	}
-	for _, path := range []string{"/api/v1/site", "/api/v1/groups", "/api/v1/groups/1", "/api/v1/events", "/api/v1/events/1", "/api/v1/calendar", "/api/v1/me/groups", "/api/v1/notifications", "/api/v1/admin/users", "/api/v1/me/household"} {
-		w := client.do("GET", path, nil, false)
-		if w.Code != http.StatusForbidden || w.Header().Get("Cache-Control") != "no-store" {
-			t.Errorf("restricted GET %s: %d %s", path, w.Code, w.Body.String())
-		}
+	if w := client.do("POST", "/api/v1/auth/login", map[string]string{"email": teen.Email, "password": "password1234"}, true); w.Code != 403 || !strings.Contains(w.Body.String(), `"code":"consent_required"`) {
+		t.Fatalf("missing consent explanation: %d %s", w.Code, w.Body.String())
 	}
-	for _, path := range []string{"/api/v1/me", "/api/v1/groups", "/api/v1/events/1/registrations", "/api/v1/account-requests"} {
-		method := "POST"
-		if path == "/api/v1/me" || path == "/api/v1/events/1/registrations" {
-			method = "PUT"
-		}
-		w := client.do(method, path, map[string]string{}, true)
-		if w.Code != http.StatusForbidden {
-			t.Errorf("restricted mutation %s: %d %s", path, w.Code, w.Body.String())
-		}
+	for name, browser := range map[string]*apiClient{"new login": client, "old cookie": legacy} {
+		t.Run(name, func(t *testing.T) {
+			for _, path := range []string{"/api/v1/site", "/api/v1/groups", "/api/v1/groups/" + itoa(public.ID), "/api/v1/events", "/api/v1/events/" + itoa(event.ID), "/api/v1/calendar"} {
+				w := browser.do("GET", path, nil, false)
+				if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" || strings.Contains(w.Body.String(), private.Name) {
+					t.Errorf("public GET %s: %d %s", path, w.Code, w.Body.String())
+				}
+			}
+			for _, path := range []string{"/api/v1/auth/me", "/api/v1/me/groups", "/api/v1/notifications", "/api/v1/admin/users", "/api/v1/me/household"} {
+				if w := browser.do("GET", path, nil, false); w.Code != 401 {
+					t.Errorf("authenticated GET %s: %d %s", path, w.Code, w.Body.String())
+				}
+			}
+			for _, path := range []string{"/api/v1/me", "/api/v1/events/" + itoa(event.ID) + "/registrations"} {
+				if w := browser.do("PUT", path, map[string]string{}, true); w.Code != 401 {
+					t.Errorf("authenticated mutation %s: %d %s", path, w.Code, w.Body.String())
+				}
+			}
+		})
 	}
-	w := client.do("POST", "/api/v1/auth/logout", nil, true)
-	if w.Code != 200 {
-		t.Fatalf("logout: %d %s", w.Code, w.Body.String())
-	}
-	if w := client.do("GET", "/api/v1/groups", nil, false); w.Code != 200 {
-		t.Fatalf("signed-out public access: %d", w.Code)
+	// Consent enables a fresh login, never a legacy pending cookie.
+	adminClient := loginAPI(t, app, "admin", "password1234")
+	apiDo(t, adminClient, "POST", consentPath(teen), map[string]string{"scope": "account", "status": "granted", "evidenceText": "Parent signed consent"}, 200)
+	apiDo(t, legacy, "GET", "/api/v1/auth/me", nil, 401)
+	if code, _ := tryLogin(t, app, "", teen.Email, "password1234"); code != 200 {
+		t.Fatalf("consented teen could not sign in: %d", code)
 	}
 }
 
@@ -126,11 +136,11 @@ func TestInvitationAgeGatePreservesTokenAndGuest(t *testing.T) {
 	if teen.Status != models.UserPendingConsent || teen.AccountType != models.AccountTeen || teen.PasswordHash == nil {
 		t.Fatalf("upgrade: %+v", teen)
 	}
-	if w := anon.do("GET", "/api/v1/auth/me", nil, false); w.Code != 200 {
-		t.Fatalf("missing restricted session: %d", w.Code)
+	if w := anon.do("GET", "/api/v1/auth/me", nil, false); w.Code != 401 {
+		t.Fatalf("pending invitation created a login: %d", w.Code)
 	}
-	if w := anon.do("GET", "/api/v1/groups", nil, false); w.Code != 403 {
-		t.Fatalf("invitation widened access: %d", w.Code)
+	if w := anon.do("GET", "/api/v1/groups", nil, false); w.Code != 200 {
+		t.Fatalf("invitation blocked public browsing: %d", w.Code)
 	}
 }
 

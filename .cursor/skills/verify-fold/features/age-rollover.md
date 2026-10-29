@@ -11,8 +11,8 @@ Teen accounts become adult accounts on the church-local eighteenth birthday. Gua
 
 ## How to get to it (user POV)
 
-- A teen's eighteenth birthday → sign in, or Waiting for consent → Check account status.
-- Guardian → Alerts → household age notice → Profile → My household.
+- A pending teen's eighteenth birthday → **Back to log in** on the public account explanation, or **Log in** from the header.
+- Guardian → Alerts → household age notice → Profile → Household.
 - Admin → Users → former teen's More menu → Consent history.
 - Admin → Users → Enable for a separately suspended staged account.
 
@@ -20,8 +20,8 @@ Teen accounts become adult accounts on the church-local eighteenth birthday. Gua
 
 Preconditions: follow the verification map baseline, launch with `verify-fold up`, require `verify-fold doctor "$RUN_ID"` to print `ok`, and load the exported run environment. Birthday actions run automatically at church-local midnight. The deterministic checks use the same rollover function with a fake clock in `go test ./... -run 'TestAgeRollover|TestNextAgeRollover'` against isolated test databases.
 
-- **Adulthood:** before the local birthday, a waiting teen's `getByRole('heading', {name:'Waiting for consent'})` remains visible. After rollover, click `getByRole('button', {name:'Check account status'})`. The same session enters Fold. The admin's Users row loses its Teen badge, and More → Consent history still shows the old consent records.
-- **Household access:** after a converted teen reaches 18, open Profile and rename their household. The change saves. Adding a household child creates a pending link that still needs an admin's confirmation.
+- **Adulthood:** before the local birthday, a pending teen cannot log in; the public explanation has `getByRole('heading', {name:'Your account is almost ready'})` and still offers public browsing. After rollover, choose **Back to log in** and submit the password to start a fresh session, subject to any separate approval or suspension requirements. A former waiting cookie never becomes a login (DEC-85). The admin's Users row loses its Teen badge, and More → Consent history still shows the old consent records.
+- **Household access:** after a converted teen reaches 18, open **Profile**, then **Household**, and rename their household. The change saves. Adding a household child creates a pending link that still needs an admin's confirmation.
 - **Guardian notice:** open Alerts as a confirmed guardian and follow the household age notice into Profile. The notice asks you to review the age group. The child keeps their existing sign-ups and has no account. Reading or archiving the notice does not create another notice on later days.
 - **Suspended conversion:** after the staged person's eighteenth birthday, the household still sees and manages their adult household person while the account remains disabled. Admin Enable moves the existing registration IDs, answers, and waitlist places once. If the original responsible account is disabled, the move waits until that account is enabled. Other birthdays still proceed.
 - **Evidence:** save the resulting account status, retained consent history, household details, notices, and registration IDs. The fake-clock suite covers midnight in the church's zone, daylight saving changes, leap birthdays, repeated and concurrent runs, full places, confirmed-link history, and rollback/retry when a registration holder is inactive.

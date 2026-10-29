@@ -395,35 +395,63 @@ func toEventJSON(ev *models.Event) eventJSON {
 }
 
 func (a *App) groupSummary(g *models.Group) groupSummaryJSON {
-	members := memberCount(a.DB, g.ID)
-	var leader models.User
-	leaderName := ""
-	if err := a.DB.First(&leader, g.LeaderID).Error; err == nil {
-		leaderName = leader.PublicName()
+	return a.groupSummaries([]models.Group{*g})[0]
+}
+
+// groupSummaries is served only after the caller selects visible groups. Each
+// related kind is loaded once, regardless of the number of groups on the page.
+func (a *App) groupSummaries(groups []models.Group) []groupSummaryJSON {
+	out := make([]groupSummaryJSON, 0, len(groups))
+	if len(groups) == 0 {
+		return out
 	}
-	var next *time.Time
-	var row struct {
-		StartsAt time.Time `gorm:"column:starts_at"`
+	ids, leaderIDs := make([]uint, 0, len(groups)), make([]uint, 0, len(groups))
+	for _, g := range groups {
+		ids, leaderIDs = append(ids, g.ID), append(leaderIDs, g.LeaderID)
 	}
-	err := a.DB.Table("event_occurrences").
-		Select("event_occurrences.starts_at").
+	var counts []struct {
+		GroupID uint
+		Count   int64
+	}
+	a.DB.Model(&models.Membership{}).Select("memberships.group_id, count(*) AS count").Joins(listedUsers("memberships")).
+		Where("memberships.group_id IN ? AND memberships.status = ?", ids, "active").Group("memberships.group_id").Scan(&counts)
+	members := make(map[uint]int64, len(counts))
+	for _, row := range counts {
+		members[row.GroupID] = row.Count
+	}
+	var leaders []models.User
+	a.DB.Where("id IN ?", leaderIDs).Find(&leaders)
+	names := make(map[uint]string, len(leaders))
+	for _, leader := range leaders {
+		names[leader.ID] = leader.PublicName()
+	}
+	var dates []struct {
+		GroupID  uint
+		StartsAt time.Time
+	}
+	a.DB.Table("event_occurrences").Select("events.group_id, min(event_occurrences.starts_at) AS starts_at").
 		Joins("JOIN events ON events.id = event_occurrences.event_id AND events.deleted_at IS NULL").
-		Where("events.group_id = ? AND event_occurrences.status = ? AND event_occurrences.starts_at >= ?",
-			g.ID, models.OccurrenceScheduled, time.Now().UTC()).
-		Order("event_occurrences.starts_at").Limit(1).Scan(&row).Error
-	if err == nil && !row.StartsAt.IsZero() {
-		t := row.StartsAt.UTC()
-		next = &t
+		Where("events.group_id IN ? AND event_occurrences.status = ? AND event_occurrences.starts_at >= ?", ids, models.OccurrenceScheduled, time.Now().UTC()).
+		Group("events.group_id").Scan(&dates)
+	next := make(map[uint]*time.Time, len(dates))
+	for _, row := range dates {
+		if !row.StartsAt.IsZero() {
+			start := row.StartsAt.UTC()
+			next[row.GroupID] = &start
+		}
 	}
-	return groupSummaryJSON{
-		ID: g.ID, Name: g.Name, Description: g.Description, // group-ok: groupSummary is served only after CanSeeGroup
-		Tags: splitTags(g.Tags), ImageURL: g.ImageURL,
-		CoverFocalX: g.CoverFocalX, CoverFocalY: g.CoverFocalY,
-		Location: g.Location, LeaderName: leaderName, MemberCount: members, // group-ok: as above
-		NextEventAt: next,
-		Status:      g.Status, LeaderID: g.LeaderID, Visibility: g.Visibility,
-		DeletionRequested: g.DeletionRequested, MemberLimit: g.MemberLimit,
+	for _, g := range groups {
+		out = append(out, groupSummaryJSON{
+			ID: g.ID, Name: g.Name, Description: g.Description, // group-ok: callers have selected visible groups
+			Tags: splitTags(g.Tags), ImageURL: g.ImageURL,
+			CoverFocalX: g.CoverFocalX, CoverFocalY: g.CoverFocalY,
+			Location: g.Location, LeaderName: names[g.LeaderID], MemberCount: members[g.ID], // group-ok: as above
+			NextEventAt: next[g.ID],
+			Status:      g.Status, LeaderID: g.LeaderID, Visibility: g.Visibility,
+			DeletionRequested: g.DeletionRequested, MemberLimit: g.MemberLimit,
+		})
 	}
+	return out
 }
 
 // ---------------------------------------------------------------------------

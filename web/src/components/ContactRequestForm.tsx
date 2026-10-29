@@ -1,3 +1,4 @@
+import { Form } from "./ui/Form";
 import { useState } from "react";
 import { Contacts } from "../contact-api";
 import type { ContactRequest } from "../types";
@@ -31,7 +32,7 @@ export function ContactRequestForm({ subjectUserId, subjectName, contextType, co
       <p role="status">Your request was sent. Contact details stay hidden until the required approvals are complete.</p>
       <ButtonLink variant="secondary" to={`/contact-requests/${created.id}`}>View request</ButtonLink>
       <Button variant="link" onClick={onClose}>Close</Button>
-    </> : <form onSubmit={submit} className="space-y-3">
+    </> : <Form noValidate onSubmit={submit} className="space-y-3">
       <p className="text-sm text-text-muted">They choose whether to share. For a teen, both the teen and an admin must approve. Requests expire after 14 days.</p>
       {error && <FormError>{error}</FormError>}
       <Choices legend="Contact details to request">{(["email", "phone", "both"] as const).map((value) => <Radio key={value} name={`contact-fields-${contextType}-${contextId}-${subjectUserId}`} value={value} checked={fields === value} onChange={() => setFields(value)} label={value === "both" ? "Email and phone" : value === "email" ? "Email" : "Phone"} />)}</Choices>
@@ -39,6 +40,6 @@ export function ContactRequestForm({ subjectUserId, subjectName, contextType, co
         <Textarea value={reason} onChange={(e) => { setReason(e.target.value); setReasonError(""); }} rows={3} />
       </Field>
       <div className="flex flex-wrap gap-2"><Button variant="primary" type="submit" disabled={busy}>{busy ? "Sending…" : "Send request"}</Button><Button variant="secondary" onClick={onClose}>Cancel</Button></div>
-    </form>}
+    </Form>}
   </section>;
 }

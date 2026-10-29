@@ -600,28 +600,16 @@ type visibleSet struct {
 	Hosted map[uint]bool
 }
 
-// visibleEvents is the one list filter for event visibility (#75): it loads
-// the events q selects and keeps those policy.CanSeeEvent allows for the
-// viewer (nil is a signed-out visitor). An event whose group row is gone
-// (soft-deleted) is never visible, not even to an admin. Pass a query
-// already narrowed to a window where possible; TestOneEventVisibilityFilter
-// keeps a second copy of this loop out of the code.
-func (a *App) visibleEvents(viewer *models.User, q *gorm.DB) (visibleSet, error) {
-	return a.visibleEventsWith(viewer, q, false)
-}
-
-// visibleEventsWith is visibleEvents with the admin-only "show deleted
-// events" switch (DEC-68): when withDeleted is set and the viewer is an
-// admin, events of soft-deleted groups are listed too. For anyone else
-// the switch does nothing.
-func (a *App) visibleEventsWith(viewer *models.User, q *gorm.DB, withDeleted bool) (visibleSet, error) {
-	return a.eventCandidates(viewer, q, withDeleted, false)
-}
-
+// dateCandidates loads candidate series facts without granting series rights.
+// Every date list must filter each date through visibleSet.canSeeDate.
 func (a *App) dateCandidates(viewer *models.User, q *gorm.DB) (visibleSet, error) {
 	return a.eventCandidates(viewer, q, false, true)
 }
 
+// eventCandidates is the shared event visibility loader. With dates=false it
+// filters series through CanSeeEvent; dates=true only loads candidates and
+// callers must separately authorize each date, never the series. Deleted groups
+// stay hidden except for the admin-only withDeleted calendar switch (DEC-68).
 func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted, dates bool) (visibleSet, error) {
 	withDeleted = withDeleted && asPerson(viewer) != nil && asPerson(viewer).Admin
 	vs := visibleSet{ByID: map[uint]*models.Event{}, Groups: map[uint]*models.Group{}, Rels: map[uint]policy.Rel{}, Hosted: map[uint]bool{}}

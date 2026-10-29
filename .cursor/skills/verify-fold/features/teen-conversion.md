@@ -4,13 +4,13 @@ A household teen gets an account without losing household management of their ev
 
 ## How to get to it
 
-1. As a household adult, open **Profile**, then **My household**. Add a teen aged 13 to 17.
+1. As a household adult, open **Profile**, then **Household**. Add a teen aged 13 to 17.
 2. As an admin, confirm the original household guardian link.
-3. Back on the adult's Profile, choose **Create their own account** and send an invitation to the teen's own email.
+3. Back on the adult's **Profile**, open **Household**, choose **Create their own account**, and send an invitation to the teen's own email.
 4. Open the invitation, choose a password, and submit. The teen waits for admin approval. The household keeps all sign-ups.
 5. As an admin, approve the account request. The household card now says **Account waiting for consent and guardian confirmation**. The new teen account guardian link is pending, even though the original household link was confirmed.
 6. Grant account consent with admin evidence or as a confirmed guardian. Confirm the new teen-account link to an original household guardian. Either order works. Only the last prerequisite moves the sign-ups.
-7. Sign in as the teen and choose **Check account status** if the waiting page is open. The account now has normal teen access. On the household adult's Profile, the teen appears under Accounts.
+7. Sign in as the teen after all prerequisites are complete. Before then, correct credentials explain the consent requirement without creating a login; public groups and events remain available as a signed-out visitor. The account now has normal teen access. On the household adult's Profile, the teen appears under Accounts.
 
 ## Proof
 

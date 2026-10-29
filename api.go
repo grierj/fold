@@ -337,7 +337,7 @@ func (a *App) authenticatedSessionUser(c *gin.Context) (*models.User, bool) {
 	if err := a.DB.First(&user, uid).Error; err != nil {
 		return nil, false
 	}
-	if sessionVersion(session) != user.SessionVersion || !user.CanAuthenticate() {
+	if sessionVersion(session) != user.SessionVersion || !user.CanSignIn() {
 		return nil, false
 	}
 	c.Set("sessionUser", &user)
@@ -358,28 +358,6 @@ func (a *App) sessionAuth() gin.HandlerFunc {
 			return
 		}
 		c.Set("apiUser", user)
-		c.Next()
-	}
-}
-
-// restrictedSession keeps pending teens outside every ordinary API, including public reads.
-func (a *App) restrictedSession() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		user, ok := a.authenticatedSessionUser(c)
-		if ok && user.Status == models.UserPendingConsent {
-			switch c.FullPath() {
-			case "/api/v1/auth/csrf", "/api/v1/auth/me", "/api/v1/auth/logout":
-			default:
-				if err := a.auditContactRejection(c, "restricted_session"); err != nil {
-					jsonError(c, http.StatusInternalServerError, "could not complete contact operation")
-					c.Abort()
-					return
-				}
-				jsonError(c, http.StatusForbidden, "your account is waiting for consent")
-				c.Abort()
-				return
-			}
-		}
 		c.Next()
 	}
 }
@@ -557,7 +535,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// API responses carry per-user data: never store them in the HTTP cache
 	// or let back/forward replay them after logout.
 	v1.Use(func(c *gin.Context) { c.Header("Cache-Control", "no-store") })
-	v1.Use(a.restrictedSession())
 
 	// Auth (csrf token endpoint is public; login/logout need the token).
 	v1.GET("/auth/csrf", a.apiGetCSRF)
@@ -582,6 +559,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/contact-requests/:id", a.apiAuth(), a.apiGetContactRequest)
 	v1.POST("/contact-requests/:id/decision", a.apiAuth(), a.apiDecideContactRequest)
 	v1.POST("/contact-requests/:id/withdraw", a.apiAuth(), a.apiWithdrawContactRequest)
+	v1.GET("/admin/contact-history/people", a.apiAuth(), a.apiContactHistoryPeople)
 	v1.GET("/admin/users/:id/contact-history", a.apiAuth(), a.apiContactHistory)
 	v1.GET("/admin/users/:id/contact-history.csv", a.apiAuth(), a.apiExportContactHistory)
 	v1.GET("/contact-grants", a.apiAuth(), a.apiListContactGrants)
@@ -595,6 +573,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.DELETE("/me/avatar", a.apiAuth(), a.apiDeleteAvatar)
 	// Verified email change (M1.2): the token is the credential.
 	v1.POST("/me/email/verify", a.apiVerifyEmailChange)
+	v1.POST("/me/email/cancel", a.apiCancelEmailChange)
 	// Calendar feed link (M1.7): the raw token comes back only from POST.
 	v1.GET("/me/calendar-feed", a.apiAuth(), a.apiGetMyCalendarFeed)
 	v1.POST("/me/calendar-feed", a.apiAuth(), a.apiCreateMyCalendarFeed)
@@ -653,7 +632,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/groups/:id/members/:userId/departure", a.apiAuth(), a.apiRemoveGroupMemberConfirmed)
 	v1.PUT("/groups/:id/members/:userId/role", a.apiAuth(), a.apiSetMemberRole)
 	v1.POST("/groups/:id/members", a.apiAuth(), a.apiAddGroupMember)
-	v1.DELETE("/groups/:id/members/:userId", a.apiAuth(), a.apiRemoveGroupMember)
+	v1.DELETE("/groups/:id/members/:userId", a.apiAuth(), a.apiRemoveGroupMemberConfirmed)
 	v1.POST("/groups/:id/deletion-request", a.apiAuth(), a.apiRequestDeletion)
 	v1.DELETE("/groups/:id/deletion-request", a.apiAuth(), a.apiCancelDeletion)
 	v1.GET("/groups/:id/members", a.apiAuth(), a.apiGroupMembers)
@@ -719,7 +698,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.DELETE("/admin/groups/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminDeleteGroup)
 	v1.GET("/admin/groups", a.apiAuth(), a.apiAdmin(), a.apiAdminListGroups)
 	v1.POST("/admin/groups/:id/members", a.apiAuth(), a.apiAdmin(), a.apiAdminAddMember)
-	v1.DELETE("/admin/groups/:id/members/:userId", a.apiAuth(), a.apiAdmin(), a.apiAdminRemoveMember)
+	v1.DELETE("/admin/groups/:id/members/:userId", a.apiAuth(), a.apiAdmin(), a.apiRemoveGroupMemberConfirmed)
 	v1.GET("/admin/users", a.apiAuth(), a.apiAdmin(), a.apiAdminListUsers)
 	v1.POST("/admin/users", a.apiAuth(), a.apiAdmin(), a.apiAdminCreateUser)
 	v1.PUT("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminUpdateUser)

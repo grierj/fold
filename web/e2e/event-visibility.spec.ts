@@ -38,7 +38,7 @@ test("making one event invite-only previews and confirms", async ({ page, reques
 
   await page.context().clearCookies();
   await signIn(page, "quinn");
-  await page.getByRole("button", { name: "Notifications" }).click();
+  await page.getByRole("button", { name: "Alerts" }).click();
   await expect(page.getByText("Registration cancelled: Seed swap")).toBeVisible();
 });
 
@@ -55,7 +55,7 @@ test("a private series can open one date without opening its siblings", async ({
   await expect(page.getByText("Visibility changed for this date")).toBeVisible();
   await page.context().clearCookies();
   await page.goto(`/events/${event.id}/dates/${date}`);
-  await expect(page.getByRole("heading", { name: "Welcome evening" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Welcome evening", level: 1 })).toBeVisible();
   await expect(page.getByRole("button", { name: "Register as a guest" })).toBeVisible();
   await expect(page.getByText("Hidden meeting room")).toHaveCount(0);
   await expect(page.getByText("Date-only welcome")).toHaveCount(0);

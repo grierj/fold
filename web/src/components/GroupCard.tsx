@@ -4,6 +4,7 @@ import { focalPosition } from "../lib/image";
 import { formatWhen } from "../lib/when";
 import { coverSrc } from "../lib/covers";
 import { CalendarIcon } from "./icons";
+import { Chip } from "./ui/Chip";
 
 // Meetup-style group card: cover image, name, member count, next event, location.
 // Tags sit outside the link so they can toggle the directory filter.
@@ -12,11 +13,14 @@ export function GroupCard({
   group,
   onTagClick,
   selectedTags = [],
+  headingLevel = 3,
 }: {
   group: GroupSummary;
   onTagClick?: (tag: string) => void;
   selectedTags?: string[];
+  headingLevel?: 2 | 3;
 }) {
+  const Heading = headingLevel === 2 ? "h2" : "h3";
   const selectedLower = selectedTags.map((t) => t.toLowerCase());
   const isSelected = (t: string) => selectedLower.includes(t.toLowerCase());
   return (
@@ -32,7 +36,7 @@ export function GroupCard({
           />
         </div>
         <div className="px-4 pt-4">
-          <h3 className="font-bold text-lg leading-snug">{group.name}</h3>
+          <Heading className="font-bold text-lg leading-snug">{group.name}</Heading>
           {(group.status === "pending" ||
             group.status === "archived" ||
             group.visibility !== "public") && (
@@ -61,20 +65,9 @@ export function GroupCard({
         <div className="px-4 pt-2 flex flex-wrap gap-1">
           {group.tags.slice(0, 3).map((t) =>
             onTagClick ? (
-              <button
-                key={t}
-                type="button"
-                onClick={() => onTagClick(t)}
-                aria-pressed={isSelected(t)}
-                className={
-                  isSelected(t)
-                    ? "inline-flex min-h-6 min-w-6 justify-center items-center gap-0.5 text-xs font-semibold bg-primary text-primary-foreground rounded-full px-2 py-0.5"
-                    : "inline-flex min-h-6 min-w-6 justify-center items-center text-xs font-medium bg-sunken text-text-muted hover:bg-border rounded-full px-2 py-0.5"
-                }
-              >
-                {isSelected(t) && <span aria-hidden="true">✓</span>}
+              <Chip key={t} size="sm" selected={isSelected(t)} onClick={() => onTagClick(t)}>
                 {t}
-              </button>
+              </Chip>
             ) : (
               <span
                 key={t}

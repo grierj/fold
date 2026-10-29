@@ -19,7 +19,7 @@ test("an admin schedules a church-wide event in the church time zone", async ({ 
   await page.getByRole("button", { name: "Schedule event" }).click();
 
   await expect(page).toHaveURL(/\/events\/\d+$/);
-  await expect(page.getByRole("heading", { name: "Church potluck" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Church potluck", level: 1 })).toBeVisible();
   await expect(page.getByText("Bring a side dish.")).toBeVisible();
   await expect(page.getByText("Hosted by Fold e2e")).toBeVisible();
 
@@ -76,7 +76,7 @@ test("opening an invite-only group's event hides the group and the names", async
   await signOut(page);
 
   await page.goto(`/events/${event.id}`);
-  await expect(page.getByRole("heading", { name: "Quiet supper" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Quiet supper", level: 1 })).toBeVisible();
   await expect(page.getByText("Hosted by Fold e2e")).toBeVisible();
   await expect(page.getByText("1 going")).toBeVisible();
   await expect(page.getByText("Hidden Care")).toHaveCount(0);
@@ -154,7 +154,7 @@ test("a non-admin host can edit the church-wide event they host", async ({ page,
   await page.getByRole("button", { name: "Edit event" }).click();
   await page.getByLabel("Title").fill("Host night revised");
   await page.getByRole("button", { name: "Save series" }).click();
-  await expect(page.getByRole("heading", { name: "Host night revised" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Host night revised", level: 1 })).toBeVisible();
 
   await page.goto("/events/new");
   await expect(page.getByText("Only an admin can schedule a church-wide event.")).toBeVisible();

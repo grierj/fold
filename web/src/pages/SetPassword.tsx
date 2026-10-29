@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AccountRequests } from "../api";
@@ -29,9 +30,11 @@ export function SetPassword() {
     setBusy(true);
     setError(null);
     try {
-      await AccountRequests.confirm(token, password);
+      const result = await AccountRequests.confirm(token, password);
+      setPassword("");
+      setConfirm("");
       await refresh();
-      navigate("/", { replace: true });
+      navigate(result.pendingConsent ? "/waiting-for-consent" : "/", { replace: true });
     } catch (err) {
       setError(
         errorCode(err) === "link_expired"
@@ -60,7 +63,7 @@ export function SetPassword() {
   return (
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-6">Set your password</h1>
-      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
         {error && <FormError>{error}</FormError>}
         <Field id="sp-password" label="Password" hint="Must be at least 10 characters.">
           <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
@@ -71,7 +74,7 @@ export function SetPassword() {
         <Button variant="primary" layout="w-full" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Set password"}
         </Button>
-      </form>
+      </Form>
     </div>
   );
 }

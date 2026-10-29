@@ -27,11 +27,7 @@ import (
 func (a *App) apiPendingGroups(c *gin.Context) {
 	var groups []models.Group
 	a.DB.Where("status = ?", models.GroupPending).Order("created_at").Find(&groups)
-	out := make([]groupSummaryJSON, 0, len(groups))
-	for i := range groups {
-		out = append(out, a.groupSummary(&groups[i]))
-	}
-	c.JSON(http.StatusOK, gin.H{"groups": out})
+	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
 }
 
 // apiApproveGroup and apiRejectGroup decide a pending group. Both are
@@ -131,31 +127,76 @@ type guardianLinkJSON struct {
 }
 
 func (a *App) toGuardianLinkJSON(link *models.GuardianLink) guardianLinkJSON {
+	return a.guardianLinksJSON([]models.GuardianLink{*link})[0]
+}
+
+func (a *App) guardianLinksJSON(links []models.GuardianLink) []guardianLinkJSON {
+	out := make([]guardianLinkJSON, 0, len(links))
+	if len(links) == 0 {
+		return out
+	}
+	var userIDs, personIDs []uint
+	for _, link := range links {
+		userIDs = append(userIDs, link.GuardianUserID)
+		if link.TeenUserID != nil {
+			userIDs = append(userIDs, *link.TeenUserID)
+		}
+		if link.PersonID != nil {
+			personIDs = append(personIDs, *link.PersonID)
+		}
+	}
+	var users []models.User
+	a.DB.Unscoped().Where("id IN ?", userIDs).Find(&users)
+	userByID := make(map[uint]models.User, len(users))
+	for _, user := range users {
+		userByID[user.ID] = user
+	}
+	var people []models.HouseholdPerson
+	if len(personIDs) > 0 {
+		a.DB.Unscoped().Where("id IN ?", personIDs).Find(&people)
+	}
+	personByID := make(map[uint]models.HouseholdPerson, len(people))
+	var householdIDs []uint
+	for _, person := range people {
+		personByID[person.ID] = person
+		householdIDs = append(householdIDs, person.HouseholdID)
+	}
+	var households []models.Household
+	if len(householdIDs) > 0 {
+		a.DB.Where("id IN ?", householdIDs).Find(&households)
+	}
+	householdByID := make(map[uint]models.Household, len(households))
+	for _, household := range households {
+		householdByID[household.ID] = household
+	}
+	for _, link := range links {
+		out = append(out, presentGuardianLink(link, userByID, personByID, householdByID))
+	}
+	return out
+}
+
+func presentGuardianLink(link models.GuardianLink, users map[uint]models.User, people map[uint]models.HouseholdPerson, households map[uint]models.Household) guardianLinkJSON {
+	name := func(id uint) string {
+		if user, ok := users[id]; ok {
+			return user.PublicName()
+		}
+		return "Someone"
+	}
 	out := guardianLinkJSON{
-		ID: link.ID, GuardianUserID: link.GuardianUserID, GuardianName: nameIn(a.DB, link.GuardianUserID),
+		ID: link.ID, GuardianUserID: link.GuardianUserID, GuardianName: name(link.GuardianUserID),
 		TeenUserID: link.TeenUserID, PersonID: link.PersonID, Status: link.Status,
 		CheckNote: link.CheckNote, ConfirmedBy: link.ConfirmedBy,
 		CreatedAt: link.CreatedAt, DecidedAt: link.DecidedAt,
 	}
 	if link.PersonID != nil {
-		var person models.HouseholdPerson
-		if err := a.DB.Unscoped().First(&person, *link.PersonID).Error; err == nil {
-			out.PersonName = person.FullName()
-			out.PersonKind = person.Kind
-			out.BirthDate = formatBirthDate(person.BirthDate)
-			out.HouseholdID = person.HouseholdID
-			var household models.Household
-			if err := a.DB.First(&household, person.HouseholdID).Error; err == nil {
-				out.HouseholdName = household.Name
-			}
+		if person, ok := people[*link.PersonID]; ok {
+			out.PersonName, out.PersonKind = person.FullName(), person.Kind
+			out.BirthDate, out.HouseholdID = formatBirthDate(person.BirthDate), person.HouseholdID
+			out.HouseholdName = households[person.HouseholdID].Name
 		}
 	} else if link.TeenUserID != nil {
-		out.PersonName = nameIn(a.DB, *link.TeenUserID)
-		out.PersonKind = models.HouseholdTeen
-		var teen models.User
-		if err := a.DB.Unscoped().First(&teen, *link.TeenUserID).Error; err == nil {
-			out.BirthDate = formatBirthDate(teen.BirthDate)
-		}
+		out.PersonName, out.PersonKind = name(*link.TeenUserID), models.HouseholdTeen
+		out.BirthDate = formatBirthDate(users[*link.TeenUserID].BirthDate)
 	}
 	return out
 }
@@ -173,10 +214,7 @@ func (a *App) apiListGuardianLinks(c *gin.Context) {
 	}
 	var rows []models.GuardianLink
 	q.Find(&rows)
-	out := make([]guardianLinkJSON, 0, len(rows))
-	for i := range rows {
-		out = append(out, a.toGuardianLinkJSON(&rows[i]))
-	}
+	out := a.guardianLinksJSON(rows)
 	nominations, err := unresolvedGuardianNominations(a.DB)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load guardian nominations")
@@ -596,10 +634,18 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 					bump = true
 				}
 			}
+			if _, changed := updates["email"]; changed {
+				if err := revokeAccountTokens(tx, u.ID); err != nil {
+					return err
+				}
+			}
 			if bump {
 				updates["session_version"] = gorm.Expr("session_version + 1")
 			}
 			if updates["status"] == models.UserDisabled {
+				if err := revokeAccountTokens(tx, u.ID); err != nil {
+					return err
+				}
 				if u.Status == models.UserDisabled {
 					if err := tx.Model(u).Updates(updates).Error; err != nil {
 						return err
@@ -712,6 +758,9 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(u, u.ID).Error; err != nil {
 			return err
 		}
+		if err := revokeAccountTokens(tx, u.ID); err != nil {
+			return err
+		}
 		ids, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
 		emailed = append(emailed, ids...)
 		if err != nil {
@@ -771,7 +820,31 @@ func (a *App) apiAdminResetPassword(c *gin.Context) {
 			"password must be at least "+strconv.Itoa(minPasswordLength)+" characters")
 		return
 	}
-	if err := a.setPassword(u, body.Password); err != nil {
+	var prepared models.User
+	if err := prepared.SetPassword(body.Password); err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not reset password")
+		return
+	}
+	me := apiUser(c)
+	err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
+		actor, target, err := lockConsentUsers(tx, me.ID, u.ID)
+		if err != nil {
+			return err
+		}
+		if !actor.CanSignIn() || !policy.IsAdmin(asPerson(actor)) || actor.SessionVersion != me.SessionVersion {
+			return errSecuritySession
+		}
+		if err := replacePasswordIn(tx, target, *prepared.PasswordHash); err != nil {
+			return err
+		}
+		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.PasswordResetCompleted,
+			TargetType: "user", TargetID: target.ID, IP: c.ClientIP(), Meta: map[string]any{"byAdmin": true}})
+	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not reset password")
 		return
 	}
@@ -785,11 +858,7 @@ func (a *App) apiAdminResetPassword(c *gin.Context) {
 func (a *App) apiAdminListGroups(c *gin.Context) {
 	var groups []models.Group
 	a.DB.Order("name").Find(&groups)
-	out := make([]groupSummaryJSON, 0, len(groups))
-	for i := range groups {
-		out = append(out, a.groupSummary(&groups[i]))
-	}
-	c.JSON(http.StatusOK, gin.H{"groups": out})
+	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
 }
 
 func (a *App) apiAdminAddMember(c *gin.Context) {
@@ -867,18 +936,10 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 	}})
 }
 
-func (a *App) apiAdminRemoveMember(c *gin.Context) {
-	a.apiRemoveGroupMemberConfirmed(c)
-}
-
 func (a *App) apiDeletionRequests(c *gin.Context) {
 	var groups []models.Group
 	a.DB.Where("deletion_requested = ?", true).Order("updated_at").Find(&groups)
-	out := make([]groupSummaryJSON, 0, len(groups))
-	for i := range groups {
-		out = append(out, a.groupSummary(&groups[i]))
-	}
-	c.JSON(http.StatusOK, gin.H{"groups": out})
+	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
 }
 
 // apiRejectDeletion keeps the group and clears the leader's request.

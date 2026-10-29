@@ -54,7 +54,7 @@ test("an admin signing in after a member's new group sees the notice", async ({ 
   await signOut(page);
 
   await signIn(page, "grier");
-  const bell = page.getByRole("button", { name: /Notifications/ });
+  const bell = page.getByRole("button", { name: /Alerts/ });
   await expect(bell).toHaveAccessibleName(/waiting on you/);
   await bell.click();
   const notice = page.getByRole("link", { name: /Sam Member started a group: Sam's new study/ });

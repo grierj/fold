@@ -273,6 +273,95 @@ func TestHouseholdConversionMailLimitCountsResends(t *testing.T) {
 	}
 }
 
+func TestHouseholdConversionUnavailableEmailsConsumeActorLimit(t *testing.T) {
+	app := testApp(t)
+	admin, _ := openGroup(t, app, "ConversionUnavailableLimit")
+	holder, c, person, _ := householdFamily(t, app, admin, "unavailablelimitparent")
+	newTestGroup(t, app, holder, "Holder Leads", models.GroupActive)
+	known := newTestUser(t, app, "conversionknown", "password1234", models.RoleMember)
+
+	for i := 0; i < leaderInviteDailyLimit; i++ {
+		apiDo(t, c, "POST", conversionPath(person.ID), map[string]any{"email": known.Email}, http.StatusConflict)
+	}
+	for _, email := range []string{known.Email, "conversionnew@example.com"} {
+		raw := apiDo(t, c, "POST", conversionPath(person.ID), map[string]any{"email": email}, http.StatusCreated)
+		var body struct {
+			Conversion conversionJSON `json:"conversion"`
+		}
+		if err := json.Unmarshal([]byte(raw), &body); err != nil {
+			t.Fatal(err)
+		}
+		if body.Conversion.Email != email || body.Conversion.State != "pending" || !body.Conversion.ExpiresAt.After(time.Now()) {
+			t.Fatalf("suppressed conversion metadata for %s: %+v", email, body.Conversion)
+		}
+	}
+
+	for _, email := range []string{known.Email, "conversionnew@example.com"} {
+		apiDo(t, c, "POST", "/api/v1/invitations", map[string]any{"email": email}, http.StatusTooManyRequests)
+	}
+
+	var refused, invitations, mails int64
+	app.DB.Model(&models.AuditLog{}).Where("actor_id = ? AND action = ?", holder.ID, audit.InvitationRefused).Count(&refused)
+	app.DB.Model(&models.Invitation{}).Where("email IN ?", []string{known.Email, "conversionnew@example.com"}).Count(&invitations)
+	app.DB.Model(&models.MailOutbox{}).Where("to_address IN ?", []string{known.Email, "conversionnew@example.com"}).Count(&mails)
+	if refused != leaderInviteDailyLimit {
+		t.Fatalf("durable household refusals: got %d, want %d", refused, leaderInviteDailyLimit)
+	}
+	if invitations != 0 || mails != 0 {
+		t.Fatalf("refused or suppressed candidates had side effects: invitations=%d mails=%d", invitations, mails)
+	}
+}
+
+func TestHouseholdConversionIdempotentCreatesConsumeActorLimit(t *testing.T) {
+	app := testApp(t)
+	admin, _ := openGroup(t, app, "ConversionIdempotentLimit")
+	holder, c, person, _ := householdFamily(t, app, admin, "idempotentlimitparent")
+	const email = "idempotentlimit@example.com"
+
+	raw := apiDo(t, c, "POST", conversionPath(person.ID), map[string]any{"email": email}, http.StatusCreated)
+	var initialBody struct {
+		Conversion conversionJSON `json:"conversion"`
+	}
+	if err := json.Unmarshal([]byte(raw), &initialBody); err != nil {
+		t.Fatal(err)
+	}
+	var before models.Invitation
+	if err := app.DB.Where("household_person_id = ?", person.ID).First(&before).Error; err != nil {
+		t.Fatal(err)
+	}
+	for range leaderInviteDailyLimit - 1 {
+		apiDo(t, c, "POST", conversionPath(person.ID), map[string]any{"email": email}, http.StatusCreated)
+	}
+
+	raw = apiDo(t, c, "POST", conversionPath(person.ID)+"/resend", nil, http.StatusOK)
+	var suppressedBody struct {
+		Conversion conversionJSON `json:"conversion"`
+	}
+	if err := json.Unmarshal([]byte(raw), &suppressedBody); err != nil {
+		t.Fatal(err)
+	}
+	var after models.Invitation
+	if err := app.DB.First(&after, before.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	var created, resent, refused, mails int64
+	app.DB.Model(&models.AuditLog{}).Where("actor_id = ? AND action = ?", holder.ID, audit.InvitationCreated).Count(&created)
+	app.DB.Model(&models.AuditLog{}).Where("actor_id = ? AND action = ?", holder.ID, audit.InvitationResent).Count(&resent)
+	app.DB.Model(&models.AuditLog{}).Where("actor_id = ? AND action = ?", holder.ID, audit.InvitationRefused).Count(&refused)
+	app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", email).Count(&mails)
+	if after.ID != before.ID || after.TokenHash != before.TokenHash || !after.ExpiresAt.Equal(before.ExpiresAt) {
+		t.Fatalf("suppressed resend changed invitation: before=%+v after=%+v", before, after)
+	}
+	if suppressedBody.Conversion.Email != initialBody.Conversion.Email ||
+		suppressedBody.Conversion.State != initialBody.Conversion.State ||
+		suppressedBody.Conversion.ExpiresAt.UnixMicro() != initialBody.Conversion.ExpiresAt.UnixMicro() {
+		t.Fatalf("suppressed resend changed metadata: before=%+v after=%+v", initialBody.Conversion, suppressedBody.Conversion)
+	}
+	if created != 1 || resent != 0 || refused != leaderInviteDailyLimit-1 || mails != 1 {
+		t.Fatalf("idempotent attempt accounting: created=%d resent=%d refused=%d mails=%d", created, resent, refused, mails)
+	}
+}
+
 func TestHouseholdConversionConcurrentDoubleAccept(t *testing.T) {
 	app := testApp(t)
 	admin, _ := openGroup(t, app, "ConversionRace")

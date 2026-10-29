@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"fold/internal/audit"
 	"fold/models"
 	"net/http"
@@ -9,6 +10,77 @@ import (
 	"testing"
 	"time"
 )
+
+func TestGuardianLinkListReadBudgetAndValues(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	client := loginAPI(t, app, "admin", "pw")
+	h := models.Household{Name: "Family", CreatedBy: admin.ID}
+	if err := app.DB.Create(&h).Error; err != nil {
+		t.Fatal(err)
+	}
+	birth := time.Date(2012, 1, 2, 0, 0, 0, 0, time.UTC)
+	var baseline int64
+	for i := 1; i <= 30; i++ {
+		link := models.GuardianLink{GuardianUserID: admin.ID, Status: models.GuardianPending}
+		if i%2 == 1 {
+			person := models.HouseholdPerson{HouseholdID: h.ID, FirstName: "Child", LastName: fmt.Sprint(i), Kind: models.HouseholdChild, BirthDate: &birth, CreatedBy: admin.ID}
+			if err := app.DB.Create(&person).Error; err != nil {
+				t.Fatal(err)
+			}
+			link.PersonID = &person.ID
+			// History must retain a soft-deleted person's name and age data.
+			if i == 1 {
+				if err := app.DB.Delete(&person).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+		} else {
+			teen := models.User{Name: fmt.Sprintf("Teen %d", i), Email: fmt.Sprintf("teen%d@example.com", i), Role: models.RoleMember, Status: models.UserPendingConsent, AccountType: models.AccountTeen, BirthDate: &birth}
+			if err := app.DB.Create(&teen).Error; err != nil {
+				t.Fatal(err)
+			}
+			link.TeenUserID = &teen.ID
+		}
+		if err := app.DB.Create(&link).Error; err != nil {
+			t.Fatal(err)
+		}
+		if i != 3 && i != 30 {
+			continue
+		}
+		counter := countDBReads(t, app.DB)
+		w := client.do("GET", "/api/v1/admin/guardian-links?status=all", nil, false)
+		reads := counter.Reads()
+		counter.Stop()
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Links []guardianLinkJSON `json:"guardianLinks"`
+		}
+		decodeJSON(t, w, &body)
+		if len(body.Links) != i {
+			t.Fatalf("got %d links want %d", len(body.Links), i)
+		}
+		for _, got := range body.Links {
+			if got.GuardianName != admin.PublicName() || got.BirthDate != "2012-01-02" || got.PersonName == "" {
+				t.Fatalf("wrong link: %+v", got)
+			}
+			if got.PersonID != nil && (got.HouseholdName != h.Name || got.HouseholdID != h.ID || got.PersonKind != models.HouseholdChild) {
+				t.Fatalf("wrong household link: %+v", got)
+			}
+			if got.TeenUserID != nil && got.PersonKind != models.HouseholdTeen {
+				t.Fatalf("wrong teen link: %+v", got)
+			}
+		}
+		if i == 3 {
+			baseline = reads
+		}
+		if reads != baseline || reads > 10 {
+			t.Fatalf("%d links: %d reads baseline%d cap10", i, reads, baseline)
+		}
+	}
+}
 
 func TestAdminUserCRUD(t *testing.T) {
 	app := testApp(t)
@@ -543,12 +615,12 @@ func TestAdminEditCannotBypassTeenConsent(t *testing.T) {
 	if u := reload(); u.Status != models.UserPendingConsent {
 		t.Fatalf("re-enabled teen: %s, want pending_consent", u.Status)
 	}
-	if code, _ := tryLogin(t, app, "", teen.Email, "password1234"); code != http.StatusOK {
-		t.Fatalf("teen restricted sign-in: %d", code)
+	if code, _ := tryLogin(t, app, "", teen.Email, "password1234"); code != http.StatusForbidden {
+		t.Fatalf("teen signed in without consent: %d", code)
 	}
-	pending := loginAPI(t, app, teen.Email, "password1234")
-	if w := pending.do("GET", "/api/v1/groups", nil, false); w.Code != http.StatusForbidden {
-		t.Fatalf("pending teen got ordinary access: %d", w.Code)
+	pending := newAPIClient(t, app)
+	if w := pending.do("GET", "/api/v1/groups", nil, false); w.Code != http.StatusOK {
+		t.Fatalf("pending teen could not browse publicly: %d", w.Code)
 	}
 
 	// An adult member can still be promoted and re-enabled as before.

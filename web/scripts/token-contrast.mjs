@@ -30,6 +30,8 @@ const pairs = [
 // Component rules: which role a class uses for a non-text edge that must reach 3:1.
 const edges = [...css.matchAll(/\.(btn-[\w-]+|chip[^{]*?)\s*\{\s*@apply([^;]*);/g)].flatMap(([, cls, body]) =>
   [...body.matchAll(/(?:^|\s)border-([a-z-]+)(?=\s|$)/g)].map(m => m[1]).filter(r => vars[r] && r !== "border").map(r => [cls.trim(), r]));
+const animatedDisabledPairs = [...css.matchAll(/\.(btn-[\w-]+)\s*\{\s*@apply([^;]*);/g)]
+  .filter(([, , body]) => /(?:^|\s)transition-(?:colors|all)(?=\s|$)/.test(body) && /(?:^|\s)disabled:text-[\w-]+(?=\s|$)/.test(body) && /(?:^|\s)disabled:bg-[\w-]+(?=\s|$)/.test(body));
 let fail = 0;
 for (const [f, b, min, why = ""] of pairs) {
   const F = resolve(f), B = resolve(b);
@@ -40,5 +42,9 @@ for (const [f, b, min, why = ""] of pairs) {
 for (const [cls, role] of edges) {
   const r = ratio(resolve(role), resolve("surface")); const ok = r >= 3; if (!ok) fail++;
   console.log(`${ok ? "pass" : "FAIL"} ${r.toFixed(2).padStart(5)}:1 >= 3  .${cls} edge border-${role} on surface`);
+}
+for (const [, cls] of animatedDisabledPairs) {
+  fail++;
+  console.log(`FAIL .${cls} animates both disabled text and background; contrasting text can fade through an unreadable intermediate state`);
 }
 process.exit(fail ? 1 : 0);

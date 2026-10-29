@@ -1,3 +1,4 @@
+import { Form } from "./ui/Form";
 import { Link } from "react-router-dom";
 import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequestField";
 import { Button } from "./ui/Button";
@@ -176,10 +177,10 @@ function SeriesWholeActions({ disabled, onApply }: {
 }) {
   return <div className="mt-3 border-t border-border pt-3">
     <p className="text-sm font-semibold mb-2">Answer the whole series</p>
-    <div className="flex flex-wrap gap-2">
-      <Button variant="secondary" disabled={disabled} onClick={() => onApply("going")}>Going to all dates</Button>
-      <Button variant="secondary" disabled={disabled} onClick={() => onApply("maybe")}>Maybe for all</Button>
-      <Button variant="danger-outline" disabled={disabled} onClick={() => onApply("declined")}>Can&apos;t go to any</Button>
+    <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2">
+      <Button variant="secondary" layout="w-full sm:w-auto" disabled={disabled} onClick={() => onApply("going")}>Going to all dates</Button>
+      <Button variant="secondary" layout="w-full sm:w-auto" disabled={disabled} onClick={() => onApply("maybe")}>Maybe for all</Button>
+      <Button variant="danger-outline" layout="w-full sm:w-auto" disabled={disabled} onClick={() => onApply("declined")}>Can&apos;t go to any</Button>
     </div>
     <p className="text-sm text-text-muted mt-2">New dates added later won&apos;t be answered for you.</p>
   </div>;
@@ -586,7 +587,7 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
     {child && d.mode === "remote" && <p className="text-sm text-text-muted">Remote attendees do not use childcare.</p>}
   </div>;
 
-  return <form ref={root} onSubmit={save} className="space-y-4" aria-label="Household answers">
+  return <Form noValidate ref={root} onSubmit={save} className="space-y-4" aria-label="Household answers">
     <h4 className="font-semibold">Who will attend?</h4>
     <div className="rounded-lg border border-border p-3">
       {instance.myRegistration === "removed" ? <p>A leader or host removed your registration for this date. Ask them to add you back.</p> : <>
@@ -621,5 +622,5 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
     <p role="status" className="text-sm text-text-muted">{message}</p>
     <Button variant="primary" type="submit" disabled={disabled}>{busy ? "Saving…" : "Save answers"}</Button>
     <SeriesScopeDialog series={series} onJustThisDate={(answer) => void saveActorDate(answer)} />
-  </form>;
+  </Form>;
 }

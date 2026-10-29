@@ -1,3 +1,4 @@
+import { Form } from "./ui/Form";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Guardians, type GuardianConsentScope } from "../guardian-api";
 import type { GuardianTeen } from "../types";
@@ -88,13 +89,13 @@ export function GuardianConsentCard() {
     {error && <FormError layout="mt-3">{error}</FormError>}
     {!loaded && !loadError && <p className="text-sm mt-3">Loading your guardian links…</p>}
     {teens.map((teen) => <TeenConsentControls key={teen.linkId} teen={teen} onChanged={load} />)}
-    <form onSubmit={claim} className="border-t border-border pt-4 mt-4 space-y-3">
+    <Form noValidate onSubmit={claim} className="border-t border-border pt-4 mt-4 space-y-3">
       <h3 className="font-semibold">Request a guardian link</h3>
       <Field id="guardian-claim-email" label="Teen's email" hint="Use the email on their Fold account. An admin checks every request before you can give consent.">
         <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} maxLength={254} required />
       </Field>
       <Button variant="secondary" layout="w-full sm:w-auto" type="submit" disabled={busy}>{busy ? "Sending…" : "Request guardian link"}</Button>
       {message && <p role="status" className="text-sm">{message}</p>}
-    </form>
+    </Form>
   </section>;
 }

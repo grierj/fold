@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
-import { apiAs, email, PASSWORD, signIn, signOut } from "./helpers";
+import { apiAs, attemptPendingSignIn, email, PASSWORD, signIn, signOut } from "./helpers";
 
 async function capture(page: import("@playwright/test").Page, name: string) {
   if (!process.env.SCREENS_DIR) return;
@@ -10,7 +10,7 @@ async function capture(page: import("@playwright/test").Page, name: string) {
   }
 }
 
-test("a teen created through the admin form waits on every route, logs out, and leaves adult access intact", async ({ page, request }) => {
+test("a teen created through the admin form browses publicly but cannot sign in before consent", async ({ page, request }) => {
   await signIn(page, "grier");
   await page.goto("/admin?tab=users");
   await page.getByRole("button", { name: "New user", exact: true }).click();
@@ -27,36 +27,23 @@ test("a teen created through the admin form waits on every route, logs out, and 
   await page.getByRole("button", { name: "Create user", exact: true }).click();
   await expect(page.getByText("Waiting Teen", { exact: true })).toBeVisible();
   await signOut(page);
-  await page.goto("/login");
-  await page.getByLabel("Email", { exact: true }).fill(email("waiting-teen"));
-  await page.getByLabel("Password", { exact: true }).fill(PASSWORD);
-  await page.getByRole("button", { name: "Log in", exact: true }).click();
-  const heading = page.getByRole("heading", { name: "Waiting for consent" });
-  await expect(heading).toBeVisible();
-  await expect(heading).toBeFocused();
-  await expect(page.getByRole("navigation")).toHaveCount(0);
+  await attemptPendingSignIn(page, "waiting-teen");
   await capture(page, "teen-waiting");
   const axe = await new AxeBuilder({ page }).analyze();
   expect(axe.violations.filter((v) => v.impact === "serious" || v.impact === "critical")).toEqual([]);
-  for (const path of ["/calendar", "/groups/1", "/events/1", "/profile", "/admin"]) {
-    await page.goto(path);
-    await expect(heading).toBeVisible();
-    await expect(page.getByRole("navigation")).toHaveCount(0);
-  }
-  for (const path of ["/groups", "/calendar", "/events", "/events/1", "/me/household", "/notifications"]) {
-    const response = await page.request.get(`/api/v1${path}`);
-    expect(response.status()).toBe(403);
-    expect(response.headers()["cache-control"]).toBe("no-store");
-    expect(await response.json()).toMatchObject({ code: "consent_required" });
-  }
+  await page.getByRole("link", { name: "Browse public events" }).click();
+  await expect(page.getByRole("heading", { name: "Calendar", exact: true })).toBeVisible();
   await page.reload();
-  await expect(heading).toBeVisible();
-  await page.getByRole("button", { name: "Check account status" }).click();
-  await expect(heading).toBeVisible();
-  await page.getByRole("button", { name: "Log out", exact: true }).click();
-  await expect(page.getByRole("link", { name: "Log in", exact: true })).toBeVisible();
-  await page.goBack();
-  await expect(heading).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Calendar", exact: true })).toBeVisible();
+  await capture(page, "teen-public-calendar");
+  for (const path of ["/site", "/groups", "/calendar", "/events"]) {
+    const response = await page.request.get(`/api/v1${path}`);
+    expect(response.status()).toBe(200);
+    expect(response.headers()["cache-control"]).toBe("no-store");
+  }
+  for (const path of ["/auth/me", "/me/household", "/notifications", "/admin/users"]) {
+    expect((await page.request.get(`/api/v1${path}`)).status()).toBe(401);
+  }
   await signIn(page, "sam");
   await expect(page.getByRole("heading", { name: "Members-only circle" })).toBeVisible();
   const admin = await apiAs(request, "grier");
@@ -64,7 +51,7 @@ test("a teen created through the admin form waits on every route, logs out, and 
   expect(users.find((user: { email: string; status: string }) => user.email === email("waiting-teen"))).toMatchObject({ status: "pending_consent", accountType: "teen" });
 });
 
-test("an ordinary invitation asks the recipient's age and opens a restricted teen session", async ({ page, request }) => {
+test("an ordinary invitation asks the recipient's age without logging in a pending teen", async ({ page, request }) => {
   test.skip((await request.get("/dev/outbox")).status() !== 200, "Requires dev outbox to open the emailed invitation");
   const admin = await apiAs(request, "grier");
   await admin("POST", "/invitations", { name: "Invited Teen", email: email("invited-teen") });
@@ -82,6 +69,9 @@ test("an ordinary invitation asks the recipient's age and opens a restricted tee
   await page.getByLabel("Choose a password").fill(PASSWORD);
   await capture(page, "ordinary-invitation-age");
   await page.getByRole("button", { name: "Create my account" }).click();
-  await expect(page.getByRole("heading", { name: "Waiting for consent" })).toBeVisible();
-  expect((await page.request.get("/api/v1/events")).status()).toBe(403);
+  await expect(page.getByRole("heading", { name: "Your account is almost ready" })).toBeVisible();
+  expect((await page.request.get("/api/v1/auth/me")).status()).toBe(401);
+  expect((await page.request.get("/api/v1/events")).status()).toBe(200);
+  await page.getByRole("link", { name: "Browse public events" }).click();
+  await expect(page.getByRole("heading", { name: "Calendar", exact: true })).toBeVisible();
 });

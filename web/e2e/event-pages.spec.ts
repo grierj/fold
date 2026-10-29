@@ -30,7 +30,7 @@ test("the leader group page at 390 shows one primary action and a keyboard-frien
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page, "lee");
   await page.goto(`/groups/${room.id}`);
-  await expect(page.getByRole("heading", { name: "Room 201 class" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Room 201 class", level: 1 })).toBeVisible();
 
   // Header: Schedule event is the primary; Edit group and the cover live in More.
   await expect(page.getByRole("link", { name: "Schedule event" })).toBeVisible();
@@ -39,10 +39,10 @@ test("the leader group page at 390 shows one primary action and a keyboard-frien
   }
 
   // The series is one card: its next date plus "2 more dates in the next 90 days".
-  const card = page.locator("div.bg-surface").filter({ has: page.getByText("Segmented night", { exact: true }) });
+  const card = page.getByRole("article", { name: "Segmented night", exact: true });
   await expect(card).toHaveCount(1);
   await expect(card.getByRole("link", { name: "2 more dates in the next 90 days" })).toBeVisible();
-  const long = page.locator("div.bg-surface").filter({ has: page.getByText("Long series", { exact: true }) });
+  const long = page.getByRole("article", { name: "Long series", exact: true });
   await expect(long.getByRole("link", { name: /^1[0-2] more dates in the next 90 days$/ })).toBeVisible();
 
   // The menu works from the keyboard and opens fully on screen.
@@ -83,7 +83,7 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page, "sam");
   await page.goto(`/events/${event.id}`);
-  const first = page.locator("div.bg-surface").filter({ has: page.getByRole("group", { name: "Your answer" }) }).first();
+  const first = page.getByRole("article", { name: "Segmented night", exact: true }).first();
   const answer = first.getByRole("group", { name: "Your answer" });
   for (const name of ["Going", "Maybe", "Can't go"]) {
     const b = answer.getByRole("button", { name });
@@ -114,7 +114,7 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
   await expect(first.getByRole("button", { name: "Hide names" })).toHaveAttribute("aria-expanded", "true");
   const attendee = first.getByRole("listitem").filter({ hasText: "Sam Member" });
   await expect(attendee).toBeVisible();
-  await expect(attendee).toContainText("(maybe)");
+  await expect(first.getByRole("region", { name: "Maybe names" }).getByRole("heading", { name: "Maybe (1)", level: 4 })).toBeVisible();
 
   await answer.getByRole("button", { name: "Can't go" }).click();
   const declineScope = page.getByRole("dialog", { name: /How far should “Can't go” apply/ });

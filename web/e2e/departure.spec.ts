@@ -69,7 +69,7 @@ test("a delayed pre-leave group response cannot restore leader controls or roste
   await page.getByRole("dialog").getByRole("button", { name: "Leave group" }).click();
   await expect(page.getByRole("button", { name: "Join this group" })).toBeVisible();
   await expect(page.getByText("0 dates kept · 1 date ended.")).toBeVisible();
-  await page.getByRole("button", { name: "members" }).click();
+  await page.getByRole("button", { name: "Members", exact: true }).click();
   await expect(page.getByText("Continuing Leader", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Schedule event" })).toHaveCount(0);
 
@@ -82,6 +82,14 @@ test("a delayed pre-leave group response cannot restore leader controls or roste
   expect(violations.filter((item) => item.impact === "serious" || item.impact === "critical").map((item) => item.id)).toEqual([]);
   await screenshot(page, "departure-refresh-boundary-390");
   await page.unroute(groupRoute);
+
+  // A voluntary leaver rejoins themselves, without a manager restoring them.
+  await page.getByRole("button", { name: "Join this group" }).click();
+  await expect(page.getByRole("button", { name: "Leave group", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Schedule event" })).toHaveCount(0);
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Leave group", exact: true })).toBeVisible();
+  await screenshot(page, "departure-self-rejoined-390");
 });
 
 test("departure chooser handles self, leader and admin paths, kept private access, zero dates, cancel and stale recovery", async ({ page, request }) => {
@@ -178,7 +186,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
 
   const keptDate = underwayAt.slice(0, 10);
   await page.goto(`/events/${underway.id}/dates/${keptDate}`);
-  await expect(page.getByRole("heading", { name: "Kept underway private date" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Kept underway private date", level: 1 })).toBeVisible();
   await expect(page.getByRole("button", { name: "Going", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.goto(`/events/${underway.id}`);
   await expect(page.getByRole("heading", { name: "Event not found" })).toBeVisible();
@@ -192,7 +200,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   await page.getByRole("button", { name: "Show who's coming" }).click();
   await expect(page.getByText("Proxy Child")).toBeVisible();
   await page.goto(`/groups/${selfGroup.id}`);
-  await page.getByRole("button", { name: "members" }).click();
+  await page.getByRole("button", { name: "Members", exact: true }).click();
   await expect(page.getByText("Departure Member")).toHaveCount(0);
 
   // Leader removal keeps the note in the dialog and uses the same canonical confirmation.
@@ -203,7 +211,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   const removeEvent = await createEvent(leaderGroup.id, "Leader removal public date", removeAt, "public");
   await (await apiAs(request, removedLogin))("PUT", `/events/${removeEvent.id}/registrations`, { date: removeAt.slice(0, 10), status: "going", attendanceMode: "in_person", people: [] });
   await page.goto(`/groups/${leaderGroup.id}`);
-  await page.getByRole("button", { name: "members" }).click();
+  await page.getByRole("button", { name: "Members", exact: true }).click();
   await fromMore(page.getByText("Leader Removal Target", { exact: true }).locator("../.."), "Remove from group");
   const leaderDialog = page.getByRole("dialog", { name: "Remove Leader Removal Target?" });
   await expect(leaderDialog).toBeVisible();

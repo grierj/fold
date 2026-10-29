@@ -683,7 +683,9 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			return departureConfirmationJSON{}, err
 		}
 		zero, empty := 0, ""
-		status := models.RegDeclined
+		// Leaving cancels the answer; it is not an explicit Can't go RSVP.
+		// Unlike a manager removal, it must allow a later public self-RSVP.
+		status := models.RegCancelled
 		if facts.Origin == policy.OccurrenceOriginDepartureRemoval {
 			status = models.RegRemoved
 		}
@@ -714,8 +716,12 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 	}
 
 	oldRole := facts.SubjectMembership.Role
+	membershipStatus := memberRemoved
+	if facts.Origin == policy.OccurrenceOriginDepartureSelf {
+		membershipStatus = models.MembershipLeft
+	}
 	membershipUpdate := tx.Model(&models.Membership{}).Where("id = ? AND status = ?", facts.SubjectMembership.ID, "active").
-		Updates(map[string]any{"status": memberRemoved, "role": models.MembershipMember})
+		Updates(map[string]any{"status": membershipStatus, "role": models.MembershipMember})
 	if membershipUpdate.Error != nil {
 		return departureConfirmationJSON{}, membershipUpdate.Error
 	}
@@ -861,6 +867,8 @@ func (a *App) apiLeaveGroupConfirmed(c *gin.Context) {
 	a.departureConfirm(c, apiUser(c).ID)
 }
 
+// Both POST and legacy DELETE routes use this preview-bound confirmation path;
+// a missing snapshot is refused rather than bypassing cleanup.
 func (a *App) apiRemoveGroupMemberConfirmed(c *gin.Context) {
 	subjectID64, err := strconv.ParseUint(c.Param("userId"), 10, 64)
 	if err != nil || subjectID64 == 0 {

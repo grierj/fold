@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ func (a *App) apiLogin(c *gin.Context) {
 		return
 	}
 	email := normalizeEmail(body.Email)
-	keys := []string{"email:" + email, "ip:" + c.ClientIP()}
+	keys := []string{"email:" + email, "ip:" + rateLimitIP(c.ClientIP())}
 	ctx := c.Request.Context()
 	// The attempt is counted before the password check, atomically per key,
 	// so a burst of parallel requests can't all pass the check before any
@@ -61,7 +62,8 @@ func (a *App) apiLogin(c *gin.Context) {
 	} else if res.RowsAffected == 1 {
 		user = &found
 	}
-	if !user.CheckPassword(body.Password) || !user.CanAuthenticate() {
+	waiting := user != nil && user.Status == models.UserPendingConsent && user.AccountType == models.AccountTeen
+	if !user.CheckPassword(body.Password) || (!user.CanSignIn() && !waiting) {
 		if err := a.lockLoginKeysAtLimit(ctx, keys); err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not sign in")
 			return
@@ -74,15 +76,14 @@ func (a *App) apiLogin(c *gin.Context) {
 	// Success clears the email's counter. The IP counter stays, so one
 	// working account can't be used to reset it.
 	a.DB.Where("key = ?", keys[0]).Delete(&models.LoginThrottle{})
-	session, err := a.Store.Get(c.Request, sessionName)
-	if err != nil {
+	if err := a.signInSession(c, user); err != nil {
 		jsonError(c, http.StatusInternalServerError, "session error")
 		return
 	}
-	session.Values["userID"] = user.ID
-	session.Values["sessionVersion"] = user.SessionVersion
-	if err := session.Save(c.Request, c.Writer); err != nil {
-		jsonError(c, http.StatusInternalServerError, "session error")
+	if waiting {
+		// Only a verified password earns this explanation; no account status
+		// is disclosed for an unknown address or a wrong password.
+		jsonError(c, http.StatusForbidden, "your account is waiting for consent")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(user)})
@@ -179,17 +180,6 @@ WHERE key = ? AND failures >= ?`, window, key, failureLimit(key)).Error
 
 // setPassword stores a new bcrypt hash, activates an invited account, and
 // ends existing sessions.
-func (a *App) setPassword(u *models.User, plaintext string) error {
-	if err := u.SetPassword(plaintext); err != nil {
-		return err
-	}
-	return a.DB.Model(u).Updates(map[string]interface{}{
-		"password_hash":   *u.PasswordHash,
-		"status":          gorm.Expr("CASE WHEN status = ? THEN ? ELSE status END", models.UserInvited, models.UserActive),
-		"session_version": gorm.Expr("session_version + 1"),
-	}).Error
-}
-
 // apiChangePassword lets the current user replace their password.
 // This browser stays logged in; other sessions for the account do not.
 func (a *App) apiChangePassword(c *gin.Context) {
@@ -211,12 +201,32 @@ func (a *App) apiChangePassword(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "current password is incorrect")
 		return
 	}
-	if err := a.setPassword(u, body.Password); err != nil {
+	var prepared models.User
+	if err := prepared.SetPassword(body.Password); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not change password")
 		return
 	}
 	var fresh models.User
-	if err := a.DB.First(&fresh, u.ID).Error; err != nil {
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		locked, err := lockCurrentCredentials(tx, u)
+		if err != nil {
+			return err
+		}
+		if err := replacePasswordIn(tx, locked, *prepared.PasswordHash); err != nil {
+			return err
+		}
+		if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.PasswordChanged,
+			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+			return err
+		}
+		fresh = *locked
+		return nil
+	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not change password")
 		return
 	}
@@ -256,16 +266,16 @@ func (a *App) apiMyGroups(c *gin.Context) {
 	var memberships []models.Membership
 	a.DB.Preload("Group").Where("user_id = ? AND status = ?", u.ID, "active").
 		Order("joined_at").Find(&memberships)
-	out := make([]groupSummaryJSON, 0, len(memberships))
+	groups := make([]models.Group, 0, len(memberships))
 	for i := range memberships {
 		// Include pending and archived groups this person still belongs to.
 		// The directory (GET /groups) stays limited to active groups.
 		if memberships[i].Group.ID == 0 {
 			continue
 		}
-		out = append(out, a.groupSummary(&memberships[i].Group))
+		groups = append(groups, memberships[i].Group)
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": out})
+	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
 }
 
 // ---------------------------------------------------------------------------
@@ -276,11 +286,10 @@ func (a *App) apiMyGroups(c *gin.Context) {
 // known or not, so the endpoint can't be used to enumerate accounts.
 const resetRequestMessage = "If that email has an account, we've sent a link"
 
-// resetThrottle limits: per client IP and per target address, per hour.
+// Password-reset requests also use the shared hourly/daily target mail caps.
 const (
-	resetIPLimit      = 10
-	resetAddressLimit = 5
-	resetWindow       = time.Hour
+	resetIPLimit = 10
+	resetWindow  = time.Hour
 )
 
 // throttleAllow counts one hit for key and reports whether it stays under
@@ -340,10 +349,10 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	}
 	email := normalizeEmail(body.Email)
 	ctx := c.Request.Context()
-	ipOK, err := a.throttleAllow(ctx, "pwreset:ip:"+c.ClientIP(), resetIPLimit, resetWindow)
+	ipOK, err := a.throttleAllow(ctx, "pwreset:ip:"+rateLimitIP(c.ClientIP()), resetIPLimit, resetWindow)
 	addrOK := true
 	if err == nil {
-		addrOK, err = a.throttleAllow(ctx, "pwreset:addr:"+email, resetAddressLimit, resetWindow)
+		addrOK, err = a.targetAllow(ctx, "pwreset:addr:"+email)
 	}
 	throttled := err != nil || !ipOK || !addrOK
 
@@ -363,6 +372,18 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	}
 	var raw string
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockContacts(tx); err != nil {
+			return err
+		}
+		// A reset request racing disable/deletion must not issue a new
+		// capability after that operation has revoked the existing ones.
+		var fresh models.User
+		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&fresh, user.ID).Error; err != nil {
+			return err
+		}
+		if fresh.Status != models.UserActive || normalizeEmail(fresh.Email) != email {
+			return errTokenInvalid
+		}
 		var err error
 		raw, err = createAccountToken(tx, models.TokenPasswordReset, user.ID, nil, tokenTTL)
 		if err != nil {
@@ -443,40 +464,37 @@ func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "password must be at least 10 characters")
 		return
 	}
-	var userID uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		tok, err := consumeAccountToken(tx, models.TokenPasswordReset, body.Token)
-		if err != nil {
-			return err
-		}
-		var u models.User
-		if err := tx.First(&u, tok.UserID).Error; err != nil || u.Status == models.UserDisabled {
-			return errTokenInvalid
-		}
-		if err := u.SetPassword(body.Password); err != nil {
-			return err
-		}
-		userID = u.ID
-		if err := tx.Model(&u).Updates(map[string]any{
-			"password_hash":   *u.PasswordHash,
-			"status":          gorm.Expr("CASE WHEN status = ? THEN ? ELSE status END", models.UserInvited, models.UserActive),
-			"session_version": gorm.Expr("session_version + 1"),
-		}).Error; err != nil {
-			return err
-		}
-		return audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.PasswordResetCompleted,
-			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
-	})
+	var fresh models.User
+	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), models.TokenPasswordReset, body.Token, body.Password)
+	if err == nil {
+		err = a.DB.Transaction(func(tx *gorm.DB) error {
+			u, err := lockAccountTokenUser(tx, models.TokenPasswordReset, body.Token)
+			if err != nil {
+				return err
+			}
+			tok, err := consumeAccountToken(tx, models.TokenPasswordReset, body.Token)
+			if err != nil {
+				return err
+			}
+			if tok.UserID != u.ID {
+				return errTokenInvalid
+			}
+			if err := replacePasswordIn(tx, u, passwordHash); err != nil {
+				return err
+			}
+			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.PasswordResetCompleted,
+				TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+				return err
+			}
+			fresh = *u
+			return nil
+		})
+	}
 	if errors.Is(err, errTokenInvalid) {
 		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
 		return
 	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not reset password")
-		return
-	}
-	var fresh models.User
-	if err := a.DB.First(&fresh, userID).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not reset password")
 		return
 	}
@@ -487,13 +505,20 @@ func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&fresh)})
 }
 
-// signInSession stores the login in the session cookie.
+// signInSession stores only an eligible login. Password setup/reset can also
+// reach here for pending teens: clear authentication (including a previous
+// account's login), while keeping CSRF so public browsing remains available.
 func (a *App) signInSession(c *gin.Context, u *models.User) error {
 	session, err := a.Store.Get(c.Request, sessionName)
 	if err != nil {
 		return err
 	}
-	session.Values["userID"] = u.ID
-	session.Values["sessionVersion"] = u.SessionVersion
+	if u.CanSignIn() {
+		session.Values["userID"] = u.ID
+		session.Values["sessionVersion"] = u.SessionVersion
+	} else {
+		delete(session.Values, "userID")
+		delete(session.Values, "sessionVersion")
+	}
 	return session.Save(c.Request, c.Writer)
 }

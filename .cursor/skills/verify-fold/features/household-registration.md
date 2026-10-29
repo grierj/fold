@@ -11,7 +11,7 @@ An adult signs up named household people independently, sees each final answer, 
 
 ## How to get to it (user POV)
 
-- Profile → My household → Add a household member, Rename or Edit address.
+- Profile → Household → Add a household member, Rename or Edit address.
 - Group → its next date → Who will attend? → Save answers.
 - Group → more dates → event → a date → Who will attend? → Save answers.
 - Event → date's More menu → Manage sign-ups → Promote, Remove or Removed or left out → Add back.
@@ -21,7 +21,7 @@ An adult signs up named household people independently, sees each final answer, 
 
 Preconditions: follow the verification map baseline, launch with `verify-fold up`, require `verify-fold doctor "$RUN_ID"` to print `ok`, and load the exported run environment. Use separate adult holder, unrelated member, event leader and admin accounts. Use a scheduled event starting within the next 24 hours for care-note proof, and another beyond that window. Use public visibility, independent in-person/remote limits and childcare.
 
-- **Profile:** `await page.goto('/profile')`; click `getByRole('button', {name:'Rename'})`, fill `getByLabel(/^Household name/)` and `getByLabel(/^Address/)`, then click `getByRole('button', {name:'Save household'})`. Check success and focus return. Reload and check both saved values. Clear Address and save again. Repeat after removing all household people; the household name/address remain.
+- **Profile:** `await page.goto('/profile/household')`; click `getByRole('button', {name:'Rename'})`, fill `getByLabel(/^Household name/)` and `getByLabel(/^Address/)`, then click `getByRole('button', {name:'Save household'})`. Check success and focus return. Reload and check both saved values. Clear Address and save again. Repeat after removing all household people; the household name/address remain.
 - **Create:** click `getByRole('button', {name:'Add a household member'})`. Add adult Mary with a birth date and child Kit with a birth date and long care notes. Before confirmation, the RSVP checkbox for Kit is disabled with “Waiting for an admin to confirm”. Confirm through the admin's Approvals page and reload as holder.
 - **RSVP from both entry points:** open the group and then the event's date, select `getByRole('checkbox', {name:'Kit', exact:true})`, choose their mode and `getByRole('checkbox', {name:'Childcare for Kit'})`. Save with `getByRole('button', {name:'Save answers'})`. First prove child-only attendance, then independent Me/Mary/Kit answers. Force one waitlisted answer and check the result names every touched person without claiming all are going. Unselect a saved person and check their explicit decline. On a refused care request, fields and unnamed Ages remain.
 - **Manager:** open the date's More menu, choose `getByRole('menuitem', {name:'Manage sign-ups'})`. Check `Kit · … household (via …)`, Child/Teen and Remote badges and integer age. Expand `getByRole('button', {name:'Show full care notes for Kit'})`; check `aria-expanded` and `aria-controls`, then collapse. Remove Kit and use Add back. Force the row's own mode full and accept the explicit over-capacity confirmation.

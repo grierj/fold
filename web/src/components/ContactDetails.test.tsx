@@ -10,14 +10,20 @@ it("renders no contact details or request controls when fields are omitted", () 
 
 it("renders only the supplied authorized contact fields", () => {
   const view = render(<ContactDetails email="pat@example.com" phone="208-555-0100" />);
-  expect(screen.getByText("Email: pat@example.com")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "pat@example.com" })).toHaveAttribute("href", "mailto:pat%40example.com");
   expect(screen.getByText("Phone: 208-555-0100")).toBeInTheDocument();
   view.rerender(<ContactDetails email="pat@example.com" />);
-  expect(screen.getByText("Email: pat@example.com")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "pat@example.com" })).toHaveClass("min-h-11", "break-all");
   expect(screen.queryByText(/Phone:/)).not.toBeInTheDocument();
   view.rerender(<ContactDetails phone="208-555-0100" />);
-  expect(screen.queryByText(/Email:/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Email:|@/)).not.toBeInTheDocument();
   expect(screen.getByText("Phone: 208-555-0100")).toBeInTheDocument();
+});
+
+it("encodes an address rather than interpreting it as mail headers", () => {
+  render(<ContactDetails email="pat?subject=hello@example.com" />);
+  expect(screen.getByRole("link")).toHaveAttribute("href", "mailto:pat%3Fsubject%3Dhello%40example.com");
 });
 
 it("does not invent placeholders for blank contact values", () => {

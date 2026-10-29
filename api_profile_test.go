@@ -118,7 +118,10 @@ func TestVerifiedEmailChange(t *testing.T) {
 	ac := loginAPI(t, app, "alice", "password1234")
 	other := loginAPI(t, app, "alice", "password1234") // a second session
 
-	w := ac.do("PUT", "/api/v1/me", map[string]string{"email": "alice.new@example.com"}, true)
+	w := ac.do("PUT", "/api/v1/me", map[string]string{
+		"email":           "alice.new@example.com",
+		"currentPassword": "password1234",
+	}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("request change: %d %s", w.Code, w.Body.String())
 	}
@@ -177,6 +180,74 @@ func TestVerifiedEmailChange(t *testing.T) {
 
 	// Login works with the new address.
 	loginAPI(t, app, "alice.new", "password1234")
+}
+
+func TestEmailChangeRequiresCurrentPassword(t *testing.T) {
+	app := testApp(t)
+	alice := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	known := newTestUser(t, app, "known", "password1234", models.RoleMember)
+	ac := loginAPI(t, app, "alice", "password1234")
+
+	for _, attempt := range []struct {
+		name     string
+		email    string
+		password string
+	}{
+		{name: "missing password known address", email: known.Email},
+		{name: "missing password new address", email: "new@example.com"},
+		{name: "wrong password known address", email: known.Email, password: " password1234"},
+		{name: "wrong password new address", email: "new@example.com", password: " password1234"},
+	} {
+		t.Run(attempt.name, func(t *testing.T) {
+			w := ac.do("PUT", "/api/v1/me", map[string]string{
+				"email":           attempt.email,
+				"currentPassword": attempt.password,
+			}, true)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status: %d %s", w.Code, w.Body.String())
+			}
+			var body struct {
+				Code string `json:"code"`
+			}
+			decodeJSON(t, w, &body)
+			if body.Code != "wrong_password" {
+				t.Fatalf("code: %q, want wrong_password", body.Code)
+			}
+		})
+	}
+
+	var tokens, mails, budgets int64
+	app.DB.Model(&models.AccountToken{}).Where("user_id = ? AND used_at IS NULL", alice.ID).Count(&tokens)
+	app.DB.Model(&models.MailOutbox{}).Count(&mails)
+	app.DB.Model(&models.LoginThrottle{}).Where("key LIKE ?", "emailchange:%").Count(&budgets)
+	if tokens != 0 || mails != 0 || budgets != 0 {
+		t.Fatalf("failed proof mutated state: tokens=%d mails=%d budgets=%d", tokens, mails, budgets)
+	}
+
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{
+		"email":           known.Email,
+		"currentPassword": "password1234",
+	}, http.StatusConflict)
+	var actorBudgets []models.LoginThrottle
+	app.DB.Where("key LIKE ?", "emailchange:user:"+strconv.FormatUint(uint64(alice.ID), 10)+":%").Find(&actorBudgets)
+	if len(actorBudgets) != 2 || actorBudgets[0].Failures != 1 || actorBudgets[1].Failures != 1 {
+		t.Fatalf("existing address actor cost: %+v", actorBudgets)
+	}
+
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{
+		"email":           "fresh@example.com",
+		"currentPassword": "password1234",
+	}, http.StatusOK)
+	var verifyTokens, cancelTokens int64
+	app.DB.Model(&models.AccountToken{}).Where("user_id = ? AND kind = ? AND used_at IS NULL", alice.ID, models.TokenEmailVerify).Count(&verifyTokens)
+	app.DB.Model(&models.AccountToken{}).Where("user_id = ? AND kind = ? AND used_at IS NULL", alice.ID, models.TokenEmailChangeCancel).Count(&cancelTokens)
+	app.DB.Model(&models.MailOutbox{}).Count(&mails)
+	if verifyTokens != 1 || cancelTokens != 1 || mails != 2 {
+		t.Fatalf("valid change: verify=%d cancel=%d mails=%d", verifyTokens, cancelTokens, mails)
+	}
+	if mailsTo(app, known.Email) != 0 || mailsTo(app, alice.Email) != 1 || mailsTo(app, "fresh@example.com") != 1 {
+		t.Fatalf("valid change mail recipients were not old and fresh addresses")
+	}
 }
 
 func TestUpdateMe(t *testing.T) {
@@ -238,7 +309,10 @@ func TestUpdateMeValidation(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("clear email: got %d, want 400", w.Code)
 	}
-	w = c.do("PUT", "/api/v1/me", map[string]string{"email": "other@example.com"}, true)
+	w = c.do("PUT", "/api/v1/me", map[string]string{
+		"email":           "other@example.com",
+		"currentPassword": "password1234",
+	}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("change email: got %d, want 200", w.Code)
 	}
@@ -440,25 +514,123 @@ func TestEmailChangeRateLimited(t *testing.T) {
 	newTestUser(t, app, "alice", "password1234", models.RoleMember)
 	ac := loginAPI(t, app, "alice", "password1234")
 	for i := 0; i < targetHourLimit; i++ {
-		apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"email": "victim@example.com"}, http.StatusOK)
+		apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{
+			"email":           "victim@example.com",
+			"currentPassword": "password1234",
+		}, http.StatusOK)
 	}
-	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"email": "victim@example.com"}, http.StatusOK)
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{
+		"email":           "victim@example.com",
+		"currentPassword": "password1234",
+	}, http.StatusOK)
 	var n int64
 	app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", "victim@example.com").Count(&n)
 	if n != targetHourLimit {
 		t.Fatalf("victim got %d emails, want %d", n, targetHourLimit)
 	}
 	// The per-user limit applies across targets too.
-	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"email": "other@example.com"}, http.StatusOK)
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{
+		"email":           "other@example.com",
+		"currentPassword": "password1234",
+	}, http.StatusOK)
 	// Another member can't add to the same victim either.
 	newTestUser(t, app, "bob", "password1234", models.RoleMember)
 	bc := loginAPI(t, app, "bob", "password1234")
-	apiDo(t, bc, "PUT", "/api/v1/me", map[string]string{"email": "victim@example.com"}, http.StatusOK)
+	apiDo(t, bc, "PUT", "/api/v1/me", map[string]string{
+		"email":           "victim@example.com",
+		"currentPassword": "password1234",
+	}, http.StatusOK)
 	for addr, want := range map[string]int64{"victim@example.com": targetHourLimit, "other@example.com": 0} {
 		app.DB.Model(&models.MailOutbox{}).Where("to_address = ?", addr).Count(&n)
 		if n != want {
 			t.Fatalf("%s got %d emails, want %d", addr, n, want)
 		}
+	}
+}
+
+func TestEmailChangeExistingAccountConflictsConsumeActorLimit(t *testing.T) {
+	app := testApp(t)
+	alice := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	known := newTestUser(t, app, "known", "password1234", models.RoleMember)
+	ac := loginAPI(t, app, "alice", "password1234")
+
+	for i := 0; i < targetHourLimit; i++ {
+		apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{
+			"email":           known.Email,
+			"currentPassword": "password1234",
+		}, http.StatusConflict)
+	}
+	for _, address := range []string{known.Email, "new@example.com"} {
+		w := ac.do("PUT", "/api/v1/me", map[string]string{
+			"email":           address,
+			"currentPassword": "password1234",
+		}, true)
+		if w.Code != http.StatusOK {
+			t.Fatalf("limited request for %s: %d %s", address, w.Code, w.Body.String())
+		}
+		var body struct {
+			VerificationSent bool `json:"verificationSent"`
+		}
+		decodeJSON(t, w, &body)
+		if !body.VerificationSent {
+			t.Fatalf("limited request for %s was not uniform: %s", address, w.Body.String())
+		}
+	}
+
+	var tokens, mails int64
+	app.DB.Model(&models.AccountToken{}).Where("kind = ? AND user_id = ?", models.TokenEmailVerify, alice.ID).Count(&tokens)
+	app.DB.Model(&models.MailOutbox{}).Count(&mails)
+	if tokens != 0 || mails != 0 {
+		t.Fatalf("refused changes mutated tokens or outbox: tokens=%d mails=%d", tokens, mails)
+	}
+}
+
+func TestExhaustedEmailChangeActorDoesNotSpendFreshTargetLimit(t *testing.T) {
+	app := testApp(t)
+	alice := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	known := newTestUser(t, app, "known", "password1234", models.RoleMember)
+	ac := loginAPI(t, app, "alice", "password1234")
+
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{
+		"email":           "pending@example.com",
+		"currentPassword": "password1234",
+	}, http.StatusOK)
+	var before models.AccountToken
+	if err := app.DB.Where("kind = ? AND user_id = ? AND used_at IS NULL", models.TokenEmailVerify, alice.ID).First(&before).Error; err != nil {
+		t.Fatalf("pending verification token: %v", err)
+	}
+	for i := 1; i < targetHourLimit; i++ {
+		apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{
+			"email":           known.Email,
+			"currentPassword": "password1234",
+		}, http.StatusConflict)
+	}
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{
+		"email":           "fresh@example.com",
+		"currentPassword": "password1234",
+	}, http.StatusOK)
+
+	var after models.AccountToken
+	if err := app.DB.Where("kind = ? AND user_id = ? AND used_at IS NULL", models.TokenEmailVerify, alice.ID).First(&after).Error; err != nil {
+		t.Fatalf("live verification token after limited request: %v", err)
+	}
+	if after.ID != before.ID || after.TokenHash != before.TokenHash || after.Payload != before.Payload {
+		t.Fatalf("limited request replaced live token: before=%+v after=%+v", before, after)
+	}
+	if n := mailsTo(app, "fresh@example.com"); n != 0 {
+		t.Fatalf("exhausted actor sent %d fresh-address emails", n)
+	}
+
+	newTestUser(t, app, "bob", "password1234", models.RoleMember)
+	bc := loginAPI(t, app, "bob", "password1234")
+	for i := 0; i < targetHourLimit; i++ {
+		apiDo(t, bc, "PUT", "/api/v1/me", map[string]string{
+			"email":           "fresh@example.com",
+			"currentPassword": "password1234",
+		}, http.StatusOK)
+	}
+	if n := mailsTo(app, "fresh@example.com"); n != targetHourLimit {
+		t.Fatalf("fresh address got %d emails from second actor, want %d", n, targetHourLimit)
 	}
 }
 

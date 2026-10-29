@@ -15,7 +15,7 @@ test("phones get a tab bar that reaches every main page, and it never covers a f
   await expect(page).toHaveURL(/\/calendar$/);
   await tabs.getByRole("link", { name: "My groups" }).click();
   await expect(page).toHaveURL(/\/my-groups$/);
-  await tabs.getByRole("link", { name: /notification/i }).click();
+  await tabs.getByRole("link", { name: /alerts/i }).click();
   await expect(page).toHaveURL(/\/notifications$/);
   await tabs.getByRole("link", { name: "Me", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Your profile" })).toBeVisible();
@@ -57,7 +57,7 @@ test("desktop keeps a top bar and no tab bar", async ({ page }) => {
 test("an admin on a phone reaches Admin from Me and can't disable or delete themselves", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 800 });
   await signIn(page, "grier");
-  await expect(page.getByRole("banner").getByRole("link", { name: "New group" })).toBeVisible();
+  await expect(page.getByRole("banner").getByRole("link", { name: "Start a group" })).toBeVisible();
   await expect(page.getByRole("banner").getByRole("link", { name: "Admin" })).toBeHidden();
   await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: "Me", exact: true }).click();
   await page.getByRole("main").getByRole("link", { name: "Admin" }).click();

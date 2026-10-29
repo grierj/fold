@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { apiAs, email, PASSWORD, signIn, signOut } from "./helpers";
+import { apiAs, attemptPendingSignIn, email, PASSWORD, signIn, signOut } from "./helpers";
 
 async function shoot(page: Page, name: string) {
   if (!process.env.SCREENS_DIR) return;
@@ -30,7 +30,7 @@ test("a household keeps its teen's sign-up until approval, consent, and the new 
   await admin("POST", `/admin/guardian-links/${person.guardianLinkId}/confirm`, { checkNote: "Known original household" });
   const registered = await parentApi("PUT", `/events/${event.id}/registrations`, { date: start.slice(0, 10), people: [{ personId: person.id, status: "going" }] });
   const registrationId = registered.people[0].registrationId;
-  await page.goto("/profile");
+  await page.goto("/profile/household");
   await page.getByRole("button", { name: "Create their own account" }).click();
   await expect(page.getByText(/The guardian link for the new account needs a fresh admin check/)).toBeVisible();
   await page.getByLabel("Their email address").fill(email(ownName));
@@ -58,7 +58,7 @@ test("a household keeps its teen's sign-up until approval, consent, and the new 
   const teen = users.find((row: { email: string }) => row.email === email(ownName));
   expect(teen).toMatchObject({ accountType: "teen", status: "pending_consent" });
   await signIn(page, parentName);
-  await page.goto("/profile");
+  await page.goto("/profile/household");
   await expect(page.getByText("Account waiting for consent and guardian confirmation", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Remove Taylor Conversion" })).toBeDisabled();
   await shoot(page, "teen-conversion-household-waiting");
@@ -75,18 +75,17 @@ test("a household keeps its teen's sign-up until approval, consent, and the new 
   const { guardianLinks } = await admin("GET", "/admin/guardian-links");
   const freshLink = guardianLinks.find((row: { teenUserId?: number; guardianUserId: number }) => row.teenUserId === teen.id && row.guardianUserId === parent.id);
   expect(freshLink).toMatchObject({ status: "pending" });
-  await signIn(page, ownName);
-  await expect(page.getByRole("heading", { name: "Waiting for consent" })).toBeVisible();
-  expect((await page.request.get("/api/v1/events")).status()).toBe(403);
+  await attemptPendingSignIn(page, ownName);
+  expect((await page.request.get("/api/v1/events")).status()).toBe(200);
   await admin("POST", `/admin/guardian-links/${freshLink.id}/confirm`, { checkNote: "Fresh teen-account guardian check" });
-  await page.getByRole("button", { name: "Check account status" }).click();
-  await expect(page.getByRole("heading", { name: "Waiting for consent" })).toHaveCount(0);
+  await signIn(page, ownName);
+  expect((await page.request.get("/api/v1/auth/me")).status()).toBe(200);
   const after = await (await page.request.get(`/api/v1/events/${event.id}`)).json();
   expect(after.occurrences[0].myRegistration).toBe("going");
   const roster = await admin("GET", `/events/${event.id}`);
   expect(roster.occurrences[0].attendees).toEqual(expect.arrayContaining([expect.objectContaining({ userId: teen.id, registrationId, status: "going", accountType: "teen" })]));
   await signIn(page, parentName);
-  await page.goto("/profile");
+  await page.goto("/profile/household");
   await expect(page.getByText("Account waiting for consent and guardian confirmation")).toHaveCount(0);
   const household = await parentApi("GET", "/me/household");
   expect(household.household.people.some((row: { id: number }) => row.id === person.id)).toBe(false);

@@ -251,32 +251,6 @@ func TestCanSeeRoster(t *testing.T) {
 	}
 }
 
-// Section 6, "Register for a public / private / invite-only event"
-// (registrations; guests come in M1.4).
-func TestCanRegister(t *testing.T) {
-	cases := []struct {
-		name string
-		p    *Person
-		g    Group
-		r    Rel
-		want bool
-	}{
-		{"member, public", adult, active(Public), none, true},
-		{"member, private", adult, active(Private), none, true},
-		{"teen, private (DEC-20)", teen, active(Private), none, true},
-		{"group member, invite-only", adult, active(InviteOnly), member, true},
-		{"outsider, invite-only", adult, active(InviteOnly), none, false},
-		{"admin, invite-only", admin, active(InviteOnly), none, true},
-		{"guest, public (not until M1.4)", guest, active(Public), none, false},
-		{"pending group", admin, pending, none, false},
-	}
-	for _, c := range cases {
-		if got := CanRegister(c.p, c.g, c.r); got != c.want {
-			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 // Section 6, "See a teen's contact details" and "See contact details of
 // adults" (DEC-31). Leadership, including co-leadership granted by another
 // leader, never reveals a teen's contact details.
@@ -346,9 +320,6 @@ func TestAccountRequestRules(t *testing.T) {
 	}
 	if CanInviteFriend(teen) || CanInviteFriend(guest) {
 		t.Error("teens and guests may not invite a friend")
-	}
-	if !CanDecideAccountRequest(admin) || CanDecideAccountRequest(adult) || CanDecideAccountRequest(teen) {
-		t.Error("only admins decide account requests")
 	}
 	if !InlineApproveAccountOK("adult", false) {
 		t.Error("a clean adult request may be approved inline")
@@ -452,34 +423,30 @@ func TestCanSeeEvent(t *testing.T) {
 	}
 }
 
-func TestCanManageAndMessageEvent(t *testing.T) {
+func TestCanManageEvent(t *testing.T) {
 	group := groupEvent(Public)
 	wide := churchEvent(Public, false)
 	hosted := churchEvent(Private, true)
 	cases := []struct {
-		name    string
-		p       *Person
-		ev      EventView
-		r       Rel
-		manage  bool
-		message bool
+		name   string
+		p      *Person
+		ev     EventView
+		r      Rel
+		manage bool
 	}{
-		{"guest", guest, wide, none, false, false},
-		{"member of a group event", adult, group, member, false, false},
-		{"leader of a group event", adult, group, leader, true, true},
-		{"stray host flag on a group event", adult, EventView{Visibility: Public, Host: true}, member, false, false},
-		{"non-host of a church-wide event", adult, wide, none, false, false},
-		{"host of a church-wide event", adult, hosted, none, true, true},
-		{"host can't manage a different church-wide event", adult, wide, none, false, false},
-		{"admin manages a group event they don't lead", admin, group, none, true, true},
-		{"host flag is a fact; assigning a teen is refused separately", teen, hosted, none, true, true},
+		{"guest", guest, wide, none, false},
+		{"member of a group event", adult, group, member, false},
+		{"leader of a group event", adult, group, leader, true},
+		{"stray host flag on a group event", adult, EventView{Visibility: Public, Host: true}, member, false},
+		{"non-host of a church-wide event", adult, wide, none, false},
+		{"host of a church-wide event", adult, hosted, none, true},
+		{"host can't manage a different church-wide event", adult, wide, none, false},
+		{"admin manages a group event they don't lead", admin, group, none, true},
+		{"host flag is a fact; assigning a teen is refused separately", teen, hosted, none, true},
 	}
 	for _, c := range cases {
 		if got := CanManageEvent(c.p, c.ev, c.r); got != c.manage {
 			t.Errorf("manage %s: got %v, want %v", c.name, got, c.manage)
-		}
-		if got := CanMessageEvent(c.p, c.ev, c.r); got != c.message {
-			t.Errorf("message %s: got %v, want %v", c.name, got, c.message)
 		}
 	}
 }

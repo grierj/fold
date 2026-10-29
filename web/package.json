@@ -31,8 +31,8 @@
     "preview": "vite preview",
     "test": "TZ=America/Boise NODE_OPTIONS=--no-experimental-webstorage vitest run",
     "e2e": "playwright test",
-    "contrast": "node scripts/token-contrast.mjs",
-    "bundle-size": "node scripts/bundle-size.mjs"
+    "contrast": "node --test scripts/token-contrast.test.mjs && node scripts/token-contrast.mjs",
+    "bundle-size": "node --test scripts/bundle-size.test.mjs && node scripts/bundle-size.mjs"
   },
   "type": "module",
   "version": "1.0.0"

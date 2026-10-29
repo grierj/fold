@@ -760,6 +760,8 @@ export interface EventDate {
  canRegister?: boolean;
  visibility?: Visibility;
  hostedBy?: string;
+ groupId?: number;
+ groupName?: string;
   id: number;
   eventId: number;
   date: string;
@@ -784,6 +786,18 @@ export interface EventDate {
   canSeeAttendees: boolean;
   canDecline: boolean;
   canBlock: boolean;
+}
+
+/** @public Narrow administrative person picker, checked by TestWebTypesMatchGoJSON. */
+export interface ContactHistoryPerson {
+  id: string;
+  name: string;
+  email: string;
+}
+
+/** @public Administrative person picker response, checked by TestWebTypesMatchGoJSON. */
+export interface ContactHistoryPeopleResponse {
+  people: ContactHistoryPerson[];
 }
 
 /** @public Retained safeguarding projection, checked by TestWebTypesMatchGoJSON; no contact values or free text. */

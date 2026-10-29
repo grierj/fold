@@ -1,3 +1,4 @@
+import { Form } from "./ui/Form";
 import { useEffect, useState } from "react";
 import { ApiError, Events } from "../api";
 import type { Visibility, VisibilityImpact } from "../types";
@@ -88,7 +89,7 @@ export function EventVisibilityControl({
   }
 
   return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
+    <Form noValidate onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
       {error && <FormError>{error}</FormError>}
       <VisibilityField
         id={`event-visibility-${eventId}`}
@@ -115,7 +116,7 @@ export function EventVisibilityControl({
       <Button variant="secondary" type="submit" disabled={busy}>
         {busy ? "Saving…" : "Save visibility"}
       </Button>
-    </form>
+    </Form>
   );
 }
 

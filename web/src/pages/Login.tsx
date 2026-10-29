@@ -1,10 +1,11 @@
+import { Form } from "../components/ui/Form";
 import { useEffect, useState } from "react";
 import { useLocation, useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../auth";
-import { ERROR_COPY, errorText } from "../lib/errors";
+import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
 import { ApiError } from "../api";
 import { Field, FormError, Input } from "../components/ui/Field";
-import { Button } from "../components/ui/Button";
+import { Button, ButtonLink } from "../components/ui/Button";
 
 export function Login() {
   const { login, user } = useAuth();
@@ -14,6 +15,7 @@ export function Login() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [waiting, setWaiting] = useState(false);
   const from = (location.state as { from?: string } | null)?.from ?? "/";
 
   useEffect(() => {
@@ -28,12 +30,14 @@ export function Login() {
     e.preventDefault();
     setBusy(true);
     setError(null);
+    setWaiting(false);
     try {
       await login(email, password);
       navigate(from, { replace: true });
     } catch (e) {
       // A 401 here is a wrong email or password (the API says
       // bad_credentials); a 429 is the sign-in lockout, which stays visible.
+      setWaiting(errorCode(e) === "consent_required");
       setError(e instanceof ApiError && e.status === 401 ? ERROR_COPY.bad_credentials : errorText(e, "We couldn't sign you in."));
     } finally {
       setBusy(false);
@@ -43,8 +47,10 @@ export function Login() {
   return (
     <div className="max-w-md mx-auto px-4 py-12">
       <h1 className="text-3xl font-bold mb-6">Log in to Fold</h1>
-      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
-        {error && <FormError>{error}</FormError>}
+      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+        {error && (waiting
+          ? <p role="status" className="rounded-md border border-border bg-sunken p-3 text-text">{error}</p>
+          : <FormError>{error}</FormError>)}
         <Field id="email" label="Email">
           <Input
             type="email"
@@ -71,7 +77,8 @@ export function Login() {
             Forgot your password?
           </Link>
         </p>
-      </form>
+      </Form>
+      {waiting && <ButtonLink variant="secondary" to="/calendar" layout="mt-4 w-full">Browse public events</ButtonLink>}
       <p className="text-sm text-text-muted mt-4 text-center">
         New here?{" "}
         <Link to="/join" className="text-primary font-semibold">

@@ -34,6 +34,18 @@ describe("Login", () => {
     expect(await screen.findByText("Groups page")).toBeInTheDocument();
   });
 
+  it("explains pending consent without trapping public browsing", async () => {
+    login.mockRejectedValue(new ApiError(403, "private", { code: "consent_required" }));
+    renderLogin();
+    await userEvent.type(screen.getByLabelText("Email"), "teen@example.com");
+    await userEvent.type(screen.getByLabelText("Password"), "password1234");
+    await userEvent.click(screen.getByRole("button", { name: "Log in" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("waiting for a parent or guardian's consent");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Browse public events" })).toHaveAttribute("href", "/calendar");
+    expect(screen.getByRole("heading", { name: "Log in to Fold" })).toBeInTheDocument();
+  });
+
   it("shows one message for any bad email or password", async () => {
     login.mockImplementation(async () => {
       throw new ApiError(401, "invalid credentials");

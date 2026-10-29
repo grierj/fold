@@ -51,11 +51,7 @@ func (a *App) apiListGroups(c *gin.Context) {
 	}
 	query.Order("name").Find(&groups)
 
-	out := make([]groupSummaryJSON, 0, len(groups))
-	for i := range groups {
-		out = append(out, a.groupSummary(&groups[i]))
-	}
-	c.JSON(http.StatusOK, gin.H{"groups": out})
+	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
 }
 
 func (a *App) apiCreateGroup(c *gin.Context) {
@@ -889,11 +885,4 @@ func memberCount(db *gorm.DB, groupID uint) int64 {
 	db.Model(&models.Membership{}).Joins(listedUsers("memberships")).
 		Where("memberships.group_id = ? AND memberships.status = ?", groupID, "active").Count(&n)
 	return n
-}
-
-// apiRemoveGroupMember routes the legacy DELETE through the same preview-bound
-// confirmation transaction as the POST departure endpoint. A missing snapshot
-// is therefore refused rather than bypassing cleanup.
-func (a *App) apiRemoveGroupMember(c *gin.Context) {
-	a.apiRemoveGroupMemberConfirmed(c)
 }

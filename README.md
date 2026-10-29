@@ -107,6 +107,7 @@ specified in `docs/DEPLOY-DIGITALOCEAN.md`.
 ```bash
 make test   # go test ./... on Postgres; starts the dev database if DATABASE_URL is unset
 make lint   # shell, Go (vet/gofmt/staticcheck), and web lint
+make deadcode # production reachability gate; test database and registry inspection seams are allow-listed
 cd web && npm test   # Vitest component tests
 make e2e    # Playwright browser tests (first run: cd web && npx playwright install chromium)
 ```
@@ -121,9 +122,9 @@ make e2e    # Playwright browser tests (first run: cd web && npx playwright inst
   [DigitalOcean deployment](docs/DEPLOY-DIGITALOCEAN.md).
 - [AGENTS.md](AGENTS.md): development and review rules.
 
-Current Compose does not pass `FOLD_SMTP_URL`/`FOLD_EMAIL_FROM` into the app;
-setting them only in `.env` is insufficient. See the deployment guide's mail
-warning before relying on invitations or password resets.
+Set `FOLD_SMTP_URL` and `FOLD_EMAIL_FROM` in `.env`, then recreate the app
+with `docker compose up -d` to enable transactional email. Follow the deployment
+guide to verify delivery before relying on invitations or password resets.
 
 ## Layout
 

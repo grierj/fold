@@ -4,27 +4,28 @@ import { Layout } from "./components/Layout";
 import { Home } from "./pages/Home";
 import { Login } from "./pages/Login";
 import { GroupDetail } from "./pages/GroupDetail";
-import { NewGroup } from "./pages/NewGroup";
-import { NewEvent } from "./pages/NewEvent";
-import { NewChurchEvent } from "./pages/NewChurchEvent";
 import { EventDetail } from "./pages/EventDetail";
 import { MyGroups } from "./pages/MyGroups";
-import { ProfilePage } from "./pages/Profile";
 import { Skeleton } from "./components/ui/Skeleton";
-import { NotificationsPage } from "./pages/Notifications";
-import { ForgotPassword } from "./pages/ForgotPassword";
-import { ResetPassword } from "./pages/ResetPassword";
-import { Invite } from "./pages/Invite";
-import { VerifyEmail } from "./pages/VerifyEmail";
-import { Join } from "./pages/Join";
-import { SetPassword } from "./pages/SetPassword";
-import { GuestConfirm } from "./pages/GuestConfirm";
-import { GuestManage } from "./pages/GuestManage";
-import { CalendarPage } from "./pages/Calendar";
 import { NotFound } from "./pages/NotFound";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
 
+const NewGroup = lazy(() => import("./pages/NewGroup").then((m) => ({ default: m.NewGroup })));
+const NewEvent = lazy(() => import("./pages/NewEvent").then((m) => ({ default: m.NewEvent })));
+const NewChurchEvent = lazy(() => import("./pages/NewChurchEvent").then((m) => ({ default: m.NewChurchEvent })));
+const ProfilePage = lazy(() => import("./pages/Profile").then((m) => ({ default: m.ProfilePage })));
+const NotificationsPage = lazy(() => import("./pages/Notifications").then((m) => ({ default: m.NotificationsPage })));
+const CalendarPage = lazy(() => import("./pages/Calendar").then((m) => ({ default: m.CalendarPage })));
+const ForgotPassword = lazy(() => import("./pages/ForgotPassword").then((m) => ({ default: m.ForgotPassword })));
+const ResetPassword = lazy(() => import("./pages/ResetPassword").then((m) => ({ default: m.ResetPassword })));
+const Invite = lazy(() => import("./pages/Invite").then((m) => ({ default: m.Invite })));
+const VerifyEmail = lazy(() => import("./pages/VerifyEmail").then((m) => ({ default: m.VerifyEmail })));
+const CancelEmailChange = lazy(() => import("./pages/CancelEmailChange").then((m) => ({ default: m.CancelEmailChange })));
+const Join = lazy(() => import("./pages/Join").then((m) => ({ default: m.Join })));
+const SetPassword = lazy(() => import("./pages/SetPassword").then((m) => ({ default: m.SetPassword })));
+const GuestConfirm = lazy(() => import("./pages/GuestConfirm").then((m) => ({ default: m.GuestConfirm })));
+const GuestManage = lazy(() => import("./pages/GuestManage").then((m) => ({ default: m.GuestManage })));
 const GuardianConsentPage = lazy(() => import("./pages/GuardianConsent").then((m) => ({ default: m.GuardianConsentPage })));
 const ContactHistoryPage = lazy(() => import("./pages/ContactHistory").then((m) => ({ default: m.ContactHistoryPage })));
 const AdminPage = lazy(() => import("./pages/Admin").then((module) => ({ default: module.AdminPage })));
@@ -50,7 +51,6 @@ export default function App() {
   }, [navigate, location.pathname]);
 
   if (loading) return null;
-  if (user?.status === "pending_consent") return <Suspense fallback={null}><WaitingForConsent key={`${user.id}:${user.status}`} /></Suspense>;
 
   return (
     // Keyed by user: signing in as someone else remounts every page and the
@@ -58,15 +58,18 @@ export default function App() {
     // survives. Routes wait for the session check so pages fetch once.
     <Layout key={user ? `${user.id}:${user.status}` : "anon"}>
       {loading ? null : (
+      <Suspense fallback={<Skeleton kind="page" label="Loading page…" />}>
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/login" element={<Login />} />
+        <Route path="/waiting-for-consent" element={<WaitingForConsent />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/invite" element={<Invite />} />
         <Route path="/join" element={<Join />} />
         <Route path="/set-password" element={<SetPassword />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
+        <Route path="/cancel-email-change" element={<CancelEmailChange />} />
         <Route path="/guardian-consent" element={<Suspense fallback={null}><GuardianConsentPage /></Suspense>} />
         <Route path="/guest/confirm" element={<GuestConfirm />} />
         <Route path="/guest/manage/:token" element={<GuestManage />} />
@@ -78,7 +81,7 @@ export default function App() {
         <Route path="/events/:id/dates/:date" element={<Suspense fallback={<Skeleton kind="page" label="Loading this date…" />}><EventDatePage /></Suspense>} />
         <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/my-groups" element={<MyGroups />} />
-        <Route path="/profile" element={<ProfilePage />} />
+        <Route path="/profile/:section?" element={<ProfilePage />} />
         <Route path="/add-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading add requests…" />}><AddRequestsPage /></Suspense>} />
         <Route path="/add-requests/:id" element={<Suspense fallback={<Skeleton kind="page" label="Loading add request…" />}><AddRequestsPage /></Suspense>} />
         <Route path="/contact-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact requests…" />}><ContactRequestsPage /></Suspense>} />
@@ -89,6 +92,7 @@ export default function App() {
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
+      </Suspense>
       )}
     </Layout>
   );

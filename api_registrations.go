@@ -1312,9 +1312,10 @@ func (a *App) apiRemoveRegistration(c *gin.Context) {
 			return err
 		}
 		emailed = append(emailed, ids...)
-		// DEC-80 retries the waitlist when pruning frees childcare.
-		// Seat-only pruning keeps the seat for a specific add or hand promotion.
-		if r.Status == models.RegGoing && (invitation.ID != 0 || effectiveChildcare(ev, r) > 0) {
+		// Removing a going party retries promotion under the occurrence lock.
+		// promoteLocked checks remaining attendance/childcare room and cutoff;
+		// being at or over capacity after removal never seats another party.
+		if r.Status == models.RegGoing {
 			ids, err := a.promoteLocked(tx, ev, locked, time.Now().UTC(), &me.ID)
 			if err != nil {
 				return err

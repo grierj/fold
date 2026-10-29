@@ -38,15 +38,17 @@ POST /api/v1/auth/password-reset/confirm {token, password} → 200 {user} | 400 
 Password reset (M1.2): the request answers `200 {"message":"If that email
 has an account, we've sent a link"}` for every address, known or not, after
 one bcrypt comparison on a miss (no account enumeration). Per-IP (10/hour)
-and per-address (5/hour) throttles live in `login_throttles`; throttled
+and per-address (3/hour, 10/day) throttles live in `login_throttles`; throttled
 requests still answer uniformly. Tokens are 32 random bytes, stored as
 SHA-256, single use, and expire after 24 hours. Confirming sets the password
-(≥ 10 chars), ends every other session, and signs the browser in.
+(≥ 10 chars), ends every other session, and signs the browser in only if the account is active. A pending-consent teen stays signed out.
 
 Sign-in is by email in any letter case (`users.email` is `citext`, unique).
 Ordinary access requires an `active` account with a password. A teen in
-`pending_consent` may authenticate but gets only the restricted waiting/session
-routes, not ordinary app access (M1.10). Every failure, whether
+`pending_consent` cannot establish a login. With a verified password, login
+answers `403 consent_required` and explains the consent requirement; no
+account privileges are stored in the cookie. Pending teens browse public
+groups and events as signed-out visitors (DEC-85). Every other failure, whether
 the email is unknown, the password is wrong, or the account is invited or
 disabled, answers `401 {"error":"invalid email or password"}` after one
 bcrypt comparison, so the response doesn't reveal whether an account
@@ -63,7 +65,8 @@ PUT    /api/v1/me           → 200 {user, verificationSent?}  (auth; partial up
 POST   /api/v1/me/password  → 200 {}  (auth)
 POST   /api/v1/me/avatar    → 200 {avatarUrl}  (auth; multipart, field "avatar")
 DELETE /api/v1/me/avatar    → 200 {}  (auth)
-POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public)
+POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public capability; CSRF required)
+POST   /api/v1/me/email/cancel  {token} → 200 {cancelled: true} | 400 link_expired  (public capability; CSRF required)
 GET    /api/v1/me/calendar-feed → 200 {calendarFeed: {hasToken, scope}}  (auth)
 POST   /api/v1/me/calendar-feed {scope?} → 200 {calendarFeed: {hasToken, scope, url}}  (auth)
 PUT    /api/v1/me/calendar-feed {scope} → 200 {calendarFeed} | 404  (auth)
@@ -97,7 +100,7 @@ is the safest cleanup if a client retains stale rows. Representative external
 calendar clients still need manual interoperability checks. Revoking a link that is already off still
 answers 200.
 
-Profile update body: any of `{name, displayName, phone, email, timezone, hideContactFromLeaders, avatarFocal: {x, y}}`.
+Profile update body: any of `{name, displayName, phone, email, currentPassword, timezone, hideContactFromLeaders, avatarFocal: {x, y}}`.
 `hideContactFromLeaders` is a boolean preference for the signed-in adult only,
 off by default. A teen's submitted preference is ignored: their contact is
 always hidden from leaders and hosts. Changing the adult preference writes
@@ -106,17 +109,52 @@ always hidden from leaders and hosts. Changing the adult preference writes
 Limits: names ≤ 100 chars, phone ≤ 30 chars, focal clamped to 0-100,
 `timezone` an IANA name (DEC-58; "" and "Local" are refused). The
 email is the login: sending a different `email` starts a verified change
-(M1.2, 10.1) — a verification link goes to the new address and a notice to
-the old one, and the response carries `verificationSent: true`. The change
-applies only after `POST /me/email/verify` redeems the (single-use,
-24-hour) token; every other session then ends, while the verifying browser
-stays logged in. Sending the current address (any case) is accepted and
-changes nothing. Changing to an address another account uses answers 409.
+(M1.2, 10.1, DEC-87) only when `currentPassword` matches the signed-in
+person's current password. Password proof is checked as submitted, without
+trimming. A verification link goes to the new address and a cancellation
+notice goes to the old address; the response carries `verificationSent: true`.
+Only the newest verification/cancellation pair works, and a new request
+invalidates both links from the previous pair. When the browser opens the
+new-address verification page, the SPA automatically redeems the single-use
+24-hour capability with a CSRF-protected `POST /me/email/verify`; an HTTP GET
+alone does not change the account. Every other session then ends, while the
+verifying browser stays logged in.
+
+`POST /me/email/cancel` redeems the old-address capability while its change
+is still pending. It leaves the email unchanged, returns `{cancelled: true}`,
+revokes every unused account token, and advances the subject account's
+credential epoch. Every cookie for that subject, including a cookie in the
+browser making the request, then fails authentication. The public capability
+does not sign in the caller or refresh an authentication epoch; if a different
+account is signed in while following it, that different account stays signed
+in. A used, expired, replaced, or post-verification cancellation token answers
+`400` with `code: "link_expired"`; it can never roll back an email already
+changed. Opening the cancellation page is read-only: cancellation requires
+the person's explicit confirmation through its CSRF-protected POST.
+
+Sending the current address (any case) is accepted and changes nothing. Within
+the actor allowance, changing to an address another account uses answers 409.
+All current-password-proven change attempts, including these account checks,
+consume the actor's limit of 3/hour and 10/day. An exhausted actor receives
+the normal 200 with `verificationSent: true` without any address lookup,
+recipient-budget use, token change or email. Actual verification sends also
+respect the recipient's 3/hour and 10/day allowance. Public sign-up, guest,
+and password-recovery responses retain their existing uniform behavior.
 
 `POST /me/password` body: `{current, password}`. `password` is at least 10
 characters. The current browser stays logged in. Every other session for
 that account ends. An admin password reset ends all of that account's
-sessions, including the one that requested it.
+sessions, including the one that requested it. Setting, changing or resetting
+a password, an admin password reset, a verified or admin email change,
+disabling, or deleting an account atomically revokes every unused
+`account_tokens` row for that user, whatever its kind.
+
+`account_tokens.kind` accepts `password_reset`, `email_verify`, `account_setup`,
+`teen_consent`, and `email_change_cancel`. Migration 40 deletes unused legacy
+`email_verify` rows because those links were issued before current-password
+proof was required. Its downgrade deletes all `email_change_cancel` rows and
+unused `email_verify` rows before restoring the four-kind check; used
+verification history remains.
 
 `user`: `{id, name, displayName, email, phone, avatarUrl,
 avatarFocalX, avatarFocalY, role, status, hasPassword, accountType, timezone,
@@ -253,8 +291,11 @@ roster rules. Event managers see them with a teen badge; unrelated members
 do not see their names.
 
 Creation and resend share the 20-per-rolling-day invitation limit by sender
-and destination, including resends. Counters live in Postgres audit rows.
-Conversion sends over the limit return the normal acknowledgement and log
+and destination, including resends. Sender allowance is checked before address
+availability; unavailable-address and idempotent live-invitation checks count as
+`invitation.refused` attempts, without spending a destination's mail allowance.
+These actor counters are shared with ordinary leader invitations. Counters live
+in Postgres audit rows. Conversion sends over the limit return the normal acknowledgement and log
 the suppression. A suppressed resend keeps the previous link live. Delivery
 failure keeps a retryable invitation. Errors use `household_conversion_email`
 for any unavailable destination, `household_conversion_open` for a different
@@ -402,7 +443,8 @@ GET  /api/v1/groups/:id/members → {members: [...]}  (auth; members and admins;
 
 Join returns 404 when the group is not visible, and 403 when it is
 invite-only and the caller is not already a member. A full group answers 409
-"This group is full" (no waitlist), and someone whose return is pending gets 409. A deletion request is
+"This group is full" (no waitlist). A disabled account re-enabled into a full
+group is left out and told to ask a leader; there is no pending-return state. A deletion request is
 accepted only from a leader who is the group's only active member. Adding
 a member clears a pending request.
 
@@ -448,7 +490,7 @@ A missing/hidden group is 404, a visible group the actor cannot manage is 403, a
 
 Departure confirmation (M1.14 T4b) sends the preview's opaque `snapshot` plus only occurrence IDs selected from its keepable `dates`. The response is the safe summary `{departure: {action, groupId, subjectId, keptCount, endedCount}}` for self-leave and removal alike; it never includes a roster. Clients refetch the normal authorized group or member GET after removal. Under one transaction the server takes the contact gate, locks the group, actor/subject accounts in ID order, and every affected occurrence in ID order; it then reloads and compares the entire preview snapshot before writing. Missing, malformed, tampered, actor/subject/group-mismatched, expired-by-fact-change snapshots and forged/nonkeepable `keepOccurrenceIds` answer coded 409 `departure_stale` with no domain writes. Legacy leave and DELETE removal routes use this same contract and cannot bypass confirmation.
 
-A selected date is retained with DEC-74 departure provenance tied to the locked membership, actor, and current registration. An already-correct departure-origin row is retained. If an active `manager_add` row supplied the date, it is irreversibly ended as `departure_superseded` without a per-date notice and a new departure-origin row is inserted; the manager issuer/request/origin remain immutable history and the successor expires at the occurrence's exact end. Every other current, not-ended registration belonging to the subject account is ended through the normal registration batch, preserving capacity/childcare release, waitlist promotion and the two-hour cutoff. Proxy registrations are untouched. The membership is then marked `removed` (the row remains), contact grants/requests are ended through their normal lifecycle, primary-contact and leadership audits/notices are maintained, and all writes roll back together on failure. Self-leave tells current leaders once; removal sends the removed account and confirmed teen guardians one privacy-safe summary with kept/ended counts. Departure does not emit per-date update notices, and email delivery starts only after commit.
+A selected date is retained with DEC-74 departure provenance tied to the locked membership, actor, and current registration. An already-correct departure-origin row is retained. If an active `manager_add` row supplied the date, it is irreversibly ended as `departure_superseded` without a per-date notice and a new departure-origin row is inserted; the manager issuer/request/origin remain immutable history and the successor expires at the occurrence's exact end. Every other current, not-ended registration belonging to the subject account is ended through the normal registration batch, preserving capacity/childcare release, waitlist promotion and the two-hour cutoff. Proxy registrations are untouched. The membership row remains: self-leave marks it `left`, while leader/admin removal marks it `removed` (DEC-86). A voluntary leaver may self-rejoin under the normal visibility and member-limit rules; a removed person still needs a leader/admin to add them back. Reactivation preserves the first-ever join date and advances tenure, invalidating old departure previews. Contact grants/requests are ended through their normal lifecycle, primary-contact and leadership audits/notices are maintained, and all writes roll back together on failure. Self-leave tells current leaders once; removal sends the removed account and confirmed teen guardians one privacy-safe summary with kept/ended counts. Departure does not emit per-date update notices, and email delivery starts only after commit.
 
 ### Invitations
 
@@ -463,12 +505,12 @@ leaders invite only into groups they lead or none (403 otherwise); members,
 teens, and guests get 403, signed-out visitors 401. There is no approval
 step for adults: the person confirms their age and sets a password on acceptance. Teens start `pending_consent`.
 Create body: `{email, name?, phone?, groupId?, overLimit?}`. The invitee chooses their age when accepting; the inviter cannot activate a teen. 409 when the email already has
-an account or a pending invitation. Leaders are limited to 20 invitations
-per rolling day; the 21st gets 429 and is audited
+an account or a pending invitation. Leaders are limited to 20 valid invitation
+attempts per rolling day, including refused existing-account and duplicate-invitation checks. Refusals are durable `invitation.refused` actor counters, not sent-mail counters; they do not consume a recipient's mail allowance. The actor allowance is checked under its transaction gate before the address lookup. The 21st attempt gets 429 and is audited
 (`invitation.rate_limited`).
 
 Tokens are 32 random bytes, stored as SHA-256, single use, and expire after
-24 hours. Ordinary accept body: `{token, name, password, ageBand: "adult"|"teen"|"under13", birthDate?}` (password ≥ 10 chars). A teen needs a real birth date aged 13 to 17 on the church-local date. Missing or inconsistent ages answer 400. Under-13 input is not stored and the token remains usable. Adults start active; teens start pending consent with a restricted session. Household conversion acceptance still uses its saved adult birth date. Accepting into a full group joins over
+24 hours. Ordinary accept body: `{token, name, password, ageBand: "adult"|"teen"|"under13", birthDate?}` (password ≥ 10 chars). A teen needs a real birth date aged 13 to 17 on the church-local date. Missing or inconsistent ages answer 400. Under-13 input is not stored and the token remains usable. Adults start active; teens start pending consent without a login and may browse public groups and events as signed-out visitors. Household conversion acceptance still uses its saved adult birth date. Accepting into a full group joins over
 `member_limit` only when the inviter set `overLimit` (an explicit, audited
 choice, DEC-39); otherwise it answers `409 {"error":"This group is
 full","full":true}` without consuming the token. The over-limit join is
@@ -477,7 +519,7 @@ audited as `membership.added_over_limit`.
 `invitation`: `{id, email, name, groupId?, groupName?, expiresAt, conversion, accountType}`.
 Ordinary invitations have `conversion: false`. Conversion invitations have
 no group and explain the transfer on the accept page. Household adult or teen acceptance waits for approval without a session. Teen transfer also waits for consent and a fresh guardian check.
-Ordinary acceptance creates a full adult session or a restricted pending-teen session.
+Ordinary acceptance signs in active accounts only; pending teens get the public consent explanation without a login.
 
 ### Account requests
 
@@ -518,8 +560,8 @@ set-password link (24 hours) to
 `/set-password`; approval creates the account only, never a group
 membership. Confirming sets the password and preserves consent or suspension
 decisions made since approval. Adults and active teens sign in; teens still
-awaiting consent or household conversion prerequisites enter a restricted
-waiting session (`pendingConsent: true`).
+awaiting consent or household conversion prerequisites stay signed out
+(`pendingConsent: true` signals the public consent explanation only).
 Disabled accounts cannot complete setup. Rejection emails
 the person too, with the admin's optional note. Requests expire after
 30 days (checked lazily in the queue and daily); deciding an expired
@@ -978,8 +1020,8 @@ Account revocation disables the teen and ends their sessions. Their kept
 memberships and registrations stop counting, and freed event seats promote
 waiters. A later grant restores places only when they fit. Initial
 `pending_consent` teens already count on rosters, so their first grant does
-not restore or recount their places. It preserves their restricted session
-so **Check account status** can enter the app.
+not restore or recount their places. After consent is granted, they can log
+in normally; there is no restricted waiting session (DEC-85).
 
 An administrator's suspension is separate from revoked consent. Granting
 consent keeps an independently suspended account disabled. Admin **Enable**
@@ -1081,11 +1123,11 @@ feeds retain recurring-series wire output.
   camera=(), microphone=(), geolocation=()`. `Strict-Transport-Security` is
   added when `COOKIE_SECURE` is on.
 
-### Teen age and restricted-session boundaries (M1.10)
+### Teen age and login boundaries (M1.10, DEC-85)
 
 Initial setup requires `age_band=adult` to confirm the first administrator is 18 or older. Admin `POST /admin/users` additionally requires `ageBand` and accepts `birthDate` as on ordinary invitation acceptance. Under-13 or inconsistent ages create no account. Teen accounts cannot be admins, and always start `pending_consent`, even when the admin supplies a password. Adults keep the active-with-password or invited-without-password behavior.
 
-A pending-consent teen with a password can authenticate. Its cookie is accepted only at `GET /auth/me`, `GET /auth/csrf`, and `POST /auth/logout`. Every other `/api/v1` route answers `403 consent_required`, including otherwise public group, event, calendar, guest, and site routes. Signed-out visitors keep their normal public access. Responses use `Cache-Control: no-store`. The SPA displays only Waiting for consent, Check account status, and Log out, including on direct navigation and reload. Account consent activates an approved teen account. A staged household conversion also needs its confirmed household guardian relationship before activation and transfer.
+A pending-consent teen cannot establish an authenticated session (DEC-85). Correct credentials answer `403 consent_required` with a consent explanation; wrong credentials keep the usual `401 bad_credentials` response. Password setup, password reset and invitation acceptance never log a pending teen in. Any existing pending cookie is treated as anonymous: public site, group, event and calendar reads work normally, while account-only routes answer `401`. The public consent explanation stays inside the normal church-branded shell and links to public events and login; it does not intercept other routes. Responses use `Cache-Control: no-store`. After account consent activates an approved teen account, they can log in. A staged household conversion also needs its confirmed household guardian relationship before activation and transfer. Age checks, guest-registration eligibility, private-data access and guardian authority are unchanged.
 
 ### Church-local age rollover
 
@@ -1299,8 +1341,8 @@ answers (`going`, `maybe`, `declined`) retain an actual registration relationshi
 and do not take the contact gate; registration pruning/cancellation does.
 
 Pre-domain refusals on the exact POST routes above are also audited once:
-CSRF failure, missing/invalid authentication, and a restricted pending-consent
-session. The existing abort sites call a narrow hook **before** writing their
+CSRF failure and missing/invalid authentication (including legacy pending-consent
+cookies, which are treated as signed out). The existing abort sites call a narrow hook **before** writing their
 401/403 response. No CSRF exemption or auth bypass is added. These rows use
 `target_type=contact_endpoint`, no claimed target ID, and only generic reason,
 HTTP method and route template metadata. The actor is nil unless established
@@ -1535,13 +1577,18 @@ remoteAvailable, guestsAllowed,
 myRegistration, myAttendanceMode?, myGuestCount?,
 videoProvider, videoUrl?, videoHidden,
 canSeeVideo, canSeeAttendees, canDecline, canBlock,
-visibility?, hostedBy?, canRegister?
+visibility?, hostedBy?, groupId?, groupName?, canRegister?
 ```
 
-Times/title/place are effective for that date. An invitation-only response
-never falls back to a hidden group's place. There are no group IDs/names,
-host identities, attendee/contact details, counts, capacities, series title,
-series start, RRULE/until, sibling dates, or management controls. `myRegistration`
+Times/title/place are effective for that date. Only ordinary-visibility reads
+include `visibility` and organizer presentation: `groupId`/`groupName` when the
+viewer may independently see the group, otherwise `hostedBy` with the church
+name (including the privacy-safe fallback for an opened hidden-group date).
+This does not authorize the parent series. Invitation-only responses omit all
+of these organizer/ordinary-visibility keys and never fall back to a hidden
+group's place. Neither response includes host identities, attendee/contact
+details, counts, capacities, series title, series start, RRULE/until, sibling
+dates, or management controls. `myRegistration`
 is the viewer's own status or null. Video is gated by that date's own RSVP and
 current policy; an invitation does not inherit manager video authority.
 `canSeeAttendees` is always false for invitation-only access, and this endpoint
@@ -1715,16 +1762,29 @@ need current exact access; stale/ended access never promotes. Automatic and
 household/proxy promotion rules otherwise remain unchanged. Manager removal also
 ends conflicting pending exact-date asks, preventing stale approvals after prune.
 
-### Administrative contact/access history (M1.11 s5; final acceptance pending)
+### Administrative contact/access history (M1.11 s5)
 
 ```
+GET /api/v1/admin/contact-history/people?q=<literal name or email search>
+GET /api/v1/admin/contact-history/people?id=<exact decimal ID>
+GET /api/v1/admin/contact-history/people?email=<exact email>
+  → 200 {people: [{id, name, email}]}
 GET /api/v1/admin/users/:id/contact-history
   → 200 {entries: ContactHistoryEntry[], nextBefore?: string}
 GET /api/v1/admin/users/:id/contact-history.csv
   → 200 text/csv; charset=utf-8
 ```
 
-Both require a current active adult admin session. A requester, subject,
+The people endpoint is an administrative picker, not a directory export. Lookup
+mode precedence is `id`, then `email`, then `q`; parameters from lower-precedence
+modes are ignored. `id` is an exact positive decimal string, `email` is an exact
+case-insensitive match, and `q` is a literal case-insensitive contains search of
+name, display name or email. Results include non-deleted accounts only, including
+inactive accounts, return only `id`, public `name` and `email`, and are capped at
+50 with no pagination. Narrow searches by full name or email. IDs remain exact
+decimal strings.
+
+These endpoints require a current active adult admin session. A requester, subject,
 guardian, leader or host has no administrative history/export right, including
 for their own ID. Existing private `/contact-requests`, `/contact-grants` and
 `/add-requests` review/list permissions are unchanged. Session version, current
@@ -1753,9 +1813,15 @@ involvement):
 - `contextType=group|event`, optionally `contextId=<positive ID>`; an ID needs a type
 - `occurrenceId=<positive ID>`
 - `from=<RFC3339 timestamp>` inclusive, `until=<RFC3339 timestamp>` exclusive;
-  when both are given, `from` must be earlier. Explicit Go zero timestamps
-  (`0001-01-01T00:00:00Z`, including equivalent offset representations) are
-  rejected, not interpreted as absent bounds. URL-encode offsets containing `+`.
+  when both are given, `from` must be earlier. The admin UI accepts inclusive
+  **calendar days** in the church timezone from `GET /site`, converts From to
+  that local day's start, and converts Until to the next local calendar day's
+  start. It does not add 24 hours, so DST-short and DST-long days keep the right
+  boundary, and it does not fall back to the browser timezone or UTC. The HTTP
+  API itself continues to use RFC3339 instants and an exclusive `until`.
+  Explicit Go zero timestamps (`0001-01-01T00:00:00Z`, including equivalent
+  offset representations) are rejected, not interpreted as absent bounds.
+  URL-encode offsets containing `+`.
 
 Unknown, repeated, empty, malformed or overlong parameters return 400
 `contact_history_filters`. Each value is at most 64 bytes; the total query is
@@ -1851,10 +1917,8 @@ contact mutation gate and do not reconcile lifecycle state. Existing lifecycle
 mutations/sweeps own their actual audit entries. DEC-33 hash chaining, write-once
 offsite storage and retention hardening remain deferred.
 
-The admin history UI/client and focused browser/mobile/accessibility proof are
-implemented and independently reviewed. Local M1.11 acceptance and final
-integrated verification are recorded in [M1.11-VERIFICATION.md](plan/M1.11-VERIFICATION.md).
-Merged in #122; production deployment is not claimed.
+Verification evidence for the broader M1.11 milestone is tracked in
+[M1.11-VERIFICATION.md](plan/M1.11-VERIFICATION.md).
 
 ### Per-date visibility (M1.13)
 

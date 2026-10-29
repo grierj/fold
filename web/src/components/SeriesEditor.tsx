@@ -1,3 +1,4 @@
+import { Form } from "./ui/Form";
 import { ChildcareField, childcareBody, childcareFrom, childcareProblem, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "./ChildcareField";
 import { useState } from "react";
 import { Events } from "../api";
@@ -196,7 +197,7 @@ export function SeriesEditor({
   }
 
   return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
+    <Form noValidate onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
       <p className="text-sm text-text-muted">
         This changes every future date that has not been edited on its own. Customized dates stay as they are. Dates
         the new schedule drops are cancelled, and people who were going or maybe are told.
@@ -303,6 +304,6 @@ export function SeriesEditor({
           </Button>
         )}
       </FormActions>
-    </form>
+    </Form>
   );
 }

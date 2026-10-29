@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { DateEditor } from "../components/DateEditor";
 import { AddRequestForm } from "../components/AddRequestForm";
 import { PeoplePicker } from "../components/ui/PeoplePicker";
@@ -11,7 +12,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
 import type { DepartureConfirmation, PersonSearchResult, EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
-import { DateBadge } from "../components/DateBadge";
+import { OccurrenceCard } from "../components/OccurrenceCard";
 import { Attendance } from "../components/Attendance";
 import { Menu } from "../components/ui/Menu";
 import { EventVisibilityControl, visibilityRank } from "../components/EventVisibility";
@@ -94,21 +95,21 @@ function EventRow({
   }
 
   return (
-    <div className="bg-surface rounded-lg border border-border p-4 flex gap-4">
-      <DateBadge at={instance.startsAt} />
-      <div className="grow min-w-0">
-        {canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
-        <div className="font-bold text-lg">{name}</div>
-        {showDescription && instance.description && (
-          <p className="text-sm text-text-muted whitespace-pre-wrap mt-1">{instance.description}</p>
-        )}
-        <div className="text-sm text-text-muted">
-          {time}
-          {loc ? ` · ${loc}` : ""}
-        </div>
-        {instance.overridden && (
-          <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
-        )}
+    <OccurrenceCard at={instance.startsAt} title={name}
+      notice={canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
+      meta={<div className="text-sm text-text-muted">{time}{loc ? ` · ${loc}` : ""}</div>}
+      menu={canManage && <Menu
+        tone="quiet"
+        label={`More for ${name} on ${instance.date}`}
+        items={[
+          { label: "Edit this date", onSelect: () => setEditor(editor === "date" ? null : "date") },
+          { label: instance.recurrenceRule ? "Edit series" : "Edit event", onSelect: () => setEditor(editor === "series" ? null : "series") },
+          { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
+        ]}
+      />}
+    >
+        {showDescription && instance.description && <p className="text-sm text-text-muted whitespace-pre-wrap">{instance.description}</p>}
+        {instance.overridden && <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>}
         <Attendance instance={instance} />
         {moreDates > 0 && (
           <Link to={`/events/${instance.eventId}`} className="inline-flex min-h-11 items-center text-sm font-medium text-primary">
@@ -167,21 +168,7 @@ function EventRow({
             />
           </>
         )}
-      </div>
-      {canManage && (
-        <div className="shrink-0">
-          <Menu
-            tone="quiet"
-            label={`More for ${name} on ${instance.date}`}
-            items={[
-              { label: "Edit this date", onSelect: () => setEditor(editor === "date" ? null : "date") },
-              { label: instance.recurrenceRule ? "Edit series" : "Edit event", onSelect: () => setEditor(editor === "series" ? null : "series") },
-              { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
-            ]}
-          />
-        </div>
-      )}
-    </div>
+    </OccurrenceCard>
   );
 }
 
@@ -226,7 +213,7 @@ function GroupForm({
   const [error, setError] = useState<string | null>(null);
 
   return (
-    <form
+    <Form noValidate
       className="bg-surface rounded-lg border border-border p-6 space-y-6"
       onSubmit={async (e) => {
         e.preventDefault();
@@ -323,7 +310,7 @@ function GroupForm({
           Cancel
         </Button>
       </FormActions>
-    </form>
+    </Form>
   );
 }
 
@@ -437,6 +424,7 @@ export function GroupDetail() {
   if (!detail) {
     return (
       <div className="max-w-xl mx-auto px-4 py-12 sm:py-16">
+        <h1 className="text-3xl font-bold mb-6">Group unavailable</h1>
         <ErrorNotice message={error ?? "We couldn't load this group."} onRetry={() => void load()} />
       </div>
     );
@@ -810,18 +798,18 @@ export function GroupDetail() {
           <>
             {/* Tabs */}
             <div className="border-b border-border mb-6">
-              <nav className="flex gap-6">
+              <nav aria-label="Group sections" className="flex gap-6">
                 {(["events", "about", "members"] as Tab[]).map((t) => (
                   <button
                     key={t}
                     onClick={() => setTab(t)}
                     className={
                       tab === t
-                        ? "pb-3 border-b-2 border-primary text-primary font-semibold capitalize"
-                        : "pb-3 text-text-muted hover:text-text font-medium capitalize"
+                        ? "min-h-11 pb-3 border-b-2 border-primary text-primary font-semibold"
+                        : "min-h-11 pb-3 text-text-muted hover:text-text font-medium"
                     }
                   >
-                    {t === "events" ? "Upcoming events" : t}
+                    {t === "events" ? "Upcoming events" : t === "about" ? "About" : "Members"}
                   </button>
                 ))}
               </nav>
@@ -829,6 +817,7 @@ export function GroupDetail() {
 
             {tab === "events" && (
               <div className="space-y-3">
+                <h2 className="sr-only">Upcoming events</h2>
                 {group.visibility === "public" && group.status === "active" && (
                   <div className="flex flex-wrap items-center gap-x-2">
                     <ButtonLink variant="link" to={`/cal/groups/${group.id}.ics`} reloadDocument>
@@ -987,7 +976,7 @@ export function GroupDetail() {
                     )}
                     {canManage && (
                       <>
-                      <form onSubmit={inviteMember} className="mt-4 flex gap-2 flex-wrap items-end">
+                      <Form noValidate onSubmit={inviteMember} className="mt-4 flex gap-2 flex-wrap items-end">
                         <div className="grow min-w-48">
                           <Field id="invite-member" label="Invite someone to Fold">
                             <Input
@@ -1012,9 +1001,9 @@ export function GroupDetail() {
                             />
                           </div>
                         )}
-                      </form>
+                      </Form>
                       {inviteStatus && <p className="text-success text-sm mt-2">{inviteStatus}</p>}
-                      <form onSubmit={addMember} className="mt-4 space-y-3">
+                      <Form noValidate onSubmit={addMember} className="mt-4 space-y-3">
                         {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={memberSelection} disabled={memberBusy} onChange={(person) => { setMemberSelection(person); setAskMember(null); setMemberEmail(""); setMemberError(null); }} /></Field>}
                         <div className="grow min-w-48">
                           <Field id="add-member" label="Add a member by email">
@@ -1030,7 +1019,7 @@ export function GroupDetail() {
                         <Button variant="secondary" type="submit" disabled={memberBusy || (!memberSelection && !memberEmail.trim())}>
                           {memberBusy ? "Adding…" : memberSelection?.teen ? "Ask to add" : "Add member"}
                         </Button>
-                      </form>
+                      </Form>
                       {askMember && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askMember.selectionId} person={askMember} scope={{ contextType: "group", contextId: Number(id) }} full={group.memberLimit !== null && group.memberCount >= group.memberLimit} onClose={() => setAskMember(null)} />}
                       </>
                     )}

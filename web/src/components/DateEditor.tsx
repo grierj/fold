@@ -1,3 +1,4 @@
+import { Form } from "./ui/Form";
 import { useState } from "react";
 import { Events } from "../api";
 import type { EventOccurrence, Visibility } from "../types";
@@ -96,7 +97,7 @@ export function DateEditor({
   }
 
   return (
-    <form onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
+    <Form noValidate onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
       <p className="text-sm text-text-muted">
         This date only. Later series changes leave it alone. The series date stays {instance.date}. {zoneNote(instance.tzid)}
       </p>
@@ -165,6 +166,6 @@ export function DateEditor({
           Close
         </Button>
       </FormActions>
-    </form>
+    </Form>
   );
 }

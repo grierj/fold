@@ -17,6 +17,19 @@ export async function signIn(page: Page, name: string) {
   await expect(page).not.toHaveURL(/\/login/);
 }
 
+// A pending teen can verify credentials, but cannot establish a login. Public
+// browsing stays available; use signIn again after account consent is granted.
+export async function attemptPendingSignIn(page: Page, name: string) {
+  await page.context().clearCookies();
+  await page.goto("/login");
+  await page.getByLabel("Email").fill(email(name));
+  await page.getByLabel("Password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Log in", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("waiting for a parent or guardian's consent");
+  await expect(page.getByRole("link", { name: "Browse public events" })).toBeVisible();
+  expect((await page.request.get("/api/v1/auth/me")).status()).toBe(401);
+}
+
 // Sign out through the header button. Logout ends with a full load of "/"
 // (window.location.replace), so wait for that load to finish before the
 // next page.goto, or the reload aborts it (the old hosts.spec.ts flake).

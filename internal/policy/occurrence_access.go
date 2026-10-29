@@ -188,13 +188,6 @@ func CanFinalizeAddRequest(r AddRequest, f AddFacts) bool {
 		(r.AdminDecision == ContactApproved || r.AdminDecision == ContactNotNeeded)
 }
 
-// Direct adult date additions still need the same block/tombstone/context gate,
-// even when submitted by admin, email or raw ID. Rate limit each single-person
-// manager action at the API; this pure rule has no counter or network effects.
-func CanDirectManagerOccurrenceAdd(s AddScope, f AddFacts) bool {
-	return s.Purpose == RequestOccurrenceAdd && f.LatestAccessEndedAt == nil && f.OrdinaryEligible && AddIneligibility(s, f, false) == ""
-}
-
 func AddRequestExpired(r AddRequest, now time.Time) bool {
 	return r.Status == ContactPending && !now.IsZero() && !r.ExpiresAt.IsZero() && !now.Before(r.ExpiresAt)
 }

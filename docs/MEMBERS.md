@@ -9,6 +9,19 @@ reminders or lead a group, use your own email address. A free one is fine.
 Ask the church office for help with a separate account. Fold does not send
 SMS yet.
 
+## Change your sign-in email
+
+1. Open **Profile**, then **Change sign-in email**. Enter the new email and your current password, then choose **Send verification link**.
+2. Open the newest verification link sent to the new address. Starting another change makes both links from the earlier request stop working.
+3. Fold also sends a notice to the old address. If you did not request the change, open that notice and choose **Cancel email change and sign out all sessions**. This cancels the pending change and ends every sign-in for your account, including the browser you are using. Sign in again and reset your password.
+
+Opening the new-address verification link loads a page that verifies the
+change automatically. Opening the old-address cancellation link only shows the
+review page; nothing is cancelled until you choose **Cancel email change and
+sign out all sessions**. If the new address was already verified, cancellation
+cannot change it back. Ask the church office for help and reset your password
+right away.
+
 ## Share an email
 
 One email address belongs to one account with one person's name and
@@ -30,7 +43,7 @@ or eligible teen to use their own email. Teens need a birth date showing
 they are 13 to 17 and a confirmed household guardian link. Children under
 13 cannot have accounts.
 
-1. Open Profile, then My household. Choose Create their own account beside the person.
+1. Open Profile, then Household. Choose Create their own account beside the person.
 2. Enter their email address and choose Send account invitation. The email must have no existing account or open invitation.
 3. They open the email link within 24 hours and choose a password. Their details and sign-ups stay with the household while an admin reviews the request.
 4. For an adult, approval moves every past and upcoming sign-up to their new account. For a teen, the move also waits for account consent and a new guardian check.
@@ -70,12 +83,12 @@ account can name a parent or guardian's email. The church office checks
 the relationship. Naming an email never grants permission by itself.
 
 A guardian needs an active adult account. If the teen already has an
-account, open Profile, find Teen consent, enter the Teen's email, and
-choose Request guardian link. An admin must confirm every link, including
+account, open Profile, then Parent or guardian link. Under Teen consent,
+enter the Teen's email and choose Request guardian link. An admin must confirm every link, including
 links from your own household. A pending link cannot give consent.
 
-Once confirmed, open Profile and Teen consent. Choose Account access, SMS,
-or Photos, then Grant consent or Revoke consent. You can also use the
+Once confirmed, open Profile, then Parent or guardian link. Under Teen
+consent, choose Account access, SMS, or Photos, then Grant consent or Revoke consent. You can also use the
 account-consent email. Opening that signed link shows a review page.
 Choose Grant account consent to submit the decision. The link expires
 after 24 hours and works once. If it expires, use Profile to request a
@@ -83,9 +96,11 @@ fresh email or manage consent directly.
 
 Account consent lets an approved teen use Fold. A household conversion
 also waits for the new guardian check described above. After choosing a
-password, a teen can sign in to Waiting for consent, check account status,
-or log out. Check account status enters Fold after the requirements are
-complete. Teens can join groups and sign up for events they can see. They
+password, a teen still needs consent before logging in. Until then, they
+can browse public groups and events without logging in. A login attempt
+explains the consent requirement; your church office can help. Once the
+requirements are complete, the teen can log in, join groups and sign up
+for events they can see. They
 cannot lead groups, host events, or become admins.
 
 Account, SMS, and photo consent are separate. An admin can record consent
@@ -124,8 +139,8 @@ retries at startup and the next church-local midnight.
 
 ## Choose who sees your contact details
 
-If you are an adult, open Profile and select **Hide my contact info from group
-leaders**, then save your profile. This choice is off by default: leaders of
+If you are an adult, open **Profile**, then **Privacy**. Select **Hide my
+contact info from group leaders**, then choose **Save privacy**. This choice is off by default: leaders of
 your groups and hosts of events you attend can otherwise see your email and
 phone. Turning it on hides both from those leaders and hosts, not from admins.
 It does not hide your name from the name picker. Teens' contact details are
@@ -142,8 +157,8 @@ To ask for hidden details as a leader or host:
 3. Choose **Send request**. A hidden adult decides alone. A teen and an admin
    must both approve; either can deny. A guardian cannot approve for the teen.
 
-Open **Direct contact requests and access** on Profile, or follow your notice,
-to review a request. Opening an email link does not approve anything: sign in,
+Open **Profile**, then **Requests** and **Contact requests and access**, or
+follow your notice, to review a request. Opening an email link does not approve anything: sign in,
 review it, then choose **Approve sharing** or **Deny request**. The requester can
 choose **Withdraw request** while it is pending. Requests expire after **14
 days**. You can have **10 open requests** across direct contact and Ask to add,
@@ -191,8 +206,8 @@ single-date options and send it. A reason is optional, at most **1000 Unicode
 characters**. Known-email adding remains available, but cannot bypass approval
 or a recipient's block.
 
-Open **Add request history** on Profile or follow your notice. Choose **Approve
-adding** or **Deny ask**. Teens and admins decide separately; both approvals
+Open **Profile**, then **Requests** and **Add request history**, or follow your
+notice. Choose **Approve adding** or **Deny ask**. Teens and admins decide separately; both approvals
 are needed, and either denial ends the ask. A guardian cannot decide in place
 of the teen. The sender can withdraw a pending ask. Group previews may withhold
 the group's details; date previews show only the title and requested time.
@@ -246,16 +261,25 @@ Ask the organizer or church office if you need help.
 ## Church admins: review retained contact-access history
 
 As an active adult admin, open **Admin → Users**, open the person's **More** menu
-and choose **Contact access history**. For a deleted account, use **Contact
-access history by ID** above the user list. Enter the retained person ID using
-digits only, from **1 to 9223372036854775807**. Keep IDs as written; do not round
-them. A missing/deleted account can have retained history, or no matching entries.
+and choose **Contact access history**. Fold resolves that row's current email to
+an exact person ID string before opening history; it never converts the ID to a
+JavaScript number. **Copy person ID** uses the same lookup and always leaves the
+ID visible on the page if clipboard access is unavailable.
 
-Choose a purpose or action to filter. Optional **From** is inclusive; **Until**
-is exclusive and must be later. Both require a timestamp with a timezone, such
-as `2026-10-01T09:00:00+02:00` or `2026-10-01T07:00:00Z`. Choose **Apply filters**.
-**Load older entries** shows earlier activity; **Refresh history** gets a fresh
-view. Editing fields alone does not change the applied filters.
+You can also choose **Find contact access history**, search by full name or email,
+choose the person, then apply the filters. Search returns at most 50 people, so
+narrow the search by full name or email; there is no paginated directory here.
+For a deleted account, open **Use a saved person ID** and enter the retained ID
+using digits only, from **1 to 9223372036854775807**. Keep IDs as written; do not
+round them. A missing or deleted account can have retained history, or no matching
+entries.
+
+Choose a purpose or action to filter. Optional **From** and **Until** are inclusive
+calendar days in the church timezone. The page loads that timezone from the site
+settings and disables Apply until it is available; it never substitutes the
+browser timezone or UTC. Choose **Apply filters**. **Load older entries** shows
+earlier activity; **Refresh history** gets a fresh view. Editing fields alone
+does not change the applied filters, and CSV uses the last applied filters.
 
 Choose **Export all matching CSV** to download every matching entry, not just
 the loaded page. The export uses the applied filters. History shows actions,

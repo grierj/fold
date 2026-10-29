@@ -183,10 +183,12 @@ it("shows supplied roster contact without reconstructing hidden members' details
     { ...member, id: 5, name: "Teen member", accountType: "teen" },
   ] });
   open();
-  await userEvent.click(await screen.findByRole("button", { name: "members" }));
-  expect(screen.getByText("Email: visible@example.com")).toBeInTheDocument();
+  await userEvent.click(await screen.findByRole("button", { name: "Members" }));
+  expect(screen.getByRole("link", { name: "visible@example.com" })).toBeInTheDocument();
   expect(screen.getByText("Phone: 208-555-0100")).toBeInTheDocument();
-  expect(screen.getAllByText(/Email:/)).toHaveLength(1);
+  expect(screen.getAllByRole("link", { name: /@/ })).toHaveLength(1);
+  expect(screen.getAllByText(/@/)).toHaveLength(1); // no plain-text fallback for hidden contacts either
+  expect(screen.queryByText(/Email:/)).not.toBeInTheDocument();
   expect(screen.getAllByText(/Phone:/)).toHaveLength(1);
   expect(screen.getByText("Hidden adult")).toBeInTheDocument();
   expect(screen.getByText("Teen member")).toBeInTheDocument();
@@ -199,7 +201,7 @@ it.each(["group_full", "teen_add_approval_required", "people_selection_unavailab
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "opaque", displayName: "Pat", teen: false, sharedGroups: [], otherGroups: [] }] });
   vi.mocked(Groups.addMember).mockRejectedValueOnce(new ApiError(409, "private", { code })).mockResolvedValueOnce({});
   vi.spyOn(window, "confirm").mockReturnValue(true);
-  open(); await userEvent.click(await screen.findByRole("button", { name: "members" }));
+  open(); await userEvent.click(await screen.findByRole("button", { name: "Members" }));
   await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
   expect(screen.getByLabelText("Add a member by email")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Add member" }));
@@ -212,7 +214,7 @@ it("offers an explicit Ask to add for a selected teen instead of direct add", as
   actor.user = { id: 2, status: "active", accountType: "adult" } as User;
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
-  open(); await userEvent.click(await screen.findByRole("button", { name: "members" }));
+  open(); await userEvent.click(await screen.findByRole("button", { name: "Members" }));
   await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
   expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
   expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
@@ -290,7 +292,7 @@ it("routes leader removal through the same chooser and preserves its optional no
   vi.mocked(Groups.memberDeparturePreview).mockResolvedValue({ departure: { action: "remove", groupId: 1, groupName: "Family group", subjectId: 3, subjectName: "Pat Person", affectedCount: 0, goingCount: 0, maybeCount: 0, waitlistedCount: 0, keepableCount: 0, defaultKeepCount: 0, dates: [], snapshot: "remove" } });
   vi.mocked(Groups.confirmMemberDeparture).mockResolvedValue({ departure: { action: "remove", groupId: 1, subjectId: 3, keptCount: 0, endedCount: 0 } });
   open();
-  await userEvent.click(await screen.findByRole("button", { name: "members" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Members" }));
   await userEvent.click(screen.getByRole("button", { name: "More for Pat Person" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Remove from group" }));
   const dialog = await screen.findByRole("dialog", { name: "Remove Pat Person?" });

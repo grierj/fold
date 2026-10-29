@@ -43,7 +43,7 @@ test("household adult invitation transfers sign-ups when the account is ready", 
   const result = await parent("PUT", `/events/${event.id}/registrations`, { date: occurrences[0].date, people: [{ personId: person.id, status: "going" }] });
   const registrationId = result.people[0].registrationId;
   await signIn(page, account);
-  await page.goto("/profile");
+  await page.goto("/profile/household");
   await expect(page.getByRole("link", { name: "Accounts and household help" })).toHaveAttribute("href", "/help/members");
   const help = await page.request.get("/help/members");
   expect(await help.text()).toContain("Create a separate account");
@@ -81,7 +81,7 @@ test("household adult invitation transfers sign-ups when the account is ready", 
   expect((await page.request.get("/api/v1/auth/me")).status()).toBe(401);
   await expect(page.getByText(/your household keeps managing your sign-ups/)).toBeVisible();
   await signIn(page, account);
-  await page.goto("/profile");
+  await page.goto("/profile/household");
   await expect(page.getByText("Account waiting for an admin")).toBeVisible();
   await expect(page.getByRole("button", { name: `Edit Conversion ${kind}` })).toBeVisible();
   await shoot(page, "conversion-adult-household-awaiting-approval");
@@ -101,7 +101,7 @@ test("household adult invitation transfers sign-ups when the account is ready", 
   const updated = await admin("GET", `/events/${event.id}`);
   expect(updated.occurrences[0].spotsLeft).toBe(0);
   expect(updated.occurrences[0].attendees).toEqual(expect.arrayContaining([expect.objectContaining({ registrationId, name: `Conversion ${kind}`, accountType: kind })]));
-  await signIn(page, account); await page.goto("/profile");
+  await signIn(page, account); await page.goto("/profile/household");
   await expect(page.getByRole("button", { name: `Edit Conversion ${kind}` })).toHaveCount(0);
   await admin("POST", "/notifications/read-all", {});
 });
@@ -111,7 +111,7 @@ test("profile reserves household space while its chunk loads", async ({ page }) 
   let release = () => {};
   const ready = new Promise<void>((resolve) => { release = resolve; });
   await page.route("**/HouseholdCard-*.js", async (route) => { await ready; await route.continue(); });
-  await page.goto("/profile", { waitUntil: "domcontentloaded" });
+  await page.goto("/profile/household", { waitUntil: "domcontentloaded" });
   const skeleton = page.getByRole("region", { name: "My household loading" });
   await expect(skeleton).toBeVisible();
   const height = await skeleton.evaluate((node) => node.getBoundingClientRect().height);

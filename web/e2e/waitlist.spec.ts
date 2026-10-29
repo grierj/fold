@@ -48,7 +48,7 @@ test("the waitlist arc: capacity 1, position 1, cancel, promoted", async ({ page
   await signIn(page, "lee");
   await page.goto(url);
   await expect(page.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
-  const bell = page.getByRole("button", { name: /Notifications/ });
+  const bell = page.getByRole("button", { name: /Alerts/ });
   await expect(bell).toHaveAccessibleName(/unread/);
   await bell.click();
   const panel = page.locator("#notif-panel");

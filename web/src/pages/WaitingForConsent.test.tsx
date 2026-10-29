@@ -1,19 +1,27 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { expect, it, vi } from "vitest";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { beforeEach, expect, it, vi } from "vitest";
 import WaitingForConsent from "./WaitingForConsent";
 
-const refresh = vi.hoisted(() => vi.fn(async () => {}));
-const logout = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock("../auth", () => ({ useAuth: () => ({ refresh, logout }) }));
+const { auth } = vi.hoisted(() => ({ auth: vi.fn() }));
+vi.mock("../auth", () => ({ useAuth: auth }));
+beforeEach(() => { auth.mockReturnValue({ user: null }); });
 
-it("focuses the wait explanation and offers only account status and logout", async () => {
-  render(<WaitingForConsent />);
-  expect(screen.getByRole("heading", { name: "Waiting for consent" })).toHaveFocus();
-  expect(screen.queryByRole("navigation")).not.toBeInTheDocument();
-  expect(screen.queryByRole("link")).not.toBeInTheDocument();
-  await userEvent.click(screen.getByRole("button", { name: "Check account status" }));
-  expect(refresh).toHaveBeenCalledOnce();
-  await userEvent.click(screen.getByRole("button", { name: "Log out" }));
-  expect(logout).toHaveBeenCalledOnce();
+it("explains consent without locking public browsing behind a session", () => {
+  render(<MemoryRouter><WaitingForConsent /></MemoryRouter>);
+  expect(screen.getByRole("heading", { name: "Your account is almost ready" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Browse public events" })).toHaveAttribute("href", "/calendar");
+  expect(screen.getByRole("link", { name: "Back to log in" })).toHaveAttribute("href", "/login");
+  expect(screen.queryByRole("button")).not.toBeInTheDocument();
+  expect(screen.queryByRole("main")).not.toBeInTheDocument(); // the shared shell supplies the landmark and church branding
+  expect(screen.getByText(/without logging in/)).toBeInTheDocument();
+});
+
+it("does not tell an already signed-in person that consent blocks their login", () => {
+  auth.mockReturnValue({ user: { id: 1, status: "active" } });
+  render(<MemoryRouter initialEntries={["/waiting-for-consent"]}><Routes>
+    <Route path="/waiting-for-consent" element={<WaitingForConsent />} />
+    <Route path="/" element={<h1>Groups destination</h1>} />
+  </Routes></MemoryRouter>);
+  expect(screen.getByRole("heading", { name: "Groups destination" })).toBeInTheDocument();
 });

@@ -69,6 +69,8 @@ var tsContracts = []struct {
 }{
 	{personSearchJSON{}, "PersonSearchResult"},
 	{peopleSearchJSON{}, "PeopleSearchResponse"},
+	{contactHistoryPersonJSON{}, "ContactHistoryPerson"},
+	{contactHistoryPeopleJSON{}, "ContactHistoryPeopleResponse"},
 	{contactHistoryEntryJSON{}, "ContactHistoryEntry"},
 	{contactHistoryJSON{}, "ContactHistoryResponse"},
 	{contactRequestJSON{}, "ContactRequest"},
@@ -246,7 +248,12 @@ func testLayoutViolations(path string, exists func(string) bool) []string {
 		sources = []string{strings.TrimSuffix(base, "_test.go") + ".go"}
 	case strings.Contains(base, ".test."):
 		stem := base[:strings.Index(base, ".test.")]
-		sources = []string{stem + ".ts", stem + ".tsx"}
+		switch ext := filepath.Ext(base); ext {
+		case ".js", ".mjs", ".cjs":
+			sources = []string{stem + ext}
+		default:
+			sources = []string{stem + ".ts", stem + ".tsx"}
+		}
 	default:
 		return out
 	}
@@ -290,13 +297,16 @@ func TestTestFilesSitNextToTheirSource(t *testing.T) {
 // The layout check catches the files this rule replaced.
 func TestTestLayoutGuardCatchesMilestoneFiles(t *testing.T) {
 	none := func(string) bool { return false }
-	for _, p := range []string{"m11b_test.go", "m03b_limit_test.go", "web/e2e/m12.spec.ts", "milestone_test.go", "tz_guard_test.go", "web/src/Orphan.test.tsx"} {
+	for _, p := range []string{"m11b_test.go", "m03b_limit_test.go", "web/e2e/m12.spec.ts", "milestone_test.go", "tz_guard_test.go", "web/src/Orphan.test.tsx", "web/scripts/orphan.test.mjs"} {
 		if len(testLayoutViolations(p, none)) == 0 {
 			t.Errorf("%s passed the layout check", p)
 		}
 	}
 	if v := testLayoutViolations("api_events_test.go", func(p string) bool { return p == "api_events.go" }); len(v) != 0 {
 		t.Errorf("api_events_test.go flagged: %v", v)
+	}
+	if v := testLayoutViolations("web/scripts/bundle-size.test.mjs", func(p string) bool { return p == "web/scripts/bundle-size.mjs" }); len(v) != 0 {
+		t.Errorf("bundle-size.test.mjs flagged: %v", v)
 	}
 	if v := testLayoutViolations("web/e2e/events.spec.ts", none); len(v) != 0 {
 		t.Errorf("events.spec.ts flagged: %v", v)
@@ -861,7 +871,79 @@ func TestUIRatchetsCatchPastMistakes(t *testing.T) {
 // control gets a programmatic label, the hint above it and the error under
 // it. Pages and other components use those instead of raw controls.
 
-var rawFormControl = regexp.MustCompile(`<(input|select|textarea)\b`)
+var (
+	reactFormStart      = regexp.MustCompile(`<form(?:\s|>)`)
+	reactFormNoValidate = regexp.MustCompile(`^<form\s+noValidate(?:\s|>)`)
+	rawFormControl      = regexp.MustCompile(`<(input|select|textarea)\b`)
+)
+
+func reactFormValidationViolations(files map[string]string) []string {
+	const sharedFormPath = "web/src/components/ui/Form.tsx"
+	var out []string
+	for p, src := range files {
+		for _, loc := range reactFormStart.FindAllStringIndex(src, -1) {
+			line := strings.Count(src[:loc[0]], "\n") + 1
+			if p != sharedFormPath {
+				out = append(out, fmt.Sprintf("%s:%d: raw `<form>`; use <Form> from components/ui/Form", p, line))
+				continue
+			}
+			if !reactFormNoValidate.MatchString(src[loc[0]:]) {
+				out = append(out, fmt.Sprintf("%s:%d: the shared native form must start with `<form noValidate ` (or `<form noValidate>`)", p, line))
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestReactFormsUseCustomValidation(t *testing.T) {
+	files := map[string]string{}
+	err := filepath.WalkDir("web/src", func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(p, ".tsx") || strings.HasSuffix(p, ".test.tsx") {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(p)] = string(b)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range reactFormValidationViolations(files) {
+		t.Error(v)
+	}
+}
+
+func TestReactFormValidationGuard(t *testing.T) {
+	const sharedFormPath = "web/src/components/ui/Form.tsx"
+	badSharedForms := map[string]string{
+		"missing":     `<form onSubmit={save}>`,
+		"not first":   `<form className="box" noValidate>`,
+		"true value":  `<form noValidate={true}>`,
+		"false value": `<form noValidate={false}>`,
+	}
+	for name, src := range badSharedForms {
+		if got := reactFormValidationViolations(map[string]string{sharedFormPath: src}); len(got) != 1 {
+			t.Errorf("%s: want one violation, got %v", name, got)
+		}
+	}
+	if got := reactFormValidationViolations(map[string]string{"web/src/pages/Login.tsx": `<form noValidate>`}); len(got) != 1 {
+		t.Errorf("raw form outside the shared component: want one violation, got %v", got)
+	}
+	good := map[string]string{
+		sharedFormPath:             "<form noValidate onSubmit={save}>\n<form\n  noValidate\n  onSubmit={save}\n>",
+		"web/src/pages/Format.tsx": `<format /> </form>`,
+	}
+	if got := reactFormValidationViolations(good); len(got) != 0 {
+		t.Errorf("valid shared forms or non-forms were flagged: %v", got)
+	}
+}
 
 func rawFormControlViolations(files map[string]string) []string {
 	var out []string
@@ -932,7 +1014,7 @@ func TestNotificationCategoriesMatch(t *testing.T) {
 
 // --- One list filter for event visibility ---
 //
-// Series lists go through visibleEvents; date lists load eventCandidates then
+// Series lists go through eventCandidates; date lists load dateCandidates then
 // apply visibleSet.canSeeDate. Candidate parents never authorize a series.
 // Both paths skip missing groups; policy loops elsewhere duplicate the filter.
 
@@ -965,7 +1047,7 @@ func TestOneEventVisibilityFilter(t *testing.T) {
 				ast.Inspect(body, func(m ast.Node) bool {
 					if call, ok := m.(*ast.CallExpr); ok {
 						if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "CanSeeEvent" {
-							t.Errorf("%s: %s filters a list with policy.CanSeeEvent; use visibleEvents", fset.Position(call.Pos()), fn.Name.Name)
+							t.Errorf("%s: %s filters a list with policy.CanSeeEvent; use eventCandidates for series, or dateCandidates and canSeeDate for dates", fset.Position(call.Pos()), fn.Name.Name)
 						}
 					}
 					return true

@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { Auth as AuthApi, Profile, ensureCsrf } from "./api";
+import { errorCode } from "./lib/errors";
 import { browserTimeZone } from "./lib/when";
 import type { User } from "./types";
 
@@ -64,8 +65,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [refresh]);
 
   const login = useCallback(async (email: string, password: string) => {
-    const { user } = await AuthApi.login(email, password);
-    setUser(await withZone(user));
+    try {
+      const { user } = await AuthApi.login(email, password);
+      setUser(await withZone(user));
+    } catch (error) {
+      // A verified pending-teen attempt clears any previous server login.
+      if (errorCode(error) === "consent_required") setUser(null);
+      throw error;
+    }
   }, []);
 
   // Logout ends the server session, then drops every client-side copy of

@@ -1,10 +1,11 @@
+import { Form } from "../components/ui/Form";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
 import { useAuth } from "../auth";
-import { DateBadge } from "../components/DateBadge";
+import { OccurrenceCard } from "../components/OccurrenceCard";
 import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
 import { DateEditor } from "../components/DateEditor";
@@ -96,6 +97,7 @@ export function EventDetail() {
   if (!page) {
     return (
       <div className="max-w-xl mx-auto px-4 py-12 sm:py-16">
+        <h1 className="text-3xl font-bold mb-6">Event unavailable</h1>
         <ErrorNotice message={error ?? "We couldn't load this event."} onRetry={() => void load()} />
       </div>
     );
@@ -118,7 +120,7 @@ export function EventDetail() {
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-2">{title}</h1>
       <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} />
-      {event.location && <p className="text-text-muted mt-1">{event.location}</p>}
+      {event.location && <p className="text-text-muted mt-1 wrap-anywhere">{event.location}</p>}
       {event.childcareAvailable && <div className="mt-3 text-text-muted">
         <p>Childcare available{event.childcareAges && ` · ${event.childcareAges}`}</p>
         {event.childcareNotes && <p className="whitespace-pre-wrap">{event.childcareNotes}</p>}
@@ -234,19 +236,22 @@ function DateRow({
   }
 
   return (
-    // Badge, details and More on top; the answer and any open panel span the
-    // card below, so the RSVP is full width on phones (PR #66 review N1).
-    <div className="bg-surface rounded-lg border border-border p-4">
-      {canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
-    <div className="flex gap-4">
-      <DateBadge at={instance.startsAt} />
-      <div className="grow min-w-0">
-        <div className="font-bold">{instance.title || "Church event"}</div>
-        <div className="text-sm text-text-muted">
-          {time}
-          {instance.location ? ` · ${instance.location}` : ""}
-        </div>
+    <OccurrenceCard at={instance.startsAt} title={instance.title || "Church event"}
+      notice={canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
+      meta={<>
+        <div className="text-sm text-text-muted">{time}{instance.location ? ` · ${instance.location}` : ""}</div>
         {held && <div className="text-sm text-text-muted">{held}</div>}
+      </>}
+      menu={canManage && <Menu
+        tone="quiet"
+        label={`More for ${instance.date}`}
+        items={[
+          { label: "Edit this date", onSelect: () => setEditingDate((v) => !v) },
+          { label: "Manage sign-ups", onSelect: () => setManaging((v) => !v) },
+          { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
+        ]}
+      />}
+    >
         {instance.videoUrl ? (
           <div>
             <ButtonLink to={instance.videoUrl} external variant="secondary">
@@ -262,22 +267,7 @@ function DateRow({
           <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>
         )}
         <Attendance instance={instance} />
-      </div>
-      {canManage && (
-        <div className="shrink-0">
-          <Menu
-            tone="quiet"
-            label={`More for ${instance.date}`}
-            items={[
-              { label: "Edit this date", onSelect: () => setEditingDate((v) => !v) },
-              { label: "Manage sign-ups", onSelect: () => setManaging((v) => !v) },
-              { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
-            ]}
-          />
-        </div>
-      )}
-    </div>
-    <div className="mt-3">
+    <div>
         <div>
           {loggedIn ? (
             <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
@@ -285,17 +275,15 @@ function DateRow({
           ) : instance.visibility === "public" ? (
             <div className="space-y-2">
               <GuestRegistrationForm instance={instance} />
-              <p className="text-sm text-text-muted">
-                Already have an account?{" "}
-                <button type="button" onClick={onNeedLogin} className="text-primary font-semibold">
-                  Log in to register
-                </button>
-              </p>
+              <p className="text-sm text-text-muted">Already have an account?</p>
+              <Button variant="secondary" onClick={onNeedLogin} layout="w-full sm:w-auto">
+                Log in to register
+              </Button>
             </div>
           ) : (
-            <button type="button" onClick={onNeedLogin} className="text-sm text-primary font-semibold">
+            <Button variant="secondary" onClick={onNeedLogin} layout="w-full sm:w-auto">
               Log in to register
-            </button>
+            </Button>
           )}
         </div>
         {editingDate && (
@@ -310,7 +298,7 @@ function DateRow({
         )}
         {canManage && managing && <Suspense fallback={<Skeleton kind="lines" />}><ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} /></Suspense>}
     </div>
-    </div>
+    </OccurrenceCard>
   );
 }
 
@@ -374,7 +362,7 @@ function HostEditor({
           </li>
         ))}
       </ul>
-      <form onSubmit={add} className="flex flex-col gap-3 sm:flex-row sm:items-end">
+      <Form noValidate onSubmit={add} className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <div className="min-w-0 flex-1">
           <Field label="Host email" hint="They must already have an account.">
             <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
@@ -383,7 +371,7 @@ function HostEditor({
         <Button variant="secondary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           Add host
         </Button>
-      </form>
+      </Form>
     </div>
   );
 }

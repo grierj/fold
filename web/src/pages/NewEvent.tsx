@@ -1,3 +1,4 @@
+import { Form } from "../components/ui/Form";
 import { ChildcareField, childcareBody, childcareProblem, emptyChildcare, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "../components/ChildcareField";
 import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
@@ -162,6 +163,7 @@ export function NewEvent() {
   if (!user) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+        <h1 className="text-3xl font-bold mb-6">Schedule an event</h1>
         <Link to="/login" state={{ from: `/groups/${id}/events/new` }} className="text-primary font-semibold">
           Log in
         </Link>{" "}
@@ -173,6 +175,7 @@ export function NewEvent() {
   if (!canManage) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+        <h1 className="text-3xl font-bold mb-6">Schedule an event</h1>
         <p className="text-text-muted">
           Only the group leader or an admin can schedule events for{" "}
           <span className="font-semibold">{groupName || "this group"}</span>.
@@ -190,7 +193,7 @@ export function NewEvent() {
       <p className="text-text-muted mb-6">
         for <span className="font-semibold">{groupName}</span>
       </p>
-      <form onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
+      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
         {error && <FormError>{error}</FormError>}
         <Field id="event-title" label="Title" optional hint="Leave it blank to use the group's name.">
           <Input
@@ -290,7 +293,7 @@ export function NewEvent() {
             Cancel
           </Link>
         </FormActions>
-      </form>
+      </Form>
     </div>
   );
 }

@@ -116,7 +116,9 @@ export function MonthView({
                             ? "border-primary bg-primary"
                             : state === "maybe" || state === "waitlisted" || state === "not_answered"
                               ? "border-primary bg-transparent"
-                              : "border-border-strong bg-border-strong";
+                              : state === "declined"
+                                ? "border-border-strong bg-transparent"
+                                : "border-border-strong bg-border-strong";
                           return <span key={`${o.eventId}-${o.date}`} className={`h-1.5 w-1.5 rounded-full border ${dot}`} />;
                         })}
                       </span>
@@ -153,6 +155,12 @@ export function MonthView({
           ))}
         </tbody>
       </table>
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-text-muted sm:hidden" role="group" aria-label="Calendar key">
+        <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full border border-primary bg-primary" />Going</span>
+        <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full border border-primary bg-transparent" />Not answered, Maybe or Waitlisted</span>
+        <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full border border-border-strong bg-transparent" />Can't go</span>
+        <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full border border-border-strong bg-border-strong" />Other events</span>
+      </div>
       <div className="mt-6">
         <DaySection heading={formatDayHeading(selected)} occs={byDay.get(selected) ?? []} />
       </div>
