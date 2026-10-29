@@ -84,7 +84,7 @@ test("series edit form lists the browser zone first", async ({ page, request }) 
 test("admin church time zone setting lists the browser zone first", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/admin");
-  await page.getByRole("button", { name: "Settings" }).click();
-  await expect(page.getByRole("button", { name: "Settings" })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("tab", { name: "Settings" }).click();
+  await expect(page.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
   await expectBrowserZoneFirst(page, "church-tz", false);
 });

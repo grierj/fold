@@ -1,3 +1,4 @@
+import { Tabs } from "../components/ui/Tabs";
 import { Form } from "../components/ui/Form";
 import { DateEditor } from "../components/DateEditor";
 import { AddRequestForm } from "../components/AddRequestForm";
@@ -825,25 +826,11 @@ function GroupDetailContent() {
           />
         ) : (
           <>
-            {/* Tabs */}
-            <div className="border-b border-border mb-6">
-              <nav aria-label="Group sections" className="flex gap-6">
-                {(["events", "about", "members"] as Tab[]).map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => setTab(t)}
-                    className={
-                      tab === t
-                        ? "min-h-11 pb-3 border-b-2 border-primary text-primary font-semibold"
-                        : "min-h-11 pb-3 text-text-muted hover:text-text font-medium"
-                    }
-                  >
-                    {t === "events" ? "Upcoming events" : t === "about" ? "About" : "Members"}
-                  </button>
-                ))}
-              </nav>
-            </div>
-
+            <Tabs label="Group sections" value={tab} onChange={setTab} options={[
+              { id: "events", label: "Upcoming events" },
+              { id: "about", label: "About" },
+              { id: "members", label: "Members" },
+            ]}>
             {tab === "events" && (
               <div className="space-y-3">
                 <h2 className="sr-only">Upcoming events</h2>
@@ -1094,6 +1081,7 @@ function GroupDetailContent() {
                 )}
               </div>
             )}
+            </Tabs>
           </>
         )}
       </div>

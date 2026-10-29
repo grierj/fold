@@ -49,9 +49,9 @@ beforeEach(() => {
 it("keeps all five sections in a three-plus-two phone grid with shared chip targets", async () => {
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   await screen.findByText(request.name);
-  const navigation = screen.getByRole("navigation", { name: "Admin sections" });
+  const navigation = screen.getByRole("tablist", { name: "Admin sections" });
   expect(navigation).toHaveClass("grid", "grid-cols-[auto_auto_auto]", "sm:flex");
-  const buttons = within(navigation).getAllByRole("button");
+  const buttons = within(navigation).getAllByRole("tab");
   expect(buttons).toHaveLength(5);
   for (const button of buttons) expect(button).toHaveClass("chip");
   expect(buttons[0]).toHaveAccessibleName("Approvals, 1 waiting");
@@ -62,16 +62,16 @@ it("keeps all five sections in a three-plus-two phone grid with shared chip targ
 it("keeps daily work above settings and opens the settings forms only on demand", async () => {
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   await screen.findByText(request.name);
-  expect(screen.getByRole("button", { name: /^Approvals/ })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("tab", { name: /^Approvals/ })).toHaveAttribute("aria-selected", "true");
   expect(screen.queryByRole("combobox", { name: "Church time zone" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Schedule a church-wide event" })).not.toBeInTheDocument();
   expect(Site.get).not.toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button", { name: "Settings" }));
+  await userEvent.click(screen.getByRole("tab", { name: "Settings" }));
   expect(await screen.findByRole("combobox", { name: "Church time zone" })).toBeInTheDocument();
   expect(screen.getByRole("group", { name: "Self-signup" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Schedule a church-wide event" })).toHaveAttribute("href", "/events/new");
-  expect(screen.getByRole("button", { name: "Settings" })).toHaveAttribute("aria-pressed", "true");
-  await userEvent.click(screen.getByRole("button", { name: "Users" }));
+  expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+  await userEvent.click(screen.getByRole("tab", { name: "Users" }));
   expect(screen.queryByRole("combobox", { name: "Church time zone" })).not.toBeInTheDocument();
 });
 
@@ -81,7 +81,7 @@ it("opens a bookmarked settings tab and falls back to approvals for unknown tabs
   view.unmount();
   render(<MemoryRouter initialEntries={["/admin?tab=not-a-tab"]}><AdminPage /></MemoryRouter>);
   expect(await screen.findByText(request.name)).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: /^Approvals/ })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("tab", { name: /^Approvals/ })).toHaveAttribute("aria-selected", "true");
 });
 
 it("shows plain account badges rather than stored status and role codes", async () => {

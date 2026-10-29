@@ -206,9 +206,9 @@
   /* "Yours" and "Church" in the zone list (as in #52). */
   .zone-tag      { @apply ml-2 inline-block rounded-full border border-primary-border bg-surface px-2 text-xs font-semibold text-primary-on-subtle; }
   .chip          { @apply inline-flex items-center gap-1.5 min-h-11 min-w-11 rounded-full border border-border-strong bg-surface px-3 text-sm font-medium text-text; }
-  .chip[aria-pressed="true"] { @apply border-primary-border bg-primary-subtle text-primary-on-subtle font-semibold; }
+  .chip[aria-pressed="true"], .chip[aria-selected="true"] { @apply border-primary-border bg-primary-subtle text-primary-on-subtle font-semibold; }
   /* Selected chips lead with a check mark (empty alt text: not read aloud). */
-  .chip[aria-pressed="true"]::before { content: "✓" / ""; }
+  .chip[aria-pressed="true"]::before, .chip[aria-selected="true"]::before { content: "✓" / ""; }
   /* A plain violet text action ("Show who's coming"), 44px tall like the
      other text links. */
   .btn-link      { @apply inline-flex items-center min-h-11 text-sm font-medium text-primary hover:underline; }
