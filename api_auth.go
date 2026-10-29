@@ -178,8 +178,38 @@ WHERE key = ? AND failures >= ?`, window, key, failureLimit(key)).Error
 	return nil
 }
 
-// setPassword stores a new bcrypt hash, activates an invited account, and
-// ends existing sessions.
+// reauthenticate shares one per-user budget across authenticated password
+// proofs and the IP budget with sign-in. Reserve before bcrypt so parallel
+// attempts cannot bypass the limits. Only a correct proof refunds its attempt;
+// it must not clear failures from other requests.
+func (a *App) reauthenticate(c *gin.Context, u *models.User, password string) bool {
+	keys := []string{fmt.Sprintf("user:%d", u.ID), "ip:" + rateLimitIP(c.ClientIP())}
+	ctx := c.Request.Context()
+	allowed, err := a.reserveLoginAttempt(ctx, keys)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not verify password")
+		return false
+	}
+	if !allowed {
+		jsonError(c, http.StatusTooManyRequests, "too many sign-in attempts; try again in 15 minutes")
+		return false
+	}
+	if !u.CheckPassword(password) {
+		if err := a.lockLoginKeysAtLimit(ctx, keys); err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not verify password")
+			return false
+		}
+		jsonError(c, http.StatusBadRequest, "current password is incorrect")
+		return false
+	}
+	if err := a.DB.WithContext(ctx).Exec(`UPDATE login_throttles
+SET failures = GREATEST(failures - 1, 0) WHERE key IN ?`, keys).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not verify password")
+		return false
+	}
+	return true
+}
+
 // apiChangePassword lets the current user replace their password.
 // This browser stays logged in; other sessions for the account do not.
 func (a *App) apiChangePassword(c *gin.Context) {
@@ -197,8 +227,7 @@ func (a *App) apiChangePassword(c *gin.Context) {
 			"password must be at least 10 characters")
 		return
 	}
-	if !u.CheckPassword(body.Current) {
-		jsonError(c, http.StatusBadRequest, "current password is incorrect")
+	if !a.reauthenticate(c, u, body.Current) {
 		return
 	}
 	var prepared models.User

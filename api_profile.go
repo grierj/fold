@@ -167,8 +167,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail, cu
 		jsonError(c, http.StatusBadRequest, "enter a valid email address")
 		return
 	}
-	if !u.CheckPassword(currentPassword) {
-		jsonError(c, http.StatusBadRequest, "current password is incorrect")
+	if !a.reauthenticate(c, u, currentPassword) {
 		return
 	}
 	// Validate the proof against locked credentials before any address lookup.

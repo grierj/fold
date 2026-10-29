@@ -662,3 +662,140 @@ func TestPasswordResetSendHasTimeout(t *testing.T) {
 		t.Fatalf("send deadline %v, want within %v", d, resetMailTimeout)
 	}
 }
+
+func TestLoginFailureLimitPolicy(t *testing.T) {
+	for _, tt := range []struct {
+		key  string
+		want int
+	}{
+		{"email:alice@example.com", 10},
+		{"user:123", 10},
+		{"ip:192.0.2.1", 50},
+	} {
+		t.Run(tt.key, func(t *testing.T) {
+			if got := failureLimit(tt.key); got != tt.want {
+				t.Fatalf("limit = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func reauthBody(emailChange bool, password string) (string, string, map[string]any) {
+	if emailChange {
+		return "PUT", "/api/v1/me", map[string]any{"email": "replacement@example.com", "currentPassword": password}
+	}
+	return "POST", "/api/v1/me/password", map[string]any{"current": password, "password": "replacement1234"}
+}
+
+func TestReauthenticationSharesUserBudgetAcrossEndpointsAndIPs(t *testing.T) {
+	app := testApp(t)
+	user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	c := loginAPI(t, app, "alice", "password1234")
+	for i := range emailFailureLimit {
+		c.ip = "198.51.100." + itoa(uint(i+1))
+		method, path, body := reauthBody(i%2 == 0, "wrong")
+		apiDo(t, c, method, path, body, http.StatusBadRequest)
+	}
+	for _, emailChange := range []bool{false, true} {
+		method, path, body := reauthBody(emailChange, "password1234")
+		c.ip = "203.0.113.1"
+		apiDo(t, c, method, path, body, http.StatusTooManyRequests)
+	}
+	var fresh models.User
+	app.DB.First(&fresh, user.ID)
+	if fresh.Email != user.Email || !fresh.CheckPassword("password1234") || fresh.SessionVersion != user.SessionVersion {
+		t.Fatal("locked-out proof changed credentials")
+	}
+	var tokens int64
+	app.DB.Model(&models.AccountToken{}).Count(&tokens)
+	if tokens != 0 || mailsTo(app, "replacement@example.com") != 0 {
+		t.Fatal("locked-out proof issued an email-change capability")
+	}
+	// Lockout lasts 15 minutes, then both window and lock expire.
+	app.DB.Exec(`UPDATE login_throttles SET locked_until = now() - interval '1 second', window_start = now() - interval '16 minutes' WHERE key = ?`, "user:"+itoa(user.ID))
+	method, path, body := reauthBody(false, "password1234")
+	apiDo(t, c, method, path, body, http.StatusOK)
+}
+
+func TestReauthenticationSharesLoginIPBudget(t *testing.T) {
+	for _, emailChange := range []bool{false, true} {
+		t.Run(map[bool]string{false: "password", true: "email"}[emailChange], func(t *testing.T) {
+			app := testApp(t)
+			newTestUser(t, app, "alice", "password1234", models.RoleMember)
+			c := loginAPI(t, app, "alice", "password1234")
+			c.ip = "192.0.2.10"
+			if err := app.DB.Create(&models.LoginThrottle{Key: "ip:" + c.ip, Failures: ipFailureLimit - 1, WindowStart: time.Now()}).Error; err != nil {
+				t.Fatal(err)
+			}
+			method, path, body := reauthBody(emailChange, "wrong")
+			apiDo(t, c, method, path, body, http.StatusBadRequest)
+			method, path, body = reauthBody(emailChange, "password1234")
+			apiDo(t, c, method, path, body, http.StatusTooManyRequests)
+			if code, _ := tryLogin(t, app, c.ip, "alice@example.com", "password1234"); code != http.StatusTooManyRequests {
+				t.Fatalf("sign-in did not share reauthentication IP lock: %d", code)
+			}
+		})
+	}
+}
+
+func TestReauthenticationSuccessRefundsOnlyItsReservation(t *testing.T) {
+	for _, emailChange := range []bool{false, true} {
+		t.Run(map[bool]string{false: "password", true: "email"}[emailChange], func(t *testing.T) {
+			app := testApp(t)
+			user := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+			c := loginAPI(t, app, "alice", "password1234")
+			c.ip = "192.0.2.10"
+			keys := []string{"user:" + itoa(user.ID), "ip:" + c.ip}
+			for _, key := range keys {
+				if err := app.DB.Create(&models.LoginThrottle{Key: key, Failures: 3, WindowStart: time.Now()}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			method, path, body := reauthBody(emailChange, "password1234")
+			apiDo(t, c, method, path, body, http.StatusOK)
+			for _, key := range keys {
+				var row models.LoginThrottle
+				if err := app.DB.Where("key = ?", key).First(&row).Error; err != nil {
+					t.Fatal(err)
+				}
+				if row.Failures != 3 || row.LockedUntil != nil {
+					t.Fatalf("success changed prior failure budget: %+v", row)
+				}
+			}
+		})
+	}
+}
+
+func TestReauthenticationReservationHoldsUnderParallelRequests(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	c := loginAPI(t, app, "alice", "password1234")
+	const burst = 3 * emailFailureLimit
+	codes := make(chan int, burst)
+	var wg sync.WaitGroup
+	for i := range burst {
+		clone := &apiClient{t: t, router: c.router, token: c.token, jar: map[string]*http.Cookie{}, ip: "198.51.100." + itoa(uint(i+1))}
+		for k, v := range c.jar {
+			clone.jar[k] = v
+		}
+		wg.Go(func() {
+			method, path, body := reauthBody(i%2 == 0, "wrong")
+			codes <- clone.do(method, path, body, true).Code
+		})
+	}
+	wg.Wait()
+	close(codes)
+	checked := 0
+	for code := range codes {
+		switch code {
+		case http.StatusBadRequest:
+			checked++
+		case http.StatusTooManyRequests:
+		default:
+			t.Fatalf("unexpected status %d", code)
+		}
+	}
+	if checked == 0 || checked > emailFailureLimit {
+		t.Fatalf("%d proofs checked in burst of %d, limit %d", checked, burst, emailFailureLimit)
+	}
+}
