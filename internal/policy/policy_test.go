@@ -1058,3 +1058,56 @@ func TestCanManageGuestRegistration(t *testing.T) {
 		})
 	}
 }
+
+func TestCanDelegateHousehold(t *testing.T) {
+	manager := &Person{ID: 1, Admin: true}
+	holder := &Person{ID: 2}
+	for _, tt := range []struct {
+		name          string
+		actor, holder *Person
+		eligible      bool
+		want          bool
+	}{
+		{"admin for adult", manager, holder, true, true},
+		{"signed out", nil, holder, true, false},
+		{"member", &Person{ID: 3}, holder, true, false},
+		{"teen admin", &Person{ID: 3, Admin: true, Teen: true}, holder, true, false},
+		{"no holder", manager, nil, true, false},
+		{"teen holder", manager, &Person{ID: 2, Teen: true}, true, false},
+		{"ineligible holder", manager, holder, false, false},
+		{"acting admin is not holder", manager, manager, true, false},
+		{"another admin may be holder", manager, &Person{ID: 2, Admin: true}, true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanDelegateHousehold(tt.actor, tt.holder, tt.eligible); got != tt.want {
+				t.Fatalf("got %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanChooseHouseholdGuardian(t *testing.T) {
+	manager := &Person{ID: 1, Admin: true}
+	guardian := &Person{ID: 2}
+	for _, tt := range []struct {
+		name     string
+		guardian *Person
+		rel      HouseholdRel
+		eligible bool
+		want     bool
+	}{
+		{"household adult", guardian, HouseholdRel{Account: true, Adult: true}, true, true},
+		{"not in household", guardian, HouseholdRel{}, true, false},
+		{"teen relation", guardian, HouseholdRel{Account: true}, true, false},
+		{"teen account", &Person{ID: 2, Teen: true}, HouseholdRel{Account: true, Adult: true}, true, false},
+		{"ineligible account", guardian, HouseholdRel{Account: true, Adult: true}, false, false},
+		{"no explicit guardian", nil, HouseholdRel{}, false, false},
+		{"acting admin is not guardian", manager, HouseholdRel{Account: true, Adult: true}, true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanChooseHouseholdGuardian(manager, tt.guardian, tt.rel, tt.eligible); got != tt.want {
+				t.Fatalf("got %t, want %t", got, tt.want)
+			}
+		})
+	}
+}

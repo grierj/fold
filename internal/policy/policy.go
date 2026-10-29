@@ -527,6 +527,18 @@ func CanManageHousehold(p *Person, rel HouseholdRel) bool {
 	return !p.Teen && rel.Adult
 }
 
+// CanDelegateHousehold lets an admin act for an existing eligible adult
+// account without making the acting admin a household account or guardian.
+func CanDelegateHousehold(actor, holder *Person, holderEligible bool) bool {
+	return IsAdmin(actor) && !actor.Teen && holder != nil && !holder.Teen && holderEligible && actor.ID != holder.ID
+}
+
+// CanChooseHouseholdGuardian requires an explicitly selected eligible adult
+// account in the household. Delegation never makes the acting admin a guardian.
+func CanChooseHouseholdGuardian(actor, guardian *Person, rel HouseholdRel, guardianEligible bool) bool {
+	return CanDelegateHousehold(actor, guardian, guardianEligible) && rel.Account && rel.Adult
+}
+
 // CanConvertHouseholdPerson requires current adult authority and birth-date
 // evidence. Teens also need a confirmed household guardian link.
 func CanConvertHouseholdPerson(p *Person, rel HouseholdRel, person HouseholdPerson, active bool) bool {

@@ -191,6 +191,9 @@ DELETE /api/v1/me/household/people/:id      → 200 {}
 POST   /api/v1/me/household/people/:id/convert → 201 {conversion}  {email}
 POST   /api/v1/me/household/people/:id/convert/resend → 200 {conversion}
 DELETE /api/v1/me/household/people/:id/convert → 200 {}
+GET    /api/v1/admin/users/:id/household            → 200 {household|null} (admin; read-only)
+POST   /api/v1/admin/users/:id/household            → 201 {household} {name?, address?} (admin; conflicts if already linked)
+POST   /api/v1/admin/users/:id/household/people     → 201 {person} {firstName, lastName?, kind, birthDate?, careNotes?, photoConsent?, guardianUserId?} (admin)
 GET    /api/v1/admin/guardian-links?status=pending  → 200 {guardianLinks, nominations}   (admin)
 POST   /api/v1/admin/guardian-links/:id/confirm     → 200 {guardianLink}    {checkNote} (admin; note required; not your own link while another active admin exists, DEC-79)
 POST   /api/v1/admin/guardian-links/:id/reject      → 200 {guardianLink}    {note?} (admin)
@@ -208,6 +211,20 @@ the account's last name. Any adult account in the household manages it; teen
 accounts get `null` from GET and 403 from the writes. Adding a `child` or
 `teen` person opens a pending guardian link that only an admin can confirm,
 with a note on how it was checked (DEC-32); an `adult` needs no approval.
+
+Admin household delegation uses an existing active adult account with a password
+as the holder (`:id`), never the acting admin. GET does not create anything;
+POST creates the household, its adult account link, and the attributed audit
+row in one transaction. An existing household link answers `409 household_exists`;
+adding people before creating a household answers `409 household_required`.
+Adding a child or teen requires an explicit `guardianUserId` naming an eligible
+active adult account in the same household (the holder or another adult), never
+the acting admin. The guardian link starts pending, with the ordinary admin
+confirmation task. Missing or ineligible guardians answer `409 household_guardian`;
+ineligible holders answer `409 household_holder`. Person/link/task/audit writes
+are atomic. `createdBy` and the audit actor identify the admin, not the holder
+or guardian. There is no household directory, search, delegated edit/delete,
+or admin household UI in this slice.
 
 Guardian claims return the same message for unknown addresses, adults,
 duplicates, and throttled submissions. The IP cap is 10/hour; the target
