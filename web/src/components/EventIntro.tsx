@@ -18,7 +18,7 @@ export function EventIntro({
     return (
       <p className="text-text-muted">
         Part of{" "}
-        <Link to={`/groups/${groupId}`} className="text-primary font-semibold">
+        <Link to={`/groups/${groupId}`} className="inline-flex min-h-11 items-center text-primary font-semibold">
           {groupName}
         </Link>
       </p>

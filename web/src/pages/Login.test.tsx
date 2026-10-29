@@ -24,6 +24,14 @@ describe("Login", () => {
     login.mockReset();
   });
 
+  it("gives the account-request link a phone-sized target without changing prose line height", () => {
+    renderLogin();
+    const link = screen.getByRole("link", { name: "Request an account" });
+    expect(link).toHaveClass("inline-flex", "min-h-11", "items-center");
+    expect(link).toHaveAttribute("href", "/join");
+    expect(link.parentElement?.className).not.toMatch(/leading-/);
+  });
+
   it("signs in with email and password, then goes home", async () => {
     login.mockResolvedValue(undefined);
     renderLogin();

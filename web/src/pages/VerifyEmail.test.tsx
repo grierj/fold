@@ -25,6 +25,14 @@ beforeEach(() => {
   verifyEmail.mockReset().mockResolvedValue({ verified: true });
 });
 
+it("keeps the expired-link profile action phone-sized within ordinary prose", async () => {
+  render(<MemoryRouter initialEntries={["/verify-email"]}><VerifyEmail /></MemoryRouter>);
+  const link = await screen.findByRole("link", { name: "profile", exact: true });
+  expect(link).toHaveAttribute("href", "/profile");
+  expect(link).toHaveClass("inline-flex", "min-h-11", "items-center");
+  expect(link.parentElement?.className).not.toMatch(/leading-/);
+});
+
 it("verifies the exact token, refreshes auth, and offers the shared profile link", async () => {
   render(<MemoryRouter initialEntries={["/verify-email?token=new-address-token"]}><VerifyEmail /></MemoryRouter>);
 

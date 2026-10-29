@@ -81,7 +81,7 @@ export function Login() {
       {waiting && <ButtonLink variant="secondary" to="/calendar" layout="mt-4 w-full">Browse public events</ButtonLink>}
       <p className="text-sm text-text-muted mt-4 text-center">
         New here?{" "}
-        <Link to="/join" className="text-primary font-semibold">
+        <Link to="/join" className="inline-flex min-h-11 items-center text-primary font-semibold">
           Request an account
         </Link>{" "}
         — an admin reviews every request.
