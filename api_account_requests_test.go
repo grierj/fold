@@ -561,3 +561,62 @@ func TestAccountExistsHintPerAddressLimit(t *testing.T) {
 		t.Fatalf("alice got %d hints, want %d", n, targetHourLimit)
 	}
 }
+
+func TestAccountRequestListReadBudgetAndInviterNames(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	inviter := newTestUser(t, app, "inviter", "pw", models.RoleMember)
+	if err := app.DB.Model(inviter).Update("display_name", "Pat").Error; err != nil {
+		t.Fatal(err)
+	}
+	// Historical requests still name a soft-deleted inviter.
+	if err := app.DB.Delete(inviter).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := loginAPI(t, app, "admin", "pw")
+	var baseline int64
+	for i := 1; i <= 30; i++ {
+		r := models.AccountRequest{Name: "Invitee", Email: "invitee@example.com", Source: models.RequestMemberInvite,
+			RequestedBy: &inviter.ID, Status: models.RequestPending, AccountType: models.AccountAdult, Flags: "{}", ExpiresAt: time.Now().Add(time.Hour)}
+		if err := app.DB.Create(&r).Error; err != nil {
+			t.Fatal(err)
+		}
+		if i != 3 && i != 30 {
+			continue
+		}
+		counter := countDBReads(t, app.DB)
+		w := client.do("GET", "/api/v1/admin/account-requests?status=pending", nil, false)
+		reads := counter.Reads()
+		counter.Stop()
+		if w.Code != http.StatusOK {
+			t.Fatalf("list: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Requests []accountRequestJSON `json:"requests"`
+		}
+		decodeJSON(t, w, &body)
+		if len(body.Requests) != i {
+			t.Fatalf("got %d requests, want %d", len(body.Requests), i)
+		}
+		for _, r := range body.Requests {
+			if r.RequestedByName != "Pat" {
+				t.Fatalf("historical inviter: %+v", r)
+			}
+		}
+		if i == 3 {
+			baseline = reads
+		}
+		if reads != baseline || reads > 5 {
+			t.Fatalf("%d requests: %d reads, baseline=%d, cap=5", i, reads, baseline)
+		}
+		t.Logf("%d requests: %d reads", i, reads)
+	}
+	missing := uint(999999)
+	names := publicNamesIn(app.DB, []uint{missing})
+	if got := toAccountRequestJSON(&models.AccountRequest{RequestedBy: &missing}, names); got.RequestedByName != "Someone" {
+		t.Fatalf("missing inviter: %+v", got)
+	}
+	if got := toAccountRequestJSON(&models.AccountRequest{}, names); got.RequestedByName != "" {
+		t.Fatalf("self request: %+v", got)
+	}
+}

@@ -52,7 +52,7 @@ type resolutionJSON struct {
 	At      time.Time `json:"at"`
 }
 
-func (a *App) toNotificationJSON(n *models.Notification, me uint) notificationJSON {
+func toNotificationJSON(n *models.Notification, me uint, names publicNames) notificationJSON {
 	out := notificationJSON{
 		ID: n.ID, Kind: n.Kind, SubjectID: n.SubjectID, Category: n.Category, Title: n.Title, Body: n.Body, Link: n.Link,
 		Actions: []notify.Action{}, BatchCount: n.BatchCount, CreatedAt: n.CreatedAt, UpdatedAt: n.UpdatedAt,
@@ -63,7 +63,7 @@ func (a *App) toNotificationJSON(n *models.Notification, me uint) notificationJS
 		_ = json.Unmarshal([]byte(n.Actions), &out.Actions)
 	}
 	if n.ResolvedAt != nil {
-		out.Resolution = &resolutionJSON{Outcome: n.Resolution, By: a.actorName(n.ResolvedByID),
+		out.Resolution = &resolutionJSON{Outcome: n.Resolution, By: names.actorName(n.ResolvedByID),
 			ByMe: n.ResolvedByID != nil && *n.ResolvedByID == me, At: *n.ResolvedAt}
 	}
 	return out
@@ -94,10 +94,19 @@ func (a *App) apiNotifications(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "unknown filter or cursor")
 		return
 	}
+	ids := []uint{}
+	for _, rows := range [][]models.Notification{page.Waiting, page.Items} {
+		for _, n := range rows {
+			if n.ResolvedAt != nil && n.ResolvedByID != nil {
+				ids = append(ids, *n.ResolvedByID)
+			}
+		}
+	}
+	names := publicNamesIn(a.DB, ids)
 	conv := func(rows []models.Notification) []notificationJSON {
 		out := make([]notificationJSON, 0, len(rows))
 		for i := range rows {
-			out = append(out, a.toNotificationJSON(&rows[i], me))
+			out = append(out, toNotificationJSON(&rows[i], me, names))
 		}
 		return out
 	}
@@ -132,7 +141,11 @@ func (a *App) notificationToggle(set func(db *gorm.DB, userID, id uint, on bool)
 			return
 		}
 		n, _ := notify.Get(a.DB, me, uint(id))
-		c.JSON(http.StatusOK, gin.H{"notification": a.toNotificationJSON(&n, me)})
+		ids := []uint{}
+		if n.ResolvedAt != nil && n.ResolvedByID != nil {
+			ids = append(ids, *n.ResolvedByID)
+		}
+		c.JSON(http.StatusOK, gin.H{"notification": toNotificationJSON(&n, me, publicNamesIn(a.DB, ids))})
 	}
 }
 
@@ -204,6 +217,45 @@ func leaderIDs(tx *gorm.DB, groupID uint) []uint {
 	tx.Model(&models.Membership{}).Where("group_id = ? AND role = ? AND status = 'active'", groupID, models.MembershipLeader).
 		Pluck("user_id", &ids)
 	return ids
+}
+
+// publicNames keeps historical display names for one response. Like nameIn,
+// it includes soft-deleted users and never falls back to an email address.
+type publicNames map[uint]string
+
+func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
+	names := publicNames{}
+	unique := make([]uint, 0, len(ids))
+	for _, id := range ids {
+		if _, ok := names[id]; !ok {
+			names[id] = "Someone"
+			unique = append(unique, id)
+		}
+	}
+	if len(unique) == 0 {
+		return names
+	}
+	var users []models.User
+	if tx.Unscoped().Select("id", "name", "display_name").Where("id IN ?", unique).Find(&users).Error == nil {
+		for _, u := range users {
+			names[u.ID] = u.PublicName()
+		}
+	}
+	return names
+}
+
+func (names publicNames) name(id uint) string {
+	if name, ok := names[id]; ok {
+		return name
+	}
+	return "Someone"
+}
+
+func (names publicNames) actorName(id *uint) string {
+	if id == nil {
+		return "Fold"
+	}
+	return names.name(*id)
 }
 
 func nameIn(tx *gorm.DB, id uint) string {

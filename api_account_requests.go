@@ -97,7 +97,7 @@ type accountRequestJSON struct {
 	DecidedAt       *time.Time          `json:"decidedAt,omitempty"`
 }
 
-func (a *App) toAccountRequestJSON(r *models.AccountRequest) accountRequestJSON {
+func toAccountRequestJSON(r *models.AccountRequest, names publicNames) accountRequestJSON {
 	flags := parseRequestFlags(r.Flags)
 	out := accountRequestJSON{
 		GuardianEmail: r.GuardianEmail,
@@ -109,7 +109,7 @@ func (a *App) toAccountRequestJSON(r *models.AccountRequest) accountRequestJSON 
 		ExpiresAt: r.ExpiresAt, CreatedAt: r.CreatedAt, DecidedAt: r.DecidedAt,
 	}
 	if r.RequestedBy != nil {
-		out.RequestedByName = nameIn(a.DB, *r.RequestedBy)
+		out.RequestedByName = names.name(*r.RequestedBy)
 	}
 	return out
 }
@@ -384,9 +384,16 @@ func (a *App) apiListAccountRequests(c *gin.Context) {
 	}
 	var rows []models.AccountRequest
 	q.Find(&rows)
+	ids := []uint{}
+	for _, r := range rows {
+		if r.RequestedBy != nil {
+			ids = append(ids, *r.RequestedBy)
+		}
+	}
+	names := publicNamesIn(a.DB, ids)
 	out := make([]accountRequestJSON, 0, len(rows))
 	for i := range rows {
-		out = append(out, a.toAccountRequestJSON(&rows[i]))
+		out = append(out, toAccountRequestJSON(&rows[i], names))
 	}
 	c.JSON(http.StatusOK, gin.H{"requests": out})
 }
@@ -678,7 +685,11 @@ func (a *App) decideAccountRequest(c *gin.Context, req *models.AccountRequest, a
 	}
 	var fresh models.AccountRequest
 	a.DB.First(&fresh, req.ID)
-	c.JSON(http.StatusOK, gin.H{"request": a.toAccountRequestJSON(&fresh), "userId": userID})
+	ids := []uint{}
+	if fresh.RequestedBy != nil {
+		ids = append(ids, *fresh.RequestedBy)
+	}
+	c.JSON(http.StatusOK, gin.H{"request": toAccountRequestJSON(&fresh, publicNamesIn(a.DB, ids)), "userId": userID})
 }
 
 // apiConfirmAccountSetup redeems the emailed set-password link. An

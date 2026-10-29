@@ -754,3 +754,69 @@ func TestHouseholdEventNoticesDeduplicateByHolder(t *testing.T) {
 		t.Fatalf("cancellation notices %+v", notices)
 	}
 }
+
+func TestNotificationFeedReadBudgetAndResolverNames(t *testing.T) {
+	app := testApp(t)
+	me := newTestUser(t, app, "reader", "pw", models.RoleMember)
+	resolver := newTestUser(t, app, "resolver", "pw", models.RoleAdmin)
+	if err := app.DB.Model(resolver).Update("display_name", "Pat").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Delete(resolver).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := loginAPI(t, app, "reader", "pw")
+	now := time.Now().UTC()
+	var baseline int64
+	for i := 1; i <= 30; i++ {
+		n := models.Notification{UserID: me.ID, Kind: "group.pending", Category: "admin", Title: "Handled", Link: "/admin",
+			ResolvedAt: &now, ResolvedByID: &resolver.ID, Resolution: "approved"}
+		if err := app.DB.Create(&n).Error; err != nil {
+			t.Fatal(err)
+		}
+		if i != 3 && i != 30 {
+			continue
+		}
+		counter := countDBReads(t, app.DB)
+		w := client.do("GET", "/api/v1/notifications?filter=all&limit=40", nil, false)
+		reads := counter.Reads()
+		counter.Stop()
+		if w.Code != http.StatusOK {
+			t.Fatalf("feed: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Notifications []notificationJSON `json:"notifications"`
+		}
+		decodeJSON(t, w, &body)
+		if len(body.Notifications) != i {
+			t.Fatalf("got %d notifications, want %d", len(body.Notifications), i)
+		}
+		for _, n := range body.Notifications {
+			if n.Resolution == nil || n.Resolution.By != "Pat" || n.Resolution.ByMe {
+				t.Fatalf("historical resolver: %+v", n)
+			}
+		}
+		if i == 3 {
+			baseline = reads
+		}
+		if reads != baseline || reads > 6 {
+			t.Fatalf("%d notifications: %d reads, baseline=%d, cap=6", i, reads, baseline)
+		}
+		t.Logf("%d notifications: %d reads", i, reads)
+	}
+	missing := uint(999999)
+	names := publicNamesIn(app.DB, []uint{missing, me.ID})
+	for _, tt := range []struct {
+		id   *uint
+		by   string
+		byMe bool
+	}{
+		{nil, "Fold", false}, {&missing, "Someone", false}, {&me.ID, me.PublicName(), true},
+	} {
+		n := models.Notification{ResolvedAt: &now, ResolvedByID: tt.id}
+		got := toNotificationJSON(&n, me.ID, names)
+		if got.Resolution.By != tt.by || got.Resolution.ByMe != tt.byMe {
+			t.Fatalf("resolution: %+v, want %+v", got.Resolution, tt)
+		}
+	}
+}
