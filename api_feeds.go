@@ -281,14 +281,15 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 					continue
 				}
 				eff := occurrenceToJSON(ev, occ, groupLoc)
+				details := projectFeedSeriesDetails(ev, vs.canSeeSeries(viewer, ev), videoFor(feedHouseholdVideoStatus(anyStatus[occ.ID], householdVideo[occ.ID])))
 				s := "CONFIRMED"
 				if status == models.RegWaitlisted {
 					s = "TENTATIVE"
 				}
 				feed.Singles = append(feed.Singles, events.FeedSingle{
 					EventID: ev.ID, OriginalDate: occ.OriginalDate,
-					Title: eff.Title, Description: ev.Description, Location: eff.Location,
-					VideoURL: videoFor(feedHouseholdVideoStatus(anyStatus[occ.ID], householdVideo[occ.ID])), RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: ev.ChildcareAvailable, ChildcareAges: ev.ChildcareAges,
+					Title: eff.Title, Description: details.description, Location: eff.Location,
+					VideoURL: details.videoURL, RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: details.childcareAvailable, ChildcareAges: details.childcareAges,
 					TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
 					URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate), UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: s,
 				})
@@ -411,24 +412,34 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 				videoURL = link
 			}
 		}
-		description := ""
-		childcareAvailable := false
-		childcareAges := ""
-		if seriesVisible {
-			description = ev.Description
-			childcareAvailable = ev.ChildcareAvailable
-			childcareAges = ev.ChildcareAges
-		}
+		details := projectFeedSeriesDetails(ev, seriesVisible, videoURL)
 		feed.Singles = append(feed.Singles, events.FeedSingle{
 			EventID: ev.ID, OriginalDate: occ.OriginalDate, Title: eff.Title,
-			Description: description, Location: eff.Location, TZID: ev.TZID,
-			StartsAt: eff.StartsAt, EndsAt: eff.EndsAt, VideoURL: videoURL,
-			RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: childcareAvailable,
-			ChildcareAges: childcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),
+			Description: details.description, Location: eff.Location, TZID: ev.TZID,
+			StartsAt: eff.StartsAt, EndsAt: eff.EndsAt, VideoURL: details.videoURL,
+			RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: details.childcareAvailable,
+			ChildcareAges: details.childcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),
 			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: status,
 		})
 	}
 	return feed
+}
+
+type feedSeriesDetails struct {
+	description        string
+	videoURL           string
+	childcareAvailable bool
+	childcareAges      string
+}
+
+// projectFeedSeriesDetails is shared by public, group and personal date feeds.
+// An opened date authorizes its date fields, never its hidden parent details.
+func projectFeedSeriesDetails(ev *models.Event, seriesVisible bool, videoURL string) feedSeriesDetails {
+	if !seriesVisible {
+		return feedSeriesDetails{}
+	}
+	return feedSeriesDetails{description: ev.Description, videoURL: videoURL,
+		childcareAvailable: ev.ChildcareAvailable, childcareAges: ev.ChildcareAges}
 }
 
 // ---------------------------------------------------------------------------

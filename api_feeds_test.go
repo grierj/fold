@@ -922,3 +922,53 @@ func TestPersonalFeedScopedInvitationAlwaysStandalone(t *testing.T) {
 		t.Fatal("hidden group feed", w.Code, w.Body.String())
 	}
 }
+
+func TestPublicAndGroupFeedsOpenedDateHidesSeriesDetails(t *testing.T) {
+	for _, visibility := range []string{models.VisibilityPrivate, models.VisibilityInviteOnly} {
+		t.Run(visibility, func(t *testing.T) {
+			app, admin, anon, ev, dates := dateVisibilityFixture(t, models.VisibilityPublic)
+			const description = "Hidden series description with enough words to cross an ICS folding boundary and stay secret"
+			const video = "https://meet.example.org/hidden-series-video-with-a-long-path-that-must-never-reach-a-date-feed"
+			const ages = "Hidden nursery ages"
+			if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{
+				"visibility": visibility, "description": description,
+				"video_provider": models.VideoProviderLink, "video_url": video, "video_reveal": models.VideoRevealAlways,
+				"childcare_available": true, "childcare_ages": ages,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{
+				"visibility": "public", "title": "Opened community date", "location": "Opened date place",
+			}, http.StatusOK)
+			for _, path := range []string{"/cal/public.ics", fmt.Sprintf("/cal/groups/%d.ics", *ev.GroupID)} {
+				raw := unfoldFeed(feedBody(t, anon, path))
+				for _, want := range []string{"BEGIN:VEVENT", "SUMMARY:Opened community date", "LOCATION:Opened date place", occurrenceDatePath(ev.ID, dates[0].OriginalDate), dates[0].StartsAt.UTC().Format("20060102T150405")} {
+					if !strings.Contains(raw, want) {
+						t.Fatalf("%s missing %q: %s", path, want, raw)
+					}
+				}
+				if strings.Count(raw, "BEGIN:VEVENT") != 1 {
+					t.Fatalf("%s exported sibling dates: %s", path, raw)
+				}
+				for _, secret := range []string{description, video, ages, "Childcare available", "RRULE:", "RECURRENCE-ID:"} {
+					if strings.Contains(raw, secret) {
+						t.Fatalf("%s leaked %q: %s", path, secret, raw)
+					}
+				}
+			}
+			// Ordinary series access still includes its description, always-video
+			// and childcare details; projection is not blanket suppression.
+			if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Update("visibility", models.VisibilityPublic).Error; err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{"/cal/public.ics", fmt.Sprintf("/cal/groups/%d.ics", *ev.GroupID)} {
+				raw := unfoldFeed(feedBody(t, anon, path))
+				for _, want := range []string{description, video, ages, "Childcare available"} {
+					if !strings.Contains(raw, want) {
+						t.Fatalf("%s suppressed authorized %q: %s", path, want, raw)
+					}
+				}
+			}
+		})
+	}
+}
