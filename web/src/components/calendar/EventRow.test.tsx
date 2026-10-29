@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import type { CalendarOccurrence } from "../../types";
@@ -71,6 +72,11 @@ describe("EventRow", () => {
 });
 
 describe("EventChip", () => {
+  it("keeps event links in the ordinary Tab order", async () => {
+    wrap(<EventChip occ={occ({})} />);
+    await userEvent.tab();
+    expect(screen.getByRole("link")).toHaveFocus();
+  });
   it.each([false, true])("keeps a 44px target when stacked=%s", (stacked) => {
     wrap(<EventChip occ={occ({})} stacked={stacked} />);
     expect(screen.getByRole("link")).toHaveClass("min-h-11");
