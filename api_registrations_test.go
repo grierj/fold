@@ -2030,3 +2030,56 @@ func TestManagerReaddWithFewerGuestsPromotesWaitlist(t *testing.T) {
 		})
 	}
 }
+
+func TestManagerHouseholdModeSwitchPromotesWaitlist(t *testing.T) {
+	for _, insideCutoff := range []bool{false, true} {
+		t.Run(fmt.Sprintf("insideCutoff=%t", insideCutoff), func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "ManagerHouseholdModeSwitch")
+			id, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+			apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(id), map[string]any{"remoteAvailable": true, "remoteCapacity": 1}, http.StatusOK)
+			holder, hc, spouse, _ := householdFamily(t, app, admin, "modeholder")
+			result := batchAnswer(t, hc, id, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going", "attendanceMode": models.AttendanceInPerson}}}, http.StatusOK)
+			registrationID := result.People[0].RegistrationID
+			var occurrence models.EventOccurrence
+			if err := app.DB.First(&occurrence, "event_id = ?", id).Error; err != nil {
+				t.Fatal(err)
+			}
+			occurrenceID := occurrence.ID
+			waiter := newTestUser(t, app, "modewaiter", "password1234", models.RoleMember)
+			wc := loginAPI(t, app, "modewaiter", "password1234")
+			if code, body := registerModeAs(wc, id, date, "going", models.AttendanceInPerson); code != http.StatusOK {
+				t.Fatalf("waitlist: %d %s", code, body)
+			}
+			if got := regStatus(t, app, waiter.ID, occurrenceID); got != models.RegWaitlisted {
+				t.Fatalf("before mode switch: %s", got)
+			}
+			if insideCutoff {
+				if err := app.DB.Model(&models.EventOccurrence{}).Where("id = ?", occurrenceID).Update("starts_at", time.Now().UTC().Add(time.Hour)).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			apiDo(t, admin, "POST", "/api/v1/events/"+itoa(id)+"/registrations/add", map[string]any{
+				"date": date, "personId": spouse.ID, "registeredBy": holder.ID, "attendanceMode": models.AttendanceRemote,
+			}, http.StatusOK)
+			var registration models.Registration
+			if err := app.DB.First(&registration, registrationID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if registration.Status != models.RegGoing || registration.AttendanceMode != models.AttendanceRemote || registrationHolder(registration) != holder.ID {
+				t.Fatalf("switched household registration: %+v", registration)
+			}
+			var promoted models.Registration
+			if err := app.DB.First(&promoted, "occurrence_id = ? AND user_id = ?", occurrenceID, waiter.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			want := models.RegGoing
+			if insideCutoff {
+				want = models.RegWaitlisted
+			}
+			if promoted.Status != want || (promoted.PromotedAt != nil) != !insideCutoff || promoted.AttendanceMode != models.AttendanceInPerson {
+				t.Fatalf("waiter after mode switch: %+v, want %s", promoted, want)
+			}
+		})
+	}
+}

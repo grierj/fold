@@ -1937,7 +1937,7 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		if err := auditRegistration(tx, actor.ID, action, ev.ID, old, r, c.ClientIP()); err != nil {
 			return err
 		}
-		if old.Status == models.RegGoing && effectiveChildcare(ev, r) < effectiveChildcare(ev, old) {
+		if old.Status == models.RegGoing && (attendanceModeOf(r.AttendanceMode) != attendanceModeOf(old.AttendanceMode) || effectiveChildcare(ev, r) < effectiveChildcare(ev, old)) {
 			mailed, err = a.promoteLocked(tx, ev, locked, now, &actor.ID)
 			return err
 		}

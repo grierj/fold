@@ -816,11 +816,15 @@ attendance pool and childcare promotes. Earlier picks in the same pass
 consume childcare spots. A party needing no childcare can still promote
 when childcare is full. Hand-promoting a specific person returns 409
 `childcare_full` if their childcare request does not fit.
-Promotion runs again when a going registration lowers its childcare count,
-cancels, declines, moves to maybe, is removed, or its account is disabled.
-Raising `childcareCapacity`, clearing its limit, or turning childcare off
-also retries promotion for future scheduled dates. Each promotion still
-requires attendance seats and follows the existing two-hour cutoff.
+Promotion runs again when a going registration lowers its guest or childcare
+count, switches attendance mode (freeing a seat in its previous pool), cancels,
+declines, moves to maybe, is removed, or its account is disabled. This includes
+manager re-adds that reduce a count or switch modes. Increasing effective
+attendance capacity (in-person or remote, including by clearing a limit or
+changing a per-date override), raising `childcareCapacity`, clearing its limit,
+or turning childcare off also retries promotion for future scheduled dates.
+Each promotion still requires attendance seats and follows the existing
+two-hour cutoff.
 On account re-enable, a going registration that would overfill childcare
 is dropped through the same DEC-47 audit and ask-a-leader notice as a full
 attendance pool, including when attendance seats are unlimited.
@@ -904,7 +908,7 @@ POST /api/v1/events/:id/registrations/promote → 200 {} | 403 | 404 | 409  (lea
   body: {date: "YYYY-MM-DD", registrationId}
 POST /api/v1/events/:id/registrations/add     → 200 {} | 403 | 404 | 409  (leader/host)
   body: {date: "YYYY-MM-DD", selectionId | userId | email | (personId + registeredBy),
-         guestCount?, childcareRequested?, overCapacity?}
+         guestCount?, attendanceMode?, childcareRequested?, overCapacity?}
 ```
 
 `registration`: `{userId, eventId, occurrenceId, date, status, guestCount,
