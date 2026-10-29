@@ -16,7 +16,12 @@ test("left-out account is told to ask a leader, who adds them over the limit", a
   await signIn(page, "lee");
   await page.goto("/groups/1");
   await expect(page.getByText("3 of 3 members")).toBeVisible();
-  await page.getByRole("button", { name: /^members$/i }).click();
+  const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
+    .getByRole("tab", { name: "Members", exact: true });
+  await membersTab.click();
+  await expect(membersTab).toHaveAttribute("aria-selected", "true");
+  const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
+  await expect(membersPanel).toBeVisible();
   await expect(page.locator("#waiting")).toHaveCount(0);
   await expect(page.getByText("Pat Returner")).toHaveCount(0);
   await page.getByLabel("Add a member by email").fill("pat@example.com");

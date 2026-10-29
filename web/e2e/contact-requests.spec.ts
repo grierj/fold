@@ -46,7 +46,12 @@ test("hidden adult requests preserve failures, disclose only on explicit reveal,
   await adult("PUT", "/me", { hideContactFromLeaders: true });
   await signIn(page, "contact-requester");
   await page.goto(`/groups/${group.id}`);
-  await page.getByRole("button", { name: /^members$/i }).click();
+  const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
+    .getByRole("tab", { name: "Members", exact: true });
+  await membersTab.click();
+  await expect(membersTab).toHaveAttribute("aria-selected", "true");
+  const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
+  await expect(membersPanel).toBeVisible();
   const roster = await (await page.request.get(`/api/v1/groups/${group.id}/members`)).json();
   const hidden = roster.members.find((m: { id: number }) => m.id === ids.adult);
   expect(hidden).not.toHaveProperty("email"); expect(hidden).not.toHaveProperty("phone");

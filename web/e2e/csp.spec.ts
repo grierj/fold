@@ -10,7 +10,12 @@ test("no CSP violations across the main pages, and the check itself works", asyn
     await page.goto(path);
     await page.waitForLoadState("networkidle");
   }
-  await page.getByRole("button", { name: /^members$/i }).click();
+  const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
+    .getByRole("tab", { name: "Members", exact: true });
+  await membersTab.click();
+  await expect(membersTab).toHaveAttribute("aria-selected", "true");
+  const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
+  await expect(membersPanel).toBeVisible();
   await expect(page.getByText("Sam Member")).toBeVisible();
   expect(violations).toEqual([]);
 

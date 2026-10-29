@@ -61,7 +61,12 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   await signIn(page, leaderLogin);
   page.on("dialog", (dialog) => dialog.accept());
   await page.goto(`/groups/${destination.id}`);
-  await page.getByRole("button", { name: /^members$/i }).click();
+  const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
+    .getByRole("tab", { name: "Members", exact: true });
+  await membersTab.click();
+  await expect(membersTab).toHaveAttribute("aria-selected", "true");
+  const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
+  await expect(membersPanel).toBeVisible();
   const picker = page.getByRole("combobox", { name: "Find a person by name" });
   const searchReply = page.waitForResponse((r) => r.url().includes("/people/search?") && r.request().method() === "GET");
   await picker.fill(patName);
