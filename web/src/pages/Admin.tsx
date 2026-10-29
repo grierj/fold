@@ -1289,7 +1289,7 @@ export function AdminPage() {
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">Admin</h1>
-      <nav aria-label="Admin sections" className="flex flex-wrap gap-2 border-b border-border pb-4 mb-6">
+      <nav aria-label="Admin sections" className="grid grid-cols-[auto_auto_auto] gap-2 border-b border-border pb-4 mb-6 sm:flex sm:flex-wrap">
         {tabs.map((t) => (
           <Chip
             key={t.id}

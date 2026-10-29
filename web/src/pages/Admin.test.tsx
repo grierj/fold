@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -44,6 +44,17 @@ beforeEach(() => {
   vi.mocked(Groups.members).mockReset().mockResolvedValue({ members: [] });
   vi.mocked(Groups.memberDeparturePreview).mockReset();
   vi.mocked(Groups.confirmMemberDeparture).mockReset();
+});
+
+it("keeps all five sections in a three-plus-two phone grid with shared chip targets", async () => {
+  render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+  await screen.findByText(request.name);
+  const navigation = screen.getByRole("navigation", { name: "Admin sections" });
+  expect(navigation).toHaveClass("grid", "grid-cols-[auto_auto_auto]", "sm:flex");
+  const buttons = within(navigation).getAllByRole("button");
+  expect(buttons).toHaveLength(5);
+  for (const button of buttons) expect(button).toHaveClass("chip");
+  expect(buttons[0]).toHaveAccessibleName("Approvals, 1 waiting");
 });
 
 it("keeps daily work above settings and opens the settings forms only on demand", async () => {
