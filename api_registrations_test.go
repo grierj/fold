@@ -1984,3 +1984,49 @@ func TestHouseholdPromotionDoesNotUseHoldersInvitation(t *testing.T) {
 		})
 	}
 }
+
+func TestManagerReaddWithFewerGuestsPromotesWaitlist(t *testing.T) {
+	for _, insideCutoff := range []bool{false, true} {
+		t.Run(fmt.Sprintf("insideCutoff=%t", insideCutoff), func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "ManagerGuestReduction")
+			id, date := seedCappedEvent(t, app, admin, gid, intPtr(4), true)
+			party := newTestUser(t, app, "party", "password1234", models.RoleMember)
+			waiter := newTestUser(t, app, "waiter", "password1234", models.RoleMember)
+			path := "/api/v1/events/" + itoa(id) + "/registrations"
+			apiDo(t, admin, "POST", path+"/add", map[string]any{"date": date, "userId": party.ID, "guestCount": 3}, http.StatusOK)
+			wc := loginAPI(t, app, "waiter", "password1234")
+			code, body := registerAs(wc, id, date, "going", nil)
+			if code != http.StatusOK {
+				t.Fatalf("waitlist: %d %s", code, body)
+			}
+			var occurrence models.EventOccurrence
+			if err := app.DB.First(&occurrence, "event_id = ?", id).Error; err != nil {
+				t.Fatal(err)
+			}
+			if got := regStatus(t, app, waiter.ID, occurrence.ID); got != models.RegWaitlisted {
+				t.Fatalf("before reduction: %s", got)
+			}
+			if insideCutoff {
+				if err := app.DB.Model(&occurrence).Update("starts_at", time.Now().UTC().Add(time.Hour)).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			apiDo(t, admin, "POST", path+"/add", map[string]any{"date": date, "userId": party.ID, "guestCount": 0}, http.StatusOK)
+			want := models.RegGoing
+			if insideCutoff {
+				want = models.RegWaitlisted
+			}
+			if got := regStatus(t, app, waiter.ID, occurrence.ID); got != want {
+				t.Fatalf("after reduction: %s, want %s", got, want)
+			}
+			var registration models.Registration
+			if err := app.DB.First(&registration, "occurrence_id = ? AND user_id = ?", occurrence.ID, party.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if registration.Status != models.RegGoing || registration.GuestCount != 0 {
+				t.Fatalf("re-added party: %+v", registration)
+			}
+		})
+	}
+}

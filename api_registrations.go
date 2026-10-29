@@ -2094,7 +2094,7 @@ func (a *App) addAccountRegistrationLocked(tx *gorm.DB, ev *models.Event, locked
 	}); err != nil {
 		return models.Registration{}, nil, err
 	}
-	if found && r.Status == models.RegGoing && count < r.ChildcareCount {
+	if found && before.Status == models.RegGoing && (mode != attendanceModeOf(before.AttendanceMode) || options.guests < before.GuestCount || count < before.ChildcareCount) {
 		ids, err := a.promoteLocked(tx, ev, locked, now, &actor)
 		if err != nil {
 			return models.Registration{}, nil, err
