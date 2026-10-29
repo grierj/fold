@@ -1452,3 +1452,72 @@ func TestContactAddRequestsConstraints(t *testing.T) {
 		t.Fatalf("downgrade discarded history: %v", err)
 	}
 }
+
+// TestMembershipAndRegistrationLookupPlans keeps the group/user-leading
+// indexes useful for the live memberCount and promoteOnDisable query shapes.
+func TestMembershipAndRegistrationLookupPlans(t *testing.T) {
+	db := openSQL(t, testdb.Fresh(t, true))
+	for _, q := range []string{
+		`INSERT INTO users (id, email) SELECT n, 'lookup-' || n || '@example.com' FROM generate_series(1, 2000) n`,
+		`INSERT INTO groups (id, name, leader_id) SELECT n, 'Group ' || n, 1 FROM generate_series(1, 150) n`,
+		`INSERT INTO memberships (user_id, group_id, status) SELECT ((g * 40 + n) % 2000) + 1, g, 'active' FROM generate_series(1, 150) g CROSS JOIN generate_series(1, 40) n`,
+		`INSERT INTO events (id, group_id, title, starts_local, duration_minutes, tzid, rrule, location, created_by, visibility, description) VALUES (1, 1, 'Lookup', '2030-01-01T12:00', 60, 'UTC', '', '', 1, 'public', '')`,
+		`INSERT INTO event_occurrences (id, event_id, original_date, starts_at, ends_at) SELECT n, 1, ('2030-01-01'::date + n)::text, now() + n * interval '1 day', now() + n * interval '1 day' + interval '1 hour' FROM generate_series(1, 64) n`,
+		`INSERT INTO registrations (occurrence_id, user_id, registered_by, status) SELECT o, u, NULL, 'going' FROM generate_series(1, 64) o CROSS JOIN generate_series(1, 1950) u`,
+		`ANALYZE users`, `ANALYZE memberships`, `ANALYZE registrations`, `ANALYZE event_occurrences`,
+	} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	for _, tt := range []struct{ name, query, index, forbidden string }{
+		{"member count", `SELECT count(*) FROM memberships
+		 JOIN users ON users.id = memberships.user_id AND users.deleted_at IS NULL AND users.status <> 'disabled'
+		 WHERE memberships.group_id = 1 AND memberships.status = 'active'`, "idx_memberships_group_id", "Seq Scan on memberships"},
+		{"disable promotion", `SELECT DISTINCT registrations.occurrence_id FROM registrations
+		 JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id
+		 WHERE (registrations.user_id = 1 OR registrations.registered_by = 1)
+		 AND registrations.status = 'going' AND event_occurrences.status = 'scheduled'
+		 AND event_occurrences.starts_at > now() ORDER BY registrations.occurrence_id`, "idx_registrations_user_id", "Bitmap Index Scan on idx_registration ("},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rows, err := db.Query("EXPLAIN (ANALYZE, COSTS OFF) " + tt.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var plan strings.Builder
+			for rows.Next() {
+				var line string
+				if err := rows.Scan(&line); err != nil {
+					t.Fatal(err)
+				}
+				plan.WriteString(line + "\n")
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			t.Log(plan.String())
+			if !strings.Contains(plan.String(), tt.index) || strings.Contains(plan.String(), tt.forbidden) {
+				t.Fatalf("expected %s without %s:\n%s", tt.index, tt.forbidden, plan.String())
+			}
+		})
+	}
+	// Both additive indexes have reversible migrations.
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DownTo(context.Background(), 40); err != nil {
+		t.Fatal(err)
+	}
+	for _, index := range []string{"idx_memberships_group_id", "idx_registrations_user_id"} {
+		var absent bool
+		if err := db.QueryRow("SELECT to_regclass($1) IS NULL", index).Scan(&absent); err != nil || !absent {
+			t.Fatalf("index %s remains after rollback: absent=%v err=%v", index, absent, err)
+		}
+	}
+	if _, err := p.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

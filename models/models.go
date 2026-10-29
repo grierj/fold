@@ -354,7 +354,7 @@ type Membership struct {
 	ID       uint   `gorm:"primaryKey"`
 	UserID   uint   `gorm:"not null;uniqueIndex:idx_user_group"`
 	User     User   `gorm:"foreignKey:UserID"`
-	GroupID  uint   `gorm:"not null;uniqueIndex:idx_user_group"`
+	GroupID  uint   `gorm:"not null;uniqueIndex:idx_user_group;index"`
 	Group    Group  `gorm:"foreignKey:GroupID"`
 	Role     string `gorm:"default:member"` // leader | member
 	Status   string `gorm:"default:active"` // active | left | removed
@@ -387,7 +387,7 @@ type Registration struct {
 	ID                 uint            `gorm:"primaryKey"`
 	OccurrenceID       uint            `gorm:"not null;uniqueIndex:idx_registration;uniqueIndex:idx_household_registration,where:household_person_id IS NOT NULL"`
 	Occurrence         EventOccurrence `gorm:"foreignKey:OccurrenceID"`
-	UserID             *uint           `gorm:"uniqueIndex:idx_registration"`
+	UserID             *uint           `gorm:"uniqueIndex:idx_registration;index"`
 	HouseholdPersonID  *uint           `gorm:"uniqueIndex:idx_household_registration,where:household_person_id IS NOT NULL;index:idx_registrations_household_person_id,where:household_person_id IS NOT NULL"`
 	RegisteredBy       *uint           `gorm:"index:idx_registrations_registered_by,where:registered_by IS NOT NULL"`
 	ChildcareRequested bool            `gorm:"not null;default:false"`
