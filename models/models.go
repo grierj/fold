@@ -497,19 +497,20 @@ type CalendarToken struct {
 
 // Account token kinds (10.1): single-use hashed tokens, valid 24 hours.
 const (
-	TokenPasswordReset = "password_reset"
-	TokenEmailVerify   = "email_verify"
-	TokenAccountSetup  = "account_setup"
-	TokenTeenConsent   = "teen_consent"
+	TokenPasswordReset     = "password_reset"
+	TokenEmailVerify       = "email_verify"
+	TokenAccountSetup      = "account_setup"
+	TokenTeenConsent       = "teen_consent"
+	TokenEmailChangeCancel = "email_change_cancel"
 )
 
-// AccountToken is a single-use hashed token for a password reset or an
-// email-change verification (10.1, M1.2). The raw token goes to the
-// person's email; only its SHA-256 is stored. payload carries the new
-// email for an email_verify token.
+// AccountToken is a single-use hashed token for a password reset, email
+// verification or cancellation, account setup, or teen consent (10.1, M1.2).
+// The raw token goes to the person's email; only its SHA-256 is stored.
+// Payload carries the new email for an email_verify token.
 type AccountToken struct {
 	ID        uint      `gorm:"primaryKey"`
-	Kind      string    `gorm:"not null"` // password_reset | email_verify
+	Kind      string    `gorm:"not null"` // password_reset | email_verify | account_setup | teen_consent | email_change_cancel
 	UserID    uint      `gorm:"not null;index"`
 	User      User      `gorm:"foreignKey:UserID"`
 	TokenHash string    `gorm:"not null;uniqueIndex:idx_account_tokens_token_hash"`

@@ -9,6 +9,7 @@ import { Form } from "./ui/Form";
 export function ProfileEmailForm() {
   const { user, refresh } = useAuth();
   const [newEmail, setNewEmail] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
   const [emailSaving, setEmailSaving] = useState(false);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
@@ -21,7 +22,7 @@ export function ProfileEmailForm() {
     setEmailStatus(null);
     setEmailSaving(true);
     try {
-      const res = await ProfileApi.update({ email: newEmail });
+      const res = await ProfileApi.update({ email: newEmail, currentPassword });
       if (res.verificationSent) {
         setEmailStatus(`Verification link sent to ${newEmail}. It expires in 24 hours.`);
         setNewEmail("");
@@ -32,6 +33,7 @@ export function ProfileEmailForm() {
     } catch (err) {
       setEmailError(errorText(err, "We couldn't start the email change."));
     } finally {
+      setCurrentPassword("");
       setEmailSaving(false);
     }
   }
@@ -41,12 +43,21 @@ export function ProfileEmailForm() {
       <h2 className="text-xl font-bold">Change sign-in email</h2>
       {emailError && <FormError>{emailError}</FormError>}
       {emailStatus && <div className="text-success text-sm">{emailStatus}</div>}
-      <Field id="new-email" label="New email" hint={<>A verification link goes to the new address, and a notice to {user.email}. The change applies after you verify, and your other sessions are signed out.</>}>
+      <Field id="new-email" label="New email" hint={<>A verification link goes to the new address. A notice goes to {user.email}, where you can cancel the pending change and sign out all sessions. If you verify the new address, your other sessions are signed out.</>}>
         <Input
           type="email"
           value={newEmail}
           onChange={(e) => setNewEmail(e.target.value)}
           autoComplete="email"
+          required
+        />
+      </Field>
+      <Field id="email-current-password" label="Current password">
+        <Input
+          type="password"
+          value={currentPassword}
+          onChange={(e) => setCurrentPassword(e.target.value)}
+          autoComplete="current-password"
           required
         />
       </Field>

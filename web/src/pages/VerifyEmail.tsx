@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Profile as ProfileApi, ApiError } from "../api";
 import { useAuth } from "../auth";
+import { ButtonLink } from "../components/ui/Button";
 
 // Redeem an email-change verification link (M1.2, 10.1). The token is the
 // credential; the change applies and every other session ends.
@@ -36,9 +37,7 @@ export function VerifyEmail() {
           <>
             <p className="text-sm">Your sign-in email is updated. Your other sessions were signed out.</p>
             <p className="mt-4">
-              <Link to="/profile" className="text-primary font-semibold text-sm">
-                View your profile
-              </Link>
+              <ButtonLink variant="link" to="/profile">View your profile</ButtonLink>
             </p>
           </>
         )}

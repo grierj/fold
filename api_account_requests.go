@@ -696,54 +696,39 @@ func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "password must be at least 10 characters")
 		return
 	}
-	var userID uint
+	var fresh models.User
 	var pendingConsent bool
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		// Discover the holder before taking locks. Consent changes acquire
-		// user locks before tokens, so setup uses that order too.
-		var initial models.AccountToken
-		if err := tx.Where("kind = ? AND token_hash = ?", models.TokenAccountSetup, hashToken(body.Token)).First(&initial).Error; err != nil {
-			return errTokenInvalid
-		}
-		var u models.User
-		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&u, initial.UserID).Error; err != nil || u.Status == models.UserDisabled {
-			return errTokenInvalid
-		}
-		tok, err := consumeAccountToken(tx, models.TokenAccountSetup, body.Token)
-		if err != nil {
-			return err
-		}
-		if tok.UserID != u.ID {
-			return errTokenInvalid
-		}
-		if err := u.SetPassword(body.Password); err != nil {
-			return err
-		}
-		userID = u.ID
-		pendingConsent = u.Status == models.UserPendingConsent
-		updates := map[string]any{
-			"password_hash":   *u.PasswordHash,
-			"session_version": gorm.Expr("session_version + 1"),
-		}
-		if u.Status == models.UserInvited {
-			updates["status"] = models.UserActive
-		}
-		if err := tx.Model(&u).Updates(updates).Error; err != nil {
-			return err
-		}
-		return audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.AccountSetupCompleted,
-			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
-	})
+	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), models.TokenAccountSetup, body.Token, body.Password)
+	if err == nil {
+		err = a.DB.Transaction(func(tx *gorm.DB) error {
+			u, err := lockAccountTokenUser(tx, models.TokenAccountSetup, body.Token)
+			if err != nil {
+				return err
+			}
+			tok, err := consumeAccountToken(tx, models.TokenAccountSetup, body.Token)
+			if err != nil {
+				return err
+			}
+			if tok.UserID != u.ID {
+				return errTokenInvalid
+			}
+			pendingConsent = u.Status == models.UserPendingConsent
+			if err := replacePasswordIn(tx, u, passwordHash); err != nil {
+				return err
+			}
+			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.AccountSetupCompleted,
+				TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+				return err
+			}
+			fresh = *u
+			return nil
+		})
+	}
 	if errors.Is(err, errTokenInvalid) {
 		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
 		return
 	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not set your password")
-		return
-	}
-	var fresh models.User
-	if err := a.DB.First(&fresh, userID).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not set your password")
 		return
 	}

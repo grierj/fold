@@ -572,6 +572,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.DELETE("/me/avatar", a.apiAuth(), a.apiDeleteAvatar)
 	// Verified email change (M1.2): the token is the credential.
 	v1.POST("/me/email/verify", a.apiVerifyEmailChange)
+	v1.POST("/me/email/cancel", a.apiCancelEmailChange)
 	// Calendar feed link (M1.7): the raw token comes back only from POST.
 	v1.GET("/me/calendar-feed", a.apiAuth(), a.apiGetMyCalendarFeed)
 	v1.POST("/me/calendar-feed", a.apiAuth(), a.apiCreateMyCalendarFeed)

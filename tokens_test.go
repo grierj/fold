@@ -45,12 +45,12 @@ func TestSecondTokenRevokesFirst(t *testing.T) {
 	// Email change: the first verification link dies when a second change
 	// is requested, so it cannot apply the stale address afterwards.
 	ac := loginAPI(t, app, "alice", "newpassword1234")
-	w = ac.do("PUT", "/api/v1/me", map[string]string{"email": "alice.one@example.com"}, true)
+	w = ac.do("PUT", "/api/v1/me", map[string]string{"email": "alice.one@example.com", "currentPassword": "newpassword1234"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("first change request: %d %s", w.Code, w.Body.String())
 	}
 	stale := tokenInEmail(t, latestEmail(t, app, "alice.one@example.com"))
-	w = ac.do("PUT", "/api/v1/me", map[string]string{"email": "alice.two@example.com"}, true)
+	w = ac.do("PUT", "/api/v1/me", map[string]string{"email": "alice.two@example.com", "currentPassword": "newpassword1234"}, true)
 	if w.Code != http.StatusOK {
 		t.Fatalf("second change request: %d %s", w.Code, w.Body.String())
 	}

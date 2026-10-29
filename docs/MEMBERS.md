@@ -9,6 +9,19 @@ reminders or lead a group, use your own email address. A free one is fine.
 Ask the church office for help with a separate account. Fold does not send
 SMS yet.
 
+## Change your sign-in email
+
+1. Open **Profile**, then **Change sign-in email**. Enter the new email and your current password, then choose **Send verification link**.
+2. Open the newest verification link sent to the new address. Starting another change makes both links from the earlier request stop working.
+3. Fold also sends a notice to the old address. If you did not request the change, open that notice and choose **Cancel email change and sign out all sessions**. This cancels the pending change and ends every sign-in for your account, including the browser you are using. Sign in again and reset your password.
+
+Opening the new-address verification link loads a page that verifies the
+change automatically. Opening the old-address cancellation link only shows the
+review page; nothing is cancelled until you choose **Cancel email change and
+sign out all sessions**. If the new address was already verified, cancellation
+cannot change it back. Ask the church office for help and reset your password
+right away.
+
 ## Share an email
 
 One email address belongs to one account with one person's name and

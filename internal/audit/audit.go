@@ -160,10 +160,18 @@ const (
 	PasswordResetRequested = "password.reset_requested"
 	PasswordResetCompleted = "password.reset_completed"
 
+	// PasswordChanged: a signed-in person changed their password.
+	// Target is the user.
+	PasswordChanged = "password.changed"
+
 	// EmailChangeRequested / EmailChanged: a verified email change (10.1,
 	// M1.2). Target is the user; meta has oldEmail and newEmail.
 	EmailChangeRequested = "email.change_requested"
 	EmailChanged         = "email.changed"
+
+	// EmailChangeCancelled: a pending verified email change was cancelled.
+	// Target is the user.
+	EmailChangeCancelled = "email.change_cancelled"
 
 	// AccountRequested: a self-signup or member invite-a-friend created
 	// an account request (DEC-4, M1.3). Target is the request; meta has

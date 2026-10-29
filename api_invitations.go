@@ -405,6 +405,9 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 			if err := tx.Save(&u).Error; err != nil {
 				return err
 			}
+			if err := revokeAccountTokens(tx, u.ID); err != nil {
+				return err
+			}
 		} else if err := tx.Create(&u).Error; err != nil {
 			return err
 		}

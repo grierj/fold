@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ---------------------------------------------------------------------------
@@ -179,17 +180,6 @@ WHERE key = ? AND failures >= ?`, window, key, failureLimit(key)).Error
 
 // setPassword stores a new bcrypt hash, activates an invited account, and
 // ends existing sessions.
-func (a *App) setPassword(u *models.User, plaintext string) error {
-	if err := u.SetPassword(plaintext); err != nil {
-		return err
-	}
-	return a.DB.Model(u).Updates(map[string]interface{}{
-		"password_hash":   *u.PasswordHash,
-		"status":          gorm.Expr("CASE WHEN status = ? THEN ? ELSE status END", models.UserInvited, models.UserActive),
-		"session_version": gorm.Expr("session_version + 1"),
-	}).Error
-}
-
 // apiChangePassword lets the current user replace their password.
 // This browser stays logged in; other sessions for the account do not.
 func (a *App) apiChangePassword(c *gin.Context) {
@@ -211,12 +201,32 @@ func (a *App) apiChangePassword(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "current password is incorrect")
 		return
 	}
-	if err := a.setPassword(u, body.Password); err != nil {
+	var prepared models.User
+	if err := prepared.SetPassword(body.Password); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not change password")
 		return
 	}
 	var fresh models.User
-	if err := a.DB.First(&fresh, u.ID).Error; err != nil {
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		locked, err := lockCurrentCredentials(tx, u)
+		if err != nil {
+			return err
+		}
+		if err := replacePasswordIn(tx, locked, *prepared.PasswordHash); err != nil {
+			return err
+		}
+		if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.PasswordChanged,
+			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+			return err
+		}
+		fresh = *locked
+		return nil
+	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not change password")
 		return
 	}
@@ -362,6 +372,18 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	}
 	var raw string
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := lockContacts(tx); err != nil {
+			return err
+		}
+		// A reset request racing disable/deletion must not issue a new
+		// capability after that operation has revoked the existing ones.
+		var fresh models.User
+		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&fresh, user.ID).Error; err != nil {
+			return err
+		}
+		if fresh.Status != models.UserActive || normalizeEmail(fresh.Email) != email {
+			return errTokenInvalid
+		}
 		var err error
 		raw, err = createAccountToken(tx, models.TokenPasswordReset, user.ID, nil, tokenTTL)
 		if err != nil {
@@ -442,40 +464,37 @@ func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "password must be at least 10 characters")
 		return
 	}
-	var userID uint
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		tok, err := consumeAccountToken(tx, models.TokenPasswordReset, body.Token)
-		if err != nil {
-			return err
-		}
-		var u models.User
-		if err := tx.First(&u, tok.UserID).Error; err != nil || u.Status == models.UserDisabled {
-			return errTokenInvalid
-		}
-		if err := u.SetPassword(body.Password); err != nil {
-			return err
-		}
-		userID = u.ID
-		if err := tx.Model(&u).Updates(map[string]any{
-			"password_hash":   *u.PasswordHash,
-			"status":          gorm.Expr("CASE WHEN status = ? THEN ? ELSE status END", models.UserInvited, models.UserActive),
-			"session_version": gorm.Expr("session_version + 1"),
-		}).Error; err != nil {
-			return err
-		}
-		return audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.PasswordResetCompleted,
-			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
-	})
+	var fresh models.User
+	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), models.TokenPasswordReset, body.Token, body.Password)
+	if err == nil {
+		err = a.DB.Transaction(func(tx *gorm.DB) error {
+			u, err := lockAccountTokenUser(tx, models.TokenPasswordReset, body.Token)
+			if err != nil {
+				return err
+			}
+			tok, err := consumeAccountToken(tx, models.TokenPasswordReset, body.Token)
+			if err != nil {
+				return err
+			}
+			if tok.UserID != u.ID {
+				return errTokenInvalid
+			}
+			if err := replacePasswordIn(tx, u, passwordHash); err != nil {
+				return err
+			}
+			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: audit.PasswordResetCompleted,
+				TargetType: "user", TargetID: u.ID, IP: c.ClientIP()}); err != nil {
+				return err
+			}
+			fresh = *u
+			return nil
+		})
+	}
 	if errors.Is(err, errTokenInvalid) {
 		jsonError(c, http.StatusBadRequest, "that link is invalid or has expired")
 		return
 	}
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not reset password")
-		return
-	}
-	var fresh models.User
-	if err := a.DB.First(&fresh, userID).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not reset password")
 		return
 	}

@@ -65,14 +65,41 @@ it("loads only the chosen setting, supports a bookmarked page and returns to the
 it("shows one security form at a time and clears a password draft when leaving it", async () => {
   renderProfile("/profile/security?tab=password");
   expect(screen.queryByLabelText("New email")).not.toBeInTheDocument();
-  await userEvent.type(screen.getByLabelText("Current password"), "do not retain this");
+  const passwordCurrent = screen.getByLabelText("Current password");
+  await userEvent.type(passwordCurrent, "do not retain this");
   await userEvent.click(screen.getByRole("button", { name: "Email" }));
-  expect(screen.queryByLabelText("Current password")).not.toBeInTheDocument();
+  expect(passwordCurrent).not.toBeInTheDocument();
   expect(screen.getByLabelText("New email")).toBeInTheDocument();
+  expect(screen.getByLabelText("Current password")).toHaveValue("");
+  expect(screen.queryByLabelText("New password")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Password" }));
   expect(screen.getByLabelText("Current password")).toHaveValue("");
   expect(Profile.update).not.toHaveBeenCalled();
   expect(Profile.changePassword).not.toHaveBeenCalled();
+});
+
+it("sends the current password for an email change and clears only the secret after failure", async () => {
+  vi.mocked(Profile.update)
+    .mockRejectedValueOnce(new ApiError(400, "private server text", { code: "wrong_password" }))
+    .mockResolvedValueOnce({ user: adult, verificationSent: true });
+  renderProfile("/profile/security?tab=email");
+  const email = screen.getByLabelText("New email");
+  const password = screen.getByLabelText("Current password");
+  await userEvent.type(email, "new@example.com");
+  await userEvent.type(password, " secret with spaces ");
+  await userEvent.click(screen.getByRole("button", { name: "Send verification link" }));
+
+  expect(Profile.update).toHaveBeenLastCalledWith({ email: "new@example.com", currentPassword: " secret with spaces " });
+  expect(await screen.findByRole("alert")).toHaveTextContent("Your current password isn't right.");
+  expect(email).toHaveValue("new@example.com");
+  expect(password).toHaveValue("");
+  expect(screen.queryByText("private server text")).not.toBeInTheDocument();
+
+  await userEvent.type(password, "correct password");
+  await userEvent.click(screen.getByRole("button", { name: "Send verification link" }));
+  expect(await screen.findByText("Verification link sent to new@example.com. It expires in 24 hours.")).toBeInTheDocument();
+  expect(email).toHaveValue("");
+  expect(password).toHaveValue("");
 });
 
 it("reserves household height only when its section is opened and the lazy chunk is slow", async () => {

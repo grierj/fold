@@ -21,6 +21,7 @@ const ForgotPassword = lazy(() => import("./pages/ForgotPassword").then((m) => (
 const ResetPassword = lazy(() => import("./pages/ResetPassword").then((m) => ({ default: m.ResetPassword })));
 const Invite = lazy(() => import("./pages/Invite").then((m) => ({ default: m.Invite })));
 const VerifyEmail = lazy(() => import("./pages/VerifyEmail").then((m) => ({ default: m.VerifyEmail })));
+const CancelEmailChange = lazy(() => import("./pages/CancelEmailChange").then((m) => ({ default: m.CancelEmailChange })));
 const Join = lazy(() => import("./pages/Join").then((m) => ({ default: m.Join })));
 const SetPassword = lazy(() => import("./pages/SetPassword").then((m) => ({ default: m.SetPassword })));
 const GuestConfirm = lazy(() => import("./pages/GuestConfirm").then((m) => ({ default: m.GuestConfirm })));
@@ -68,6 +69,7 @@ export default function App() {
         <Route path="/join" element={<Join />} />
         <Route path="/set-password" element={<SetPassword />} />
         <Route path="/verify-email" element={<VerifyEmail />} />
+        <Route path="/cancel-email-change" element={<CancelEmailChange />} />
         <Route path="/guardian-consent" element={<Suspense fallback={null}><GuardianConsentPage /></Suspense>} />
         <Route path="/guest/confirm" element={<GuestConfirm />} />
         <Route path="/guest/manage/:token" element={<GuestManage />} />

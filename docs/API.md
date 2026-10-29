@@ -65,7 +65,8 @@ PUT    /api/v1/me           → 200 {user, verificationSent?}  (auth; partial up
 POST   /api/v1/me/password  → 200 {}  (auth)
 POST   /api/v1/me/avatar    → 200 {avatarUrl}  (auth; multipart, field "avatar")
 DELETE /api/v1/me/avatar    → 200 {}  (auth)
-POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public)
+POST   /api/v1/me/email/verify  {token} → 200 {user} | 400  (public capability; CSRF required)
+POST   /api/v1/me/email/cancel  {token} → 200 {cancelled: true} | 400 link_expired  (public capability; CSRF required)
 GET    /api/v1/me/calendar-feed → 200 {calendarFeed: {hasToken, scope}}  (auth)
 POST   /api/v1/me/calendar-feed {scope?} → 200 {calendarFeed: {hasToken, scope, url}}  (auth)
 PUT    /api/v1/me/calendar-feed {scope} → 200 {calendarFeed} | 404  (auth)
@@ -99,7 +100,7 @@ is the safest cleanup if a client retains stale rows. Representative external
 calendar clients still need manual interoperability checks. Revoking a link that is already off still
 answers 200.
 
-Profile update body: any of `{name, displayName, phone, email, timezone, hideContactFromLeaders, avatarFocal: {x, y}}`.
+Profile update body: any of `{name, displayName, phone, email, currentPassword, timezone, hideContactFromLeaders, avatarFocal: {x, y}}`.
 `hideContactFromLeaders` is a boolean preference for the signed-in adult only,
 off by default. A teen's submitted preference is ignored: their contact is
 always hidden from leaders and hosts. Changing the adult preference writes
@@ -108,17 +109,52 @@ always hidden from leaders and hosts. Changing the adult preference writes
 Limits: names ≤ 100 chars, phone ≤ 30 chars, focal clamped to 0-100,
 `timezone` an IANA name (DEC-58; "" and "Local" are refused). The
 email is the login: sending a different `email` starts a verified change
-(M1.2, 10.1) — a verification link goes to the new address and a notice to
-the old one, and the response carries `verificationSent: true`. The change
-applies only after `POST /me/email/verify` redeems the (single-use,
-24-hour) token; every other session then ends, while the verifying browser
-stays logged in. Sending the current address (any case) is accepted and
-changes nothing. Within the actor allowance, changing to an address another account uses answers 409. All valid change attempts, including these account checks, consume the actor's limit of 3/hour and 10/day. An exhausted actor receives the normal 200 with `verificationSent: true` without any address lookup, recipient-budget use, token change or email. Actual verification sends also respect the recipient's 3/hour and 10/day allowance.
+(M1.2, 10.1, DEC-87) only when `currentPassword` matches the signed-in
+person's current password. Password proof is checked as submitted, without
+trimming. A verification link goes to the new address and a cancellation
+notice goes to the old address; the response carries `verificationSent: true`.
+Only the newest verification/cancellation pair works, and a new request
+invalidates both links from the previous pair. When the browser opens the
+new-address verification page, the SPA automatically redeems the single-use
+24-hour capability with a CSRF-protected `POST /me/email/verify`; an HTTP GET
+alone does not change the account. Every other session then ends, while the
+verifying browser stays logged in.
+
+`POST /me/email/cancel` redeems the old-address capability while its change
+is still pending. It leaves the email unchanged, returns `{cancelled: true}`,
+revokes every unused account token, and advances the subject account's
+credential epoch. Every cookie for that subject, including a cookie in the
+browser making the request, then fails authentication. The public capability
+does not sign in the caller or refresh an authentication epoch; if a different
+account is signed in while following it, that different account stays signed
+in. A used, expired, replaced, or post-verification cancellation token answers
+`400` with `code: "link_expired"`; it can never roll back an email already
+changed. Opening the cancellation page is read-only: cancellation requires
+the person's explicit confirmation through its CSRF-protected POST.
+
+Sending the current address (any case) is accepted and changes nothing. Within
+the actor allowance, changing to an address another account uses answers 409.
+All current-password-proven change attempts, including these account checks,
+consume the actor's limit of 3/hour and 10/day. An exhausted actor receives
+the normal 200 with `verificationSent: true` without any address lookup,
+recipient-budget use, token change or email. Actual verification sends also
+respect the recipient's 3/hour and 10/day allowance. Public sign-up, guest,
+and password-recovery responses retain their existing uniform behavior.
 
 `POST /me/password` body: `{current, password}`. `password` is at least 10
 characters. The current browser stays logged in. Every other session for
 that account ends. An admin password reset ends all of that account's
-sessions, including the one that requested it.
+sessions, including the one that requested it. Setting, changing or resetting
+a password, an admin password reset, a verified or admin email change,
+disabling, or deleting an account atomically revokes every unused
+`account_tokens` row for that user, whatever its kind.
+
+`account_tokens.kind` accepts `password_reset`, `email_verify`, `account_setup`,
+`teen_consent`, and `email_change_cancel`. Migration 40 deletes unused legacy
+`email_verify` rows because those links were issued before current-password
+proof was required. Its downgrade deletes all `email_change_cancel` rows and
+unused `email_verify` rows before restoring the four-kind check; used
+verification history remains.
 
 `user`: `{id, name, displayName, email, phone, avatarUrl,
 avatarFocalX, avatarFocalY, role, status, hasPassword, accountType, timezone,

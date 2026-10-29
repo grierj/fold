@@ -138,6 +138,9 @@ func (a *App) changeTeenConsent(tx *gorm.DB, c *gin.Context, teen, actor *models
 				return nil, err
 			}
 			if status == models.UserDisabled {
+				if err := revokeAccountTokens(tx, teen.ID); err != nil {
+					return nil, err
+				}
 				ids, err := a.promoteOnDisable(tx, teen.ID)
 				if err != nil {
 					return nil, err

@@ -634,10 +634,18 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 					bump = true
 				}
 			}
+			if _, changed := updates["email"]; changed {
+				if err := revokeAccountTokens(tx, u.ID); err != nil {
+					return err
+				}
+			}
 			if bump {
 				updates["session_version"] = gorm.Expr("session_version + 1")
 			}
 			if updates["status"] == models.UserDisabled {
+				if err := revokeAccountTokens(tx, u.ID); err != nil {
+					return err
+				}
 				if u.Status == models.UserDisabled {
 					if err := tx.Model(u).Updates(updates).Error; err != nil {
 						return err
@@ -750,6 +758,9 @@ func (a *App) apiAdminDeleteUser(c *gin.Context) {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(u, u.ID).Error; err != nil {
 			return err
 		}
+		if err := revokeAccountTokens(tx, u.ID); err != nil {
+			return err
+		}
 		ids, err := handOffLeadership(c, tx, u.ID, body.Successors, "account_deleted")
 		emailed = append(emailed, ids...)
 		if err != nil {
@@ -809,7 +820,31 @@ func (a *App) apiAdminResetPassword(c *gin.Context) {
 			"password must be at least "+strconv.Itoa(minPasswordLength)+" characters")
 		return
 	}
-	if err := a.setPassword(u, body.Password); err != nil {
+	var prepared models.User
+	if err := prepared.SetPassword(body.Password); err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not reset password")
+		return
+	}
+	me := apiUser(c)
+	err := a.contactMutation(contactChange{UserID: u.ID}, func(tx *gorm.DB) error {
+		actor, target, err := lockConsentUsers(tx, me.ID, u.ID)
+		if err != nil {
+			return err
+		}
+		if !actor.CanSignIn() || !policy.IsAdmin(asPerson(actor)) || actor.SessionVersion != me.SessionVersion {
+			return errSecuritySession
+		}
+		if err := replacePasswordIn(tx, target, *prepared.PasswordHash); err != nil {
+			return err
+		}
+		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.PasswordResetCompleted,
+			TargetType: "user", TargetID: target.ID, IP: c.ClientIP(), Meta: map[string]any{"byAdmin": true}})
+	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not reset password")
 		return
 	}
