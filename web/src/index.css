@@ -185,6 +185,8 @@
   /* Primary and danger change both text and fill when disabled; cross-fading
      those contrasting endpoints creates low-contrast intermediate frames. */
   .btn-primary   { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-primary px-5 font-semibold text-primary-foreground hover:bg-primary-hover active:bg-primary-active disabled:bg-sunken disabled:text-text-muted disabled:cursor-not-allowed; }
+  /* Primary action on a dark cover: no page-level color overrides. */
+  .btn-primary-inverse { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-surface px-5 font-semibold text-primary hover:bg-sunken active:bg-page; }
   .btn-secondary { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md border border-border-strong bg-surface px-5 font-semibold text-text transition-colors hover:bg-sunken; }
   .btn-danger    { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-danger px-5 font-semibold text-danger-foreground hover:bg-danger-hover disabled:bg-sunken disabled:text-text-muted disabled:cursor-not-allowed; }
   /* A destructive action that sits beside the main one (Reject, Remove). */

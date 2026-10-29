@@ -715,7 +715,8 @@ function GroupDetailContent() {
           className="w-full h-full object-cover"
           style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
         />
-        <div className="absolute inset-0 bg-linear-to-t from-black/60 to-transparent" />
+        {/* A uniform 75% inverse scrim keeps even white covers legible behind every line. */}
+        <div className="absolute inset-0 bg-inverse/75" />
         <div className="absolute bottom-0 left-0 right-0">
           <div className="max-w-6xl mx-auto px-4 pb-5 flex items-end gap-4 flex-wrap">
             <div className="grow min-w-0">
@@ -738,8 +739,8 @@ function GroupDetailContent() {
                   )}
                 </div>
               )}
-              <h1 className="text-3xl sm:text-4xl font-bold text-white">{group.name}</h1>
-              <div className="text-white/80 text-sm mt-1">
+              <h1 className="text-3xl sm:text-4xl font-bold text-inverse-foreground">{group.name}</h1>
+              <div className="text-inverse-foreground text-sm mt-1">
                 {canManage && group.memberLimit
                   ? `${group.memberCount} of ${group.memberLimit} members`
                   : `${group.memberCount} ${group.memberCount === 1 ? "member" : "members"}`}
@@ -750,12 +751,9 @@ function GroupDetailContent() {
             <div className="flex flex-wrap gap-2">
               {canManage && (
                 <>
-                  <Link
-                    to={`/groups/${group.id}/events/new`}
-                    className="btn-primary bg-surface! text-primary! hover:bg-sunken!"
-                  >
+                  <ButtonLink to={`/groups/${group.id}/events/new`} variant="primary-inverse">
                     Schedule event
-                  </Link>
+                  </ButtonLink>
                   {/* One primary action (Schedule event); the rest live in More (DEC-63). */}
                   <Menu
                     label="More group actions"

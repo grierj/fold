@@ -10,6 +10,10 @@ describe("Button", () => {
     expect(b).toHaveClass("btn-danger-outline");
     expect(b).toHaveAttribute("type", "button");
   });
+  it("offers an inverse primary action without page-level overrides", () => {
+    render(<Button variant="primary-inverse">Schedule event</Button>);
+    expect(screen.getByRole("button", { name: "Schedule event" })).toHaveClass("btn-primary-inverse");
+  });
   it("keeps compact table actions at least 44px high", () => {
     render(<Button variant="secondary" size="sm">Edit</Button>);
     expect(screen.getByRole("button", { name: "Edit" })).toHaveClass("min-h-11", "text-sm");

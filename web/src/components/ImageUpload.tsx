@@ -91,7 +91,7 @@ export function ImageUpload({
         )}
         {preview && (
           <div
-            className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-white shadow-sm pointer-events-none"
+            className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-inverse-foreground ring-1 ring-inverse shadow-sm pointer-events-none"
             style={{ left: `${focal.x}%`, top: `${focal.y}%` }}
           />
         )}

@@ -12,7 +12,7 @@ export function DateBadge({ at, size = "md" }: { at: string; size?: "sm" | "md" 
     <div
       className={`${box} flex flex-col items-center justify-center rounded-lg bg-primary-subtle text-primary-hover shrink-0`}
     >
-      <span className="text-[10px] font-bold uppercase tracking-wide leading-none">{month}</span>
+      <span className="text-xs font-bold uppercase tracking-wide leading-none">{month}</span>
       <span className="font-bold leading-none mt-0.5">{day}</span>
     </div>
   );

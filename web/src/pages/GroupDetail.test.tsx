@@ -426,3 +426,12 @@ it("switches group sections by arrow keys and labels the active panel", async ()
   expect(screen.getByRole("tab", { name: "About" })).toHaveAttribute("aria-selected", "true");
   expect(screen.getByRole("tabpanel", { name: "About" })).toHaveTextContent("About this group");
 });
+
+it("uses a uniform cover scrim, foreground roles and an inverse primary action", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
+  open();
+  expect(await screen.findByRole("heading", { name: "Family group" })).toHaveClass("text-inverse-foreground");
+  expect(screen.getByText(/Organized by Leader/)).toHaveClass("text-inverse-foreground");
+  expect(document.querySelector(".bg-inverse\\/75")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Schedule event" })).toHaveClass("btn-primary-inverse");
+});
