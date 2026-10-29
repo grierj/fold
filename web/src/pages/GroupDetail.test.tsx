@@ -313,7 +313,7 @@ it("links to the full group calendar when upcoming dates are truncated", async (
   const upcomingEvents = Array.from({ length: 25 }, (_, i) => occurrence({ id: i + 1, eventId: i + 1 }));
   vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents, truncated: true });
   open();
-  expect(await screen.findByText("Showing the next 25 dates.")).toBeVisible();
+  expect(await screen.findByText("25 dates loaded.")).toBeVisible();
   expect(screen.getByRole("link", { name: "See all dates in the calendar" })).toHaveAttribute("href", "/calendar?group=1");
 });
 
@@ -397,4 +397,22 @@ it("clears dates and cursor immediately when the viewer changes", async () => {
   await act(async () => publicPage.resolve({ ...page, isMember: false, upcomingEvents: [] }));
   expect(await screen.findByRole("heading", { name: "Family group" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Load more dates" })).not.toBeInTheDocument();
+});
+
+it("keeps loading a series beyond 100 dates using the latest page metadata", async () => {
+  const dates = Array.from({ length: 126 }, (_, i) => occurrence({ id: i + 1, recurrenceRule: "FREQ=DAILY" }));
+  vi.mocked(Groups.get)
+    .mockResolvedValueOnce({ ...page, upcomingEvents: dates.slice(0, 25), truncated: true, hasMore: true, nextCursor: "after-25" })
+    .mockResolvedValueOnce({ ...page, upcomingEvents: dates.slice(24, 100), truncated: true, hasMore: true, nextCursor: "after-100" })
+    .mockResolvedValueOnce({ ...page, upcomingEvents: dates.slice(100) });
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "Load more dates" }));
+  expect(await screen.findByText("100 dates loaded.")).toBeVisible();
+  expect(screen.getByRole("link", { name: "99 more dates loaded" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Load more dates" }));
+  expect(Groups.get).toHaveBeenLastCalledWith("1", { cursor: "after-100" });
+  expect(await screen.findByRole("link", { name: "125 more dates loaded" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Load more dates" })).not.toBeInTheDocument();
+  expect(screen.queryByText("100 dates loaded.")).not.toBeInTheDocument();
+  expect(screen.getAllByRole("form", { name: "Household answers" })).toHaveLength(1);
 });

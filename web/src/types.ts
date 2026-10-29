@@ -284,6 +284,13 @@ export interface GroupDetailResponse {
   isMember: boolean;
 }
 
+export interface GroupEventsResponse {
+  events: EventOccurrence[];
+  truncated: boolean;
+  hasMore: boolean;
+  nextCursor: string;
+}
+
 export interface EventHostRow {
   userId: number;
   name: string;

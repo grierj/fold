@@ -19,12 +19,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// How far a list request may look, and how many dates of one series it
-// returns. Stored occurrences go out 18 months; this only caps the response.
+// How far a list request may look. Stored occurrences go out 18 months.
 const (
-	maxEventWindow       = 366 * 24 * time.Hour
-	maxOccurrencesListed = 100
-	settingTimezone      = "timezone"
+	maxEventWindow  = 366 * 24 * time.Hour
+	settingTimezone = "timezone"
 )
 
 func (a *App) churchTimezone() string {
@@ -68,22 +66,6 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 // Occurrence JSON
 // ---------------------------------------------------------------------------
 
-func (a *App) buildOccurrences(groupIDs []uint, from, to string, startAfter *time.Time, me *models.User) []occurrenceJSON {
-	out, _ := a.buildOccurrencesPage(groupIDs, from, to, startAfter, me, 0)
-	return out
-}
-
-func (a *App) buildOccurrencesPage(groupIDs []uint, from, to string, startAfter *time.Time, me *models.User, limit int) ([]occurrenceJSON, bool) {
-	if len(groupIDs) == 0 {
-		return []occurrenceJSON{}, false
-	}
-	var ids []uint
-	if err := a.DB.Model(&models.Event{}).Where("group_id IN ?", groupIDs).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
-		return []occurrenceJSON{}, false
-	}
-	return a.occurrencesForEventsPage(ids, from, to, startAfter, me, limit)
-}
-
 // occurrencesForEvents lists scheduled dates of these events and attaches
 // attendee names only where policy allows. A caller who cannot see an
 // event's group gets "Hosted by <church>" and no group id or name.
@@ -121,16 +103,11 @@ func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startA
 	q.Order("starts_at, id").Find(&occs)
 
 	truncated := false
-	perEvent := map[uint]int{}
 	kept := make([]models.EventOccurrence, 0, len(occs))
 	for _, o := range occs {
 		if !vs.canSeeDate(me, byID[o.EventID], &o) {
 			continue
 		}
-		if perEvent[o.EventID] >= maxOccurrencesListed {
-			continue
-		}
-		perEvent[o.EventID]++
 		if cursor != nil && (o.StartsAt.Before(cursor.StartsAt) || (o.StartsAt.Equal(cursor.StartsAt) && o.ID <= cursor.ID)) {
 			continue
 		}
@@ -659,6 +636,13 @@ func parseDateWindow(c *gin.Context) (from, to string, ok bool) {
 	return from, to, true
 }
 
+type groupEventsJSON struct {
+	Events     []occurrenceJSON `json:"events"`
+	Truncated  bool             `json:"truncated"`
+	HasMore    bool             `json:"hasMore"`
+	NextCursor string           `json:"nextCursor"`
+}
+
 func (a *App) apiListEvents(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var g models.Group
@@ -670,7 +654,17 @@ func (a *App) apiListEvents(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"events": a.buildOccurrences([]uint{g.ID}, from, to, nil, apiUser(c))})
+	limit, cursor, ok := parseGroupUpcomingPage(c, g.ID)
+	if !ok {
+		return
+	}
+	var eventIDs []uint
+	a.DB.Model(&models.Event{}).Where("group_id = ?", g.ID).Pluck("id", &eventIDs)
+	listed, hasMore := a.occurrencesForEventsAfter(eventIDs, from, to, nil, apiUser(c), limit, cursor)
+	c.JSON(http.StatusOK, groupEventsJSON{
+		Events: listed, Truncated: hasMore, HasMore: hasMore,
+		NextCursor: nextGroupUpcomingCursor(g.ID, listed, hasMore),
+	})
 }
 
 func (a *App) apiCreateEvent(c *gin.Context) {

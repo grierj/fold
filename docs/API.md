@@ -363,9 +363,10 @@ Upcoming dates use a bounded, forward-only continuation, not next-date
 search. Each request covers scheduled dates starting at or after now, with
 an original date through the UTC date 90 days ahead. `limit` defaults to
 25 and accepts integers from 1 through 100. Dates are ordered by start time,
-then occurrence ID; visibility is checked before the page limit, per-series
-100-date cap, and continuation metadata. Hidden dates never consume a slot
-or imply another page. Attendee enrichment runs only for the returned page.
+then occurrence ID; visibility is checked before the page limit and
+continuation metadata. There is no per-series cap: every visible date in the
+window can be reached by paging. Hidden dates never consume a slot or imply
+another page. Attendee enrichment runs only for the returned page.
 `hasMore` and `truncated` are equivalent: another visible date remains in
 this window. When true, `nextCursor` is an opaque last-seen occurrence key;
 pass it unchanged as `cursor` to request the next page. Otherwise it is `""`.
@@ -378,9 +379,9 @@ The SPA merges continuation pages by occurrence ID and resets loaded dates
 and cursors when the group or viewer changes. Per-series “more dates loaded”
 counts describe only those loaded, visible dates, not all dates in the
 90-day window or the full series. The calendar link remains available when
-the list is truncated. `/groups/:id/events` and the calendar keep their
-full requested date-window behavior; the group detail's page cap does not
-apply to them. Group detail does not accept `from`/`to` window controls.
+the list is truncated. `/groups/:id/events` uses the same paging rules over
+its requested `from`/`to` window (see Events below); the calendar has its own
+truncation flag. Group detail does not accept `from`/`to` window controls.
 
 `members` is filled only for the group's members and admins (people see each
 other only inside groups they share); otherwise it is `[]`. `canManage` is
@@ -664,8 +665,8 @@ GET  /api/v1/events
      can see but whose group they cannot; from yesterday through 90 days)
 POST /api/v1/events                         → 201 {event}   (admin; church-wide)
 GET  /api/v1/events/:id                     → 200 {event, occurrences, canManage, canSetVisibility}
-GET  /api/v1/groups/:id/events?from=2026-10-06&to=2027-01-06
-  → {events: [occurrence]}   (default: next 90 days, max 366-day window, max 100 per event)
+GET  /api/v1/groups/:id/events?from=2026-10-06&to=2027-01-06&cursor=&limit=
+  → {events: [occurrence], truncated, hasMore, nextCursor}   (default: next 90 days, max 366-day window; 25 dates per page)
 POST /api/v1/groups/:id/events              → 201 {event}   (group leader or admin)
      body adds optional {visibility, visibilityReason} (DEC-51): defaults to the
      group's value; wider than the group is saved leader-opened with an
@@ -692,6 +693,16 @@ GET  /api/v1/calendar?from=&to=&tz=&mine=1&group=&deleted=1&remote=1&childcare=1
      childcare=1 keeps only events with childcareAvailable)
 POST /api/v1/events/video/jitsi             → 200 {url}   (leader, host, or admin)
 ```
+
+`GET /groups/:id/events` pages all visible scheduled dates within its original-date
+window, with no per-series cap. Like group detail, `limit` defaults to 25
+and accepts 1..100; `truncated` and `hasMore` both mean another visible date
+remains, and `nextCursor` is an opaque, group-bound continuation (otherwise
+`""`). Pass the cursor unchanged and repeat the same `from`/`to` on each
+page to traverse a requested window; omitted bounds are recomputed on each
+request. Visibility is checked before the limit and metadata, and attendee
+enrichment only runs for returned dates. Invalid cursors or limits return
+400 (`group_upcoming_page`). This is not a frozen snapshot.
 
 `event`: `{id, groupId?, groupName?, groupVisibility?, hostedBy?, title,
 description, startsLocal, durationMinutes, tzid, startsAt, endsAt, location,

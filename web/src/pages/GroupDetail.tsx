@@ -413,7 +413,9 @@ function GroupDetailContent() {
         if (loadRevision.current !== revision) return;
         for (const date of next.upcomingEvents) dates.set(date.id, date);
       }
-      setDetail({ ...next, upcomingEvents: [...dates.values()] });
+      // Continuation metadata belongs to the last fetched page, while the
+      // visible rows and counts describe all loaded dates, not a series total.
+      setDetail({ ...next, upcomingEvents: [...dates.values()].sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt) || a.id - b.id) });
       onLoaded?.();
     } catch (e) {
       if (loadRevision.current !== revision) return;
@@ -878,7 +880,7 @@ function GroupDetailContent() {
                 )}
                 {detail.truncated && (
                   <div className="flex flex-wrap items-center gap-x-2">
-                    <span className="text-sm text-text-muted">Showing the next {events.length} dates.</span>
+                    <span className="text-sm text-text-muted">{events.length} dates loaded.</span>
                     <ButtonLink variant="link" to={`/calendar?group=${group.id}`}>
                       See all dates in the calendar
                     </ButtonLink>

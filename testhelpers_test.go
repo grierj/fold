@@ -477,15 +477,29 @@ func openGroup(t *testing.T, app *App, name string) (*apiClient, string) {
 
 func listOccurrences(t *testing.T, c *apiClient, gid, from, to string) []occurrenceJSON {
 	t.Helper()
-	w := c.do("GET", "/api/v1/groups/"+gid+"/events?from="+from+"&to="+to, nil, false)
-	if w.Code != http.StatusOK {
-		t.Fatalf("list events: %d %s", w.Code, w.Body.String())
+	path := "/api/v1/groups/" + gid + "/events?from=" + from + "&to=" + to
+	out := []occurrenceJSON{}
+	cursor := ""
+	for {
+		url := path
+		if cursor != "" {
+			url += "&cursor=" + cursor
+		}
+		w := c.do("GET", url, nil, false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list events: %d %s", w.Code, w.Body.String())
+		}
+		var body groupEventsJSON
+		decodeJSON(t, w, &body)
+		out = append(out, body.Events...)
+		if !body.HasMore {
+			return out
+		}
+		if body.NextCursor == "" || body.NextCursor == cursor {
+			t.Fatal("list events did not advance its cursor")
+		}
+		cursor = body.NextCursor
 	}
-	var body struct {
-		Events []occurrenceJSON `json:"events"`
-	}
-	decodeJSON(t, w, &body)
-	return body.Events
 }
 
 func occurrenceOn(t *testing.T, list []occurrenceJSON, date string) occurrenceJSON {

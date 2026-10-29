@@ -1219,12 +1219,21 @@ func TestGroupDetailUpcomingCapAfterVisibility(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("events: %d %s", w.Code, w.Body.String())
 	}
-	var list struct {
-		Events []occurrenceJSON `json:"events"`
-	}
+	var list groupEventsJSON
 	decodeJSON(t, w, &list)
-	if len(list.Events) != 50 {
-		t.Fatalf("full events list: got %d, want 50", len(list.Events))
+	if len(list.Events) != 25 || !list.HasMore || !list.Truncated || list.NextCursor == "" {
+		t.Fatalf("events first page: got %d, hasMore=%v truncated=%v cursor=%q", len(list.Events), list.HasMore, list.Truncated, list.NextCursor)
+	}
+	w = client.do("GET", "/api/v1/groups/"+itoa(g.ID)+"/events"+window+"&cursor="+list.NextCursor, nil, false)
+	var last groupEventsJSON
+	decodeJSON(t, w, &last)
+	if len(last.Events) != 25 || last.HasMore || last.Truncated || last.NextCursor != "" {
+		t.Fatalf("events last page: got %d, hasMore=%v truncated=%v cursor=%q", len(last.Events), last.HasMore, last.Truncated, last.NextCursor)
+	}
+	for i, row := range append(list.Events, last.Events...) {
+		if row.ID != visibleIDs[i] {
+			t.Fatalf("events date %d: got %d want %d", i, row.ID, visibleIDs[i])
+		}
 	}
 	w = client.do("GET", "/api/v1/calendar"+window+"&tz=UTC&group="+itoa(g.ID), nil, false)
 	if w.Code != http.StatusOK {

@@ -80,6 +80,7 @@ var tsContracts = []struct {
 	{userJSON{}, "User"},
 	{groupSummaryJSON{}, "GroupSummary"},
 	{groupDetailJSON{}, "GroupDetailResponse"},
+	{groupEventsJSON{}, "GroupEventsResponse"},
 	{memberJSON{}, "Member"},
 	{departureKeepableDateJSON{}, "DepartureKeepableDate"},
 	{departurePreviewJSON{}, "DeparturePreview"},

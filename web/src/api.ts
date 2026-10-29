@@ -117,6 +117,7 @@ import type {
   EventOccurrence,
   EventSeries,
   GroupDetailResponse,
+  GroupEventsResponse,
   GuestRegistration,
   GroupSummary,
   GuardianLink,
@@ -224,14 +225,16 @@ export const Groups = {
   cancelDeletion: (id: number | string) =>
     api<unknown>(`/groups/${id}/deletion-request`, { method: "DELETE" }),
   members: (id: number | string) => api<{ members: Member[] }>(`/groups/${id}/members`),
-  events: (id: number | string, from?: string, to?: string) => {
+  events: (id: number | string, from?: string, to?: string, page?: { cursor?: string; limit?: number }) => {
     let p = `/groups/${id}/events`;
     const q = new URLSearchParams();
     if (from) q.set("from", from);
     if (to) q.set("to", to);
+    if (page?.cursor) q.set("cursor", page.cursor);
+    if (page?.limit !== undefined) q.set("limit", String(page.limit));
     const qs = q.toString();
     if (qs) p += `?${qs}`;
-    return api<{ events: EventOccurrence[] }>(p);
+    return api<GroupEventsResponse>(p);
   },
   createEvent: (
     id: number | string,
