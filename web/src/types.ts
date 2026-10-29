@@ -274,11 +274,12 @@ export interface EventOccurrence {
 }
 
 // NOTE: the implementation returns {group, members, upcomingEvents,
-// canManage, isMember}.
+// truncated, canManage, isMember}.
 export interface GroupDetailResponse {
   group: GroupSummary;
   members: Member[] | null;
   upcomingEvents: EventOccurrence[];
+  truncated: boolean;
   canManage: boolean;
   isMember: boolean;
 }

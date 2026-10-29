@@ -69,29 +69,41 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 func (a *App) buildOccurrences(groupIDs []uint, from, to string, startAfter *time.Time, me *models.User) []occurrenceJSON {
+	out, _ := a.buildOccurrencesPage(groupIDs, from, to, startAfter, me, 0)
+	return out
+}
+
+func (a *App) buildOccurrencesPage(groupIDs []uint, from, to string, startAfter *time.Time, me *models.User, limit int) ([]occurrenceJSON, bool) {
 	if len(groupIDs) == 0 {
-		return []occurrenceJSON{}
+		return []occurrenceJSON{}, false
 	}
 	var ids []uint
 	if err := a.DB.Model(&models.Event{}).Where("group_id IN ?", groupIDs).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
-		return []occurrenceJSON{}
+		return []occurrenceJSON{}, false
 	}
-	return a.occurrencesForEvents(ids, from, to, startAfter, me)
+	return a.occurrencesForEventsPage(ids, from, to, startAfter, me, limit)
 }
 
 // occurrencesForEvents lists scheduled dates of these events and attaches
 // attendee names only where policy allows. A caller who cannot see an
 // event's group gets "Hosted by <church>" and no group id or name.
 func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User) []occurrenceJSON {
+	out, _ := a.occurrencesForEventsPage(eventIDs, from, to, startAfter, me, 0)
+	return out
+}
+
+// occurrencesForEventsPage applies a response cap after date visibility but
+// before attendee enrichment. A zero limit keeps the full list behavior.
+func (a *App) occurrencesForEventsPage(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User, limit int) ([]occurrenceJSON, bool) {
 	out := []occurrenceJSON{}
 	if len(eventIDs) == 0 {
-		return out
+		return out, false
 	}
 	// The one place event dates are listed: drop every event this viewer
 	// can't see, so no caller has to remember to (hardening review).
 	vs, err := a.dateCandidates(me, a.DB.Where("id IN ?", eventIDs))
 	if err != nil || len(vs.IDs) == 0 {
-		return out
+		return out, false
 	}
 	evs, byID, groups, rels, hosted := vs.Events, vs.ByID, vs.Groups, vs.Rels, vs.Hosted
 	eventIDs = vs.IDs
@@ -102,8 +114,9 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		q = q.Where("starts_at >= ?", *startAfter)
 	}
 	var occs []models.EventOccurrence
-	q.Order("starts_at").Find(&occs)
+	q.Order("starts_at, id").Find(&occs)
 
+	truncated := false
 	perEvent := map[uint]int{}
 	kept := make([]models.EventOccurrence, 0, len(occs))
 	for _, o := range occs {
@@ -113,11 +126,15 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		if perEvent[o.EventID] >= maxOccurrencesListed {
 			continue
 		}
+		if limit > 0 && len(kept) >= limit {
+			truncated = true
+			break
+		}
 		perEvent[o.EventID]++
 		kept = append(kept, o)
 	}
 	if len(kept) == 0 {
-		return out
+		return out, false
 	}
 
 	ids := make([]uint, len(kept))
@@ -214,7 +231,7 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		}
 	}
 
-	siteName := a.siteName()
+	siteName := ""
 	for i := range kept {
 		o := &kept[i]
 		ev := byID[o.EventID]
@@ -290,6 +307,9 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 				inst.Attendees = kept
 			}
 		}
+		if siteName == "" && (ev.GroupID == nil || a.groupShownTo(me, g, rel) == nil) {
+			siteName = a.siteName()
+		}
 		a.presentGroup(&inst, ev, g, me, rel, siteName)
 		if !vs.canSeeSeries(me, ev) {
 			inst.hideSeries = true
@@ -304,8 +324,8 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		}
 		out = append(out, inst)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].StartsAt.Before(out[j].StartsAt) })
-	return out
+	sort.SliceStable(out, func(i, j int) bool { return out[i].StartsAt.Before(out[j].StartsAt) })
+	return out, truncated
 }
 
 // occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.

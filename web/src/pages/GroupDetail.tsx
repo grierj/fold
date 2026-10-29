@@ -844,6 +844,14 @@ export function GroupDetail() {
                     }
                   />
                 )}
+                {detail.truncated && (
+                  <div className="flex flex-wrap items-center gap-x-2">
+                    <span className="text-sm text-text-muted">Showing the next {events.length} dates.</span>
+                    <ButtonLink variant="link" to={`/calendar?group=${group.id}`}>
+                      See all dates in the calendar
+                    </ButtonLink>
+                  </div>
+                )}
                 {householdError && <ErrorNotice message={householdError} onRetry={retryHousehold} />}
           {nextDates.map((m) => (
                   <EventRow

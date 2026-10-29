@@ -11,7 +11,7 @@ const actor = vi.hoisted(() => ({ user: { id: 2, accountType: "adult", hideConta
 vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, isAdmin: false }) }));
 vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), People: { search: vi.fn() }, Groups: { get: vi.fn(), addMember: vi.fn(), join: vi.fn(), departurePreview: vi.fn(), confirmDeparture: vi.fn(), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() }, Events: { register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() }, Households: { mine: vi.fn() } }));
 const family: Household = { id: 1, name: "Family", address: "", createdBy: 2, accounts: [], people: [{ id: 3, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary", kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] };
-const page: GroupDetailResponse = { group: { id: 1, name: "Family group", description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Hall", leaderName: "Leader", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null }, members: [], upcomingEvents: [occurrence({})], canManage: false, isMember: true };
+const page: GroupDetailResponse = { group: { id: 1, name: "Family group", description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Hall", leaderName: "Leader", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null }, members: [], upcomingEvents: [occurrence({})], truncated: false, canManage: false, isMember: true };
 function open() { render(<MemoryRouter initialEntries={["/groups/1"]}><Routes><Route path="/groups/:id" element={<GroupDetail />} /></Routes></MemoryRouter>); }
 function GroupRouteWithSwitcher() {
   const navigate = useNavigate();
@@ -307,4 +307,18 @@ it("keeps the date visibility note in the content column rather than another hor
   const note = await screen.findByText("Visibility changed for this date");
   expect(note.parentElement).toHaveClass("grow", "min-w-0");
   expect(note.parentElement).not.toHaveClass("flex");
+});
+
+it("links to the full group calendar when upcoming dates are truncated", async () => {
+  const upcomingEvents = Array.from({ length: 25 }, (_, i) => occurrence({ id: i + 1, eventId: i + 1 }));
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents, truncated: true });
+  open();
+  expect(await screen.findByText("Showing the next 25 dates.")).toBeVisible();
+  expect(screen.getByRole("link", { name: "See all dates in the calendar" })).toHaveAttribute("href", "/calendar?group=1");
+});
+
+it("does not show a truncation notice for a complete upcoming list", async () => {
+  open();
+  await screen.findByRole("heading", { name: "Family group" });
+  expect(screen.queryByRole("link", { name: "See all dates in the calendar" })).not.toBeInTheDocument();
 });

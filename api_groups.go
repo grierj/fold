@@ -127,6 +127,8 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"group": a.groupSummary(&g)})
 }
 
+const maxGroupUpcomingOccurrences = 25
+
 func (a *App) apiGetGroup(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	g, rel, ok := a.loadGroupFor(c, uint(id))
@@ -142,12 +144,13 @@ func (a *App) apiGetGroup(c *gin.Context) {
 	}
 
 	now := time.Now().UTC()
-	upcoming := a.buildOccurrences([]uint{g.ID}, now.Add(-24*time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02"), &now, me)
+	upcoming, truncated := a.buildOccurrencesPage([]uint{g.ID}, now.Add(-24*time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02"), &now, me, maxGroupUpcomingOccurrences)
 
 	c.JSON(http.StatusOK, gin.H{
 		"group":          a.groupSummary(g),
 		"members":        memberList,
 		"upcomingEvents": upcoming,
+		"truncated":      truncated,
 		"canManage":      policy.CanManageGroup(p, rel),
 		"isMember":       rel.Member,
 	})

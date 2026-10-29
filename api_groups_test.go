@@ -1154,3 +1154,88 @@ func TestGroupManagerAddExistingLeaderKeepsRoleUnderContactGate(t *testing.T) {
 		})
 	}
 }
+
+func TestGroupDetailUpcomingCapAfterVisibility(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "pw", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Busy group", models.GroupActive)
+	client := newAPIClient(t, app)
+	start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	// Earlier hidden dates must neither consume the cap nor set truncated.
+	for i := 0; i < 30; i++ {
+		_, o := seedEvent(t, app, g, leader.ID, start.Add(time.Duration(i)*time.Minute))
+		if err := app.DB.Model(&o).Update("visibility_override", models.VisibilityInviteOnly).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A hidden date after the visible page must not imply another page.
+	_, hiddenTail := seedEvent(t, app, g, leader.ID, start.Add(48*time.Hour))
+	if err := app.DB.Model(&hiddenTail).Update("visibility_override", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	visibleIDs := []uint{}
+	var cappedReads int64
+	read := func(n int) {
+		t.Helper()
+		counter := countDBReads(t, app.DB)
+		w := client.do("GET", "/api/v1/groups/"+itoa(g.ID), nil, false)
+		reads := counter.Reads()
+		counter.Stop()
+		if w.Code != http.StatusOK {
+			t.Fatalf("group: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			UpcomingEvents []occurrenceJSON `json:"upcomingEvents"`
+			Truncated      bool             `json:"truncated"`
+		}
+		decodeJSON(t, w, &body)
+		want := min(n, maxGroupUpcomingOccurrences)
+		if len(body.UpcomingEvents) != want || body.Truncated != (n > maxGroupUpcomingOccurrences) {
+			t.Fatalf("%d visible dates: got %d, truncated=%v (want %d)", n, len(body.UpcomingEvents), body.Truncated, want)
+		}
+		for i, row := range body.UpcomingEvents {
+			if row.ID != visibleIDs[i] {
+				t.Fatalf("date %d: got %d, want %d", i, row.ID, visibleIDs[i])
+			}
+		}
+		if n == maxGroupUpcomingOccurrences {
+			cappedReads = reads
+		}
+		if n >= maxGroupUpcomingOccurrences && (reads != cappedReads || w.Body.Len() > 40000) {
+			t.Fatalf("%d dates: %d reads (baseline=%d), %d bytes (cap=40000)", n, reads, cappedReads, w.Body.Len())
+		}
+		t.Logf("%d visible dates: returned=%d truncated=%v bytes=%d reads=%d", n, len(body.UpcomingEvents), body.Truncated, w.Body.Len(), reads)
+	}
+	read(0)
+	for i := 1; i <= 50; i++ {
+		_, o := seedEvent(t, app, g, leader.ID, start.Add(time.Duration(30+i)*time.Minute))
+		visibleIDs = append(visibleIDs, o.ID)
+		if i == maxGroupUpcomingOccurrences || i == maxGroupUpcomingOccurrences+1 || i == 50 {
+			read(i)
+		}
+	}
+	window := "?from=" + start.Format("2006-01-02") + "&to=" + start.AddDate(0, 0, 1).Format("2006-01-02")
+	w := client.do("GET", "/api/v1/groups/"+itoa(g.ID)+"/events"+window, nil, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("events: %d %s", w.Code, w.Body.String())
+	}
+	var list struct {
+		Events []occurrenceJSON `json:"events"`
+	}
+	decodeJSON(t, w, &list)
+	if len(list.Events) != 50 {
+		t.Fatalf("full events list: got %d, want 50", len(list.Events))
+	}
+	w = client.do("GET", "/api/v1/calendar"+window+"&tz=UTC&group="+itoa(g.ID), nil, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("calendar: %d %s", w.Code, w.Body.String())
+	}
+	var cal struct {
+		Occurrences []calendarOccurrenceJSON `json:"occurrences"`
+		Truncated   bool                     `json:"truncated"`
+	}
+	decodeJSON(t, w, &cal)
+	if len(cal.Occurrences) != 50 || cal.Truncated {
+		t.Fatalf("calendar: got %d, truncated=%v", len(cal.Occurrences), cal.Truncated)
+	}
+}
