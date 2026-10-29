@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestAPILoginFlow(t *testing.T) {
@@ -797,5 +799,83 @@ func TestReauthenticationReservationHoldsUnderParallelRequests(t *testing.T) {
 	}
 	if checked == 0 || checked > emailFailureLimit {
 		t.Fatalf("%d proofs checked in burst of %d, limit %d", checked, burst, emailFailureLimit)
+	}
+}
+
+func TestPasswordResetBudgetGatesAccountWork(t *testing.T) {
+	start := time.Now()
+	(&models.User{}).CheckPassword("not a real password")
+	minimumWork := time.Since(start) / 3
+	for _, status := range []string{models.UserActive, models.UserGuest, models.UserDisabled, "unknown"} {
+		for _, budget := range []string{"available", "ip", "address hour", "address day"} {
+			t.Run(status+"/"+budget, func(t *testing.T) {
+				app := testApp(t)
+				// Complete the setup gate even for an unknown target address.
+				if err := app.DB.Create(&models.User{Name: "Other member", Email: "other@example.com", Status: models.UserActive}).Error; err != nil {
+					t.Fatal(err)
+				}
+				const email = "target@example.com"
+				const ip = "10.5.0.1"
+				if status != "unknown" {
+					if err := app.DB.Create(&models.User{Name: "Target", Email: email, Status: status}).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				var key string
+				var failures int
+				switch budget {
+				case "ip":
+					key, failures = "pwreset:ip:"+rateLimitIP(ip), resetIPLimit
+				case "address hour":
+					key, failures = "pwreset:addr:"+email+":h", targetHourLimit
+				case "address day":
+					key, failures = "pwreset:addr:"+email+":d", targetDayLimit
+				}
+				if key != "" {
+					if err := app.DB.Create(&models.LoginThrottle{Key: key, Failures: failures, WindowStart: time.Now()}).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+				lookups := 0
+				const callback = "reset:observe-account-lookup"
+				if err := app.DB.Callback().Query().Before("gorm:query").Register(callback, func(db *gorm.DB) {
+					if db.Statement.Table == "users" {
+						lookups++
+					}
+				}); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { app.DB.Callback().Query().Remove(callback) })
+				jobs := 0
+				app.background = func(func()) { jobs++ }
+				anon := anonClient(t, app, ip)
+				lookups = 0 // Ignore the first-request setup gate during CSRF.
+				started := time.Now()
+				answer := apiDo(t, anon, "POST", "/api/v1/auth/password-reset", map[string]string{"email": email}, http.StatusOK)
+				elapsed := time.Since(started)
+				if answer != "{\"message\":\""+resetRequestMessage+"\"}" {
+					t.Fatalf("nonuniform answer: %s", answer)
+				}
+				var tokens, audits int64
+				app.DB.Model(&models.AccountToken{}).Count(&tokens)
+				app.DB.Model(&models.AuditLog{}).Where("action = ?", audit.PasswordResetRequested).Count(&audits)
+				if budget != "available" {
+					if lookups != 0 || tokens != 0 || audits != 0 || jobs != 0 {
+						t.Fatalf("throttled account work: lookups=%d tokens=%d audits=%d mail=%d", lookups, tokens, audits, jobs)
+					}
+					return
+				}
+				if lookups == 0 || elapsed < minimumWork {
+					t.Fatalf("in-budget lookup/bcrypt missing: lookups=%d elapsed=%v minimum=%v", lookups, elapsed, minimumWork)
+				}
+				want := int64(0)
+				if status == models.UserActive {
+					want = 1
+				}
+				if tokens != want || audits != want || int64(jobs) != want {
+					t.Fatalf("in-budget reset: tokens=%d audits=%d mail=%d, want %d", tokens, audits, jobs, want)
+				}
+			})
+		}
 	}
 }

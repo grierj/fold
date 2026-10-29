@@ -366,8 +366,9 @@ func (a *App) targetAllow(ctx context.Context, key string) (bool, error) {
 
 // apiRequestPasswordReset starts a password reset. It always answers 200
 // with the uniform message. A known address gets a single-use link valid
-// for 24 hours; an unknown one costs a dummy bcrypt comparison so the
-// timing doesn't reveal whether the account exists (10.1).
+// for 24 hours. Inside the IP/address budget, both known and unknown
+// addresses pay a dummy bcrypt comparison; exhausted budgets return before
+// account lookup or bcrypt, independent of account existence (10.1).
 func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	var body struct {
 		Email string `json:"email"`
@@ -383,7 +384,11 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	if err == nil {
 		addrOK, err = a.targetAllow(ctx, "pwreset:addr:"+email)
 	}
-	throttled := err != nil || !ipOK || !addrOK
+	if err != nil || !ipOK || !addrOK {
+		log.Printf("password reset rate limited: ip=%s err=%v", c.ClientIP(), err)
+		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
+		return
+	}
 
 	var user models.User
 	// Only real accounts get a reset: guests (M1.4) have no password to
@@ -395,7 +400,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	// the email: the send runs in the background, so response time doesn't
 	// reveal whether the account exists (#93).
 	(&models.User{}).CheckPassword("not a real password")
-	if !found || throttled {
+	if !found {
 		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 		return
 	}
