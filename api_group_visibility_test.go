@@ -7,9 +7,12 @@ import (
 	"fold/internal/policy"
 	"fold/models"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestGroupMorePrivateTightensAndCancels(t *testing.T) {
@@ -372,5 +375,102 @@ func TestVisibilityBatchExcludesEndedAndUnconsentedInvitations(t *testing.T) {
 				apiDo(t, f.client, "GET", dateReadPath(f.event.ID, f.dates[1].OriginalDate), nil, 404)
 			})
 		}
+	}
+}
+
+func TestUpdateGroupTighteningUsesLockedVisibilityAndDecisions(t *testing.T) {
+	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityPrivate)
+	gid := *ev.GroupID
+	path := "/api/v1/groups/" + itoa(gid)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"visibility": models.VisibilityPublic}, http.StatusOK)
+	opened := scheduleGroupEvent(t, admin, gid, "Opened series")
+	setVisibility(t, admin, opened.ID, models.VisibilityPublic, "", http.StatusOK)
+	gate := holdContactGate(t, app)
+	// This is a visibility no-op at preflight, but becomes tightening at the gate.
+	response := queueContact(func() *httptest.ResponseRecorder {
+		return admin.do("PUT", path, map[string]any{"name": "Must roll back", "visibility": models.VisibilityPrivate}, true)
+	})
+	waitContactWaiters(t, app, 1)
+	if err := gate.Model(&models.Group{}).Where("id = ?", gid).Update("visibility", models.VisibilityPublic).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	w := awaitContactResponse(t, response)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("missing decisions: %d %s", w.Code, w.Body.String())
+	}
+	var conflict struct {
+		Impact visibilityImpactJSON `json:"impact"`
+	}
+	decodeJSON(t, w, &conflict)
+	keys := map[string]bool{}
+	for _, row := range conflict.Impact.LeaderOpened {
+		key := row.DecisionKey
+		if key == "" {
+			key = itoa(row.ID)
+		}
+		keys[key] = true
+	}
+	if len(keys) != 2 || !keys[itoa(opened.ID)] || !keys[dateDecisionKey(dates[0].ID)] {
+		t.Fatalf("lost opened series/date decisions: %+v", conflict.Impact)
+	}
+	var saved models.Group
+	if err := app.DB.First(&saved, gid).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Visibility != models.VisibilityPublic || saved.Name == "Must roll back" {
+		t.Fatal("decision conflict saved patch")
+	}
+	apiDo(t, admin, "PUT", path, map[string]any{"visibility": models.VisibilityPrivate, "openedEvents": map[string]string{
+		itoa(opened.ID): openedTighten, dateDecisionKey(dates[0].ID): openedTighten,
+	}}, http.StatusOK)
+	var date models.EventOccurrence
+	if err := app.DB.First(&date, dates[0].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if eventRow(t, app, opened.ID).Visibility != models.VisibilityPrivate || date.VisibilityOverride == nil || *date.VisibilityOverride != models.VisibilityPrivate {
+		t.Fatal("opened series/date decisions were not applied")
+	}
+}
+
+func TestUpdateGroupTighteningFailureRollsBackDependents(t *testing.T) {
+	for _, table := range []string{"audit_logs", "notifications"} {
+		t.Run(table, func(t *testing.T) {
+			app := testApp(t)
+			newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			admin := loginAPI(t, app, "admin", "password1234")
+			gid := createGroupAs(t, admin, "Original", models.VisibilityPublic)
+			ev := scheduleGroupEvent(t, admin, gid, "Rollback event")
+			outsider := newTestUser(t, app, "outsider", "password1234", models.RoleMember)
+			oc := loginAPI(t, app, outsider.Email, "password1234")
+			register(t, oc, ev.ID)
+			audits := contactCount(t, app, &models.AuditLog{}, "1=1")
+			notices := contactCount(t, app, &models.Notification{}, "1=1")
+			mail := contactCount(t, app, &models.MailOutbox{}, "1=1")
+			const callback = "group-update:fail-tightening"
+			if err := app.DB.Callback().Create().Before("gorm:create").Register(callback, func(db *gorm.DB) {
+				if db.Statement.Table == table {
+					db.AddError(fmt.Errorf("injected %s failure", table))
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { app.DB.Callback().Create().Remove(callback) })
+			apiDo(t, admin, "PUT", "/api/v1/groups/"+itoa(gid), map[string]any{"name": "Failed patch", "visibility": models.VisibilityInviteOnly}, http.StatusInternalServerError)
+			var saved models.Group
+			if err := app.DB.First(&saved, gid).Error; err != nil {
+				t.Fatal(err)
+			}
+			var reg models.Registration
+			if err := app.DB.Where("user_id = ?", outsider.ID).First(&reg).Error; err != nil {
+				t.Fatal(err)
+			}
+			if saved.Name != "Original" || saved.Visibility != models.VisibilityPublic || eventRow(t, app, ev.ID).Visibility != models.VisibilityPublic || reg.Status != models.RegGoing ||
+				contactCount(t, app, &models.AuditLog{}, "1=1") != audits || contactCount(t, app, &models.Notification{}, "1=1") != notices || contactCount(t, app, &models.MailOutbox{}, "1=1") != mail {
+				t.Fatal("failed tightening left group/event/registration/audit/notification/mail changes")
+			}
+		})
 	}
 }

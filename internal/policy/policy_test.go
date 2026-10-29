@@ -131,6 +131,8 @@ func TestCanManageGroup(t *testing.T) {
 		{"member can't manage", adult, member, false},
 		{"outsider can't manage", adult, none, false},
 		{"guest can't manage", guest, none, false},
+		{"signed-out stale leader can't manage", nil, leader, false},
+		{"removed leader can't manage", adult, Rel{Removed: true}, false},
 	}
 	for _, c := range cases {
 		if got := CanManageGroup(c.p, c.r); got != c.want {
@@ -995,6 +997,33 @@ func TestIsAdmin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := IsAdmin(tc.person); got != tc.want {
 				t.Fatalf("IsAdmin = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCanSetGroupStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		person *Person
+		rel    Rel
+		status string
+		want   bool
+	}{
+		{"admin approves", admin, none, GroupActive, true},
+		{"admin rejects", admin, none, GroupArchived, true},
+		{"admin makes pending", admin, none, GroupPending, true},
+		{"leader archives", adult, leader, GroupArchived, true},
+		{"leader cannot reactivate", adult, leader, GroupActive, false},
+		{"leader cannot make pending", adult, leader, GroupPending, false},
+		{"former leader cannot archive", adult, member, GroupArchived, false},
+		{"removed leader cannot archive", adult, Rel{Removed: true}, GroupArchived, false},
+		{"outsider cannot archive", adult, none, GroupArchived, false},
+		{"signed out cannot archive", nil, leader, GroupArchived, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanSetGroupStatus(tc.person, tc.rel, tc.status); got != tc.want {
+				t.Fatalf("CanSetGroupStatus = %v, want %v", got, tc.want)
 			}
 		})
 	}

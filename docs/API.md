@@ -402,6 +402,14 @@ everyone and blocks joins until the count drops (DEC-39).
 anything else is rejected with 400. On update, omit it to leave it
 unchanged.
 
+Group updates patch only supplied fields onto the current locked row; omitted
+fields retain concurrent changes. `status` may also be supplied: leaders may
+archive, but only admins may approve or reactivate. An unrelated pending-group
+edit does not decide approval. The transaction rechecks the actor's session and
+current group authority: revoked credentials return 401, a now-hidden/deleted
+group returns 404, and a visible group the actor can no longer manage returns
+403. Approval tasks, tightening, audits and notices commit or roll back together.
+
 Changing a group's visibility (DEC-48). Making it more open never changes
 its events. Making it more private, in the same transaction:
 - events more open than the new value that aren't `leaderOpened` become the

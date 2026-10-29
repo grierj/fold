@@ -1321,3 +1321,250 @@ func TestGroupDetailUpcomingContinuation(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateGroupNamePatchPreservesConcurrentState(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	successor := newTestUser(t, app, "successor", "password1234", models.RoleMember)
+	admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	client := loginAPI(t, app, leader.Email, "password1234")
+	ac := loginAPI(t, app, admin.Email, "password1234")
+	g := newTestGroup(t, app, leader, "Original", models.GroupActive)
+	gate := holdContactGate(t, app)
+	response := queueContact(func() *httptest.ResponseRecorder {
+		return client.do("PUT", "/api/v1/groups/"+itoa(g.ID), map[string]any{"name": " Renamed "}, true)
+	})
+	waitContactWaiters(t, app, 1)
+	// A preceding transaction commits every field omitted by the queued PUT.
+	updates := map[string]any{
+		"status": models.GroupArchived, "visibility": models.VisibilityInviteOnly,
+		"member_limit": 7, "image_url": "covers/current.png", "cover_focal_x": 21, "cover_focal_y": 83,
+		"leader_id": successor.ID, "description": "New description", "location": "New place", "tags": "new", "deletion_requested": true,
+	}
+	if err := gate.Model(g).Updates(updates).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	w := awaitContactResponse(t, response)
+	if w.Code != http.StatusOK {
+		t.Fatalf("name patch: %d %s", w.Code, w.Body.String())
+	}
+	var saved models.Group
+	if err := app.DB.First(&saved, g.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Name != "Renamed" || saved.Status != models.GroupArchived || saved.Visibility != models.VisibilityInviteOnly ||
+		saved.MemberLimit == nil || *saved.MemberLimit != 7 || saved.ImageURL != "covers/current.png" ||
+		saved.CoverFocalX != 21 || saved.CoverFocalY != 83 || saved.LeaderID != successor.ID ||
+		saved.Description != "New description" || saved.Location != "New place" || saved.Tags != "new" || !saved.DeletionRequested {
+		t.Fatalf("patch overwrote concurrent state: %+v", saved)
+	}
+	var result struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, w, &result)
+	if result.Group.Name != saved.Name || result.Group.Status != saved.Status || result.Group.Visibility != saved.Visibility || result.Group.LeaderID != saved.LeaderID {
+		t.Fatalf("response did not reflect committed state: %+v", result.Group)
+	}
+	// A leader can edit an archived group but cannot explicitly reactivate it.
+	if w := client.do("PUT", "/api/v1/groups/"+itoa(g.ID), map[string]any{"status": models.GroupActive}, true); w.Code != http.StatusForbidden {
+		t.Fatalf("leader reactivation: %d %s", w.Code, w.Body.String())
+	}
+	apiDo(t, ac, "PUT", "/api/v1/groups/"+itoa(g.ID), map[string]any{"status": models.GroupActive}, http.StatusOK)
+	// Explicit empty values, zero focal points and null limit must be written.
+	apiDo(t, client, "PUT", "/api/v1/groups/"+itoa(g.ID), map[string]any{
+		"description": "", "location": "", "tags": []string{}, "memberLimit": nil,
+		"coverFocal": map[string]any{"x": 0, "y": 0},
+	}, http.StatusOK)
+	if err := app.DB.First(&saved, g.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.MemberLimit != nil || saved.Description != "" || saved.Location != "" || saved.Tags != "" || saved.CoverFocalX != 0 || saved.CoverFocalY != 0 || saved.ImageURL != "covers/current.png" {
+		t.Fatalf("explicit clears not applied: %+v", saved)
+	}
+}
+
+func TestUpdateGroupDeletedAfterPreflightIsNotRecreated(t *testing.T) {
+	for _, hardDelete := range []bool{false, true} {
+		t.Run(fmt.Sprint("hardDelete=", hardDelete), func(t *testing.T) {
+			app := testApp(t)
+			actor := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+			client := loginAPI(t, app, actor.Email, "password1234")
+			g := newTestGroup(t, app, actor, "Original", models.GroupActive)
+			gate := holdContactGate(t, app)
+			response := queueContact(func() *httptest.ResponseRecorder {
+				return client.do("PUT", "/api/v1/groups/"+itoa(g.ID), map[string]any{"name": "Resurrected"}, true)
+			})
+			waitContactWaiters(t, app, 1)
+			q := gate
+			if hardDelete {
+				if err := gate.Where("group_id = ?", g.ID).Delete(&models.Membership{}).Error; err != nil {
+					t.Fatal(err)
+				}
+				q = q.Unscoped()
+			}
+			if err := q.Delete(g).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := gate.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			if w := awaitContactResponse(t, response); w.Code != http.StatusNotFound {
+				t.Fatalf("deleted group patch: %d %s", w.Code, w.Body.String())
+			}
+			if contactCount(t, app, &models.Group{}, "id = ?", g.ID) != 0 {
+				t.Fatal("patch recreated deleted group")
+			}
+		})
+	}
+}
+
+func TestUpdateGroupRechecksAuthorityAtWrite(t *testing.T) {
+	for _, mutation := range []string{"demote-leader", "remove-leader", "hidden-remove", "session", "disabled", "deleted", "demote-admin", "hidden-admin", "status-admin"} {
+		t.Run(mutation, func(t *testing.T) {
+			app := testApp(t)
+			actor := newTestUser(t, app, "actor", "password1234", models.RoleMember)
+			owner := actor
+			if mutation == "demote-admin" || mutation == "hidden-admin" || mutation == "status-admin" {
+				if err := app.DB.Model(actor).Update("role", models.RoleAdmin).Error; err != nil {
+					t.Fatal(err)
+				}
+				if mutation != "status-admin" {
+					owner = newTestUser(t, app, "owner", "password1234", models.RoleMember)
+				}
+			}
+			client := loginAPI(t, app, actor.Email, "password1234")
+			g := newTestGroup(t, app, owner, "Original", models.GroupActive)
+			body := map[string]any{"name": "Unauthorized"}
+			if mutation == "status-admin" {
+				body["status"] = models.GroupActive
+			}
+			gate := holdContactGate(t, app)
+			response := queueContact(func() *httptest.ResponseRecorder {
+				return client.do("PUT", "/api/v1/groups/"+itoa(g.ID), body, true)
+			})
+			waitContactWaiters(t, app, 1)
+			want := http.StatusForbidden
+			var err error
+			switch mutation {
+			case "demote-leader":
+				err = gate.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, actor.ID).Update("role", models.MembershipMember).Error
+			case "remove-leader", "hidden-remove":
+				err = gate.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", g.ID, actor.ID).Update("status", memberRemoved).Error
+			case "session":
+				err = gate.Model(actor).Update("session_version", actor.SessionVersion+1).Error
+				want = http.StatusUnauthorized
+			case "disabled":
+				err = gate.Model(actor).Update("status", models.UserDisabled).Error
+				want = http.StatusUnauthorized
+			case "deleted":
+				err = gate.Delete(actor).Error
+				want = http.StatusUnauthorized
+			default:
+				err = gate.Model(actor).Update("role", models.RoleMember).Error
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mutation == "hidden-remove" || mutation == "hidden-admin" {
+				if err := gate.Model(g).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+					t.Fatal(err)
+				}
+				want = http.StatusNotFound
+			}
+			if err := gate.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			if w := awaitContactResponse(t, response); w.Code != want {
+				t.Fatalf("revoked edit: %d %s, want %d", w.Code, w.Body.String(), want)
+			}
+			var saved models.Group
+			if err := app.DB.First(&saved, g.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if saved.Name != "Original" || contactCount(t, app, &models.AuditLog{}, "1=1") != 0 || contactCount(t, app, &models.Notification{}, "1=1") != 0 {
+				t.Fatal("revoked edit left side effects")
+			}
+		})
+	}
+}
+
+func TestUpdateGroupPendingDecisionsUseLockedStatus(t *testing.T) {
+	for _, status := range []string{models.GroupActive, models.GroupArchived} {
+		t.Run(status, func(t *testing.T) {
+			app := testApp(t)
+			admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+			lc := loginAPI(t, app, leader.Email, "password1234")
+			ac := loginAPI(t, app, admin.Email, "password1234")
+			gid := createGroupAs(t, lc, "Pending", models.VisibilityPrivate)
+			path := "/api/v1/groups/" + itoa(gid)
+			apiDo(t, ac, "PUT", path, map[string]any{"description": "Still pending"}, http.StatusOK)
+			if contactCount(t, app, &models.Notification{}, "kind = ? AND resolved_at IS NULL", "group.pending") != 1 || contactCount(t, app, &models.AuditLog{}, "action IN ?", []string{audit.GroupApproved, audit.GroupRejected}) != 0 {
+				t.Fatal("unrelated pending edit decided approval")
+			}
+			gate := holdContactGate(t, app)
+			decision := queueContact(func() *httptest.ResponseRecorder {
+				return ac.do("PUT", path, map[string]any{"status": status}, true)
+			})
+			waitContactWaiters(t, app, 1)
+			edit := queueContact(func() *httptest.ResponseRecorder {
+				return lc.do("PUT", path, map[string]any{"name": "Renamed"}, true)
+			})
+			waitContactWaiters(t, app, 2)
+			gate.Rollback()
+			for _, response := range []<-chan *httptest.ResponseRecorder{decision, edit} {
+				if w := awaitContactResponse(t, response); w.Code != http.StatusOK {
+					t.Fatalf("pending transition: %d %s", w.Code, w.Body.String())
+				}
+			}
+			// Repeating a decision is an ordinary status no-op, not another task transition.
+			apiDo(t, ac, "PUT", path, map[string]any{"status": status}, http.StatusOK)
+			var saved models.Group
+			if err := app.DB.First(&saved, gid).Error; err != nil {
+				t.Fatal(err)
+			}
+			if saved.Status != status || saved.Name != "Renamed" {
+				t.Fatalf("name edit undid decision: %+v", saved)
+			}
+			action, resolution := audit.GroupApproved, "approved"
+			if status == models.GroupArchived {
+				action, resolution = audit.GroupRejected, "rejected"
+			}
+			if contactCount(t, app, &models.AuditLog{}, "action = ? AND target_id = ?", action, gid) != 1 ||
+				contactCount(t, app, &models.Notification{}, "kind = ? AND subject_id = ? AND resolution = ? AND resolved_at IS NOT NULL", "group.pending", gid, resolution) != 1 {
+				t.Fatal("decision did not produce exactly one audit/task transition")
+			}
+		})
+	}
+}
+
+func TestUpdateGroupApprovalAuditFailureRollsBackTask(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	lc := loginAPI(t, app, leader.Email, "password1234")
+	ac := loginAPI(t, app, admin.Email, "password1234")
+	gid := createGroupAs(t, lc, "Pending", models.VisibilityPrivate)
+	const callback = "group-update:fail-approval-audit"
+	if err := app.DB.Callback().Create().Before("gorm:create").Register(callback, func(db *gorm.DB) {
+		if db.Statement.Table == "audit_logs" {
+			db.AddError(fmt.Errorf("injected approval audit failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.DB.Callback().Create().Remove(callback) })
+	apiDo(t, ac, "PUT", "/api/v1/groups/"+itoa(gid), map[string]any{"status": models.GroupActive, "name": "Approved"}, http.StatusInternalServerError)
+	var saved models.Group
+	if err := app.DB.First(&saved, gid).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Status != models.GroupPending || saved.Name != "Pending" ||
+		contactCount(t, app, &models.AuditLog{}, "action = ?", audit.GroupApproved) != 0 ||
+		contactCount(t, app, &models.Notification{}, "kind = ? AND resolved_at IS NULL", "group.pending") != 1 {
+		t.Fatal("failed approval left group/task/audit changes")
+	}
+}
