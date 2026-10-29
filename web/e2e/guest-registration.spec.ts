@@ -20,25 +20,40 @@ test("guest form: age gate keeps the typed fields, then the uniform thanks", asy
     tzid: "America/Boise",
   });
 
+  let submissions = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === `/api/v1/events/${event.id}/guest-registrations`) submissions++;
+  });
   await page.goto(`/events/${event.id}`);
   await expect(page.getByRole("heading", { name: "Guest welcome night", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: "Register as a guest" }).click();
   await page.getByLabel("Full name").fill("Browser Gail");
   await page.getByLabel("Email").fill("gail-e2e@example.com");
 
-  // Without the 18-or-older tick, the guardian message shows and the
-  // typed values stay put.
+  // Without the 18-or-older tick, shared inline validation stops submission
+  // and keeps the typed values in place.
+  const adult = page.getByLabel(/I am 18 or older/);
   await page.getByRole("button", { name: "Email me a confirmation link" }).click();
-  await expect(page.getByText(/parent or guardian to register you/i)).toBeVisible();
+  const ageError = page.getByRole("paragraph").filter({ hasText: "Check this box to continue." });
+  await expect(ageError).toBeVisible();
+  await expect(ageError).toMatchAriaSnapshot(`- paragraph: Check this box to continue.`);
+  const ageErrorID = await ageError.getAttribute("id");
+  expect(ageErrorID).toBeTruthy();
+  expect((await adult.getAttribute("aria-describedby"))?.split(/\s+/)).toContain(ageErrorID);
+  await expect(adult).toHaveAccessibleDescription("Check this box to continue.");
+  await expect(adult).toHaveAttribute("aria-invalid", "true");
+  await expect(adult).toBeFocused();
+  expect(submissions).toBe(0);
   await expect(page.getByLabel("Full name")).toHaveValue("Browser Gail");
   await expect(page.getByLabel("Email")).toHaveValue("gail-e2e@example.com");
 
   // Ticking it sends the verification email (which this server cannot
   // deliver) and answers like every other public form.
-  await page.getByLabel(/I am 18 or older/).check();
+  await adult.check();
   await page.getByRole("button", { name: "Email me a confirmation link" }).click();
   await expect(page.getByText(/check your email/i)).toBeVisible();
   await expect(page.getByText(/confirmed when you open the link/i)).toBeVisible();
+  expect(submissions).toBe(1);
 });
 
 test("confirm and manage pages explain a bad link", async ({ page }) => {

@@ -204,7 +204,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     await capture(page, `${scenario}-unavailable`);
     expect((await page.request.get(`/api/v1${path}`)).status()).toBe(404);
     expect((await page.request.get(`/api/v1${otherPath}`)).status()).toBe(200);
-    await page.getByRole("link", { name: "Your calendar" }).click();
+    await page.getByRole("link", { name: "Back to calendar", exact: true }).click();
     await page.getByRole("button", { name: "Just mine", exact: true }).click();
     await expect(page.locator(`main a[href="${path}"]`)).toHaveCount(0);
     await expect(page.locator(`main a[href="${otherPath}"]`)).toBeVisible();

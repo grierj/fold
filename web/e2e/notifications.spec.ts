@@ -6,24 +6,73 @@ import { apiAs, email, signIn } from "./helpers";
 // server, so it survives signing out.
 
 test("a waiting group approval is counted and approved from the bell", async ({ page, request }) => {
+  type Badge = { unread: number; waiting: number };
+  const badgeAccessibleName = (badge: Badge) => {
+    const parts = [];
+    if (badge.unread > 0) parts.push(`${badge.unread} unread`);
+    if (badge.waiting > 0) parts.push(`${badge.waiting} waiting on you`);
+    const label = parts.length > 0 ? `Alerts, ${parts.join(", ")}` : "Alerts";
+    const count = badge.unread + badge.waiting;
+    return count > 0 ? `${count > 9 ? "9+" : count} ${label}` : label;
+  };
+  const admin = await apiAs(request, "grier");
+  const baseline = await admin("GET", "/notifications/badge") as Badge;
   const sam = await apiAs(request, "sam");
-  await sam("POST", "/groups", { name: "Bell study", description: "", tags: [], imageUrl: "", location: "", visibility: "private", memberLimit: null });
+  const { group } = await sam("POST", "/groups", {
+    name: "Bell study", description: "", tags: [], imageUrl: "", location: "", visibility: "private", memberLimit: null,
+  }) as { group: { id: number } };
 
   await signIn(page, "grier");
+  const readBadge = async (): Promise<Badge> => {
+    const response = await page.request.get("/api/v1/notifications/badge");
+    expect(response.ok()).toBe(true);
+    return (await response.json()) as Badge;
+  };
+  await expect.poll(async () => (await readBadge()).waiting).toBe(baseline.waiting + 1);
+  const createdBadge = await readBadge();
+  expect(createdBadge).toEqual({ unread: baseline.unread, waiting: baseline.waiting + 1 });
+
+  const waitingResponse = await page.request.get("/api/v1/notifications?filter=waiting");
+  expect(waitingResponse.ok()).toBe(true);
+  const waitingFeed = await waitingResponse.json() as {
+    notifications: { id: number; subjectId?: number; title: string; waiting: boolean }[];
+  };
+  const createdTask = waitingFeed.notifications.find((notification) => notification.subjectId === group.id);
+  expect(createdTask).toMatchObject({ title: "Sam Member started a group: Bell study", waiting: true });
+
   const bell = page.getByRole("button", { name: /Alerts/ });
-  await expect(bell).toHaveAccessibleName(/1 waiting on you/);
+  await expect(bell).toHaveAccessibleName(badgeAccessibleName(createdBadge));
   await bell.click();
   const panel = page.locator("#notif-panel");
   await expect(panel.getByRole("heading", { name: "Waiting on you" })).toBeVisible();
-  // Nothing ordinary is unread, so Mark all as read is off; the task stays.
-  await expect(panel.getByRole("button", { name: "Mark all as read" })).toHaveAttribute("aria-disabled", "true");
-
-  const row = panel.getByRole("listitem").filter({ hasText: "started a group: Bell study" });
-  const approved = page.waitForResponse((r) => r.url().includes("/approve") && r.request().method() === "POST");
+  await expect(panel.getByRole("button", { name: "Mark all as read" })).toHaveAttribute(
+    "aria-disabled", String(createdBadge.unread === 0)
+  );
+  const row = panel.getByRole("listitem").filter({ hasText: "Sam Member started a group: Bell study" });
+  await expect(row).toHaveCount(1);
+  await expect(row.getByText("Sam Member started a group: Bell study", { exact: true })).toBeVisible();
+  const approved = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === `/api/v1/admin/groups/${group.id}/approve` && response.request().method() === "POST"
+  );
   await row.getByRole("button", { name: "Approve" }).click();
   expect((await approved).ok()).toBe(true);
   await expect(row).toContainText("You approved this");
-  await expect(bell).not.toHaveAccessibleName(/waiting on you/);
+  await expect.poll(async () => (await readBadge()).waiting).toBe(baseline.waiting);
+  const resolvedBadge = await readBadge();
+  expect(resolvedBadge).toEqual({ unread: baseline.unread + 1, waiting: baseline.waiting });
+  await expect(bell).toHaveAccessibleName(badgeAccessibleName(resolvedBadge));
+
+  const resolvedResponse = await page.request.get("/api/v1/notifications?filter=all");
+  expect(resolvedResponse.ok()).toBe(true);
+  const resolvedFeed = await resolvedResponse.json() as {
+    notifications: { id: number; subjectId?: number; waiting: boolean; resolution?: { outcome: string; byMe: boolean } }[];
+  };
+  const resolvedTask = resolvedFeed.notifications.find((notification) => notification.id === createdTask!.id);
+  expect(resolvedTask).toMatchObject({
+    subjectId: group.id,
+    waiting: false,
+    resolution: { outcome: "approved", byMe: true },
+  });
 });
 
 test("archive survives signing out, and Undo or the Archived filter restores it", async ({ page, request }) => {

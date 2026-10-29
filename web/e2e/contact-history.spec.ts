@@ -94,9 +94,16 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
 
   await page.getByLabel("Direct contact", { exact: true }).check();
   await page.getByLabel("Action (optional)").selectOption("contact.reveal");
-  await page.getByLabel("From (optional)").fill("2020-01-01T09:00:00+02:00");
-  await page.getByLabel("Until (optional)").fill("2099-01-01T00:00:00Z");
+  await page.getByLabel("From (optional)").fill("2020-01-01");
+  await page.getByLabel("Until (optional)").fill("2099-01-01");
+  const filteredRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return request.method() === "GET" && url.pathname === `/api/v1${historyPath}` && url.searchParams.get("action") === "contact.reveal";
+  });
   await page.getByRole("button", { name: "Apply filters" }).focus(); await page.keyboard.press("Enter");
+  const filteredURL = new URL((await filteredRequest).url());
+  expect(filteredURL.searchParams.get("from")).toBe("2020-01-01T07:00:00.000Z");
+  expect(filteredURL.searchParams.get("until")).toBe("2099-01-02T07:00:00.000Z");
   await expect(page.getByRole("listitem")).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "Contact details revealed", exact: true })).toBeVisible();
   await capture(page, "filtered");
@@ -111,23 +118,51 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   for (const secret of [email(adultLogin), "2085550197", "PRIVATE HISTORY REASON", "password1234"]) expect(csv).not.toContain(secret);
   if (proof) writeFileSync(`${proof}/actual-history.csv`, csv);
 
-  await page.getByLabel("From (optional)").fill("2090-01-01T00:00:00Z");
+  await page.getByLabel("From (optional)").fill("2090-01-01");
   await page.getByRole("button", { name: "Apply filters" }).click();
   await expect(page.getByText("No matching history", { exact: true })).toBeVisible(); await capture(page, "empty");
-  await page.getByLabel("From (optional)").fill("not a date");
+
+  const malformedRFC3339 = await page.request.get(`/api/v1${historyPath}?from=not-a-date`);
+  expect(malformedRFC3339.status()).toBe(400);
+  expect(await malformedRFC3339.text()).not.toContain("entries");
+
+  let reversedRangeSubmissions = 0;
+  await page.route((url) => url.pathname === `/api/v1${historyPath}`, async (route) => {
+    reversedRangeSubmissions++;
+    await route.continue();
+  });
+  const fromDate = page.getByLabel("From (optional)");
+  const untilDate = page.getByLabel("Until (optional)");
+  await fromDate.fill("2090-01-02");
+  await expect(untilDate).toHaveAttribute("min", "2090-01-02");
+  await untilDate.fill("2090-01-01");
   await page.getByRole("button", { name: "Apply filters" }).click();
-  await expect(page.getByRole("alert")).toContainText("Check the dates and filters");
-  await expect(page.getByLabel("From (optional)")).toHaveValue("not a date"); await capture(page, "error");
+  const rangeError = page.getByRole("paragraph").filter({ hasText: "Choose a value within the limits shown above." });
+  await expect(rangeError).toBeVisible();
+  await expect(rangeError).toMatchAriaSnapshot(`- paragraph: Choose a value within the limits shown above.`);
+  const rangeErrorID = await rangeError.getAttribute("id");
+  expect(rangeErrorID).toBeTruthy();
+  expect((await untilDate.getAttribute("aria-describedby"))?.split(/\s+/)).toContain(rangeErrorID);
+  await expect(untilDate).toHaveAccessibleDescription("In church time. This whole date is included; choose From or a later date. Choose a value within the limits shown above.");
+  await expect(untilDate).toHaveAttribute("aria-invalid", "true");
+  await expect(untilDate).toBeFocused();
+  await expect(fromDate).toHaveValue("2090-01-02");
+  await expect(untilDate).toHaveValue("2090-01-01");
+  expect(reversedRangeSubmissions).toBe(0);
+  await expect(page.getByText("No matching history", { exact: true })).toBeVisible();
+  await capture(page, "error");
 
   // Retention uses the manual field, not a live-account lookup or test route.
   await (await apiAs(request, adminName))("DELETE", `/admin/users/${adult.id}`);
   await page.goto("/admin/contact-history");
-  await page.getByLabel("Person ID").fill(String(adult.id));
+  await page.getByText("Use a saved person ID", { exact: true }).click();
+  const savedPersonID = page.getByLabel("Saved person ID", { exact: true });
+  await savedPersonID.fill(String(adult.id));
   await page.getByRole("button", { name: "Apply filters" }).click();
   await expect(page.getByRole("heading", { name: "Contact requested", exact: true })).toBeVisible();
   const retained = await (await page.request.get(`/api/v1/admin/users/${String(adult.id)}/contact-history`)).json(); save("deleted-retained", retained);
   expect(retained.entries.some((e: { action: string }) => e.action === "contact.requested")).toBe(true);
-  await page.getByLabel("Person ID").fill("9223372036854775807");
+  await savedPersonID.fill("9223372036854775807");
   await page.getByRole("button", { name: "Apply filters" }).click();
   await expect(page.getByText("No matching history", { exact: true })).toBeVisible();
 

@@ -27,7 +27,7 @@ test("event times follow the browser's zone, with one 'held in' line on the even
 
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
-  const card = page.locator("div.rounded-lg", { hasText: "Night watch" }).first();
+  const card = page.getByRole("article", { name: "Night watch" });
   await expect(card.getByText(/^12:30 AM/)).toBeVisible();
   await expect(card.getByText(badgeDay, { exact: true })).toBeVisible();
   await expect(card.getByText(/Held in/)).toHaveCount(0);

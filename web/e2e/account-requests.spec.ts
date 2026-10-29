@@ -65,10 +65,14 @@ test("invite a friend speaks about them, then the admin queue decides", async ({
 
   await signIn(page, "grier");
   await page.goto("/admin");
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.getByRole("button", { name: "Settings" })).toHaveAttribute("aria-pressed", "true");
   // Self-signup is two radio rows (DEC-65), On chosen.
   const mode = page.getByRole("group", { name: "Self-signup" });
   await expect(mode).toBeVisible();
   await expect(mode.getByRole("radio", { name: /^On/ })).toBeChecked();
+  await page.getByRole("button", { name: /^Approvals/ }).click();
+  await expect(page.getByRole("button", { name: /^Approvals/ })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("Account requests")).toBeVisible();
   await expect(page.getByText("Friend Fran")).toBeVisible();
   await expect(page.getByText(/Invited by Sam/)).toBeVisible();

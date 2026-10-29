@@ -167,13 +167,18 @@ test("teen decisions work in both orders; guardian sees only active grants and c
     if (first === "admin") {
       await page.goto("/profile/requests");
       await page.getByRole("link", { name: "Contact requests and access" }).click();
-      await page.getByRole("button", { name: "View active contact access" }).click();
-      await expect(page.getByRole("region", { name: "Active teen contact grants" }).getByRole("button", { name: "Revoke access" })).toBeVisible();
+      const grants = page.getByRole("region", { name: "Contact grants" });
+      const teenGrant = grants.getByRole("region", { name: "Contact grant for Contact Teen" });
+      await expect(teenGrant.getByRole("button", { name: "Revoke access" })).toBeVisible();
       await capture(page, "guardian-profile-active-grant");
+      page.once("dialog", (dialog) => dialog.accept());
+      await teenGrant.getByRole("button", { name: "Revoke access" }).click();
+      await expect(teenGrant).toHaveCount(0);
       await page.goto(path);
+    } else {
+      page.once("dialog", (dialog) => dialog.accept());
+      await page.getByRole("button", { name: "Revoke access" }).click();
     }
-    page.once("dialog", (dialog) => dialog.accept());
-    await page.getByRole("button", { name: "Revoke access" }).click();
     await expect(page.getByText("Contact access is not available", { exact: true })).toBeVisible();
     await save(`guardian-${first}-ended-omissions`, await (await page.request.get("/api/v1/contact-grants")).json());
   }
