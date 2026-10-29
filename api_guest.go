@@ -185,19 +185,22 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return
 	}
+	// Every in-budget submission pays the same bcrypt cost before account
+	// lookup or either address limit, even when that address is exhausted.
+	// IP/site limits and the honeypot above shed CPU without inspecting it.
+	(&models.User{}).CheckPassword("not a real password")
 	var existing models.User
 	if a.DB.Where("email = ?", email).Limit(1).Find(&existing).RowsAffected == 1 &&
 		existing.Status != models.UserGuest {
-		// About the same cost as storing a signup, and the hint travels
-		// by email instead (10.1).
-		(&models.User{}).CheckPassword("not a real password")
 		// The hint is an email to that address too, so it shares the
 		// per-address limit (3 an hour) whatever the IP (10.1).
 		if ok, err := a.throttleAllow(c.Request.Context(), "guestreg:hint:"+email,
 			guestVerifyPerHour, time.Hour); err == nil && ok {
-			if err := a.sendAlreadyHaveAccountEmail(email); err != nil {
-				log.Printf("account-exists email to %s: %v", email, err)
-			}
+			a.runInBackground(func() {
+				if err := a.sendAlreadyHaveAccountEmail(email); err != nil {
+					log.Printf("account-exists email to %s: %v", email, err)
+				}
+			})
 		}
 		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 		return
@@ -224,9 +227,11 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save your registration")
 		return
 	}
-	if err := a.sendGuestVerificationEmail(&signup, raw, ev, &occ, f); err != nil {
-		log.Printf("guest verification email to %s: %v", email, err)
-	}
+	a.runInBackground(func() {
+		if err := a.sendGuestVerificationEmail(&signup, raw, ev, &occ, f); err != nil {
+			log.Printf("guest verification email to %s: %v", email, err)
+		}
+	})
 	c.JSON(http.StatusOK, gin.H{"message": signupThanks})
 }
 

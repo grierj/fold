@@ -1118,3 +1118,155 @@ func TestGuestManageMemberExactDateAccess(t *testing.T) {
 	// has current authority even though the hash remains stored.
 	apiDo(t, anon, "GET", path, nil, http.StatusNotFound)
 }
+
+func TestGuestRegistrationDefersMailForEveryAddressKind(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Guest timing", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	guest := models.User{Name: "Returning guest", Email: "guest@example.com", Status: models.UserGuest}
+	if err := app.DB.Create(&guest).Error; err != nil {
+		t.Fatal(err)
+	}
+	var jobs []func()
+	app.background = func(f func()) { jobs = append(jobs, f) }
+	anon := anonClient(t, app, "10.4.1.1")
+	var answer string
+	for _, email := range []string{member.Email, "new@example.com", guest.Email} {
+		body := guestSubmit(t, anon, ev.ID, guestBody("Guest", email, true), http.StatusOK)
+		if answer != "" && body != answer {
+			t.Fatalf("nonuniform answer for %s: %s", email, body)
+		}
+		answer = body
+		if n := mailsTo(app, email); n != 0 {
+			t.Fatalf("mail was not deferred for %s: %d", email, n)
+		}
+	}
+	if len(jobs) != 3 {
+		t.Fatalf("deferred jobs = %d, want 3", len(jobs))
+	}
+	if guestSignupCount(t, app, member.Email) != 0 || guestSignupCount(t, app, "new@example.com") != 1 || guestSignupCount(t, app, guest.Email) != 1 {
+		t.Fatal("wrong signup rows for account/new/returning guest")
+	}
+	for _, job := range jobs {
+		job()
+	}
+	for _, email := range []string{member.Email, "new@example.com", guest.Email} {
+		if n := mailsTo(app, email); n != 1 {
+			t.Fatalf("deferred mail for %s = %d, want 1", email, n)
+		}
+	}
+}
+
+func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
+	// Calibrate a deliberately loose lower bound instead of hard-coding the
+	// machine's bcrypt speed. Observe work at the account lookup, not at the
+	// end of the request: the padding must precede all address-dependent work.
+	start := time.Now()
+	(&models.User{}).CheckPassword("not a real password")
+	minimumWork := time.Since(start) / 3
+	for _, tt := range []struct {
+		name      string
+		account   bool
+		guest     bool
+		exhausted bool
+		gate      string
+	}{
+		{name: "new"},
+		{name: "account", account: true},
+		{name: "returning guest", guest: true},
+		{name: "new address exhausted", exhausted: true},
+		{name: "account address exhausted", account: true, exhausted: true},
+		{name: "IP exhausted", gate: "ip"},
+		{name: "site exhausted", gate: "site"},
+		{name: "honeypot", gate: "honeypot"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := testApp(t)
+			newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			admin := loginAPI(t, app, "admin", "password1234")
+			gid := createGroupAs(t, admin, "Guest gates", models.VisibilityPublic)
+			ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+			email := "target@example.com"
+			if tt.account {
+				newTestUser(t, app, "target", "password1234", models.RoleMember)
+			}
+			if tt.guest {
+				if err := app.DB.Create(&models.User{Name: "Guest", Email: email, Status: models.UserGuest}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			seedThrottle := func(key string, failures int) {
+				t.Helper()
+				if err := app.DB.Create(&models.LoginThrottle{Key: key, Failures: failures, WindowStart: time.Now()}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.exhausted {
+				if tt.account {
+					seedThrottle("guestreg:hint:"+email, guestVerifyPerHour)
+				} else {
+					for range guestVerifyPerHour {
+						_, hash, err := createInvitationToken()
+						if err != nil {
+							t.Fatal(err)
+						}
+						var occ models.EventOccurrence
+						app.DB.Where("event_id = ?", ev.ID).First(&occ)
+						if err := app.DB.Create(&models.GuestSignup{Name: "Guest", Email: email, OccurrenceID: occ.ID, TokenHash: hash, ExpiresAt: time.Now().Add(time.Hour)}).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}
+			const ip = "10.4.1.2"
+			if tt.gate == "ip" {
+				seedThrottle("guestreg:ip:"+rateLimitIP(ip), guestIPLimit)
+			}
+			if tt.gate == "site" {
+				seedThrottle("guestreg:site", publicSignupSiteLimit)
+			}
+			var lookupAt time.Duration
+			var started time.Time
+			const callback = "guest:observe-account-lookup"
+			if err := app.DB.Callback().Query().Before("gorm:query").Register(callback, func(db *gorm.DB) {
+				if db.Statement.Table == "users" {
+					lookupAt = time.Since(started)
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { app.DB.Callback().Query().Remove(callback) })
+			jobs := 0
+			app.background = func(func()) { jobs++ }
+			anon := anonClient(t, app, ip)
+			body := guestBody("Guest", email, true)
+			if tt.gate == "honeypot" {
+				body["website"] = "bot"
+			}
+			started = time.Now()
+			answer := guestSubmit(t, anon, ev.ID, body, http.StatusOK)
+			if !strings.Contains(answer, signupThanks) {
+				t.Fatalf("nonuniform answer: %s", answer)
+			}
+			if tt.gate != "" {
+				if lookupAt != 0 || jobs != 0 || guestSignupCount(t, app, email) != 0 {
+					t.Fatalf("early gate inspected/stored/mailed address: lookup=%v jobs=%d", lookupAt, jobs)
+				}
+			} else {
+				if lookupAt < minimumWork {
+					t.Fatalf("account lookup before bcrypt work: %v, want >= %v", lookupAt, minimumWork)
+				}
+				wantJobs := 1
+				if tt.exhausted {
+					wantJobs = 0
+				}
+				if jobs != wantJobs {
+					t.Fatalf("mail jobs = %d, want %d", jobs, wantJobs)
+				}
+			}
+		})
+	}
+}
