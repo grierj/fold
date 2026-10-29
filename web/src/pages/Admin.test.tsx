@@ -55,6 +55,7 @@ it("keeps all five sections in a three-plus-two phone grid with shared chip targ
   expect(buttons).toHaveLength(5);
   for (const button of buttons) expect(button).toHaveClass("chip");
   expect(buttons[0]).toHaveAccessibleName("Approvals, 1 waiting");
+  expect(buttons[0].textContent).toBe("Approvals 1");
   expect(within(buttons[0]).getByText("1")).toHaveAttribute("aria-hidden", "true");
 });
 
