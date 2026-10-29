@@ -173,7 +173,12 @@ export const Groups = {
     const qs = q.toString();
     return api<{ groups: GroupSummary[] }>(`/groups${qs ? `?${qs}` : ""}`);
   },
-  get: (id: number | string) => api<GroupDetailResponse>(`/groups/${id}`),
+  get: (id: number | string, page?: { cursor?: string; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (page?.cursor) params.set("cursor", page.cursor);
+    if (page?.limit) params.set("limit", String(page.limit));
+    return api<GroupDetailResponse>(`/groups/${id}${params.size ? `?${params}` : ""}`);
+  },
   mine: () => api<{ groups: GroupSummary[] }>(`/me/groups`),
   create: (data: {
     name: string;

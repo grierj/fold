@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -129,9 +130,54 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 
 const maxGroupUpcomingOccurrences = 25
 
+// Cursors are positions, never authority: each page rechecks date visibility.
+// StartsAt and ID match the occurrence list's deterministic sort order.
+type groupUpcomingCursor struct {
+	GroupID  uint      `json:"groupId"`
+	StartsAt time.Time `json:"startsAt"`
+	ID       uint      `json:"id"`
+}
+
+type groupDetailJSON struct {
+	Group          groupSummaryJSON `json:"group"`
+	Members        []memberJSON     `json:"members"`
+	UpcomingEvents []occurrenceJSON `json:"upcomingEvents"`
+	Truncated      bool             `json:"truncated"`
+	HasMore        bool             `json:"hasMore"`
+	NextCursor     string           `json:"nextCursor"`
+	CanManage      bool             `json:"canManage"`
+	IsMember       bool             `json:"isMember"`
+}
+
+func parseGroupUpcomingPage(c *gin.Context, groupID uint) (int, *groupUpcomingCursor, bool) {
+	limit := maxGroupUpcomingOccurrences
+	if raw, present := c.GetQuery("limit"); present {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 100 {
+			jsonError(c, http.StatusBadRequest, "invalid upcoming date page; reload the group")
+			return 0, nil, false
+		}
+		limit = n
+	}
+	var cursor *groupUpcomingCursor
+	if raw, present := c.GetQuery("cursor"); present {
+		cursor = &groupUpcomingCursor{}
+		data, err := base64.RawURLEncoding.DecodeString(raw)
+		if len(raw) > 512 || err != nil || json.Unmarshal(data, cursor) != nil || cursor.GroupID != groupID || cursor.ID == 0 || cursor.StartsAt.IsZero() {
+			jsonError(c, http.StatusBadRequest, "invalid upcoming date page; reload the group")
+			return 0, nil, false
+		}
+	}
+	return limit, cursor, true
+}
+
 func (a *App) apiGetGroup(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	g, rel, ok := a.loadGroupFor(c, uint(id))
+	if !ok {
+		return
+	}
+	limit, cursor, ok := parseGroupUpcomingPage(c, g.ID)
 	if !ok {
 		return
 	}
@@ -144,15 +190,19 @@ func (a *App) apiGetGroup(c *gin.Context) {
 	}
 
 	now := time.Now().UTC()
-	upcoming, truncated := a.buildOccurrencesPage([]uint{g.ID}, now.Add(-24*time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02"), &now, me, maxGroupUpcomingOccurrences)
-
-	c.JSON(http.StatusOK, gin.H{
-		"group":          a.groupSummary(g),
-		"members":        memberList,
-		"upcomingEvents": upcoming,
-		"truncated":      truncated,
-		"canManage":      policy.CanManageGroup(p, rel),
-		"isMember":       rel.Member,
+	var eventIDs []uint
+	a.DB.Model(&models.Event{}).Where("group_id = ?", g.ID).Pluck("id", &eventIDs)
+	upcoming, hasMore := a.occurrencesForEventsAfter(eventIDs, now.Add(-24*time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02"), &now, me, limit, cursor)
+	nextCursor := ""
+	if hasMore {
+		last := upcoming[len(upcoming)-1]
+		data, _ := json.Marshal(groupUpcomingCursor{GroupID: g.ID, StartsAt: last.StartsAt, ID: last.ID})
+		nextCursor = base64.RawURLEncoding.EncodeToString(data)
+	}
+	c.JSON(http.StatusOK, groupDetailJSON{
+		Group: a.groupSummary(g), Members: memberList, UpcomingEvents: upcoming,
+		Truncated: hasMore, HasMore: hasMore, NextCursor: nextCursor,
+		CanManage: policy.CanManageGroup(p, rel), IsMember: rel.Member,
 	})
 }
 

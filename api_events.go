@@ -95,6 +95,10 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 // occurrencesForEventsPage applies a response cap after date visibility but
 // before attendee enrichment. A zero limit keeps the full list behavior.
 func (a *App) occurrencesForEventsPage(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User, limit int) ([]occurrenceJSON, bool) {
+	return a.occurrencesForEventsAfter(eventIDs, from, to, startAfter, me, limit, nil)
+}
+
+func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User, limit int, cursor *groupUpcomingCursor) ([]occurrenceJSON, bool) {
 	out := []occurrenceJSON{}
 	if len(eventIDs) == 0 {
 		return out, false
@@ -126,11 +130,14 @@ func (a *App) occurrencesForEventsPage(eventIDs []uint, from, to string, startAf
 		if perEvent[o.EventID] >= maxOccurrencesListed {
 			continue
 		}
+		perEvent[o.EventID]++
+		if cursor != nil && (o.StartsAt.Before(cursor.StartsAt) || (o.StartsAt.Equal(cursor.StartsAt) && o.ID <= cursor.ID)) {
+			continue
+		}
 		if limit > 0 && len(kept) >= limit {
 			truncated = true
 			break
 		}
-		perEvent[o.EventID]++
 		kept = append(kept, o)
 	}
 	if len(kept) == 0 {

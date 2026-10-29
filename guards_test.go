@@ -79,6 +79,7 @@ var tsContracts = []struct {
 	{contactRevealJSON{}, "ContactReveal"},
 	{userJSON{}, "User"},
 	{groupSummaryJSON{}, "GroupSummary"},
+	{groupDetailJSON{}, "GroupDetailResponse"},
 	{memberJSON{}, "Member"},
 	{departureKeepableDateJSON{}, "DepartureKeepableDate"},
 	{departurePreviewJSON{}, "DeparturePreview"},

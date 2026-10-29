@@ -325,7 +325,7 @@ S3-replacement seam.
 GET  /api/v1/groups?search=&tag=          → {groups: [groupSummary]}
 GET  /api/v1/me/groups                    → {groups: [groupSummary]}  (auth; groups I belong to, any status)
 POST /api/v1/groups                       → 201 {group}   (auth, not teens; pending, or active when an admin creates it)
-GET  /api/v1/groups/:id                   → {group, members, upcomingEvents, canManage, isMember}
+GET  /api/v1/groups/:id?cursor=&limit=    → {group, members, upcomingEvents, truncated, hasMore, nextCursor, canManage, isMember}
 PUT  /api/v1/groups/:id                   → 200 {group}   (group leader or admin)
 POST   /api/v1/groups/:id/cover           → 200 {imageUrl} (group leader or admin; multipart, field "cover")
 DELETE /api/v1/groups/:id/cover           → 200 {}         (group leader or admin)
@@ -356,7 +356,32 @@ for no limit (DEC-39); `memberCount` counts active members of listed accounts. `
 displayed primary contact only (one of the leaders); they grant nothing.
 
 `group` (detail response): `{group: groupSummary, members: [...],
-upcomingEvents: [occurrence], canManage: bool, isMember: bool}`.
+upcomingEvents: [occurrence], truncated: bool, hasMore: bool,
+nextCursor: string, canManage: bool, isMember: bool}`.
+
+Upcoming dates use a bounded, forward-only continuation, not next-date
+search. Each request covers scheduled dates starting at or after now, with
+an original date through the UTC date 90 days ahead. `limit` defaults to
+25 and accepts integers from 1 through 100. Dates are ordered by start time,
+then occurrence ID; visibility is checked before the page limit, per-series
+100-date cap, and continuation metadata. Hidden dates never consume a slot
+or imply another page. Attendee enrichment runs only for the returned page.
+`hasMore` and `truncated` are equivalent: another visible date remains in
+this window. When true, `nextCursor` is an opaque last-seen occurrence key;
+pass it unchanged as `cursor` to request the next page. Otherwise it is `""`.
+A cursor belongs to one group, grants no access, and each page checks current
+visibility again. Invalid cursors or out-of-range limits return 400
+(`group_upcoming_page`). The time window is evaluated anew on each request;
+this is not a frozen snapshot when dates or permissions change.
+
+The SPA merges continuation pages by occurrence ID and resets loaded dates
+and cursors when the group or viewer changes. Per-series “more dates loaded”
+counts describe only those loaded, visible dates, not all dates in the
+90-day window or the full series. The calendar link remains available when
+the list is truncated. `/groups/:id/events` and the calendar keep their
+full requested date-window behavior; the group detail's page cap does not
+apply to them. Group detail does not accept `from`/`to` window controls.
+
 `members` is filled only for the group's members and admins (people see each
 other only inside groups they share); otherwise it is `[]`. `canManage` is
 true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, accountType?, role,
@@ -812,8 +837,8 @@ visibility overrides.
 
 Occurrences are returned in chronological order. `from`/`to` are inclusive
 `YYYY-MM-DD` and at most 366 days apart. Cancelled dates are left out of
-the list. The group detail's `upcomingEvents` are the scheduled dates from
-now through 90 days.
+the list. The group detail's `upcomingEvents` instead use the bounded
+90-day continuation described under Groups (25 dates per page by default).
 
 ### Registration
 

@@ -273,13 +273,13 @@ export interface EventOccurrence {
   videoHidden?: boolean;
 }
 
-// NOTE: the implementation returns {group, members, upcomingEvents,
-// truncated, canManage, isMember}.
 export interface GroupDetailResponse {
   group: GroupSummary;
   members: Member[] | null;
   upcomingEvents: EventOccurrence[];
   truncated: boolean;
+  hasMore: boolean;
+  nextCursor: string;
   canManage: boolean;
   isMember: boolean;
 }

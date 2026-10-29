@@ -1239,3 +1239,76 @@ func TestGroupDetailUpcomingCapAfterVisibility(t *testing.T) {
 		t.Fatalf("calendar: got %d, truncated=%v", len(cal.Occurrences), cal.Truncated)
 	}
 }
+
+func TestGroupDetailUpcomingContinuation(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "pw", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Paged group", models.GroupActive)
+	client := newAPIClient(t, app)
+	path := "/api/v1/groups/" + itoa(g.ID)
+	start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	visible := []uint{}
+	for i := 0; i < 55; i++ {
+		// Equal start times exercise the ID tie-breaker on page boundaries.
+		_, o := seedEvent(t, app, g, leader.ID, start)
+		if i%2 == 0 {
+			if err := app.DB.Model(&o).Update("visibility_override", models.VisibilityInviteOnly).Error; err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			visible = append(visible, o.ID)
+		}
+	}
+	read := func(query string) groupDetailJSON {
+		t.Helper()
+		w := client.do("GET", path+query, nil, false)
+		if w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+		var page groupDetailJSON
+		decodeJSON(t, w, &page)
+		return page
+	}
+	first := read("")
+	if len(first.UpcomingEvents) != 25 || !first.HasMore || !first.Truncated || first.NextCursor == "" {
+		t.Fatalf("first page: %d dates, hasMore=%v truncated=%v cursor=%q", len(first.UpcomingEvents), first.HasMore, first.Truncated, first.NextCursor)
+	}
+	second := read("?cursor=" + first.NextCursor)
+	if len(second.UpcomingEvents) != 2 || second.HasMore || second.Truncated || second.NextCursor != "" {
+		t.Fatalf("last page: %d dates, hasMore=%v truncated=%v cursor=%q", len(second.UpcomingEvents), second.HasMore, second.Truncated, second.NextCursor)
+	}
+	for i, row := range append(first.UpcomingEvents, second.UpcomingEvents...) {
+		if row.ID != visible[i] {
+			t.Fatalf("date %d: got %d want %d", i, row.ID, visible[i])
+		}
+	}
+	// Every continuation rechecks date visibility; an old cursor grants nothing.
+	if err := app.DB.Model(&models.EventOccurrence{}).Where("id IN ?", visible[25:]).Update("visibility_override", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	last := read("?cursor=" + first.NextCursor)
+	if len(last.UpcomingEvents) != 0 || last.HasMore || last.Truncated || last.NextCursor != "" {
+		t.Fatal("hidden tail leaked into continuation metadata")
+	}
+	for _, limit := range []string{"1", "100"} {
+		page := read("?limit=" + limit)
+		want := 25
+		if limit == "1" {
+			want = 1
+		}
+		if len(page.UpcomingEvents) != want || page.HasMore != (limit == "1") {
+			t.Fatalf("limit %s: got %d dates hasMore=%v", limit, len(page.UpcomingEvents), page.HasMore)
+		}
+	}
+	other := newTestGroup(t, app, leader, "Other group", models.GroupActive)
+	w := client.do("GET", "/api/v1/groups/"+itoa(other.ID)+"?cursor="+first.NextCursor, nil, false)
+	if w.Code != 400 {
+		t.Fatalf("cross-group cursor: %d %s", w.Code, w.Body.String())
+	}
+	for _, query := range []string{"?limit=0", "?limit=-1", "?limit=101", "?limit=abc", "?cursor=invalid", "?cursor=e30"} {
+		w := client.do("GET", path+query, nil, false)
+		if w.Code != 400 || !strings.Contains(w.Body.String(), `"code":"group_upcoming_page"`) {
+			t.Fatalf("%s: %d %s", query, w.Code, w.Body.String())
+		}
+	}
+}
