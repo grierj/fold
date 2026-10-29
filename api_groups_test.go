@@ -1568,3 +1568,119 @@ func TestUpdateGroupApprovalAuditFailureRollsBackTask(t *testing.T) {
 		t.Fatal("failed approval left group/task/audit changes")
 	}
 }
+
+func TestChangeRoleRechecksActorAfterContactGate(t *testing.T) {
+	for _, operation := range []string{"role", "join"} {
+		for _, mutation := range []string{"demote", "disable", "session"} {
+			t.Run(operation+"/"+mutation, func(t *testing.T) {
+				app := testApp(t)
+				actor := newTestUser(t, app, "queued admin", "pw", models.RoleAdmin)
+				owner := newTestUser(t, app, "owner", "pw", models.RoleMember)
+				target := newTestUser(t, app, "target", "pw", models.RoleMember)
+				g := newTestGroup(t, app, owner, "Queued membership", models.GroupActive)
+				client := loginAPI(t, app, actor.Email, "pw")
+				method := "PUT"
+				path := "/api/v1/groups/" + itoa(g.ID) + "/members/" + itoa(target.ID) + "/role"
+				body := map[string]any{"role": models.MembershipLeader}
+				if operation == "join" {
+					// Only an admin can self-join an invite-only group.
+					if err := app.DB.Model(g).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+						t.Fatal(err)
+					}
+					target = actor
+					method, path, body = "POST", "/api/v1/groups/"+itoa(g.ID)+"/join", map[string]any{}
+				} else {
+					addMember(t, app, target, g, models.MembershipMember)
+				}
+				gate := holdContactGate(t, app)
+				response := queueContact(func() *httptest.ResponseRecorder {
+					return client.do(method, path, body, true)
+				})
+				waitContactWaiters(t, app, 1) // handler authenticated before the revocation
+				updates := map[string]any{"role": models.RoleMember}
+				want := http.StatusBadRequest
+				if operation == "join" {
+					want = http.StatusForbidden
+				}
+				switch mutation {
+				case "disable":
+					updates = map[string]any{"status": models.UserDisabled}
+					want = http.StatusUnauthorized
+				case "session":
+					updates = map[string]any{"session_version": actor.SessionVersion + 1}
+					want = http.StatusUnauthorized
+				}
+				if err := gate.Model(actor).Updates(updates).Error; err != nil {
+					t.Fatal(err)
+				}
+				if err := gate.Commit().Error; err != nil {
+					t.Fatal(err)
+				}
+				if w := awaitContactResponse(t, response); w.Code != want {
+					t.Fatalf("revoked membership mutation: %d %s, want %d", w.Code, w.Body.String(), want)
+				}
+				rel := relIn(app.DB, target.ID, g.ID)
+				if rel.Leader || (operation == "join" && rel.Member) || leaderCount(app.DB, g.ID) != 1 {
+					t.Fatal("revoked actor changed membership")
+				}
+				if contactCount(t, app, &models.AuditLog{}, "1=1") != 0 || contactCount(t, app, &models.Notification{}, "1=1") != 0 {
+					t.Fatal("revoked actor left audit or notification side effects")
+				}
+			})
+		}
+	}
+}
+
+func TestChangeRoleRechecksTargetAfterContactGate(t *testing.T) {
+	for _, mutation := range []string{"promote-teen", "demote-admin", "admin-add-teen"} {
+		t.Run(mutation, func(t *testing.T) {
+			app := testApp(t)
+			actor := newTestUser(t, app, "leader", "pw", models.RoleMember)
+			target := newTestUser(t, app, "target", "pw", models.RoleMember)
+			g := newTestGroup(t, app, actor, "Fresh target", models.GroupActive)
+			role := models.MembershipLeader
+			method := "PUT"
+			path := "/api/v1/groups/" + itoa(g.ID) + "/members/" + itoa(target.ID) + "/role"
+			body := map[string]any{"role": role}
+			updates := map[string]any{"account_type": models.AccountTeen, "birth_date": time.Now().AddDate(-15, 0, 0)}
+			want := http.StatusBadRequest
+			switch mutation {
+			case "demote-admin":
+				role = models.MembershipMember
+				body["role"] = role
+				updates = map[string]any{"role": models.RoleAdmin}
+				addMember(t, app, target, g, models.MembershipLeader)
+			case "admin-add-teen":
+				if err := app.DB.Model(actor).Update("role", models.RoleAdmin).Error; err != nil {
+					t.Fatal(err)
+				}
+				method, path = "POST", "/api/v1/admin/groups/"+itoa(g.ID)+"/members"
+				body["userId"] = target.ID
+			default:
+				addMember(t, app, target, g, models.MembershipMember)
+			}
+			client := loginAPI(t, app, actor.Email, "pw")
+			gate := holdContactGate(t, app)
+			response := queueContact(func() *httptest.ResponseRecorder {
+				return client.do(method, path, body, true)
+			})
+			waitContactWaiters(t, app, 1) // target was loaded before the change
+			if err := gate.Model(target).Updates(updates).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := gate.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			if w := awaitContactResponse(t, response); w.Code != want {
+				t.Fatalf("ineligible target: %d %s, want %d", w.Code, w.Body.String(), want)
+			}
+			rel := relIn(app.DB, target.ID, g.ID)
+			if (mutation == "demote-admin" && !rel.Leader) || (mutation != "demote-admin" && rel.Leader) || (mutation == "admin-add-teen" && rel.Member) {
+				t.Fatal("queued mutation used stale target eligibility")
+			}
+			if contactCount(t, app, &models.AuditLog{}, "1=1") != 0 || contactCount(t, app, &models.Notification{}, "1=1") != 0 {
+				t.Fatal("refused target change left audit or notification side effects")
+			}
+		})
+	}
+}

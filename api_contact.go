@@ -936,7 +936,9 @@ func (a *App) completeGroupAsk(tx *gorm.DB, op *contactOperation, r *models.Cont
 	if err != nil {
 		return err
 	}
-	err = a.changeRoleIn(tx, requester, ip, &g, r.SubjectUserID, models.MembershipMember, "", r.AddOverLimit, &memberAddOptions{KeepExistingRole: true, approved: &verifiedGroupAdd{r.ID, op.now}}, func(me *models.User, rel, _ policy.Rel, _ int) bool { return policy.CanManageGroup(asPerson(me), rel) }, &op.mailed)
+	err = a.changeRoleIn(tx, requester, ip, &g, r.SubjectUserID, models.MembershipMember, "", r.AddOverLimit, &memberAddOptions{KeepExistingRole: true, approved: &verifiedGroupAdd{r.ID, op.now}}, func(me, _ *models.User, rel, _ policy.Rel, _ int) bool {
+		return policy.CanManageGroup(asPerson(me), rel)
+	}, &op.mailed)
 	if errors.Is(err, errGroupFull) {
 		return contactAudit(tx, &op.actor.ID, audit.ContactRefused, *r, "group_full", ip)
 	}

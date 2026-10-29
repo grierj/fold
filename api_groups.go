@@ -483,13 +483,16 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 	}
 	if !rel.Member {
 		// Self-join never goes over the member limit (DEC-39).
-		err := a.changeRole(c, g, u.ID, models.MembershipMember, "", false, nil, func(me *models.User, _, t policy.Rel, _ int) bool {
+		err := a.changeRole(c, g, u.ID, models.MembershipMember, "", false, nil, func(me, _ *models.User, _, t policy.Rel, _ int) bool {
 			return policy.CanJoinGroup(asPerson(me), asGroup(g), t)
 		})
 		switch err {
 		case nil:
 		case errGroupFull:
 			groupFull(c)
+			return
+		case errSecuritySession:
+			jsonError(c, http.StatusUnauthorized, "unauthorized")
 			return
 		case errRoleRefused:
 			jsonError(c, http.StatusForbidden, "you can't join this group")
@@ -630,11 +633,14 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 		return
 	}
 	makeLeader := body.Role == models.MembershipLeader
-	err := a.changeRole(c, g, target.ID, body.Role, "", false, nil, func(me *models.User, actor, targetRel policy.Rel, leaders int) bool {
-		return policy.CanChangeRole(asPerson(me), actor, asPerson(&target), targetRel, makeLeader, leaders)
+	err := a.changeRole(c, g, target.ID, body.Role, "", false, nil, func(me, target *models.User, actor, targetRel policy.Rel, leaders int) bool {
+		return policy.CanChangeRole(asPerson(me), actor, asPerson(target), targetRel, makeLeader, leaders)
 	})
 	switch err {
 	case nil:
+	case errSecuritySession:
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
 	case errRoleRefused:
 		jsonError(c, http.StatusBadRequest,
 			"only adult members can be made leaders, and a group must keep at least one leader")
@@ -677,7 +683,7 @@ type memberAddOptions struct {
 // membership.removed row for every removal. Direct manager additions require
 // adult actors/targets and write membership.added.
 func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, note string, overLimit bool, add *memberAddOptions,
-	allow func(me *models.User, actor, target policy.Rel, leaders int) bool) error {
+	allow func(me, target *models.User, actorRel, targetRel policy.Rel, leaders int) bool) error {
 	actor := apiUser(c)
 	var emailed []uint
 	err := a.contactMutation(contactChange{UserID: userID}, func(tx *gorm.DB) error {
@@ -689,9 +695,37 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, 
 	return err
 }
 
-// changeRoleIn requires the contact gate and caller-owned transaction. It keeps
-// the group-first lock/capacity protocol and never commits or sends emails.
-func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models.Group, userID uint, newRole, note string, overLimit bool, add *memberAddOptions, allow func(*models.User, policy.Rel, policy.Rel, int) bool, emailed *[]uint) error {
+// changeRoleIn requires the contact gate and caller-owned transaction. It locks
+// users before the group/membership capacity protocol and never commits or sends emails.
+func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models.Group, userID uint, newRole, note string, overLimit bool, add *memberAddOptions, allow func(*models.User, *models.User, policy.Rel, policy.Rel, int) bool, emailed *[]uint) error {
+	sessionErr := errSecuritySession
+	if add != nil {
+		sessionErr = errPeopleAddForbidden
+	}
+	if actor == nil {
+		return sessionErr
+	}
+	var fresh models.User
+	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&fresh, actor.ID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return sessionErr
+		}
+		return err
+	}
+	if !fresh.CanSignIn() || fresh.SessionVersion != actor.SessionVersion {
+		return sessionErr
+	}
+	actor = &fresh
+	target := actor
+	if userID != actor.ID {
+		target = &models.User{}
+		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(target, userID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errRoleRefused
+			}
+			return err
+		}
+	}
 	if add != nil {
 		fresh, err := peopleAddActor(tx, actor)
 		if err != nil {
@@ -715,7 +749,7 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 	if actor.ID != userID {
 		actorRel = relIn(tx, actor.ID, g.ID)
 	}
-	if !allow(actor, actorRel, targetRel, leaderCount(tx, g.ID)) {
+	if !allow(actor, target, actorRel, targetRel, leaderCount(tx, g.ID)) {
 		return errRoleRefused
 	}
 	if (add != nil && add.KeepExistingRole && targetRel.Member) || oldRole == newRole || (newRole == memberRemoved && !targetRel.Member) {
@@ -728,15 +762,14 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 		// A guest (M1.4) has no account to hold a membership with:
 		// they join a group only after an account upgrade or an
 		// invitation turns the guest row into one.
-		var target models.User
-		if err := tx.First(&target, userID).Error; err != nil || target.Status == models.UserGuest {
+		if target.Status == models.UserGuest {
 			return errRoleRefused
 		}
 		if add != nil {
 			if target.Status != models.UserActive {
 				return errRoleRefused
 			}
-			if policy.TeenAddNeedsApproval(asPerson(&target)) && (add.approved == nil || !a.verifiedGroupAddIn(tx, add.approved, actor.ID, userID, g.ID)) {
+			if policy.TeenAddNeedsApproval(asPerson(target)) && (add.approved == nil || !a.verifiedGroupAddIn(tx, add.approved, actor.ID, userID, g.ID)) {
 				return errTeenAddApproval
 			}
 		}
@@ -870,7 +903,7 @@ func (a *App) apiAddGroupMember(c *gin.Context) {
 		jsonError(c, 409, errTeenAddApproval.Error())
 		return
 	}
-	err := a.changeRole(c, g, target.ID, models.MembershipMember, "", body.OverLimit, &memberAddOptions{KeepExistingRole: true}, func(me *models.User, actor, _ policy.Rel, _ int) bool {
+	err := a.changeRole(c, g, target.ID, models.MembershipMember, "", body.OverLimit, &memberAddOptions{KeepExistingRole: true}, func(me, _ *models.User, actor, _ policy.Rel, _ int) bool {
 		return policy.CanManageGroup(asPerson(me), actor)
 	})
 	switch err {
