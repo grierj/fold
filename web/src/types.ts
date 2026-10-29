@@ -788,6 +788,18 @@ export interface EventDate {
   canBlock: boolean;
 }
 
+/** @public Narrow administrative person picker, checked by TestWebTypesMatchGoJSON. */
+export interface ContactHistoryPerson {
+  id: string;
+  name: string;
+  email: string;
+}
+
+/** @public Administrative person picker response, checked by TestWebTypesMatchGoJSON. */
+export interface ContactHistoryPeopleResponse {
+  people: ContactHistoryPerson[];
+}
+
 /** @public Retained safeguarding projection, checked by TestWebTypesMatchGoJSON; no contact values or free text. */
 export interface ContactHistoryEntry {
   id: string;

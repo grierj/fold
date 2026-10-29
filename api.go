@@ -559,6 +559,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/contact-requests/:id", a.apiAuth(), a.apiGetContactRequest)
 	v1.POST("/contact-requests/:id/decision", a.apiAuth(), a.apiDecideContactRequest)
 	v1.POST("/contact-requests/:id/withdraw", a.apiAuth(), a.apiWithdrawContactRequest)
+	v1.GET("/admin/contact-history/people", a.apiAuth(), a.apiContactHistoryPeople)
 	v1.GET("/admin/users/:id/contact-history", a.apiAuth(), a.apiContactHistory)
 	v1.GET("/admin/users/:id/contact-history.csv", a.apiAuth(), a.apiExportContactHistory)
 	v1.GET("/contact-grants", a.apiAuth(), a.apiListContactGrants)

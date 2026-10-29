@@ -1762,16 +1762,29 @@ need current exact access; stale/ended access never promotes. Automatic and
 household/proxy promotion rules otherwise remain unchanged. Manager removal also
 ends conflicting pending exact-date asks, preventing stale approvals after prune.
 
-### Administrative contact/access history (M1.11 s5; final acceptance pending)
+### Administrative contact/access history (M1.11 s5)
 
 ```
+GET /api/v1/admin/contact-history/people?q=<literal name or email search>
+GET /api/v1/admin/contact-history/people?id=<exact decimal ID>
+GET /api/v1/admin/contact-history/people?email=<exact email>
+  → 200 {people: [{id, name, email}]}
 GET /api/v1/admin/users/:id/contact-history
   → 200 {entries: ContactHistoryEntry[], nextBefore?: string}
 GET /api/v1/admin/users/:id/contact-history.csv
   → 200 text/csv; charset=utf-8
 ```
 
-Both require a current active adult admin session. A requester, subject,
+The people endpoint is an administrative picker, not a directory export. Lookup
+mode precedence is `id`, then `email`, then `q`; parameters from lower-precedence
+modes are ignored. `id` is an exact positive decimal string, `email` is an exact
+case-insensitive match, and `q` is a literal case-insensitive contains search of
+name, display name or email. Results include non-deleted accounts only, including
+inactive accounts, return only `id`, public `name` and `email`, and are capped at
+50 with no pagination. Narrow searches by full name or email. IDs remain exact
+decimal strings.
+
+These endpoints require a current active adult admin session. A requester, subject,
 guardian, leader or host has no administrative history/export right, including
 for their own ID. Existing private `/contact-requests`, `/contact-grants` and
 `/add-requests` review/list permissions are unchanged. Session version, current
@@ -1800,9 +1813,15 @@ involvement):
 - `contextType=group|event`, optionally `contextId=<positive ID>`; an ID needs a type
 - `occurrenceId=<positive ID>`
 - `from=<RFC3339 timestamp>` inclusive, `until=<RFC3339 timestamp>` exclusive;
-  when both are given, `from` must be earlier. Explicit Go zero timestamps
-  (`0001-01-01T00:00:00Z`, including equivalent offset representations) are
-  rejected, not interpreted as absent bounds. URL-encode offsets containing `+`.
+  when both are given, `from` must be earlier. The admin UI accepts inclusive
+  **calendar days** in the church timezone from `GET /site`, converts From to
+  that local day's start, and converts Until to the next local calendar day's
+  start. It does not add 24 hours, so DST-short and DST-long days keep the right
+  boundary, and it does not fall back to the browser timezone or UTC. The HTTP
+  API itself continues to use RFC3339 instants and an exclusive `until`.
+  Explicit Go zero timestamps (`0001-01-01T00:00:00Z`, including equivalent
+  offset representations) are rejected, not interpreted as absent bounds.
+  URL-encode offsets containing `+`.
 
 Unknown, repeated, empty, malformed or overlong parameters return 400
 `contact_history_filters`. Each value is at most 64 bytes; the total query is
@@ -1898,10 +1917,8 @@ contact mutation gate and do not reconcile lifecycle state. Existing lifecycle
 mutations/sweeps own their actual audit entries. DEC-33 hash chaining, write-once
 offsite storage and retention hardening remain deferred.
 
-The admin history UI/client and focused browser/mobile/accessibility proof are
-implemented and independently reviewed. Local M1.11 acceptance and final
-integrated verification are recorded in [M1.11-VERIFICATION.md](plan/M1.11-VERIFICATION.md).
-Merged in #122; production deployment is not claimed.
+Verification evidence for the broader M1.11 milestone is tracked in
+[M1.11-VERIFICATION.md](plan/M1.11-VERIFICATION.md).
 
 ### Per-date visibility (M1.13)
 

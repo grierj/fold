@@ -2,14 +2,15 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ApiError } from "../api";
+import { ApiError, Site } from "../api";
 import { ContactHistory } from "../contact-history-api";
 import type { ContactHistoryEntry, ContactHistoryResponse } from "../types";
 import { ContactHistoryPage } from "./ContactHistory";
 
 const auth = vi.hoisted(() => ({ user: { id: 1, role: "admin", status: "active" } as { id: number; role: string; status: string } | null, loading: false, isAdmin: true }));
 vi.mock("../auth", () => ({ useAuth: () => auth }));
-vi.mock("../contact-history-api", async (actual) => ({ ...await actual<typeof import("../contact-history-api")>(), ContactHistory: { list: vi.fn(), csv: vi.fn() } }));
+vi.mock("../api", async (actual) => ({ ...await actual<typeof import("../api")>(), Site: { get: vi.fn() } }));
+vi.mock("../contact-history-api", async (actual) => ({ ...await actual<typeof import("../contact-history-api")>(), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
 const entry: ContactHistoryEntry = { id: "9007199254740993", at: "2026-10-01T12:00:00Z", action: "contact.decision", outcome: "decision", actorId: "9223372036854775807", requesterId: "9007199254740992", subjectUserId: "9007199254740993", purpose: "contact", requestId: "9223372036854775807", contextType: "group", contextId: "9007199254740993", party: "subject", decision: "approved", fields: "both" };
 const empty = { purpose: "", action: "", from: "", until: "" };
 function deferred<T>() { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; }
@@ -23,6 +24,8 @@ function mount(path = "/admin/users/9223372036854775807/contact-history") {
 }
 beforeEach(() => {
   vi.clearAllMocks(); auth.user = { id: 1, role: "admin", status: "active" }; auth.isAdmin = true;
+  vi.mocked(ContactHistory.people).mockResolvedValue({ people: [] });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off" });
   vi.mocked(ContactHistory.list).mockResolvedValue({ entries: [entry], nextBefore: "9007199254740993" });
   vi.mocked(ContactHistory.csv).mockResolvedValue(new Blob(["auditId,at\r\n"]));
   vi.stubGlobal("URL", class extends URL {
@@ -49,15 +52,15 @@ it("uses returned cursors unchanged, keeps server order and suppresses exact dup
   const rows = screen.getAllByRole("listitem"); expect(rows).toHaveLength(2);
   expect(rows[0]).toHaveTextContent("Audit #9007199254740993"); expect(rows[1]).toHaveTextContent("Audit #9007199254740992");
 });
-it("separates drafts from submitted/export filters and preserves invalid dates on server failure", async () => {
+it("separates drafts from submitted/export filters and preserves a valid date draft on server failure", async () => {
   mount(); await screen.findByText("Person's decision: Approved");
-  await userEvent.type(screen.getByLabelText("From (optional)"), "bad date");
+  fireEvent.change(screen.getByLabelText("From (optional)"), { target: { value: "2026-10-01" } });
   await userEvent.click(screen.getByRole("button", { name: "Export all matching CSV" }));
   expect(ContactHistory.csv).toHaveBeenLastCalledWith("9223372036854775807", empty);
   vi.mocked(ContactHistory.list).mockRejectedValueOnce(new ApiError(400, "SECRET", { code: "contact_history_filters" }));
   await userEvent.click(screen.getByRole("button", { name: "Apply filters" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Check the dates and filters");
-  expect(screen.getByLabelText("From (optional)")).toHaveValue("bad date");
+  expect(screen.getByLabelText("From (optional)")).toHaveValue("2026-10-01");
   expect(screen.queryByText("SECRET")).not.toBeInTheDocument();
   expect(screen.queryByText("Person's decision: Approved")).not.toBeInTheDocument();
 });
@@ -65,7 +68,8 @@ it("supports manual deleted IDs and neutral empty history without a live user lo
   vi.mocked(ContactHistory.list).mockResolvedValue({ entries: [] });
   mount("/admin/contact-history");
   expect(screen.getByText("Choose a person")).toBeInTheDocument();
-  await userEvent.type(screen.getByLabelText("Person ID"), "9223372036854775807");
+  await userEvent.click(screen.getByText("Use a saved person ID"));
+  await userEvent.type(screen.getByLabelText("Saved person ID"), "9223372036854775807");
   await userEvent.click(screen.getByRole("button", { name: "Apply filters" }));
   expect(await screen.findByText("No matching history")).toBeInTheDocument();
   expect(ContactHistory.list).toHaveBeenCalledWith("9223372036854775807", empty);
@@ -73,15 +77,67 @@ it("supports manual deleted IDs and neutral empty history without a live user lo
 });
 it("rejects overflow without coercion and preserves all draft fields", async () => {
   mount("/admin/contact-history");
-  await userEvent.type(screen.getByLabelText("Person ID"), "9223372036854775808");
+  await userEvent.click(screen.getByText("Use a saved person ID"));
+  await userEvent.type(screen.getByLabelText("Saved person ID"), "9223372036854775808");
   await userEvent.click(screen.getByLabelText("Direct contact"));
-  await userEvent.type(screen.getByLabelText("Until (optional)"), "2026-11-01T07:00:00Z");
+  fireEvent.change(screen.getByLabelText("Until (optional)"), { target: { value: "2026-11-01" } });
   await userEvent.click(screen.getByRole("button", { name: "Apply filters" }));
-  expect(screen.getByText(/Enter a person ID from/)).toBeInTheDocument();
-  expect(screen.getByLabelText("Person ID")).toHaveValue("9223372036854775808");
-  expect(screen.getByLabelText("Person ID")).toHaveFocus();
+  expect(screen.getByText("Check the saved person ID. Use the digits saved before the account was deleted.")).toBeInTheDocument();
+  expect(screen.getByLabelText("Saved person ID")).toHaveValue("9223372036854775808");
+  await waitFor(() => expect(screen.getByLabelText("Saved person ID")).toHaveFocus());
+  expect(screen.getByLabelText("Until (optional)")).toHaveValue("2026-11-01");
   expect(screen.getByLabelText("Direct contact")).toBeChecked(); expect(ContactHistory.list).not.toHaveBeenCalled();
 });
+it("finds a person by friendly metadata and submits the exact returned string ID", async () => {
+  vi.mocked(ContactHistory.people).mockImplementation(async ({ q }) => ({
+    people: q === "Pat" ? [{ id: "9007199254740993", name: "Pat Friendly", email: "pat@example.com" }] : [],
+  }));
+  mount("/admin/contact-history");
+  await userEvent.type(screen.getByLabelText("Find a person"), "Pat");
+  await screen.findByRole("option", { name: "Pat Friendly — pat@example.com" });
+  await userEvent.selectOptions(screen.getByLabelText("Person"), "9007199254740993");
+  await userEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+  expect(await screen.findByRole("heading", { name: "History for Pat Friendly" })).toBeInTheDocument();
+  expect(ContactHistory.list).toHaveBeenLastCalledWith("9007199254740993", empty);
+});
+
+it("converts inclusive church dates to UTC once and exports the applied snapshot", async () => {
+  mount(); await screen.findByText("Person's decision: Approved");
+  fireEvent.change(screen.getByLabelText("From (optional)"), { target: { value: "2026-03-08" } });
+  fireEvent.change(screen.getByLabelText("Until (optional)"), { target: { value: "2026-03-08" } });
+  await userEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+  const applied = { purpose: "", action: "", from: "2026-03-08T07:00:00.000Z", until: "2026-03-09T06:00:00.000Z" };
+  await waitFor(() => expect(ContactHistory.list).toHaveBeenLastCalledWith("9223372036854775807", applied));
+  expect(screen.getByText(/From March 8, 2026 · Through March 8, 2026/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Until (optional)"), { target: { value: "2026-03-09" } });
+  await userEvent.click(screen.getByRole("button", { name: "Export all matching CSV" }));
+  expect(ContactHistory.csv).toHaveBeenLastCalledWith("9223372036854775807", applied);
+});
+
+it("disables date application until retry loads the church timezone and never falls back to browser UTC", async () => {
+  vi.mocked(Site.get).mockRejectedValueOnce(new TypeError("offline")).mockResolvedValueOnce({ name: "Church", timezone: "America/Denver", selfSignup: "off" });
+  mount(); await screen.findByText("Person's decision: Approved");
+  fireEvent.change(screen.getByLabelText("From (optional)"), { target: { value: "2026-11-01" } });
+  fireEvent.change(screen.getByLabelText("Until (optional)"), { target: { value: "2026-11-01" } });
+  expect(await screen.findByRole("button", { name: "Apply filters" })).toBeDisabled();
+  expect(ContactHistory.list).toHaveBeenCalledTimes(1);
+  await userEvent.click(await screen.findByRole("button", { name: "Try loading church time again" }));
+  await waitFor(() => expect(screen.getByRole("button", { name: "Apply filters" })).toBeEnabled());
+  await userEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+  await waitFor(() => expect(ContactHistory.list).toHaveBeenLastCalledWith("9223372036854775807", {
+    purpose: "", action: "", from: "2026-11-01T06:00:00.000Z", until: "2026-11-02T07:00:00.000Z",
+  }));
+});
+
+it.each([401, 403])("clears history when person metadata lookup loses authority %s", async (status) => {
+  vi.mocked(ContactHistory.people).mockRejectedValue(new ApiError(status, "SECRET"));
+  mount();
+  if (status === 401) expect(await screen.findByText("Sign in first")).toBeInTheDocument();
+  else expect(await screen.findByText(/This history is no longer available/)).toBeInTheDocument();
+  expect(screen.queryByText("Person's decision: Approved")).not.toBeInTheDocument();
+  expect(screen.queryByText("SECRET")).not.toBeInTheDocument();
+});
+
 it.each([401, 403])("clears all history and suppresses pending CSV on authority loss %s", async (status) => {
   const pending = deferred<Blob>(); vi.mocked(ContactHistory.csv).mockReturnValue(pending.promise);
   mount(); await userEvent.click(await screen.findByRole("button", { name: "Export all matching CSV" }));

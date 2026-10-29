@@ -261,16 +261,25 @@ Ask the organizer or church office if you need help.
 ## Church admins: review retained contact-access history
 
 As an active adult admin, open **Admin → Users**, open the person's **More** menu
-and choose **Contact access history**. For a deleted account, use **Contact
-access history by ID** above the user list. Enter the retained person ID using
-digits only, from **1 to 9223372036854775807**. Keep IDs as written; do not round
-them. A missing/deleted account can have retained history, or no matching entries.
+and choose **Contact access history**. Fold resolves that row's current email to
+an exact person ID string before opening history; it never converts the ID to a
+JavaScript number. **Copy person ID** uses the same lookup and always leaves the
+ID visible on the page if clipboard access is unavailable.
 
-Choose a purpose or action to filter. Optional **From** is inclusive; **Until**
-is exclusive and must be later. Both require a timestamp with a timezone, such
-as `2026-10-01T09:00:00+02:00` or `2026-10-01T07:00:00Z`. Choose **Apply filters**.
-**Load older entries** shows earlier activity; **Refresh history** gets a fresh
-view. Editing fields alone does not change the applied filters.
+You can also choose **Find contact access history**, search by full name or email,
+choose the person, then apply the filters. Search returns at most 50 people, so
+narrow the search by full name or email; there is no paginated directory here.
+For a deleted account, open **Use a saved person ID** and enter the retained ID
+using digits only, from **1 to 9223372036854775807**. Keep IDs as written; do not
+round them. A missing or deleted account can have retained history, or no matching
+entries.
+
+Choose a purpose or action to filter. Optional **From** and **Until** are inclusive
+calendar days in the church timezone. The page loads that timezone from the site
+settings and disables Apply until it is available; it never substitutes the
+browser timezone or UTC. Choose **Apply filters**. **Load older entries** shows
+earlier activity; **Refresh history** gets a fresh view. Editing fields alone
+does not change the applied filters, and CSV uses the last applied filters.
 
 Choose **Export all matching CSV** to download every matching entry, not just
 the loaded page. The export uses the applied filters. History shows actions,

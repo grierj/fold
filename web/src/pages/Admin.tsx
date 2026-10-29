@@ -26,6 +26,7 @@ import { ErrorNotice } from "../components/ErrorNotice";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
+import { ContactHistory } from "../contact-history-api";
 
 type AdminTab = "approvals" | "groups" | "users" | "invite" | "settings";
 
@@ -848,13 +849,59 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
       setBusy(false);
     }
   }
+
+  async function openContactHistory(u: User) {
+    if (!u.email.trim()) { setError("Refresh the user list, then try opening this person's history again."); return; }
+    setBusy(true);
+    setError(null);
+    setFeedStatus("");
+    try {
+      const { people } = await ContactHistory.people({ email: u.email });
+      const person = people[0];
+      if (!person || people.length !== 1) {
+        setError("We couldn't find contact access history for that person.");
+        return;
+      }
+      navigate(`/admin/users/${encodeURIComponent(person.id)}/contact-history`);
+    } catch (e) {
+      setError(errorText(e, "We couldn't open contact access history."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyPersonId(u: User) {
+    if (!u.email.trim()) { setError("Refresh the user list, then try getting this person's ID again."); return; }
+    setBusy(true);
+    setError(null);
+    setFeedStatus("");
+    try {
+      const { people } = await ContactHistory.people({ email: u.email });
+      const person = people[0];
+      if (!person || people.length !== 1) {
+        setError("We couldn't find the person ID for that person.");
+        return;
+      }
+      try {
+        await navigator.clipboard?.writeText(person.id);
+      } catch {
+        // The visible status is also the fallback when clipboard access is unavailable.
+      }
+      setFeedStatus(`Person ID for ${person.name}: ${person.id}`);
+    } catch (e) {
+      setError(errorText(e, "We couldn't get that person ID."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Deleting or disabling opens a panel that also picks successors (DEC-36).
   const [leaving, setLeaving] = useState<{ id: number; action: "delete" | "disable" } | null>(null);
 
   return (
     <div>
       <div className="flex flex-wrap justify-end gap-2 mb-4">
-        <ButtonLink variant="secondary" to="/admin/contact-history">Contact access history by ID</ButtonLink>
+        <ButtonLink variant="secondary" to="/admin/contact-history">Find contact access history</ButtonLink>
         <Button variant="primary" onClick={() => { setCreating(true); setEditingId(null); }}>
           New user
         </Button>
@@ -952,7 +999,8 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                     tone="quiet"
                     label={`More for ${u.displayName || u.name}`}
                     items={[
-                      { label: "Contact access history", onSelect: () => navigate(`/admin/users/${String(u.id)}/contact-history`) },
+                      { label: "Contact access history", onSelect: () => void openContactHistory(u), disabled: busy },
+                      { label: "Copy person ID", onSelect: () => void copyPersonId(u), disabled: busy },
                       ...(u.accountType === "teen" || u.hasTeenConsentHistory ? [{ label: u.accountType === "teen" ? "Manage consent" : "Consent history", onSelect: () => { setConsentId(u.id); setEditingId(null); setResetId(null); setCreating(false); } }] : []),
                       { label: "Reset password", onSelect: () => { setResetId(u.id); setEditingId(null); setCreating(false); } },
                       { label: "Revoke calendar link", onSelect: () => void revokeCalendarLink(u), danger: true, disabled: busy },

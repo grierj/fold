@@ -166,3 +166,52 @@ export function formatCalendarDay(day: string): string {
 export function formatBirthDate(day: string): string {
   return fmt(asDate(day), "UTC", { month: "long", day: "numeric", year: "numeric" });
 }
+
+// Calendar-day filters use the church's clock, not the browser's. The history
+// API's upper bound is exclusive: an inclusive Until day becomes the next
+// calendar day's start. Never add 24 hours to a zoned instant (DST days vary).
+export function historyDayBounds(from: string, until: string, zone: string): { from: string; until: string } | null {
+  function utcDay(day: string): Date | null {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+    const date = new Date(`${day}T00:00:00.000Z`);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === day ? date : null;
+  }
+  try {
+    const calendar = new Intl.DateTimeFormat("en-US", {
+      timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", era: "short",
+    });
+    const keyAt = (at: number): number => {
+      const parts = calendar.formatToParts(at);
+      const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === type)?.value ?? "";
+      const year = Number(part("year"));
+      return (part("era") === "BC" ? 1 - year : year) * 10000 + Number(part("month")) * 100 + Number(part("day"));
+    };
+    function start(day: string): string | null {
+      const date = utcDay(day);
+      if (!date) return null;
+      const key = Number(day.replace(/-/g, ""));
+      // Find the boundary of the church-local date rather than assuming
+      // midnight exists: some zones start a spring-forward day at 01:00.
+      let low = date.getTime() - 36 * 60 * 60 * 1000;
+      let high = date.getTime() + 36 * 60 * 60 * 1000;
+      while (low < high) {
+        const middle = Math.floor((low + high) / 2);
+        if (keyAt(middle) < key) low = middle + 1;
+        else high = middle;
+      }
+      return keyAt(low) === key ? new Date(low).toISOString() : null;
+    }
+    if (from && until && from > until) return null;
+    const lower = from ? start(from) : "";
+    let upper: string | null = "";
+    if (until) {
+      const next = utcDay(until);
+      if (!next) return null;
+      next.setUTCDate(next.getUTCDate() + 1);
+      upper = start(next.toISOString().slice(0, 10));
+    }
+    return lower === null || upper === null ? null : { from: lower, until: upper };
+  } catch {
+    return null;
+  }
+}

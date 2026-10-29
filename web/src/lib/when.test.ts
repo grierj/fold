@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, zoneNote } from "./when";
+import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, historyDayBounds, zoneNote } from "./when";
 
 // Saturday Oct 17 2026, 7:00 PM in Los Angeles (PDT, UTC-7) = 02:00 UTC Sunday.
 const laSat7pm = "2026-10-18T02:00:00Z";
@@ -100,5 +100,51 @@ describe("heldIn", () => {
 describe("zoneNote", () => {
   it("names the zone the form edits in", () => {
     expect(zoneNote("America/Los_Angeles")).toBe("Times are in Pacific time.");
+  });
+});
+
+describe("historyDayBounds", () => {
+  it("uses an inclusive local From day and the next local day as the exclusive Until bound", () => {
+    expect(historyDayBounds("2026-10-01", "2026-10-03", "UTC")).toEqual({
+      from: "2026-10-01T00:00:00.000Z",
+      until: "2026-10-04T00:00:00.000Z",
+    });
+    expect(historyDayBounds("2026-10-01", "2026-10-01", "UTC")).toEqual({
+      from: "2026-10-01T00:00:00.000Z",
+      until: "2026-10-02T00:00:00.000Z",
+    });
+  });
+
+  it("follows short and long Denver days instead of adding 24 hours", () => {
+    expect(historyDayBounds("2026-03-08", "2026-03-08", "America/Denver")).toEqual({
+      from: "2026-03-08T07:00:00.000Z",
+      until: "2026-03-09T06:00:00.000Z",
+    });
+    expect(historyDayBounds("2026-11-01", "2026-11-01", "America/Denver")).toEqual({
+      from: "2026-11-01T06:00:00.000Z",
+      until: "2026-11-02T07:00:00.000Z",
+    });
+  });
+
+  it("handles non-hour offsets, midnight gaps, and year boundaries", () => {
+    expect(historyDayBounds("2026-10-01", "", "Asia/Kathmandu")).toEqual({
+      from: "2026-09-30T18:15:00.000Z",
+      until: "",
+    });
+    expect(historyDayBounds("2026-09-06", "", "America/Santiago")).toEqual({
+      from: "2026-09-06T04:00:00.000Z",
+      until: "",
+    });
+    expect(historyDayBounds("2026-12-31", "2026-12-31", "UTC")).toEqual({
+      from: "2026-12-31T00:00:00.000Z",
+      until: "2027-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("keeps blank bounds blank and rejects invalid input", () => {
+    expect(historyDayBounds("", "", "UTC")).toEqual({ from: "", until: "" });
+    expect(historyDayBounds("2026-02-30", "", "UTC")).toBeNull();
+    expect(historyDayBounds("2026-10-03", "2026-10-01", "UTC")).toBeNull();
+    expect(historyDayBounds("2026-10-01", "", "Mars/Olympus_Mons")).toBeNull();
   });
 });
