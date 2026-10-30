@@ -44,11 +44,11 @@ export default function App() {
   useEffect(() => {
     setOnUnauthorized(() => {
       if (location.pathname !== "/login") {
-        navigate("/login", { state: { from: location.pathname }, replace: true });
+        navigate("/login", { state: { from: location.pathname + location.search }, replace: true });
       }
     });
     return () => setOnUnauthorized(null);
-  }, [navigate, location.pathname]);
+  }, [navigate, location.pathname, location.search]);
 
   if (loading) return null;
 
@@ -57,7 +57,6 @@ export default function App() {
     // header, so nothing fetched for the previous user (or while signed out)
     // survives. Routes wait for the session check so pages fetch once.
     <Layout key={user ? `${user.id}:${user.status}` : "anon"}>
-      {loading ? null : (
       <Suspense fallback={<Skeleton kind="page" label="Loading page…" />}>
       <Routes>
         <Route path="/" element={<Home />} />
@@ -93,7 +92,6 @@ export default function App() {
         <Route path="*" element={<NotFound />} />
       </Routes>
       </Suspense>
-      )}
     </Layout>
   );
 }

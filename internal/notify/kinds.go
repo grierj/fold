@@ -40,6 +40,7 @@ const (
 	MembershipLeft          = "membership.left"
 	MemberNotRestored       = "membership.not_restored"
 	OccurrenceCancelled     = "event.cancelled"
+	OccurrenceRestored      = "event.restored"
 	RegistrationCancelled   = "registration.cancelled"
 	VisibilityOverride      = "event.visibility_override"
 	AccountRequested        = "account.requested"
@@ -301,6 +302,15 @@ func init() {
 		Key: OccurrenceCancelled, Category: CatEvents, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			return "Cancelled: " + or(v.Event, "Church event"), join(v.When, v.Place)
+		},
+	})
+	register(Kind{
+		// A date a series edit had cancelled is on again because the rule
+		// includes it. Same recipients and privacy rules as OccurrenceCancelled.
+		Key: OccurrenceRestored, Category: CatEvents, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return "Back on: " + or(v.Event, "Church event"),
+				join(v.When, v.Place, "Your sign-up is still in place.")
 		},
 	})
 	register(Kind{

@@ -68,6 +68,10 @@ func (a *App) rolloverAges(now time.Time) (int, error) {
 	if err := a.DB.Select("id", "household_id").Where("kind = ? AND converted_user_id IS NULL AND birth_date IS NOT NULL AND birth_date <= ?", models.HouseholdChild,
 		today.AddDate(-13, 0, 0).Format("2006-01-02")).
 		Where("NOT EXISTS (SELECT 1 FROM audit_logs WHERE action = ? AND target_type = 'household_person' AND target_id = household_people.id)", audit.HouseholdChildTurned13).
+		// Without a confirmed, active adult guardian flagHouseholdChild13 writes
+		// nothing, so leave those children out instead of re-checking nightly.
+		Where("EXISTS (SELECT 1 FROM guardian_links gl JOIN users u ON u.id = gl.guardian_user_id AND u.deleted_at IS NULL AND u.status = ? AND u.account_type = ? WHERE gl.person_id = household_people.id AND gl.status = ?)",
+			models.UserActive, models.AccountAdult, models.GuardianConfirmed).
 		Order("household_id, id").Find(&people).Error; err != nil {
 		return changed, err
 	}

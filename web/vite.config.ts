@@ -49,6 +49,9 @@ export default defineConfig({
   // Node's accessor and jsdom wins, on Node 24 (CI) and newer alike.
   test: {
     environment: "jsdom",
+    // vm contexts reuse one worker per thread instead of booting jsdom in a
+    // fresh fork per file: about a fifth faster, still isolated per file.
+    pool: "vmThreads",
     include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["./src/test/setup.ts"],
   },

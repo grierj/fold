@@ -56,6 +56,8 @@ func (in setupInput) fieldErrors() map[string]string {
 		out["password"] = "Enter a password."
 	} else if len(in.Password) < minPasswordLength {
 		out["password"] = fmt.Sprintf("Use at least %d characters.", minPasswordLength)
+	} else if len(in.Password) > maxPasswordBytes {
+		out["password"] = fmt.Sprintf("Use at most %d bytes (accents and emoji take more).", maxPasswordBytes)
 	}
 	if in.Confirm == "" {
 		out["password_confirm"] = "Enter your password again."
@@ -83,6 +85,6 @@ func (in setupInput) pageData(fields map[string]string, message string) gin.H {
 		"Error": message, "FieldErrors": fields, "ErrorSummary": summary, "FirstError": first,
 		"EnteredSiteName": in.SiteName, "EnteredTimezone": in.Timezone,
 		"EnteredName": in.Name, "EnteredEmail": in.Email,
-		"AdultConfirmed": in.Adult, "PasswordMinimum": minPasswordLength,
+		"AdultConfirmed": in.Adult, "PasswordMinimum": minPasswordLength, "PasswordMaximum": maxPasswordBytes,
 	}
 }

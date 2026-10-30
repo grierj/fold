@@ -11,7 +11,9 @@ import (
 	"crypto/x509/pkix"
 	"fmt"
 	"math/big"
+	"mime"
 	"net"
+	netmail "net/mail"
 	"os"
 	"strings"
 	"testing"
@@ -405,5 +407,38 @@ func TestSMTPHeaderInjection(t *testing.T) {
 func TestNoSenderFails(t *testing.T) {
 	if err := (NoSender{}).Send(context.Background(), Message{To: "a@b.c"}); err == nil {
 		t.Fatal("NoSender sent")
+	}
+}
+
+// Messages carry Date and a random Message-ID in the sender's domain, and a
+// non-ASCII subject travels as an RFC 2047 encoded word.
+func TestSMTPAddsDateMessageIDAndEncodesSubject(t *testing.T) {
+	fake := newFakeSMTP(t)
+	s, err := NewSMTP("smtp://"+fake.addr(), "Fold <noreply@example.com>")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Send(context.Background(), Message{
+		To: "sam@example.com", Subject: "Café night", Text: "plain body",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	<-fake.done
+	msg, err := netmail.ReadMessage(strings.NewReader(fake.data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := msg.Header.Date(); err != nil {
+		t.Fatalf("Date header: %v", err)
+	}
+	if id := msg.Header.Get("Message-ID"); !strings.HasPrefix(id, "<") || !strings.HasSuffix(id, "@example.com>") {
+		t.Fatalf("Message-ID: %q", id)
+	}
+	raw := msg.Header.Get("Subject")
+	if !strings.HasPrefix(raw, "=?utf-8?q?") {
+		t.Fatalf("subject not encoded: %q", raw)
+	}
+	if got, err := new(mime.WordDecoder).DecodeHeader(raw); err != nil || got != "Café night" {
+		t.Fatalf("decoded subject %q, %v", got, err)
 	}
 }

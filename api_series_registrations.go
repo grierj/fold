@@ -3,11 +3,11 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"time"
-	"unicode/utf8"
 
 	"fold/internal/policy"
 	"fold/models"
@@ -170,6 +170,26 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			return
 		}
 	}
+	// Input checks that don't depend on the event run before any lock is
+	// taken. Guest and childcare availability need the event, so they wait
+	// until the actor is known to be allowed to see it.
+	mode := ""
+	if body.AttendanceMode != nil {
+		mode = *body.AttendanceMode
+	}
+	if !validMode(mode) {
+		jsonError(c, http.StatusBadRequest, "attendanceMode must be in_person or remote")
+		return
+	}
+	care := childcareRequest{ChildcareCount: body.ChildcareCount, ChildcareAgesNote: body.ChildcareAgesNote}
+	if msg := care.problem(nil); msg != "" {
+		jsonError(c, http.StatusBadRequest, msg)
+		return
+	}
+	guests := 0
+	if body.GuestCount != nil {
+		guests = *body.GuestCount
+	}
 	eventID := uint(eventID64)
 	actorAtRequest := apiUser(c)
 	response := seriesRegistrationResponse{EventID: eventID, Scope: body.Scope, Date: body.Date, Status: body.Status,
@@ -177,7 +197,8 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 	var mailed []uint
 	undoRaw, tokenErr := newRawToken()
 	if tokenErr != nil {
-		jsonError(c, http.StatusInternalServerError, tokenErr.Error())
+		log.Printf("series registration: %v", tokenErr)
+		jsonError(c, http.StatusInternalServerError, "could not save registration")
 		return
 	}
 	undoHash := hashToken(undoRaw)
@@ -258,26 +279,25 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 		// individually because their status or clock may have changed while the
 		// candidate query waited.
 
-		guests := 0
-		if body.GuestCount != nil {
-			guests = *body.GuestCount
-		}
 		if guests < 0 || guests > ev.GuestsAllowed {
 			return errSeriesGuests
 		}
-		mode := ""
-		if body.AttendanceMode != nil {
-			mode = *body.AttendanceMode
+		if care.problem(&ev) != "" {
+			return errSeriesChildcareUnavailable
 		}
-		if !validMode(mode) {
-			return errSeriesMode
+
+		// One read for the actor's answers on every selected date.
+		lockedIDs := make([]uint, len(locked))
+		for i := range locked {
+			lockedIDs[i] = locked[i].ID
 		}
-		care := childcareRequest{ChildcareCount: body.ChildcareCount, ChildcareAgesNote: body.ChildcareAgesNote}
-		if body.ChildcareCount != nil && (*body.ChildcareCount < 0 || *body.ChildcareCount > 20) {
-			return errSeriesChildcareCount
+		var priorRows []models.Registration
+		if err := tx.Where("occurrence_id IN ? AND user_id = ?", lockedIDs, actor.ID).Find(&priorRows).Error; err != nil {
+			return err
 		}
-		if body.ChildcareAgesNote != nil && utf8.RuneCountInString(*body.ChildcareAgesNote) > 200 {
-			return errSeriesChildcareNote
+		prior := make(map[uint]models.Registration, len(priorRows))
+		for _, r := range priorRows {
+			prior[r.OccurrenceID] = r
 		}
 
 		for i := range locked {
@@ -295,14 +315,7 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			if !policy.CanRegisterEvent(asPerson(&actor), dateView, gp, rel) {
 				continue
 			}
-			var old models.Registration
-			if err := tx.Where("occurrence_id = ? AND user_id = ?", o.ID, actor.ID).Limit(1).Find(&old).Error; err != nil {
-				return err
-			}
-			if old.Status == models.RegRemoved {
-				response.Refusals = append(response.Refusals, seriesRegistrationRefusal{OccurrenceID: o.ID, Date: o.OriginalDate, Code: "registration_removed"})
-				continue
-			}
+			old := prior[o.ID]
 			change, err := prepareRegistration(old, o, userSubject(actor.ID), body.Status, guests, mode, care, nil, dateNow)
 			if err != nil {
 				if code := seriesRefusalCode(err); code != "" {
@@ -392,14 +405,11 @@ func (a *App) apiRegisterSeries(c *gin.Context) {
 			jsonError(c, http.StatusConflict, "this series has no future dates to answer")
 		case errors.Is(err, errSeriesGuests):
 			jsonErrorCode(c, http.StatusBadRequest, "too_many_guests", "too many guests")
-		case errors.Is(err, errSeriesMode):
-			jsonError(c, http.StatusBadRequest, "attendanceMode must be in_person or remote")
-		case errors.Is(err, errSeriesChildcareCount):
-			jsonError(c, http.StatusBadRequest, "childcareCount must be a whole number from 0 to 20")
-		case errors.Is(err, errSeriesChildcareNote):
-			jsonError(c, http.StatusBadRequest, "childcare age note must be 200 characters or fewer")
+		case errors.Is(err, errSeriesChildcareUnavailable):
+			jsonError(c, http.StatusBadRequest, errChildcareUnavailable.Error())
 		default:
-			jsonError(c, http.StatusInternalServerError, err.Error())
+			log.Printf("series registration: %v", err)
+			jsonError(c, http.StatusInternalServerError, "could not save registration")
 		}
 		return
 	}
@@ -639,7 +649,8 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 		case errors.Is(err, errSeriesUndoUnavailable):
 			jsonError(c, http.StatusNotFound, "Undo not found")
 		default:
-			jsonError(c, http.StatusInternalServerError, err.Error())
+			log.Printf("series undo: %v", err)
+			jsonError(c, http.StatusInternalServerError, "could not undo registration")
 		}
 		return
 	}
@@ -649,17 +660,15 @@ func (a *App) apiUndoSeriesRegistration(c *gin.Context) {
 }
 
 var (
-	errSeriesUnavailable     = errors.New("series unavailable")
-	errSeriesNoDates         = errors.New("series has no future dates")
-	errSeriesGuests          = errors.New("series guest count invalid")
-	errSeriesMode            = errors.New("series attendance mode invalid")
-	errSeriesChildcareCount  = errors.New("series childcare count invalid")
-	errSeriesChildcareNote   = errors.New("series childcare note invalid")
-	errSeriesUndoUnavailable = errors.New("series undo unavailable")
-	errSeriesUndoOtherActor  = errors.New("series undo other actor")
-	errSeriesUndoExpired     = errors.New("series undo expired")
-	errSeriesUndoUsed        = errors.New("series undo used")
-	errSeriesUndoChanged     = errors.New("series undo state changed")
-	errSeriesUndoAuthority   = errors.New("series undo authority revoked")
-	errSeriesUndoEnded       = errors.New("series undo occurrence ended")
+	errSeriesUnavailable          = errors.New("series unavailable")
+	errSeriesNoDates              = errors.New("series has no future dates")
+	errSeriesGuests               = errors.New("series guest count invalid")
+	errSeriesChildcareUnavailable = errors.New("series childcare unavailable")
+	errSeriesUndoUnavailable      = errors.New("series undo unavailable")
+	errSeriesUndoOtherActor       = errors.New("series undo other actor")
+	errSeriesUndoExpired          = errors.New("series undo expired")
+	errSeriesUndoUsed             = errors.New("series undo used")
+	errSeriesUndoChanged          = errors.New("series undo state changed")
+	errSeriesUndoAuthority        = errors.New("series undo authority revoked")
+	errSeriesUndoEnded            = errors.New("series undo occurrence ended")
 )

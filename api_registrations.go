@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"fold/internal/audit"
 	"fold/internal/events"
@@ -260,16 +260,28 @@ func loadWaitlist(tx *gorm.DB, occurrenceID uint) ([]models.Registration, error)
 // among listed accounts, computed on read (Decision 2: never stored).
 // It is 0 when the registration is not waitlisted.
 func waitlistPosition(db *gorm.DB, occurrenceID, regID uint) (int, error) {
-	wl, err := loadWaitlist(db, occurrenceID)
-	if err != nil {
+	var target models.Registration
+	if err := db.Joins(listedRegistrations()).
+		Where("registrations.id = ? AND registrations.occurrence_id = ? AND registrations.status = ?",
+			regID, occurrenceID, models.RegWaitlisted).
+		Limit(1).Find(&target).Error; err != nil {
 		return 0, err
 	}
-	for i, r := range wl {
-		if r.ID == regID {
-			return i + 1, nil
-		}
+	if target.ID == 0 {
+		return 0, nil
 	}
-	return 0, nil
+	q := db.Model(&models.Registration{}).Joins(listedRegistrations()).
+		Where("registrations.occurrence_id = ? AND registrations.status = ?", occurrenceID, models.RegWaitlisted)
+	if target.WaitlistedAt != nil {
+		// NULL waitlisted_at sorts last, so it never precedes a dated row.
+		q = q.Where("registrations.waitlisted_at IS NOT NULL AND (registrations.waitlisted_at, registrations.id) <= (?, ?)",
+			target.WaitlistedAt, target.ID)
+	} else {
+		q = q.Where("(registrations.waitlisted_at IS NOT NULL OR registrations.id <= ?)", target.ID)
+	}
+	var n int64
+	err := q.Count(&n).Error
+	return int(n), err
 }
 
 // lockOccurrence locks one occurrence row for a seat-changing write.
@@ -286,6 +298,15 @@ func hostIDs(tx *gorm.DB, eventID uint) []uint {
 	var ids []uint
 	tx.Model(&models.EventHost{}).Where("event_id = ?", eventID).Pluck("user_id", &ids)
 	return ids
+}
+
+// noticeEnd is when a date's notices stop mattering: its end, or its start
+// when it has none.
+func noticeEnd(o *models.EventOccurrence) time.Time {
+	if o.EndsAt.IsZero() {
+		return o.StartsAt
+	}
+	return o.EndsAt
 }
 
 // eventNoticeVars builds the guarded Vars and link for one recipient of
@@ -364,10 +385,7 @@ func notifyRegistrationPromoted(tx *gorm.DB, ev *models.Event, o *models.EventOc
 		policy.CanSeeVideoLink(videoRevealOf(ev), true, false) && (reg.HouseholdPersonID == nil || reg.AttendanceMode == models.AttendanceRemote) {
 		vars.VideoURL = video
 	}
-	end := o.EndsAt
-	if end.IsZero() {
-		end = o.StartsAt
-	}
+	end := noticeEnd(o)
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationPromoted, To: []uint{userID}, Actor: actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
@@ -389,17 +407,28 @@ func notifyWaitlistCutoff(tx *gorm.DB, ev *models.Event, o *models.EventOccurren
 	if len(to) == 0 {
 		return nil, nil
 	}
-	vars, link := eventNoticeVarsIn(tx, ev, o, to[0])
-	end := o.EndsAt
-	if end.IsZero() {
-		end = o.StartsAt
+	// Vars are per recipient: the time renders in each leader's own zone.
+	var groupIDs []uint
+	if ev.GroupID != nil {
+		groupIDs = []uint{*ev.GroupID}
 	}
-	return notify.Send(tx, notify.Msg{
-		Kind: notify.WaitlistCutoff, To: to, Actor: actor,
-		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-		Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
-		ExpiresAt: &end,
-	})
+	facts := loadNoticeFacts(tx, groupIDs, to)
+	end := noticeEnd(o)
+	var ids []uint
+	for _, uid := range to {
+		vars, link := eventNoticeVars(ev, o, uid, facts)
+		sent, err := notify.Send(tx, notify.Msg{
+			Kind: notify.WaitlistCutoff, To: []uint{uid}, Actor: actor,
+			SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
+			Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+			ExpiresAt: &end,
+		})
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, sent...)
+	}
+	return ids, nil
 }
 
 // notifyEventChanged tells everyone going or waitlisted on one occurrence
@@ -440,10 +469,7 @@ func notifyEventChanged(tx *gorm.DB, ev *models.Event, o *models.EventOccurrence
 		}
 		vars, link := eventNoticeVars(ev, o, uid, facts)
 		vars.Change = variant
-		end := o.EndsAt
-		if end.IsZero() {
-			end = o.StartsAt
-		}
+		end := noticeEnd(o)
 		sent, err := notify.Send(tx, notify.Msg{
 			Kind: notify.EventChanged, To: []uint{uid}, Actor: &actor,
 			SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
@@ -472,10 +498,7 @@ func notifyRegistrationRemoved(tx *gorm.DB, ev *models.Event, o *models.EventOcc
 		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
 	}
 	vars.Note = note
-	end := o.EndsAt
-	if end.IsZero() {
-		end = o.StartsAt
-	}
+	end := noticeEnd(o)
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationRemoved, To: []uint{userID}, Actor: &actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
@@ -492,10 +515,7 @@ func notifyRegistrationNotRestored(tx *gorm.DB, ev *models.Event, o *models.Even
 	if reg.HouseholdPersonID != nil {
 		vars.Person = householdPersonName(tx, *reg.HouseholdPersonID)
 	}
-	end := o.EndsAt
-	if end.IsZero() {
-		end = o.StartsAt
-	}
+	end := noticeEnd(o)
 	return notify.Send(tx, notify.Msg{
 		Kind: notify.RegistrationNotRestored, To: []uint{userID}, Actor: actor,
 		SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
@@ -541,6 +561,18 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 		}
 		childcare = events.Pool{Capacity: ev.ChildcareCapacity, Used: used}
 	}
+	// A greedy pass takes the first entry that fits an untouched pool, so if
+	// none fits even before eligibility filters the line, nobody can be picked.
+	entryOf := func(r models.Registration) events.WaitEntry {
+		return events.WaitEntry{ID: r.ID, Seats: 1 + r.GuestCount, Mode: attendanceModeOf(r.AttendanceMode), Childcare: effectiveChildcare(ev, r)}
+	}
+	line := make([]events.WaitEntry, 0, len(wl))
+	for _, r := range wl {
+		line = append(line, entryOf(r))
+	}
+	if len(events.PickPromotionsByPool(line, pools, childcare)) == 0 {
+		return nil, nil
+	}
 	facts := a.loadSubjectFacts(tx, wl, nil)
 	access := map[uint]bool{}
 	facts.clock = func() time.Time { return a.householdClock(now) }
@@ -549,7 +581,7 @@ func (a *App) promoteLocked(tx *gorm.DB, ev *models.Event, o *models.EventOccurr
 		if !facts.eligible(a, tx, r, ev, access) {
 			continue
 		}
-		entries = append(entries, events.WaitEntry{ID: r.ID, Seats: 1 + r.GuestCount, Mode: attendanceModeOf(r.AttendanceMode), Childcare: effectiveChildcare(ev, r)})
+		entries = append(entries, entryOf(r))
 	}
 	if events.InCutoff(now, o.StartsAt) {
 		// Nobody is auto-promoted; the leaders or hosts are told only
@@ -728,20 +760,25 @@ func (a *App) applyRegistrationBatch(tx *gorm.DB, ev *models.Event, o *models.Ev
 			continue
 		}
 		interim := ch.old
+		changed := false
 		switch {
 		case ch.next.Status != models.RegGoing || ch.next.AttendanceMode != ch.old.AttendanceMode:
 			interim.Status = models.RegDeclined
-			released = true
+			changed = true
 		default:
 			if ch.next.GuestCount < interim.GuestCount {
 				interim.GuestCount = ch.next.GuestCount
-				released = true
+				changed = true
 			}
 			if effectiveChildcare(ev, ch.next) < effectiveChildcare(ev, interim) {
 				interim.ChildcareCount, interim.ChildcareRequested = ch.next.ChildcareCount, ch.next.ChildcareRequested
-				released = true
+				changed = true
 			}
 		}
+		if !changed {
+			continue // registerLocked writes the final row below
+		}
+		released = true
 		if err := saveRegistration(tx, &interim); err != nil {
 			return nil, err
 		}
@@ -857,7 +894,7 @@ func registrationError(c *gin.Context, err error) {
 			body["personId"] = own.personID
 		}
 		c.JSON(http.StatusConflict, body)
-	case errors.Is(err, errRegNotFound), errors.Is(err, gorm.ErrRecordNotFound):
+	case errors.Is(err, errRegNotFound):
 		jsonError(c, 404, "household person not found")
 	case errors.Is(err, errOccurrenceNotFound):
 		jsonError(c, 404, "that date is not on this event")
@@ -872,6 +909,7 @@ func registrationError(c *gin.Context, err error) {
 	case errors.Is(err, errRemovedBlocked):
 		jsonError(c, 409, errRemovedBlocked.Error())
 	default:
+		log.Printf("registration: %v", err)
 		jsonError(c, 500, "could not save registration")
 	}
 }
@@ -913,24 +951,12 @@ func (a *App) apiRegister(c *gin.Context) {
 		jsonError(c, 400, "holder fields need status")
 		return
 	}
-	care := childcareRequest{ChildcareCount: body.ChildcareCount, ChildcareAgesNote: body.ChildcareAgesNote}
-	if !care.validate(c, ev) {
-		return
-	}
 	mode := ""
 	if body.AttendanceMode != nil {
 		mode = *body.AttendanceMode
 	}
 	if !validMode(mode) {
 		jsonError(c, 400, "attendanceMode must be in_person or remote")
-		return
-	}
-	guests := 0
-	if body.GuestCount != nil {
-		guests = *body.GuestCount
-	}
-	if guests < 0 || guests > ev.GuestsAllowed {
-		jsonErrorCode(c, 400, "too_many_guests", "too many guests")
 		return
 	}
 	seen := map[uint]bool{}
@@ -952,13 +978,32 @@ func (a *App) apiRegister(c *gin.Context) {
 			return
 		}
 	}
+	// A viewer who cannot register for the event gets the answer a missing
+	// event gets, before any answer that depends on the event's settings or
+	// dates (no oracle for hidden events).
 	var o models.EventOccurrence
 	if a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, body.Date, models.OccurrenceScheduled).First(&o).Error != nil {
+		if !a.canRegisterAnyDate(a.DB, u, ev) {
+			jsonError(c, 404, "event not found")
+			return
+		}
 		jsonError(c, 404, "that date is not on this event")
 		return
 	}
 	if !a.canRegisterIn(a.DB, u, dateEvent(ev, &o)) {
 		jsonError(c, 404, "event not found")
+		return
+	}
+	care := childcareRequest{ChildcareCount: body.ChildcareCount, ChildcareAgesNote: body.ChildcareAgesNote}
+	if !care.validate(c, ev) {
+		return
+	}
+	guests := 0
+	if body.GuestCount != nil {
+		guests = *body.GuestCount
+	}
+	if guests < 0 || guests > ev.GuestsAllowed {
+		jsonErrorCode(c, 400, "too_many_guests", "too many guests")
 		return
 	}
 	// Discover responsible accounts before acquiring any household/date lock.
@@ -1021,8 +1066,17 @@ func (a *App) apiRegister(c *gin.Context) {
 		if err := tx.First(ev, ev.ID).Error; err != nil {
 			return err
 		}
+		// The holder, event and locked date are fixed from here, so the
+		// answer is the same wherever it is asked.
+		var registrableKnown, registrableOK bool
+		registrable := func() bool {
+			if !registrableKnown {
+				registrableOK, registrableKnown = a.canRegisterIn(tx, &holder, dateEvent(ev, locked)), true
+			}
+			return registrableOK
+		}
 		if len(body.People) > 0 {
-			if !a.canRegisterIn(tx, &holder, dateEvent(ev, locked)) {
+			if !registrable() {
 				return errOccurrenceNotFound
 			}
 			today = a.householdClock(now)
@@ -1066,7 +1120,7 @@ func (a *App) apiRegister(c *gin.Context) {
 			}
 			hasInvitation = live
 		}
-		if !hasInvitation && !a.canRegisterIn(tx, &holder, dateEvent(ev, locked)) {
+		if !hasInvitation && !registrable() {
 			return errOccurrenceNotFound
 		}
 		changes := []registrationChange{}
@@ -1171,6 +1225,27 @@ func (a *App) apiRegister(c *gin.Context) {
 	}
 	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, response)
+}
+
+// canRegisterAnyDate says whether u could register for the event on the
+// series' own visibility or on any scheduled date's override. Callers use it
+// to tell "no such date on an event you can see" from "no such event".
+func (a *App) canRegisterAnyDate(tx *gorm.DB, u *models.User, ev *models.Event) bool {
+	if a.canRegisterIn(tx, u, ev) {
+		return true
+	}
+	var overrides []string
+	if tx.Model(&models.EventOccurrence{}).
+		Where("event_id = ? AND status = ? AND visibility_override IS NOT NULL", ev.ID, models.OccurrenceScheduled).
+		Distinct().Pluck("visibility_override", &overrides).Error != nil {
+		return false
+	}
+	for i := range overrides {
+		if a.canRegisterIn(tx, u, dateEvent(ev, &models.EventOccurrence{VisibilityOverride: &overrides[i]})) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) canRegisterIn(tx *gorm.DB, u *models.User, ev *models.Event) bool {
@@ -1487,18 +1562,8 @@ func (a *App) apiAddRegistration(c *gin.Context) {
 		a.managerDateAddError(c, 400, "choose one registration target")
 		return
 	}
-	if body.ChildcareCount != nil {
-		if *body.ChildcareCount < 0 || *body.ChildcareCount > 20 {
-			a.managerDateAddError(c, 400, "childcareCount must be a whole number from 0 to 20")
-			return
-		}
-		if *body.ChildcareCount > 0 && !ev.ChildcareAvailable {
-			a.managerDateAddError(c, 400, errChildcareUnavailable.Error())
-			return
-		}
-	}
-	if body.ChildcareAgesNote != nil && utf8.RuneCountInString(strings.TrimSpace(*body.ChildcareAgesNote)) > 200 {
-		a.managerDateAddError(c, 400, "childcare age note must be 200 characters or fewer")
+	if msg := body.childcareRequest.problem(ev); msg != "" {
+		a.managerDateAddError(c, 400, msg)
 		return
 	}
 	addMode := ""
@@ -1781,7 +1846,7 @@ func (a *App) restoreRegistrations(tx *gorm.DB, userID uint, intendedStatus stri
 		if r.HouseholdPersonID != nil {
 			fits = facts.eligible(a, tx, r, &ev, access)
 		} else {
-			fits = a.canRegisterDateIn(tx, &holder, &ev, o.ID)
+			fits = a.canRegisterDate(tx, &holder, &ev, o)
 		}
 		mode := attendanceModeOf(r.AttendanceMode)
 		demand := effectiveChildcare(&ev, r)
@@ -1875,7 +1940,7 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		acct, found := householdAccountIn(tx, holderID)
 		links := guardianLinksForPeople(tx, []uint{personID})
 		f := a.factsForIn(tx, actor, ev)
-		problem := policy.CanManageHouseholdRegistration(asPerson(actor), asPerson(&holder), policy.CanManageEvent(asPerson(actor), f.view, f.rel), previouslyRegisteredPerson(tx, ev.ID, o.ID, personID, holderID), householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID), householdFacts(&person, links[personID], a.householdClock(now)), holder.Status == models.UserActive, a.canRegisterIn(tx, &holder, dateEvent(ev, &o)))
+		problem := policy.CanManageHouseholdRegistration(asPerson(actor), asPerson(&holder), policy.CanManageEvent(asPerson(actor), f.view, f.rel), previouslyRegisteredPerson(tx, ev.ID, o.ID, personID, holderID), householdRelOf(acct, found && acct.HouseholdID == person.HouseholdID), householdFacts(&person, links[personID], a.householdClock(now)), holder.Status == models.UserActive, a.canRegisterIn(tx, &holder, dateEvent(ev, locked)))
 		if problem != "" {
 			return householdRegistrationError{code: problem}
 		}
@@ -1918,8 +1983,11 @@ func (a *App) addHouseholdRegistration(c *gin.Context, ev *models.Event, date st
 		if err != nil {
 			return err
 		}
-		// Keep the existing user re-add arithmetic; replacement-delta cleanup is
-		// deferred. A household add is normally a removed or dropped row.
+		// An idempotent re-add of a row already going in this pool keeps its own
+		// seat, as addAccountRegistrationLocked does.
+		if old.Status == models.RegGoing && attendanceModeOf(old.AttendanceMode) == r.AttendanceMode {
+			used -= 1 + old.GuestCount
+		}
 		over := !events.Fits(capacityForMode(ev, locked, r.AttendanceMode), used, 1)
 		if over && !overCapacity {
 			return errEventFull

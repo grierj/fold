@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -66,30 +67,31 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 // Occurrence JSON
 // ---------------------------------------------------------------------------
 
-// occurrencesForEvents lists scheduled dates of these events and attaches
+// occurrencesForEventsErr lists scheduled dates of these events and attaches
 // attendee names only where policy allows. A caller who cannot see an
-// event's group gets "Hosted by <church>" and no group id or name.
-func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User) []occurrenceJSON {
-	out, _ := a.occurrencesForEventsPage(eventIDs, from, to, startAfter, me, 0)
-	return out
+// event's group gets "Hosted by <church>" and no group id or name. A failed
+// read is an error to answer with a 500, never an empty list.
+func (a *App) occurrencesForEventsErr(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User) ([]occurrenceJSON, error) {
+	out, _, err := a.occurrencesForEventsAfterErr(eventIDs, from, to, startAfter, me, 0, nil)
+	return out, err
 }
 
-// occurrencesForEventsPage applies a response cap after date visibility but
-// before attendee enrichment. A zero limit keeps the full list behavior.
-func (a *App) occurrencesForEventsPage(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User, limit int) ([]occurrenceJSON, bool) {
-	return a.occurrencesForEventsAfter(eventIDs, from, to, startAfter, me, limit, nil)
-}
-
-func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User, limit int, cursor *groupUpcomingCursor) ([]occurrenceJSON, bool) {
+// occurrencesForEventsAfterErr is occurrencesForEventsErr with a response cap
+// (applied after date visibility, before attendee enrichment; zero keeps the
+// full list) and a group-page cursor.
+func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User, limit int, cursor *groupUpcomingCursor) ([]occurrenceJSON, bool, error) {
 	out := []occurrenceJSON{}
 	if len(eventIDs) == 0 {
-		return out, false
+		return out, false, nil
 	}
 	// The one place event dates are listed: drop every event this viewer
 	// can't see, so no caller has to remember to (hardening review).
 	vs, err := a.dateCandidates(me, a.DB.Where("id IN ?", eventIDs))
-	if err != nil || len(vs.IDs) == 0 {
-		return out, false
+	if err != nil {
+		return out, false, err
+	}
+	if len(vs.IDs) == 0 {
+		return out, false, nil
 	}
 	evs, byID, groups, rels, hosted := vs.Events, vs.ByID, vs.Groups, vs.Rels, vs.Hosted
 	eventIDs = vs.IDs
@@ -100,7 +102,9 @@ func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startA
 		q = q.Where("starts_at >= ?", *startAfter)
 	}
 	var occs []models.EventOccurrence
-	q.Order("starts_at, id").Find(&occs)
+	if err := q.Order("starts_at, id").Find(&occs).Error; err != nil {
+		return out, false, err
+	}
 
 	truncated := false
 	kept := make([]models.EventOccurrence, 0, len(occs))
@@ -118,7 +122,7 @@ func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startA
 		kept = append(kept, o)
 	}
 	if len(kept) == 0 {
-		return out, false
+		return out, false, nil
 	}
 
 	ids := make([]uint, len(kept))
@@ -132,12 +136,14 @@ func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startA
 		N            int64
 	}
 	var counts []countRow
-	a.DB.Model(&models.Registration{}).Joins(listedRegistrations()).
+	if err := a.DB.Model(&models.Registration{}).Joins(listedRegistrations()).
 		Select("registrations.occurrence_id, registrations.status, count(*) as n").
 		Where("registrations.occurrence_id IN ? AND registrations.status NOT IN ?",
 			ids, []string{models.RegCancelled, models.RegRemoved}).
 		Group("registrations.occurrence_id, registrations.status").
-		Scan(&counts)
+		Scan(&counts).Error; err != nil {
+		return out, false, err
+	}
 	countOf := map[uint]map[string]int64{}
 	for _, r := range counts {
 		if countOf[r.OccurrenceID] == nil {
@@ -151,19 +157,25 @@ func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startA
 	mine := map[uint]models.Registration{}
 	if me != nil {
 		var rows []models.Registration
-		a.DB.Where("user_id = ? AND occurrence_id IN ? AND status <> ?", me.ID, ids, models.RegCancelled).Find(&rows)
+		if err := a.DB.Where("user_id = ? AND occurrence_id IN ? AND status <> ?", me.ID, ids, models.RegCancelled).Find(&rows).Error; err != nil {
+			return out, false, err
+		}
 		for _, r := range rows {
 			mine[r.OccurrenceID] = r
 		}
 	}
 	// Seats used per occurrence, in one query per pool (M1.5, M1.8
 	// slice 2). The counts above count rows; these count seats.
+	// A failed seat or childcare total degrades to zero rather than hiding
+	// the dates (TestOccurrenceCountErrorsKeepDates); it is logged.
 	usedMap, err := seatsUsedMap(a.DB, ids)
 	if err != nil {
+		log.Printf("list event dates: seats: %v", err)
 		usedMap = map[uint]int{}
 	}
 	remoteUsedMap, err := seatsUsedMapForMode(a.DB, ids, models.AttendanceRemote)
 	if err != nil {
+		log.Printf("list event dates: remote seats: %v", err)
 		remoteUsedMap = map[uint]int{}
 	}
 
@@ -196,6 +208,7 @@ func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startA
 	}
 	childcareUsed, err := childcareUsedMap(a.DB, childcareIDs)
 	if err != nil {
+		log.Printf("list event dates: childcare: %v", err)
 		childcareUsed = map[uint]int{}
 	}
 	// One set of household facts and one church-local clock per request.
@@ -211,7 +224,10 @@ func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startA
 	householdVideo := map[uint]bool{}
 	if me != nil {
 		if _, inHousehold := facts.accounts[me.ID]; inHousehold {
-			householdVideo, _ = householdGoingMap(a.DB, ids, me, true)
+			householdVideo, err = householdGoingMap(a.DB, ids, me, true)
+			if err != nil {
+				return out, false, err
+			}
 		}
 	}
 
@@ -305,11 +321,18 @@ func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startA
 			inst.SeriesLocation = ""
 			inst.SeriesDurationMinutes = 0
 			inst.SeriesVisibility = ""
+			// Like the exact-date page: a hidden parent contributes no
+			// description or childcare details (PLAN 8.2). The video link
+			// already follows the date page's reveal rule above.
+			inst.Description = ""
+			inst.ChildcareNotes = ""
+			inst.ChildcareAges = ""
+			inst.ChildcareCapacity = nil
 		}
 		out = append(out, inst)
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].StartsAt.Before(out[j].StartsAt) })
-	return out, truncated
+	return out, truncated, nil
 }
 
 // occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.
@@ -496,7 +519,11 @@ type eventBody struct {
 	VideoReveal   *string `json:"videoReveal"`
 }
 
-func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creating bool) (events.Spec, bool) {
+// specFrom builds the series rule from the body over base (nil on create),
+// checks it against the window Ensure will really generate, and returns
+// those dates. A rule that passes here cannot fail later as a 500 or leave
+// the daily extender stuck.
+func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creating bool) (events.Spec, []events.When, bool) {
 	spec := events.Spec{TZID: a.churchTimezone()}
 	if base != nil {
 		spec.StartsLocal = base.StartsLocal
@@ -524,17 +551,39 @@ func (a *App) specFrom(c *gin.Context, body eventBody, base *models.Event, creat
 	}
 	if creating && (body.StartsLocal == nil || body.DurationMinutes == nil) {
 		jsonError(c, http.StatusBadRequest, "startsLocal and durationMinutes are required")
-		return spec, false
+		return spec, nil, false
 	}
 	if len(spec.RRule) > maxRecurrenceLen {
 		jsonError(c, http.StatusBadRequest, "recurrence rule is too long")
-		return spec, false
+		return spec, nil, false
 	}
-	if _, err := events.Expand(spec, time.Now().AddDate(0, 1, 0)); err != nil {
-		jsonError(c, http.StatusBadRequest, err.Error())
-		return spec, false
+	// Check against the window Ensure and Extend will really generate, so a
+	// rule that passes here cannot fail later as a 500 or a stuck extender.
+	now := time.Now().UTC()
+	window := now.AddDate(0, 1, 0)
+	if start, _, err := events.ParseWall(spec.StartsLocal, spec.TZID); err == nil {
+		window = events.WindowEnd(start, now)
 	}
-	return spec, true
+	whens, err := events.Expand(spec, window)
+	if err != nil {
+		specError(c, err)
+		return spec, nil, false
+	}
+	return spec, whens, true
+}
+
+// specError answers a rejected series rule. A rule that makes too many dates
+// has its own code so the page can say what to change.
+func specError(c *gin.Context, err error) {
+	if errors.Is(err, events.ErrTooManyDates) {
+		jsonErrorCode(c, http.StatusBadRequest, "recurrence_too_many", err.Error())
+		return
+	}
+	if errors.Is(err, events.ErrTooFrequent) {
+		jsonErrorCode(c, http.StatusBadRequest, "recurrence_too_frequent", err.Error())
+		return
+	}
+	jsonError(c, http.StatusBadRequest, err.Error())
 }
 
 func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEdits, vid videoEdits) {
@@ -660,7 +709,11 @@ func (a *App) apiListEvents(c *gin.Context) {
 	}
 	var eventIDs []uint
 	a.DB.Model(&models.Event{}).Where("group_id = ?", g.ID).Pluck("id", &eventIDs)
-	listed, hasMore := a.occurrencesForEventsAfter(eventIDs, from, to, nil, apiUser(c), limit, cursor)
+	listed, hasMore, err := a.occurrencesForEventsAfterErr(eventIDs, from, to, nil, apiUser(c), limit, cursor)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load events")
+		return
+	}
 	c.JSON(http.StatusOK, groupEventsJSON{
 		Events: listed, Truncated: hasMore, HasMore: hasMore,
 		NextCursor: nextGroupUpcomingCursor(g.ID, listed, hasMore),
@@ -687,7 +740,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		return
 	}
 
-	spec, ok := a.specFrom(c, body, nil, true)
+	spec, _, ok := a.specFrom(c, body, nil, true)
 	if !ok {
 		return
 	}
@@ -723,6 +776,10 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&ev).Error; err != nil {
+			return err
+		}
+		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.EventCreated, TargetType: "event", TargetID: ev.ID,
+			Meta: map[string]any{"groupId": g.ID, "churchWide": false, "visibility": ev.Visibility}, IP: c.ClientIP()}); err != nil {
 			return err
 		}
 		if ev.Visibility != g.Visibility {
@@ -771,6 +828,11 @@ func (a *App) loadManagedEvent(c *gin.Context) (*models.Event, bool) {
 	return ev, true
 }
 
+// errAnswered means the handler already wrote the response (a validation
+// failure inside a transaction); the transaction rolls back and nothing more
+// is sent.
+var errAnswered = errors.New("response already sent")
+
 func (a *App) apiUpdateEvent(c *gin.Context) {
 	ev, ok := a.loadManagedEvent(c)
 	if !ok {
@@ -781,48 +843,46 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid body")
 		return
 	}
-	spec, ok := a.specFrom(c, body, ev, false)
-	if !ok {
-		return
-	}
-	title, description, location := ev.Title, ev.Description, ev.Location
-	if body.Title != nil {
-		title = strings.TrimSpace(*body.Title)
-	}
-	if body.Description != nil {
-		description = strings.TrimSpace(*body.Description)
-	}
-	if body.Location != nil {
-		location = strings.TrimSpace(*body.Location)
-	}
-	if !textOK(c, title, description, location) {
-		return
-	}
-	now := time.Now().UTC()
-	start, _, err := events.ParseWall(spec.StartsLocal, spec.TZID)
-	if err != nil {
-		jsonError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	whens, err := events.Expand(spec, events.WindowEnd(start, now))
-	if err != nil {
-		jsonError(c, http.StatusBadRequest, err.Error())
-		return
-	}
 	ed, ok := parseCapacityEdits(c, body)
 	if !ok {
 		return
 	}
-	vid, ok := parseVideoEdits(c, body, ev)
-	if !ok {
-		return
-	}
 	me := apiUser(c)
+	now := time.Now().UTC()
 	var emailed []uint
-	err = a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
-		var locked models.Event
+	var locked models.Event
+	// Everything that depends on the stored row is read from the locked row
+	// inside the transaction, so a concurrent edit is never overwritten with
+	// values built from a stale copy. Validation failures answer the request
+	// themselves and return errAnswered to roll back (nothing is written yet).
+	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, ev.ID).Error; err != nil {
 			return err
+		}
+		if f := a.factsForIn(tx, me, &locked); !policy.CanManageEvent(asPerson(me), f.view, f.rel) {
+			jsonError(c, http.StatusForbidden, "you can't change this event")
+			return errAnswered
+		}
+		spec, whens, ok := a.specFrom(c, body, &locked, false)
+		if !ok {
+			return errAnswered
+		}
+		title, description, location := locked.Title, locked.Description, locked.Location
+		if body.Title != nil {
+			title = strings.TrimSpace(*body.Title)
+		}
+		if body.Description != nil {
+			description = strings.TrimSpace(*body.Description)
+		}
+		if body.Location != nil {
+			location = strings.TrimSpace(*body.Location)
+		}
+		if !textOK(c, title, description, location) {
+			return errAnswered
+		}
+		vid, ok := parseVideoEdits(c, body, &locked)
+		if !ok {
+			return errAnswered
 		}
 		var occs []models.EventOccurrence
 		if err := tx.Where("event_id = ?", ev.ID).Find(&occs).Error; err != nil {
@@ -833,6 +893,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			existing[i] = events.Existing{
 				ID: o.ID, OriginalDate: o.OriginalDate, StartsAt: o.StartsAt, EndsAt: o.EndsAt,
 				TimeFrozen: o.TimeFrozen(), Keep: o.Customized(),
+				SeriesCancelled: o.SeriesCancelled(),
 			}
 		}
 		actions := events.ApplySeries(existing, whens, now)
@@ -843,8 +904,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if err := tx.Save(&locked).Error; err != nil {
 			return err
 		}
-		*ev = locked
-		var cancelled, moved []uint
+		var cancelled, moved, restored []uint
 		for _, act := range actions {
 			switch act.Kind {
 			case "move":
@@ -855,10 +915,22 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				moved = append(moved, act.ID)
 			case "cancel":
 				if err := tx.Model(&models.EventOccurrence{}).Where("id = ?", act.ID).
-					Update("status", models.OccurrenceCancelled).Error; err != nil {
+					Updates(map[string]any{"status": models.OccurrenceCancelled, "cancel_source": models.CancelSourceSeries}).Error; err != nil {
 					return err
 				}
 				cancelled = append(cancelled, act.ID)
+			case "restore":
+				// The rule includes this date again, so the cancellation the
+				// series made is undone. Registrations were never touched by the
+				// cancellation, so there is nothing to re-create.
+				set := map[string]any{"status": models.OccurrenceScheduled, "cancel_source": ""}
+				if act.Retime {
+					set["starts_at"], set["ends_at"] = act.When.StartsAt, act.When.EndsAt
+				}
+				if err := tx.Model(&models.EventOccurrence{}).Where("id = ?", act.ID).Updates(set).Error; err != nil {
+					return err
+				}
+				restored = append(restored, act.ID)
 			case "add":
 				row := models.EventOccurrence{
 					EventID: ev.ID, OriginalDate: act.When.OriginalDate,
@@ -875,6 +947,11 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if err != nil {
 			return err
 		}
+		ids, err = restoreSeriesDates(tx, me.ID, c.ClientIP(), &locked, restored)
+		emailed = append(emailed, ids...)
+		if err != nil {
+			return err
+		}
 		// event.changed: one item per occurrence per going or waitlisted
 		// person. A date that both moved and took the series place change
 		// gets the combined "time and place" variant, not two items. The
@@ -882,6 +959,10 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		// semantics), so the time fan-out mails exactly the dates that moved.
 		placeChanged := body.Location != nil && strings.TrimSpace(*body.Location) != oldPlace
 		movedSet := map[uint]bool{}
+		// A restored date already got its new time and place in the "back on" notice.
+		for _, occID := range restored {
+			movedSet[occID] = true
+		}
 		movedByID := map[uint]*models.EventOccurrence{}
 		if len(moved) > 0 {
 			var movedRows []models.EventOccurrence
@@ -906,12 +987,25 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				return err
 			}
 		}
+		// Future scheduled dates are loaded once, after the series edit has moved or
+		// cancelled some, for both fan-outs below.
+		var futureOccs []models.EventOccurrence
+		futureLoaded := false
+		future := func() ([]models.EventOccurrence, error) {
+			if !futureLoaded {
+				if err := tx.Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID,
+					models.OccurrenceScheduled, now).Find(&futureOccs).Error; err != nil {
+					return nil, err
+				}
+				futureLoaded = true
+			}
+			return futureOccs, nil
+		}
 		// event.changed, place variant: the event place changed, so every
 		// future scheduled date without its own place changed place with it.
 		if placeChanged {
-			var occs []models.EventOccurrence
-			if err := tx.Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID,
-				models.OccurrenceScheduled, now).Find(&occs).Error; err != nil {
+			occs, err := future()
+			if err != nil {
 				return err
 			}
 			for i := range occs {
@@ -943,9 +1037,8 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			if ed.remoteCapSet {
 				newRemoteCap = ed.remoteCap
 			}
-			var occs []models.EventOccurrence
-			if err := tx.Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID,
-				models.OccurrenceScheduled, now).Find(&occs).Error; err != nil {
+			occs, err := future()
+			if err != nil {
 				return err
 			}
 			for i := range occs {
@@ -972,12 +1065,19 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not update event")
+		switch {
+		case errors.Is(err, errAnswered):
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			jsonError(c, http.StatusNotFound, "event not found")
+		default:
+			jsonError(c, http.StatusInternalServerError, "could not update event")
+		}
 		return
 	}
 	a.deliverNotificationEmails(emailed)
+	ev = &locked
 	j := toEventJSON(ev)
-	revealVideoToManager(&j, ev) // loadManagedEvent: only managers reach here
+	revealVideoToManager(&j, ev) // the locked row was re-checked: only managers reach here
 	c.JSON(http.StatusOK, gin.H{"event": j})
 }
 
@@ -987,6 +1087,14 @@ func (a *App) apiDeleteEvent(c *gin.Context) {
 		return
 	}
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
+		meta := map[string]any{"title": ev.Title, "churchWide": ev.GroupID == nil}
+		if ev.GroupID != nil {
+			meta["groupId"] = *ev.GroupID
+		}
+		if err := audit.Write(tx, audit.Entry{Actor: &apiUser(c).ID, Action: audit.EventDeleted, TargetType: "event", TargetID: ev.ID,
+			Meta: meta, IP: c.ClientIP()}); err != nil {
+			return err
+		}
 		return deleteEventRows(tx, []uint{ev.ID})
 	})
 	if err != nil {
@@ -996,7 +1104,7 @@ func (a *App) apiDeleteEvent(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{})
 }
 
-// deleteEventRows removes an event's registrations, occurrences, and hosts,
+// deleteEventRows removes an event's registrations, guest signups, occurrences, and hosts,
 // then soft-deletes the event. tx is the caller's transaction.
 func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 	if len(eventIDs) == 0 {
@@ -1008,6 +1116,10 @@ func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 	}
 	if len(occIDs) > 0 {
 		if err := tx.Where("occurrence_id IN ?", occIDs).Delete(&models.Registration{}).Error; err != nil {
+			return err
+		}
+		// Unverified guest signups point at occurrences with no cascade.
+		if err := tx.Where("occurrence_id IN ?", occIDs).Delete(&models.GuestSignup{}).Error; err != nil {
 			return err
 		}
 	}
@@ -1044,9 +1156,17 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 	var emailed []uint
 	err := a.contactMutation(contactChange{EventID: ev.ID}, func(tx *gorm.DB) error {
 		res := tx.Model(&models.EventOccurrence{}).Where("id = ? AND status <> ?", occ.ID, models.OccurrenceCancelled).
-			Update("status", models.OccurrenceCancelled)
+			Updates(map[string]any{"status": models.OccurrenceCancelled, "cancel_source": models.CancelSourceManual})
 		if res.Error != nil || res.RowsAffected == 0 {
-			return res.Error // already cancelled: nobody is told twice
+			if res.Error == nil {
+				// Already cancelled: nobody is told twice. A person asking for
+				// this date to be cancelled makes it theirs, so a later series
+				// edit will not bring it back.
+				res.Error = tx.Model(&models.EventOccurrence{}).
+					Where("id = ? AND status = ? AND cancel_source = ?", occ.ID, models.OccurrenceCancelled, models.CancelSourceSeries).
+					Update("cancel_source", models.CancelSourceManual).Error
+			}
+			return res.Error
 		}
 		ids, err := notifyOccurrencesCancelled(tx, apiUser(c).ID, []uint{occ.ID})
 		emailed = append(emailed, ids...)
@@ -1312,4 +1432,23 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 	}
 	a.deliverNotificationEmails(emailed)
 	c.JSON(http.StatusOK, gin.H{"occurrence": inst})
+}
+
+// restoreSeriesDates records dates a series edit just brought back and tells
+// the people signed up for them. It runs in the series edit's transaction,
+// after the rows are scheduled again, so the audit row, the notices and the
+// change commit together. Nothing here touches registrations.
+func restoreSeriesDates(tx *gorm.DB, actor uint, ip string, ev *models.Event, occIDs []uint) ([]uint, error) {
+	if len(occIDs) == 0 {
+		return nil, nil
+	}
+	var dates []string
+	if err := tx.Model(&models.EventOccurrence{}).Where("id IN ?", occIDs).Order("original_date").Pluck("original_date", &dates).Error; err != nil {
+		return nil, err
+	}
+	if err := audit.Write(tx, audit.Entry{Actor: &actor, Action: audit.EventDatesRestored, TargetType: "event", TargetID: ev.ID,
+		Meta: map[string]any{"dates": dates, "occurrenceIds": occIDs}, IP: ip}); err != nil {
+		return nil, err
+	}
+	return notifyOccurrencesRestored(tx, actor, occIDs)
 }

@@ -1693,3 +1693,99 @@ func TestChangeRoleRechecksTargetAfterContactGate(t *testing.T) {
 		})
 	}
 }
+
+// Guest signups point at occurrences with no cascade, so deleting an event or
+// a group must clear them first (otherwise the foreign key makes it a 500).
+func TestDeleteGroupAndEventWithGuestSignups(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	adminC := loginAPI(t, app, "admin", "password1234")
+	signup := func(occ models.EventOccurrence, hash string) {
+		t.Helper()
+		if err := app.DB.Create(&models.GuestSignup{Name: "Guest", Email: hash + "@example.com", OccurrenceID: occ.ID,
+			TokenHash: hash, ExpiresAt: time.Now().UTC().Add(time.Hour)}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := time.Now().UTC().Add(48 * time.Hour)
+
+	g := activeGroup(t, app, admin, "Guest group", models.VisibilityPublic, "")
+	_, groupOcc := seedEvent(t, app, &g, admin.ID, start)
+	signup(groupOcc, "group-guest")
+	apiDo(t, adminC, "DELETE", "/api/v1/admin/groups/"+itoa(g.ID), nil, http.StatusOK)
+	if n := contactCount(t, app, &models.GuestSignup{}, "occurrence_id = ?", groupOcc.ID); n != 0 {
+		t.Fatalf("guest signups left after group delete: %d", n)
+	}
+
+	g2 := activeGroup(t, app, admin, "Event guest group", models.VisibilityPublic, "")
+	ev, evOcc := seedEvent(t, app, &g2, admin.ID, start)
+	signup(evOcc, "event-guest")
+	apiDo(t, adminC, "DELETE", "/api/v1/events/"+itoa(ev.ID), nil, http.StatusOK)
+	if n := contactCount(t, app, &models.GuestSignup{}, "occurrence_id = ?", evOcc.ID); n != 0 {
+		t.Fatalf("guest signups left after event delete: %d", n)
+	}
+
+	// The group deletion is audited with the group's name, once.
+	rows, _ := auditRows(t, app, audit.GroupDeleted)
+	if len(rows) != 1 || rows[0].TargetID != g.ID || rows[0].TargetType != "group" ||
+		rows[0].ActorID == nil || *rows[0].ActorID != admin.ID || !strings.Contains(rows[0].MetaJSON, "Guest group") {
+		t.Fatalf("group delete audit: %+v", rows)
+	}
+}
+
+// Approving without tags leaves the group's tags alone; sent tags replace them
+// under the same length rule a leader's edit follows.
+func TestApproveGroupTagsOnlyWhenSent(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	adminC := loginAPI(t, app, "admin", "password1234")
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	mk := func(name string) models.Group {
+		g := models.Group{Name: name, LeaderID: leader.ID, Status: models.GroupPending, Visibility: models.VisibilityPublic, Tags: "men,bible"}
+		if err := app.DB.Create(&g).Error; err != nil {
+			t.Fatal(err)
+		}
+		return g
+	}
+	keep, replace, long := mk("Keep tags"), mk("Replace tags"), mk("Long tags")
+	apiDo(t, adminC, "POST", "/api/v1/admin/groups/"+itoa(keep.ID)+"/approve", map[string]any{}, http.StatusOK)
+	apiDo(t, adminC, "POST", "/api/v1/admin/groups/"+itoa(replace.ID)+"/approve", map[string]any{"tags": []string{" young adults ", "", "food"}}, http.StatusOK)
+	apiDo(t, adminC, "POST", "/api/v1/admin/groups/"+itoa(long.ID)+"/approve", map[string]any{"tags": []string{strings.Repeat("x", maxTagsLen+1)}}, http.StatusBadRequest)
+	for id, want := range map[uint][2]string{keep.ID: {models.GroupActive, "men,bible"}, replace.ID: {models.GroupActive, "young adults,food"}, long.ID: {models.GroupPending, "men,bible"}} {
+		var got models.Group
+		if err := app.DB.First(&got, id).Error; err != nil {
+			t.Fatal(err)
+		}
+		if got.Status != want[0] || got.Tags != want[1] {
+			t.Fatalf("group %d: status %q tags %q, want %v", id, got.Status, got.Tags, want)
+		}
+	}
+}
+
+// Leading a group an admin has not approved, or has archived, grants no
+// power to add people (Grier, Oct 29, 2026); admins still may.
+func TestLeaderCannotAddToUnapprovedGroup(t *testing.T) {
+	for _, status := range []string{models.GroupPending, models.GroupArchived} {
+		t.Run(status, func(t *testing.T) {
+			app := testApp(t)
+			newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			lead := newTestUser(t, app, "lead", "password1234", models.RoleMember)
+			newTestUser(t, app, "sam", "password1234", models.RoleMember)
+			g := newTestGroup(t, app, lead, "Unapproved", status)
+			leader := loginAPI(t, app, "lead", "password1234")
+			w := leader.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/members", map[string]any{"email": "sam@example.com"}, true)
+			if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"group_add_not_approved"`) {
+				t.Fatalf("leader add to %s group: %d %s", status, w.Code, w.Body.String())
+			}
+			var n int64
+			app.DB.Model(&models.Membership{}).Where("group_id = ? AND status = ?", g.ID, "active").Count(&n)
+			if n != 1 {
+				t.Fatalf("active memberships = %d, want only the leader", n)
+			}
+			admin := loginAPI(t, app, "admin", "password1234")
+			if w := admin.do("POST", "/api/v1/groups/"+itoa(g.ID)+"/members", map[string]any{"email": "sam@example.com"}, true); w.Code != http.StatusOK {
+				t.Fatalf("admin add to %s group: %d %s", status, w.Code, w.Body.String())
+			}
+		})
+	}
+}

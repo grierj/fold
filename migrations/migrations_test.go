@@ -29,6 +29,7 @@ func openSQL(t *testing.T, name string) *sql.DB {
 // TestContactRequestsConstraints checks 00030 on real Postgres, including the
 // retained safeguarding identity and exact successful-grant provenance.
 func TestContactRequestsConstraints(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string, args ...any) {
 		t.Helper()
@@ -174,6 +175,7 @@ func TestContactRequestsConstraints(t *testing.T) {
 }
 
 func TestOccurrenceAccessDepartureOriginMigration(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string, args ...any) {
 		t.Helper()
@@ -297,6 +299,7 @@ func TestOccurrenceAccessDepartureOriginMigration(t *testing.T) {
 }
 
 func TestDepartureOccurrenceAccessExpiryMigration(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	ctx := context.Background()
 	p, err := migrations.NewProvider(db)
@@ -340,6 +343,7 @@ func TestDepartureOccurrenceAccessExpiryMigration(t *testing.T) {
 }
 
 func TestDepartureAccessSupersessionMigration(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	ctx := context.Background()
 	p, err := migrations.NewProvider(db)
@@ -446,6 +450,7 @@ func assertMembershipTenurePreserved(t *testing.T, db *sql.DB, p *goose.Provider
 }
 
 func TestMembershipTenureMigration(t *testing.T) {
+	t.Parallel()
 	db, p, joined := seedMembershipTenureMigration(t, "active")
 	ctx := context.Background()
 
@@ -470,6 +475,7 @@ func TestMembershipTenureMigration(t *testing.T) {
 }
 
 func TestMembershipTenureMigrationCleanRollback(t *testing.T) {
+	t.Parallel()
 	db, p, joined := seedMembershipTenureMigration(t, "active")
 	ctx := context.Background()
 	if _, err := p.DownTo(ctx, 35); err != nil {
@@ -497,6 +503,7 @@ func TestMembershipTenureMigrationCleanRollback(t *testing.T) {
 }
 
 func TestMembershipTenureMigrationWaitsForReactivation(t *testing.T) {
+	t.Parallel()
 	db, p, joined := seedMembershipTenureMigration(t, "removed")
 	ctx := context.Background()
 	writer, err := db.BeginTx(ctx, nil)
@@ -552,6 +559,7 @@ func TestMembershipTenureMigrationWaitsForReactivation(t *testing.T) {
 }
 
 func TestSeriesUndoReceiptMigrationAndRollback(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string, args ...any) {
 		t.Helper()
@@ -586,7 +594,52 @@ func TestSeriesUndoReceiptMigrationAndRollback(t *testing.T) {
 	}
 }
 
+// TestOccurrenceCancelSourceMigration checks 00043: the column defaults to
+// empty (existing cancelled dates stay manual-like), only the three values are
+// accepted, and the rollback removes it.
+func TestOccurrenceCancelSourceMigration(t *testing.T) {
+	t.Parallel()
+	db := openSQL(t, testdb.Fresh(t, true))
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	exec(`INSERT INTO users(id,email) VALUES(92001,'cancel-source@example.com')`)
+	exec(`INSERT INTO events(id,title,description,visibility,starts_local,duration_minutes,tzid,rrule,location,created_by) VALUES(92002,'Source','','public','2026-10-01T10:00',60,'UTC','','',92001)`)
+	exec(`INSERT INTO event_occurrences(id,event_id,original_date,starts_at,ends_at,status) VALUES(92003,92002,'2026-12-01','2026-12-01 10:00Z','2026-12-01 11:00Z','cancelled')`)
+	var source string
+	if err := db.QueryRow(`SELECT cancel_source FROM event_occurrences WHERE id = 92003`).Scan(&source); err != nil || source != "" {
+		t.Fatalf("default cancel_source = %q, %v", source, err)
+	}
+	for _, v := range []string{"series", "manual", ""} {
+		exec(`UPDATE event_occurrences SET cancel_source = $1 WHERE id = 92003`, v)
+	}
+	if _, err := db.Exec(`UPDATE event_occurrences SET cancel_source = 'bogus' WHERE id = 92003`); err == nil {
+		t.Fatal("unknown cancel_source accepted")
+	}
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.DownTo(context.Background(), 42); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM information_schema.columns WHERE table_name = 'event_occurrences' AND column_name = 'cancel_source'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("cancel_source remains after down: %d %v", n, err)
+	}
+	if _, err := p.Up(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT cancel_source FROM event_occurrences WHERE id = 92003`).Scan(&source); err != nil || source != "" {
+		t.Fatalf("cancel_source after re-up = %q, %v", source, err)
+	}
+}
+
 func TestMigrateEmptyDatabase(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	p, err := migrations.NewProvider(db)
 	if err != nil {
@@ -607,6 +660,7 @@ func TestMigrateEmptyDatabase(t *testing.T) {
 // TestNoDrift is the C1 drift check: AutoMigrate run for real against a
 // freshly migrated database must not want to CREATE or ALTER anything.
 func TestNoDrift(t *testing.T) {
+	t.Parallel()
 	db, err := testdb.Open(testdb.Fresh(t, true))
 	if err != nil {
 		t.Fatal(err)
@@ -636,6 +690,7 @@ func (driftProbe) TableName() string { return "settings" }
 // TestDriftCheckCatchesUnmigratedField proves the check fails when a model
 // gains a field without a migration.
 func TestDriftCheckCatchesUnmigratedField(t *testing.T) {
+	t.Parallel()
 	db, err := testdb.Open(testdb.Fresh(t, true))
 	if err != nil {
 		t.Fatal(err)
@@ -657,6 +712,7 @@ func TestDriftCheckCatchesUnmigratedField(t *testing.T) {
 // TestMigrationsTakeAdvisoryLock holds the migration lock from another
 // session and checks that a second migrator waits instead of migrating.
 func TestMigrationsTakeAdvisoryLock(t *testing.T) {
+	t.Parallel()
 	name := testdb.Fresh(t, false)
 	holder := openSQL(t, name)
 	ctx := context.Background()
@@ -697,6 +753,7 @@ func TestMigrationsTakeAdvisoryLock(t *testing.T) {
 // TestSimplicityMigrations checks 00008 (DEC-47) and 00009 (DEC-48) on
 // existing rows, and that 00009 goes back down cleanly.
 func TestSimplicityMigrations(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	ctx := context.Background()
 	p, err := migrations.NewProvider(db)
@@ -771,6 +828,7 @@ func TestSimplicityMigrations(t *testing.T) {
 // 00010 carries open admin tasks (pending groups, deletion requests) over
 // as stored notifications for active admins only.
 func TestNotificationsBackfill(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	ctx := context.Background()
 	p, err := migrations.NewProvider(db)
@@ -822,6 +880,7 @@ func TestNotificationsBackfill(t *testing.T) {
 // the down migration failed: it re-added the old status CHECK while
 // waitlisted/removed rows still existed.
 func TestMigration15DownMapsStatuses(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	ctx := context.Background()
 	p, err := migrations.NewProvider(db)
@@ -888,6 +947,7 @@ func TestMigration15DownMapsStatuses(t *testing.T) {
 // per account), household people, and guardian links naming exactly one
 // of a teen account or a household person. Down drops all four tables.
 func TestHouseholdMigration22(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	ctx := context.Background()
 	p, err := migrations.NewProvider(db)
@@ -941,6 +1001,7 @@ func TestHouseholdMigration22(t *testing.T) {
 
 // #78: the guest manage-link lookup uses a partial unique index, not a scan.
 func TestManageTokenIndex(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	p, err := migrations.NewProvider(db)
 	if err != nil {
@@ -959,6 +1020,7 @@ func TestManageTokenIndex(t *testing.T) {
 }
 
 func TestChildcareMigration23(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	p, err := migrations.NewProvider(db)
 	if err != nil {
@@ -1005,6 +1067,7 @@ func TestChildcareMigration23(t *testing.T) {
 }
 
 func TestHouseholdRegistrationMigration24(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	ctx := context.Background()
 	p, err := migrations.NewProvider(db)
@@ -1081,6 +1144,7 @@ func TestHouseholdRegistrationMigration24(t *testing.T) {
 }
 
 func TestHouseholdConversionMigration25(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	ctx := context.Background()
 	p, err := migrations.NewProvider(db)
@@ -1131,6 +1195,7 @@ func TestHouseholdConversionMigration25(t *testing.T) {
 }
 
 func TestTeenConsentMigrationAppendOnlyAndRollback(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	p, err := migrations.NewProvider(db)
 	if err != nil {
@@ -1182,6 +1247,7 @@ func TestTeenConsentMigrationAppendOnlyAndRollback(t *testing.T) {
 
 // TestContactAddRequestsMigration preserves the exact s2 data through up/down/up.
 func TestContactAddRequestsMigration(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, false))
 	p, err := migrations.NewProvider(db)
 	if err != nil {
@@ -1237,6 +1303,7 @@ func TestContactAddRequestsMigration(t *testing.T) {
 }
 
 func TestContactAddRequestsConstraints(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, true))
 	exec := func(q string, args ...any) {
 		t.Helper()
@@ -1456,6 +1523,7 @@ func TestContactAddRequestsConstraints(t *testing.T) {
 // TestMembershipAndRegistrationLookupPlans keeps the group/user-leading
 // indexes useful for the live memberCount and promoteOnDisable query shapes.
 func TestMembershipAndRegistrationLookupPlans(t *testing.T) {
+	t.Parallel()
 	db := openSQL(t, testdb.Fresh(t, true))
 	for _, q := range []string{
 		`INSERT INTO users (id, email) SELECT n, 'lookup-' || n || '@example.com' FROM generate_series(1, 2000) n`,

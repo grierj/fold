@@ -173,7 +173,9 @@ func TestBatching(t *testing.T) {
 		t.Fatalf("batched: %+v", got)
 	}
 	// Once read, the next one starts a new row.
-	SetRead(db, uid, got[0].ID, true)
+	if _, err := SetRead(db, uid, got[0].ID, true); err != nil {
+		t.Fatal(err)
+	}
 	send("Kim")
 	if got = rows(t, db, uid); len(got) != 2 || got[1].Title != "Kim joined Youth" {
 		t.Fatalf("after read: %+v", got)
@@ -209,12 +211,12 @@ func TestStatesBadgeAndReadAll(t *testing.T) {
 	if unread, waiting, _ = Badge(db, uid); unread != 0 || waiting != 1 {
 		t.Fatalf("after read-all: %d %d", unread, waiting)
 	}
-	page, _ := Feed(db, uid, FilterAll, "", 20)
+	page, _, _ := Feed(db, uid, FilterAll, "", 20)
 	if len(page.Waiting) != 1 || len(page.Items) != 1 || page.WaitingTotal != 1 {
 		t.Fatalf("feed: %+v", page)
 	}
 	// The expired cancellation shows under Archived only.
-	arch, _ := Feed(db, uid, FilterArchived, "", 20)
+	arch, _, _ := Feed(db, uid, FilterArchived, "", 20)
 	if len(arch.Items) != 1 || arch.Items[0].Kind != OccurrenceCancelled {
 		t.Fatalf("archived: %+v", arch)
 	}
@@ -229,16 +231,21 @@ func TestStatesBadgeAndReadAll(t *testing.T) {
 	}
 	// Own rows only.
 	id := page.Items[0].ID
-	if SetArchived(db, other, id, true) || SetRead(db, other, id, false) {
+	if found, _ := SetArchived(db, other, id, true); found {
+		t.Fatal("another user changed my row")
+	}
+	if found, _ := SetRead(db, other, id, false); found {
 		t.Fatal("another user changed my row")
 	}
 	if _, ok := Get(db, other, id); ok {
 		t.Fatal("another user read my row")
 	}
-	if !SetArchived(db, uid, id, true) || !SetArchived(db, uid, id, false) {
-		t.Fatal("archive and undo")
+	for _, on := range []bool{true, false} {
+		if found, err := SetArchived(db, uid, id, on); !found || err != nil {
+			t.Fatal("archive and undo", err)
+		}
 	}
-	if _, ok := Feed(db, uid, "bogus", "", 20); ok {
+	if _, ok, _ := Feed(db, uid, "bogus", "", 20); ok {
 		t.Fatal("bogus filter accepted")
 	}
 }
@@ -254,8 +261,8 @@ func TestFeedCursor(t *testing.T) {
 	seen := map[uint]bool{}
 	cursor := ""
 	for pages := 0; pages < 5; pages++ {
-		p, ok := Feed(db, uid, FilterAll, cursor, 2)
-		if !ok {
+		p, ok, err := Feed(db, uid, FilterAll, cursor, 2)
+		if !ok || err != nil {
 			t.Fatal("cursor refused")
 		}
 		for _, n := range p.Items {
@@ -376,4 +383,60 @@ func TestContactKindsNavigationOnlySafeEmail(t *testing.T) {
 			t.Fatalf("sensitive email %s: %s %s", key, title, body)
 		}
 	}
+}
+
+// updated_at orders the feed and drives retention, so opening the bell,
+// reading, archiving or resolving must not move it.
+func TestStateChangesLeaveUpdatedAtAlone(t *testing.T) {
+	db := testdb.Shared(t)
+	uid, other := user(t, db, "stamp"), user(t, db, "stamp-other")
+	old := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
+	task, err := Send(db, Msg{Kind: GroupPending, To: []uint{uid}, SubjectID: 905, Link: "/admin", Vars: Vars{Group: "G"}})
+	if err != nil || len(task) != 1 {
+		t.Fatalf("send task: %v %v", task, err)
+	}
+	plain, err := Send(db, Msg{Kind: LeadershipChanged, To: []uint{uid}, SubjectID: 905, Link: "/groups/5"})
+	if err != nil || len(plain) != 1 {
+		t.Fatalf("send plain: %v %v", plain, err)
+	}
+	ids := []uint{task[0], plain[0]}
+	if err := db.Model(&models.Notification{}).Where("id IN ?", ids).UpdateColumn("updated_at", old).Error; err != nil {
+		t.Fatal(err)
+	}
+	unchanged := func(step string) {
+		t.Helper()
+		var got []models.Notification
+		if err := db.Where("id IN ?", ids).Find(&got).Error; err != nil || len(got) != 2 {
+			t.Fatalf("%s: load %v %v", step, got, err)
+		}
+		for _, n := range got {
+			if !n.UpdatedAt.Equal(old) {
+				t.Fatalf("%s moved updated_at of %d to %v", step, n.ID, n.UpdatedAt)
+			}
+		}
+	}
+	if err := Seen(db, uid, ids); err != nil {
+		t.Fatal(err)
+	}
+	unchanged("seen")
+	if found, err := SetRead(db, uid, plain[0], true); !found || err != nil {
+		t.Fatal("read", err)
+	}
+	unchanged("read")
+	if err := ReadAll(db, uid); err != nil {
+		t.Fatal(err)
+	}
+	unchanged("read-all")
+	if found, err := SetArchived(db, uid, plain[0], true); !found || err != nil {
+		t.Fatal("archive", err)
+	}
+	unchanged("archive")
+	if err := ArchiveRead(db, uid); err != nil {
+		t.Fatal(err)
+	}
+	unchanged("archive-read")
+	if n, err := Resolve(db, GroupPending, 905, &other, "approved"); err != nil || n != 1 {
+		t.Fatalf("resolve %d %v", n, err)
+	}
+	unchanged("resolve")
 }

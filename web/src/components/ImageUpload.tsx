@@ -43,7 +43,6 @@ export function ImageUpload({
     try {
       const resized = await prepareUpload(f, maxDim);
       const url = URL.createObjectURL(resized);
-      if (preview && preview.startsWith("blob:")) URL.revokeObjectURL(preview);
       setPreview(url);
       onFile(resized);
     } catch {
@@ -54,7 +53,6 @@ export function ImageUpload({
   }
 
   function clear() {
-    if (preview && preview.startsWith("blob:")) URL.revokeObjectURL(preview);
     setPreview(initialUrl ?? null);
     onFile(null);
   }

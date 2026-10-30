@@ -88,7 +88,7 @@ export function DateEditor({
     } catch (err) {
       const msg = errorText(err, "We couldn't update this date.");
       setError(msg);
-      if (isRemoteError(msg)) {
+      if (isRemoteError(err)) {
         setRemoteError(msg);
         focusRemoteCapacity(remotePrefix);
       }

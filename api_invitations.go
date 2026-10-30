@@ -82,6 +82,18 @@ func (a *App) toInvitationJSON(inv *models.Invitation) invitationJSON {
 	return out
 }
 
+// leadsApprovedGroup reports whether userID actively leads at least one
+// group an admin has approved (policy.LeadsApprovedGroup). Leading only a
+// pending or rejected group grants no power to invite people into Fold.
+func leadsApprovedGroup(db *gorm.DB, userID uint) (bool, error) {
+	var statuses []string
+	err := db.Model(&models.Membership{}).
+		Joins("JOIN groups ON groups.id = memberships.group_id AND groups.deleted_at IS NULL").
+		Where("memberships.user_id = ? AND memberships.role = ? AND memberships.status = 'active'", userID, models.MembershipLeader).
+		Pluck("groups.status", &statuses).Error
+	return policy.LeadsApprovedGroup(statuses), err
+}
+
 // apiCreateInvitation invites someone to Fold, optionally into a group.
 // Admins may invite anyone, into any group or none; leaders only into a
 // group they lead, or with no group (policy.CanInvite). A leader's 21st
@@ -129,15 +141,20 @@ func (a *App) apiCreateInvitation(c *gin.Context) {
 	}
 	leadsTarget := rel.Leader
 	leadsAnywhere := false
-	if !leadsTarget && !asPerson(me).Admin {
-		var n int64
-		a.DB.Model(&models.Membership{}).
-			Where("user_id = ? AND role = ? AND status = 'active'", me.ID, models.MembershipLeader).
-			Count(&n)
-		leadsAnywhere = n > 0
+	if !asPerson(me).Admin {
+		var err error
+		if leadsAnywhere, err = leadsApprovedGroup(a.DB, me.ID); err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not create invitation")
+			return
+		}
 	}
 	if !policy.CanInvite(asPerson(me), body.GroupID != nil, leadsTarget, leadsAnywhere) {
 		jsonError(c, http.StatusForbidden, "forbidden")
+		return
+	}
+	// An invitation into a group that isn't active could never be accepted.
+	if g != nil && !policy.CanInviteIntoGroup(g.Status) {
+		jsonError(c, http.StatusConflict, "this group isn't approved yet; you can invite people once an admin approves it")
 		return
 	}
 
@@ -297,8 +314,7 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "token, name, and password are required")
 		return
 	}
-	if len(body.Password) < minPasswordLength {
-		jsonError(c, http.StatusBadRequest, "password must be at least 10 characters")
+	if !checkNewPassword(c, body.Password) {
 		return
 	}
 	initial, err := liveInvitation(a.DB, body.Token)
@@ -373,11 +389,10 @@ func (a *App) apiAcceptInvitation(c *gin.Context) {
 		if group != nil {
 			leadsTarget = relIn(tx, inviter.ID, group.ID).Leader
 		} else {
-			var n int64
-			if err := tx.Model(&models.Membership{}).Where("user_id = ? AND role = ? AND status = 'active'", inviter.ID, models.MembershipLeader).Count(&n).Error; err != nil {
+			var err error
+			if leadsAnywhere, err = leadsApprovedGroup(tx, inviter.ID); err != nil {
 				return err
 			}
-			leadsAnywhere = n > 0
 		}
 		if !policy.CanInvite(asPerson(&inviter), group != nil, leadsTarget, leadsAnywhere) {
 			return errTokenInvalid

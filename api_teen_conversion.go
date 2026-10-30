@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"sort"
 	"time"
 
 	"fold/internal/accounts"
@@ -57,14 +56,7 @@ func lockConversionParticipants(tx *gorm.DB, inv *models.Invitation, person *mod
 		return nil, nil, err
 	}
 	ids = append(ids, extraIDs...)
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-	unique := ids[:0]
-	for _, id := range ids {
-		if id != 0 && (len(unique) == 0 || unique[len(unique)-1] != id) {
-			unique = append(unique, id)
-		}
-	}
-	ids = unique
+	ids = sortedUniqueIDs(ids)
 	var rows []models.User
 	if err := tx.Unscoped().Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).Where("id IN ?", ids).Order("id").Find(&rows).Error; err != nil {
 		return nil, nil, err

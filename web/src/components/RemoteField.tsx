@@ -1,3 +1,4 @@
+import { errorCode } from "../lib/errors";
 import { Checkbox, Field, Input } from "./ui/Field";
 
 // The one Remote attendance section for every event form (M1.8 slice 2,
@@ -35,7 +36,10 @@ export function focusRemoteCapacity(idPrefix: string) {
   setTimeout(() => document.getElementById(`remote-capacity-${idPrefix}`)?.focus(), 0);
 }
 
-export const isRemoteError = (msg: string) => /remote seat limit/i.test(msg);
+export const isRemoteError = (err: unknown) => {
+  const code = errorCode(err);
+  return code === "invalid_remote_capacity" || code === "invalid_remote_capacity_override" || code === "remote_capacity_zero";
+};
 
 // remoteBody is the wire form: the checkbox, and the cap as a number
 // (null clears it to no limit).

@@ -67,8 +67,9 @@ type guestRegistrationJSON struct {
 // invite-only event keeps its group hidden.
 func (a *App) guestDisplay(reg *models.Registration, occ *models.EventOccurrence,
 	ev *models.Event, grp *models.Group) guestRegistrationJSON {
+	shown := a.groupShownTo(nil, grp, policy.Rel{})
 	loc := ""
-	if shown := a.groupShownTo(nil, grp, policy.Rel{}); shown != nil {
+	if shown != nil {
 		loc = shown.Location
 	}
 	inst := occurrenceToJSON(ev, occ, loc)
@@ -77,7 +78,7 @@ func (a *App) guestDisplay(reg *models.Registration, occ *models.EventOccurrence
 		Title: inst.Title, Status: reg.Status, StartsAt: inst.StartsAt,
 		Location: inst.Location,
 	}
-	if shown := a.groupShownTo(nil, grp, policy.Rel{}); ev.GroupID != nil && shown != nil {
+	if ev.GroupID != nil && shown != nil {
 		out.GroupName = shown.Name
 	} else {
 		out.HostedBy = a.siteName()
@@ -94,17 +95,17 @@ func (a *App) guestDisplay(reg *models.Registration, occ *models.EventOccurrence
 // loadGuestEvent loads the event in :id for a signed-out visitor. It
 // answers 404 unless a guest may register for it, like every other
 // hidden thing in the API.
-func (a *App) loadGuestEvent(c *gin.Context, date string) (*models.Event, eventFacts, bool) {
+func (a *App) loadGuestEvent(c *gin.Context, date string) (*models.Event, *models.EventOccurrence, eventFacts, bool) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var ev models.Event
 	if err := a.DB.First(&ev, id).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "event not found")
-		return nil, eventFacts{}, false
+		return nil, nil, eventFacts{}, false
 	}
 	var occ models.EventOccurrence
 	if a.DB.Where("event_id = ? AND original_date = ? AND status = ?", ev.ID, date, models.OccurrenceScheduled).First(&occ).Error != nil {
 		jsonError(c, 404, "event not found")
-		return nil, eventFacts{}, false
+		return nil, nil, eventFacts{}, false
 	}
 	f := a.factsFor(nil, dateEvent(&ev, &occ))
 	gp := policy.Group{}
@@ -113,9 +114,9 @@ func (a *App) loadGuestEvent(c *gin.Context, date string) (*models.Event, eventF
 	}
 	if !policy.CanRegisterGuest(f.view, gp) {
 		jsonError(c, http.StatusNotFound, "event not found")
-		return nil, eventFacts{}, false
+		return nil, nil, eventFacts{}, false
 	}
-	return &ev, f, true
+	return &ev, &occ, f, true
 }
 
 type guestRegistrationInput struct {
@@ -138,7 +139,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	ev, f, ok := a.loadGuestEvent(c, strings.TrimSpace(body.Date))
+	ev, occ, f, ok := a.loadGuestEvent(c, strings.TrimSpace(body.Date))
 	if !ok {
 		return
 	}
@@ -156,12 +157,6 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		// The age gate on the guest door (5.10): nothing is stored.
 		jsonError(c, http.StatusBadRequest,
 			"Ask a parent or guardian to register you. Guests registering on their own must be 18 or older.")
-		return
-	}
-	var occ models.EventOccurrence
-	if err := a.DB.Where("event_id = ? AND original_date = ? AND status = ?",
-		ev.ID, strings.TrimSpace(body.Date), models.OccurrenceScheduled).First(&occ).Error; err != nil {
-		jsonError(c, http.StatusNotFound, "that date is not on this event")
 		return
 	}
 	hits, err := a.throttleHit(c.Request.Context(), "guestreg:ip:"+rateLimitIP(c.ClientIP()), time.Hour)
@@ -193,9 +188,8 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 	if a.DB.Where("email = ?", email).Limit(1).Find(&existing).RowsAffected == 1 &&
 		existing.Status != models.UserGuest {
 		// The hint is an email to that address too, so it shares the
-		// per-address limit (3 an hour) whatever the IP (10.1).
-		if ok, err := a.throttleAllow(c.Request.Context(), "guestreg:hint:"+email,
-			guestVerifyPerHour, time.Hour); err == nil && ok {
+		// per-address limit (3 an hour, 10 a day) whatever the IP (10.1).
+		if ok, err := a.targetAllow(c.Request.Context(), "guestreg:hint:"+email); err == nil && ok {
 			a.runInBackground(func() {
 				if err := a.sendAlreadyHaveAccountEmail(email); err != nil {
 					log.Printf("account-exists email to %s: %v", email, err)
@@ -228,7 +222,7 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 		return
 	}
 	a.runInBackground(func() {
-		if err := a.sendGuestVerificationEmail(&signup, raw, ev, &occ, f); err != nil {
+		if err := a.sendGuestVerificationEmail(&signup, raw, ev, occ, f); err != nil {
 			log.Printf("guest verification email to %s: %v", email, err)
 		}
 	})
@@ -238,15 +232,22 @@ func (a *App) apiCreateGuestRegistration(c *gin.Context) {
 // guestVerifyLimited reports whether this address has used up its
 // verification emails: 3 in the last hour or 10 in the last day (10.1).
 // Each stored signup is one email sent, so the rows are the counter.
+// A failed count is treated as limited: no email goes out unmetered.
 func (a *App) guestVerifyLimited(email string, now time.Time) bool {
 	var hour, day int64
-	a.DB.Model(&models.GuestSignup{}).
-		Where("email = ? AND created_at > ?", email, now.Add(-time.Hour)).Count(&hour)
+	if err := a.DB.Model(&models.GuestSignup{}).
+		Where("email = ? AND created_at > ?", email, now.Add(-time.Hour)).Count(&hour).Error; err != nil {
+		log.Printf("guest verification count: %v", err)
+		return true
+	}
 	if hour >= guestVerifyPerHour {
 		return true
 	}
-	a.DB.Model(&models.GuestSignup{}).
-		Where("email = ? AND created_at > ?", email, now.Add(-24*time.Hour)).Count(&day)
+	if err := a.DB.Model(&models.GuestSignup{}).
+		Where("email = ? AND created_at > ?", email, now.Add(-24*time.Hour)).Count(&day).Error; err != nil {
+		log.Printf("guest verification count: %v", err)
+		return true
+	}
 	return day >= guestVerifyPerDay
 }
 
@@ -310,11 +311,19 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 			// so saying so reveals nothing to a stranger.
 			return errGuestHasAccount
 		}
+		// A guest who confirms again already holds their row; like
+		// registerLocked, their own seats do not count against them.
+		var prior models.Registration
+		havePrior := found &&
+			tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).Limit(1).Find(&prior).RowsAffected == 1
 		// Seat check under the lock, before anything is created.
 		cap := events.EffectiveCapacity(ev.Capacity, occ.CapacityOverride)
 		used, err := seatsUsed(tx, occ.ID)
 		if err != nil {
 			return err
+		}
+		if havePrior && prior.Status == models.RegGoing && prior.AttendanceMode == models.AttendanceInPerson {
+			used -= 1 + prior.GuestCount
 		}
 		if cap != nil && used+1 > *cap && !ev.WaitlistEnabled {
 			// No seat and no waitlist: the link dies here (the update
@@ -374,11 +383,12 @@ func (a *App) apiConfirmGuestRegistration(c *gin.Context) {
 		if full {
 			status = models.RegWaitlisted
 			wlAt = &now
+			if havePrior && prior.Status == models.RegWaitlisted && prior.WaitlistedAt != nil {
+				wlAt = prior.WaitlistedAt // keep their place in line
+			}
 		}
 		reg := models.Registration{UserID: &user.ID, OccurrenceID: occ.ID}
-		var prior models.Registration
-		if tx.Where("user_id = ? AND occurrence_id = ?", user.ID, occ.ID).
-			First(&prior).RowsAffected == 1 && prior.Status == models.RegRemoved {
+		if havePrior && prior.Status == models.RegRemoved {
 			// A pruned guest can't re-enter through the public form;
 			// a leader or host adds them back (mirrors registerLocked).
 			return errRemovedBlocked

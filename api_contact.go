@@ -146,9 +146,19 @@ type contactOperation struct {
 // Rejected domain operations COMMIT their refusal audit, rather than returning
 // an error from the transaction and accidentally rolling that audit back.
 func (a *App) contactOperation(c *gin.Context, fn func(*gorm.DB, *contactOperation) error) {
+	a.runContactOperation(c, lockContacts, fn)
+}
+
+// contactRead is contactOperation for GET handlers that only read. It takes the
+// shared gate, so readers do not queue behind each other.
+func (a *App) contactRead(c *gin.Context, fn func(*gorm.DB, *contactOperation) error) {
+	a.runContactOperation(c, lockContactsShared, fn)
+}
+
+func (a *App) runContactOperation(c *gin.Context, lock func(*gorm.DB) error, fn func(*gorm.DB, *contactOperation) error) {
 	op := contactOperation{}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := lockContacts(tx); err != nil {
+		if err := lock(tx); err != nil {
 			return err
 		}
 		op.now = time.Now().UTC().Truncate(time.Microsecond)
@@ -303,8 +313,8 @@ func (a *App) apiCreateContactRequest(c *gin.Context) {
 		}
 		op.mailed = append(op.mailed, ids...)
 		if r.NeedsAdmin {
-			var admins []uint
-			if err = tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Order("id").Pluck("id", &admins).Error; err != nil {
+			admins, err := activeAdminIDs(tx)
+			if err != nil {
 				return err
 			}
 			ids, err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
@@ -325,7 +335,7 @@ func (a *App) apiListContactRequests(c *gin.Context) { a.readContactRequests(c, 
 func (a *App) apiGetContactRequest(c *gin.Context)   { a.readContactRequests(c, true) }
 func (a *App) readContactRequests(c *gin.Context, single bool) {
 	out := []contactRequestJSON{}
-	a.contactOperation(c, func(tx *gorm.DB, op *contactOperation) error {
+	a.contactRead(c, func(tx *gorm.DB, op *contactOperation) error {
 		actor := contactAccount(op.actor, op.now, op.zone)
 		q := tx.Where("purpose = ?", policy.RequestContact).Order("id DESC").Limit(100)
 		if single {
@@ -486,7 +496,7 @@ func (a *App) apiWithdrawContactRequest(c *gin.Context) {
 
 func (a *App) apiListContactGrants(c *gin.Context) {
 	out := []contactGrantJSON{}
-	a.contactOperation(c, func(tx *gorm.DB, op *contactOperation) error {
+	a.contactRead(c, func(tx *gorm.DB, op *contactOperation) error {
 		actor := contactAccount(op.actor, op.now, op.zone)
 		var gs []models.ContactGrant
 		q := tx.Where("request_id IN (SELECT id FROM contact_requests WHERE purpose = ?)", policy.RequestContact).Order("id DESC").Limit(100)
@@ -857,8 +867,8 @@ func (a *App) apiCreateAddRequest(c *gin.Context) {
 		}
 		op.mailed = append(op.mailed, ids...)
 		if r.NeedsAdmin {
-			var admins []uint
-			if err = tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Order("id").Pluck("id", &admins).Error; err != nil {
+			admins, err := activeAdminIDs(tx)
+			if err != nil {
 				return err
 			}
 			ids, err = contactNotice(tx, r, notify.ContactAdminReview, admins, "admin-review")
@@ -878,7 +888,7 @@ func (a *App) apiListAddRequests(c *gin.Context) { a.readAddRequests(c, false) }
 func (a *App) apiGetAddRequest(c *gin.Context)   { a.readAddRequests(c, true) }
 func (a *App) readAddRequests(c *gin.Context, single bool) {
 	out := []addRequestJSON{}
-	a.contactOperation(c, func(tx *gorm.DB, op *contactOperation) error {
+	a.contactRead(c, func(tx *gorm.DB, op *contactOperation) error {
 		actor := contactAccount(op.actor, op.now, op.zone)
 		q := tx.Where("purpose IN ?", []string{policy.RequestGroupAdd, policy.RequestOccurrenceAdd}).Order("id DESC").Limit(100)
 		if single {
@@ -936,11 +946,14 @@ func (a *App) completeGroupAsk(tx *gorm.DB, op *contactOperation, r *models.Cont
 	if err != nil {
 		return err
 	}
-	err = a.changeRoleIn(tx, requester, ip, &g, r.SubjectUserID, models.MembershipMember, "", r.AddOverLimit, &memberAddOptions{KeepExistingRole: true, approved: &verifiedGroupAdd{r.ID, op.now}}, func(me, _ *models.User, rel, _ policy.Rel, _ int) bool {
+	err = a.changeRoleIn(tx, requester, ip, &g, r.SubjectUserID, models.MembershipMember, r.AddOverLimit, &memberAddOptions{KeepExistingRole: true, approved: &verifiedGroupAdd{r.ID, op.now}}, func(me, _ *models.User, rel, _ policy.Rel, _ int) bool {
 		return policy.CanManageGroup(asPerson(me), rel)
 	}, &op.mailed)
 	if errors.Is(err, errGroupFull) {
 		return contactAudit(tx, &op.actor.ID, audit.ContactRefused, *r, "group_full", ip)
+	}
+	if errors.Is(err, errGroupNotApprovedForAdds) {
+		return contactAudit(tx, &op.actor.ID, audit.ContactRefused, *r, "group_not_approved", ip)
 	}
 	if err != nil {
 		return err

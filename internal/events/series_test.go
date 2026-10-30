@@ -72,3 +72,50 @@ func itoa(n uint) string {
 	}
 	return string(b[i:])
 }
+
+func TestApplySeriesRestoresSeriesCancelledDates(t *testing.T) {
+	now := at("2026-10-10", "12:00")
+	existing := []Existing{
+		// Cancelled by an earlier series edit; the new rule has it again.
+		{ID: 1, OriginalDate: "2026-10-14", StartsAt: at("2026-10-14", "19:00"), EndsAt: at("2026-10-14", "20:00"), SeriesCancelled: true},
+		// Cancelled by a person (or before the source was tracked): stays.
+		{ID: 2, OriginalDate: "2026-10-21", StartsAt: at("2026-10-21", "19:00"), EndsAt: at("2026-10-21", "20:00"), Keep: true},
+		// Series-cancelled and also carries another override: restored with
+		// its own values, clock not moved.
+		{ID: 3, OriginalDate: "2026-10-28", StartsAt: at("2026-10-28", "18:00"), EndsAt: at("2026-10-28", "19:00"), SeriesCancelled: true, TimeFrozen: true, Keep: true},
+		{ID: 4, OriginalDate: "2026-11-04", StartsAt: at("2026-11-04", "19:00"), EndsAt: at("2026-11-04", "20:00"), SeriesCancelled: true, Keep: true}, // title override only
+		// Past: untouched even though the rule has it.
+		{ID: 5, OriginalDate: "2026-10-07", StartsAt: at("2026-10-07", "19:00"), EndsAt: at("2026-10-07", "20:00"), SeriesCancelled: true},
+		// Series-cancelled and still not in the rule: left alone, not cancelled again.
+		{ID: 6, OriginalDate: "2026-11-11", StartsAt: at("2026-11-11", "19:00"), EndsAt: at("2026-11-11", "20:00"), SeriesCancelled: true},
+	}
+	var next []When
+	for _, d := range []string{"2026-10-07", "2026-10-14", "2026-10-21", "2026-10-28", "2026-11-04"} {
+		next = append(next, When{OriginalDate: d, StartsAt: at(d, "20:00"), EndsAt: at(d, "21:00")})
+	}
+	got := ApplySeries(existing, next, now)
+	if len(got) != 3 {
+		t.Fatalf("actions: %+v", got)
+	}
+	byID := map[uint]Action{}
+	for _, a := range got {
+		if a.Kind != "restore" {
+			t.Fatalf("unexpected %+v", a)
+		}
+		byID[a.ID] = a
+	}
+	if a, ok := byID[1]; !ok || !a.Retime || a.When.StartsAt.Hour() != 20 {
+		t.Errorf("plain series-cancelled date: %+v", a)
+	}
+	if a, ok := byID[3]; !ok || a.Retime {
+		t.Errorf("clock-frozen date must keep its clock: %+v", a)
+	}
+	if a, ok := byID[4]; !ok || a.Retime {
+		t.Errorf("overridden date must keep its row as is: %+v", a)
+	}
+	for _, id := range []uint{2, 5, 6} {
+		if _, ok := byID[id]; ok {
+			t.Errorf("date %d must not be touched", id)
+		}
+	}
+}

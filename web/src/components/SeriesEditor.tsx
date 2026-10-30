@@ -183,12 +183,12 @@ export function SeriesEditor({
     } catch (err) {
       const msg = errorText(err, "We couldn't update the series.");
       setError(msg);
-      if (isChildcareCapacityError(msg)) { setChildcareError(msg); focusChildcareCapacity(idPrefix); }
-      if (isRemoteError(msg)) {
+      if (isChildcareCapacityError(err)) { setChildcareError(msg); focusChildcareCapacity(idPrefix); }
+      if (isRemoteError(err)) {
         setRemoteError(msg);
         focusRemoteCapacity(idPrefix);
       }
-      if (isVideoError(msg)) {
+      if (isVideoError(err)) {
         setVideoError(msg);
         focusVideoUrl(idPrefix);
       }

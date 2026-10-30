@@ -26,7 +26,10 @@ import (
 
 func (a *App) apiPendingGroups(c *gin.Context) {
 	var groups []models.Group
-	a.DB.Where("status = ?", models.GroupPending).Order("created_at").Find(&groups)
+	if err := a.DB.Where("status = ?", models.GroupPending).Order("created_at").Find(&groups).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list groups")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
 }
 
@@ -40,12 +43,18 @@ func (a *App) apiApproveGroup(c *gin.Context) {
 		FromNotification *uint    `json:"fromNotification"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	a.decideGroup(c, notify.ActionApproveGroup, body.FromNotification, func(g *models.Group) {
-		if body.Tags != nil {
-			g.Tags = joinTags(body.Tags)
+	// Tags are the admin's to change only when they sent some; otherwise the
+	// leader's own edits stay as they are.
+	var tags *string
+	if body.Tags != nil {
+		joined := joinTags(body.Tags)
+		if len(joined) > maxTagsLen {
+			jsonError(c, http.StatusBadRequest, "tags are too long")
+			return
 		}
-		g.Status = models.GroupActive
-	})
+		tags = &joined
+	}
+	a.decideGroup(c, notify.ActionApproveGroup, body.FromNotification, models.GroupActive, tags)
 }
 
 func (a *App) apiRejectGroup(c *gin.Context) {
@@ -53,10 +62,10 @@ func (a *App) apiRejectGroup(c *gin.Context) {
 		FromNotification *uint `json:"fromNotification"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	a.decideGroup(c, "reject", body.FromNotification, func(g *models.Group) { g.Status = models.GroupArchived })
+	a.decideGroup(c, "reject", body.FromNotification, models.GroupArchived, nil)
 }
 
-func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint, apply func(*models.Group)) {
+func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint, status string, tags *string) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var g models.Group
 	if err := a.DB.First(&g, id).Error; err != nil {
@@ -71,16 +80,22 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 	if action != notify.ActionApproveGroup {
 		outcome, auditAction = "rejected", audit.GroupRejected
 	}
-	apply(&g)
 	errHandled := errors.New("already handled")
 	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
-		res := tx.Model(&models.Group{}).Where("id = ? AND status = ?", g.ID, models.GroupPending).
-			Updates(map[string]any{"status": g.Status, "tags": g.Tags})
+		set := map[string]any{"status": status}
+		if tags != nil {
+			set["tags"] = *tags
+		}
+		res := tx.Model(&models.Group{}).Where("id = ? AND status = ?", g.ID, models.GroupPending).Updates(set)
 		if res.Error != nil {
 			return res.Error
 		}
 		if res.RowsAffected == 0 {
 			return errHandled
+		}
+		// Answer with the row as stored, not the unlocked read from above.
+		if err := tx.First(&g, g.ID).Error; err != nil {
+			return err
 		}
 		if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &me.ID, outcome); err != nil {
 			return err
@@ -437,9 +452,7 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "name is required (at most 100 characters)")
 		return
 	}
-	if body.Password != "" && len(body.Password) < minPasswordLength {
-		jsonError(c, http.StatusBadRequest,
-			"password must be at least "+strconv.Itoa(minPasswordLength)+" characters")
+	if body.Password != "" && !checkNewPassword(c, body.Password) {
 		return
 	}
 	role := body.Role
@@ -487,7 +500,7 @@ func (a *App) apiAdminCreateUser(c *gin.Context) {
 			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.UserCreated,
-			TargetType: "user", TargetID: u.ID, IP: c.ClientIP()})
+			TargetType: "user", TargetID: u.ID, Meta: map[string]any{"role": u.Role}, IP: c.ClientIP()})
 	})
 	if errors.Is(err, errSecuritySession) {
 		jsonError(c, http.StatusUnauthorized, "unauthorized")
@@ -657,6 +670,18 @@ func (a *App) apiAdminUpdateUser(c *gin.Context) {
 				if status != u.Status || adminDisabled != u.AdministrativelyDisabled {
 					updates["status"] = status
 					bump = true
+				}
+			}
+			if newRole, ok := updates["role"].(string); ok && newRole != u.Role {
+				if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserRoleChanged, TargetType: "user", TargetID: u.ID,
+					Meta: map[string]any{"oldRole": u.Role, "newRole": newRole}, IP: c.ClientIP()}); err != nil {
+					return err
+				}
+			}
+			if newEmail, ok := updates["email"].(string); ok {
+				if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.UserEmailChanged, TargetType: "user", TargetID: u.ID,
+					Meta: map[string]any{"oldEmail": u.Email, "newEmail": newEmail}, IP: c.ClientIP()}); err != nil {
+					return err
 				}
 			}
 			if _, changed := updates["email"]; changed {
@@ -840,9 +865,7 @@ func (a *App) apiAdminResetPassword(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "password is required")
 		return
 	}
-	if len(body.Password) < minPasswordLength {
-		jsonError(c, http.StatusBadRequest,
-			"password must be at least "+strconv.Itoa(minPasswordLength)+" characters")
+	if !checkNewPassword(c, body.Password) {
 		return
 	}
 	var prepared models.User
@@ -927,7 +950,7 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "role must be leader or member")
 		return
 	}
-	err := a.changeRole(c, &g, u.ID, role, "", body.OverLimit, &memberAddOptions{}, func(me, target *models.User, actor, t policy.Rel, leaders int) bool {
+	err := a.changeRole(c, &g, u.ID, role, body.OverLimit, &memberAddOptions{}, func(me, target *models.User, actor, t policy.Rel, leaders int) bool {
 		// Admins may add someone straight in with either role.
 		return policy.IsAdmin(asPerson(me)) && policy.CanChangeRole(asPerson(me), actor, asPerson(target),
 			policy.Rel{Member: true, Leader: t.Leader}, role == models.MembershipLeader, leaders)
@@ -951,19 +974,15 @@ func (a *App) apiAdminAddMember(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not add member")
 		return
 	}
-	var m models.Membership
-	a.DB.Where("user_id = ? AND group_id = ?", u.ID, g.ID).First(&m)
-	if g.DeletionRequested && memberCount(a.DB, g.ID) > 1 {
-		a.clearDeletionRequest(g.ID, nil, "withdrawn")
-	}
-	c.JSON(http.StatusOK, gin.H{"membership": gin.H{
-		"id": m.ID, "userId": m.UserID, "groupId": m.GroupID, "role": role,
-	}})
+	a.membershipAdded(c, &g, u.ID)
 }
 
 func (a *App) apiDeletionRequests(c *gin.Context) {
 	var groups []models.Group
-	a.DB.Where("deletion_requested = ?", true).Order("updated_at").Find(&groups)
+	if err := a.DB.Where("deletion_requested = ?", true).Order("updated_at").Find(&groups).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list groups")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
 }
 

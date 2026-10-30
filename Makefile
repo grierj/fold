@@ -17,13 +17,14 @@ dev: devdb
 	(cd web && npm run dev) & \
 	wait
 
-# go test against DATABASE_URL; starts the dev database when it is unset.
+# go test ./... against DATABASE_URL, with the root package split across
+# parallel shards (scripts/go-test.sh); starts the dev database when it is unset.
 test:
 	@if [ -z "$$DATABASE_URL" ]; then \
 		$(DEV_COMPOSE) up -d --wait db && \
-		DATABASE_URL="$(DEV_DATABASE_URL)" go test ./...; \
+		DATABASE_URL="$(DEV_DATABASE_URL)" scripts/go-test.sh; \
 	else \
-		go test ./...; \
+		scripts/go-test.sh; \
 	fi
 
 # Playwright (Chromium) against the real binary on a fresh <db>_e2e Postgres
@@ -60,10 +61,10 @@ deadcode:
 lint-web:
 	cd web && npx knip
 
-# Shell scripts under deploy/digitalocean. -x follows source= directives.
+# Shell scripts under deploy/digitalocean and scripts. -x follows source= directives.
 lint-sh:
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required (apt-get install shellcheck)"; exit 1; }
-	shellcheck -x deploy/digitalocean/*.sh
+	shellcheck -x deploy/digitalocean/*.sh scripts/*.sh
 
 # provision.sh --dry-run inside a fresh Ubuntu container. Needs Docker.
 provision-dry-run:

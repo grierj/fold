@@ -563,12 +563,21 @@ func lockDepartureOccurrences(tx *gorm.DB, facts departureFacts) (map[uint]model
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	out := make(map[uint]models.EventOccurrence, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	// One ordered statement takes every row lock in id order.
+	var rows []models.EventOccurrence
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", ids).Order("id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, o := range rows {
+		out[o.ID] = o
+	}
 	for _, id := range ids {
-		o, err := lockOccurrence(tx, id)
-		if err != nil {
-			return nil, err
+		if _, ok := out[id]; !ok {
+			return nil, gorm.ErrRecordNotFound
 		}
-		out[id] = *o
 	}
 	return out, nil
 }
@@ -653,6 +662,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 		membershipFactRel(facts.ActorMembership), membershipFactRel(facts.SubjectMembership), facts.LeaderCount) {
 		return departureConfirmationJSON{}, errDepartureStale
 	}
+	events := map[uint]*models.Event{}
 	for i := range facts.Dates {
 		d := facts.Dates[i]
 		o := locked[d.OccurrenceID]
@@ -678,9 +688,13 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			}
 			continue
 		}
-		var ev models.Event
-		if err := tx.First(&ev, d.EventID).Error; err != nil {
-			return departureConfirmationJSON{}, err
+		ev := events[d.EventID]
+		if ev == nil {
+			ev = &models.Event{}
+			if err := tx.First(ev, d.EventID).Error; err != nil {
+				return departureConfirmationJSON{}, err
+			}
+			events[d.EventID] = ev
 		}
 		zero, empty := 0, ""
 		// Leaving cancels the answer; it is not an explicit Can't go RSVP.
@@ -699,7 +713,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 			change.next.RemovalNote = note
 			change.auditAction = audit.RegistrationRemoved
 		}
-		ids, err := a.applyRegistrationBatch(tx, &ev, &o, []registrationChange{change}, now, facts.Actor.ID, ip)
+		ids, err := a.applyRegistrationBatch(tx, ev, &o, []registrationChange{change}, now, facts.Actor.ID, ip)
 		if err != nil {
 			return departureConfirmationJSON{}, err
 		}
@@ -776,7 +790,7 @@ func (a *App) applyDeparture(tx *gorm.DB, facts departureFacts, locked map[uint]
 }
 
 func asPersonFact(f departureUserFact) *policy.Person {
-	return &policy.Person{ID: f.ID, Admin: f.Role == models.RoleAdmin, Teen: f.AccountType == models.AccountTeen}
+	return &policy.Person{ID: f.ID, Admin: f.Role == models.RoleAdmin && f.Status == models.UserActive, Teen: f.AccountType == models.AccountTeen}
 }
 
 func membershipFactRel(f departureMembershipFact) policy.Rel {

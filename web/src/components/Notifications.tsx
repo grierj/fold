@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { BellIcon } from "./icons";
-import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
 import { Illustration } from "./ui/Illustration";
 import {
-  badgeLabel, badgeText, relativeTime, resolutionText, useBadge, useFeed, type Feed,
+  badgeLabel, badgeText, relativeTime, resolutionText, useFeed, type Feed,
 } from "../lib/notifications";
+import type { Badge } from "../api";
 import type { Notification } from "../types";
 
 // The bell, its panel, and the rows shared with the /notifications page.
@@ -294,10 +295,8 @@ export function useArchiveToast(feed: Feed) {
 // NotificationBell: the badge counts unread plus waiting items (DEC-44),
 // capped at 9+. On narrow screens it goes to /notifications (6.10); wider,
 // it opens a disclosure popover (no focus trap, 6.2).
-export function NotificationBell() {
-  const { pathname, search } = useLocation();
+export function NotificationBell({ badge }: { badge: Badge & { loaded: boolean } }) {
   const navigate = useNavigate();
-  const badge = useBadge(pathname + search);
   const [open, setOpen] = useState(false);
   const boxRef = useRef<HTMLDivElement>(null);
   const bellRef = useRef<HTMLButtonElement>(null);
@@ -414,9 +413,7 @@ export function NotificationBell() {
 
 // NotificationTab: the phone tab bar's Notifications tab (UI makeover PR 5),
 // with the same badge as the bell.
-export function NotificationTab({ className }: { className: (a: { isActive: boolean }) => string }) {
-  const { pathname, search } = useLocation();
-  const badge = useBadge(pathname + search);
+export function NotificationTab({ badge, className }: { badge: Badge; className: (a: { isActive: boolean }) => string }) {
   const count = badge.unread + badge.waiting;
   return (
     <NavLink to="/notifications" className={className} aria-label={`${count > 0 ? `${badgeText(badge)} ` : ""}${badgeLabel(badge)}`}>

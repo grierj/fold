@@ -23,16 +23,9 @@ func (a *App) apiCancelEmailChange(c *gin.Context) {
 		return
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		user, err := lockAccountTokenUser(tx, models.TokenEmailChangeCancel, body.Token)
+		user, _, err := lockAndConsumeAccountToken(tx, models.TokenEmailChangeCancel, body.Token)
 		if err != nil {
 			return err
-		}
-		token, err := consumeAccountToken(tx, models.TokenEmailChangeCancel, body.Token)
-		if err != nil {
-			return err
-		}
-		if token.UserID != user.ID {
-			return errTokenInvalid
 		}
 		if err := tx.Model(user).Update("session_version", gorm.Expr("session_version + 1")).Error; err != nil {
 			return err

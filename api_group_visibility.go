@@ -236,7 +236,7 @@ func (a *App) applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group,
 	now := time.Now().UTC()
 	var emailed []uint
 	tighten := func(ev *models.Event, reason string) error {
-		old := ev.Visibility
+		old, oldOpened := ev.Visibility, ev.LeaderOpened
 		if err := tx.Model(ev).Updates(map[string]any{"visibility": newVis, "leader_opened": false}).Error; err != nil {
 			return err
 		}
@@ -247,7 +247,7 @@ func (a *App) applyGroupTightening(c *gin.Context, tx *gorm.DB, g *models.Group,
 		}
 		return audit.Write(tx, audit.Entry{Actor: &actor.ID, Action: audit.VisibilityChanged, TargetType: "event", TargetID: ev.ID,
 			Meta: map[string]any{"oldVisibility": old, "newVisibility": newVis, "groupVisibility": newVis,
-				"oldLeaderOpened": ev.LeaderOpened, "leaderOpened": false, "reason": reason},
+				"oldLeaderOpened": oldOpened, "leaderOpened": false, "reason": reason},
 			IP: c.ClientIP()})
 	}
 	for i := range auto {

@@ -102,7 +102,22 @@ func (a *App) loadConversionBatch(tx *gorm.DB, actor *models.User, householdID u
 	if actor == nil || len(personIDs) == 0 {
 		return a.loadConversionBatchFor(tx, actor, policy.HouseholdRel{}, personIDs, nil)
 	}
-	return a.loadConversionBatchFor(tx, actor, conversionRelation(tx, actor.ID, householdID), personIDs, guardianLinksForPeople(tx, personIDs))
+	links, err := loadGuardianLinks(tx, personIDs)
+	if err != nil {
+		return nil, err
+	}
+	return a.loadConversionBatchFor(tx, actor, conversionRelation(tx, actor.ID, householdID), personIDs, links)
+}
+
+// householdPersonRow builds one person's JSON for a single-person response.
+// The conversion batch already holds the person's guardian links, so they
+// are not loaded a second time.
+func (a *App) householdPersonRow(tx *gorm.DB, person *models.HouseholdPerson, viewer *models.User) (householdPersonJSON, error) {
+	batch, err := a.loadConversionBatch(tx, viewer, person.HouseholdID, []uint{person.ID})
+	if err != nil {
+		return householdPersonJSON{}, err
+	}
+	return a.toHouseholdPersonJSON(person, batch.links[person.ID], viewer, batch)
 }
 
 // loadConversionBatchFor takes a relation the caller already knows, so
@@ -443,6 +458,12 @@ func conversionLockIDs(tx *gorm.DB, inv *models.Invitation, person *models.House
 		}
 		ids = append(ids, found...)
 	}
+	return sortedUniqueIDs(ids), nil
+}
+
+// sortedUniqueIDs sorts ids in place, drops zeros and duplicates, and returns
+// the result (a fixed lock order for every conversion path).
+func sortedUniqueIDs(ids []uint) []uint {
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 	unique := ids[:0]
 	for _, id := range ids {
@@ -450,7 +471,7 @@ func conversionLockIDs(tx *gorm.DB, inv *models.Invitation, person *models.House
 			unique = append(unique, id)
 		}
 	}
-	return unique, nil
+	return unique
 }
 
 func (a *App) acceptHouseholdConversion(c *gin.Context, raw, password string, initial *models.Invitation) {

@@ -50,7 +50,7 @@ func (a *App) presentAddRequests(tx *gorm.DB, op *contactOperation, rs []models.
 	names := map[uint]string{}
 	if len(nameIDs) > 0 {
 		var rows []models.User
-		if err := tx.Unscoped().Where("id IN ?", nameIDs).Find(&rows).Error; err != nil {
+		if err := tx.Unscoped().Select("id", "name", "display_name").Where("id IN ?", nameIDs).Find(&rows).Error; err != nil {
 			return nil, err
 		}
 		for _, u := range rows {

@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -15,20 +16,28 @@ import (
 // It is not the migration lock, so a migrate and an extend can overlap.
 const LockID = 731002511
 
+// insertBatch keeps one insert under the Postgres parameter limit.
+const insertBatch = 500
+
 // Extend inserts any missing occurrences through the rolling horizon.
 // Rows that already exist, including cancelled dates and per-date overrides,
 // are left alone. Safe to run twice.
 func Extend(db *gorm.DB, now time.Time) error {
+	// A one-time event has all its dates from creation, and a series whose end
+	// date has passed cannot make new ones, so neither is loaded.
 	var evs []models.Event
-	if err := db.Find(&evs).Error; err != nil {
+	if err := db.Where("rrule <> '' AND (rrule_until IS NULL OR rrule_until >= ?)", now.AddDate(0, 0, -1).Format("2006-01-02")).
+		Order("id").Find(&evs).Error; err != nil {
 		return err
 	}
+	// One bad event must not stop the rest from being extended.
+	var errs []error
 	for i := range evs {
 		if err := Ensure(db, &evs[i], now); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // Ensure generates occurrences for one event through the horizon.
@@ -74,7 +83,7 @@ func Ensure(db *gorm.DB, ev *models.Event, now time.Time) error {
 	return db.Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "event_id"}, {Name: "original_date"}},
 		DoNothing: true,
-	}).Create(&rows).Error
+	}).CreateInBatches(&rows, insertBatch).Error
 }
 
 // ExtendLocked runs Extend while holding LockID. A second caller, or a
@@ -97,6 +106,7 @@ func ExtendLocked(ctx context.Context, db *gorm.DB, now time.Time) error {
 	if !got {
 		return nil
 	}
-	defer conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", LockID)
+	// The request context may be cancelled by now; the unlock must still run.
+	defer conn.ExecContext(context.Background(), "SELECT pg_advisory_unlock($1)", LockID)
 	return Extend(db, now)
 }

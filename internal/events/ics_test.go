@@ -263,3 +263,11 @@ func TestICSDateParticipationDetails(t *testing.T) {
 		}
 	}
 }
+
+func TestEscapeTextDropsControlCharacters(t *testing.T) {
+	got := escapeText("a\x00b\x1bc\x7fd\te;f,g\\h\r\ni")
+	want := `abcd` + "\t" + `e\;f\,g\\h\ni`
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}

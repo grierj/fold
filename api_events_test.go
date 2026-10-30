@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"fold/internal/audit"
 	"fold/internal/events"
 	"fold/models"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -1380,5 +1382,325 @@ func TestGroupEventsContinuationBeyond100Dates(t *testing.T) {
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"group_upcoming_page"`) {
 			t.Fatalf("%s: %d %s", query, w.Code, w.Body.String())
 		}
+	}
+}
+
+// A repeat rule is refused when it repeats more than once a day, or makes
+// more dates than the cap, and the answer is quick and carries its own code.
+func TestRepeatRuleLimitsAnswerQuickly(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Rules")
+	start := atUTC(time.Now().AddDate(0, 0, 7), 19, 0)
+	create := func(rule string) *httptest.ResponseRecorder {
+		return admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+			"title": "Repeats", "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60,
+			"tzid": "UTC", "recurrenceRule": rule,
+		}, true)
+	}
+	for _, rule := range []string{"FREQ=SECONDLY", "FREQ=MINUTELY", "FREQ=HOURLY;INTERVAL=2"} {
+		began := time.Now()
+		w := create(rule)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"recurrence_too_frequent"`) {
+			t.Fatalf("%s: %d %s", rule, w.Code, w.Body.String())
+		}
+		if time.Since(began) > 2*time.Second {
+			t.Fatalf("%s took %s", rule, time.Since(began))
+		}
+	}
+	// Daily with every hour of the day is still only "daily", so the cap
+	// catches it.
+	hours := make([]string, 24)
+	for i := range hours {
+		hours[i] = fmt.Sprint(i)
+	}
+	w := create("FREQ=DAILY;BYHOUR=" + strings.Join(hours, ","))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"recurrence_too_many"`) {
+		t.Fatalf("byhour: %d %s", w.Code, w.Body.String())
+	}
+	var n int64
+	app.DB.Model(&models.Event{}).Count(&n)
+	if n != 0 {
+		t.Fatalf("a refused rule left %d events", n)
+	}
+	for _, rule := range []string{weeklyRule(start), "FREQ=DAILY", "FREQ=MONTHLY;BYMONTHDAY=1"} {
+		if w := create(rule); w.Code != http.StatusCreated {
+			t.Fatalf("%s: %d %s", rule, w.Code, w.Body.String())
+		}
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, create(weeklyRule(start)), &created)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", created.Event.ID), map[string]any{"recurrenceRule": "FREQ=SECONDLY"}, http.StatusBadRequest)
+}
+
+// Creating, deleting and changing the hosts of an event leave audit rows.
+func TestEventLifecycleIsAudited(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Audited")
+	newTestUser(t, app, "host2", "password1234", models.RoleMember)
+	start := atUTC(time.Now().AddDate(0, 0, 7), 19, 0)
+	count := func(action string, id uint) int64 {
+		var n int64
+		app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_id = ?", action, id).Count(&n)
+		return n
+	}
+	var grp struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"title": "Group night", "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC",
+	}, true), &grp)
+	if count(audit.EventCreated, grp.Event.ID) != 1 {
+		t.Fatal("group event creation not audited")
+	}
+	apiDo(t, admin, "DELETE", fmt.Sprintf("/api/v1/events/%d", grp.Event.ID), nil, http.StatusOK)
+	if count(audit.EventDeleted, grp.Event.ID) != 1 {
+		t.Fatal("event deletion not audited")
+	}
+
+	var church struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, admin.do("POST", "/api/v1/events", map[string]any{
+		"title": "Church picnic", "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC",
+	}, true), &church)
+	if church.Event.ID == 0 || count(audit.EventCreated, church.Event.ID) != 1 {
+		t.Fatalf("church event creation not audited: %+v", church.Event)
+	}
+	hosts := fmt.Sprintf("/api/v1/events/%d/hosts", church.Event.ID)
+	apiDo(t, admin, "POST", hosts, map[string]any{"email": "host2@example.com"}, http.StatusOK)
+	apiDo(t, admin, "POST", hosts, map[string]any{"email": "host2@example.com"}, http.StatusOK)
+	if got := count(audit.EventHostAdded, church.Event.ID); got != 1 {
+		t.Fatalf("host added rows %d, want 1 (a repeat adds nothing)", got)
+	}
+	var host models.User
+	app.DB.Where("email = ?", "host2@example.com").First(&host)
+	apiDo(t, admin, "DELETE", fmt.Sprintf("%s/%d", hosts, host.ID), nil, http.StatusOK)
+	if count(audit.EventHostRemoved, church.Event.ID) != 1 {
+		t.Fatal("host removal not audited")
+	}
+}
+
+// A bad event must not stop the extender from reaching later events.
+func TestExtendContinuesPastABadEvent(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Extender")
+	start := atUTC(time.Now().AddDate(0, 0, 7), 19, 0)
+	var first models.User
+	app.DB.Order("id").First(&first)
+	// Created first, so it sorts before the good event.
+	bad := models.Event{Title: "Bad", StartsLocal: start.Format("2006-01-02T15:04"), DurationMinutes: 60,
+		TZID: "UTC", RRule: "FREQ=SECONDLY", Visibility: models.VisibilityPublic, CreatedBy: first.ID}
+	if err := app.DB.Create(&bad).Error; err != nil {
+		t.Fatal(err)
+	}
+	var good struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"title": "Good", "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60,
+		"tzid": "UTC", "recurrenceRule": weeklyRule(start),
+	}, true), &good)
+	app.DB.Where("event_id = ?", good.Event.ID).Delete(&models.EventOccurrence{})
+	err := events.Extend(app.DB, time.Now().UTC())
+	if err == nil || !errors.Is(err, events.ErrTooFrequent) {
+		t.Fatalf("want the bad event's error, got %v", err)
+	}
+	var n int64
+	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", good.Event.ID).Count(&n)
+	if n < 70 {
+		t.Fatalf("later event was not extended: %d dates", n)
+	}
+}
+
+// A date opened from a hidden series lists like the exact-date page: no
+// description or childcare details from the series, and a registered-only
+// video link stays hidden from someone who is not going.
+func TestHiddenSeriesListHidesDescriptionChildcareAndVideo(t *testing.T) {
+	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityInviteOnly)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID), map[string]any{
+		"description":        "SECRET-DESCRIPTION",
+		"childcareAvailable": true, "childcareNotes": "SECRET-CHILDCARE-NOTE", "childcareAges": "SECRET-AGES",
+		"childcareCapacity": 7,
+		"videoProvider":     "link", "videoUrl": "https://example.com/SECRET-VIDEO", "videoReveal": "registered_only",
+	}, http.StatusOK)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate),
+		map[string]any{"visibility": "public", "reason": "Open"}, http.StatusOK)
+
+	listed, err := app.occurrencesForEventsErr([]uint{ev.ID}, dates[0].OriginalDate, dates[3].OriginalDate, nil, nil)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("list: %v %+v", err, listed)
+	}
+	raw, err := json.Marshal(listed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"SECRET-DESCRIPTION", "SECRET-CHILDCARE-NOTE", "SECRET-AGES", "SECRET-VIDEO"} {
+		if strings.Contains(string(raw), secret) {
+			t.Fatalf("hidden series leaked %s: %s", secret, raw)
+		}
+	}
+	if listed[0].ChildcareCapacity != nil {
+		t.Fatalf("childcare capacity leaked: %v", *listed[0].ChildcareCapacity)
+	}
+}
+
+// The exact-date page shows no cancelled registration as the viewer's answer.
+func TestDatePageIgnoresCancelledRegistration(t *testing.T) {
+	app, admin, _, ev, dates := dateVisibilityFixture(t, models.VisibilityPublic)
+	_ = admin
+	member := newTestUser(t, app, "cancelled-member", "password1234", models.RoleMember)
+	if err := app.DB.Create(&models.Registration{
+		UserID: &member.ID, OccurrenceID: dates[0].ID, Status: models.RegCancelled,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	c := loginAPI(t, app, "cancelled-member", "password1234")
+	raw := apiDo(t, c, "GET", fmt.Sprintf("/api/v1/events/%d/dates/%s", ev.ID, dates[0].OriginalDate), nil, http.StatusOK)
+	if strings.Contains(raw, `"myRegistration":"cancelled"`) {
+		t.Fatalf("cancelled registration came back: %s", raw)
+	}
+}
+
+// occurrencesForEvents is occurrencesForEventsErr for tests that only look
+// at the rows.
+func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User) []occurrenceJSON {
+	out, _ := a.occurrencesForEventsErr(eventIDs, from, to, startAfter, me)
+	return out
+}
+
+// A series edit that drops dates cancels them and says why. A later edit
+// whose rule includes them again brings them back on and tells the people who
+// were told they were cancelled; their registrations were never removed, so
+// none is recreated. A date a person cancelled stays cancelled.
+func TestSeriesEditRestoresSeriesCancelledDates(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Restore")
+	newTestUser(t, app, "sam", "password1234", models.RoleMember)
+	newTestUser(t, app, "pat", "password1234", models.RoleMember)
+	sam := loginAPI(t, app, "sam", "password1234")
+	pat := loginAPI(t, app, "pat", "password1234")
+	for _, c := range []*apiClient{sam, pat} {
+		if w := c.do("POST", "/api/v1/groups/"+gid+"/join", map[string]any{}, true); w.Code != http.StatusOK {
+			t.Fatalf("join: %d %s", w.Code, w.Body.String())
+		}
+	}
+	start := atUTC(time.Now().AddDate(0, 0, 14), 19, 0)
+	d1 := start.AddDate(0, 0, 7).Format("2006-01-02")
+	d2 := start.AddDate(0, 0, 14).Format("2006-01-02")
+	d3 := start.AddDate(0, 0, 21).Format("2006-01-02")
+	d4 := start.AddDate(0, 0, 28).Format("2006-01-02")
+	w := admin.do("POST", "/api/v1/groups/"+gid+"/events", map[string]any{
+		"title": "Prayer", "startsLocal": start.Format("2006-01-02T15:04"),
+		"durationMinutes": 60, "tzid": "UTC", "recurrenceRule": weeklyRule(start),
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	eid := itoa(created.Event.ID)
+	reg := func(c *apiClient, date, status string) {
+		t.Helper()
+		if w := c.do("PUT", "/api/v1/events/"+eid+"/registrations", map[string]any{"date": date, "status": status}, true); w.Code != http.StatusOK {
+			t.Fatalf("register %s: %d %s", date, w.Code, w.Body.String())
+		}
+	}
+	reg(sam, d2, "going")
+	reg(sam, d3, "going")
+	reg(sam, d4, "going")
+	reg(pat, d3, "maybe")
+
+	occ := func(date string) models.EventOccurrence {
+		t.Helper()
+		var o models.EventOccurrence
+		if err := app.DB.Where("event_id = ? AND original_date = ?", created.Event.ID, date).First(&o).Error; err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	count := func(c *apiClient, title string) int {
+		n := 0
+		for _, item := range feed(t, c, "") {
+			if item.Title == title {
+				n++
+			}
+		}
+		return n
+	}
+	registrations := func() int64 {
+		var n int64
+		app.DB.Model(&models.Registration{}).Joins("JOIN event_occurrences ON event_occurrences.id = registrations.occurrence_id").
+			Where("event_occurrences.event_id = ? AND registrations.status <> ?", created.Event.ID, models.RegCancelled).Count(&n)
+		return n
+	}
+	before := registrations()
+
+	// A person cancels d4 by hand. Sam is told once.
+	if w := admin.do("POST", "/api/v1/events/"+eid+"/cancel", map[string]any{"date": d4}, true); w.Code != http.StatusOK {
+		t.Fatalf("cancel d4: %d %s", w.Code, w.Body.String())
+	}
+	if got := occ(d4); got.Status != models.OccurrenceCancelled || got.CancelSource != models.CancelSourceManual {
+		t.Fatalf("d4 after manual cancel: %+v", got)
+	}
+
+	// Ending the series on d1 drops d2 and d3; d4 stays a manual cancellation.
+	if w := admin.do("PUT", "/api/v1/events/"+eid, map[string]any{"rruleUntil": d1}, true); w.Code != http.StatusOK {
+		t.Fatalf("until: %d %s", w.Code, w.Body.String())
+	}
+	for _, d := range []string{d2, d3} {
+		if got := occ(d); got.Status != models.OccurrenceCancelled || got.CancelSource != models.CancelSourceSeries {
+			t.Fatalf("%s after until: %+v", d, got)
+		}
+	}
+	if got := occ(d4); got.CancelSource != models.CancelSourceManual {
+		t.Fatalf("d4 source changed: %q", got.CancelSource)
+	}
+	if got := count(sam, "Cancelled: Prayer"); got != 3 {
+		t.Fatalf("sam cancelled notices = %d, want 3 (d2, d3, d4)", got)
+	}
+	if got := count(pat, "Cancelled: Prayer"); got != 0 {
+		t.Fatalf("pat (maybe) cancelled notices = %d", got)
+	}
+	if registrations() != before {
+		t.Fatal("cancelling changed registrations")
+	}
+
+	// Clearing the end date brings d2 and d3 back, not d4.
+	if w := admin.do("PUT", "/api/v1/events/"+eid, map[string]any{"rruleUntil": ""}, true); w.Code != http.StatusOK {
+		t.Fatalf("clear until: %d %s", w.Code, w.Body.String())
+	}
+	for _, d := range []string{d2, d3} {
+		if got := occ(d); got.Status != models.OccurrenceScheduled || got.CancelSource != "" || got.StartsAt.UTC().Hour() != 19 {
+			t.Fatalf("%s after clearing until: %+v", d, got)
+		}
+	}
+	if got := occ(d4); got.Status != models.OccurrenceCancelled || got.CancelSource != models.CancelSourceManual {
+		t.Fatalf("manually cancelled d4 came back: %+v", got)
+	}
+	if got := count(sam, "Back on: Prayer"); got != 2 {
+		t.Fatalf("sam back-on notices = %d, want 2 (d2, d3)", got)
+	}
+	if got := count(pat, "Back on: Prayer"); got != 0 {
+		t.Fatalf("pat (maybe) back-on notices = %d", got)
+	}
+	if registrations() != before {
+		t.Fatalf("restoring changed registrations: %d then %d", before, registrations())
+	}
+	var audits int64
+	app.DB.Model(&models.AuditLog{}).Where("action = ? AND target_type = 'event' AND target_id = ?", audit.EventDatesRestored, created.Event.ID).Count(&audits)
+	if audits != 1 {
+		t.Fatalf("restore audit rows = %d", audits)
+	}
+
+	// Cancelling again after a restore tells people again.
+	if w := admin.do("PUT", "/api/v1/events/"+eid, map[string]any{"rruleUntil": d1}, true); w.Code != http.StatusOK {
+		t.Fatalf("until again: %d %s", w.Code, w.Body.String())
+	}
+	if got := count(sam, "Cancelled: Prayer"); got != 5 {
+		t.Fatalf("sam cancelled notices after second cut = %d, want 5", got)
 	}
 }

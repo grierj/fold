@@ -620,3 +620,26 @@ func TestAccountRequestListReadBudgetAndInviterNames(t *testing.T) {
 		t.Fatalf("self request: %+v", got)
 	}
 }
+
+// A rate-limited invite-a-friend gets the door's own message, never the
+// self-signup text, so the limit stays invisible (DEC-52).
+func TestRateLimitedInviteFriendAnswersWithItsOwnMessage(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "pw", models.RoleAdmin)
+	newTestUser(t, app, "sam", "pw", models.RoleMember)
+	sam := loginAPI(t, app, "sam", "pw")
+	sam.ip = "10.6.7.7"
+	if err := app.DB.Create(&models.LoginThrottle{Key: "acctreq:ip:" + rateLimitIP(sam.ip),
+		Failures: accountRequestIPLimit, WindowStart: time.Now()}).Error; err != nil {
+		t.Fatal(err)
+	}
+	w := sam.do("POST", "/api/v1/account-requests/invite-friend",
+		signupBody("Friend Fran", "fran@example.com", "adult", ""), true)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), signupThanks) ||
+		!strings.Contains(w.Body.String(), "your friend will hear from us") {
+		t.Fatalf("limited invite: %d %s", w.Code, w.Body.String())
+	}
+	if n := requestCount(t, app, "fran@example.com"); n != 0 {
+		t.Fatalf("limited invite stored %d rows", n)
+	}
+}

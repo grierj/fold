@@ -169,6 +169,33 @@ func TestSeriesRegistrationThisAndFollowingPreservesEarlierAndRemoved(t *testing
 	}
 }
 
+// The series path refuses childcare on an event without childcare, the same
+// 400 the single-date path gives, and leaves no rows behind.
+func TestSeriesRegistrationRefusesChildcareWhenUnavailable(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "series-care-leader", "password1234", models.RoleMember)
+	group := activeGroup(t, app, leader, "Series care group", models.VisibilityPublic, "")
+	actor := newTestUser(t, app, "series-care-actor", "password1234", models.RoleMember)
+	addMember(t, app, actor, &group, models.MembershipMember)
+	ev, occs := seedSeriesEvent(t, app, &group, leader.ID, nil, false, 2)
+	client := loginAPI(t, app, "series-care-actor", "password1234")
+
+	body := map[string]any{"scope": seriesScopeAllFuture, "status": models.RegGoing, "childcareCount": 1}
+	w := client.do("POST", fmt.Sprintf("/api/v1/events/%d/series-registrations", ev.ID), body, true)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), errChildcareUnavailable.Error()) {
+		t.Fatalf("childcare on a no-childcare series: %d %s", w.Code, w.Body.String())
+	}
+	var n int64
+	app.DB.Model(&models.Registration{}).Where("occurrence_id IN ?", []uint{occs[0].ID, occs[1].ID}).Count(&n)
+	if n != 0 {
+		t.Fatalf("refused series answer left %d rows", n)
+	}
+	body["childcareCount"] = 0
+	if out := postSeriesAnswer(client, ev.ID, body); out == nil || len(out.Results) != 2 {
+		t.Fatalf("zero childcare should answer both dates: %+v", out)
+	}
+}
+
 func TestSeriesRegistrationMixedCapacityAndLaterExtension(t *testing.T) {
 	app := testApp(t)
 	leader := newTestUser(t, app, "capacity-leader", "password1234", models.RoleMember)

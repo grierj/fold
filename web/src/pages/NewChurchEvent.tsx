@@ -107,12 +107,12 @@ export function NewChurchEvent() {
     } catch (err) {
       const msg = errorText(err, "We couldn't schedule the event.");
       setError(msg);
-      if (isChildcareCapacityError(msg)) { setChildcareError(msg); focusChildcareCapacity("church-event"); }
-      if (isRemoteError(msg)) {
+      if (isChildcareCapacityError(err)) { setChildcareError(msg); focusChildcareCapacity("church-event"); }
+      if (isRemoteError(err)) {
         setRemoteError(msg);
         focusRemoteCapacity("church-event");
       }
-      if (isVideoError(msg)) {
+      if (isVideoError(err)) {
         setVideoError(msg);
         focusVideoUrl("church-event");
       }

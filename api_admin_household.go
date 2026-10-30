@@ -242,12 +242,7 @@ func (a *App) apiAdminAddHouseholdPerson(c *gin.Context) {
 		return
 	}
 	a.deliverNotificationEmails(emailed)
-	links := guardianLinksForPeople(a.DB, []uint{person.ID})
-	batch, err := a.loadConversionBatch(a.DB, apiUser(c), person.HouseholdID, []uint{person.ID})
-	var row householdPersonJSON
-	if err == nil {
-		row, err = a.toHouseholdPersonJSON(&person, links[person.ID], apiUser(c), batch)
-	}
+	row, err := a.householdPersonRow(a.DB, &person, apiUser(c))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load that person")
 		return

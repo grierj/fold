@@ -433,6 +433,16 @@ func TestUpdateGroupTighteningUsesLockedVisibilityAndDecisions(t *testing.T) {
 	if eventRow(t, app, opened.ID).Visibility != models.VisibilityPrivate || date.VisibilityOverride == nil || *date.VisibilityOverride != models.VisibilityPrivate {
 		t.Fatal("opened series/date decisions were not applied")
 	}
+	// The audit row records the leader-opened flag the event had before it
+	// was tightened, not the cleared one.
+	var tightened models.AuditLog
+	if err := app.DB.Where("action = ? AND target_id = ? AND meta_json::text LIKE ?", audit.VisibilityChanged, opened.ID, "%leader_chose_tighten%").
+		First(&tightened).Error; err != nil {
+		t.Fatal(err)
+	}
+	if meta := strings.ReplaceAll(tightened.MetaJSON, " ", ""); !strings.Contains(meta, `"oldLeaderOpened":true`) || !strings.Contains(meta, `"leaderOpened":false`) {
+		t.Fatalf("tighten audit meta: %s", tightened.MetaJSON)
+	}
 }
 
 func TestUpdateGroupTighteningFailureRollsBackDependents(t *testing.T) {

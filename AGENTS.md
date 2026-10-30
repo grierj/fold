@@ -108,8 +108,10 @@ Postgres (`login_throttles`, see `api_auth.go`).
 - Migrations: every schema change is a **new** goose file in `migrations/`
   (`NNNNN_name.sql`); never edit an old one. The model change goes in the
   same PR and `models.All()`.
-- Tests: `make test` (`go test ./...` against `DATABASE_URL`; starts the
-  dev database if unset). Handler tests use `httptest` and the package's
+- Tests: `make test` (`go test ./...` against `DATABASE_URL`, with the root
+  package split across parallel processes by `scripts/go-test.sh`; starts the
+  dev database if unset). Tests hash passwords at bcrypt's cheapest cost; a
+  test that measures timing calls `realPasswordCost(t)` first. Handler tests use `httptest` and the package's
   Postgres database from `internal/testdb` (see `testhelpers_test.go` for the
   cookie-jar + CSRF-dance pattern — reuse it).
 - Frontend: `cd web && npm test` runs Vitest component tests
@@ -210,7 +212,7 @@ Grier's rule (Oct 22, 2026).
 
 ```bash
 make dev      # dev Postgres (deploy/docker-compose.dev.yml) + Go server + Vite
-make test     # go test ./... against DATABASE_URL (starts the dev DB if unset)
+make test     # go test ./... against DATABASE_URL, root package sharded (starts the dev DB if unset)
 make lint     # shell, Go (vet/gofmt/staticcheck), and web lint
 make e2e      # Playwright (Chromium) on a fresh Postgres database
 cd web && npm test        # Vitest component tests

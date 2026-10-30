@@ -630,7 +630,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.PUT("/groups/:id", a.apiAuth(), a.apiUpdateGroup)
 	v1.POST("/groups/:id/join", a.apiAuth(), a.apiJoinGroup)
 	v1.GET("/groups/:id/departure-preview", a.sessionAuth(), a.apiLeaveGroupDeparturePreview)
-	v1.POST("/groups/:id/leave", a.apiAuth(), a.apiLeaveGroup)
+	v1.POST("/groups/:id/leave", a.apiAuth(), a.apiLeaveGroupConfirmed)
 	v1.GET("/groups/:id/members/:userId/departure-preview", a.sessionAuth(), a.apiRemoveGroupMemberDeparturePreview)
 	v1.POST("/groups/:id/members/:userId/departure", a.apiAuth(), a.apiRemoveGroupMemberConfirmed)
 	v1.PUT("/groups/:id/members/:userId/role", a.apiAuth(), a.apiSetMemberRole)

@@ -63,7 +63,7 @@
             </div>
             <div>
                 <label class="label" for="password">Password</label>
-                <p class="mt-1 text-sm text-text-muted" id="password-hint">At least {{.PasswordMinimum}} characters.</p>
+                <p class="mt-1 text-sm text-text-muted" id="password-hint">At least {{.PasswordMinimum}} characters; at most {{.PasswordMaximum}} bytes (accents and emoji take more).</p>
                 <input class="input" id="password" type="password" name="password" autocomplete="new-password" aria-describedby="password-hint{{with index .FieldErrors "password"}} password-error{{end}}" required {{with index .FieldErrors "password"}}aria-invalid="true" {{end}}{{if eq .FirstError "password"}}autofocus {{end}}>
                 {{with index .FieldErrors "password"}}<p class="mt-1 flex items-center gap-1 text-sm text-danger" id="password-error"><span aria-hidden="true">⚠</span>{{.}}</p>{{end}}
             </div>
