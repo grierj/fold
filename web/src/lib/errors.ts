@@ -58,6 +58,7 @@ export const ERROR_COPY = {
   wrong_password: "Your current password isn't right. Try typing it again.",
   password_too_short: "Your password needs at least 10 characters.",
   password_too_long: "That password is too long. Use at most 72 bytes — about 72 letters, fewer with accents or emoji.",
+  message_has_contact: "Leave email addresses and phone numbers out of the message.",
   link_expired: "This link has expired or was already used. Ask for a new one and try again.",
   session_expired: "Your session timed out. Reload the page and try again.",
   signed_out: "You've been signed out. Please sign in again.",

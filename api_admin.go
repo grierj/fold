@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fold/internal/audit"
 	"fold/internal/notify"
@@ -54,18 +56,59 @@ func (a *App) apiApproveGroup(c *gin.Context) {
 		}
 		tags = &joined
 	}
-	a.decideGroup(c, notify.ActionApproveGroup, body.FromNotification, models.GroupActive, tags)
+	a.decideGroup(c, notify.ActionApproveGroup, body.FromNotification, models.GroupActive, tags, "")
+}
+
+// maxRejectMessage bounds the optional message to a rejected group's leaders.
+const maxRejectMessage = 500
+
+// Notification text never carries contact details (5.12), so free text that
+// becomes one is checked for an email address or a phone-shaped number: a run
+// of ten or more digits (with the usual separators), or a local number like
+// 555-0143. Dates such as 2026-11-05 or a 2026-2027 season are not phones.
+var (
+	digitRun    = regexp.MustCompile(`\+?\d[\d\s().-]{6,}\d`)
+	localNumber = regexp.MustCompile(`\b\d{3}[-.\s]\d{4}\b`)
+)
+
+func hasContactDetails(s string) bool {
+	if strings.Contains(s, "@") || localNumber.MatchString(s) {
+		return true
+	}
+	for _, run := range digitRun.FindAllString(s, -1) {
+		digits := 0
+		for _, r := range run {
+			if r >= '0' && r <= '9' {
+				digits++
+			}
+		}
+		if digits >= 10 {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) apiRejectGroup(c *gin.Context) {
 	var body struct {
-		FromNotification *uint `json:"fromNotification"`
+		FromNotification *uint  `json:"fromNotification"`
+		Message          string `json:"message"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	a.decideGroup(c, "reject", body.FromNotification, models.GroupArchived, nil)
+	// An optional message to the leaders, carried on their notice (DEC-96).
+	message := strings.TrimSpace(body.Message)
+	if utf8.RuneCountInString(message) > maxRejectMessage {
+		jsonError(c, http.StatusBadRequest, "message must be 500 characters or fewer")
+		return
+	}
+	if hasContactDetails(message) {
+		jsonError(c, http.StatusBadRequest, "leave contact details out of the message")
+		return
+	}
+	a.decideGroup(c, "reject", body.FromNotification, models.GroupArchived, nil, message)
 }
 
-func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint, status string, tags *string) {
+func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint, status string, tags *string, note string) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var g models.Group
 	if err := a.DB.First(&g, id).Error; err != nil {
@@ -101,12 +144,16 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &me.ID, outcome); err != nil {
 			return err
 		}
-		ids, err := notifyGroupDecided(tx, &g, me.ID, outcome == "approved")
+		ids, err := notifyGroupDecided(tx, &g, me.ID, outcome == "approved", note)
 		if err != nil {
 			return err
 		}
 		emailed = ids
-		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction, TargetType: "group", TargetID: g.ID, IP: c.ClientIP()})
+		var meta map[string]any
+		if note != "" {
+			meta = map[string]any{"message": note}
+		}
+		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction, TargetType: "group", TargetID: g.ID, Meta: meta, IP: c.ClientIP()})
 	})
 	if errors.Is(err, errHandled) {
 		a.alreadyHandled(c, notify.GroupPending, g.ID)

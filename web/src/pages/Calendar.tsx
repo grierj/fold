@@ -16,7 +16,7 @@ import { ViewSwitch } from "../components/ui/ViewSwitch";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { ChevronLeftIcon, ChevronRightIcon } from "../components/icons";
 import { DaySection } from "../components/calendar/EventRow";
-import { WeekView } from "../components/calendar/WeekView";
+import { WeekView, weekCountText } from "../components/calendar/WeekView";
 import { MonthView } from "../components/calendar/MonthView";
 
 // The calendar (M1.6, DEC-67): every date the viewer may see, as Agenda
@@ -43,6 +43,7 @@ export function CalendarPage() {
   const [occs, setOccs] = useState<CalendarOccurrence[]>([]);
   const [truncated, setTruncated] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
   const [groups, setGroups] = useState<GroupSummary[]>([]);
@@ -68,7 +69,11 @@ export function CalendarPage() {
         setTruncated(truncated);
       })
       .catch((e) => alive && setError(errorText(e, "We couldn't load the calendar.")))
-      .finally(() => alive && setLoading(false));
+      .finally(() => {
+        if (!alive) return;
+        setLoading(false);
+        setLoaded(true);
+      });
     return () => {
       alive = false;
     };
@@ -94,6 +99,14 @@ export function CalendarPage() {
   const step = (n: number) => go({ date: view === "month" ? addMonths(date, n) : addDays(date, 7 * n) });
   const unit = view === "month" ? "month" : "week";
   const daySelected = selected && selected.slice(0, 7) === month ? selected : today.slice(0, 7) === month ? today : `${month}-01`;
+  // The Remote seats and Childcare chips appear only when something in view
+  // has them (DEC-99). A selected chip always stays so the filter can be turned
+  // off. Before the first load we don't know, so they wait rather than flash.
+  const anyRemote = occs.some((o) => o.remoteAvailable);
+  const anyChildcare = occs.some((o) => o.childcareAvailable);
+  const showRemote = remote || (loaded && anyRemote);
+  const showChildcare = childcare || (loaded && anyChildcare);
+  const weekCount = weekDays.reduce((n, d) => n + (byDay.get(d)?.length ?? 0), 0);
   const groupName = groups.find((g) => String(g.id) === group)?.name ?? "this group";
 
   return (
@@ -132,10 +145,12 @@ export function CalendarPage() {
               Just mine
             </Chip>
           )}
-          <Chip selected={remote} onClick={() => go({ remote: remote ? null : "1" })}>
-            Remote seats
-          </Chip>
-          <Chip selected={childcare} onClick={() => go({ childcare: childcare ? null : "1" })}>Childcare</Chip>
+          {showRemote && (
+            <Chip selected={remote} onClick={() => go({ remote: remote ? null : "1" })}>
+              Remote seats
+            </Chip>
+          )}
+          {showChildcare && <Chip selected={childcare} onClick={() => go({ childcare: childcare ? null : "1" })}>Childcare</Chip>}
           {isAdmin && (
             <Chip selected={deleted} onClick={() => go({ deleted: deleted ? null : "1" })}>
               Show deleted events
@@ -191,9 +206,8 @@ export function CalendarPage() {
           )
         ) : (
           <>
-            {!loading && occs.length === 0 && (
-              <p className="mb-4 text-sm text-text-muted">{view === "week" ? "No events this week." : "No events this month."}</p>
-            )}
+            {!loading && view === "week" && <p className="mb-4 text-sm text-text-muted">{weekCountText(weekCount)}</p>}
+            {!loading && view === "month" && occs.length === 0 && <p className="mb-4 text-sm text-text-muted">No events this month.</p>}
             {view === "week" ? (
               <WeekView days={weekDays} byDay={byDay} today={today} />
             ) : (

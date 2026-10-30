@@ -43,6 +43,11 @@ func TestDecideCalendar(t *testing.T) {
 			f.ChurchWide = true
 			f.StartsAt = now.AddDate(0, 0, 30).Add(time.Nanosecond)
 		}), CalendarDecision{OwnScope: true}},
+		{"signed-out church-wide date is shown but never theirs", CalendarScopeAll, withCalendar(base, func(f *CalendarFacts) {
+			f.ChurchWide = true
+			f.SignedOut = true
+			f.StartsAt = now.AddDate(0, 0, 3)
+		}), CalendarDecision{Include: true}},
 		{"visible private date remains in all", CalendarScopeAll, withCalendar(base, func(f *CalendarFacts) { f.PublicDate = false; f.StartsAt = now.AddDate(0, 0, 90) }), CalendarDecision{Include: true}},
 	}
 	for _, tc := range tests {

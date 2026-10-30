@@ -1,14 +1,16 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
-import { beforeEach, expect, it, vi } from "vitest";
-import { AdminAccountRequests, AdminGroups, AdminUsers, Groups, Invitations, People, Site, ApiError } from "../api";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Admin, AdminAccountRequests, AdminGroups, AdminUsers, Groups, Invitations, People, Site, ApiError } from "../api";
 import { ERROR_COPY } from "../lib/errors";
 import { ContactHistory } from "../contact-history-api";
-import type { AccountRequest, User } from "../types";
+import type { AccountRequest, GroupSummary, User } from "../types";
 import { AdminPage } from "./Admin";
 
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1 }, loading: false, isAdmin: true }) }));
+// One stable object, like the real provider: a fresh one per render would re-run the page's load effects.
+const auth = vi.hoisted(() => ({ user: { id: 1 }, loading: false, isAdmin: true }));
+vi.mock("../auth", () => ({ useAuth: () => auth }));
 vi.mock("../contact-history-api", async (actual) => ({ ...await actual<typeof import("../contact-history-api")>(), ContactHistory: { people: vi.fn(), list: vi.fn(), csv: vi.fn() } }));
 vi.mock("../api", async (actual) => ({
   ...(await actual<typeof import("../api")>()),
@@ -16,7 +18,7 @@ vi.mock("../api", async (actual) => ({
   Invitations: { create: vi.fn() },
   Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() },
   AdminGroups: { list: vi.fn(), addMember: vi.fn() },
-  Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }) },
+  Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn() },
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }) },
   AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
   AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },
@@ -35,8 +37,15 @@ const request: AccountRequest = {
   decisionNote: "", expiresAt: "2026-12-01T00:00:00Z", createdAt: "2026-10-22T12:00:00Z",
 };
 
+const user = (id: number, name: string, extra: Partial<User> = {}): User => ({ id, name, displayName: "", email: `${name.toLowerCase().replace(/ /g, ".")}@example.com`, phone: "", hideContactFromLeaders: true, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC", ...extra });
+const group = (id: number, name: string, extra: Partial<GroupSummary> = {}): GroupSummary => ({ id, name, description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null, ...extra });
+
 beforeEach(() => {
   vi.mocked(Site.get).mockClear();
+  vi.mocked(Admin.pending).mockReset().mockResolvedValue({ groups: [] });
+  vi.mocked(Admin.approve).mockReset();
+  vi.mocked(Admin.reject).mockReset();
+  vi.mocked(Admin.deleteGroup).mockReset();
   vi.mocked(ContactHistory.people).mockReset().mockResolvedValue({ people: [] });
   vi.mocked(AdminUsers.list).mockResolvedValue({ users: [] });
   vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [] });
@@ -50,17 +59,36 @@ beforeEach(() => {
   vi.mocked(Groups.confirmMemberDeparture).mockReset();
 });
 
-it("keeps all five sections in a three-plus-two phone grid with shared chip targets", async () => {
+it("keeps all five sections in one scrolling row with shared chip targets", async () => {
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   await screen.findByText(request.name);
   const navigation = screen.getByRole("tablist", { name: "Admin sections" });
-  expect(navigation).toHaveClass("grid", "grid-cols-[auto_auto_auto]", "sm:flex");
+  expect(navigation).toHaveClass("flex", "min-w-max");
+  expect(navigation).not.toHaveClass("grid", "flex-wrap");
+  expect(navigation.parentElement).toHaveClass("overflow-x-auto");
   const buttons = within(navigation).getAllByRole("tab");
   expect(buttons).toHaveLength(5);
   for (const button of buttons) expect(button).toHaveClass("chip");
   expect(buttons[0]).toHaveAccessibleName("Approvals, 1 waiting");
   expect(buttons[0].textContent).toBe("Approvals 1");
   expect(within(buttons[0]).getByText("1")).toHaveAttribute("aria-hidden", "true");
+});
+
+it("counts users and groups on their tabs once they are known", async () => {
+  vi.mocked(AdminUsers.list).mockResolvedValue({ users: [user(1, "Ann"), user(2, "Bo")] });
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group(1, "A"), group(2, "B"), group(3, "C")] });
+  render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByRole("tab", { name: "Users, 2" })).toHaveTextContent("Users 2");
+  expect(await screen.findByRole("tab", { name: "Groups, 3" })).toHaveTextContent("Groups 3");
+  expect(screen.getByRole("tab", { name: "Invite" })).toHaveTextContent(/^Invite$/);
+  expect(AdminGroups.list).toHaveBeenCalledTimes(1);
+});
+
+it("shows no count on a tab whose list failed to load", async () => {
+  vi.mocked(AdminGroups.list).mockRejectedValue(new ApiError(500, "x"));
+  render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+  await screen.findByText(request.name);
+  expect(screen.getByRole("tab", { name: "Groups" })).toHaveTextContent(/^Groups$/);
 });
 
 it("keeps daily work above settings and opens the settings forms only on demand", async () => {
@@ -75,7 +103,7 @@ it("keeps daily work above settings and opens the settings forms only on demand"
   expect(screen.getByRole("group", { name: "Self-signup" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Schedule a church-wide event" })).toHaveAttribute("href", "/events/new");
   expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
-  await userEvent.click(screen.getByRole("tab", { name: "Users" }));
+  await userEvent.click(screen.getByRole("tab", { name: /^Users/ }));
   expect(screen.queryByRole("combobox", { name: "Church time zone" })).not.toBeInTheDocument();
 });
 
@@ -98,13 +126,175 @@ it("shows plain account badges rather than stored status and role codes", async 
   expect(screen.queryByText("pending_consent")).not.toBeInTheDocument();
 });
 
-it("labels group metadata and uses the shared size for every group action", async () => {
-  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [{ id: 3, name: "Choir", memberCount: 1, status: "active", leaderName: "Pat Leader" } as import("../types").GroupSummary] });
+it("labels only the groups that need attention and keeps one action beside More", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group(3, "Choir", { leaderName: "Pat Leader" })] });
   render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
-  expect(await screen.findByText("Active", { exact: true })).toBeInTheDocument();
-  expect(screen.getByText("1 member · Organized by Pat Leader")).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "Open & edit" })).toHaveClass("btn-secondary");
-  expect(screen.getByRole("link", { name: "Open & edit" })).not.toHaveClass("text-sm");
+  expect(await screen.findByText("1 member · Organized by Pat Leader")).toBeInTheDocument();
+  expect(screen.queryByText("Active", { exact: true })).not.toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Choir" })).toHaveAttribute("href", "/groups/3");
+  expect(screen.queryByRole("link", { name: "Open & edit" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Manage members" })).toHaveClass("btn-secondary");
+  expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "More for Choir" })).toBeInTheDocument();
+});
+
+it("lists pending groups first, then the rest by name, with a label only when not active", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [
+    group(1, "Zeta"), group(2, "Alpha", { status: "archived" }), group(3, "Mid", { status: "pending" }), group(4, "Beta"), group(5, "Aaa pending", { status: "pending" }),
+  ] });
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await screen.findByText("Aaa pending");
+  const names = screen.getAllByRole("link").map((l) => l.textContent).filter((t) => ["Zeta", "Alpha", "Mid", "Beta", "Aaa pending"].includes(t ?? ""));
+  expect(names).toEqual(["Aaa pending", "Mid", "Alpha", "Beta", "Zeta"]);
+  expect(screen.getAllByText("Pending approval")).toHaveLength(2);
+  expect(screen.getAllByText("Archived")).toHaveLength(1);
+  expect(screen.queryByText("Active", { exact: true })).not.toBeInTheDocument();
+});
+
+it("filters groups as you type and says when none match", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group(1, "Choir", { leaderName: "Pat Leader" }), group(2, "Youth night")] });
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await userEvent.type(await screen.findByRole("searchbox", { name: "Search groups" }), "CHOIR");
+  expect(screen.getByRole("link", { name: "Choir" })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Youth night" })).not.toBeInTheDocument();
+  await userEvent.clear(screen.getByRole("searchbox", { name: "Search groups" }));
+  await userEvent.type(screen.getByRole("searchbox", { name: "Search groups" }), "zzz");
+  expect(screen.getByText("No groups match")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Clear search" }));
+  expect(screen.getByRole("link", { name: "Youth night" })).toBeInTheDocument();
+});
+
+it("deletes a group from its More menu after the same confirm", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group(3, "Choir"), group(4, "Youth")] });
+  vi.mocked(Admin.deleteGroup).mockResolvedValue({});
+  const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: "More for Choir" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+  expect(confirmSpy).toHaveBeenCalledWith("Delete “Choir”? This removes the group, its members, and its events.");
+  expect(Admin.deleteGroup).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "More for Choir" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+  expect(Admin.deleteGroup).toHaveBeenCalledWith(3);
+  await waitFor(() => expect(screen.queryByRole("link", { name: "Choir" })).not.toBeInTheDocument());
+  const status = screen.getByText("“Choir” was deleted.");
+  expect(status).toHaveAttribute("role", "status");
+  await waitFor(() => expect(status).toHaveFocus());
+  expect(screen.getByRole("tab", { name: "Groups, 1" })).toBeInTheDocument();
+  expect(AdminGroups.list).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the delete status line in the page, empty, before anything is deleted", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group(3, "Choir")] });
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await screen.findByRole("link", { name: "Choir" });
+  const statuses = screen.getAllByRole("status").filter((el) => el.textContent === "");
+  expect(statuses.length).toBeGreaterThan(0);
+  expect(statuses[0]).not.toHaveClass("empty:hidden");
+});
+
+it("counts two deletes in a row from the one list", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [group(3, "Choir"), group(4, "Youth"), group(5, "Band")] });
+  vi.mocked(Admin.deleteGroup).mockResolvedValue({});
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: "More for Choir" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+  await screen.findByRole("tab", { name: "Groups, 2" });
+  await userEvent.click(screen.getByRole("button", { name: "More for Youth" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+  await screen.findByRole("tab", { name: "Groups, 1" });
+  expect(AdminGroups.list).toHaveBeenCalledTimes(1);
+});
+
+it("loads the groups once for the chip and the tab, and retries a failed load", async () => {
+  vi.mocked(AdminGroups.list).mockRejectedValueOnce(new ApiError(500, "x")).mockResolvedValue({ groups: [group(3, "Choir")] });
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: "Try again" }));
+  expect(await screen.findByRole("link", { name: "Choir" })).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "Groups, 1" })).toBeInTheDocument();
+  expect(AdminGroups.list).toHaveBeenCalledTimes(2);
+});
+
+it("does not refetch the groups when the tab opens, and refetches them once per group decision", async () => {
+  const pending = group(9, "Sunrise study", { status: "pending" });
+  vi.mocked(Admin.pending).mockResolvedValue({ groups: [pending] });
+  vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [] });
+  vi.mocked(Admin.approve).mockResolvedValue({ group: pending });
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [pending] });
+  render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+  await screen.findByText("Sunrise study");
+  await userEvent.click(screen.getByRole("tab", { name: "Groups, 1" }));
+  await screen.findByRole("button", { name: "Manage members" });
+  expect(AdminGroups.list).toHaveBeenCalledTimes(1);
+  await userEvent.click(screen.getByRole("tab", { name: /^Approvals/ }));
+  await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+  await screen.findByText(/approved/);
+  expect(AdminGroups.list).toHaveBeenCalledTimes(2);
+});
+
+it("leaves room before the Invite only label only when a status label comes first", async () => {
+  vi.mocked(AdminGroups.list).mockResolvedValue({ groups: [
+    group(1, "Open book", { visibility: "invite_only" }),
+    group(2, "Waiting", { visibility: "invite_only", status: "pending" }),
+  ] });
+  render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
+  await screen.findByText("Waiting");
+  const pills = screen.getAllByText("Invite only");
+  expect(pills).toHaveLength(2);
+  const [alone, withStatus] = [pills.find((p) => p.closest("div.bg-surface")?.textContent?.includes("Open book"))!, pills.find((p) => p.closest("div.bg-surface")?.textContent?.includes("Waiting"))!];
+  expect(alone).not.toHaveClass("ml-1.5");
+  expect(withStatus).toHaveClass("ml-1.5");
+});
+
+describe("Users search and filters", () => {
+  const people = [
+    user(1, "Ann Admin", { role: "admin" }),
+    user(2, "Bo Member", { displayName: "Bobby" }),
+    user(3, "Cy Off", { status: "disabled" }),
+    user(4, "Di Invited", { status: "invited" }),
+  ];
+  const rows = () => screen.getAllByRole("row").slice(1);
+
+  it("filters by name, display name or email as you type, ignoring case", async () => {
+    vi.mocked(AdminUsers.list).mockResolvedValue({ users: people });
+    render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+    const box = await screen.findByRole("searchbox", { name: "Search by name or email" });
+    expect(rows()).toHaveLength(4);
+    await userEvent.type(box, "BOBBY");
+    expect(rows()).toHaveLength(1);
+    await userEvent.clear(box);
+    await userEvent.type(box, "di.invited@");
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toHaveTextContent("Di Invited");
+    await userEvent.clear(box);
+    await userEvent.type(box, "ann admin");
+    expect(rows()).toHaveLength(1);
+  });
+
+  it.each([["Admins", "Ann Admin"], ["Disabled", "Cy Off"], ["Invited", "Di Invited"]])("the %s chip keeps only %s", async (chip, name) => {
+    vi.mocked(AdminUsers.list).mockResolvedValue({ users: people });
+    render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+    expect(await screen.findByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByRole("button", { name: chip }));
+    expect(screen.getByRole("button", { name: chip })).toHaveAttribute("aria-pressed", "true");
+    expect(rows()).toHaveLength(1);
+    expect(rows()[0]).toHaveTextContent(name);
+    await userEvent.click(screen.getByRole("button", { name: "All" }));
+    expect(rows()).toHaveLength(4);
+  });
+
+  it("says No one matches in a neutral empty state and can clear both", async () => {
+    vi.mocked(AdminUsers.list).mockResolvedValue({ users: people });
+    render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+    await userEvent.click(await screen.findByRole("button", { name: "Admins" }));
+    await userEvent.type(screen.getByRole("searchbox", { name: "Search by name or email" }), "nobody");
+    expect(screen.getByText("No one matches")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Clear search and filter" }));
+    expect(rows()).toHaveLength(4);
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute("aria-pressed", "true");
+  });
 });
 
 it.each([
@@ -199,7 +389,7 @@ it("offers a teen Ask to add without a leader-role shortcut", async () => {
   render(<MemoryRouter initialEntries={["/admin?tab=groups"]}><AdminPage /></MemoryRouter>);
   await userEvent.click(await screen.findByRole("button", { name: "Manage members" }));
   await userEvent.type(screen.getByRole("combobox", { name: "Find a person by name" }), "Pat"); await userEvent.click(await screen.findByRole("option", { name: /Teen Pat/ }));
-  expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
+  expect(screen.getByText(/Adding a teen needs their approval/)).toHaveAttribute("role", "status");
   expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
   await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
   expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
@@ -312,4 +502,163 @@ it("invites without a group by default, confirms in a status and clears the form
   expect(Invitations.create).toHaveBeenCalledWith({ email: "new@example.com", name: undefined, groupId: null });
   expect(await screen.findByRole("status")).toHaveTextContent("Invitation sent to new@example.com.");
   expect(screen.getByLabelText("Email")).toHaveValue("");
+});
+
+describe("Approvals: new groups", () => {
+  const pending = group(9, "Sunrise study", { status: "pending", tags: ["music", "worship"], leaderName: "Lee Leader" });
+  const open = async () => {
+    vi.mocked(Admin.pending).mockResolvedValue({ groups: [pending] });
+    vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [] });
+    render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+    await screen.findByText("Sunrise study");
+  };
+
+  it("shows the leader's tags as text and opens the tags field only on Edit tags", async () => {
+    await open();
+    expect(screen.getByText("Tags: music, worship")).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: /^Tags/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Edit tags for Sunrise study" }));
+    expect(screen.getByRole("textbox", { name: /^Tags/ })).toHaveValue("music, worship");
+    expect(screen.queryByText("Tags: music, worship")).not.toBeInTheDocument();
+  });
+
+  it("moves focus to the tags field when it opens, and names each Edit tags button by its group", async () => {
+    vi.mocked(Admin.pending).mockResolvedValue({ groups: [pending, group(10, "Evening prayer", { status: "pending" })] });
+    vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [] });
+    render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+    await screen.findByText("Evening prayer");
+    const edit = screen.getByRole("button", { name: "Edit tags for Sunrise study" });
+    expect(edit).toHaveTextContent(/^Edit tags$/);
+    expect(screen.getByRole("button", { name: "Edit tags for Evening prayer" })).toBeInTheDocument();
+    await userEvent.click(edit);
+    expect(screen.getByRole("textbox", { name: /^Tags/ })).toHaveFocus();
+  });
+
+  it("approves without tags unless they were edited, then says so with a link", async () => {
+    vi.mocked(Admin.approve).mockResolvedValue({ group: pending });
+    await open();
+    vi.mocked(Admin.pending).mockResolvedValue({ groups: [] });
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(Admin.approve).toHaveBeenCalledWith(9, undefined);
+    const status = await screen.findByText(/“Sunrise study” approved\. Lee Leader was told\./);
+    expect(status).toHaveAttribute("role", "status");
+    expect(within(status).getByRole("link", { name: "View group" })).toHaveAttribute("href", "/groups/9");
+    await waitFor(() => expect(status).toHaveFocus());
+    expect(screen.getByText("All caught up")).toBeInTheDocument();
+  });
+
+  it("sends edited tags with the approval", async () => {
+    vi.mocked(Admin.approve).mockResolvedValue({ group: pending });
+    await open();
+    await userEvent.click(screen.getByRole("button", { name: "Edit tags for Sunrise study" }));
+    await userEvent.clear(screen.getByRole("textbox", { name: /^Tags/ }));
+    await userEvent.type(screen.getByRole("textbox", { name: /^Tags/ }), "kids, , prayer");
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(Admin.approve).toHaveBeenCalledWith(9, ["kids", "prayer"]);
+  });
+
+  it("opens a reject dialog instead of the browser confirm, with focus in the message", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
+    await open();
+    const reject = screen.getByRole("button", { name: "Reject" });
+    await userEvent.click(reject);
+    const dialog = screen.getByRole("dialog", { name: "Reject “Sunrise study”?" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(confirmSpy).not.toHaveBeenCalled();
+    const message = within(dialog).getByLabelText("Message to the leader (optional)");
+    expect(message).toHaveFocus();
+    expect(within(dialog).getByText("The group is archived and its leaders are told.")).toBeInTheDocument();
+    expect(within(dialog).getByText("They'll see this in Fold. Leave out email addresses and phone numbers.")).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Reject group" })).toHaveClass("btn-danger");
+    expect(Admin.reject).not.toHaveBeenCalled();
+  });
+
+  it("falls back to Its leaders when the group has no leader name", async () => {
+    vi.mocked(Admin.approve).mockResolvedValue({ group: pending });
+    vi.mocked(Admin.pending).mockResolvedValue({ groups: [group(9, "Sunrise study", { status: "pending", leaderName: "" })] });
+    vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [] });
+    render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+    await screen.findByText("Sunrise study");
+    vi.mocked(Admin.pending).mockResolvedValue({ groups: [] });
+    await userEvent.click(screen.getByRole("button", { name: "Approve" }));
+    expect(await screen.findByText(/“Sunrise study” approved\. Its leaders were told\./)).toBeInTheDocument();
+  });
+
+  it("cancels with the Cancel button or Escape and returns focus to Reject", async () => {
+    await open();
+    const reject = screen.getByRole("button", { name: "Reject" });
+    await userEvent.click(reject);
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(reject).toHaveFocus();
+    await userEvent.click(reject);
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(reject).toHaveFocus();
+    expect(Admin.reject).not.toHaveBeenCalled();
+  });
+
+  it("keeps Tab inside the dialog", async () => {
+    await open();
+    await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+    const dialog = screen.getByRole("dialog");
+    const message = within(dialog).getByRole("textbox");
+    await userEvent.tab({ shift: true });
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    await userEvent.tab();
+    expect(message).toHaveFocus();
+  });
+
+  it("sends the message, closes, and says the group was rejected without a View group link", async () => {
+    vi.mocked(Admin.reject).mockResolvedValue({});
+    await open();
+    vi.mocked(Admin.pending).mockResolvedValue({ groups: [] });
+    await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+    await userEvent.type(screen.getByRole("textbox", { name: /^Message to the leader/ }), "Please pick a different name.");
+    await userEvent.click(screen.getByRole("button", { name: "Reject group" }));
+    expect(Admin.reject).toHaveBeenCalledWith(9, "Please pick a different name.");
+    const status = await screen.findByText(/“Sunrise study” rejected\. Lee Leader was told\./);
+    expect(status).toHaveAttribute("role", "status");
+    expect(within(status).queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("rejects with no message when the box is left empty", async () => {
+    vi.mocked(Admin.reject).mockResolvedValue({});
+    await open();
+    await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reject group" }));
+    expect(Admin.reject).toHaveBeenCalledWith(9, undefined);
+  });
+
+  it.each(["message_has_contact", "too_long"] as const)("shows %s under the field and keeps the dialog open with the text", async (code) => {
+    vi.mocked(Admin.reject).mockRejectedValue(new ApiError(400, "private server text", { code }));
+    await open();
+    await userEvent.click(screen.getByRole("button", { name: "Reject" }));
+    const message = screen.getByRole("textbox", { name: /^Message to the leader/ });
+    await userEvent.type(message, "Call 555 123 4567");
+    await userEvent.click(screen.getByRole("button", { name: "Reject group" }));
+    const dialog = screen.getByRole("dialog");
+    expect(await within(dialog).findByText(ERROR_COPY[code])).toBeInTheDocument();
+    expect(message).toHaveAccessibleDescription(new RegExp(ERROR_COPY[code].slice(0, 20)));
+    expect(message).toHaveValue("Call 555 123 4567");
+    expect(within(dialog).getByRole("button", { name: "Reject group" })).toBeEnabled();
+    expect(screen.queryByText("private server text")).not.toBeInTheDocument();
+    expect(screen.getByText("Sunrise study", { selector: "a" })).toBeInTheDocument();
+  });
+
+  it("clears the status line when another decision is made", async () => {
+    vi.mocked(Admin.approve).mockResolvedValue({ group: pending });
+    vi.mocked(AdminAccountRequests.approve).mockResolvedValue({ request, userId: 8 });
+    vi.mocked(Admin.pending).mockResolvedValue({ groups: [pending] });
+    vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [request] });
+    render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+    await screen.findByText("Sunrise study");
+    const card = screen.getByText("Sunrise study", { selector: "a" }).closest("div.bg-surface") as HTMLElement;
+    await userEvent.click(within(card).getByRole("button", { name: "Approve" }));
+    await screen.findByText(/“Sunrise study” approved/);
+    const accountCard = (await screen.findByText(request.name)).closest("div.bg-surface") as HTMLElement;
+    await userEvent.click(within(accountCard).getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(screen.queryByText(/“Sunrise study” approved/)).not.toBeInTheDocument());
+  });
 });

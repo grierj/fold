@@ -13,10 +13,10 @@ func TestCalendarScopeDecisionUsesEffectiveDateVisibility(t *testing.T) {
 	opened := models.VisibilityPublic
 	ev := &models.Event{Visibility: models.VisibilityInviteOnly, GroupID: uintp(1)}
 	occ := &models.EventOccurrence{VisibilityOverride: &opened, StartsAt: now.AddDate(0, 0, 31)}
-	if got := calendarScopeDecision(policy.CalendarScopeAll, true, ev, occ, policy.Rel{}, false, false, false, "", now); got.Include {
+	if got := calendarScopeDecision(policy.CalendarScopeAll, true, true, ev, occ, policy.Rel{}, false, false, false, "", now); got.Include {
 		t.Fatalf("an effectively public unanswered date outside the window was included: %+v", got)
 	}
-	if got := calendarScopeDecision(policy.CalendarScopeMine, true, ev, occ, policy.Rel{Member: true}, false, false, false, "", now); !got.Include || !got.OwnScope {
+	if got := calendarScopeDecision(policy.CalendarScopeMine, true, true, ev, occ, policy.Rel{Member: true}, false, false, false, "", now); !got.Include || !got.OwnScope {
 		t.Fatalf("membership did not exempt an own-group date: %+v", got)
 	}
 }

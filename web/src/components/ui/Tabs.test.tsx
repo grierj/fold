@@ -40,3 +40,12 @@ it.each(["chips", "underline"] as const)("links %s tabs and panels with one tab 
   expect(events).toHaveFocus();
   expect(screen.getByRole("navigation")).toHaveClass("overflow-x-auto");
 });
+
+it("pulls the chips bar out by its own padding so the first chip meets the content edge", () => {
+  const { unmount } = render(<Example variant="chips" />);
+  expect(screen.getByRole("navigation")).toHaveClass("-mx-1");
+  expect(screen.getByRole("tablist")).toHaveClass("px-1");
+  unmount();
+  render(<Example variant="underline" />);
+  expect(screen.getByRole("navigation")).not.toHaveClass("-mx-1");
+});

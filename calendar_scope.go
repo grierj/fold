@@ -96,7 +96,7 @@ func (a *App) loadCalendarScopeBatch(viewer *models.User, occurrenceIDs []uint) 
 	return out, err
 }
 
-func calendarScopeDecision(scope policy.CalendarScope, authorized bool, ev *models.Event, occ *models.EventOccurrence, rel policy.Rel, hosted, household, exact bool, ownStatus string, now time.Time) policy.CalendarDecision {
+func calendarScopeDecision(scope policy.CalendarScope, signedIn, authorized bool, ev *models.Event, occ *models.EventOccurrence, rel policy.Rel, hosted, household, exact bool, ownStatus string, now time.Time) policy.CalendarDecision {
 	publicDate := false
 	churchWide := false
 	if ev != nil {
@@ -107,5 +107,6 @@ func calendarScopeDecision(scope policy.CalendarScope, authorized bool, ev *mode
 		Authorized: authorized, GroupMember: rel.Member, ChurchWide: churchWide,
 		Host: hosted, OwnStatus: ownStatus, HouseholdDate: household,
 		ExactDate: exact, PublicDate: publicDate, StartsAt: occ.StartsAt,
+		SignedOut: !signedIn,
 	}, now)
 }

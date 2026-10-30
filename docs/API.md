@@ -1059,6 +1059,8 @@ GET  /api/v1/admin/deletions               → {groups: [groupSummary]}  (admin;
 POST /api/v1/admin/groups/:id/approve      → 200 {group}               (admin)
      body: {tags: []}
 POST /api/v1/admin/groups/:id/reject       → 200 {}                    (admin; archives the group)
+     body: {message?} — optional, at most 500 characters, carried on the leaders' group.rejected notice and the
+     audit row (DEC-96); 400 too_long, or message_has_contact when it holds an email address or phone number
 POST /api/v1/admin/groups/:id/reject-deletion → 200 {}               (admin; clears the request)
 DELETE /api/v1/admin/groups/:id            → 200 {}                    (admin; deletes the group)
 GET  /api/v1/admin/groups                  → {groups: [groupSummary]}  (admin; all statuses)

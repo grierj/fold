@@ -288,7 +288,7 @@ describe("Home signed in (DEC-94)", () => {
     expect(rows[0]).toHaveTextContent("Going");
     // The same badge the calendar rows use: an icon for Going, the label as its name.
     const badge = within(rows[0]).getByLabelText("Going");
-    expect(badge).toHaveClass("inline-flex", "rounded-sm");
+    expect(badge).toHaveClass("inline-flex", "text-success-on-subtle");
     expect(badge.querySelector("svg")).not.toBeNull();
     expect(within(rows[0]).getByRole("link")).toHaveAttribute("href", "/events/1/dates/2030-01-11");
     expect(rows[1]).toHaveTextContent("Maybe");
