@@ -917,6 +917,10 @@ func TestHouseholdOnlyPersonalFeedKeepsDetailsPrivate(t *testing.T) {
 	if !strings.Contains(raw, ev.Title) || !strings.Contains(raw, videoLink) {
 		t.Fatalf("missing personal date/link %s", raw)
 	}
+	uid := fmt.Sprintf("event-%d-%s@", ev.ID, strings.ReplaceAll(date, "-", ""))
+	if block := feedEventWithUIDPrefix(raw, uid); !strings.Contains(block, "STATUS:TENTATIVE\r\n") || strings.Contains(block, "STATUS:CONFIRMED") {
+		t.Fatalf("household scope became the viewer's RSVP: %s", block)
+	}
 	for _, secret := range []string{"Mary", "Kit", "Private allergy note", "household", "2020-05-01"} {
 		if strings.Contains(raw, secret) {
 			t.Fatalf("feed leak %s", raw)
@@ -1277,4 +1281,83 @@ func mustBuildFeed(t *testing.T, app *App, viewer *models.User, opts feedOptions
 		t.Fatalf("build feed: %v", err)
 	}
 	return feed
+}
+
+func TestPersonalFeedHouseholdScopeKeepsOwnRSVPPrecedence(t *testing.T) {
+	for _, recurring := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recurring=%v", recurring), func(t *testing.T) {
+			app := testApp(t)
+			newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			admin := loginAPI(t, app, "admin", "password1234")
+			gid := createFeedGroup(t, admin, "Household RSVP", models.VisibilityPublic, "Hall")
+			owner, client, spouse, _ := householdFamily(t, app, admin, "household feed owner")
+			// Beyond discovery's 30-day window, only actual own/household
+			// ties can put these non-member dates in either feed scope.
+			start := feedStart(60)
+			states := []string{"", models.RegMaybe, models.RegWaitlisted, models.RegGoing, models.RegDeclined}
+			var dates []models.EventOccurrence
+			if recurring {
+				ev := createFeedEvent(t, admin, gid, "Household series", start, weeklyRule(start)+";COUNT=5")
+				if err := app.DB.Where("event_id = ?", ev.ID).Order("starts_at").Find(&dates).Error; err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				for i := range states {
+					ev := createFeedEvent(t, admin, gid, fmt.Sprintf("Household date %d", i), start.AddDate(0, 0, i), "")
+					var occ models.EventOccurrence
+					if err := app.DB.Where("event_id = ?", ev.ID).First(&occ).Error; err != nil {
+						t.Fatal(err)
+					}
+					dates = append(dates, occ)
+				}
+			}
+			if len(dates) != len(states) {
+				t.Fatalf("fixture has %d dates, want %d", len(dates), len(states))
+			}
+			for i, occ := range dates {
+				batchAnswer(t, client, occ.EventID, occ.OriginalDate, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": models.RegGoing}}}, http.StatusOK)
+				if states[i] != "" {
+					reg := models.Registration{UserID: &owner.ID, OccurrenceID: occ.ID, Status: states[i], AttendanceMode: models.AttendanceInPerson, Source: "web"}
+					if err := app.DB.Create(&reg).Error; err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			for _, scope := range []string{models.CalendarFeedMine, models.CalendarFeedAll} {
+				raw := unfoldFeed(feedBody(t, client, createFeedLink(t, client, scope)))
+				if strings.Count(raw, "BEGIN:VEVENT") != 4 || strings.Contains(raw, "RRULE:") || strings.Contains(raw, "RECURRENCE-ID:") {
+					t.Fatalf("scope=%s recreated an omitted date: %s", scope, raw)
+				}
+				for i, occ := range dates {
+					uid := fmt.Sprintf("event-%d-%s@", occ.EventID, strings.ReplaceAll(occ.OriginalDate, "-", ""))
+					block := feedEventWithUIDPrefix(raw, uid)
+					if states[i] == models.RegDeclined {
+						if block != "" {
+							t.Fatalf("scope=%s household Going overrode own Can't go: %s", scope, block)
+						}
+						continue
+					}
+					want := "TENTATIVE"
+					if states[i] == models.RegGoing {
+						want = "CONFIRMED"
+					}
+					if !strings.Contains(block, "STATUS:"+want+"\r\n") {
+						t.Fatalf("scope=%s own=%q: want %s in %s", scope, states[i], want, block)
+					}
+				}
+				for _, secret := range []string{"Mary", "Kit", "Private allergy note", "householdPerson", "2020-05-01"} {
+					if strings.Contains(raw, secret) {
+						t.Fatalf("scope=%s leaked %q", scope, secret)
+					}
+				}
+			}
+			var householdGoing int64
+			if err := app.DB.Model(&models.Registration{}).Where("household_person_id = ? AND status = ?", spouse.ID, models.RegGoing).Count(&householdGoing).Error; err != nil {
+				t.Fatal(err)
+			}
+			if householdGoing != int64(len(states)) {
+				t.Fatalf("own RSVP/feed changed household attendance: %d Going", householdGoing)
+			}
+		})
+	}
 }

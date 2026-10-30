@@ -481,6 +481,27 @@ func TestHouseholdOnlyCalendarDoesNotOverwriteOwnStatus(t *testing.T) {
 			t.Fatalf("calendar leak %s", raw)
 		}
 	}
+	if code, body := registerAs(c, eventID, date, models.RegDeclined, nil); code != http.StatusOK {
+		t.Fatalf("own Can't go: %d %s", code, body)
+	}
+	window := "from=" + date + "&to=" + date + "&tz=UTC"
+	page, raw = getCalendar(t, c, window+"&mine=1", http.StatusOK)
+	if len(page.Occurrences) != 0 {
+		t.Fatalf("household Going overrode own Can't go in Just mine: %s", raw)
+	}
+	page, raw = getCalendar(t, c, window, http.StatusOK)
+	if len(page.Occurrences) != 1 || page.Occurrences[0].MyStatus == nil || *page.Occurrences[0].MyStatus != models.RegDeclined || !page.Occurrences[0].OwnScope {
+		t.Fatalf("Everything lost own Can't go: %s", raw)
+	}
+	for _, secret := range []string{"Mary", "householdPerson", "careNotes", "birthDate"} {
+		if strings.Contains(raw, secret) {
+			t.Fatalf("declined calendar leaked household data: %s", raw)
+		}
+	}
+	var going int64
+	if err := app.DB.Model(&models.Registration{}).Where("household_person_id = ? AND status = ?", spouse.ID, models.RegGoing).Count(&going).Error; err != nil || going != 1 {
+		t.Fatalf("own Can't go changed household attendance: %d Going, err=%v", going, err)
+	}
 }
 
 func TestCalendarScopedInvitationIsOneSlimGoingDate(t *testing.T) {

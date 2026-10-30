@@ -901,6 +901,12 @@ Fold sits between leaders and the people they reach, so nobody's personal addres
 | Personal feed | `/cal/u/<token>.ics` | secret token in the URL | Option A, "My events" (`mine`, default): the viewer's own scope (DEC-72/73) — occurrences the user is `going`, `maybe` or `waitlisted` for, all events of groups they belong to, church-wide dates, events they host (DEC-7), and events their household people are registered for (DEC-8). Option B, "Everything I can see" (`all`): every date the user may see. Both scopes follow DEC-71/77 from M1.14: Going is `CONFIRMED`, Maybe, Not answered and Waitlisted are `TENTATIVE`, Can't go dates are omitted, an unanswered public date of another group appears only in `all` and only within the 30-day window, and an unanswered church-wide date appears only within the window. Video links included when the user may see them. |
 | Room feed | `/cal/rooms/<roomId>/<token>.ics` | admin-issued token | All bookings for the room. Invite-only bookings are titled "Reserved". |
 
+Personal-feed status follows the **viewer’s own answer** (DEC-71). Household
+registrations supply scope, not the viewer’s RSVP: a household-only Going date is
+`TENTATIVE` when the viewer has not answered. The viewer’s Can't go omits the date
+from both `mine` and `all` even when a household person is Going, without changing
+that person’s registration. Video eligibility is separate from this status.
+
 Token rules:
 
 - 32 random bytes, base64url, shown once. Only the SHA-256 hash is stored.

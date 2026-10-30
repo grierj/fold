@@ -94,7 +94,12 @@ the date's effective remote capacity is unlimited or positive, even if the paren
 series is hidden. Zero capacity omits the marker, not the date or an independently
 authorized video link; a full positive-capacity pool still advertises remote attendance.
 Going is `STATUS:CONFIRMED`; Maybe, Waitlisted and Not answered are
-`STATUS:TENTATIVE`; Can't go is omitted. Public and group dates are `CONFIRMED`.
+`STATUS:TENTATIVE`; Can't go is omitted. These are the viewer's own answers:
+household registrations supply scope, not an RSVP for the viewer. A household-only
+Going date is therefore `TENTATIVE`, and the viewer's Can't go omits it from both
+personal scopes even when a household person is Going; their registration is unchanged.
+Video eligibility is checked separately and does not change this status.
+Public and group dates are `CONFIRMED`.
 
 Date-specific UIDs across all feeds are an intentional pre-release wire correction
 from earlier series masters and detached `(series UID, RECURRENCE-ID)` rows.
