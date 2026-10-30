@@ -2,10 +2,10 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Admin, AdminAccountRequests, AdminGroups, AdminUsers, Groups, Invitations, People, Site, ApiError } from "../api";
+import { Admin, AdminAccountRequests, AdminGroups, AdminRooms, AdminUsers, Groups, Invitations, People, Site, ApiError } from "../api";
 import { ERROR_COPY } from "../lib/errors";
 import { ContactHistory } from "../contact-history-api";
-import type { AccountRequest, GroupSummary, User } from "../types";
+import type { AccountRequest, GroupSummary, Room, User } from "../types";
 import { AdminPage } from "./Admin";
 
 // One stable object, like the real provider: a fresh one per render would re-run the page's load effects.
@@ -22,7 +22,8 @@ vi.mock("../api", async (actual) => ({
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }) },
   AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
   AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },
-  Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off" }) },
+  AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn() },
+  Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false }) },
 }));
 
 function HistoryDestination() {
@@ -41,7 +42,9 @@ const user = (id: number, name: string, extra: Partial<User> = {}): User => ({ i
 const group = (id: number, name: string, extra: Partial<GroupSummary> = {}): GroupSummary => ({ id, name, description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null, ...extra });
 
 beforeEach(() => {
-  vi.mocked(Site.get).mockClear();
+  vi.mocked(Site.get).mockReset().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false });
+  vi.mocked(AdminRooms.list).mockReset().mockResolvedValue({ rooms: [] });
+  vi.mocked(AdminRooms.setEnabled).mockReset();
   vi.mocked(Admin.pending).mockReset().mockResolvedValue({ groups: [] });
   vi.mocked(Admin.approve).mockReset();
   vi.mocked(Admin.reject).mockReset();
@@ -97,7 +100,6 @@ it("keeps daily work above settings and opens the settings forms only on demand"
   expect(screen.getByRole("tab", { name: /^Approvals/ })).toHaveAttribute("aria-selected", "true");
   expect(screen.queryByRole("combobox", { name: "Church time zone" })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Schedule a church-wide event" })).not.toBeInTheDocument();
-  expect(Site.get).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole("tab", { name: "Settings" }));
   expect(await screen.findByRole("combobox", { name: "Church time zone" })).toBeInTheDocument();
   expect(screen.getByRole("group", { name: "Self-signup" })).toBeInTheDocument();
@@ -661,4 +663,85 @@ describe("Approvals: new groups", () => {
     await userEvent.click(within(accountCard).getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(screen.queryByText(/“Sunrise study” approved/)).not.toBeInTheDocument());
   });
+});
+
+const hall: Room = { id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, features: "kitchen", notes: "", active: true, restricted: false, defaultSetupMinutes: 30, defaultTeardownMinutes: 0 };
+const withRooms = (roomsEnabled: boolean) => vi.mocked(Site.get).mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled });
+
+it("shows no Rooms tab while rooms are off", async () => {
+  render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+  await screen.findByText(request.name);
+  await waitFor(() => expect(Site.get).toHaveBeenCalled());
+  expect(screen.queryByRole("tab", { name: /^Rooms/ })).not.toBeInTheDocument();
+  expect(AdminRooms.list).not.toHaveBeenCalled();
+});
+
+it("shows the Rooms tab after Groups, with its count, while rooms are on", async () => {
+  withRooms(true);
+  vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall] });
+  render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+  const tab = await screen.findByRole("tab", { name: "Rooms, 1" });
+  const tabs = screen.getAllByRole("tab").map((t) => t.textContent?.replace(/\d+$/, "").trim());
+  expect(tabs.indexOf("Rooms")).toBe(tabs.indexOf("Groups") + 1);
+  await userEvent.click(tab);
+  expect(await screen.findByText("Fellowship Hall")).toBeInTheDocument();
+});
+
+it("falls back to Approvals for a bookmarked Rooms tab when rooms are off", async () => {
+  render(<MemoryRouter initialEntries={["/admin?tab=rooms"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText(request.name)).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: /^Approvals/ })).toHaveAttribute("aria-selected", "true");
+});
+
+it("opens a bookmarked Rooms tab once /site says rooms are on", async () => {
+  withRooms(true);
+  vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall] });
+  render(<MemoryRouter initialEntries={["/admin?tab=rooms"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText("Fellowship Hall")).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: /^Rooms/ })).toHaveAttribute("aria-selected", "true");
+});
+
+it("reads the rooms switch from /site and saves it the moment it changes, then shows the tab", async () => {
+  vi.mocked(AdminRooms.setEnabled).mockResolvedValue({ roomsEnabled: true });
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
+  expect(box).not.toBeChecked();
+  expect(screen.getByText("Book rooms for events and see what's booked. Turning this off hides rooms; nothing is deleted.")).toBeInTheDocument();
+  expect(screen.queryByRole("tab", { name: /^Rooms/ })).not.toBeInTheDocument();
+  await userEvent.click(box);
+  expect(AdminRooms.setEnabled).toHaveBeenCalledWith(true);
+  expect(await screen.findByText("Saved")).toHaveClass("text-success");
+  expect(box).toBeChecked();
+  expect(await screen.findByRole("tab", { name: /^Rooms/ })).toBeInTheDocument();
+});
+
+it("starts the rooms switch on when /site says rooms are on, and hides the tab when it is turned off", async () => {
+  withRooms(true);
+  vi.mocked(AdminRooms.setEnabled).mockResolvedValue({ roomsEnabled: false });
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
+  await waitFor(() => expect(box).toBeChecked());
+  expect(await screen.findByRole("tab", { name: /^Rooms/ })).toBeInTheDocument();
+  await userEvent.click(box);
+  expect(AdminRooms.setEnabled).toHaveBeenCalledWith(false);
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
+  expect(box).not.toBeChecked();
+  await waitFor(() => expect(screen.queryByRole("tab", { name: /^Rooms/ })).not.toBeInTheDocument());
+});
+
+it("disables the rooms switch while it saves and puts it back with an error when saving fails", async () => {
+  let fail: (e: unknown) => void = () => {};
+  vi.mocked(AdminRooms.setEnabled).mockReturnValue(new Promise((_, reject) => { fail = reject; }));
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
+  await userEvent.click(box);
+  expect(box).toBeDisabled();
+  expect(box).toBeChecked();
+  await act(async () => { fail(new ApiError(500, "private server text")); });
+  expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't save that setting.");
+  expect(box).not.toBeChecked();
+  expect(box).toBeEnabled();
+  expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+  expect(screen.queryByText("private server text")).not.toBeInTheDocument();
+  expect(screen.queryByRole("tab", { name: /^Rooms/ })).not.toBeInTheDocument();
 });

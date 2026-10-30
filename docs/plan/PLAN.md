@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-100.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-102.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-100; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-102; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-100) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-102) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -260,7 +260,7 @@ The field lists show the important columns, not every column. Every table has `i
 
 **Site and settings**
 
-- `Setting(key, value)`: exists. Keys include `church_name`, `timezone` (IANA, required), `church_address` (for email footers and legal pages), `rooms_enabled` (bool), `self_signup` (`off|request`, default `request`; there is no "open" mode, DEC-4), `sms_send_window_start` (default `08:00`), `sms_send_window_end` (default `20:00`; both read in each recipient's local time, DEC-9, DEC-25), `sms_registration_path` (`ein_10dlc|ein_toll_free|sole_prop_10dlc|sole_prop_toll_free`, DEC-3), `guardian_copies` (bool, default false; email copies only, DEC-19, DEC-29), `jitsi_domain`.
+- `Setting(key, value)`: exists. Keys include `church_name`, `timezone` (IANA, required), `church_address` (for email footers and legal pages), `rooms_enabled` (bool), `room_bookings_need_approval` (bool, default false, DEC-102), `self_signup` (`off|request`, default `request`; there is no "open" mode, DEC-4), `sms_send_window_start` (default `08:00`), `sms_send_window_end` (default `20:00`; both read in each recipient's local time, DEC-9, DEC-25), `sms_registration_path` (`ein_10dlc|ein_toll_free|sole_prop_10dlc|sole_prop_toll_free`, DEC-3), `guardian_copies` (bool, default false; email copies only, DEC-19, DEC-29), `jitsi_domain`.
 - `SetupState(step, status pending|done|skipped, data_json, updated_at)`: one row per wizard step. The first-run gate and the SPA wizard read this table, not a cached "any user exists" flag (M4.2).
 - `ProviderConfig(kind, provider, settings_json, secrets_enc, status, verified_at, last_error)` (from M4.1). `kind` is `email|sms|storage|video|dns|backup_offsite`. One active row per kind; email may have a second row marked `fallback`.
 
@@ -326,7 +326,7 @@ The field lists show the important columns, not every column. Every table has `i
 
 **Rooms (optional; hidden when `rooms_enabled=false`)**
 
-- `Room(name, building, capacity, features, notes, active, restricted, color)`. `restricted` rooms (for example the nursery) can be booked only by admins.
+- `Room(name, building, capacity, features, notes, active, restricted, default_setup_minutes, default_teardown_minutes, color)`. `restricted` rooms (for example the nursery) can be booked only by admins. Each booking copies the room's default setup and teardown minutes; an admin may override them on one booking (DEC-101). `color` arrives with M2.2, when the by-room view uses it.
 - `RoomBooking(occurrence_id, room_id, starts_at, ends_at, setup_minutes, teardown_minutes, padded_range tstzrange, status confirmed|requested|rejected, allow_overlap, overlap_reason, created_by)`. The app computes `padded_range = [starts_at - setup, ends_at + teardown)` on every insert and update (a `timestamptz - interval` expression is not immutable, so it cannot be used inside the constraint). Conflicts are enforced by a PostgreSQL exclusion constraint `EXCLUDE USING gist (room_id WITH =, padded_range WITH &&) WHERE (status = 'confirmed' AND NOT allow_overlap)`, using `btree_gist` (DEC-1). A `CHECK` keeps `padded_range` consistent with the four source columns. An admin double-booking sets `allow_overlap=true` with a reason.
 
 **Messaging and consent**
@@ -1666,13 +1666,13 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 **M2.1 Rooms and bookings**
 
 - **M2.1a Room catalog and the rooms switch**
-  - Database: `rooms` (5.3 `Room` fields) and the `rooms_enabled` setting (default off).
-  - API: admin CRUD under `/api/v1/admin/rooms`, `policy.CanManageRooms`; every room endpoint answers 404 while rooms are off. `GET /api/v1/rooms` lists active rooms to people who may book (`policy.CanBookRoom`), without notes for non-admins.
+  - Database: `rooms` (5.3 `Room` fields with the DEC-101 default padding; `color` waits for M2.2) and the `rooms_enabled` setting (default off).
+  - API: admin create, edit and deactivate under `/api/v1/admin/rooms` (no delete: history stays), `policy.CanManageRooms`, audited; every room endpoint answers 404 while rooms are off; `GET /site` says whether rooms are on.
   - UI: a Rooms tab in Admin (list, add, edit, deactivate; restricted rooms labelled), and a Rooms on/off switch in admin Settings that saves at once (DEC-98).
   - Acceptance: with rooms off no room UI shows and every room endpoint is 404; only admins manage rooms; deactivating keeps history.
 - **M2.1b One booking on one date**
   - Database: `room_bookings` with `padded_range`, the `CHECK` that it matches the times and padding, and the exclusion constraint on confirmed bookings (5.3, 9.2).
-  - API: book, change and release the room of one occurrence; `room_busy` (409) names the conflict window but never the other event; admins may double-book with a reason (`room_booking.overlap` audit row); restricted rooms are admin-only; a capacity warning (not a block) when the event's capacity or going count is above the room's. Cancelling a date releases its booking.
+  - API: `GET /api/v1/rooms` lists active rooms to people who may book (`policy.CanBookRoom`), without notes for non-admins, restricted rooms for admins only. Book, change and release the room of one occurrence, with the padding copied from the room (DEC-101); `room_busy` (409) names the conflict window but never the other event; admins may double-book with a reason (`room_booking.overlap` audit row); restricted rooms are admin-only; a capacity warning (not a block) when the event's capacity or going count is above the room's. Cancelling a date releases its booking.
   - UI: a Room field beside Location (not under More options, DEC-95) in "Edit this date" and the shared `SeriesEditor`, with busy rooms marked; the date card and event page show the room as the place.
   - Acceptance: two concurrent bookings of overlapping padded ranges, exactly one wins (database and API); padding edges (touching ranges don't conflict); leaders can't book restricted rooms; the double-book reason is audited.
 - **M2.1c Series bookings and moving dates**
@@ -1681,9 +1681,10 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - UI: the event create forms get the Room field (with "whole series" for a series); the event page lists dates that lost their room with a "Pick a room" action.
   - Acceptance: a series of 10 books 10 dates; editing the series time moves every booking; a moved date that now conflicts is `requested` and named in one notice; the extender books new dates and handles conflicts the same way.
 - **M2.1d Requested bookings and matching old locations**
+  - Setting: `room_bookings_need_approval` (DEC-102) and its switch in admin Settings; with it on, leader and host bookings start `requested` and create an admin task.
   - API: admins list requested bookings, confirm one (with a double-book reason if it still conflicts) or reject it (the leader is told); leaders re-pick. The 9.1 "match locations" helper lists distinct free-text locations with counts and lets an admin map one to a room, which books matching future dates where free and reports the rest. Running it again books nothing twice.
   - UI: a "Needs a room" list on the admin Rooms tab and the match-locations helper.
-  - Acceptance: confirming a still-conflicting request needs a reason; rejecting notifies; re-picking replaces the requested booking; the helper never overwrites a leader's typed location and is idempotent.
+  - Acceptance: with approval on, a leader's booking is `requested` and holds nothing until confirmed; confirming a still-conflicting request needs a reason; rejecting notifies; re-picking replaces the requested booking; the helper never overwrites a leader's typed location and is idempotent.
 - Tests across M2.1: conflict table tests (padding edges, moved and restored dates, extender), policy tables for `CanManageRooms` and `CanBookRoom`, migration drift, and a Playwright path for book, conflict and double-book.
 
 **M2.2 By-room view and room feed**
@@ -2123,6 +2124,8 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-98 | **On/off settings save at once** (Grier, Oct 30, 2026; audit #21). A single on/off setting (Privacy's hide-contact switch, admin self-signup) saves when changed, shows "Saved", and returns to its old value with an error if saving fails. Text and choice fields keep a Save button, and leaving a page with unsaved edits asks first. | M1.1, M4.2 |
 | DEC-99 | **Audit polish** (Grier, Oct 30, 2026; audit #14, #16, #17, #19, #20, #23–25). Leaders get "Manage sign-ups" in the group page's date menu and one "Add people" panel (name search first, then an email that adds an account or invites); the date page uses the event card. Signed out, nothing is "your" calendar scope, so no date reads "Not answered"; calendar answer labels are quiet text (DEC-71's labels kept); empty week days shrink. Admin users and groups get search, filters, counts, pending-first groups and Delete inside More; their search boxes use the same `SearchBox` exception as Home (screen-reader label, placeholder; DEC-65). Me groups its rows under You, Family and Sharing with descriptions. Copy: "See all 10 dates", "Church-wide event" when no hosts, sentence-case headings, header "Sign up" for account requests, "New group" in both headers (DEC-62), one Log in button on sign-in pages. Delight: "Today"/"Tonight" on the next meeting, "Only 3 seats left" at five or fewer, and a leader's first-meeting nudge on an empty group. | 5.3, 8.1, M1.6, M1.11, M1.14 |
 | DEC-100 | **A room suggestion's event type is its group's tags** (Grier, Oct 30, 2026; Phase 2 review). Events get no category field. For 9.3 Rule 3 two events are the same type when their groups share a tag; a church-wide event has no tags and skips the type filter, while Rule 4 still ranks same-series and same-group use first. | 5.3, 9.3, M2.3 |
+| DEC-101 | **Rooms carry their setup and teardown time** (Grier, Oct 30, 2026; M2.1 planning). An admin gives each room default setup and teardown minutes (0 unless set, at most 240). A booking copies them into its own padding, so leaders never enter it; an admin may override the padding on one booking. Conflicts compare the padded ranges (9.2). | 5.3, 9.2, M2.1 |
+| DEC-102 | **Room bookings can need an admin's approval** (Grier, Oct 30, 2026; M2.1 planning). A setting, "Room bookings need an admin's approval" (`room_bookings_need_approval`, default off). Off, a leader's or host's booking is confirmed at once and only conflicts block it (DEC-30). On, it starts `requested`, holds nothing, and appears in the admin "Needs a room" list as a task; admins' own bookings always confirm at once. The setting ships with that list in M2.1d. | 5.3, 9.2, M2.1 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 

@@ -100,6 +100,10 @@ setup("first-run setup and seed data", async ({ page, request }) => {
   const { event: householdEvent } = await adminAgain("POST", `/groups/${group.id}/events`, { title: "Household check night", startsLocal: starts, durationMinutes: 60, tzid: "UTC", capacity: 1, waitlistEnabled: true, remoteAvailable: true, remoteCapacity: 1, childcareAvailable: true, childcareCapacity: 1 });
   const parentAgain = await apiAs(request, "household-parent");
   await parentAgain("PUT", `/events/${householdEvent.id}/registrations`, { date: starts.slice(0, 10), status: "going", attendanceMode: "remote", people: [{ personId: kit.id, status: "going", attendanceMode: "in_person", childcareRequested: true }, { personId: mary.id, status: "going", attendanceMode: "in_person" }] });
+  // Rooms are on, with one room, so the room screens are covered (M2.1a).
+  const roomsAdmin = await apiAs(request, "grier");
+  await roomsAdmin("PUT", "/admin/settings/rooms", { enabled: true });
+  await roomsAdmin("POST", "/admin/rooms", { name: "Fellowship Hall", building: "Main", capacity: 80, features: "kitchen, projector", defaultSetupMinutes: 30 });
   // The household seed's notices are handled; leave the admin bell as the
   // other specs expect.
   await (await apiAs(request, "grier"))("POST", "/notifications/read-all", {});

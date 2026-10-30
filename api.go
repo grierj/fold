@@ -655,6 +655,11 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// the viewer can see without seeing their group.
 	v1.GET("/site", a.apiSite)
 	v1.PUT("/admin/timezone", a.apiAuth(), a.apiAdmin(), a.apiSetTimezone)
+	// Rooms (M2.1a): every room route is 404 while rooms are off (9.1).
+	v1.PUT("/admin/settings/rooms", a.apiAuth(), a.apiAdmin(), a.apiSetRoomsEnabled)
+	v1.GET("/admin/rooms", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminListRooms)
+	v1.POST("/admin/rooms", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminCreateRoom)
+	v1.PUT("/admin/rooms/:id", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminUpdateRoom)
 	v1.GET("/events", a.optionalUser(), a.apiListOpenEvents)
 	// The calendar (M1.6): every occurrence the viewer may see over a
 	// date range, as slim rows with no attendee data.

@@ -130,6 +130,7 @@ import type {
   HouseholdConversion,
   Member,
   Notification,
+  Room,
   NotificationSettings as NotificationSettingsData,
   NotificationFeed,
   NotificationFilter,
@@ -266,7 +267,7 @@ export const Groups = {
 };
 
 export const Site = {
-  get: () => api<{ name: string; timezone: string; selfSignup: "request" | "off" }>("/site"),
+  get: () => api<{ name: string; timezone: string; selfSignup: "request" | "off"; roomsEnabled: boolean }>("/site"),
 };
 
 export interface AccountRequestInput {
@@ -687,3 +688,24 @@ export function attendeeSubject(row: Attendee): { kind: "user"; userId: number }
   if (row.userId === undefined && row.householdPerson) return { kind: "household", person: row.householdPerson };
   return null;
 }
+
+// Rooms (M2.1a). Everything answers 404 while rooms are off. On update, absent
+// fields keep their value and a null capacity clears the limit.
+export interface RoomInput {
+  name?: string;
+  building?: string;
+  capacity?: number | null;
+  features?: string;
+  notes?: string;
+  active?: boolean;
+  restricted?: boolean;
+  defaultSetupMinutes?: number;
+  defaultTeardownMinutes?: number;
+}
+
+export const AdminRooms = {
+  list: () => api<{ rooms: Room[] }>("/admin/rooms"),
+  create: (body: RoomInput) => api<{ room: Room }>("/admin/rooms", { method: "POST", body }),
+  update: (id: number, body: RoomInput) => api<{ room: Room }>(`/admin/rooms/${id}`, { method: "PUT", body }),
+  setEnabled: (enabled: boolean) => api<{ roomsEnabled: boolean }>("/admin/settings/rooms", { method: "PUT", body: { enabled } }),
+};
