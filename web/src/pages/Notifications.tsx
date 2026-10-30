@@ -30,8 +30,8 @@ export function NotificationsPage() {
   const showWaiting = isAdmin || feed.waitingTotal > 0 || filter === "waiting";
   return (
     <div className="max-w-2xl mx-auto px-4 pb-8">
-      <div className="sticky top-[var(--fold-header-height,4rem)] z-5 bg-page -mx-4 px-4 pt-6 pb-3">
-        <div className="flex flex-wrap items-center gap-x-4">
+      <div className="sticky top-[var(--fold-header-height,4rem)] z-5 bg-page -mx-4 px-4 pt-4 sm:pt-6 pb-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <h1 className="text-3xl font-bold mr-auto">Alerts</h1>
           <ButtonLink to="/profile/notifications" variant="link">
             Email settings
@@ -39,10 +39,10 @@ export function NotificationsPage() {
           {filter !== "archived" && (
             <Button
               variant="link"
-              layout="disabled:text-text-muted disabled:no-underline"
+              layout="aria-disabled:text-text-muted aria-disabled:no-underline"
               title="Items waiting on you stay until they're handled"
-              disabled={badge.unread === 0}
-              onClick={feed.readAll}
+              aria-disabled={badge.unread === 0}
+              onClick={() => badge.unread > 0 && feed.readAll()}
             >
               Mark all as read
             </Button>

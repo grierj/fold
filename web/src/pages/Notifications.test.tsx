@@ -52,7 +52,7 @@ describe("Mark all as read", () => {
   it("works when something is unread", async () => {
     open();
     const btn = await screen.findByRole("button", { name: "Mark all as read" });
-    await waitFor(() => expect(btn).toBeEnabled());
+    await waitFor(() => expect(btn).toHaveAttribute("aria-disabled", "false"));
     await userEvent.click(btn);
     expect(api.readAll).toHaveBeenCalled();
   });
@@ -62,7 +62,10 @@ describe("Mark all as read", () => {
     open();
     await screen.findByRole("link", { name: /Pat made Sam a leader/ });
     await waitFor(() => expect(api.badge).toHaveBeenCalled());
-    expect(screen.getByRole("button", { name: "Mark all as read" })).toBeDisabled();
+    const btn = screen.getByRole("button", { name: "Mark all as read" });
+    expect(btn).toHaveAttribute("aria-disabled", "true");
+    await userEvent.click(btn);
+    expect(api.readAll).not.toHaveBeenCalled();
   });
 });
 
@@ -76,7 +79,7 @@ describe("icons by kind", () => {
     ["event.cancelled", "calendar"], ["event.changed", "calendar"], ["event.restored", "calendar"],
     ["occurrence.changed", "calendar"], ["registration.promoted", "calendar"], ["waitlist.cutoff", "calendar"],
     ["account.requested", "person"], ["add.admin_review", "person"], ["household.link_pending", "person"],
-    ["group.pending", "check"], ["group.approved", "check"],
+    ["group.pending", "group"], ["group.approved", "check"],
     ["membership.left", "group"], ["group.leadership_changed", "group"], ["group.rejected", "group"], ["group.deletion", "group"],
     ["teen_consent.changed", "shield"], ["contact.admin_review", "shield"],
     ["something.new", "generic"],

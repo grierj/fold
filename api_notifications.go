@@ -810,30 +810,49 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 	if len(userIDs) == 0 {
 		return
 	}
-	var users []models.User
-	if err := a.DB.Where("id IN ?", userIDs).Find(&users).Error; err != nil {
+	// Each recipient comes with the email consent scopes they opted out of
+	// (DEC-97), in the same read, so a batch stays at two reads.
+	var users []emailRecipient
+	if err := a.DB.Model(&models.User{}).Select(`users.*, COALESCE((
+		SELECT string_agg(latest.scope, ',') FROM (
+			SELECT DISTINCT ON (c.scope) c.scope, c.status FROM consents c
+			WHERE c.user_id = users.id AND c.channel = ? ORDER BY c.scope, c.at DESC, c.id DESC
+		) latest WHERE latest.status = ?), '') AS email_opt_outs`, models.ConsentEmail, models.ConsentOptedOut).
+		Where("users.id IN ?", userIDs).Find(&users).Error; err != nil {
 		// Mark nothing suppressed: without a delivery record the rows stay
 		// pending, so a later delivery pass can still send them.
 		log.Printf("notification email: loading %d recipients: %v", len(userIDs), err)
 		return
 	}
 	byID := make(map[uint]*models.User, len(users))
+	optOuts := make(map[uint]map[string]bool, len(users))
 	for i := range users {
-		byID[users[i].ID] = &users[i]
-	}
-	optOuts, err := emailOptOuts(a.DB, userIDs)
-	if err != nil {
-		// As above: no record, so a later pass can still decide.
-		log.Printf("notification email: loading consent for %d recipients: %v", len(userIDs), err)
-		return
+		byID[users[i].ID] = &users[i].User
+		for _, scope := range strings.Split(users[i].EmailOptOuts, ",") {
+			if scope == "" {
+				continue
+			}
+			if optOuts[users[i].ID] == nil {
+				optOuts[users[i].ID] = map[string]bool{}
+			}
+			optOuts[users[i].ID][scope] = true
+		}
 	}
 	for i := range rows {
 		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID], optOuts[rows[i].UserID])
 	}
 }
 
+// emailRecipient is a notification email recipient with the comma-joined
+// email consent scopes whose latest record opts out.
+type emailRecipient struct {
+	models.User
+	EmailOptOuts string
+}
+
 // emailOptOuts maps each user to the email consent scopes whose latest
-// record opts out (5.12, DEC-97).
+// record opts out (5.12, DEC-97). Delivery reads the same thing alongside
+// each recipient's account (deliverNotificationEmails).
 func emailOptOuts(db *gorm.DB, userIDs []uint) (map[uint]map[string]bool, error) {
 	var rows []models.Consent
 	if err := db.Raw(`SELECT DISTINCT ON (user_id, scope) user_id, scope, status FROM consents
@@ -950,7 +969,8 @@ func (a *App) apiGetNotificationSettings(c *gin.Context) {
 // apiUpdateNotificationSettings turns all optional email off or back on by
 // appending one consent row per optional category whose state changes
 // (DEC-97). Required email (account, safety, requests waiting on you) is
-// never affected.
+// never affected. The append-only consents rows, with their IP and user
+// agent, are the record of the change (5.3), so no AuditLog row is added.
 func (a *App) apiUpdateNotificationSettings(c *gin.Context) {
 	var body struct {
 		OptionalEmailOff *bool `json:"optionalEmailOff"`
@@ -967,7 +987,7 @@ func (a *App) apiUpdateNotificationSettings(c *gin.Context) {
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		// One writer per person at a time, so two quick toggles can't
 		// interleave their rows.
-		if err := tx.Exec("SELECT 1 FROM users WHERE id = ? FOR UPDATE", me.ID).Error; err != nil {
+		if err := tx.Exec("SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE", me.ID).Error; err != nil {
 			return err
 		}
 		optOuts, err := emailOptOuts(tx, []uint{me.ID})

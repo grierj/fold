@@ -984,4 +984,25 @@ func TestOptionalEmailSwitch(t *testing.T) {
 	if n := contactCount(t, app, &models.Consent{}, "user_id = ? AND status = 'opted_in'", leader.ID); n != int64(optional) {
 		t.Fatalf("%d opt-in rows, want %d", n, optional)
 	}
+
+	// Back on, the latest row wins: the next optional email is sent.
+	decodeJSON(t, lc.do("POST", "/api/v1/groups", map[string]any{"name": "Loud group"}, true), &body)
+	if w := adminClient.do("POST", "/api/v1/admin/groups/"+itoa(body.Group.ID)+"/reject", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("reject: %d", w.Code)
+	}
+	var rejected models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", leader.ID, notify.GroupRejected).First(&rejected).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n := contactCount(t, app, &models.NotificationDelivery{}, "notification_id = ? AND status = ?", rejected.ID, models.DeliverySent); n != 1 {
+		t.Fatalf("optional email after turning it back on: %d sent", n)
+	}
+
+	// Consent history is evidence: it can't be edited or removed.
+	if err := app.DB.Exec("UPDATE consents SET status = 'opted_in' WHERE user_id = ?", leader.ID).Error; err == nil {
+		t.Fatal("consent rows accepted an UPDATE")
+	}
+	if err := app.DB.Exec("DELETE FROM consents WHERE user_id = ?", leader.ID).Error; err == nil {
+		t.Fatal("consent rows accepted a DELETE")
+	}
 }

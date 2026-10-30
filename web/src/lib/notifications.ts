@@ -266,10 +266,10 @@ export function resolutionText(n: Notification): string {
 export type KindIcon = "calendar" | "person" | "check" | "group" | "shield" | "generic";
 
 // kindIcon picks the row icon from the registry key's family (audit item 22),
-// so an admin alert about an event looks like an event. Order matters: the
-// two group decisions come before the rest of group.*.
+// so an admin alert about an event looks like an event. A task still waiting
+// (group.pending) shows the group icon; only the decision reads as done.
 export function kindIcon(kind: string): KindIcon {
-  if (kind === "group.pending" || kind === "group.approved") return "check";
+  if (kind === "group.approved") return "check";
   if (/^(event|occurrence|registration|waitlist)\./.test(kind)) return "calendar";
   if (/^(account|add|household)\./.test(kind)) return "person";
   if (/^(membership|group)\./.test(kind)) return "group";

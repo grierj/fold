@@ -27,8 +27,7 @@ it("shows a skeleton line while loading, then the switch as the server has it", 
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   await act(async () => { finish({ settings: { optionalEmailOff: true } }); });
   expect(await screen.findByRole("checkbox", { name: new RegExp(`^${label}`) })).toBeChecked();
-  expect(screen.getByText(/You'll still get emails about your account, safety, and requests waiting on you/)).toBeInTheDocument();
-  expect(screen.getByText(/In-app alerts are always on/)).toBeInTheDocument();
+  expect(screen.getByText(/Stops emails about group and event updates/)).toBeInTheDocument();
 });
 
 it("saves on change with no Save button and says Saved", async () => {

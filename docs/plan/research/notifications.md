@@ -98,7 +98,8 @@ shows the account's email; authorized full review can show the necessary details
 Use EmptyState with a short explanation of the updates that would appear.
 Waiting and Archived filters have their own neutral empty wording. Do not
 create a fake welcome notification just to fill the list. Offer only actions
-that exist; no settings link before M3.12.
+that exist; no settings link before M3.12 (DEC-97 since brings the "Turn off
+all optional email" switch early, so Alerts links to Me > Notifications).
 
 ### 6.8 Preferences (future M3.12)
 

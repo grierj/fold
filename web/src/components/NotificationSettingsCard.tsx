@@ -42,12 +42,9 @@ export function NotificationSettingsCard() {
 
   if (loadError) return <ErrorNotice message={loadError} onRetry={load} />;
   if (off === null) return <Skeleton kind="lines" count={1} label="Loading your email settings…" />;
-  return <div className="space-y-3">
-    <div className="bg-surface rounded-lg border border-border p-6 space-y-3">
-      {error && <FormError>{error}</FormError>}
-      <Checkbox label="Turn off all optional email" description="You'll still get emails about your account, safety, and requests waiting on you. Everything still shows in Alerts." checked={off} disabled={saving} onChange={(e) => void change(e.target.checked)} />
-      <p role="status" className="text-success text-sm">{saved ? "Saved" : ""}</p>
-    </div>
-    <p className="text-sm text-text-muted">In-app alerts are always on. Account, safety and request emails can't be turned off.</p>
+  return <div className="bg-surface rounded-lg border border-border p-6 space-y-3">
+    {error && <FormError>{error}</FormError>}
+    <Checkbox label="Turn off all optional email" description="Stops emails about group and event updates, waitlist changes and leader changes. You'll still get emails about your account, safety and requests waiting on you, and everything still shows in Alerts." checked={off} disabled={saving} onChange={(e) => void change(e.target.checked)} />
+    <p role="status" className="text-success text-sm">{saved ? "Saved" : ""}</p>
   </div>;
 }
