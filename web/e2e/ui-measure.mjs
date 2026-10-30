@@ -39,19 +39,40 @@ export const measure = () => {
   // pushed past the viewport's sides. The page itself doesn't scroll
   // sideways in that case, so the overflow check alone misses it (PR #65
   // review F1: Admin Users actions inside overflow-hidden at 390).
-  const cutOff = [...document.querySelectorAll("a[href],button,input:not([type=hidden]),select,textarea,[role=button],[role=tab],summary")]
-    .filter((e) => vis(e) && !e.closest("[aria-hidden=true]"))
+  // A tab bar scrolls sideways inside its own bar on purpose (DEC-99); the
+  // active tab is kept in view and a half-shown chip signals there is more.
+  // So a tab is exempt only against that scroller (the nearest ancestor of its
+  // tablist that scrolls sideways); any other ancestor still counts, and the
+  // scroller itself is checked below like a control.
+  const tabScroller = (e) => {
+    if (!e.matches("[role=tab]")) return null;
+    const list = e.closest("[role=tablist]");
+    for (let a = list && list.parentElement; a && a !== document.body; a = a.parentElement) {
+      if (/(auto|scroll)/.test(getComputedStyle(a).overflowX)) return a;
+    }
+    return null;
+  };
+  const controls = [...document.querySelectorAll("a[href],button,input:not([type=hidden]),select,textarea,[role=button],[role=tab],summary")]
+    .filter((e) => vis(e) && !e.closest("[aria-hidden=true]"));
+  const scrollers = new Set(controls.map(tabScroller).filter(Boolean));
+  const cutOff = [...controls, ...scrollers]
     .filter((e) => {
+      const own = tabScroller(e);
       const r = e.getBoundingClientRect();
-      // A tab bar scrolls sideways inside its own bar on purpose (DEC-99); the
-      // active tab is kept in view and a half-shown chip signals there is more.
-      if (e.matches("[role=tab]")) return false;
-      if (r.left < -1 || r.right > window.innerWidth + 1) return true;
+      let left = r.left, right = r.right;
+      // Only the part of a tab inside its scroller is on show.
+      if (own) {
+        const b = own.getBoundingClientRect();
+        left = Math.max(left, b.left);
+        right = Math.min(right, b.right);
+      }
+      if (left < -1 || right > window.innerWidth + 1) return true;
       for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) {
+        if (a === own) continue;
         const s = getComputedStyle(a);
         if (/(hidden|clip|auto|scroll)/.test(s.overflowX)) {
           const b = a.getBoundingClientRect();
-          if (r.left < b.left - 1 || r.right > b.right + 1) return true;
+          if (left < b.left - 1 || right > b.right + 1) return true;
         }
       }
       return false;

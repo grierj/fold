@@ -62,9 +62,32 @@ func (a *App) apiApproveGroup(c *gin.Context) {
 // maxRejectMessage bounds the optional message to a rejected group's leaders.
 const maxRejectMessage = 500
 
-// contactPattern spots an email address or phone number in free text that
-// would become notification text, which never carries contact details (5.12).
-var contactPattern = regexp.MustCompile(`@|\+?\d[\d\s().-]{6,}\d`)
+// Notification text never carries contact details (5.12), so free text that
+// becomes one is checked for an email address or a phone-shaped number: a run
+// of ten or more digits (with the usual separators), or a local number like
+// 555-0143. Dates such as 2026-11-05 or a 2026-2027 season are not phones.
+var (
+	digitRun    = regexp.MustCompile(`\+?\d[\d\s().-]{6,}\d`)
+	localNumber = regexp.MustCompile(`\b\d{3}[-.\s]\d{4}\b`)
+)
+
+func hasContactDetails(s string) bool {
+	if strings.Contains(s, "@") || localNumber.MatchString(s) {
+		return true
+	}
+	for _, run := range digitRun.FindAllString(s, -1) {
+		digits := 0
+		for _, r := range run {
+			if r >= '0' && r <= '9' {
+				digits++
+			}
+		}
+		if digits >= 10 {
+			return true
+		}
+	}
+	return false
+}
 
 func (a *App) apiRejectGroup(c *gin.Context) {
 	var body struct {
@@ -78,7 +101,7 @@ func (a *App) apiRejectGroup(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "message must be 500 characters or fewer")
 		return
 	}
-	if contactPattern.MatchString(message) {
+	if hasContactDetails(message) {
 		jsonError(c, http.StatusBadRequest, "leave contact details out of the message")
 		return
 	}

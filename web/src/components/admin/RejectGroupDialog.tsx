@@ -93,6 +93,7 @@ export function RejectGroupDialog({ groupName, onReject, onCancel }: {
         className="w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl bg-surface border border-border p-5 shadow-xl space-y-4"
       >
         <h2 id={titleId} className="text-xl font-bold">Reject “{groupName}”?</h2>
+        <p className="text-sm text-text-muted">The group is archived and its leaders are told.</p>
         <Field
           label="Message to the leader"
           optional

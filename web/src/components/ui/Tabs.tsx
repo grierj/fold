@@ -5,7 +5,8 @@ type Option<T extends string> = { id: T; label: ReactNode; accessibleName?: stri
 // Automatic-activation tabs: one Tab stop, arrows (wrapping), Home and End.
 // The active panel follows in reading order; overflow stays inside the bar.
 // Chip tabs are one row that scrolls sideways inside the bar on phones, never
-// wrapping onto uneven rows (DEC-99); the padding keeps focus rings unclipped.
+// wrapping onto uneven rows (DEC-99); the padding keeps focus rings unclipped,
+// and the bar's negative margin cancels it so the first chip meets the content edge.
 export function Tabs<T extends string>({ label, options, value, onChange, variant = "underline", children }: {
   label: string;
   options: Option<T>[];
@@ -35,7 +36,7 @@ export function Tabs<T extends string>({ label, options, value, onChange, varian
     button?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }
   return <>
-    <nav aria-label={label} className="mb-6 overflow-x-auto border-b border-border">
+    <nav aria-label={label} className={`mb-6 overflow-x-auto border-b border-border${variant === "chips" ? " -mx-1" : ""}`}>
       <div ref={list} role="tablist" aria-label={label} className={variant === "chips"
         ? "flex min-w-max gap-2 px-1 pt-1 pb-4"
         : "flex min-w-max gap-6"}>

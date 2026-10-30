@@ -40,7 +40,7 @@ const TeenConsentPanel = lazy(() => import("../components/TeenConsentPanel"));
 // Approvals
 // ---------------------------------------------------------------------------
 
-type Decision = { kind: "approved" | "rejected"; id: number; name: string };
+type Decision = { kind: "approved" | "rejected"; id: number; name: string; leaderName: string };
 
 function PendingCard({ group, onDone }: { group: GroupSummary; onDone: (decision: Decision) => void }) {
   const [tags, setTags] = useState(group.tags.join(", "));
@@ -50,6 +50,12 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: (decision
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const tagsInput = useRef<HTMLInputElement>(null);
+
+  // "Edit tags" unmounts when the field opens, so focus moves to the field.
+  useEffect(() => {
+    if (editingTags) tagsInput.current?.focus();
+  }, [editingTags]);
 
   async function approve() {
     setBusy(true);
@@ -64,7 +70,7 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: (decision
               .filter(Boolean)
           : undefined
       );
-      onDone({ kind: "approved", id: group.id, name: group.name });
+      onDone({ kind: "approved", id: group.id, name: group.name, leaderName: group.leaderName });
     } catch (e) {
       setError(errorText(e, "We couldn't approve that."));
     } finally {
@@ -75,7 +81,7 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: (decision
   async function reject(message: string) {
     await Admin.reject(group.id, message || undefined);
     setRejecting(false);
-    onDone({ kind: "rejected", id: group.id, name: group.name });
+    onDone({ kind: "rejected", id: group.id, name: group.name, leaderName: group.leaderName });
   }
 
   return (
@@ -97,13 +103,13 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: (decision
       {editingTags ? (
         <div className="mt-4">
           <Field id={`admin-tags-${group.id}`} label="Tags" optional hint="Separate tags with commas, for example young-adults, bible-study.">
-            <Input value={tags} onChange={(e) => setTags(e.target.value)} />
+            <Input ref={tagsInput} value={tags} onChange={(e) => setTags(e.target.value)} />
           </Field>
         </div>
       ) : (
         <p className="mt-3 flex flex-wrap items-center gap-x-3 text-sm text-text-muted">
           <span>Tags: {group.tags.length > 0 ? group.tags.join(", ") : "none"}</span>
-          <Button variant="link" onClick={() => setEditingTags(true)}>Edit tags</Button>
+          <Button variant="link" aria-label={`Edit tags for ${group.name}`} onClick={() => setEditingTags(true)}>Edit tags</Button>
         </p>
       )}
       {error && <FormError layout="mt-2">{error}</FormError>}
@@ -329,7 +335,7 @@ function ApprovalsTab({ onCount, onGroupDecided }: { onCount: (n: number) => voi
       <p role="status" aria-live="polite" className="sr-only">{announce}</p>
       {decision && (
         <p ref={decisionRef} role="status" tabIndex={-1} className="mb-4 rounded-lg border border-border bg-sunken px-4 py-3 text-sm focus:outline-none">
-          “{decision.name}” {decision.kind}. Its leaders were told.
+          “{decision.name}” {decision.kind}. {decision.leaderName ? `${decision.leaderName} was told.` : "Its leaders were told."}
           {decision.kind === "approved" && (
             <>{" "}<Link to={`/groups/${decision.id}`} className="text-link">View group</Link></>
           )}
@@ -581,36 +587,31 @@ function sortGroups(groups: GroupSummary[]): GroupSummary[] {
   return [...groups].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 
-function GroupsTab({ users, onCount }: { users: User[]; onCount: (n: number) => void }) {
-  const [groups, setGroups] = useState<GroupSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+// The list lives in AdminPage (it also feeds the tab count), so opening the tab
+// shows what is already loaded and a delete updates the one source.
+function GroupsTab({ users, groups, error, reload, onDeleted }: {
+  users: User[];
+  groups: GroupSummary[] | null;
+  error: string | null;
+  reload: () => void;
+  onDeleted: (id: number) => void;
+}) {
   const [query, setQuery] = useState("");
   const [openMembers, setOpenMembers] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleted, setDeleted] = useState("");
-  const [retry, setRetry] = useState(0);
+  const deletedRef = useRef<HTMLParagraphElement>(null);
   const manageMemberButtons = useRef(new Map<number, HTMLButtonElement>());
   const closeMembers = useCallback((groupId: number) => {
     setOpenMembers((current) => current === groupId ? null : current);
   }, []);
 
+  // The deleted row is gone, so focus moves to the line that says so (the Menu
+  // that opened it went with the row).
   useEffect(() => {
-    (async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const { groups } = await AdminGroups.list();
-        setGroups(groups);
-        onCount(groups.length);
-      } catch (e) {
-        setError(errorText(e, "We couldn't load the groups."));
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, [retry, onCount]);
+    if (deleted) deletedRef.current?.focus();
+  }, [deleted]);
 
   async function deleteGroup(g: GroupSummary) {
     if (!confirm(`Delete “${g.name}”? This removes the group, its members, and its events.`)) return;
@@ -619,8 +620,7 @@ function GroupsTab({ users, onCount }: { users: User[]; onCount: (n: number) => 
     setDeleted("");
     try {
       await Admin.deleteGroup(g.id);
-      setGroups((prev) => prev.filter((x) => x.id !== g.id));
-      onCount(groups.length - 1);
+      onDeleted(g.id);
       setDeleted(`“${g.name}” was deleted.`);
       setOpenMembers((v) => (v === g.id ? null : v));
     } catch (e) {
@@ -630,8 +630,7 @@ function GroupsTab({ users, onCount }: { users: User[]; onCount: (n: number) => 
     }
   }
 
-  if (loading) return <Skeleton kind="lines" />;
-  if (error) return <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />;
+  if (!groups) return error ? <ErrorNotice message={error} onRetry={reload} /> : <Skeleton kind="lines" />;
 
   const needle = query.trim().toLowerCase();
   const shown = sortGroups(groups).filter((g) => !needle || g.name.toLowerCase().includes(needle) || g.leaderName.toLowerCase().includes(needle));
@@ -640,7 +639,8 @@ function GroupsTab({ users, onCount }: { users: User[]; onCount: (n: number) => 
     <div className="space-y-3">
       {groups.length > 0 && <SearchBox id="admin-group-search" label="Search groups" value={query} onChange={setQuery} />}
       {deleteError && <FormError>{deleteError}</FormError>}
-      <p role="status" className="text-sm text-text-muted empty:hidden">{deleted}</p>
+      {/* Always rendered so screen readers announce the text when it arrives; empty, it takes no room. */}
+      <p ref={deletedRef} role="status" tabIndex={-1} className={deleted ? "text-sm text-text-muted focus:outline-none" : "sr-only"}>{deleted}</p>
       {shown.map((g) => (
         <div key={g.id} className="bg-surface rounded-lg border border-border p-5">
           <div className="flex items-center gap-3 flex-wrap">
@@ -660,7 +660,7 @@ function GroupsTab({ users, onCount }: { users: User[]; onCount: (n: number) => 
                   </span>
                 )}
                 {g.visibility === "invite_only" && (
-                  <span className="ml-1.5 inline-block rounded-full px-2 py-0.5 font-semibold bg-inverse text-inverse-foreground">
+                  <span className={`${g.status !== "active" ? "ml-1.5 " : ""}inline-block rounded-full px-2 py-0.5 font-semibold bg-inverse text-inverse-foreground`}>
                     Invite only
                   </span>
                 )}
@@ -1357,7 +1357,11 @@ export function AdminPage() {
   // Counts for the Users and Groups chips; unknown (null) until loaded, so a
   // failed load shows no number rather than a wrong one.
   const [userCount, setUserCount] = useState<number | null>(null);
-  const [groupCount, setGroupCount] = useState<number | null>(null);
+  // The groups list is loaded once here and shared: the Groups chip counts it
+  // and the Groups tab shows it, so a delete or a decision updates one place.
+  const [groups, setGroups] = useState<GroupSummary[] | null>(null);
+  const [groupsError, setGroupsError] = useState<string | null>(null);
+  const groupCount = groups ? groups.length : null;
 
   const loadUsers = useCallback(async () => {
     try {
@@ -1371,23 +1375,25 @@ export function AdminPage() {
     }
   }, []);
 
-  // The count for the Groups chip comes from the same list the tab shows, loaded
-  // once up front (no extra endpoint); the tab reports its own changes after.
-  const loadGroupCount = useCallback(async () => {
+  // A failed load keeps any list already shown and leaves the count unknown
+  // otherwise; the Groups tab offers a retry.
+  const loadGroups = useCallback(async () => {
+    setGroupsError(null);
     try {
       const { groups } = await AdminGroups.list();
-      setGroupCount(groups.length);
-    } catch {
-      // The Groups tab shows its own error.
+      setGroups(groups);
+    } catch (e) {
+      setGroupsError(errorText(e, "We couldn't load the groups."));
     }
   }, []);
+  const groupDeleted = useCallback((id: number) => setGroups((prev) => prev && prev.filter((g) => g.id !== id)), []);
 
   useEffect(() => {
     if (!authLoading && user && isAdmin) {
       loadUsers();
-      void loadGroupCount();
+      void loadGroups();
     } else if (!authLoading) setUsersLoading(false);
-  }, [authLoading, user, isAdmin, loadUsers, loadGroupCount]);
+  }, [authLoading, user, isAdmin, loadUsers, loadGroups]);
 
   if (!authLoading && (!user || !isAdmin)) {
     return (
@@ -1427,8 +1433,8 @@ export function AdminPage() {
         <SelfSignupSetting />
         <ButtonLink to="/events/new" variant="secondary">Schedule a church-wide event</ButtonLink>
       </section>}
-      {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} onGroupDecided={loadGroupCount} />}
-      {tab === "groups" && <GroupsTab users={users} onCount={setGroupCount} />}
+      {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} onGroupDecided={loadGroups} />}
+      {tab === "groups" && <GroupsTab users={users} groups={groups} error={groupsError} reload={loadGroups} onDeleted={groupDeleted} />}
       {tab === "users" && (
         usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}

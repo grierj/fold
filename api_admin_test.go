@@ -1290,3 +1290,24 @@ func TestRejectMessageReachesLeaders(t *testing.T) {
 		t.Fatal("the audit row should keep the message")
 	}
 }
+
+func TestHasContactDetails(t *testing.T) {
+	for s, want := range map[string]bool{
+		"Write to pastor@example.org":     true,
+		"Call 208-555-0143":               true,
+		"Call (208) 555 0143":             true,
+		"Call +1 208 555 0143":            true,
+		"Text 555-0143 after six":         true,
+		"Let's meet 2026-11-05":           false,
+		"Try the 2026-2027 season":        false,
+		"Starting 10.5.2026":              false,
+		"June 1 - 2026":                   false,
+		"Room 201, Fridays at 7:00 PM":    false,
+		"Capacity 100, ages 5-12":         false,
+		"In 2026 11 groups met 12 times.": false,
+	} {
+		if got := hasContactDetails(s); got != want {
+			t.Errorf("hasContactDetails(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
