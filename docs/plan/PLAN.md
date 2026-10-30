@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan, reconciled against [PR #163](https://github.com/grierj/fold/pull/163) (merge `62629fb`, Oct 29, 2026), with post-merge source inspected through `6d689bb`. Decisions run through DEC-99. Historical milestone checks are recorded below; this reconciliation is not fresh full-suite acceptance, a production deployment, or a claim of production readiness.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-100.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-99; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-100; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-99) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-100) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -294,14 +294,14 @@ The field lists show the important columns, not every column. Every table has `i
 
 **Groups**
 
-- `Group`: `visibility` (`public|private|invite_only`; replaces `Visibility` + `InviteOnly`), `status` (`pending|active|archived`), `leader_id` (displayed primary contact only; never used for permissions, C12), `category` (from a short admin-defined list, for example "Small group", "Ministry", "Class", "Youth"). `member_limit` (nullable positive int; null, the default, means unlimited; set by the group's leaders or an admin; DEC-39, 5.4). Joining: any member who can see a public or private group may join it at once; invite-only groups are joined only by invitation. There is no join-request step; leaders remove members who shouldn't be there (DEC-30). There is no teen restriction on groups (DEC-20).
+- `Group`: `visibility` (`public|private|invite_only`; replaces `Visibility` + `InviteOnly`), `status` (`pending|active|archived`), `leader_id` (displayed primary contact only; never used for permissions, C12), `tags` (free text, comma-separated; the Home chips filter by them, and room suggestions use them as the event's type, DEC-100). `member_limit` (nullable positive int; null, the default, means unlimited; set by the group's leaders or an admin; DEC-39, 5.4). Joining: any member who can see a public or private group may join it at once; invite-only groups are joined only by invitation. There is no join-request step; leaders remove members who shouldn't be there (DEC-30). There is no teen restriction on groups (DEC-20).
 - `Membership`: `role` = `leader|member`; several leaders allowed; this is the only source of leadership. `status` = `active|left|removed`. `left` records a voluntary departure: the row and first-ever join date remain, and the person may rejoin under the ordinary visibility and capacity rules (DEC-86). Reactivation advances the membership tenure. `removed` means a leader or admin removed the person (DEC-35): they can't rejoin on their own until a leader or admin adds them back, and the removal is in the `AuditLog`. A disabled account keeps its `active` memberships, hidden and uncounted, with any leadership handed off (DEC-38). When an account is re-enabled and a group is at its `member_limit`, that membership is dropped and the person is told to ask a leader (DEC-47); there is no `pending_return` status. A teen account can never have `role=leader` (DEC-18).
 
 **Events**
 
 - `Event` (renamed from `Meeting`):
   - `group_id` (nullable; null = a church-wide event, created only by admins and run by its assigned hosts, see `EventHost`; DEC-7)
-  - `title`, `description` (plain text, at most 5000 characters); future `category` (same list as groups; used by room suggestions). Rich text belongs to the messaging composer, not event descriptions.
+  - `title`, `description` (plain text, at most 5000 characters); there is no event category: room suggestions use the group's tags as the event's type (DEC-100). Rich text belongs to the messaging composer, not event descriptions.
   - `visibility` (`public|private|invite_only`), the event's own value, copied from the group when the event is created (DEC-48), and `leader_opened` (bool), set when a leader or admin made the event wider than its group. There is no live link to the group: making the group more open never changes its events. Making the group more private tightens, in the same transaction, every event more open than the new value that isn't `leader_opened` (one audit row each), and cancels and notifies registrants who can no longer see it; each `leader_opened` event wider than the new value is shown to the leader before saving, to keep open (a logged override) or tighten (DEC-6, DEC-17, DEC-48):
     - A leader of the event's group, or an admin, may set any of the three values on a group event. For example, an invite-only group's event can be made `private` (all signed-in members) or `public`.
     - A change that makes the event more open than its group writes an `AuditLog` row `event.visibility_override` (old value, new value, group visibility, optional `visibility_reason`; a reason is never required, DEC-28) and notifies the group's other leaders and the admins. Going back to the group's value or to a stricter value is also audited and clears `leader_opened`.
@@ -358,7 +358,7 @@ The field lists show the important columns, not every column. Every table has `i
 
 **Calendar**
 
-- `CalendarToken(user_id, kind personal|room, room_id?, token_hash, created_at, last_used_at, revoked_at)`.
+- `CalendarToken(user_id, token_hash, scope mine|all)`: one personal feed token per user. Room feeds use their own `room_feed_tokens(room_id, token_hash, created_by, created_at, revoked_at)` (M2.2b).
 
 **Platform**
 
@@ -888,7 +888,7 @@ Fold sits between leaders and the people they reach, so nobody's personal addres
 
 ### 8.1 In-app views
 
-- Timeline (`/calendar`): an agenda list grouped by day showing every occurrence the viewer may see. Filters: group, category, "my events", visibility, childcare, remote. Scrolls forward; a "past" toggle shows history.
+- Timeline (`/calendar`): an agenda list grouped by day showing every occurrence the viewer may see. Filters: group, tag, "my events", visibility, childcare, remote. Scrolls forward; a "past" toggle shows history.
 - Week and month grid views (a small calendar component; no heavy dependency needed).
 - By room (`/calendar/rooms`, when rooms are on): one column per room, rows for time, one day or one week at a time. Bookings the viewer cannot see show as grey "Reserved" blocks with no title.
 
@@ -900,7 +900,7 @@ Fold sits between leaders and the people they reach, so nobody's personal addres
 | Public group feed | `/cal/groups/<id>.ics` | none; public groups only | That group's public events |
 | Personal feed | `/cal/u/<token>.ics` | secret token in the URL | Option A, "My events" (`mine`, default): the viewer's own scope (DEC-72/73) — occurrences the user is `going`, `maybe` or `waitlisted` for, all events of groups they belong to, church-wide dates, events they host (DEC-7), and events their household people are registered for (DEC-8). Option B, "Everything I can see" (`all`): every date the user may see. Both scopes follow DEC-71/77 from M1.14: Going is `CONFIRMED`, Maybe, Not answered and Waitlisted are `TENTATIVE`, Can't go dates are omitted, an unanswered public date of another group appears only in `all` and only within the 30-day window, and an unanswered church-wide date appears only within the window. Video links included when the user may see them. |
 | One date (DEC-93) | `/api/v1/events/<id>/dates/<date>/calendar.ics` | the date page's own access (signed out for public dates) | A one-time download of that date, with exactly what the date page shows; Going is `CONFIRMED`, Maybe and Waitlisted `TENTATIVE`. Not a subscription. |
-| Room feed | `/cal/rooms/<roomId>/<token>.ics` | admin-issued token | All bookings for the room. Invite-only bookings are titled "Reserved". |
+| Room feed | `/cal/rooms/<roomId>/<token>.ics` | admin-issued token | Confirmed bookings for the room. Invite-only and hidden-date bookings are titled "Reserved". |
 
 Personal-feed status follows the **viewer’s own answer** (DEC-71). Household
 registrations supply scope, not the viewer’s RSVP: a household-only Going date is
@@ -941,7 +941,7 @@ ICS details:
 
 ### 9.3 Room suggestions: the exact rule
 
-When someone picks a room for event E (group G_E, which may be none; visibility V_E; category T_E; occurrence time window W), Fold suggests rooms like this.
+When someone picks a room for event E (group G_E, which may be none; visibility V_E; type T_E, the tags of G_E (DEC-100); occurrence time window W), Fold suggests rooms like this.
 
 **Definitions**
 
@@ -961,14 +961,14 @@ When someone picks a room for event E (group G_E, which may be none; visibility 
 
 **Rule 3: type filter**
 
-- If T_E is set, show only candidates with at least one counting usage whose event `category = T_E`.
+- If T_E is not empty, show only candidates with at least one counting usage whose event's group shares a tag with T_E. A church-wide event has no tags, so the filter doesn't apply.
 - If that leaves nothing, fall back to all candidates from Rule 2 and label them "Used by other kinds of events".
 
 **Rule 4: ranking** (highest first)
 
 1. Counting usages by E itself (same series)
 2. Counting usages by events of the same group G_E
-3. Counting usages with the same category T_E
+3. Counting usages whose group shares a tag with T_E
 4. Most recent counting usage
 5. Total counting usages
 6. Capacity closest to (and at least) E's capacity, when set
@@ -1517,485 +1517,197 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 
 Rooms (M2) can be built in parallel with M3 once M1.1a is merged.
 
-M0 and M1.1–M1.14 have merged. M1.14's calendar/feed boundary merged in #129, series RSVP/Undo in #130, and departure in #131 (`a18902e`, Oct 27, 2026). All three protected checks passed for #131. STATUS and M1.14-VERIFICATION retain the delivery and local acceptance evidence; deployment is a separate operator step.
+Phases 0 and 1 (v0.2, v0.3) are complete; Phase 2 (rooms) is next, see 14.5.
 
 ### 14.3 Phase 0: Foundations
 
+Phase 0 is done (v0.2) and merged before Phase 1. It delivered the Postgres-only baseline, the CLI and request plumbing, the policy package and audit log, email login, member removal with sole-leader handoff, security headers, and the frontend test tooling. The live rules are in sections 5–10 and the decisions in section 15; the code and tests are the source of truth. [STATUS.md](../../STATUS.md) records delivery.
+
 **M0.1 PostgreSQL only, clean baseline, CLI, request plumbing**
-- Depends on: none
-- Scope:
-  - Remove SQLite (C14, DEC-1, DEC-24): delete the `glebarez/sqlite` dependency, every SQLite branch in `db.go` and `config.go`, and `SQLITE_PATH` in the Dockerfile and README. Add `deploy/docker-compose.dev.yml` and a **new** `Makefile` with `dev`, `test`, and `lint` (11.9). Tests use `DATABASE_URL`.
-  - Point CI at Postgres only, and add the drift check (C1): migrate a throwaway Postgres database with goose, run `AutoMigrate` against it for real with a logger that records every statement, fail on any `CREATE` or `ALTER`, and drop the database afterward. Do not use GORM's `DryRun` (its migrator needs real query results).
-  - Add goose with embedded SQL migrations and a clean baseline migration for the current models (DEC-22). There is no stamping of old databases and no upgrade note for PR #7.
-  - CLI subcommands `serve`, `healthcheck`, `migrate`, `version`, with lazy config: `version` needs no env; `migrate status` needs only `DATABASE_URL` (C11).
-  - Trusted proxies (C17): give the compose network a fixed subnet and trust only it by default (`FOLD_TRUSTED_PROXIES`).
-  - CSRF route groups (C17): create the router groups so `/hooks/*` and `POST /u/unsubscribe/<token>` are outside the CSRF middleware (their handlers come later), with a test that the exempt list is exactly those.
-  - Update `AGENTS.md`: Postgres for dev and tests; SMS through adapters with Telnyx as the default and Twilio next, none required (C13); no Python. Fix the README Go version.
-- Acceptance:
-  - [x] `go.mod` has no SQLite driver, and `rg -i sqlite` finds nothing outside this plan
-  - [x] `APP_ENV=dev` without `DATABASE_URL` exits with a clear "start the dev database" message
-  - [x] A fresh database migrates to the baseline, and the drift check reports no drift
-  - [x] Adding a model field without a migration makes the drift check fail (a self-test proves the check works)
-  - [x] `fold version` works with no environment variables; `fold migrate status` works with only `DATABASE_URL`
-  - [x] `fold` with no arguments still serves
-  - [x] Migrations take a Postgres advisory lock, so two app containers starting together don't both migrate
-  - [x] `ClientIP()` returns the address the trusted proxy forwards, and ignores `X-Forwarded-For` sent from outside the trusted subnet (test with a fake proxy)
-  - [x] A POST to `/hooks/test` without a CSRF token is not rejected by CSRF; any other POST without one is
-  - [x] The whole existing test suite passes on Postgres via `make test` in under 2 minutes on a laptop
-- Tests: migration on an empty database; drift-check self-test; advisory-lock test; trusted-proxy test; CSRF exemption test; the existing suite.
+- Delivered: SQLite is gone (C14, DEC-1, DEC-24). Dev and tests use `DATABASE_URL`; `deploy/docker-compose.dev.yml` and the `Makefile` (`dev`, `test`, `lint`) start the dev database (11.9). goose runs embedded SQL migrations from a clean baseline (DEC-22) under a Postgres advisory lock, so two containers never migrate together.
+- The CI drift check (C1) migrates a throwaway database with goose, runs `AutoMigrate` with a statement-recording logger, and fails on any `CREATE` or `ALTER`. A self-test proves the check works. It does not use GORM's `DryRun`.
+- CLI: `serve`, `healthcheck`, `migrate`, `version`, with lazy config: `version` needs no env and `migrate status` needs only `DATABASE_URL` (C11).
+- Request plumbing (C17): the compose network has a fixed subnet that is the only default trusted proxy (`FOLD_TRUSTED_PROXIES`). `/hooks/*` and `POST /u/unsubscribe/<token>` sit outside the CSRF middleware, and a test pins the exempt list.
 
 **M0.2 Visibility enum, policy package, leadership by membership, audit log**
-- Depends on: M0.1
-- Scope: one `visibility` enum on groups (C3). Create `internal/policy` and move all existing checks there. Leadership comes only from `Membership.role=leader`; replace every `Group.LeaderID` check (about 16 places, for example `api_groups.go:543`) with policy calls, and keep `LeaderID` as the displayed primary contact (C12). Update the SPA (`inviteOnly` in `groupSummaryJSON` in `api.go`, `web/src/types.ts:31`) and `docs/API.md`. Create the `AuditLog` table (5.3) and one `audit.Write` helper that every later milestone uses. Making or removing a leader writes a `membership.role_changed` row and shows the admins an in-app notice (DEC-31; no admin gate).
-- Acceptance:
-  - [x] Every handler's permission check calls `policy`; `rg LeaderID` finds it only in models, display code, and tests
-  - [x] Invite-only groups return 404 to non-members, and admins see every group in lists and by id (DEC-5)
-  - [x] A group can have several leaders; removing the last leader is blocked; a teen cannot be made a leader (DEC-18; enforced once teen accounts exist in M1.10, with the policy rule written now)
-  - [x] The SPA shows and edits the three visibility values; the old `inviteOnly` field is gone from the API
-  - [x] The `AuditLog` table exists; making or removing a leader writes a row (actor, group, person, old and new role, IP) and shows admins an in-app notice
-- Tests: policy table tests covering every row of section 6 that exists so far; audit-row tests for leader changes.
-
-**M0.3 Log in by email; leaders remove members; sole-leader handoff; security headers and dependency scanning**
-- Depends on: M0.2 (run after it; both rewrite handlers and test helpers)
-- Size: this milestone grew on Oct 9, 2026 (DEC-35 to DEC-37) and is now too big for one session. **Build it as two PRs, M0.3a then M0.3b**, each with its own STATUS.md row (the PR that claims M0.3a splits the row). References to "M0.3" elsewhere in this plan mean M0.3a (email login, throttling, sessions) unless they name M0.3b. M0.3b depends only on M0.2, so it may go first if Grier wants member removal sooner, but don't run the two in parallel: both change the admin user handlers, the roster, and the test helpers.
+- Delivered: one `visibility` enum on groups (C3) and `internal/policy`, which holds every permission check. Leadership comes only from `Membership.role=leader`; `Group.LeaderID` is the displayed primary contact only (C12). Invite-only groups are 404 to non-members, and admins see every group (DEC-5).
+- A group can have several leaders, the last leader can't be removed, and a teen can't be made a leader (DEC-18; the policy rule came first, the teen accounts in M1.10).
+- The `AuditLog` table (5.3) and the one `audit.Write` helper. Making or removing a leader writes `membership.role_changed` and shows admins an in-app notice, with no admin gate (DEC-31).
 
 **M0.3a Log in by email**
-- Depends on: M0.2
-- Scope: C16 and DEC-23. Drop `Username`; `User.email` becomes `citext` NOT NULL unique; `password_hash` nullable. Login, the first-admin page, admin user creation, and the SPA use email. Throttling is keyed by email and by client IP, stored in Postgres. Login never says whether an email has an account. Changing a password or role, or disabling an account, bumps `session_version` (10.1).
-- Acceptance:
-  - [x] Sign-in works with the email in any letter case, and fails for a user with no password set
-  - [x] Creating a second account with the same email (any case) is refused
-  - [x] There is no `username` column, field, or form anywhere (`rg -i username` finds nothing outside this plan)
-  - [x] Ten failed logins for one email lock that email for 15 minutes across IPs; fifty from one IP lock that IP
-  - [x] An unknown email and a wrong password get the same response in about the same time
-  - [x] Changing a password or role, or disabling an account, ends the person's other sessions
-- Tests: API tests for login, creation, and throttling.
+- Delivered (C16, DEC-23): the email is the login (`citext`, unique, no username) and `password_hash` is nullable. Sign-in and the first-admin page use email in any letter case.
+- Throttling is keyed by email and by client IP and stored in Postgres: ten failures lock an email for 15 minutes across IPs, fifty lock an IP. An unknown email and a wrong password answer alike. Changing a password or role, or disabling an account, bumps `session_version` (10.1).
 
 **M0.3b Leaders remove members, sole-leader handoff, security headers, dependency scanning**
-- Depends on: M0.2 (and M0.3a if it lands first; rebase the roster and admin-user handlers onto it)
-- Scope:
-  - **Leaders remove members (DEC-35).** `DELETE /api/v1/groups/:id/members/:userId` (optional `{note}`) for the group's leaders and admins. The rule lives in `internal/policy` (extend `CanRemoveMember` with the target person):
-    - Admins may remove anyone; leaders only from groups they lead.
-    - Nobody removes the group's last leader (they hand off first, as in M0.2).
-    - A leader cannot remove an admin, and for consistency cannot demote an admin who co-leads the group (`CanChangeRole`). Only another admin can.
-    - A leader may remove a co-leader (not the last), the same as demoting one. Removing yourself is leaving (`POST /groups/:id/leave`), with the same rules.
-    - Teens are removed like anyone else.
-  - Removal sets `Membership.status=removed` instead of deleting the row. A removed person can't rejoin on their own: join answers 403 "A leader removed you from this group". A leader or admin can add them back, which sets `active` again. An invite-only group becomes 404 to them at once. They aren't notified in this milestone, because there is no email yet. The admin endpoint `DELETE /admin/groups/:id/members/:userId` uses the same path.
-  - Every removal writes one `membership.removed` audit row (actor, group, person, old role, optional note, IP). When the removed person was a leader, admins get the same in-app `leadership` notice as in M0.2 (DEC-31). The note goes only into the audit row and is never shown to the removed person. The SPA adds "Remove from group" with a confirm on roster rows for leaders and admins.
-  - **Sole-leader handoff when an account is deleted or disabled (DEC-36).**
-    - `GET /api/v1/admin/users/:id/sole-leader-groups` lists every group, in any status, where the account is the only active leader. For each group it gives the candidate successors: the group's other active adult members, and every admin (the deleting admin included).
-    - `DELETE /api/v1/admin/users/:id` (and disabling, once account status exists in M0.3a) takes `{successors: {"<groupId>": <userId>}}`. It refuses with 400 and the list of groups when any sole-led group is missing a valid successor.
-    - In one transaction it makes each successor a leader (adding an admin as a member if needed) and sets the primary contact. Then it **deletes** the account and ends its memberships, or **disables** the account and keeps its memberships and RSVPs as plain member, demoting any other leadership (DEC-38).
-    - Audit rows: one `membership.role_changed` per group (meta `reason: "account_deleted"` or `"account_disabled"`, plus the departing user's id), and one `user.deleted` or `user.disabled` row.
-    - The SPA's delete or disable dialog lists each group with a successor picker that defaults to the deleting admin.
-    - `leaderCount` counts only active accounts.
-  - **Disabled accounts keep their memberships (DEC-38).** While disabled, their memberships and RSVPs are hidden from rosters and never counted (member counts, RSVP counts, `leaderCount`, the "other members" check for deletion requests). Enabling the account restores them as plain member (one `membership.restored` audit row each, plus `user.enabled`). A group at its `member_limit` leaves them out instead, with an "ask a leader" notice (DEC-47, below; this first shipped as `pending_return`). Meetings and RSVPs have no capacity yet; M1.5 and M1.8 apply the same left-out rule to registrations.
-  - **Group member limit (DEC-39, 5.4).** Migration `00004` adds nullable `groups.member_limit` with `CHECK (member_limit > 0)`. The group create and edit API and form take `memberLimit` (a number sets it, null clears it). `policy.GroupHasRoom` owns the rule.
-    - Join, the leader's add by email, and the admin add all go through one path that locks the group row and counts. Full means self-join gets 409 "This group is full"; leader and admin adds get 409 with `full: true` unless the body has `overLimit: true`, and that add writes `membership.added_over_limit` (actor, person, count, limit).
-    - Re-enabling an account restores its memberships in group-id order, locking each group row. A group with room gets `active` member, written as `membership.restored`. *(Superseded by DEC-47, Oct 13, 2026: this first shipped as `pending_return`.)* A full group now leaves them out: the membership is dropped, `membership.not_restored` is written (userId, count, limit), and the person gets a derived notice to ask a leader. Migration `00008` resolved leftover `pending_return` rows the same way and added `CHECK (status IN ('active','removed'))` on memberships.
-    - *(Removed by DEC-47.)* The `POST /api/v1/groups/:id/members/:userId/return` approve/decline route, the `membership.return_approved` / `return_declined` audit actions, the roster's "Waiting to return" section and `GET /api/v1/admin/pending-returns` on the Approvals tab are gone. Leaders use the audited over-limit add instead.
-    - Invitation acceptance into a group (M1.2) follows the leader's add rule.
-  - **Admins on rosters (DEC-38).** The members JSON has an `admin` flag. The SPA shows an "Admin" label on group and admin rosters and hides Remove and "Remove as leader" for admins unless the viewer is an admin.
-  - **Security headers (DEC-37, 10.1, 10.6).** The app sets them itself, so they hold behind any proxy:
-    - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'`. As built, `style-src` needs no `'unsafe-inline'`: React sets focal points through the CSSOM, which CSP allows. `blob:` is for upload previews, and `img-src https:` is for cover images given by URL. Tighten `img-src` when uploads become the only source (M4.7). The image compressor runs on the main thread, because its web worker loads code from a CDN.
-    - `Strict-Transport-Security: max-age=31536000` when `COOKIE_SECURE` is on (never in dev).
-    - Keep `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`, and `X-Frame-Options: SAMEORIGIN`. Add `Permissions-Policy: camera=(), microphone=(), geolocation=()`.
-    - The server-rendered `/setup` page must work under the same CSP (no inline scripts).
-    - Caddy and image-level headers stay with M5.1.
-  - **Dependency scanning (DEC-37, 10.6).**
-    - `.github/dependabot.yml`: weekly updates for Go modules, npm (`/web`), GitHub Actions, and the Dockerfile base images.
-    - A CI job runs `govulncheck ./...` (pinned version) and `npm audit --omit=dev --audit-level=high` in `web/`. Both must pass.
-    - Fix or upgrade anything they flag in the same PR. Note any finding that can't be fixed in the PR body with the reason.
-    - Pinned image digests in releases stay with M5.1.
-- Acceptance:
-  - [x] A leader removes a member and a co-leader of their own group; each removal writes a `membership.removed` row with actor, group, person, old role, and IP
-  - [x] A leader can't remove (or demote) an admin, can't remove the last leader, and gets 404 for a group they can't see and 403 for a visible group they don't lead
-  - [x] A removed member can't rejoin by themselves, a leader can add them back, and an invite-only group is 404 to them right after removal
-  - [x] Removing a leader shows admins an in-app notice; the note is in the audit row and nowhere in the removed person's API responses
-  - [x] Deleting (or disabling) the only leader of two groups without successors is refused with both groups listed; with successors (one group member, one the deleting admin by default) it succeeds, both groups keep a leader, and the audit rows are written
-  - [x] A successor must be an active adult member of that group or an admin; anyone else is refused
-  - [x] Every response carries the CSP, `nosniff`, referrer, frame, and permissions headers; HSTS is present only with `COOKIE_SECURE`; the SPA and `/setup` load with no CSP violations in a browser
-  - [x] Dependabot config is in the repo, and the `govulncheck` and `npm audit` CI steps pass
-  - [x] Disabling then re-enabling keeps memberships and restores them as plain member, never leader; each restore and the re-enable are audited (DEC-38)
-  - [x] While disabled, the person is hidden from rosters and excluded from member counts, RSVP counts, and leader counts (DEC-38)
-  - [x] Roster APIs flag admins, and leaders get no Remove button for them (DEC-38)
-  - [x] A group can have a member limit (null is unlimited); a full group refuses self-join with "This group is full", and there is no waitlist (DEC-39)
-  - [x] Leaders and admins add over the limit only with the explicit override (the SPA confirms), and each over-limit add is audited (DEC-39)
-  - [x] Only active memberships of listed accounts count, leaders included; disabled accounts don't (DEC-39)
-  - [x] Lowering the limit below the count keeps everyone and blocks new joins until the count drops; leaders and admins see "count of limit" (DEC-39)
-  - [x] Re-enabling restores a membership as member when the group has room; when it's full the person is left out, audited as `membership.not_restored`, and told to ask a leader, who can use the audited over-limit add (DEC-38, DEC-47; replaces the original `pending_return` flow)
-  - [x] Concurrent joins and a re-enable can't push a group past its limit without an override (group row lock) (DEC-39)
-- Tests: policy table tests for the new `CanRemoveMember` and `CanChangeRole` cases (admin target, last leader, co-leader, self); API tests for removal, rejoin, audit rows, and the handoff (refusal, defaults, invalid successor); a header test on an API route, the SPA shell, and `/setup`.
+- Removal (DEC-35): `DELETE /api/v1/groups/:id/members/:userId` (optional `{note}`) and the admin twin `DELETE /admin/groups/:id/members/:userId`. `CanRemoveMember` and `CanChangeRole` decide: admins remove anyone, leaders only from groups they lead, nobody removes the last leader, and a leader can't remove or demote an admin. Leaving is `POST /groups/:id/leave` with the same rules. Removal sets `status=removed` and keeps the row. The person can't rejoin alone (403 "A leader removed you from this group"), and a leader or admin can add them back. It writes `membership.removed` (the note stays in the audit row, never shown to the person) and gives admins the `leadership` notice when a leader goes.
+- Sole-leader handoff (DEC-36): `GET /api/v1/admin/users/:id/sole-leader-groups` lists groups where the account is the only active leader, with candidate successors (the group's other active adult members and every admin). `DELETE /api/v1/admin/users/:id`, and disabling, take `{successors: {"<groupId>": <userId>}}` and refuse with 400 and the list when one is missing. One transaction makes the successors leaders, then deletes or disables. Audit rows are `membership.role_changed` per group (reason `account_deleted` or `account_disabled`) and `user.deleted` or `user.disabled`. `leaderCount` counts only active accounts.
+- Disabled accounts (DEC-38): memberships and registrations are kept but hidden and never counted. Enabling restores them as plain member (`membership.restored`, `user.enabled`). In a full group the person is left out, `membership.not_restored` is written, and they get a notice to ask a leader (DEC-47); memberships are `active`, `removed` or `left` (DEC-86). The members JSON has an `admin` flag, and Remove is hidden for admins unless the viewer is an admin.
+- Member limit (DEC-39, 5.4): nullable `groups.member_limit` (`CHECK > 0`) and `policy.GroupHasRoom`. Join, the leader's add and the admin add share one path that locks the group row. A full group answers self-join 409 "This group is full"; leader and admin adds get 409 with `full: true` unless the body has `overLimit: true`, which writes `membership.added_over_limit`. Lowering the limit below the count keeps everyone. Only active memberships of listed accounts count.
+- Security headers (DEC-37, 10.1, 10.6): the app sets CSP (`default-src 'self'`, no `unsafe-inline`; `img-src 'self' data: blob: https:`, where `blob:` is for upload previews and `https:` for cover images by URL), HSTS when `COOKIE_SECURE` is on, `nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN` and a `Permissions-Policy` that turns off camera, microphone and geolocation. `/setup` works under the same CSP. The image compressor runs on the main thread because its web worker loads code from a CDN.
+- Dependency scanning: Dependabot updates Go, npm, GitHub Actions and Docker base images weekly. CI runs a pinned `govulncheck ./...` and `npm audit --omit=dev --audit-level=high`.
+- Left for M4.7: tighten `img-src` once uploads are the only image source. Left for M5.1: Caddy and image-level headers, and pinned image digests in releases.
 
 **M0.4 Frontend and browser test tooling**
-- Depends on: M0.1
-- Scope: add Vitest (with Testing Library) and an `npm test` script to `web/`; add Playwright with one smoke test (sign in, see the groups page) under `web/e2e`; `make e2e`; a CI job that installs Chromium and runs both.
-- Acceptance:
-  - [x] `npm test` runs at least one real component test
-  - [x] `make e2e` passes locally against the dev stack, and the CI job passes
-- Tests: the new ones.
+- Delivered: Vitest with Testing Library (`npm test`), Playwright with a smoke test under `web/e2e` (sign in, see the groups page), `make e2e`, and a CI job that installs Chromium and runs both.
 
 ### 14.4 Phase 1: Events and people
 
+Phase 1 is done (v0.3), merged through PR #184. It delivered events with time zones and occurrences, stored notifications and email, the ways into an account, guests, capacity and waitlists, the calendar and ICS feeds, video, remote and childcare, households and teen accounts, contact privacy, per-date visibility, series RSVP, and the frontend toolchain upgrades. The live rules are in sections 5–10 and the decisions in section 15; the code and tests are the source of truth. [STATUS.md](../../STATUS.md) records delivery, and [M1.10](M1.10-VERIFICATION.md), [M1.11](M1.11-VERIFICATION.md), [M1.13](M1.13-VERIFICATION.md) and [M1.14](M1.14-VERIFICATION.md) retain the verification evidence.
+
 **M1.1a Events, time zones, occurrences, series edits**
-- Depends on: M0.2
-- Scope:
-  - Rename Meeting to Event and RSVP to Registration (no data conversion, DEC-22).
-  - Time zones (C2): `timezone` setting, `starts_local` + `tzid`, expansion with `DTSTART;TZID`.
-  - Occurrences: `EventOccurrence` with an 18-month horizon, extended by the daily ticker (5.5); cancelled dates as occurrence status.
-  - Series edits: the v1 rule in 5.3 (whole future series, plus per-date overrides).
-- Acceptance:
-  - [x] A weekly 7:00 pm America/Boise event stays at 7:00 pm local on both sides of 2026-11-01 and 2027-03-14
-  - [x] The API returns both UTC and local times
-  - [x] A series edit moves future occurrences, keeps their registrations, cancels dates that no longer exist (registrants told), and leaves per-date overrides alone
-- Built in #38 (Oct 10, 2026). Later changes: church time zone default and browser zone first in the shared `ZoneSelect` (#50, #51, #52; DEC-50); one shared `SeriesEditor` on the group and event pages (#51).
-- Tests: DST table tests (America/Boise, America/New_York, America/Phoenix, Europe/London); occurrence generation; series edit.
+- Delivered: Meeting is Event and RSVP is Registration (DEC-22). The wall clock (`starts_local` plus IANA `tzid`) is the source of truth and expansion uses `DTSTART;TZID` (C2), so a 7:00 pm America/Boise event stays 7:00 pm across daylight saving changes. The API returns UTC and local times.
+- `EventOccurrence` rows store UTC, are generated 18 months ahead and are extended daily (5.5). A cancelled date is an occurrence status.
+- A series edit (5.3) moves future occurrences that have no per-date override, keeps their registrations, cancels dates that no longer exist and tells their registrants. One shared `SeriesEditor` serves the group and event pages. The church time zone is the default and the browser zone comes first in the shared `ZonePicker` (DEC-50, DEC-65).
 
 **M1.1b Church-wide hosts, event visibility, audit, attendee privacy**
-- Depends on: M1.1a
-- Scope:
-  - Church-wide events (`group_id` null), created by admins, with required `EventHost` rows (DEC-7).
-  - Event visibility and the DEC-6, DEC-17, and DEC-28 rules, written to the `AuditLog` table from M0.2. *(Shipped with `visibility_source` `group|custom` and a live fan-out from the group; replaced by DEC-48 on Oct 13, 2026: the event stores its own value, copied at creation, plus a `leader_opened` marker. Migration `00009` backfilled from the group where the source was `group`, set the marker where it was `custom` and wider, and dropped the column.)*
-  - The more-open change tells the group's other leaders and the admins with a derived in-app notice (the same feed as today's other notices). M1.1c stores that notice as a row.
-  - Attendee privacy for opened events (final review, finding 3): when an invite-only group's event is `private` or `public`, people outside the group see a count, not names. Leaders, admins, and members of the group see names (section 6). The visibility dialog warns: "Only leaders will see who signed up, so members of <group> aren't revealed." The event page names no leaders. It shows "Hosted by <church name>", plus a "Message the organizers" button once M3.11 exists.
-- Acceptance:
-  - [x] A leader of the event's group, or an admin, can set a group event to `public`, `private`, or `invite_only`. A change more open than the group writes an `event.visibility_override` audit row (reason optional, DEC-28) and shows an in-app notice to the other leaders and the admins
-  - [x] An invite-only group's `private` or `public` event shows "Hosted by <church>" and never names or links the group or its leaders to outsiders; the group still returns 404 to them
-  - [x] On such an event, a member who isn't in the group sees only an attendee count, never names (API and UI tests)
-  - [x] ~~With `visibility_source=group`, changing the group's visibility changes the event's; with `custom`, it does not~~ Replaced by DEC-48: a new event copies the group's visibility; making the group more open changes no events; making it more private tightens inherited events (audited), cancels and notifies registrants who lose access, and asks the leader to keep or tighten each leader-opened event before saving
-  - [x] A church-wide event cannot be saved without at least one host, and cannot be `invite_only`; a non-admin host can switch it between `public` and `private`
-  - [x] A non-admin host can edit, message, and see registrants of the events they host, and nothing else (policy tests)
-- Built in #39 (Oct 10, 2026). Later changes: the PR #41 location fix for opened invite-only groups; event visibility stored on the event (#43, DEC-48); group event lists filtered by each event's own visibility, and single-event tightening that previews, confirms, cancels and notifies like a group change (#44, #45); visibility chosen at creation and edited inside Edit series / Edit event (#51, DEC-51).
-- Tests: policy tables for visibility, hosts, and attendee lists; API tests for the audit row, the notice, hosted-by, and the count.
+- Church-wide events (`group_id` null) are created by admins and need at least one `EventHost` (DEC-7). They can't be `invite_only`; a non-admin host can switch them between `public` and `private` and can edit, message and see registrants of the events they host, nothing more.
+- An event stores its own `visibility`, copied from the group at creation, plus a `leader_opened` marker (DEC-48). It is chosen at creation and edited inside Edit series (DEC-51). Making a group more private tightens inherited events, cancels and notifies registrants who lose access, and asks the leader about each leader-opened event. Tightening a single event previews, confirms, cancels and notifies the same way (see Consistency in AGENTS.md).
+- A change more open than the group writes an `event.visibility_override` audit row (reason optional, DEC-28) and notifies the group's other leaders and the admins (DEC-6, DEC-17).
+- Attendee privacy: for an opened event of an invite-only group, outsiders see "Hosted by <church name>" and an attendee count, never names, the group or its leaders (the PR #41 rule). Leaders, admins and group members see names.
+- Left for M3.11: the "Message the organizers" button on that event page.
 
 **M1.1c Stored in-app notifications**
-- Depends on: M1.1b
-- Scope: the stored notifications of 5.12 (DEC-42). This was split out of M1.1b because the two together are too big for one PR. The work:
-  - Add the `notifications` table, `internal/notify` with the kind registry, and the feed, badge, seen, read, read-all, and archive endpoints.
-  - Rebuild the bell and panel to the research 6.1–6.7 and 6.9 spec, and add the `/notifications` page with the mobile switch (6.10).
-  - Store today's derived notices (pending groups, deletion requests, leader grants, "not back in this group" notices (DEC-47), cancellation notices, and the M1.1b visibility-override notice) as rows, written in the same transaction as their `AuditLog` row.
-  - Resolve tasks on approval or rejection.
-  - Allow-list inline Approve for new groups.
-  - Archive on the server (`archived_at`), replacing localStorage dismissals.
-  - Drop the derived "upcoming events" items (DEC-44).
-  - Run the 60-second badge poll plus refresh on focus and navigation.
-  - From M1.2 on, the same changes also send a transactional email.
-- Acceptance:
-  - [x] Notifications are stored rows (5.12); nothing is derived on read, and the SPA writes no notification state to localStorage
-  - [x] Archiving an item survives logout and shows on another device; Undo (and the Archived filter) restores it
-  - [x] The badge counts unread plus unresolved waiting items; "Mark all as read" leaves waiting items counted until they are resolved, on both server and UI (DEC-44: one plain count, no needs-action dot)
-  - [x] The bell shows no upcoming-event items (DEC-44)
-  - [x] Approving or rejecting a pending group resolves every admin's copy in the same transaction; a second admin sees "Done · approved by …"; an inline Approve that loses the race gets 409 with `resolvedBy`
-  - [x] An inline action posted for a kind that isn't allow-listed is refused by the server
-  - [x] A user can't read, mark, or archive another user's notification (404)
-  - [x] Writing the same `dedupe_key` twice creates one row
-  - [x] `GET /notifications/badge` returns `{unread, waiting}` and 304 when unchanged; the SPA refreshes it on focus and navigation and pauses while hidden
-  - [x] Every kind, rendered with teen and hidden-adult fixtures, contains no `@` or phone pattern (unit test over the registry)
-  - [x] A notification `link` that isn't an internal path is rejected
-- Built in #46 (Oct 13, 2026). The settings gear and `/settings/notifications` wait for M3.12; no kind batches yet (batching is built and tested with a test kind).
-- Tests: notify tests (state transitions, batching, dedupe, task resolution, own-rows-only); Playwright for the bell, archive and Undo, and the waiting count.
+- Delivered (5.12, DEC-42): the `notifications` table, `internal/notify` with its kind registry, endpoints for feed, badge, seen, read, read-all and archive, the bell, panel and `/notifications` page. Rows are written in the same transaction as their `AuditLog` row, and `dedupe_key` makes a repeat write one row. Archive is server-side (`archived_at`), and the SPA keeps no notification state in localStorage.
+- Tasks (`waiting`) resolve when decided; a second admin sees "Done · approved by …" and a losing inline Approve gets 409 with `resolvedBy`. Inline actions are allow-listed (new-group Approve, eligible account requests) and checked on the server. A `link` must be an internal path, and no kind carries an email address or phone number. Other people's rows answer 404.
+- `GET /notifications/badge` returns `{unread, waiting}` and 304 when unchanged; the SPA polls every 60 seconds, refreshes on focus and navigation, and pauses while hidden. The badge is one plain count (DEC-44) and the bell shows no upcoming-event items.
+- Left for M3.12: the settings gear and `/settings/notifications`. No kind batches yet; batching is built and tested with a test kind.
 
 **M1.2 Email basics, password reset, invitations**
-- Depends on: M1.1b, M1.1c, M0.3
-- Scope: `internal/mail` minimal sender (`devoutbox` in dev and tests, SMTP from `FOLD_SMTP_URL`) and plain transactional templates (C6). Password reset with a uniform response. Verified email change (10.1). Admin and leader `Invitation`s (no approval), with the per-leader daily limit. Email copies of M1.1b's visibility notices. Email delivery of notifications (5.12): kinds marked `AllowEmail` send a transactional email through the minimal sender right after the transaction commits, recorded in `notification_deliveries`. Sensitive kinds use the link-only `RenderEmailSafe` variant. The 15-minute "if not seen" delay waits for jobs (M3.1). `/dev/outbox` page in dev only.
-- Acceptance:
-  - [x] `/dev/outbox` is unreachable unless `APP_ENV=dev`
-  - [x] SMTP sends through a test SMTP server in CI
-  - [x] An admin's or leader's invitation creates an active account on acceptance (the person sets a password), with no approval step
-  - [x] A leader's invitation can add the person only to a group that leader leads (403 otherwise)
-  - [x] Accepting an invitation into a full group follows the leader's add rule: it joins over the `member_limit` only when the inviting leader or admin chose to go over it, and that is audited (DEC-39)
-  - [x] Reset and invite tokens are single use and expire
-  - [x] Password reset answers "If that email has an account, we've sent a link" for every address, known or not
-  - [x] Changing your email sends a verification link to the new address and a notice to the old one; the change applies only after verification and ends every other session
-  - [x] A leader's 21st invitation in a day gets 429 (default limit 20) and is audited
-  - [x] A visibility-override notice reaches the other leaders and the admins in the bell and by email, with one `notification_deliveries` row each
-  - [x] Email for a contact-request, consent, or minor-related kind names nobody and only links into Fold
-- Built in #47, with the #48 follow-up (Oct 13, 2026): SMTP STARTTLS/implicit TLS delivery fixed, and a new reset or verify token revokes the earlier one.
-- Tests: API tests reading links from the devoutbox; policy table for who may invite; notification email tests.
+- Delivered (C6): `internal/mail` with `devoutbox` in dev and tests and SMTP from `FOLD_SMTP_URL` (STARTTLS or implicit TLS), plain transactional templates, and `/dev/outbox` in dev only.
+- Password reset answers the same message for every address. Reset and invite tokens are single use and expire, and a new one revokes the earlier. A verified email change sends a link to the new address and a notice to the old, applies only after verification, and ends other sessions (10.1).
+- Admin and leader `Invitation`s need no approval. A leader can invite only into groups they lead, with a per-leader daily limit (default 20; the next answers 429 and is audited). Accepting into a full group follows the leader's add rule (DEC-39).
+- Notification email: kinds marked `AllowEmail` send after the transaction commits, recorded in `notification_deliveries`. Sensitive kinds use the link-only `RenderEmailSafe` variant.
+- Left for M3.1: the 15-minute "if not seen" delay.
 
 **M1.3 Self-signup, account requests, age gate**
-- Depends on: M1.2
-- Scope: the account doors in 5.10 (DEC-4): self-signup `AccountRequest`, member "invite a friend", the admin approval queue for accounts (kept, DEC-30), uniform responses with no account enumeration, `self_signup` setting (`off|request`, default `request`), the age gate (under 13 refused; teens routed to `pending_consent`, finished in M1.10), rate limits and honeypot on public forms.
-- Acceptance:
-  - [x] Self-signup creates a pending `AccountRequest`; nobody can sign in until an admin approves; the person is emailed either way
-  - [x] A member's "invite a friend" creates a pending request; the friend gets no email until an admin approves
-  - [x] A request for an email that already has an account gets the same on-screen response as any other; the address is emailed a sign-in and reset hint instead (no account enumeration)
-  - [x] Choosing "under 13" on any door stores nothing and shows the household explanation
-  - [x] Requests expire after 30 days
-  - [x] Public forms are rate limited (10 per IP per hour) and have a honeypot; past the limit the form shows its usual message, stores nothing, and logs (DEC-52)
-  - [x] An admin's bell item for an adult account request with no warnings has inline Approve; a teen request or one with a duplicate, rate-limit, or honeypot flag shows only Review, and the server refuses inline approval of it (DEC-44)
-- Built in #49 (Oct 14, 2026).
-- Tests: API tests for each door.
+- Delivered (5.10, DEC-4): self-signup `AccountRequest`s, a member's "invite a friend", and the admin approval queue (DEC-30). The `self_signup` setting is `off` or `request` (default `request`). Nobody signs in until an admin approves, and requests expire after 30 days.
+- Responses never reveal an account: a request for an existing email gets the usual page and a sign-in and reset hint by email. Public forms allow 10 per IP per hour and have a honeypot; past the limit the form shows its usual message, stores nothing and logs (DEC-52).
+- Age gate: "under 13" stores nothing and shows the household explanation; teens go to `pending_consent` (finished in M1.10).
+- The bell's inline Approve appears only for an adult request with no warnings; a teen request, or one with a duplicate, rate-limit or honeypot flag, shows Review and the server refuses inline approval (DEC-44).
 
 **M1.4 Guest registration**
-- Depends on: M1.3
-- Scope: guests on public events (name + email, verified by an emailed link; "I am 18 or older"); manage link; guest upgrade request (C5); verification emails limited per target address as well as per IP (10.1).
-- Acceptance:
-  - [x] A guest registers without an account, gets a confirmation email with a manage link, and can cancel from it
-  - [x] Without "I am 18 or older", nothing is stored and the guardian message shows
-  - [x] A guest who later gets an account keeps their registrations (same email, `citext`)
-  - [x] Verification emails to one address stop after 3 in an hour or 10 in a day (defaults), whatever the IP
-  - [x] A guest form for an email that already has an account gets the usual response, and the email asks the person to sign in
-- Built in #55 (Oct 14, 2026). Grier approved its build choices on Oct 15 as DEC-54 (a separate `cancelled` registration status), DEC-55 (the manage link stops working once the date has ended) and DEC-56 (guests register as `going` only until M1.5). Also: the form answers the same thanks message, never 429, when a limit is hit (DEC-52); the confirm page posts the token from a button, so mail scanners confirm nothing; tightening an event to `private` cancels guest registrations through the usual preview and confirm; guests get no password reset (DEC-53). The "you already have an account" hint email on the guest form shares the 3-per-hour address limit (fixed in #56; it was unlimited).
-- Tests: API tests with the devoutbox (`api_guest_test.go`), the `CanRegisterGuest` policy table, and `web/e2e/guest-registration.spec.ts`.
+- Delivered (C5; AGENTS.md states the rule): a signed-out adult registers for a public event with name, email and "I am 18 or older"; without it nothing is stored. The submit stores only a `guest_signups` row. The guest `User` and `Registration` (`source=guest_form`, hashed manage token) exist after the emailed link is redeemed from a button, so mail scanners confirm nothing. The rule is `policy.CanRegisterGuest`.
+- The manage link cancels the registration and stops working once the date has ended (DEC-55). Registrations use a separate `cancelled` status (DEC-54). Guests get no password reset (DEC-53).
+- Verification emails cap at 3 per hour and 10 per day per address, whatever the IP. The "you already have an account" hint shares that cap. The form never answers 429 (DEC-52). A guest who gets an account keeps their registrations (same `citext` email). Tightening an event to `private` cancels guest registrations through the usual preview.
 
 **M1.5 Capacity, waitlist, pruning**
-- Depends on: M1.2
-- Scope: the initial in-person capacity/waitlist, guests, and removal by leaders/hosts (DEC-20). Remote and childcare counting landed in M1.8, then named household people in M1.9; section 5.4 describes their combined rules. Also the DEC-38 rules for disabled and re-enabled accounts: hidden and uncounted while disabled, and left out with an "ask a leader" notice when a restore would exceed capacity (DEC-47). Event-change and waitlist notifications (5.12; Quill's "M2.x" phase, placed here because Fold's Phase 2 is Rooms): cancellations, time or place changes, and "you're in" off the waitlist go in the bell for people going or waitlisted, and by email. The no-auto-promotion cutoff notice goes to leaders. Each event item has `expires_at` set to the occurrence end and is auto-archived (not deleted) after that. Reminders stay out of the bell (7.7).
-- Acceptance:
-  - [x] 50 concurrent "going" requests on a 10-seat event give exactly 10 going and 40 waitlisted (Postgres test)
-  - [x] Cancelling promotes the earliest entry that fits, skipping a party too big for the free seats
-  - [x] No auto-promotion inside the cutoff; the leader is notified instead
-  - [x] Promoted people get an email with a one-click "I can't come" link
-  - [x] There is no approval step: a sign-up is `going` (or `waitlisted`) at once; a leader or host can remove anyone, and the removed person is told (DEC-30)
-  - [x] Registrations of a disabled account are hidden from attendee lists and never count toward capacity, waitlist math, or attendee counts (DEC-38)
-  - [x] Re-enabling an account whose registration would overfill an occurrence leaves it out: the registration is dropped, audited, and the person gets a notice to ask a leader or host, who can add them over capacity by explicit choice (DEC-38, DEC-47)
-  - [x] Cancelling an occurrence, or changing its time or place, gives each going or waitlisted person one bell item (never batched for cancellations) and an email; a promotion gives "you're in"
-  - [x] After the occurrence ends, its event items are archived automatically and still show under Archived
-- Tests: unit tests on the promotion function plus the concurrency test; notification expiry test.
+- Delivered (5.4, DEC-20): in-person capacity and waitlist under a per-occurrence lock (50 concurrent requests on 10 seats give 10 going and 40 waitlisted). A sign-up is `going` or `waitlisted` at once, with no approval step (DEC-30). Leaders and hosts can remove anyone, and the person is told. Remote and childcare counting (M1.8) and household people (M1.9) extend the same rules.
+- Cancelling promotes the earliest entry that fits, skipping a party too big for the free seats. Inside the cutoff nobody is auto-promoted and the leader is notified. Promoted people get an email with a one-click "I can't come" link.
+- Disabled accounts' registrations are hidden and never counted. A restore that would overfill an occurrence is dropped, audited, and the person is told to ask a leader or host, who can add them over capacity by explicit choice (DEC-38, DEC-47).
+- Event-change notifications (5.12): a cancellation, a time or place change and "you're in" give each going or waitlisted person a bell item (cancellations never batched) and an email. Event items expire at the occurrence end and are archived, not deleted. Reminders stay out of the bell (7.7).
 
 **M1.6 Calendar views**
-- Depends on: M1.1b, M0.4. Prefer to land M1.12 (frontend toolchain upgrades) first, so the calendar UI is written once against React 19 and Tailwind 4.
-- Scope: agenda timeline, week and month views, filters (8.1).
-- Acceptance:
-  - [x] A member never sees invite-only events of groups they are not in (API and UI)
-  - [x] Times show in the viewer's zone (DEC-57); the event page names the event's own zone when it differs
-  - [x] Works on a phone-width screen
-- Tests: API tests; a Playwright smoke test for each view.
+- Delivered (8.1): agenda, week and month views with filters, working at phone width. A member never sees invite-only events of groups they aren't in. Times show in the viewer's zone, and the event page names the event's own zone when it differs (DEC-57).
 
 **M1.7 ICS feeds**
-- Depends on: M1.1b
-- Scope: 8.2 feeds and tokens.
-- Acceptance:
-  - [x] Feeds validate (parsed by golang-ical in tests; golden files)
-  - [x] Recurring events export authorized stored dates as standalone VEVENTs with stable original-date UIDs, no recurrence-generating properties (8.2)
-  - [x] A revoked or regenerated token returns 404
-  - [x] Leaving an invite-only group removes its events from the personal feed on the next fetch
-  - [x] Video links follow `video_reveal`, delivered in M1.8 with the personal-feed exception in DEC-70
-- Tests: golden files; permission tests; ETag test.
+- Delivered (8.2): feeds with revocable tokens (a revoked or regenerated token is 404) and ETags. Recurring events export authorized stored dates as standalone VEVENTs with stable original-date UIDs and no recurrence-generating properties. Leaving an invite-only group drops its events from the personal feed on the next fetch. Video links follow `video_reveal` (M1.8, DEC-70).
 
 **M1.8 Video, remote, childcare**
-- Delivery: merged in #102 (video), #105 (remote) and #109 (childcare).
-- Depends on: M1.1a
-- Scope: 5.8 video links (link and Jitsi), remote flag and remote capacity UI, childcare fields and counts on registration (F11–F13).
-- Acceptance:
-  - [x] Remote and childcare capacity follow DEC-38: a disabled account's registrations never count, and a restore that would exceed `remote_capacity` or `childcare_capacity` is left out with an "ask a leader" notice (DEC-47)
-  - [x] "Generate Jitsi link" makes a new random URL on the configured domain
-  - [x] `registered_only` is going-only in API/email (apart from managers); personal ICS additionally allows Maybe and unanswered members/hosts (DEC-70)
-  - [x] Events can be filtered by "remote available" and "childcare available"
-  - [x] Other people's childcare counts and notes are visible only to admins and the event's leaders/hosts; registrants can see their own requests
-  - [x] There is no video embed or iframe anywhere; the link opens in a new tab (DEC-16)
-- Tests: policy and API tests.
+- Delivered (5.8, F11–F13): video links (a link, or a generated random Jitsi URL on the configured domain), a remote flag with `remote_capacity`, and a childcare flag with `childcare_capacity` and counts on registration. Events filter by "remote available" and "childcare available".
+- There is no video embed or iframe; the link opens in a new tab (DEC-16). `registered_only` shows the link to going registrants and managers; the personal ICS also allows Maybe and unanswered members and hosts (DEC-70).
+- Other people's childcare counts and notes are visible only to admins and the event's leaders and hosts; registrants see their own. The disabled and restore rules of DEC-38 and DEC-47 apply to both capacities.
 
 **M1.9 Households and household people**
-- Delivery: merged through #111; teen-account conversion and birthdays followed in M1.10.
-- Depends on: M1.5
-- Scope: `Household`, `HouseholdAccount`, `HouseholdPerson` (child, teen, adult), `GuardianLink` for household children, registering household people for events, turning a household person into their own account, the shared-email rules in 5.10, admin confirmation of every link to a child or teen (DEC-32), and `docs/MEMBERS.md` (DEC-8, DEC-23).
-- Acceptance:
-  - [x] A holder can register a spouse sharing their email; both count toward capacity and authorized roster output identifies the responsible holder
-  - [x] Transactional notices about a household person's registration go to the account holder (general messaging is future work)
-  - [x] Adult conversion transfers registrations only on account approval; teen transfer waits for M1.10 consent/link prerequisites (DEC-82/83)
-  - [x] Care notes follow guardian/admin access and the scheduled-going event window (DEC-81)
-  - [x] Child/teen registration requires an admin-confirmed guardian link; adults need no link approval (DEC-32/79)
-  - [x] `docs/MEMBERS.md` contains the member guidance from 5.10
-- Tests: policy table for the household rows in section 6; API tests.
+- Delivered (DEC-8, DEC-23, DEC-32): `Household`, `HouseholdAccount`, `HouseholdPerson` (child, teen, adult) and `GuardianLink`. A holder registers household people, including a spouse who shares their email. They count toward capacity, rosters name the responsible holder, and transactional notices go to the holder.
+- An admin confirms every guardian link to a child or teen; adults need no link approval (DEC-32, DEC-79). Adult conversion transfers registrations only on account approval; teen transfer waits for M1.10 consent and link prerequisites (DEC-82, DEC-83). Care notes follow guardian and admin access and the scheduled-going window (DEC-81).
+- `docs/MEMBERS.md` holds the member guidance from 5.10.
 
 **M1.10 Teen accounts, consent, badges**
-- Delivery: five merged end-to-end slices (#114–#118), with retained evidence in [M1.10-VERIFICATION.md](M1.10-VERIFICATION.md): age gates and restricted access; consent lifecycle; guardian links and email consent; approval-first household teen conversion; daily church-local age rollover and final acceptance.
-- Household teen conversion creates an account only after approval. Sign-ups remain household-managed until account consent and the fresh original-household guardian link are confirmed. The last prerequisite completes transfer in one transaction. At 18 the consent/link requirements end; independent suspension and unavailable responsible accounts still delay transfer (DEC-83).
-- Depends on: M1.9, M1.3
-- Scope: teen accounts, `TeenConsent`, guardian links to teen accounts, consent emails with a signed link, the daily age rollover, Teen and Child badges (DEC-8, DEC-18, DEC-20).
-- Acceptance:
-  - [x] No path creates a `User` younger than 13 (API tests on every door)
-  - [x] A teen account cannot sign in until `account` consent is granted; pending teens can browse public groups and events as signed-out visitors (DEC-85 amends the original restricted-session behavior)
-  - [x] A confirmed guardian can grant and revoke consent; an admin can grant only with evidence text; a leader who is not the teen's guardian gets 403
-  - [x] Every guardian link to a teen is pending until an admin confirms it: a teen account made from the guardian's own household person, a teen self-signup naming a guardian, and a claim on an existing teen. There is no auto-confirm path, and no consent from that adult counts until then (DEC-32)
-  - [x] A teen with consent can see and register for any event a member could (no youth-only rule), and cannot be made a leader, host, or admin
-  - [x] Teen and Child badges show on existing attendee lists and rosters for leaders, hosts, and admins (API field plus UI). Other viewers see counts. Recipient-list badges belong to the future M3.4 composer.
-  - [x] A teen turns into an adult on their 18th birthday (fake-clock test), and the consent history is kept (subject to the staged inactive-holder retry in DEC-83)
-  - [x] Every consent change and link confirmation writes an `AuditLog` row
-  - [x] Re-enabling a disabled teen restores `active` only if their latest `account` consent is still granted, and otherwise sets `pending_consent` (DEC-69). Independent administrator suspension is separate from consent revocation.
-- Tests: policy table for every row in section 6 on teens; API tests; fake-clock tests.
+- Delivered (DEC-8, DEC-18, DEC-20): teen accounts with `TeenConsent`, guardian links to teen accounts, consent emails with a signed link, and Teen and Child badges on attendee lists and rosters for leaders, hosts and admins (others see counts). No path creates a `User` under 13.
+- A teen can't sign in until `account` consent is granted; pending teens browse public groups and events as signed-out visitors (DEC-85). A confirmed guardian grants and revokes consent; an admin grants only with evidence text. Every guardian link to a teen is pending until an admin confirms it, with no auto-confirm path (DEC-32). A consented teen can see and register for anything a member could, and can't be a leader, host or admin.
+- The daily church-local age rollover makes a teen an adult at 18 and keeps the consent history. Re-enabling a disabled teen restores `active` only if the latest `account` consent is still granted, else `pending_consent` (DEC-69). Every consent change and link confirmation writes an `AuditLog` row.
+- Household teen conversion creates the account only after approval. Sign-ups stay household-managed until account consent and a fresh guardian link are confirmed, then transfer completes in one transaction. At 18 those requirements end; suspension or an unavailable responsible account still delays transfer (DEC-83).
+- Left for M3.4: recipient-list badges in the composer.
 
 **M1.11 Contact privacy and direct-contact requests**
-- Delivery: merged in #122 (Oct 25, 2026), including the authorized DEC-75 one-date dependency with read filtering and lifecycle protections. Broader M1.14 was delivered later in #129–#131, as recorded below. Contact, group-add and occurrence-add requests share machinery, never authority; an approved add never grants contact access.
-- Depends on: M1.10, M1.2
-- Scope: 5.11 (DEC-31): leaders and hosts never get teen contact details; the adult setting "Hide my contact info from group leaders" (off by default); `ContactRequest` and `ContactGrant`; approval rules (a hidden adult decides alone; for a teen, an admin and the teen must both approve); revocation by the person, an admin, or a teen's confirmed guardian; automatic end of grants; audit rows for every attempt; the admin contact-access history and CSV export.
-- **Add people by name (DEC-78).** Leaders and hosts add people to their groups and events by searching names, with no email needed, because teens' and hidden adults' emails are never shown to them (5.11), and email-only selection could not reach people who most need adding (teens joining an invite-only youth group, adults who hide their contact info).
-  - Search: `GET /api/v1/people/search?q=` for leaders and hosts only (and admins), at least 2 characters, at most 10 results, rate-limited per user. Each result carries display name, a Teen badge where it applies, and an opaque id; never an email, phone, birth date or avatar of a teen. It is not a directory (10.2, M6.1): there is no browse or empty-query list, and members who aren't leaders or hosts can't call it.
-  - Results include every active account the search may return: adults (including those with "Hide my contact info from group leaders" on, which hides contact details, not the name) and teens with active accounts (badged). Disabled and deleted accounts, guests and `pending_consent` teens are excluded. There is no opt-out from name search and no teen hiding from search (Grier, Oct 20). "Hide contact info" (always on for teens, optional for adults) stays separate from a possible "hide completely", which is an open question for later (DEC-78).
-  - Telling same names apart: each result shows, in order, the person's profile picture if they set one (teens have no public avatar, 10.3, so they skip this), then the groups they share with the searcher, then their other groups, but only groups the searcher could already see: public groups and private groups (which every signed-in member can view), plus invite-only groups only if the searcher is in them or can otherwise see them. An invite-only group the searcher can't see is never named. If nothing distinguishes two results, they say "More than one match? Ask an admin."
-  - Adding: an adult is added directly through the existing paths (the group member add with its limit and audit rows, and the DEC-75 one-date add, whose picker is this search). Anyone who can't be added directly gets an "Ask to add" request instead, through the direct-contact approval flow (5.11): a request, the person's approval, expiry, and an audit row for each step. Every teen add is an "Ask to add" that needs both an admin and the teen to approve, as in the direct-contact rule. Email add stays for people who share their address.
-  - Every add and every ask-to-add step is audited (actor, target, group or event, date). Searches are rate-limited but not audited per keystroke. Admins can still add adults directly through the admin members path (`POST /admin/groups/:id/members`), audited.
-- Acceptance:
-  - [x] No API response to a leader or host contains a teen's email or phone, or those of an adult with the setting on, unless an active grant covers it (a test checks the JSON keys on rosters, attendee lists, profiles, and recipient lists)
-  - [x] With the setting off (the default), an adult's contact details show to their leaders as before
-  - [x] A hidden adult alone approves or declines a request about them; a teen request is granted only after both an admin and the teen approve, and either one declining ends it
-  - [x] The person, an admin, or (for a teen) a confirmed guardian can revoke a grant at once
-  - [x] Grants end automatically when the leader stops leading the group, when a host is removed from the event or 30 days after its last occurrence, when a teen turns 18 (fake-clock test), or when either account is disabled
-  - [x] Requests expire after 14 days; a leader can have at most 10 open requests (defaults)
-  - [x] Every request, decision by each party, withdrawal, expiry, grant, reveal, revocation, automatic end, and refused attempt writes an `AuditLog` row (a test walks every path and checks its row)
-  - [x] Admins can see and export (CSV) the contact-access history for any person
-  - [x] A leader or host finds a teen or a contact-hidden adult by name and adds them to a group or event without ever seeing an email (JSON key test on search results)
-  - [x] Disabled, deleted, pending-consent and guest accounts never appear in results; teens and contact-hidden adults do, with no email, phone or birth date (JSON key test)
-  - [x] Same-name results are distinguished by profile picture (adults only), then shared groups, then other groups the searcher can already see (public and private included); an invite-only group the searcher can't see is never named; otherwise "More than one match? Ask an admin."
-  - [x] Picking a teen sends an "Ask to add" through the direct-contact flow that needs both an admin and the teen; the teen joins only after both approve, and either declining ends it; every step is audited
-  - [x] Search needs 2+ characters, returns at most 10, is refused to non-leaders, and is rate-limited; every add from it is audited
-  - [x] The picker is an accessible combobox: a labelled input, results in a `role=listbox` with arrow keys and Enter, the count announced ("3 people found"), a no-results message, and 44px rows (axe and keyboard tests)
-  - [x] Under 2 characters the picker shows a hint ("Type at least 2 letters"), and when rate-limited it shows a calm message ("Too many searches. Try again in a minute.") instead of an error
-  - [x] The no-results message never says why someone is missing: "No one found. An admin can add people who aren't listed."
-- Tests: policy tables for the 5.11 rows of section 6; API tests on every path; fake-clock tests for expiry and age; search result key and exclusion tests.
-- Acceptance and merge: all 16 existing-surface criteria accepted locally, then merged in #122 (`99764d0`). [M1.11-VERIFICATION.md](M1.11-VERIFICATION.md) retains the matrix, independent reviews, integrated gates and mail/UI proof. Future messaging recipient-list composition was not tested or built; this M1.11 acceptance did not claim broader M1.14 (delivered later below) or production deployment.
+- Delivered (5.11, DEC-31): leaders and hosts never get a teen's contact details. Adults can turn on "Hide my contact info from group leaders" (off by default). `ContactRequest` and `ContactGrant` carry the flow: a hidden adult decides alone; for a teen, an admin and the teen must both approve and either one declining ends it. The person, an admin, or a teen's confirmed guardian can revoke at once. Requests expire after 14 days and a leader has at most 10 open. Grants end when the leader stops leading, when a host is removed or 30 days after the event's last occurrence, when a teen turns 18, or when either account is disabled. Every step and refusal writes an `AuditLog` row, and admins see and export (CSV) a person's contact-access history.
+- Add people by name (DEC-78): `GET /api/v1/people/search?q=` for leaders, hosts and admins, with at least 2 characters, at most 10 results and a per-user rate limit. A result has a display name, a Teen badge and an opaque id, never an email, phone, birth date or a teen's avatar. It is not a directory (10.2, M6.1): no browse, no empty query, no opt-out. Disabled, deleted, guest and `pending_consent` accounts never appear; contact-hidden adults and active teens do.
+- Same-name results show the profile picture (adults only), then shared groups, then other groups the searcher can already see; an invite-only group the searcher can't see is never named. If nothing helps they say "More than one match? Ask an admin." No-results never says why someone is missing.
+- Adults are added directly through the member add (limit and audit rows) or the DEC-75 one-date add. Anyone who can't be added directly gets an "Ask to add" request through the contact approval flow, and every teen add needs both an admin and the teen. Admins add adults through `POST /admin/groups/:id/members`. Contact, group-add and occurrence-add requests share machinery, never authority: an approved add never grants contact access. The picker is an accessible combobox.
+- The narrow DEC-75 exact-date prerequisite also landed here: sanitized exact-date GET, own RSVP, decline and block, names-free recipient and guardian notices, exact-date calendar links and standalone personal ICS. It grants no group, roster, series or management access.
 
 **M1.12 Frontend toolchain upgrades**
-- Depends on: M0.4. Best done **before M1.6**, the first large new UI, so new screens are written once against the new stack. It's independent of the other Phase 1 milestones and can run in parallel.
-- Why: Dependabot opened these majors, and Grier wants them done rather than dropped (Oct 11, 2026). Each is breaking, so each lands as its own PR, in this order, with the full checks green before the next.
-  1. **Vite 8 + `@vitejs/plugin-react` 6** (Dependabot #31 and #34, closed). These two must move together: plugin-react 6 needs `vite ^8`, and each failed CI on its own. Vite 8 replaces esbuild and Rollup with Rolldown and Oxc. Migration:
-     - Check `vite.config.ts`, including the dev proxy and `base: "/"`, the Vitest config block, and the `build` output that `go:embed` serves.
-     - Confirm the image compressor still runs on the main thread.
-     - Keep Vitest on a version whose `vite` peer range includes 8. Vitest 5 already allows `^6.4 || ^7 || ^8`.
-  2. **React 19** (with `@types/react`, `@types/react-dom`, and current Testing Library). Breaking changes:
-     - removed legacy APIs (`propTypes`/`defaultProps` on function components, string refs, legacy context)
-     - `ref` as a prop
-     - stricter types: `useRef` needs an argument, and implicit `children` and the global `JSX` namespace are gone
-     - changed error-reporting behavior
-
-     Migration: run the official codemods, fix the types, and check that React Router 7 and `browser-image-compression` work unchanged.
-  3. **Tailwind CSS 4** (Dependabot #35, closed). It's a real migration, not a bump:
-     - Configuration becomes CSS-first. `tailwind.config.js` moves to `@theme` in `index.css`.
-     - The PostCSS plugin becomes `@tailwindcss/postcss` (or the Vite plugin `@tailwindcss/vite`), and `autoprefixer` is dropped.
-     - Several utilities are renamed or have new defaults: shadow, blur and rounded scales, ring width and color, the default border color, and `outline-none`.
-     - `@apply` in component classes (`.btn-primary`, `.input`, `.label`) needs checking.
-     - Browser support becomes Safari 16.4+, Chrome 111+, and Firefox 128+.
-
-     Migration: run `npx @tailwindcss/upgrade`, then review each changed class against the screens.
-  4. **Node 24 LTS.** Node 22 leaves maintenance on Apr 30, 2027, so this lands before then. Move the CI `node-version`, the Dockerfile `node:24-alpine` build stage, README, and AGENTS.md together, and regenerate the lockfile. Watch for packages whose `engines` exclude Node 24. Dependabot skips non-LTS Node images, so it won't propose this.
-- Already done, not part of this milestone: **TypeScript 7** (#32) and **Vitest 5** (#33) were merged on Oct 11, 2026. Both needed no code or config changes. TypeScript 7's `tsc --noEmit` type-checks the app as before.
-- Acceptance (for each step):
-  - [x] `npm ci && npm run build` passes, and the embedded SPA serves from the Go binary (deep links still load)
-  - [x] `npm test` and `make e2e` pass, three runs in a row for e2e, with zero CSP violations (the existing CSP spec)
-  - [x] `npm audit --omit=dev` is clean
-  - [x] No visual regressions: before-and-after screenshots of the home page, group detail, new group, admin tabs, login, and profile at desktop and 390 px widths are compared and attached to the PR; any intended change is called out
-  - [x] Tailwind 4: no `tailwind.config.js` left over unless the PR says why; the `brand` palette and the `.btn-*`/`.input` classes look the same
-  - [x] Node 24: CI, the Docker build, and local checks all run on Node 24, and nothing still says Node 22
-- Tests: the existing Vitest and Playwright suites; add a Playwright screenshot comparison for the key pages if the manual comparison proves error-prone.
-- Done (Oct 15, 2026, branch `m1.12-toolchain`): one PR with one commit per step, each checked before the next, at Grier's request. Notes:
-  - Screenshots are automated: `web/e2e/screens.spec.ts` (runs only with `SCREENS_DIR` set) shoots 12 pages at 390, 768 and 1280 px, and `web/e2e/compare-screens.mjs` diffs two runs. Every step compared identical to master.
-  - Tailwind 4 uses `@tailwindcss/vite`, so `postcss.config.js`, `tailwind.config.js` and `autoprefixer` are gone.
-  - To keep the screens unchanged, `index.css` pins Tailwind 3's hex palette for the color families Fold uses, gives form controls their background back, keeps the v3 placeholder gray and keeps the pointer cursor on buttons. The UI makeover's token PR (DEC-59) replaces the pinned palette.
-  - Kept from Tailwind 4: `hover:` applies only on devices that can hover (no sticky hover on phones). The browser floor is Safari 16.4, Chrome 111 and Firefox 128.
+- Delivered: Vite 8 with `@vitejs/plugin-react` 6, React 19, Tailwind CSS 4 and Node 24 (`.nvmrc`, CI, Dockerfile, docs), with TypeScript 7 and Vitest 5 before them. Tailwind is configured CSS-first (`@theme` in `index.css`, `@tailwindcss/vite`, no `tailwind.config.js`). The image compressor still runs on the main thread. `hover:` applies only on devices that can hover. The browser floor is Safari 16.4, Chrome 111 and Firefox 128.
 
 **M1.13 Per-date event visibility (DEC-46)**
-- Depends on: M1.1b and M1.6. Best done after M1.7 too, so the feeds honor it from the start (if it lands first, M1.7 must apply the per-date value).
-- Why: DEC-46 allows one private-series date to be public without exposing its siblings. Implemented in #123; the shared date editor now sets or clears the date override.
-- Scope:
-  - Data: a nullable `EventOccurrence.visibility_override` (`public|private|invite_only`), added by a goose migration. The **effective visibility** of a date is the override if set, else the event's value (DEC-48: the event's own `visibility`, copied from the group at creation). `Customized()` counts the override, so series edits leave the date alone.
-  - API: `apiUpdateOccurrence` accepts `visibility` (a value, or `null`/`"series"` to clear the override). The same people who may set the event's visibility may set a date's (a leader of the group or an admin; for church-wide events the hosts and admins, `public` or `private` only). Every read path uses the effective visibility per date: event and occurrence pages, lists, the calendar, ICS feeds, search, registration (`CanRegisterEvent`), reminders, and room-suggestion counts (9.3 counts a usage at the visibility of that date).
-  - Series-edit scopes (5.3): v1 has two scopes.
-    - **This date**: sets or clears the override on that occurrence only.
-    - **All future dates** (the series edit): changes `Event.visibility`. Dates with their own visibility keep it, like other per-date overrides. The dialog says so ("2 dates have their own visibility and won't change") and offers "Also reset those dates to the series setting", which clears their overrides (each clear is audited).
-    - **This and following** does not exist in v1 (5.3). If a later milestone adds it, splitting a series copies the series visibility to the new series and carries each date's override with it.
-  - Audit and notices (DEC-17, DEC-28): a per-date change more open than the group writes an `AuditLog` row `event.visibility_override` with the occurrence's `original_date` (plus old value, new value, group visibility, and optional reason, never required) and notifies the group's other leaders and the admins with one notice naming the date. Clearing an override or making a date stricter is also audited. The series dialog's bulk reset writes one row per date.
-  - Invite-only privacy (the PR #41 fixes apply per date): an opened date of an invite-only group's series shows "Hosted by <church name>", never the group's name, link, location, or leaders. The group's location is not used as the fallback location for that date (only the event's or the date's own location text, if any). Outsiders see an attendee count, not names. Other dates of the series stay hidden (404) to them, and nothing on the opened date links to or lists those dates (no "more dates in this series", no series RRULE in its ICS entry; it exports as a single event). Cancellation and change notices to outside registrants of that date follow the same rules.
-  - A date made **stricter** than the series (for example one public date made private): people who can no longer see it and are registered get the same notice as a cancellation for them, and their registrations become `cancelled` (the leader is warned with the count before saving).
-  - Group made more private (DEC-48): a date whose override is wider than the new group value is treated like a `leader_opened` event: it is listed in the group visibility review, and the leader keeps it (logged) or tightens it, with the same cancel-and-notify rule.
-  - UI: the per-date edit form gets a visibility control: "Same as series (<value>)" or an explicit value, with the same more-open warning as the series dialog (DEC-17 attendee-privacy wording). The date shows a small "Visibility changed for this date" note to leaders.
-- Acceptance:
-  - [x] A leader can make one date of a private weekly series public; signed-out visitors see that date and can register for it, and still get 404 for every other date
-  - [x] Clearing the override returns the date to the series value; changing the series value then changes it
-  - [x] A series visibility change leaves dates with their own visibility alone, the dialog shows how many, and "Also reset" clears them
-  - [x] A per-date more-open change writes one `event.visibility_override` audit row with the date, reason optional, and one notice to the other leaders and the admins; clearing or tightening is audited too
-  - [x] For an invite-only group, the opened date never exposes the group's name, link, location, leaders, or other dates (API JSON key tests, page tests, the ICS entry, and outside-registrant notices)
-  - [x] Existing calendar, ICS feeds and date discovery use the per-date value (regression evidence in M1.13-VERIFICATION.md)
-  - [ ] Future dedicated event search, scheduled reminders (M3.6/M3.8) and room suggestions (M2.3) apply the same per-date rule; no tests are claimed for absent consumers
-  - [x] Making a date stricter cancels and notifies registrants who can no longer see it, after the leader confirms the count
-  - [x] A church-wide event's date can be `public` or `private` only; a non-admin host can set it on events they host
-- Tests: policy tables for effective visibility; API tests for the audit row, notices, privacy keys, and series-edit interaction; a Playwright test for the private-series, one-public-date flow.
-
-M1.13 merged in #123 (`2c38f8f`, Oct 25, 2026). Date storage/policy, API consumers,
-shared date editor, series preserve/reset and group-date review are implemented.
-[M1.13-VERIFICATION.md](M1.13-VERIFICATION.md) retains the local regression,
-browser and independent-review evidence. Absent consumers remain future work,
-not a reason to call this merged implementation unclaimed.
+- Delivered: a nullable `EventOccurrence.visibility_override` (`public`, `private` or `invite_only`). A date's effective visibility is the override, else the event's value (`policy.EffectiveVisibility`); `Customized()` counts the override, so series edits leave the date alone. `apiUpdateOccurrence` takes `visibility` (a value, or `null` or `"series"` to clear). Whoever may set the event's visibility may set a date's; church-wide dates allow `public` or `private` only.
+- Every read path uses the effective value per date: event and occurrence pages, lists, calendar, ICS feeds, registration (`CanRegisterEvent`) and date discovery.
+- A series edit changes `Event.visibility` and leaves dates with their own value; the dialog counts them and offers "Also reset those dates to the series setting" (each clear audited). Series edits have no "this and following" split in v1 (5.3).
+- A per-date change more open than the group writes `event.visibility_override` with the occurrence's `original_date` and notifies the other leaders and admins once, naming the date; clearing or tightening is audited too. Making a date stricter cancels and notifies registrants who can no longer see it, after the leader confirms the count. When a group becomes more private, a date wider than the new value goes through the group visibility review like a `leader_opened` event.
+- An opened date of an invite-only group's series shows "Hosted by <church name>" and never the group's name, link, location (the group's location is not a fallback), leaders or other dates. Outsiders see a count, and its ICS entry is a single event.
+- Left for M3.6, M3.8 and M2.3: reminders and room suggestions apply the same per-date rule (7.7, 9.3).
 
 **M1.14 Series RSVP and RSVP-aware calendar (DEC-71)**
-- Narrow prerequisite merged with M1.11 (#122): stable-occurrence invitations, sanitized exact-date GET and own RSVP/decline/block, safe recipient/guardian notices, exact-date calendar links and standalone personal ICS. These grant no group/roster or series/management access. Active teens are searchable, but every teen add needs teen and admin approval (DEC-78). See M1.11-VERIFICATION.md.
-- Delivery status: calendar/feed, series RSVP/Undo and membership departure are merged. The original integrated acceptance at `754a2f6` remains historical evidence. Publication follow-ups `30d48c3`, `09b1260` and `5f927ce` repaired RSVP draft reconciliation, atomic response feedback and page-wide mutation serialization; independent review approved that final series head. Calendar/feed merged in PR #129 (`891ce26`), and series RSVP/Undo merged in PR #130 (merge `7229e92`, reviewed head `5f927ce`) after all three protected checks passed. Departure's exact source head `deb093d` passed all 12 fresh repository gates (520 component tests and 80 browser passes with 6 conditional skips), and independent publication review approved correctness, security, database, efficiency, simplicity and UI/UX. [M1.14-VERIFICATION.md](M1.14-VERIFICATION.md) maps every acceptance item to tests and retained artifacts. [Departure PR #131](https://github.com/grierj/fold/pull/131) merged normally as `a18902e` on Oct 27, 2026 after `test`, `web` and `provision` passed; it is the protected CI and merge receipt.
-- Depends on: M1.5 (capacity and waitlist), M1.6 (calendar views), M1.7 (ICS feeds). Best after M1.13, so series-wide responses use each date's effective visibility.
-- Why: Grier, Oct 20, 2026 (via Big Boss): his calendar and personal feed should show where he stands on each date, with dates he isn't going to removed, and answering a long series one date at a time is tedious. Illuminator's review of #103 settled the UI (DEC-71, amending DEC-67).
-- Wording: user-facing copy uses the DEC-63 words only: "Going", "Maybe", "Can't go", plus "Waitlisted" and the new "Not answered" (a date in the viewer's own scope with no response). The stored status `declined` never appears in copy.
-- Scope:
-  - **Which dates are ghosted.** Ghosting applies only to dates in the viewer's own scope, the "Just mine" set of DEC-67 (my groups, events I host, dates I answered). Other events in the Everything view keep today's look.
-  - **States in the calendar (8.1).** In the viewer's own scope:
-    - Going: solid violet, no label (or "Going").
-    - Maybe, Not answered and Waitlisted: ghosted, each with its own label ("Maybe", "Not answered", "Waitlisted"). They get the same visual treatment and keep every detail (time, place, description, and the video link where DEC-70 allows).
-    - Can't go: removed from Just mine, with an optional "Show can't go" chip following the "Show deleted events" pattern (#84, DEC-68). The chip is optional (DEC-71 says "may"): it is not required for M1.14 acceptance and its absence is not a deferral of anything else in this milestone. In Everything the date stays, labelled "Can't go", so it is easy to find and change.
-  - **Invite model (DEC-72 to DEC-75).** "Own scope" means: dates of groups I belong to (my standing invite), church-wide dates (everyone, via the invisible church-wide group), events I host, and dates I answered. A public event of another group joins my own scope only once I answer Maybe or Going (DEC-73); unanswered, it is not in Just mine or my personal feed. Joining a group adds its upcoming dates as Not answered; leaving takes me off the group's upcoming dates, Going included, after a confirmation that can keep dates underway or inside the cutoff and public dates I chose; past sign-ups and attendance stay (DEC-74). A leader or host can add one person who already has an account to a single date (DEC-75). Unanswered church-wide dates are limited in Just mine so they don't flood it (rule below). Discovery of public events is still open (DEC-76).
-  - **Delivered departure behavior (#131; voluntary rejoining refined in #163, DEC-86):** Leaving or removal ends the person's registrations on the group's upcoming dates, except dates kept in the confirmation; past attendance stays. A read-only preview returns counts and keepable dates, and confirmation applies registration cleanup, promotion, exact-date access and audit writes under the occurrence locks. Voluntary departure keeps a `left` membership that can rejoin normally; leader/admin removal keeps `removed` and blocks ordinary self-rejoining.
-  - **Kept dates after departure (DEC-74, decided Oct 26, 2026).** A date kept in the confirmation stays attended even when it is private or invite-only and the person is no longer a member. Keeping it records explicit exact-date access for that one occurrence, in the same provenance family as a DEC-75 invitation — extend that shipped mechanism, do not relax `policy.CanSeeEvent` and do not build a parallel visibility rule. The access is sanitized and date-only: the person can open that one date, change their own answer or choose Can't go, and the date shows in their Just mine and personal feed with their answer. It grants no group page, roster, series, other dates, or management access. It ends when the date ends or is cancelled, when the person chooses Can't go (or "Don't add me again" on that date), when a leader or host removes that registration, or when the account is disabled or deleted; losing the membership alone never ends it. Household and proxy registrations are untouched by this rule and keep their existing lifecycle.
-  - **Departure notices (DEC-74, decided Oct 26, 2026).** Notices are stored rows, one per recipient, written in the same transaction as the membership change and its audit row (`notify.Send`). On a leader or admin removal, the removed person gets one summarized, names-free notice saying how many upcoming dates were kept and how many ended — never one notice per date, and no group name for a group they can no longer see. On a self-leave, the leaver gets no notice, but every group leader gets one notice that the person left the group. Promoted waitlisters keep their usual "you're in" notices, and the existing leadership-change notice still fires when a leader leaves or is removed. Where the removed person is a teen, confirmed guardians get the same safe, names-free copy as the M1.11 exact-date notices. Notice text never carries an email address or phone number.
-    - Church-wide events keep `group_id` null. The shipped scope query uses an equivalent "everyone" rule; no synthetic group or membership rows are created.
-    - Calendar and personal-feed scope now enforce DEC-73: unanswered public events of other groups never enter Just mine or `mine`; `all` and Everything apply the unanswered-date window (DEC-77).
-    - The DEC-75 exact-date prerequisite is now implemented in M1.11 s4 as described above: ordinary eligible adult adds and approved purpose-bound asks mint explicit invitation provenance, not relaxed series visibility. The narrow recipient/guardian notice and block controls are not general messaging copies or full M1.14 completion.
-  - **Unanswered-date window (N8 rule, DEC-77).** The window limits dates the viewer has not answered, and DEC-73 still wins inside the viewer's own scope: (a) in Just mine and the personal feed's `mine` scope, an unanswered public date of a group the viewer doesn't belong to never shows, at any distance (DEC-73); unanswered church-wide dates show only within the next 30 days; (b) in the Everything view and the personal feed's `all` scope, unanswered public and church-wide dates show only within the next 30 days. Later unanswered dates appear once they come within 30 days, and any date the person answered (Going, Maybe, Waitlisted, or Can't go where it is shown) always shows, subject to current visibility. Dates of the person's own groups are not limited this way. The window becomes an admin setting later (M4.2).
-  - **Ghosted visual spec (WCAG 1.4.1 and AA).** Ghosted is a dashed or outline border with a lighter stone fill. Text keeps full token contrast and opacity is never used on text. Every chip's accessible name includes its status word. Phone month view: hollow dots for ghosted dates and filled dots for going. The day button's accessible name carries the status (for example "Oct 31, 2 events, 1 going").
-  - **Event page.** The RSVP segmented control shows the viewer's answer: Going, Maybe or Can't go selected. Waitlisted shows Going selected with a "Waitlisted" label. Not answered shows nothing selected.
-  - **Personal ICS feed (8.2).** Going is `STATUS:CONFIRMED`; Maybe, Not answered and Waitlisted are `STATUS:TENTATIVE`. Can't go dates are omitted from the finite standalone occurrence snapshot. Public and group feeds also use standalone dates, without personal RSVP statuses.
-  - **Series scope choice.** After tapping Going, Maybe or Can't go on a date of a series, an accessible dialog asks how far the answer reaches: "Just this date" (the default, focused first), "This and following dates", or "All future dates". The dialog traps focus, Esc cancels, and on phones it is a bottom sheet with 44px options. Single-date events skip the dialog. The series' own buttons use the same words: "Going to all dates", "Maybe for all", "Can't go to any".
-  - **Applying a series answer.** Every chosen date goes through the normal locked per-date registration path, so capacity, the waitlist and cutoffs apply per date. Dates a leader removed the person from stay removed. Dates added later by `occurrences.extend` are not answered automatically, and the UI says so under the series answer: "New dates added later won't be answered for you." "This and following" is a response scope only; series *edits* still have no "this and following" split (5.3).
-  - **Result.** A `role=status` summary in DEC-63 wording, for example "Going to 8 dates · waitlisted for Nov 7 and Nov 14", with Undo for 10 seconds, which restores every date's previous answer through the same locked path (a seat given up in the meantime may be gone, and the Undo result says so). A bulk Can't go asks for confirmation first, because it removes those dates from Just mine and the feed.
-  - **Privacy (DEC-64, DEC-67).** The summary reports only the viewer's own dates. The calendar API still returns slim rows with only the viewer's own answer: no attendees, counts, or other people's Can't go data.
-  - **API contract for the new endpoints.** Every state-changing endpoint this milestone adds (series answers, Undo, departure confirm) is an authenticated POST under `/api/v1` inside the CSRF group, like every other write (C17, 10.1); the departure preview is a read-only GET and changes nothing. Every error a person can act on gets a stable code in `api_errors.go` and a line in the SPA's `ERROR_COPY` (DEC-61); the SPA never shows the server's error text. A departure confirm whose facts changed since its preview (counts, keepable dates, or the person's registrations) refuses with 409 and a code that tells the person to review the updated confirmation, and changes nothing. No new endpoint here is a public form, so DEC-52's answer-as-success rule does not apply, and none of them adds a rate limit: the existing DEC-75 manager-add limits are unchanged, and a signed-in person's own series answers, Undo, leave and removal confirms are not rate-limited.
-  - **Blocks stay narrow (DEC-75).** The existing "Don't add me again" block stops new manager adds for its organizer scope only (`policy.ManagerAddBlocked`). It does not block a person's own series answers, does not block joining or rejoining a group, and does not end any registration that already stands — including a date kept at departure. No generalized block management is built here. A person ends a kept or invited date themselves with Can't go; choosing "Don't add me again" on such a date ends that date too and blocks future manager adds for that scope, as today. Every block, and every refusal it causes, keeps its existing audit row.
-- Acceptance:
-  - [x] In Just mine, Maybe, Not answered and Waitlisted dates show ghosted with their own text labels and full details, and Going dates show solid. Other events in Everything are unchanged (component/API/browser tests and retained calendar artifacts; locally accepted at `754a2f6`, merged in #129)
-  - [x] On the event page, for single-date and series dates alike, the RSVP segmented control maps the viewer's own answer exactly: Going, Maybe or Can't go selected when that is the answer; Waitlisted shows Going selected with a "Waitlisted" label; Not answered shows nothing selected (component and serialized browser tests; locally accepted, merged in #130)
-  - [x] Can't go dates are gone from Just mine and the personal feed; in Everything they stay with a "Can't go" label (UI and ICS tests; calendar/feed feature head verified locally)
-  - [x] The personal feed marks Going `CONFIRMED`, ghosted states `TENTATIVE`, and omits Can't go dates, including single dates of a series (golden files; recurrence-safe expanded personal feed verified locally)
-  - [x] The series dialog offers Just this date (default, focused first), This and following dates, and All future dates, with keyboard and focus coverage (Esc cancels, focus is trapped and returns; component and real-browser proof retained for T1)
-  - [x] "All future dates" and "This and following" register each date through the per-date locked path, waitlist the full ones in line order, leave removed and earlier dates alone, and report the result in a `role=status` summary (API/concurrency tests and mixed-outcome browser proof; series/calendar review approved)
-  - [x] A bulk Can't go asks for confirmation (accepted-confirm browser path and resulting four-date summary proved locally)
-  - [x] Ghosted, solid and Can't go states are axe-clean, ghosted text meets AA contrast, and the status is announced in text (1.4.1). Calendar and RSVP targets are 44px at 390 (measured target artifacts and isolated verify-ui evidence retained in M1.14-VERIFICATION.md)
-  - [x] Playwright screenshots at 390 and 1280 px for Agenda, Week and Month, including the phone month dots (fresh artifact paths and manual 390px inspection in M1.14-VERIFICATION.md)
-  - [x] Leaving a group, and a leader or admin removing someone, first shows a confirmation with the count of upcoming dates (no attendee names): "Leave Tuesday Bible Study?", "You'll be taken off 4 upcoming dates, including 2 you said Going to. Your past attendance stays.", with "Leave group" (danger) and "Stay"; a plain confirm with no count when there are 0 dates; the leader version is "Remove Pat? They'll be taken off 4 upcoming dates and told." Dates underway or inside the cutoff are listed with Keep ticked, and public dates the person chose with Keep unticked. The person confirming ticks or unticks Keep: on a self-leave that is the leaver; on a removal it is the leader or admin confirming, and the removed person is told which dates were kept and which ended (DEC-74)
-  - [x] Leaving or removal ends registrations only on upcoming dates not kept, never past ones (past sign-ups and attendance are unchanged), promotes the waitlist, and audits it; joining puts upcoming dates on their calendar as Not answered (DEC-74)
-  - [x] A kept private or invite-only date stays open to the departed person as sanitized exact-date access only — they can view that date, change their own answer, and see it in Just mine and their personal feed, with no group page, roster, series or other-date access — until the date ends or is cancelled, they choose Can't go, a manager removes that registration, or the account is disabled or deleted (DEC-74; API tests including a hidden-group leak check)
-  - [x] A removal sends the removed person exactly one summarized, names-free departure notice (kept and ended counts, no group name they can no longer see, a names-free guardian copy for a teen), a self-leave sends each group leader one notice that the person left, and no departure sends one notice per date (notify registry/privacy tests)
-  - [x] A non-member's public-event date appears in their Just mine and personal feed only after Maybe or Going; unanswered it appears in neither (DEC-73; policy/API/feed tests verified locally)
-  - [x] Church-wide dates are in every member's own scope (DEC-72); unanswered church-wide dates show in Just mine and the personal feed only within the next 30 days, unanswered public dates of other groups show within the window only in Everything and the feed's `all` scope and never in Just mine or `mine` unanswered (DEC-73), and answered dates always show (DEC-77; policy/API/feed tests verified locally)
-  - [x] The new series-answer, Undo and departure endpoints are CSRF-protected writes (the departure preview is a read-only GET), every actionable error has a DEC-61 code and `ERROR_COPY` line, a stale departure confirmation refuses 409 and changes nothing, and no new endpoint answers 429 (API tests; `TestCSRFExemptRoutesAreExact` and the error-copy guards still pass)
-  - [x] A "Don't add me again" block refuses new manager adds for its scope but never a person's own series answer, group join, or a registration that already stands; Can't go on a kept or invited date ends that date (API tests beside the occurrence-access tests)
-  - [x] Exact-date prerequisite delivered in M1.11: a manager adds one eligible adult or sends a purpose-bound Ask; every teen needs teen + admin approval. Rate limits, sanitized date-only access, names-free recipient/guardian notices linking to Can't go/Don't add me again, manager-only Added by a leader, audit and existing household/proxy boundaries are covered in M1.11-VERIFICATION.md (DEC-75 amended by DEC-78). This does not complete M1.14.
-- Tests: API tests for bulk and this-and-following responses, leave and join, the non-member add, and own-scope membership; feed golden files for TENTATIVE and omitted dates; Playwright tests with axe for the calendar states and the dialog.
+- Delivered: the calendar and personal ICS show where the viewer stands on each date, series answers cover many dates at once, and leaving a group is a counted confirmation. Copy uses the DEC-63 words: "Going", "Maybe", "Can't go", "Waitlisted" and "Not answered". The stored status `declined` never appears in copy.
+- Own scope (DEC-67, DEC-72 to DEC-75): dates of my groups, church-wide dates (everyone, with no synthetic group), events I host, and dates I answered. A public event of another group enters my scope only once I answer Maybe or Going (DEC-73). Joining a group adds its upcoming dates as Not answered. Unanswered public and church-wide dates show only within the next 30 days in Everything and the feed's `all` scope; church-wide ones also in Just mine; dates of my own groups and answered dates always show (DEC-77). Discovery of public events stays open (DEC-76).
+- Calendar states in Just mine: Going is solid; Maybe, Not answered and Waitlisted are ghosted with a text label and full detail; Can't go is removed (in Everything it stays, labelled). Ghosted means a dashed border and lighter fill, never opacity on text, and the chip's accessible name carries the status. Phone month view uses hollow and filled dots. The event page's segmented control shows the viewer's answer; Waitlisted shows Going with a "Waitlisted" label. The calendar API returns slim rows with only the viewer's own answer.
+- Personal ICS (8.2): Going is `CONFIRMED`, Maybe, Not answered and Waitlisted are `TENTATIVE`, and Can't go dates are omitted. Public and group feeds carry no RSVP status.
+- Series answers: after Going, Maybe or Can't go on a series date, a dialog asks "Just this date" (default), "This and following dates" or "All future dates" (DEC-92 removed the separate whole-series buttons). Each date goes through the normal locked registration path, so capacity, waitlist and cutoffs apply per date; dates a leader removed the person from stay removed, and dates added later are not answered ("New dates added later won't be answered for you."). A `role=status` summary offers Undo for 10 seconds, restoring each date's previous answer through the same path. A bulk Can't go asks for confirmation.
+- Departure (DEC-74, DEC-86): `GET` preview returns counts and keepable dates, and the confirming POST applies cleanup, waitlist promotion, exact-date access and audit rows under the occurrence locks. Leaving or removal ends registrations on upcoming dates except dates kept in the confirmation (underway or inside the cutoff, ticked by default; public dates the person chose, unticked); past attendance stays. A confirm whose facts changed since the preview answers 409 and changes nothing. A voluntary leave keeps a `left` membership that can rejoin; leader or admin removal keeps `removed`.
+- A kept private or invite-only date records explicit exact-date access for that one occurrence, in the same provenance family as a DEC-75 invitation (`policy.CanSeeEvent` is not relaxed). It is sanitized and date-only: the person can open the date, change their answer, and see it in Just mine and the personal feed, with no group page, roster, series or management access. It ends when the date ends or is cancelled, when the person chooses Can't go or "Don't add me again", when a manager removes the registration, or when the account is disabled or deleted.
+- Departure notices (stored rows, `notify.Send`): a removal sends the person one summarized, names-free notice (dates kept and ended, no group name they can't see, a names-free copy to a teen's confirmed guardians). A self-leave sends each group leader one notice. Never one notice per date.
+- "Don't add me again" blocks new manager adds for its organizer scope only (`policy.ManagerAddBlocked`). It never blocks the person's own answers, joining a group, or a registration that already stands.
+- API: the series-answer, Undo and departure-confirm endpoints are authenticated CSRF-protected POSTs under `/api/v1`. Their actionable errors have `api_errors.go` codes and `ERROR_COPY` lines (DEC-61). None answers 429. The "Show can't go" chip is optional.
+- Left for M4.2: an admin setting `calendar_unanswered_window_days` (DEC-77); M1.14 ships the fixed 30 days.
 
 ### 14.5 Phase 2: Rooms
 
+Rooms are optional (9.1) and touch the database, API and UI together, so every milestone ships as thin slices in this order (14.1): the database change, then the API and internals, then the UI. A slice may land hidden behind `rooms_enabled` until its UI exists. Nothing for rooms exists yet: no tables, no setting, no endpoints. In the release table rooms are v0.6, after email (v0.4) and the MVP (v0.5); they may run in parallel with Phase 3 because they share only events and occurrences.
+
+Design defaults for this phase (decided here so slices don't reopen them; change them in review if wrong):
+
+- **Where rooms show.** With rooms on, an event or date with a confirmed booking shows the room as its place ("Fellowship Hall · Main building"); a typed location then shows as a detail after it ("… · north door"), and the room name is the ICS `LOCATION` (8.2). Without a booking, the free-text location shows as today.
+- **Room feed tokens** are their own table (`room_feed_tokens(room_id, token_hash, created_by, created_at, revoked_at)`), not a new kind on the per-user `calendar_tokens` (which is one row per user).
+- **A `requested` booking holds nothing.** Only `confirmed` bookings are in the exclusion constraint. `rejected` is set only when an admin declines a requested booking. When a leader picks another room for that date, the new booking replaces the requested one.
+- **Restricted rooms** (the nursery, say) appear in the by-room view and room feed lists for admins only; everyone else never sees them listed.
+- **Phones.** The by-room view shows one room at a time as a day list with a room picker; the column grid starts at `sm` (DEC-67's pattern for Week).
+- **Event type for suggestions (9.3 Rule 3)** is the group's tags (DEC-100): no event category field.
+
 **M2.1 Rooms and bookings**
-- Depends on: M1.1a
-- Scope: 9.1–9.2. `rooms_enabled` setting, room CRUD (admins), bookings per occurrence and per series, setup and teardown padding stored in `padded_range`, conflicts, admin double-book with a reason, bookings that move with their occurrence.
-- Acceptance:
-  - [ ] With rooms off, no room UI or endpoints are reachable
-  - [ ] Overlapping bookings (including padding) are refused for leaders and hosts, by the exclusion constraint as well as by the API (two concurrent requests: exactly one wins)
-  - [ ] `padded_range` always matches `starts_at`, `ends_at`, and the padding (the `CHECK` rejects a mismatch)
-  - [ ] Moving an occurrence moves its bookings; a move into a conflict turns the booking `requested` and tells the leader, and the edit still saves
-  - [ ] Restricted rooms can be booked only by admins
-- Tests: conflict table tests, including the padding edges and moved occurrences.
+
+- **M2.1a Room catalog and the rooms switch**
+  - Database: `rooms` (5.3 `Room` fields) and the `rooms_enabled` setting (default off).
+  - API: admin CRUD under `/api/v1/admin/rooms`, `policy.CanManageRooms`; every room endpoint answers 404 while rooms are off. `GET /api/v1/rooms` lists active rooms to people who may book (`policy.CanBookRoom`), without notes for non-admins.
+  - UI: a Rooms tab in Admin (list, add, edit, deactivate; restricted rooms labelled), and a Rooms on/off switch in admin Settings that saves at once (DEC-98).
+  - Acceptance: with rooms off no room UI shows and every room endpoint is 404; only admins manage rooms; deactivating keeps history.
+- **M2.1b One booking on one date**
+  - Database: `room_bookings` with `padded_range`, the `CHECK` that it matches the times and padding, and the exclusion constraint on confirmed bookings (5.3, 9.2).
+  - API: book, change and release the room of one occurrence; `room_busy` (409) names the conflict window but never the other event; admins may double-book with a reason (`room_booking.overlap` audit row); restricted rooms are admin-only; a capacity warning (not a block) when the event's capacity or going count is above the room's. Cancelling a date releases its booking.
+  - UI: a Room field beside Location (not under More options, DEC-95) in "Edit this date" and the shared `SeriesEditor`, with busy rooms marked; the date card and event page show the room as the place.
+  - Acceptance: two concurrent bookings of overlapping padded ranges, exactly one wins (database and API); padding edges (touching ranges don't conflict); leaders can't book restricted rooms; the double-book reason is audited.
+- **M2.1c Series bookings and moving dates**
+  - Database: nullable `events.default_room_id` referencing `rooms` (5.3).
+  - API and internals: "Book for the whole series" books every generated date and stores `events.default_room_id`; the daily extender books new dates as it generates them. A series edit, a per-date reschedule, or a DEC-91 restore moves bookings in the same transaction; a move into a conflict makes the booking `requested`, the edit still saves, and the leader or hosts get one `room.lost` notice listing the dates ("Room lost on 2 dates: pick another room"). The extender does the same for new dates that conflict.
+  - UI: the event create forms get the Room field (with "whole series" for a series); the event page lists dates that lost their room with a "Pick a room" action.
+  - Acceptance: a series of 10 books 10 dates; editing the series time moves every booking; a moved date that now conflicts is `requested` and named in one notice; the extender books new dates and handles conflicts the same way.
+- **M2.1d Requested bookings and matching old locations**
+  - API: admins list requested bookings, confirm one (with a double-book reason if it still conflicts) or reject it (the leader is told); leaders re-pick. The 9.1 "match locations" helper lists distinct free-text locations with counts and lets an admin map one to a room, which books matching future dates where free and reports the rest. Running it again books nothing twice.
+  - UI: a "Needs a room" list on the admin Rooms tab and the match-locations helper.
+  - Acceptance: confirming a still-conflicting request needs a reason; rejecting notifies; re-picking replaces the requested booking; the helper never overwrites a leader's typed location and is idempotent.
+- Tests across M2.1: conflict table tests (padding edges, moved and restored dates, extender), policy tables for `CanManageRooms` and `CanBookRoom`, migration drift, and a Playwright path for book, conflict and double-book.
 
 **M2.2 By-room view and room feed**
-- Depends on: M2.1, M1.6, M1.7
-- Acceptance:
-  - [ ] Bookings the viewer cannot see show as "Reserved" with no title or group
-  - [ ] Room ICS feed works with an admin token and masks invite-only titles
-- Tests: API masking tests; a Playwright smoke test.
+
+- **M2.2a By-room view**
+  - API: `GET /api/v1/calendar/rooms?view=day|week&date=` returns, per active room, the confirmed bookings in range. A booking the viewer can't see (policy date visibility) is `{start, end, reserved: true}` with no title, group, event id or link; restricted rooms show to admins only.
+  - UI: `/calendar/rooms` (a Rooms view beside Agenda, Week and Month when rooms are on): columns per room with time rows from `sm` up, one room at a time on phones; "Reserved" blocks are grey with the word.
+  - Acceptance: members, leaders and admins each see exactly the details section 6 allows; JSON for a hidden booking has no identifying keys (a key-list test); teens and guests get 404.
+- **M2.2b Room ICS feed**
+  - Database: `room_feed_tokens` (5.3).
+  - API: admins issue and revoke a token per room (`room_feed_tokens`); `/cal/rooms/<roomId>/<token>.ics` exports confirmed bookings, titling invite-only and hidden bookings "Reserved"; the token never reaches the access log (existing redaction).
+  - UI: a "Calendar feed" action on each room in the admin Rooms tab (copy link, revoke).
+  - Acceptance: a revoked token answers 404; the feed shows what an admin would see, except that invite-only and hidden-date bookings are titled "Reserved" with no group or description (8.2).
+- Tests across M2.2: the key-list masking tests, and a Playwright smoke test of the by-room view.
 
 **M2.3 Room suggestions**
-- Depends on: M2.1
-- Scope: 9.3 exactly, using M1.13 effective occurrence visibility, never just the event or group's value. Test explicitly opened and tightened dates as well as the original 13 cases.
-- Acceptance:
-  - [ ] All 13 cases in the 9.3 table pass
-  - [ ] The response never contains other events' titles, groups, or dates (a test checks the JSON keys)
-  - [ ] Suggestions return in under 100 ms with 50 rooms and 20,000 bookings (benchmark on Postgres)
-- Tests: the 9.3 table, plus a benchmark.
+
+- **M2.3a Suggestion engine (internal)**
+  - `rooms.CountingUsagePredicate(E)` and the query from it, using M1.13 effective per-date visibility (never the group's or event's stored value alone). All five rules of 9.3, with the event's type taken from its group's tags (DEC-100).
+  - Tests: all 13 cases in the 9.3 table, plus explicitly opened and tightened dates and a church-wide event (no tags, so no type filter); a benchmark with 50 rooms and 20,000 bookings under 100 ms on Postgres.
+- **M2.3b Suggestions in the picker**
+  - API: `GET /api/v1/rooms/suggestions?event=&date=` returns up to 5 rooms with counts and a reason ("Used by this group 6 times"); the JSON never carries other events' titles, groups or dates (a key-list test).
+  - UI: the Room field shows "Suggested" first, each with its reason and Busy marks ("Busy on 2 of 8 dates"), then the full list.
+  - Acceptance: suggestions are a shortcut, never a gate: every bookable room stays pickable by hand.
 
 ### 14.6 Phase 3: Messaging
 
@@ -2410,6 +2122,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-97 | **"Turn off all optional email" arrives early** (Grier, Oct 30, 2026; audit #22). The single DEC-44 switch moves forward from M3.12 to Me > Notifications, linked from Alerts. Required mail (account, security, safety and request emails) always sends; each notification kind is marked optional or required in the registry. The per-category grid, SMS and the rest of M3.12 stay where they are. | 5.12, M3.12 |
 | DEC-98 | **On/off settings save at once** (Grier, Oct 30, 2026; audit #21). A single on/off setting (Privacy's hide-contact switch, admin self-signup) saves when changed, shows "Saved", and returns to its old value with an error if saving fails. Text and choice fields keep a Save button, and leaving a page with unsaved edits asks first. | M1.1, M4.2 |
 | DEC-99 | **Audit polish** (Grier, Oct 30, 2026; audit #14, #16, #17, #19, #20, #23–25). Leaders get "Manage sign-ups" in the group page's date menu and one "Add people" panel (name search first, then an email that adds an account or invites); the date page uses the event card. Signed out, nothing is "your" calendar scope, so no date reads "Not answered"; calendar answer labels are quiet text (DEC-71's labels kept); empty week days shrink. Admin users and groups get search, filters, counts, pending-first groups and Delete inside More. Me groups its rows under You, Family and Sharing with descriptions. Copy: "See all 10 dates", "Church-wide event" when no hosts, sentence-case headings, header "Sign up" for account requests, "New group" in both headers (DEC-62), one Log in button on sign-in pages. Delight: "Today"/"Tonight" on the next meeting, "Only 3 seats left" at five or fewer, and a leader's first-meeting nudge on an empty group. | 5.3, 8.1, M1.6, M1.11, M1.14 |
+| DEC-100 | **A room suggestion's event type is its group's tags** (Grier, Oct 30, 2026; Phase 2 review). Events get no category field. For 9.3 Rule 3 two events are the same type when their groups share a tag; a church-wide event has no tags and skips the type filter, while Rule 4 still ranks same-series and same-group use first. | 5.3, 9.3, M2.3 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 
