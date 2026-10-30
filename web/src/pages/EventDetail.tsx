@@ -297,15 +297,19 @@ function DateRow({
   // "Pick a room" on the dates-that-need-a-room list opens this date's editor and moves to it, once per ask.
   const editorRef = useRef<HTMLDivElement>(null);
   const handledRequest = useRef(0);
+  // The editor was opened by "Pick a room", so its Room control takes the cursor.
+  const [focusRoom, setFocusRoom] = useState(false);
   useEffect(() => {
-    if (editRequest > 0 && editRequest !== handledRequest.current) setEditingDate(true);
+    if (editRequest > 0 && editRequest !== handledRequest.current) {
+      setEditingDate(true);
+      setFocusRoom(true);
+    }
   }, [editRequest]);
   useEffect(() => {
     if (editRequest === 0 || editRequest === handledRequest.current || !editingDate) return;
     handledRequest.current = editRequest;
     const editor = editorRef.current;
     editor?.scrollIntoView?.({ block: "start" });
-    editor?.querySelector<HTMLElement>("input, textarea, select")?.focus({ preventScroll: true });
   }, [editRequest, editingDate]);
   const [cancelling, setCancelling] = useState(false);
   const time = formatTime(instance.startsAt);
@@ -341,7 +345,7 @@ function DateRow({
         tone="quiet"
         label={`More for ${instance.date}`}
         items={[
-          { label: "Edit this date", onSelect: () => setEditingDate((v) => !v) },
+          { label: "Edit this date", onSelect: () => { setFocusRoom(false); setEditingDate((v) => !v); } },
           { label: "Manage sign-ups", onSelect: () => setManaging((v) => !v) },
           { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
         ]}
@@ -386,6 +390,7 @@ function DateRow({
           <DateEditor
             instance={instance}
             onRoomChanged={onChanged}
+            focusRoom={focusRoom}
             onSaved={() => {
               setEditingDate(false);
               onChanged();

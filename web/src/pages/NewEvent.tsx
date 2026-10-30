@@ -44,9 +44,8 @@ export function NewEvent() {
   const [childcare, setChildcare] = useState<ChildcareValue>(emptyChildcare);
   const [remote, setRemote] = useState<RemoteValue>(emptyRemote);
   const [seats, setSeats] = useState<SeatsValue>(emptySeats);
-  // The room for every date, and how many dates it is busy on (from the latest check).
+  // The room for every date; the event page lists any dates it is busy on.
   const [roomId, setRoomId] = useState<number | null>(null);
-  const [roomBusyDates, setRoomBusyDates] = useState(0);
   // Closed on create; a problem inside it opens it (DEC-95).
   const [moreOpen, setMoreOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -150,8 +149,9 @@ export function NewEvent() {
         ...(roomId !== null ? { roomId } : {}),
       });
       markSaved();
-      // A room that is busy on some dates leaves them needing one, and the event page is where they are listed.
-      navigate(roomBusyDates > 0 ? `/events/${event.id}` : `/groups/${id}`);
+      // A room may be busy on some dates, which then need one; the event page lists them. A check can be stale
+      // or still pending at submit, so any chosen room goes there.
+      navigate(roomId !== null ? `/events/${event.id}` : `/groups/${id}`);
     } catch (err) {
       const msg = errorText(err, "We couldn't schedule the event.");
       setError(msg);
@@ -249,7 +249,7 @@ export function NewEvent() {
           schedule={scheduleReady(when, tzid, seats) ? scheduleFields(when, tzid, seats) : null}
           groupId={Number(id)}
           roomId={roomId}
-          onChange={(next, busyDates) => { setRoomId(next); setRoomBusyDates(busyDates); }}
+          onChange={setRoomId}
         />
         <EventOptions
           idPrefix="event"

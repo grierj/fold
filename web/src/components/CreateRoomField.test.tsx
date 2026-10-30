@@ -27,9 +27,9 @@ beforeEach(() => {
 });
 
 // The page keeps the chosen room, as both create forms do.
-function Harness({ schedule, groupId, onChange }: { schedule: Schedule | null; groupId?: number; onChange?: (id: number | null, busy: number) => void }) {
+function Harness({ schedule, groupId, onChange }: { schedule: Schedule | null; groupId?: number; onChange?: (id: number | null) => void }) {
   const [roomId, setRoomId] = useState<number | null>(null);
-  return <CreateRoomField id="t-room" schedule={schedule} groupId={groupId} roomId={roomId} onChange={(id, busy) => { setRoomId(id); onChange?.(id, busy); }} />;
+  return <CreateRoomField id="t-room" schedule={schedule} groupId={groupId} roomId={roomId} onChange={(id) => { setRoomId(id); onChange?.(id); }} />;
 }
 const select = () => screen.findByRole("combobox", { name: /^Room/ });
 
@@ -46,7 +46,7 @@ describe("CreateRoomField", () => {
     render(<Harness schedule={null} />);
     const box = await select();
     expect(box).toBeDisabled();
-    expect(screen.getByText("Pick a date and time first to see which rooms are free.")).toBeInTheDocument();
+    expect(screen.getByText("Finish the date, time and seat limit first to see which rooms are free.")).toBeInTheDocument();
     expect(SeriesRooms.check).not.toHaveBeenCalled();
   });
 
@@ -94,16 +94,16 @@ describe("CreateRoomField", () => {
     const box = await select();
     await screen.findByRole("option", { name: /^Chapel/ });
     await userEvent.selectOptions(box, "2");
-    expect(onChange).toHaveBeenLastCalledWith(2, 2);
+    expect(onChange).toHaveBeenLastCalledWith(2);
     expect(box).toHaveValue("2");
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Chapel is in use on 2 of 10 dates. It will be booked on the other 8, and the event page will list the busy dates under “Dates that need a room”.",
     );
     await userEvent.selectOptions(box, "3");
-    expect(onChange).toHaveBeenLastCalledWith(3, 0);
+    expect(onChange).toHaveBeenLastCalledWith(3);
     expect(screen.getByRole("status")).toHaveTextContent("This room may seat fewer people than the seat limit allows.");
     await userEvent.selectOptions(box, "none");
-    expect(onChange).toHaveBeenLastCalledWith(null, 0);
+    expect(onChange).toHaveBeenLastCalledWith(null);
     expect(screen.getByRole("status")).toBeEmptyDOMElement();
   });
 
@@ -121,17 +121,46 @@ describe("CreateRoomField", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("is in use at this time, so the event will start without a room.");
   });
 
-  it("refreshes the busy count of a chosen room after a new check, and drops a room that is gone", async () => {
+  it("drops a room a fresh check no longer lists, and says so", async () => {
     const onChange = vi.fn();
     const { rerender } = render(<Harness schedule={weekly} onChange={onChange} />);
     await screen.findByRole("option", { name: /^Chapel/ });
     await userEvent.selectOptions(await select(), "2");
     vi.mocked(SeriesRooms.check).mockResolvedValue({ rooms: [room({ id: 2, name: "Chapel", building: "", busyDates: 5 })], dates: 10 });
     rerender(<Harness schedule={{ ...weekly, durationMinutes: 60 }} onChange={onChange} />);
-    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(2, 5));
+    await screen.findByRole("option", { name: /^Chapel.*in use on 5 of 10 dates/ });
+    expect(onChange).toHaveBeenLastCalledWith(2);
     vi.mocked(SeriesRooms.check).mockResolvedValue({ rooms: [hall], dates: 10 });
     rerender(<Harness schedule={{ ...weekly, durationMinutes: 45 }} onChange={onChange} />);
-    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(null, 0));
+    await waitFor(() => expect(onChange).toHaveBeenLastCalledWith(null));
+    expect(await screen.findByRole("status")).toHaveTextContent("Chapel isn't available for these dates any more, so no room is chosen.");
+    expect(await select()).toHaveValue("none");
+  });
+
+  it("keeps the chosen room in view, and hides labels and notes about the old dates, when a check fails", async () => {
+    const { rerender } = render(<Harness schedule={weekly} groupId={5} />);
+    await screen.findByRole("option", { name: /^Chapel/ });
+    await userEvent.selectOptions(await select(), "2");
+    expect(await screen.findByRole("status")).toHaveTextContent("Chapel is in use on 2 of 10 dates.");
+    vi.mocked(SeriesRooms.check).mockRejectedValue(new ApiError(500, "down", { code: "server_error" }));
+    rerender(<Harness schedule={{ ...weekly, durationMinutes: 60 }} groupId={5} />);
+    await screen.findByRole("button", { name: "Try again" });
+    const box = await select();
+    expect(box).toHaveValue("2");
+    expect(screen.getByRole("option", { name: "Chapel" })).toBeInTheDocument();
+    expect(screen.queryByText(/in use on/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("keeps the chosen room in view while the dates are unfinished", async () => {
+    const { rerender } = render(<Harness schedule={weekly} />);
+    await screen.findByRole("option", { name: /^Chapel/ });
+    await userEvent.selectOptions(await select(), "2");
+    rerender(<Harness schedule={null} />);
+    const box = await select();
+    await waitFor(() => expect(box).toBeDisabled());
+    expect(box).toHaveValue("2");
+    expect(screen.queryByText(/in use on/)).not.toBeInTheDocument();
   });
 
   it("offers a retry when the check fails, without blocking the form", async () => {

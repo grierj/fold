@@ -18,12 +18,15 @@ export function DateEditor({
   onSaved,
   onClose,
   onRoomChanged,
+  focusRoom,
 }: {
   instance: EventOccurrence;
   onSaved: () => void;
   onClose: () => void;
   // The room was booked or released (its own action, not part of Save).
   onRoomChanged?: () => void;
+  // Opened by "Pick a room": the cursor goes to the Room control.
+  focusRoom?: boolean;
 }) {
   const [date, setDate] = useState(instance.startsLocal.slice(0, 10));
   const [time, setTime] = useState(instance.startsLocal.slice(11, 16));
@@ -131,7 +134,7 @@ export function DateEditor({
           <Input value={location} onChange={(e) => setLocation(e.target.value)} />
         </Field>
       </div>
-      <RoomField eventId={instance.eventId} date={instance.date} idPrefix={`cev-${instance.id}`} onChanged={onRoomChanged} />
+      <RoomField eventId={instance.eventId} date={instance.date} idPrefix={`cev-${instance.id}`} onChanged={onRoomChanged} focusOnLoad={focusRoom} />
       <Field id={`cev-cap-${instance.id}`} label="Capacity for this date" optional hint="Leave it blank to use the event’s capacity.">
         <Input
           type="number"

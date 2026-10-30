@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -66,13 +68,75 @@ type seriesBookingJSON struct {
 // timeWindow is one date's unpadded time.
 type timeWindow struct{ start, end time.Time }
 
-// pgTimes is a Postgres array literal of times, for unnest.
-func pgTimes(ts []time.Time) string {
-	parts := make([]string, len(ts))
-	for i, t := range ts {
-		parts[i] = `"` + t.UTC().Format(time.RFC3339Nano) + `"`
+// busyDates counts, per room, how many of the dates another confirmed
+// booking holds the room on, padded by the room's own setup and teardown
+// (DEC-101). One read fetches the confirmed bookings near the dates, then a
+// sweep: a room's bookings sorted by start, with the latest end so far, make
+// each date one binary search. Bookings of eventID's own dates don't count.
+func busyDates(db *gorm.DB, rooms []models.Room, windows []timeWindow, eventID uint) (map[uint]int, error) {
+	out := map[uint]int{}
+	if len(windows) == 0 || len(rooms) == 0 {
+		return out, nil
 	}
-	return "{" + strings.Join(parts, ",") + "}"
+	first, last := windows[0].start, windows[0].end
+	for _, w := range windows {
+		if w.start.Before(first) {
+			first = w.start
+		}
+		if w.end.After(last) {
+			last = w.end
+		}
+	}
+	// Both sides' padding is at most maxRoomPadding, so nothing further out
+	// can overlap.
+	slack := 2 * time.Duration(maxRoomPadding) * time.Minute
+	var rows []struct {
+		RoomID uint
+		Lo, Hi time.Time
+	}
+	if err := db.Raw(`SELECT b.room_id, lower(b.padded_range) AS lo, upper(b.padded_range) AS hi FROM room_bookings b
+		WHERE b.status = ? AND b.starts_at < ? AND b.ends_at > ?
+		AND NOT EXISTS (SELECT 1 FROM event_occurrences o WHERE o.id = b.occurrence_id AND o.event_id = ?)
+		ORDER BY b.room_id, lower(b.padded_range)`,
+		models.BookingConfirmed, last.Add(slack), first.Add(-slack), eventID).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	type held struct {
+		starts []time.Time
+		latest []time.Time // latest[i]: the latest end among bookings 0..i
+	}
+	byRoom := map[uint]*held{}
+	for _, r := range rows {
+		h := byRoom[r.RoomID]
+		if h == nil {
+			h = &held{}
+			byRoom[r.RoomID] = h
+		}
+		latest := r.Hi
+		if n := len(h.latest); n > 0 && h.latest[n-1].After(latest) {
+			latest = h.latest[n-1]
+		}
+		h.starts = append(h.starts, r.Lo)
+		h.latest = append(h.latest, latest)
+	}
+	for _, room := range rooms {
+		h := byRoom[room.ID]
+		if h == nil {
+			continue
+		}
+		setup := time.Duration(room.DefaultSetupMinutes) * time.Minute
+		teardown := time.Duration(room.DefaultTeardownMinutes) * time.Minute
+		for _, w := range windows {
+			from, to := w.start.Add(-setup), w.end.Add(teardown)
+			// Bookings starting before this date's padded end overlap it if
+			// any of them ends after its padded start (ranges are [lo, hi)).
+			n := sort.Search(len(h.starts), func(i int) bool { return !h.starts[i].Before(to) })
+			if n > 0 && h.latest[n-1].After(from) {
+				out[room.ID]++
+			}
+		}
+	}
+	return out, nil
 }
 
 // roomChoices lists the active rooms p may book for the given dates, with
@@ -83,29 +147,9 @@ func roomChoices(db *gorm.DB, p *policy.Person, windows []timeWindow, eventID ui
 	if err := db.Where("active").Order("lower(building), lower(name)").Find(&rooms).Error; err != nil {
 		return nil, err
 	}
-	busy := map[uint]int{}
-	if len(windows) > 0 {
-		starts, ends := make([]time.Time, len(windows)), make([]time.Time, len(windows))
-		for i, w := range windows {
-			starts[i], ends[i] = w.start, w.end
-		}
-		var rows []struct {
-			RoomID uint
-			Dates  int
-		}
-		if err := db.Raw(`SELECT r.id AS room_id, count(DISTINCT w.n) AS dates
-			FROM unnest(?::timestamptz[], ?::timestamptz[]) WITH ORDINALITY AS w(s, e, n)
-			JOIN rooms r ON r.active
-			JOIN room_bookings b ON b.room_id = r.id AND b.status = ?
-				AND b.padded_range && tstzrange(w.s - make_interval(mins => r.default_setup_minutes::int),
-					w.e + make_interval(mins => r.default_teardown_minutes::int), '[)')
-			WHERE NOT EXISTS (SELECT 1 FROM event_occurrences o WHERE o.id = b.occurrence_id AND o.event_id = ?)
-			GROUP BY r.id`, pgTimes(starts), pgTimes(ends), models.BookingConfirmed, eventID).Scan(&rows).Error; err != nil {
-			return nil, err
-		}
-		for _, r := range rows {
-			busy[r.RoomID] = r.Dates
-		}
+	busy, err := busyDates(db, rooms, windows, eventID)
+	if err != nil {
+		return nil, err
 	}
 	want := 0
 	if capacity != nil {
@@ -329,7 +373,7 @@ func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uin
 	}
 	var occs []models.EventOccurrence
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-		Where("id IN ? AND status = ? AND NOT EXISTS (SELECT 1 FROM room_bookings b WHERE b.occurrence_id = event_occurrences.id)",
+		Where("id IN ? AND status = ? AND starts_at > now() AND NOT EXISTS (SELECT 1 FROM room_bookings b WHERE b.occurrence_id = event_occurrences.id)",
 			occurrenceIDs, models.OccurrenceScheduled).Order("id").Find(&occs).Error; err != nil {
 		return nil, err
 	}
@@ -375,20 +419,30 @@ func settleDateRooms(tx *gorm.DB, ev *models.Event, moved, added []uint, by *uin
 
 // afterExtend books the series room for dates the daily extender adds,
 // collecting notification ids to email once the run is over. While rooms
-// are off it books nothing and tells no one.
+// are off it books nothing and tells no one. A failure here is logged and
+// undone on its own, so it never stops the event's new dates being added.
 func (a *App) afterExtend(emailed *[]uint) events.AfterEnsure {
 	return func(tx *gorm.DB, ev *models.Event, added []string) error {
 		if ev.DefaultRoomID == nil || !a.roomsEnabled() {
 			return nil
 		}
-		var ids []uint
-		if err := tx.Model(&models.EventOccurrence{}).Where("event_id = ? AND original_date IN ?", ev.ID, added).
-			Pluck("id", &ids).Error; err != nil {
+		if err := tx.SavePoint("rooms").Error; err != nil {
 			return err
 		}
-		sent, err := settleDateRooms(tx, ev, nil, ids, nil)
+		sent, err := func() ([]uint, error) {
+			var ids []uint
+			if err := tx.Model(&models.EventOccurrence{}).Where("event_id = ? AND original_date IN ?", ev.ID, added).
+				Pluck("id", &ids).Error; err != nil {
+				return nil, err
+			}
+			return settleDateRooms(tx, ev, nil, ids, nil)
+		}()
+		if err != nil {
+			log.Printf("occurrences: event %d: series room: %v", ev.ID, err)
+			return tx.RollbackTo("rooms").Error
+		}
 		*emailed = append(*emailed, sent...)
-		return err
+		return nil
 	}
 }
 

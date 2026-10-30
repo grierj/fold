@@ -41,9 +41,10 @@ const paddedRangeSQL = `tstzrange(?::timestamptz - make_interval(mins => ?::int)
 // everyone else (9.2).
 func heldByOverlap(tx *gorm.DB, roomID, occurrenceID uint, start, end time.Time, setup, teardown int) (bool, error) {
 	var held bool
-	err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM room_bookings WHERE room_id = ? AND status = ? AND allow_overlap
+	// The status is a literal so the planner can use idx_room_bookings_overlap.
+	err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM room_bookings WHERE room_id = ? AND status = 'confirmed' AND allow_overlap
 		AND occurrence_id <> ? AND padded_range && `+paddedRangeSQL+`)`,
-		roomID, models.BookingConfirmed, occurrenceID, start, setup, end, teardown).Scan(&held).Error
+		roomID, occurrenceID, start, setup, end, teardown).Scan(&held).Error
 	return held, err
 }
 
@@ -85,16 +86,15 @@ func placeBooking(tx *gorm.DB, occ *models.EventOccurrence, room *models.Room, s
 		return 0, err
 	}
 	if !held {
-		savepoint := fmt.Sprintf("book%d", occ.ID)
-		tx.SavePoint(savepoint)
-		err := insert(models.BookingConfirmed, false, "")
-		if err == nil {
-			return bookedFree, nil
-		}
-		if !isOverlap(err) {
+		free, err := trySavepoint(tx, fmt.Sprintf("book%d", occ.ID), func() error {
+			return insert(models.BookingConfirmed, false, "")
+		})
+		if err != nil {
 			return 0, err
 		}
-		tx.RollbackTo(savepoint)
+		if free {
+			return bookedFree, nil
+		}
 	}
 	switch {
 	case reason != "":
@@ -103,6 +103,26 @@ func placeBooking(tx *gorm.DB, occ *models.EventOccurrence, room *models.Room, s
 		return bookedRequested, insert(models.BookingRequested, false, "")
 	}
 	return notBooked, nil
+}
+
+// trySavepoint runs write under a savepoint. ok is false when the exclusion
+// constraint refused it; the transaction is then as it was before. The
+// savepoint is released either way: a whole series books hundreds of dates
+// in one transaction, and open subtransactions slow every session.
+func trySavepoint(tx *gorm.DB, name string, write func() error) (ok bool, err error) {
+	if err := tx.SavePoint(name).Error; err != nil {
+		return false, err
+	}
+	werr := write()
+	if werr != nil && !isOverlap(werr) {
+		return false, werr
+	}
+	if werr != nil {
+		if err := tx.RollbackTo(name).Error; err != nil {
+			return false, err
+		}
+	}
+	return werr == nil, tx.Exec("RELEASE SAVEPOINT " + name).Error
 }
 
 // isOverlap reports the exclusion constraint refusing a booking.
@@ -416,7 +436,9 @@ func moveRoomBookings(tx *gorm.DB, occurrenceIDs []uint) ([]string, error) {
 		return nil, nil
 	}
 	var bookings []models.RoomBooking
-	if err := tx.Where("occurrence_id IN ?", occurrenceIDs).Order("id").Find(&bookings).Error; err != nil {
+	// Room order, so two edits moving dates between the same rooms take the
+	// room locks in the same order and can't deadlock.
+	if err := tx.Where("occurrence_id IN ?", occurrenceIDs).Order("room_id, id").Find(&bookings).Error; err != nil {
 		return nil, err
 	}
 	var lost []string
@@ -446,19 +468,14 @@ func moveRoomBookings(tx *gorm.DB, occurrenceIDs []uint) ([]string, error) {
 				return nil, err
 			}
 		}
-		savepoint := fmt.Sprintf("move%d", b.ID)
-		tx.SavePoint(savepoint)
-		var err error = errLostRoom
+		kept := false
 		if !held {
-			err = move(b.Status)
-		}
-		if err != nil {
-			if err != errLostRoom && !isOverlap(err) {
+			var err error
+			if kept, err = trySavepoint(tx, fmt.Sprintf("move%d", b.ID), func() error { return move(b.Status) }); err != nil {
 				return nil, err
 			}
-			if err != errLostRoom {
-				tx.RollbackTo(savepoint)
-			}
+		}
+		if !kept {
 			if err := move(models.BookingRequested); err != nil {
 				return nil, err
 			}
@@ -467,8 +484,6 @@ func moveRoomBookings(tx *gorm.DB, occurrenceIDs []uint) ([]string, error) {
 	}
 	return lost, nil
 }
-
-var errLostRoom = errors.New("room held at the new time")
 
 // notifyRoomLost tells the event's leaders (or a church-wide event's hosts)
 // which dates lost their room, in one notice (9.2). The person who moved
@@ -510,35 +525,48 @@ func placeLine(room *occurrenceRoomJSON, location string) string {
 	return line
 }
 
+// occurrenceRooms maps dates to their confirmed booking's room, for showing
+// the room as the place (9.2). Empty while rooms are off. One read: the
+// rooms switch is checked inside the same query, so a list of dates pays
+// exactly one read for rooms whether they are on or off. A page shows its
+// dates without rooms if the read fails; feeds use roomsFor and fail.
+func (a *App) occurrenceRooms(db *gorm.DB, occurrenceIDs []uint) map[uint]*occurrenceRoomJSON {
+	if len(occurrenceIDs) == 0 {
+		return map[uint]*occurrenceRoomJSON{}
+	}
+	out, _ := roomsFor(db, occurrenceIDs)
+	return out
+}
+
 // roomsChunk keeps one rooms lookup under the Postgres parameter limit.
 const roomsChunk = 10000
 
-// occurrenceRooms maps dates to their confirmed booking's room, for showing
-// the room as the place (9.2). Empty while rooms are off. One read (per
-// 10,000 dates): the rooms switch is checked inside the same query, so a
-// list of dates pays exactly one read for rooms whether they are on or off.
-func (a *App) occurrenceRooms(db *gorm.DB, occurrenceIDs []uint) map[uint]*occurrenceRoomJSON {
+// roomsFor is occurrenceRooms, reporting a failed read. A feed's dates come
+// in chunks of 10,000, so a list of dates under that pays one read.
+func roomsFor(db *gorm.DB, occurrenceIDs []uint) (map[uint]*occurrenceRoomJSON, error) {
 	out := map[uint]*occurrenceRoomJSON{}
-	for len(occurrenceIDs) > roomsChunk {
-		for k, v := range a.occurrenceRooms(db, occurrenceIDs[:roomsChunk]) {
-			out[k] = v
+	for len(occurrenceIDs) > 0 {
+		n := min(len(occurrenceIDs), roomsChunk)
+		if err := roomsChunkInto(db, occurrenceIDs[:n], out); err != nil {
+			return out, err
 		}
-		occurrenceIDs = occurrenceIDs[roomsChunk:]
+		occurrenceIDs = occurrenceIDs[n:]
 	}
-	if len(occurrenceIDs) == 0 {
-		return out
-	}
+	return out, nil
+}
+
+func roomsChunkInto(db *gorm.DB, occurrenceIDs []uint, out map[uint]*occurrenceRoomJSON) error {
 	var rows []struct {
 		OccurrenceID uint
 		ID           uint
 		Name         string
 		Building     string
 	}
-	db.Raw(`SELECT b.occurrence_id, r.id, r.name, r.building FROM room_bookings b JOIN rooms r ON r.id = b.room_id
+	err := db.Raw(`SELECT b.occurrence_id, r.id, r.name, r.building FROM room_bookings b JOIN rooms r ON r.id = b.room_id
 		WHERE b.occurrence_id IN ? AND b.status = ?
-		AND EXISTS (SELECT 1 FROM settings WHERE key = ? AND value = 'true')`, occurrenceIDs, models.BookingConfirmed, settingRoomsEnabled).Scan(&rows)
+		AND EXISTS (SELECT 1 FROM settings WHERE key = ? AND value = 'true')`, occurrenceIDs, models.BookingConfirmed, settingRoomsEnabled).Scan(&rows).Error
 	for _, r := range rows {
 		out[r.OccurrenceID] = &occurrenceRoomJSON{ID: r.ID, Name: r.Name, Building: r.Building}
 	}
-	return out
+	return err
 }

@@ -719,6 +719,8 @@ describe("EventDetail dates that need a room", () => {
     expect(DateRooms.list).not.toHaveBeenCalledWith(7, "2026-12-01");
     const room = await screen.findByRole("combobox", { name: /^Room/ });
     expect(room).toBeInTheDocument();
+    // The cursor goes to the Room control, not the date field.
+    await waitFor(() => expect(room).toHaveFocus());
   });
 
   it("shows nothing when no date needs a room", async () => {

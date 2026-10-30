@@ -41,6 +41,14 @@ func Extend(db *gorm.DB, now time.Time, after AfterEnsure) error {
 	for i := range evs {
 		ev := &evs[i]
 		err := db.Transaction(func(tx *gorm.DB) error {
+			// Re-read under the event's lock: an edit that committed since the
+			// list was read wins, and none runs while this adds its dates.
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(ev, ev.ID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil // deleted since
+				}
+				return err
+			}
 			added, err := ensure(tx, ev, now)
 			if err != nil || after == nil || len(added) == 0 {
 				return err

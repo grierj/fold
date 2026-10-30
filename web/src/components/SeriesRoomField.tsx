@@ -26,6 +26,16 @@ export function seriesRoomLabel(room: SeriesRoom, dates: number): string {
   return `${roomName(room)}${seats}${busy}${room.tooSmall ? " — may be too small" : ""}`;
 }
 
+// What picking a room will do to dates it is busy on, said before it is booked.
+function busyNote(room: SeriesRoom, dates: number): string | null {
+  if (room.busyDates <= 0) return null;
+  const name = roomName(room);
+  const listed = "the busy dates will be listed under “Dates that need a room”.";
+  if (dates <= 1) return `${name} is in use at this time, so the date will need a room; ${listed}`;
+  if (room.busyDates >= dates) return `${name} is in use on all ${dates} dates, so none can be booked yet; ${listed}`;
+  return `${name} is in use on ${room.busyDates} of ${dates} dates. It will be booked on the other ${dates - room.busyDates}, and ${listed}`;
+}
+
 // What a series booking did, in words. `over` is how many of the booked dates
 // an admin double-booked.
 function resultMessage(res: SeriesBooking, over = 0): string {
@@ -48,10 +58,13 @@ function resultMessage(res: SeriesBooking, over = 0): string {
 }
 
 // The Room control of "Edit series" for a recurring series (M2.1c, DEC-95:
-// beside Location, not under More options). Like RoomField, a choice is saved
-// at once and never waits for the form's Save. A date that is busy keeps its
+// beside Location, not under More options). Booking is its own action and
+// never waits for the form's Save. A date that is busy keeps its
 // place on the event's "Dates that need a room" list (DEC-103). It shows
 // nothing while rooms are off.
+// Unlike RoomField it does not book when the select changes, but on its own
+// button: arrow keys on a closed select fire change, and one keypress must
+// never book or release dozens of dates.
 export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
   eventId: number;
   idPrefix: string;
@@ -64,6 +77,10 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
   const [enabled, setEnabled] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // The select's choice, not yet booked.
+  const [pick, setPick] = useState(NONE);
+  // How many upcoming dates have a room that holds nothing (DEC-103).
+  const [needsCount, setNeedsCount] = useState(0);
   const [rooms, setRooms] = useState<SeriesRoom[]>([]);
   const [dates, setDates] = useState(0);
   const [current, setCurrent] = useState<OccurrenceRoom | null>(null);
@@ -104,6 +121,8 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
       setRooms(res.rooms);
       setDates(res.dates);
       setCurrent(res.defaultRoom);
+      setPick(res.defaultRoom ? String(res.defaultRoom.id) : NONE);
+      setNeedsCount(res.needsRoom.length);
     } catch (e) {
       if (alive.current) setLoadError(errorText(e, "We couldn't load the rooms."));
     } finally {
@@ -125,6 +144,8 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
       const res = await SeriesRooms.set(eventId, overlapReason ? { roomId, overlapReason } : { roomId });
       if (!alive.current) return;
       setCurrent(res.defaultRoom);
+      setPick(res.defaultRoom ? String(res.defaultRoom.id) : NONE);
+      setNeedsCount(res.defaultRoom ? res.lost.length : 0);
       setStatus(resultMessage(res, over));
       setReason("");
       setReasonError(null);
@@ -141,14 +162,18 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
   }
 
   function choose(value: string) {
-    if (busy) return;
+    setPick(value);
     setPending(null);
     setReasonError(null);
-    if (value === NONE) {
+  }
+
+  function apply() {
+    if (busy || pick === value) return;
+    if (pick === NONE) {
       void send(null);
       return;
     }
-    const room = rooms.find((r) => String(r.id) === value);
+    const room = rooms.find((r) => String(r.id) === pick);
     if (room) void send(room.id);
   }
 
@@ -174,6 +199,7 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
   // A series room an admin set that this person can't list (a restricted room) still shows by name.
   const hidden = current && !rooms.some((r) => r.id === current.id) ? current : null;
   const value = current ? String(current.id) : NONE;
+  const chosen = pick === NONE ? null : (rooms.find((r) => String(r.id) === pick) ?? null);
 
   return (
     <div className="space-y-2">
@@ -190,9 +216,9 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
             id={id}
             label="Room for every date"
             optional
-            hint="Booked for every upcoming date as soon as you choose it, so you don't need to press Save. A date you gave its own room keeps it. “No series room” frees the rest."
+            hint="Choose a room, then book it for every upcoming date. A date you gave its own room keeps it. “No series room” releases the rooms it booked."
           >
-            <Select value={value} aria-busy={busy || undefined} onChange={(e) => choose(e.target.value)}>
+            <Select value={pick} aria-busy={busy || undefined} onChange={(e) => choose(e.target.value)}>
               <option value={NONE}>No series room</option>
               {hidden && <option value={String(hidden.id)}>{roomName(hidden)}</option>}
               {rooms.map((r) => (
@@ -200,8 +226,17 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
               ))}
             </Select>
           </Field>
+          <Button variant="secondary" disabled={busy || pick === value} onClick={apply}>
+            {pick === NONE ? "Stop the series room" : "Book for every date"}
+          </Button>
           <div role="status" className="space-y-2 empty:hidden">
+            {chosen && pick !== value && busyNote(chosen, dates) && (
+              <p className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>{busyNote(chosen, dates)}</p>
+            )}
             {status && <p className="text-sm text-text-muted">{status}</p>}
+            {current && dates > 0 && needsCount >= dates && (
+              <p className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>Not booked on any date yet: every date is busy.</p>
+            )}
           </div>
           {error && <FormError>{error}</FormError>}
           {pending && (

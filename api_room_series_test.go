@@ -228,3 +228,129 @@ func TestRoomSeriesExtenderBooksNewDates(t *testing.T) {
 		t.Fatalf("%d bookings after a second run", n)
 	}
 }
+
+func TestRoomSeriesEditsBookAddedAndRestoredDates(t *testing.T) {
+	f := newBookingFixture(t)
+	start := f.startOn.AddDate(0, 0, 1)
+	series := createFeedEvent(t, f.leader, f.group, "Weekly", start, "FREQ=WEEKLY;COUNT=3")
+	if code, out := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK || out.Booked != 3 {
+		t.Fatalf("book the series: %d %+v", code, out)
+	}
+	edit := func(rule string) {
+		t.Helper()
+		if w := f.leader.do("PUT", "/api/v1/events/"+itoa(series.ID), map[string]any{"recurrenceRule": rule}, true); w.Code != http.StatusOK {
+			t.Fatalf("series edit %s: %d %s", rule, w.Code, w.Body.String())
+		}
+	}
+	// Shortening cancels and frees the third date; another event takes the
+	// hall then.
+	edit("FREQ=WEEKLY;COUNT=2")
+	third := start.AddDate(0, 0, 14)
+	other := createFeedEvent(t, f.leader, f.group, "Other", third, "")
+	if w := f.leader.do("PUT", "/api/v1/events/"+itoa(other.ID)+"/dates/"+feedDate(third)+"/room", map[string]any{"roomId": f.hall.ID}, true); w.Code != http.StatusOK {
+		t.Fatalf("book the other event: %d %s", w.Code, w.Body.String())
+	}
+	// Lengthening restores the third date (busy: requested, and the leader
+	// is told) and adds a fourth (booked).
+	edit("FREQ=WEEKLY;COUNT=4")
+	if n := seriesBookings(t, f.app, series.ID, models.BookingConfirmed); n != 3 {
+		t.Fatalf("%d confirmed; want the first, second and new fourth date", n)
+	}
+	if n := seriesBookings(t, f.app, series.ID, models.BookingRequested); n != 1 {
+		t.Fatalf("%d requested; want the restored, busy third date", n)
+	}
+	if contactCount(t, f.app, &models.Notification{}, "user_id = ? AND kind = ?", f.leaderUser.ID, notify.RoomLost) != 1 {
+		t.Fatal("the restored date losing its room should be announced once")
+	}
+}
+
+func TestRoomSeriesSwitchRooms(t *testing.T) {
+	f := newBookingFixture(t)
+	var chapel struct {
+		Room roomJSON `json:"room"`
+	}
+	decodeJSON(t, f.admin.do("POST", "/api/v1/admin/rooms", map[string]any{"name": "Chapel"}, true), &chapel)
+	var annex struct {
+		Room roomJSON `json:"room"`
+	}
+	decodeJSON(t, f.admin.do("POST", "/api/v1/admin/rooms", map[string]any{"name": "Annex"}, true), &annex)
+	start := f.startOn.AddDate(0, 0, 1)
+	series := createFeedEvent(t, f.leader, f.group, "Weekly", start, "FREQ=WEEKLY;COUNT=3")
+	if code, _ := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
+		t.Fatalf("book the hall: %d", code)
+	}
+	// The second date gets the annex on its own; the chapel is busy on the third.
+	second, third := feedDate(start.AddDate(0, 0, 7)), start.AddDate(0, 0, 14)
+	if w := f.leader.do("PUT", "/api/v1/events/"+itoa(series.ID)+"/dates/"+second+"/room", map[string]any{"roomId": annex.Room.ID}, true); w.Code != http.StatusOK {
+		t.Fatalf("annex on one date: %d", w.Code)
+	}
+	other := createFeedEvent(t, f.leader, f.group, "Other", third, "")
+	if w := f.leader.do("PUT", "/api/v1/events/"+itoa(other.ID)+"/dates/"+feedDate(third)+"/room", map[string]any{"roomId": chapel.Room.ID}, true); w.Code != http.StatusOK {
+		t.Fatalf("chapel for the other event: %d", w.Code)
+	}
+
+	code, out := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": chapel.Room.ID})
+	if code != http.StatusOK || out.Booked != 1 || out.Kept != 1 || len(out.Lost) != 1 || out.Lost[0] != feedDate(third) {
+		t.Fatalf("switch to the chapel: %d %+v", code, out)
+	}
+	rooms := map[string]uint{}
+	var rows []struct {
+		OriginalDate string
+		RoomID       uint
+		Status       string
+	}
+	f.app.DB.Raw(`SELECT o.original_date, b.room_id, b.status FROM room_bookings b JOIN event_occurrences o ON o.id = b.occurrence_id
+		WHERE o.event_id = ?`, series.ID).Scan(&rows)
+	for _, r := range rows {
+		rooms[r.OriginalDate+" "+r.Status] = r.RoomID
+	}
+	if rooms[feedDate(start)+" confirmed"] != chapel.Room.ID || rooms[second+" confirmed"] != annex.Room.ID ||
+		rooms[feedDate(third)+" requested"] != chapel.Room.ID || len(rows) != 3 {
+		t.Fatalf("after the switch: %+v", rows)
+	}
+	if contactCount(t, f.app, &models.RoomBooking{}, "room_id = ? AND occurrence_id IN (SELECT id FROM event_occurrences WHERE event_id = ?)", f.hall.ID, series.ID) != 0 {
+		t.Fatal("switching rooms must free the old series room on every date")
+	}
+}
+
+func TestRoomSeriesChurchWideAndRoomsOff(t *testing.T) {
+	f := newBookingFixture(t)
+	start := f.startOn.AddDate(0, 0, 2)
+	body := map[string]any{"title": "Church night", "startsLocal": start.Format("2006-01-02T15:04"),
+		"durationMinutes": 60, "tzid": "UTC", "recurrenceRule": "FREQ=WEEKLY;COUNT=2", "roomId": f.nursery.ID}
+	if w := f.admin.do("POST", "/api/v1/events", body, true); w.Code != http.StatusCreated {
+		t.Fatalf("admin creating a church-wide event in the nursery: %d %s", w.Code, w.Body.String())
+	}
+	var ev models.Event
+	f.app.DB.Where("title = ?", "Church night").First(&ev)
+	if seriesBookings(t, f.app, ev.ID, models.BookingConfirmed) != 2 {
+		t.Fatal("the church-wide series should book both dates")
+	}
+	// The public feed names the room (DEC-104: a restricted room shows as the place).
+	anon := newAPIClient(t, f.app)
+	if w := fetchFeed(t, anon, "/cal/public.ics"); !strings.Contains(w.Body.String(), "LOCATION:Nursery") {
+		t.Fatalf("public feed LOCATION: %s", w.Body.String())
+	}
+
+	// Rooms off: create with a room is refused, and the extender books nothing.
+	if w := f.admin.do("PUT", "/api/v1/admin/settings/rooms", map[string]any{"enabled": false}, true); w.Code != http.StatusOK {
+		t.Fatalf("rooms off: %d", w.Code)
+	}
+	body["title"] = "Off night"
+	if w := f.admin.do("POST", "/api/v1/events", body, true); w.Code != http.StatusNotFound {
+		t.Fatalf("create with a room while rooms are off: %d", w.Code)
+	}
+	if err := f.app.DB.Where("event_id = ?", ev.ID).Delete(&models.EventOccurrence{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var emailed []uint
+	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend(&emailed)); err != nil {
+		t.Fatal(err)
+	}
+	if n := contactCount(t, f.app, &models.EventOccurrence{}, "event_id = ?", ev.ID); n != 2 {
+		t.Fatalf("%d dates regenerated", n)
+	}
+	if n := contactCount(t, f.app, &models.RoomBooking{}, "occurrence_id IN (SELECT id FROM event_occurrences WHERE event_id = ?)", ev.ID); n != 0 {
+		t.Fatalf("%d bookings made while rooms are off", n)
+	}
+}

@@ -66,9 +66,9 @@ export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
   // The group the event is for; omitted for a church-wide event.
   groupId?: number;
   roomId: number | null;
-  // The chosen room and how many dates it is busy on (0 when none), also
-  // called when a fresh check changes that count.
-  onChange: (roomId: number | null, busyDates: number) => void;
+  // The chosen room, or null. Also called with null when a fresh check no
+  // longer lists the chosen room.
+  onChange: (roomId: number | null) => void;
 }) {
   const [enabled, setEnabled] = useState(false);
   const [rooms, setRooms] = useState<SeriesRoom[]>([]);
@@ -76,9 +76,13 @@ export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
+  // The chosen room, kept by name so it stays in view when the rooms can't be listed.
+  const [kept, setKept] = useState<Pick<SeriesRoom, "id" | "name" | "building"> | null>(null);
+  // A fresh check dropped the chosen room: say so.
+  const [dropped, setDropped] = useState("");
   const seq = useRef(0);
-  const latest = useRef({ roomId, onChange });
-  latest.current = { roomId, onChange };
+  const latest = useRef({ roomId, onChange, kept });
+  latest.current = { roomId, onChange, kept };
 
   useEffect(() => {
     let alive = true;
@@ -110,10 +114,22 @@ export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
         const { roomId: chosen, onChange: report } = latest.current;
         if (chosen !== null) {
           const room = res.rooms.find((r) => r.id === chosen);
-          report(room ? chosen : null, room?.busyDates ?? 0);
+          if (room) {
+            setKept(room);
+            setDropped("");
+          } else {
+            const gone = latest.current.kept;
+            setDropped(`${gone ? roomName(gone) : "That room"} isn't available for these dates any more, so no room is chosen.`);
+            report(null);
+          }
         }
       } catch (e) {
-        if (seq.current === mine) setError(errorText(e, "We couldn't check which rooms are free."));
+        if (seq.current === mine) {
+          // Labels and notes about the previous dates would mislead, so none stay.
+          setRooms([]);
+          setDates(0);
+          setError(errorText(e, "We couldn't check which rooms are free."));
+        }
       } finally {
         if (seq.current === mine) setChecking(false);
       }
@@ -127,16 +143,20 @@ export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
   if (!enabled) return null;
 
   const chosen = rooms.find((r) => r.id === roomId) ?? null;
-  const value = chosen ? String(chosen.id) : NONE;
+  // Rooms that can't be listed right now (dates unfinished, or a failed check) don't reset the choice.
+  const shown = !chosen && roomId !== null && kept?.id === roomId ? kept : null;
+  const value = chosen ? String(chosen.id) : shown ? String(shown.id) : NONE;
   const recurring = !!schedule && schedule.recurrenceRule !== "";
   const hint = !schedule
-    ? "Pick a date and time first to see which rooms are free."
+    ? "Finish the date, time and seat limit first to see which rooms are free."
     : recurring
       ? "Booked for every date when you schedule the event."
       : "Booked when you schedule the event.";
   const choose = (v: string) => {
     const room = rooms.find((r) => String(r.id) === v);
-    onChange(room ? room.id : null, room?.busyDates ?? 0);
+    setDropped("");
+    if (room) setKept(room);
+    onChange(room ? room.id : null);
   };
 
   return (
@@ -144,6 +164,7 @@ export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
       <Field id={id} label="Room" optional hint={hint}>
         <Select value={value} disabled={!schedule} aria-busy={checking || undefined} onChange={(e) => choose(e.target.value)}>
           <option value={NONE}>No room</option>
+          {shown && <option value={String(shown.id)}>{roomName(shown)}</option>}
           {rooms.map((r) => (
             <option key={r.id} value={String(r.id)}>{seriesRoomLabel(r, dates)}</option>
           ))}
@@ -151,6 +172,7 @@ export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
       </Field>
       <div role="status" className="space-y-2 empty:hidden">
         {checking && <p className="text-sm text-text-muted">Checking which rooms are free…</p>}
+        {dropped && <p className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>{dropped}</p>}
         {!checking && chosen && notes(chosen, dates).map((n) => (
           <p key={n} className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>{n}</p>
         ))}

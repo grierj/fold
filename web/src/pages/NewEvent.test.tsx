@@ -201,7 +201,8 @@ describe("NewEvent", () => {
     await userEvent.click(screen.getByRole("button", { name: "Schedule event" }));
     await waitFor(() => expect(Groups.createEvent).toHaveBeenCalled());
     expect(Groups.createEvent).toHaveBeenCalledWith("5", expect.objectContaining({ roomId: 3, recurrenceRule: "FREQ=WEEKLY;BYDAY=WE" }));
-    expect(await screen.findByText("Group page")).toBeInTheDocument();
+    // Any chosen room goes to the event page, busy or not: a stale or pending check can't hide dates that need one.
+    expect(await screen.findByText("Event page")).toBeInTheDocument();
   });
 
   it("checks again when the seat limit changes", async () => {

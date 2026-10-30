@@ -209,14 +209,18 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) (e
 		Order("starts_at").Find(&occs).Error; err != nil {
 		return events.Feed{}, err
 	}
-	// A booked room is the date's place in calendars too (8.2, M2.1c).
+	// A booked room is the date's place in calendars too (8.2, M2.1c). A
+	// failed read fails the feed rather than publishing it without rooms.
 	occIDs := make([]uint, 0, len(occs))
 	for _, o := range occs {
 		if o.Status == models.OccurrenceScheduled {
 			occIDs = append(occIDs, o.ID)
 		}
 	}
-	rooms := a.occurrenceRooms(a.DB, occIDs)
+	rooms, err := roomsFor(a.DB, occIDs)
+	if err != nil {
+		return events.Feed{}, err
+	}
 	if opts.personal && viewer != nil {
 		return a.buildPersonalFeedSingles(feed, viewer, opts.scope, now, occs, scoped, vs, rooms)
 	}
