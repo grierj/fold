@@ -223,6 +223,10 @@ func leaderIDs(tx *gorm.DB, groupID uint) []uint {
 // it includes soft-deleted users and never falls back to an email address.
 type publicNames map[uint]string
 
+// Bound the IN expansion well below PostgreSQL's 65,535 bind parameters;
+// account-request history can supply an unbounded number of distinct people.
+const publicNamesBatchSize = 1000
+
 func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
 	names := publicNames{}
 	unique := make([]uint, 0, len(ids))
@@ -232,13 +236,13 @@ func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
 			unique = append(unique, id)
 		}
 	}
-	if len(unique) == 0 {
-		return names
-	}
-	var users []models.User
-	if tx.Unscoped().Select("id", "name", "display_name").Where("id IN ?", unique).Find(&users).Error == nil {
-		for _, u := range users {
-			names[u.ID] = u.PublicName()
+	for start := 0; start < len(unique); start += publicNamesBatchSize {
+		batch := unique[start:min(start+publicNamesBatchSize, len(unique))]
+		var users []models.User
+		if tx.Unscoped().Select("id", "name", "display_name").Where("id IN ?", batch).Find(&users).Error == nil {
+			for _, u := range users {
+				names[u.ID] = u.PublicName()
+			}
 		}
 	}
 	return names

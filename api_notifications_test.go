@@ -820,3 +820,52 @@ func TestNotificationFeedReadBudgetAndResolverNames(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicNamesInBatches(t *testing.T) {
+	app := testApp(t)
+	active := newTestUser(t, app, "active name", "pw", models.RoleMember)
+	deleted := newTestUser(t, app, "historical name", "pw", models.RoleMember)
+	if err := app.DB.Model(deleted).Update("display_name", "Historical display").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Delete(deleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []int{0, 1, publicNamesBatchSize - 1, publicNamesBatchSize, publicNamesBatchSize + 1, 2*publicNamesBatchSize + 1, 65536} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			ids := make([]uint, size)
+			for i := range ids {
+				ids[i] = uint(1000000 + i) // Missing people do not require seeded rows.
+			}
+			if size > 0 {
+				ids[0] = active.ID
+			}
+			if size > 1 {
+				ids[size-1] = deleted.ID
+			}
+			// Repeated references must not consume more binds or queries.
+			input := append(append([]uint{}, ids...), ids...)
+			counter := countDBReads(t, app.DB)
+			names := publicNamesIn(app.DB, input)
+			reads := counter.Reads()
+			counter.Stop()
+			if want := int64((size + publicNamesBatchSize - 1) / publicNamesBatchSize); reads != want {
+				t.Fatalf("%d unique IDs: %d reads, want %d", size, reads, want)
+			}
+			if len(names) != size {
+				t.Fatalf("%d names, want %d", len(names), size)
+			}
+			for _, id := range ids {
+				want := "Someone"
+				if id == active.ID {
+					want = active.PublicName()
+				} else if id == deleted.ID {
+					want = "Historical display"
+				}
+				if got := names.name(id); got != want {
+					t.Fatalf("id %d: name %q, want %q", id, got, want)
+				}
+			}
+		})
+	}
+}
