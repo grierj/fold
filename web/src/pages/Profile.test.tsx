@@ -20,6 +20,7 @@ vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
   CalendarFeeds: { get: () => get(), create: vi.fn(), setScope: vi.fn(), revoke: vi.fn() },
   Profile: { update: vi.fn(), changePassword: vi.fn() },
+  NotificationSettings: { get: () => Promise.resolve({ settings: { optionalEmailOff: true } }), update: vi.fn() },
 }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, refresh: actor.refresh, logout: vi.fn(), isAdmin: false }) }));
 
@@ -41,7 +42,7 @@ it("opens a short hub without mounting forms or fetching the calendar feed", () 
   renderProfile();
   expect(screen.getByRole("heading", { level: 1, name: "Your profile" })).toBeInTheDocument();
   expect(screen.getByText("Pat")).toBeInTheDocument();
-  for (const name of ["Profile details", "Privacy", "Email and password", "Calendar feed", "Household", "Parent or guardian link", "Invite someone", "Contact and add requests"]) {
+  for (const name of ["Profile details", "Privacy", "Notifications", "Email and password", "Calendar feed", "Household", "Parent or guardian link", "Invite someone", "Contact and add requests"]) {
     expect(screen.getByRole("link", { name: new RegExp(`^${name}`) })).toBeInTheDocument();
   }
   expect(screen.queryByRole("link", { name: "Requests" })).not.toBeInTheDocument();
@@ -54,7 +55,7 @@ it("opens a short hub without mounting forms or fetching the calendar feed", () 
 it("groups the rows under You, Family and Sharing, each with a one-line description", () => {
   renderProfile();
   const rows: Record<string, [string, string][]> = {
-    You: [["Profile details", "Name, photo and time zone"], ["Email and password", "How you sign in"], ["Privacy", "Hide your contact info from leaders"]],
+    You: [["Profile details", "Name, photo and time zone"], ["Email and password", "How you sign in"], ["Privacy", "Hide your contact info from leaders"], ["Notifications", "Turn optional email on or off"]],
     Family: [["Household", "Family members you sign up with you"], ["Parent or guardian link", "Connect a parent or guardian"]],
     Sharing: [["Calendar feed", "Add Fold dates to your phone's calendar"], ["Invite someone", "Ask an admin to let someone in"], ["Contact and add requests", "Requests to reach or add you"]],
   };
@@ -273,4 +274,11 @@ it.each(["household", "guardian", "invite", "unknown"])("returns a teen's unavai
   expect(screen.queryByText("Household loaded")).not.toBeInTheDocument();
   expect(screen.queryByText("Guardian links loaded")).not.toBeInTheDocument();
   expect(Profile.update).not.toHaveBeenCalled();
+});
+
+it.each(["adult", "teen"] as const)("shows Notifications at /profile/notifications to a %s", async (accountType) => {
+  actor.user = { ...adult, accountType };
+  renderProfile("/profile/notifications");
+  expect(screen.getByRole("heading", { level: 1, name: "Notifications" })).toBeInTheDocument();
+  expect(await screen.findByRole("checkbox", { name: /^Turn off all optional email/ })).toBeChecked();
 });

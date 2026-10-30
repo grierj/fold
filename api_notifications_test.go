@@ -909,3 +909,100 @@ func TestPublicNamesInBatchFailureUsesOnlyFallbacks(t *testing.T) {
 		})
 	}
 }
+
+// "Turn off all optional email" (DEC-97) appends one consent row per optional
+// category, is idempotent, and stops optional notification email while
+// required email (a task waiting on the person) still sends.
+func TestOptionalEmailSwitch(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	adminClient := loginAPI(t, app, "admin", "password1234")
+	lc := loginAPI(t, app, "leader", "password1234")
+	settings := func(c *apiClient) bool {
+		t.Helper()
+		var body struct {
+			Settings notificationSettingsJSON `json:"settings"`
+		}
+		decodeJSON(t, c.do("GET", "/api/v1/me/notification-settings", nil, false), &body)
+		return body.Settings.OptionalEmailOff
+	}
+	set := func(c *apiClient, off bool) {
+		t.Helper()
+		if w := c.do("PUT", "/api/v1/me/notification-settings", map[string]any{"optionalEmailOff": off}, true); w.Code != http.StatusOK {
+			t.Fatalf("PUT %v: %d %s", off, w.Code, w.Body.String())
+		}
+	}
+	if settings(lc) {
+		t.Fatal("optional email starts on")
+	}
+	if w := lc.do("PUT", "/api/v1/me/notification-settings", map[string]any{}, true); w.Code != http.StatusBadRequest {
+		t.Fatalf("missing field: %d", w.Code)
+	}
+	set(lc, true)
+	set(lc, true)
+	if !settings(lc) {
+		t.Fatal("switch didn't stick")
+	}
+	optional := len(notify.OptionalEmailCategories())
+	if n := contactCount(t, app, &models.Consent{}, "user_id = ? AND channel = 'email' AND status = 'opted_out' AND source = 'web_form'", leader.ID); n != int64(optional) {
+		t.Fatalf("%d opt-out rows, want one per optional category (%d), even after a repeat", n, optional)
+	}
+
+	// An optional kind (the leader's group was approved) is suppressed...
+	var body struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, lc.do("POST", "/api/v1/groups", map[string]any{"name": "Quiet group"}, true), &body)
+	if w := adminClient.do("POST", "/api/v1/admin/groups/"+itoa(body.Group.ID)+"/approve", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("approve: %d", w.Code)
+	}
+	var approved models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", leader.ID, notify.GroupApproved).First(&approved).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n := contactCount(t, app, &models.NotificationDelivery{}, "notification_id = ? AND status = ? AND reason = ?", approved.ID, models.DeliverySuppressed, "optional email turned off"); n != 1 {
+		t.Fatalf("optional email not suppressed: %d", n)
+	}
+
+	// ...while required email still sends: an admin who turned optional
+	// email off still gets the new-group task.
+	set(adminClient, true)
+	decodeJSON(t, lc.do("POST", "/api/v1/groups", map[string]any{"name": "Second group"}, true), &body)
+	var task models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", admin.ID, notify.GroupPending).Order("id DESC").First(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n := contactCount(t, app, &models.NotificationDelivery{}, "notification_id = ? AND status = ?", task.ID, models.DeliverySent); n != 1 {
+		t.Fatalf("required task email not sent: %d", n)
+	}
+
+	set(lc, false)
+	if settings(lc) {
+		t.Fatal("switch didn't turn back on")
+	}
+	if n := contactCount(t, app, &models.Consent{}, "user_id = ? AND status = 'opted_in'", leader.ID); n != int64(optional) {
+		t.Fatalf("%d opt-in rows, want %d", n, optional)
+	}
+
+	// Back on, the latest row wins: the next optional email is sent.
+	decodeJSON(t, lc.do("POST", "/api/v1/groups", map[string]any{"name": "Loud group"}, true), &body)
+	if w := adminClient.do("POST", "/api/v1/admin/groups/"+itoa(body.Group.ID)+"/reject", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("reject: %d", w.Code)
+	}
+	var rejected models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", leader.ID, notify.GroupRejected).First(&rejected).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n := contactCount(t, app, &models.NotificationDelivery{}, "notification_id = ? AND status = ?", rejected.ID, models.DeliverySent); n != 1 {
+		t.Fatalf("optional email after turning it back on: %d sent", n)
+	}
+
+	// Consent history is evidence: it can't be edited or removed.
+	if err := app.DB.Exec("UPDATE consents SET status = 'opted_in' WHERE user_id = ?", leader.ID).Error; err == nil {
+		t.Fatal("consent rows accepted an UPDATE")
+	}
+	if err := app.DB.Exec("DELETE FROM consents WHERE user_id = ?", leader.ID).Error; err == nil {
+		t.Fatal("consent rows accepted a DELETE")
+	}
+}

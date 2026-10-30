@@ -810,27 +810,80 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 	if len(userIDs) == 0 {
 		return
 	}
-	var users []models.User
-	if err := a.DB.Where("id IN ?", userIDs).Find(&users).Error; err != nil {
+	// Each recipient comes with the email consent scopes they opted out of
+	// (DEC-97), in the same read, so a batch stays at two reads.
+	var users []emailRecipient
+	if err := a.DB.Model(&models.User{}).Select(`users.*, COALESCE((
+		SELECT string_agg(latest.scope, ',') FROM (
+			SELECT DISTINCT ON (c.scope) c.scope, c.status FROM consents c
+			WHERE c.user_id = users.id AND c.channel = ? ORDER BY c.scope, c.at DESC, c.id DESC
+		) latest WHERE latest.status = ?), '') AS email_opt_outs`, models.ConsentEmail, models.ConsentOptedOut).
+		Where("users.id IN ?", userIDs).Find(&users).Error; err != nil {
 		// Mark nothing suppressed: without a delivery record the rows stay
 		// pending, so a later delivery pass can still send them.
 		log.Printf("notification email: loading %d recipients: %v", len(userIDs), err)
 		return
 	}
 	byID := make(map[uint]*models.User, len(users))
+	optOuts := make(map[uint]map[string]bool, len(users))
 	for i := range users {
-		byID[users[i].ID] = &users[i]
+		byID[users[i].ID] = &users[i].User
+		for _, scope := range strings.Split(users[i].EmailOptOuts, ",") {
+			if scope == "" {
+				continue
+			}
+			if optOuts[users[i].ID] == nil {
+				optOuts[users[i].ID] = map[string]bool{}
+			}
+			optOuts[users[i].ID][scope] = true
+		}
 	}
 	for i := range rows {
-		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID])
+		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID], optOuts[rows[i].UserID])
 	}
 }
 
+// emailRecipient is a notification email recipient with the comma-joined
+// email consent scopes whose latest record opts out.
+type emailRecipient struct {
+	models.User
+	EmailOptOuts string
+}
+
+// emailOptOuts maps each user to the email consent scopes whose latest
+// record opts out (5.12, DEC-97). Delivery reads the same thing alongside
+// each recipient's account (deliverNotificationEmails).
+func emailOptOuts(db *gorm.DB, userIDs []uint) (map[uint]map[string]bool, error) {
+	var rows []models.Consent
+	if err := db.Raw(`SELECT DISTINCT ON (user_id, scope) user_id, scope, status FROM consents
+		WHERE user_id IN ? AND channel = ? ORDER BY user_id, scope, at DESC, id DESC`, userIDs, models.ConsentEmail).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[uint]map[string]bool)
+	for _, r := range rows {
+		if r.Status != models.ConsentOptedOut {
+			continue
+		}
+		if out[r.UserID] == nil {
+			out[r.UserID] = map[string]bool{}
+		}
+		out[r.UserID][r.Scope] = true
+	}
+	return out, nil
+}
+
+func categoryScope(category string) string { return "category:" + category }
+
 // deliverNotificationEmail sends one row to its preloaded recipient (nil
-// when the account is gone).
-func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notification, u *models.User) {
+// when the account is gone). optedOut holds the recipient's email consent
+// scopes that opt out; only optional kinds consult it (DEC-97).
+func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notification, u *models.User, optedOut map[string]bool) {
 	k, ok := notify.Lookup(n.Kind)
 	if !ok || !k.AllowEmail {
+		return
+	}
+	if !k.Required && optedOut[categoryScope(k.Category)] {
+		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "optional email turned off")
 		return
 	}
 	if u == nil ||
@@ -881,4 +934,90 @@ func (a *App) emailBaseURL() string {
 // emailLink makes an absolute URL from a notification's internal path.
 func (a *App) emailLink(path string) string {
 	return a.emailBaseURL() + path
+}
+
+// notificationSettingsJSON is the Me > Notifications payload. Today it holds
+// the single DEC-97 switch; M3.12 adds per-category Email and Text switches.
+type notificationSettingsJSON struct {
+	OptionalEmailOff bool `json:"optionalEmailOff"`
+}
+
+// optionalEmailOff reports whether every optional category's latest email
+// consent opts out, which is what the switch writes.
+func optionalEmailOff(db *gorm.DB, userID uint) (bool, error) {
+	optOuts, err := emailOptOuts(db, []uint{userID})
+	if err != nil {
+		return false, err
+	}
+	for _, c := range notify.OptionalEmailCategories() {
+		if !optOuts[userID][categoryScope(c)] {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func (a *App) apiGetNotificationSettings(c *gin.Context) {
+	off, err := optionalEmailOff(a.DB, apiUser(c).ID)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load notification settings")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"settings": notificationSettingsJSON{OptionalEmailOff: off}})
+}
+
+// apiUpdateNotificationSettings turns all optional email off or back on by
+// appending one consent row per optional category whose state changes
+// (DEC-97). Required email (account, safety, requests waiting on you) is
+// never affected. The append-only consents rows, with their IP and user
+// agent, are the record of the change (5.3), so no AuditLog row is added.
+func (a *App) apiUpdateNotificationSettings(c *gin.Context) {
+	var body struct {
+		OptionalEmailOff *bool `json:"optionalEmailOff"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.OptionalEmailOff == nil {
+		jsonError(c, http.StatusBadRequest, "invalid request")
+		return
+	}
+	me := apiUser(c)
+	status := models.ConsentOptedIn
+	if *body.OptionalEmailOff {
+		status = models.ConsentOptedOut
+	}
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		// One writer per person at a time, so two quick toggles can't
+		// interleave their rows.
+		if err := tx.Exec("SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE", me.ID).Error; err != nil {
+			return err
+		}
+		optOuts, err := emailOptOuts(tx, []uint{me.ID})
+		if err != nil {
+			return err
+		}
+		for _, cat := range notify.OptionalEmailCategories() {
+			if optOuts[me.ID][categoryScope(cat)] == *body.OptionalEmailOff {
+				continue
+			}
+			if err := tx.Create(&models.Consent{
+				UserID: me.ID, Channel: models.ConsentEmail, Scope: categoryScope(cat), Status: status,
+				Source: models.ConsentSourceWebForm, IP: c.ClientIP(), UserAgent: clipRunes(c.Request.UserAgent(), 500),
+			}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not save notification settings")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"settings": notificationSettingsJSON{OptionalEmailOff: *body.OptionalEmailOff}})
+}
+
+// clipRunes keeps at most n runes of s (a request header we store).
+func clipRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }

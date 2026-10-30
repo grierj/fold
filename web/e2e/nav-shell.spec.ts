@@ -92,3 +92,27 @@ test("five tab labels stay on one line at 390, even with a 9+ badge", async ({ p
     expect((await link.boundingBox())!.height, `${await link.textContent()} wraps`).toBeLessThanOrEqual(56);
   }
 });
+
+// DEC-97, DEC-98: Me > Notifications is reached from the Me list on a phone
+// and from the sidebar on desktop, and its one switch saves at once.
+test("Me reaches Notifications, and the optional-email switch saves and sticks", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await signIn(page, "sam");
+  await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: "Me", exact: true }).click();
+  await page.getByRole("main").getByRole("link", { name: /^Notifications/ }).click();
+  await expect(page).toHaveURL(/\/profile\/notifications$/);
+  await expect(page.getByRole("heading", { name: "Notifications" })).toBeVisible();
+  const box = page.getByRole("checkbox", { name: "Turn off all optional email" });
+  await expect(box).not.toBeChecked();
+  await box.check();
+  await expect(page.getByRole("status").filter({ hasText: "Saved" })).toBeVisible();
+  await page.reload();
+  await expect(box).toBeChecked();
+
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(page.getByRole("navigation", { name: "Profile settings" }).getByRole("link", { name: "Notifications" })).toHaveAttribute("aria-current", "page");
+
+  // Leave the shared seed user as other specs expect it.
+  await box.uncheck();
+  await expect(page.getByRole("status").filter({ hasText: "Saved" })).toBeVisible();
+});

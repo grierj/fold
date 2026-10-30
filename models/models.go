@@ -782,6 +782,31 @@ type TeenConsent struct {
 	At           time.Time `gorm:"not null;default:clock_timestamp()"`
 }
 
+// Consent is one append-only consent record (5.3, 5.12). The latest row per
+// (user, channel, scope) is in force. DEC-97 writes the first ones: "Turn off
+// all optional email" stores an email opt-out per optional notification
+// category (scope "category:<name>").
+type Consent struct {
+	ID           uint      `gorm:"primaryKey"`
+	UserID       uint      `gorm:"not null"`
+	Channel      string    `gorm:"not null"`
+	Scope        string    `gorm:"not null"`
+	Status       string    `gorm:"not null"`
+	Source       string    `gorm:"not null"`
+	EvidenceText string    `gorm:"not null;default:''"`
+	IP           string    `gorm:"column:ip;not null;default:''"`
+	UserAgent    string    `gorm:"not null;default:''"`
+	At           time.Time `gorm:"not null;default:clock_timestamp()"`
+}
+
+// Consent channels, statuses and sources.
+const (
+	ConsentEmail         = "email"
+	ConsentOptedIn       = "opted_in"
+	ConsentOptedOut      = "opted_out"
+	ConsentSourceWebForm = "web_form"
+)
+
 // ContactRequest stores contact/group_add/occurrence_add outcomes, not attempt
 // history (AuditLog owns that). Retained IDs have no live-domain foreign keys.
 // Dispatch by Purpose BEFORE constructing contact-only policy or presentation
@@ -889,7 +914,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
-		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{},
+		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{},
 	}
 }
 

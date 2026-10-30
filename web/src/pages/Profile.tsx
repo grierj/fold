@@ -10,6 +10,7 @@ import { AdminIcon } from "../components/icons";
 import { ImageUpload } from "../components/ImageUpload";
 import { AccountRequestForm } from "../components/AccountRequestForm";
 import { CalendarFeedCard } from "../components/CalendarFeedCard";
+import { NotificationSettingsCard } from "../components/NotificationSettingsCard";
 import { ProfileEmailForm, ProfilePasswordForm } from "../components/ProfileSecurityForms";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { errorText } from "../lib/errors";
@@ -29,6 +30,7 @@ const sectionGroups: { heading: string; items: Section[] }[] = [
     { id: "details", label: "Profile details", description: "Name, photo and time zone" },
     { id: "security", label: "Email and password", description: "How you sign in" },
     { id: "privacy", label: "Privacy", description: "Hide your contact info from leaders" },
+    { id: "notifications", label: "Notifications", description: "Turn optional email on or off" },
   ] },
   { heading: "Family", items: [
     { id: "household", label: "Household", description: "Family members you sign up with you", adultOnly: true },
@@ -113,6 +115,7 @@ export function ProfilePage() {
         <div key={selected.id}>
           {section === "details" && <ProfileDetails />}
           {section === "privacy" && <ProfilePrivacy />}
+          {section === "notifications" && <NotificationSettingsCard />}
           {section === "security" && <>
             <nav aria-label="Email and password" className="flex flex-wrap gap-2">
               <Chip selected={securityTab === "email"} onClick={() => changeSecurityTab("email")}>Email</Chip>

@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { BellIcon } from "./icons";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { AdminIcon, BellIcon, CalendarIcon, CheckIcon, GroupsIcon, UserPlusIcon } from "./icons";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { Button } from "./ui/Button";
 import { EmptyState } from "./ui/EmptyState";
 import { Illustration } from "./ui/Illustration";
 import {
-  badgeLabel, badgeText, relativeTime, resolutionText, useFeed, type Feed,
+  badgeLabel, badgeText, kindIcon, relativeTime, resolutionText, useFeed, type Feed,
 } from "../lib/notifications";
 import type { Badge } from "../api";
 import type { Notification } from "../types";
@@ -20,18 +20,18 @@ function isMobile(): boolean {
   return typeof window.matchMedia === "function" && window.matchMedia(MOBILE).matches;
 }
 
-function CategoryIcon({ category }: { category: Notification["category"] }) {
-  const d =
-    category === "events"
-      ? "M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"
-      : category === "admin"
-        ? "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"
-        : "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z";
+const KIND_ICONS = {
+  calendar: CalendarIcon, person: UserPlusIcon, check: CheckIcon, group: GroupsIcon, shield: AdminIcon, generic: BellIcon,
+} as const;
+
+// The icon follows the kind, not the category (audit item 22). Decorative:
+// the title carries the meaning. data-icon names the choice for tests.
+function KindBadge({ kind }: { kind: string }) {
+  const name = kindIcon(kind);
+  const Glyph = KIND_ICONS[name];
   return (
     <span className="w-9 h-9 rounded-full bg-sunken text-text-muted flex items-center justify-center shrink-0">
-      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={d} />
-      </svg>
+      <Glyph className="w-5 h-5" data-icon={name} />
     </span>
   );
 }
@@ -49,10 +49,12 @@ function NotificationRow({
   const unread = !n.read && !n.waiting && !n.archived;
   const done = resolutionText(n);
   const handled = feed.handled[n.id];
+  // A decided task keeps only its outcome: the original ask is stale.
+  const resolved = !!(done || handled);
   return (
     <li className="relative flex gap-3 px-4 py-3 hover:bg-sunken">
       {unread && <span className="absolute left-1.5 top-5 w-2 h-2 rounded-full bg-primary" aria-hidden="true" />}
-      <CategoryIcon category={n.category} />
+      <KindBadge kind={n.kind} />
       <div className="min-w-0 flex-1 pr-8">
         <Link
           to={n.link}
@@ -65,7 +67,7 @@ function NotificationRow({
           {unread && <span className="sr-only">Unread. </span>}
           {n.waiting && <span className="sr-only">Waiting on you. </span>}
           <span className={`block text-sm line-clamp-2 ${unread ? "font-semibold" : ""}`}>{n.title}</span>
-          {n.body && <span className="block text-xs text-text-muted line-clamp-2">{n.body}</span>}
+          {n.body && !resolved && <span className="block text-xs text-text-muted line-clamp-2">{n.body}</span>}
         </Link>
         <div className="mt-0.5 text-xs text-text-muted flex gap-2">
           <time dateTime={n.updatedAt} title={new Date(n.updatedAt).toLocaleString()}>
@@ -180,25 +182,27 @@ function Skeleton() {
   );
 }
 
-function FeedEmpty({ text }: { text?: string }) {
+function FeedEmpty({ text, action }: { text?: string; action?: ReactNode }) {
   return (
     <EmptyState
       framed={false}
       illustration={<Illustration name="all-caught-up" size="sm" />}
       title={text ?? "You're all caught up"}
-      body={!text ? "Updates about your groups, events, and requests show up here." : undefined}
+      body={!text ? "Updates about your groups and events show up here." : undefined}
+      action={!text ? action : undefined}
     />
   );
 }
 
 // FeedBody renders loading, error, and the rows of one feed.
 export function FeedBody({
-  feed, onArchived, onNavigate, emptyText, sections = true, dayHeadings = false,
+  feed, onArchived, onNavigate, emptyText, emptyAction, sections = true, dayHeadings = false,
 }: {
   feed: Feed;
   onArchived: (n: Notification) => void;
   onNavigate?: () => void;
   emptyText?: string;
+  emptyAction?: ReactNode; // shown with the default empty message only
   sections?: boolean;
   dayHeadings?: boolean; // the full page splits Recent into Today and Earlier (6.5)
 }) {
@@ -214,7 +218,7 @@ export function FeedBody({
       </div>
     );
   }
-  if (feed.waiting.length + feed.items.length === 0) return <FeedEmpty text={emptyText} />;
+  if (feed.waiting.length + feed.items.length === 0) return <FeedEmpty text={emptyText} action={emptyAction} />;
   const row = (n: Notification) => (
     <NotificationRow key={n.id} n={n} feed={feed} onArchived={onArchived} onNavigate={onNavigate} />
   );

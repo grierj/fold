@@ -834,3 +834,9 @@ export interface ContactHistoryResponse {
   entries: ContactHistoryEntry[];
   nextBefore?: string;
 }
+
+// Me > Notifications (DEC-97): one switch for now. Optional email is every
+// notification email except account, safety and requests waiting on you.
+export interface NotificationSettings {
+  optionalEmailOff: boolean;
+}

@@ -101,9 +101,13 @@ type Vars struct {
 
 // Kind is one registry entry (5.12).
 type Kind struct {
-	Key         string
-	Category    string
-	Waiting     bool          // a task: counted until resolved, never batched
+	Key      string
+	Category string
+	Waiting  bool // a task: counted until resolved, never batched
+	// Required email can't be turned off (DEC-97, research 6.8): safety
+	// kinds (minors, consent, contact access) and tasks waiting on the
+	// recipient. register sets it; everything else is optional email.
+	Required    bool
 	BatchWindow time.Duration // 0: never batched
 	Actions     []Action      // the inline allow-list
 	Render      func(Vars) (title, body string)
@@ -137,7 +141,17 @@ func (k Kind) RenderForEmail(v Vars) (title, body string) {
 
 var registry = map[string]Kind{}
 
-func register(k Kind) { registry[k.Key] = k }
+func register(k Kind) {
+	k.Required = k.Category == CatSafety || k.Waiting
+	registry[k.Key] = k
+}
+
+// OptionalEmailCategories are the categories "Turn off all optional email"
+// opts out of (DEC-97). Required kinds send whatever their category's
+// consent says, so a category holding both kinds is still listed.
+func OptionalEmailCategories() []string {
+	return []string{CatAdmin, CatGroups, CatEvents, CatMessages}
+}
 
 // Lookup finds a kind by key.
 func Lookup(key string) (Kind, bool) {
