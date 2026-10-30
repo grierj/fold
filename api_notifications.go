@@ -239,10 +239,16 @@ func publicNamesIn(tx *gorm.DB, ids []uint) publicNames {
 	for start := 0; start < len(unique); start += publicNamesBatchSize {
 		batch := unique[start:min(start+publicNamesBatchSize, len(unique))]
 		var users []models.User
-		if tx.Unscoped().Select("id", "name", "display_name").Where("id IN ?", batch).Find(&users).Error == nil {
-			for _, u := range users {
-				names[u.ID] = u.PublicName()
+		if err := tx.Unscoped().Select("id", "name", "display_name").Where("id IN ?", batch).Find(&users).Error; err != nil {
+			// Preserve the historical all-fallback behavior on read failure;
+			// never publish names determined by which batch failed.
+			for id := range names {
+				names[id] = "Someone"
 			}
+			return names
+		}
+		for _, u := range users {
+			names[u.ID] = u.PublicName()
 		}
 	}
 	return names

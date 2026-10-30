@@ -869,3 +869,43 @@ func TestPublicNamesInBatches(t *testing.T) {
 		})
 	}
 }
+
+func TestPublicNamesInBatchFailureUsesOnlyFallbacks(t *testing.T) {
+	app := testApp(t)
+	person := newTestUser(t, app, "historical actor", "pw", models.RoleMember)
+	ids := make([]uint, 2*publicNamesBatchSize+1)
+	for i := range ids {
+		ids[i] = uint(1000000 + i)
+	}
+	ids[0] = person.ID
+	for _, failedBatch := range []int{1, 2, 3} {
+		t.Run(fmt.Sprint(failedBatch), func(t *testing.T) {
+			reads := 0
+			const callback = "test:fail_public_names_batch"
+			if err := app.DB.Callback().Query().Before("gorm:query").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table == "users" {
+					reads++
+					if reads == failedBatch {
+						_ = tx.AddError(errors.New("names unavailable"))
+					}
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = app.DB.Callback().Query().Remove(callback) })
+			names := publicNamesIn(app.DB, ids)
+			_ = app.DB.Callback().Query().Remove(callback)
+			if reads != failedBatch {
+				t.Fatalf("continued after failed batch: %d reads, want %d", reads, failedBatch)
+			}
+			for _, id := range ids {
+				if got := names.name(id); got != "Someone" {
+					t.Fatalf("batch failure published partial historical name for %d: %q", id, got)
+				}
+			}
+			if got := publicNamesIn(app.DB, ids).name(person.ID); got != person.PublicName() {
+				t.Fatalf("fresh lookup did not recover: %q", got)
+			}
+		})
+	}
+}
