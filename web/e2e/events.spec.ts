@@ -15,7 +15,7 @@ test("a new series defaults to the church time zone", async ({ page }) => {
   await expect(page).toHaveURL(/\/groups\/\d+\/events\/new/);
   // The form names the zone on one line; Change opens the shared picker (DEC-95).
   await expect(page.getByText("Mountain time", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Change" }).click();
+  await page.getByRole("button", { name: "Change time zone" }).click();
   const tz = page.getByRole("combobox", { name: "Time zone" });
   await expect(tz).toHaveValue("Boise (Mountain)");
   await tz.click();

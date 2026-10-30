@@ -478,11 +478,15 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &u.ID, outcome); err != nil {
 				return err
 			}
-			ids, err := notifyGroupDecided(tx, g, u.ID, g.Status == models.GroupActive)
-			if err != nil {
-				return err
+			// Only an admin's decision is news to the leaders; a leader
+			// archiving their own pending group is not "an admin decided".
+			if policy.IsAdmin(asPerson(u)) {
+				ids, err := notifyGroupDecided(tx, g, u.ID, g.Status == models.GroupActive)
+				if err != nil {
+					return err
+				}
+				emailed = append(emailed, ids...)
 			}
-			emailed = append(emailed, ids...)
 			if err := audit.Write(tx, audit.Entry{Actor: &u.ID, Action: action, TargetType: "group", TargetID: g.ID, IP: c.ClientIP()}); err != nil {
 				return err
 			}

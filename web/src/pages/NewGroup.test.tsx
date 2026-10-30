@@ -4,6 +4,7 @@ import { MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter } from 
 import { beforeEach, expect, it, vi } from "vitest";
 import { Groups } from "../api";
 import type { GroupSummary } from "../types";
+import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { NewGroup } from "./NewGroup";
 
 const auth = vi.hoisted(() => ({ isAdmin: false }));
@@ -108,7 +109,7 @@ it("keeps the form and its edits when creating fails", async () => {
 it("asks before Cancel throws away a half-filled new group, but not an empty form", async () => {
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   const router = createMemoryRouter([
-    { path: "/groups/new", element: <NewGroup /> },
+    { path: "/groups/new", element: <><UnsavedChangesBlocker /><NewGroup /></> },
     { path: "/", element: <h1>Home page</h1> },
   ], { initialEntries: ["/groups/new"] });
   render(<RouterProvider router={router} />);
@@ -125,7 +126,7 @@ it("lets a created group's screen go on without the leave prompt", async () => {
   vi.mocked(Groups.create).mockResolvedValue(made("pending"));
   const confirm = vi.spyOn(window, "confirm");
   const router = createMemoryRouter([
-    { path: "/groups/new", element: <NewGroup /> },
+    { path: "/groups/new", element: <><UnsavedChangesBlocker /><NewGroup /></> },
     { path: "/", element: <h1>Home page</h1> },
   ], { initialEntries: ["/groups/new"] });
   render(<RouterProvider router={router} />);
@@ -133,4 +134,17 @@ it("lets a created group's screen go on without the leave prompt", async () => {
   await userEvent.click(await screen.findByRole("link", { name: "Back to Home" }));
   expect(await screen.findByRole("heading", { name: "Home page" })).toBeInTheDocument();
   expect(confirm).not.toHaveBeenCalled();
+});
+
+it("shows a one-line summary while More options is closed, and follows what is typed inside", async () => {
+  open();
+  const more = screen.getByRole("button", { name: "More options" });
+  expect(screen.getByText("No tags · No member limit · Pattern cover")).toBeInTheDocument();
+  expect(more).toHaveAccessibleDescription("No tags · No member limit · Pattern cover");
+  await userEvent.click(more);
+  expect(screen.queryByText("No tags · No member limit · Pattern cover")).not.toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText(/Tags/), "men, food");
+  await userEvent.type(screen.getByLabelText(/Member limit/), "20");
+  await userEvent.click(more);
+  expect(screen.getByText("Tags: men, food · Limit 20 · Pattern cover")).toBeInTheDocument();
 });

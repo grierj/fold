@@ -93,7 +93,7 @@ describe("WhenFields", () => {
     render(<Harness />);
     expect(screen.getByText("Mountain time")).toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Change" }));
+    await userEvent.click(screen.getByRole("button", { name: "Change time zone" }));
     const zone = screen.getByRole("combobox", { name: "Time zone" });
     expect(zone).toHaveValue("Denver (Mountain)");
     expect(zone).toHaveAccessibleDescription("Pick the zone.");

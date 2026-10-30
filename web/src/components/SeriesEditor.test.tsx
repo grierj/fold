@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { SeriesEditor } from "./SeriesEditor";
+import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { Events } from "../api";
 
 vi.mock("../api", () => ({
@@ -185,7 +186,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     const router = createMemoryRouter(
       [
-        { path: "/", element: <SeriesEditor series={baseSeries} idPrefix="guard" onSaved={() => { void router.navigate("/done"); }} /> },
+        { path: "/", element: <><UnsavedChangesBlocker /><SeriesEditor series={baseSeries} idPrefix="guard" onSaved={() => { void router.navigate("/done"); }} /></> },
         { path: "/elsewhere", element: <p>Elsewhere page</p> },
         { path: "/done", element: <p>Done page</p> },
       ],

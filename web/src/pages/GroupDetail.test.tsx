@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError, Events, Groups, Households, People } from "../api";
 import type { GroupDetailResponse, Household, User } from "../types";
 import { occurrence } from "../test/occurrence";
+import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { GroupDetail } from "./GroupDetail";
 
 const actor = vi.hoisted(() => ({ user: { id: 2, accountType: "adult", hideContactFromLeaders: false } as User | null }));
@@ -222,7 +223,7 @@ it("offers an explicit Ask to add for a selected teen instead of direct add", as
   open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
   await userEvent.click(screen.getByRole("button", { name: "Add people" }));
   await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
-  expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
+  expect(screen.getByText(/Adding a teen needs their approval/)).toHaveAttribute("role", "status");
   expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
   await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
   expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
@@ -592,7 +593,7 @@ it("asks before leaving an edited group form, and not once saved", async () => {
   vi.mocked(Groups.update).mockResolvedValue({ group: page.group });
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
   const router = createMemoryRouter([
-    { path: "/groups/:id", element: <><Link to="/elsewhere">Elsewhere</Link><GroupDetail /></> },
+    { path: "/groups/:id", element: <><UnsavedChangesBlocker /><Link to="/elsewhere">Elsewhere</Link><GroupDetail /></> },
     { path: "/elsewhere", element: <p>Elsewhere page</p> },
   ], { initialEntries: ["/groups/1"] });
   render(<RouterProvider router={router} />);

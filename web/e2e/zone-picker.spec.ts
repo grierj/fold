@@ -14,7 +14,7 @@ function futureDate(days: number): string {
 async function expectBrowserZoneFirst(page: Page, id: string, church = true, reveal = church) {
   // The create and edit forms name the zone on one line; Change opens the
   // picker (DEC-95). The admin setting shows the picker at rest.
-  if (reveal) await page.getByRole("button", { name: "Change", exact: true }).click();
+  if (reveal) await page.getByRole("button", { name: "Change time zone", exact: true }).click();
   const box = page.locator(`#${id}`);
   await expect(box).toHaveAttribute("role", "combobox");
   await expect(box).toHaveValue("Boise (Mountain)");
@@ -42,7 +42,7 @@ test("church-wide create form lists the browser zone first", async ({ page }) =>
 test("typing filters by region and the keyboard picks a zone", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/events/new");
-  await page.getByRole("button", { name: "Change" }).click();
+  await page.getByRole("button", { name: "Change time zone" }).click();
   const box = page.getByRole("combobox", { name: "Time zone" });
   await box.click();
   await box.fill("pac");
@@ -73,7 +73,7 @@ test("series edit form lists the browser zone first", async ({ page, request }) 
   await page.goto(`/groups/${group.id}`);
   await fromMore(page, "Edit series");
   await expect(page.getByText("Mountain time", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Change", exact: true }).click();
+  await page.getByRole("button", { name: "Change time zone", exact: true }).click();
   const id = await page.getByLabel("Time zone").getAttribute("id");
   await expectBrowserZoneFirst(page, id!, true, false);
   await page.goto(`/groups/${group.id}/events/new`);

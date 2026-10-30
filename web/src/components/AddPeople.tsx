@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ApiError, Groups, Invitations } from "../api";
 import type { PersonSearchResult } from "../types";
 import { errorCode, errorText } from "../lib/errors";
@@ -37,7 +37,17 @@ export function AddPeople({ groupId, groupName, memberCount, memberLimit, canSea
   const panelId = useId();
   const full = memberLimit !== null && memberCount >= memberLimit;
 
+  // The link that switched modes is gone once the other form shows, so focus
+  // would fall to the page; move it to the new field instead.
+  const focusField = useRef(false);
+  useEffect(() => {
+    if (!focusField.current) return;
+    focusField.current = false;
+    document.getElementById(mode === "name" ? "add-people-name" : "add-people-email")?.focus();
+  }, [mode]);
+
   function switchTo(next: "name" | "email") {
+    focusField.current = true;
     setMode(next);
     setSelection(null);
     setAskPerson(null);
@@ -117,11 +127,12 @@ export function AddPeople({ groupId, groupName, memberCount, memberLimit, canSea
       {open && (
         <section id={panelId} aria-label="Add people" className="mt-3 space-y-3 rounded-lg border border-border p-4">
           {error && <FormError>{error}</FormError>}
-          {status && <p role="status" className="text-sm text-success">{status}</p>}
+          {/* Always in the page, so a screen reader announces the text when it changes. */}
+          <p role="status" className="text-sm text-success empty:-mb-3">{status}</p>
           {mode === "name" ? (
             <>
               <Form noValidate onSubmit={addByName} className="space-y-3">
-                <Field label="Find a person by name">
+                <Field id="add-people-name" label="Find a person by name">
                   <PeoplePicker value={selection} disabled={busy}
                     onChange={(person) => { setSelection(person); setAskPerson(null); setError(null); setStatus(null); }} />
                 </Field>

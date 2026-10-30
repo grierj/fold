@@ -1,28 +1,31 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { Link, RouterProvider, createMemoryRouter, useNavigate } from "react-router-dom";
+import { Link, Outlet, RouterProvider, createMemoryRouter, useNavigate } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
-import { useUnsavedChanges } from "./unsavedChanges";
+import { UnsavedChangesBlocker, useUnsavedChanges } from "./unsavedChanges";
 
-function Editor() {
+function Editor({ label = "Edit" }: { label?: string }) {
   const [dirty, setDirty] = useState(false);
   const { guard, markSaved } = useUnsavedChanges(dirty);
   const navigate = useNavigate();
   return <>
     {guard}
-    <button type="button" onClick={() => setDirty(true)}>Edit</button>
+    <button type="button" onClick={() => setDirty(true)}>{label}</button>
     <button type="button" onClick={() => { markSaved(); navigate("/done"); }}>Save</button>
     <Link to="/elsewhere">Elsewhere</Link>
   </>;
 }
 
-function renderAt() {
-  const router = createMemoryRouter([
-    { path: "/", element: <Editor /> },
-    { path: "/elsewhere", element: <p>Elsewhere page</p> },
-    { path: "/done", element: <p>Saved page</p> },
-  ]);
+function renderAt(page = <Editor />) {
+  const router = createMemoryRouter([{
+    element: <><UnsavedChangesBlocker /><Outlet /></>,
+    children: [
+      { path: "/", element: page },
+      { path: "/elsewhere", element: <p>Elsewhere page</p> },
+      { path: "/done", element: <p>Saved page</p> },
+    ],
+  }]);
   render(<RouterProvider router={router} />);
   return router;
 }
@@ -67,4 +70,13 @@ it("asks the browser before closing the tab with unsaved edits", async () => {
   const dirty = new Event("beforeunload", { cancelable: true });
   act(() => { window.dispatchEvent(dirty); });
   expect(dirty.defaultPrevented).toBe(true);
+});
+
+it("guards every open form, not only the last one mounted", async () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  renderAt(<><Editor label="Edit first" /><Editor label="Edit second" /></>);
+  await userEvent.click(screen.getByRole("button", { name: "Edit first" }));
+  await userEvent.click(screen.getAllByRole("link", { name: "Elsewhere" })[0]);
+  expect(confirm).toHaveBeenCalled();
+  expect(screen.queryByText("Elsewhere page")).not.toBeInTheDocument();
 });

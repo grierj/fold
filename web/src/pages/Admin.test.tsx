@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -269,6 +269,32 @@ it("puts self-signup back and says why when saving fails", async () => {
   expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeChecked();
   expect(screen.queryByText("Saved")).not.toBeInTheDocument();
   expect(screen.queryByText("private server text")).not.toBeInTheDocument();
+});
+
+it("disables self-signup while a save is in flight, then goes back to the value from before that save on failure", async () => {
+  let fail: (e: unknown) => void = () => {};
+  vi.mocked(AdminAccountRequests.setSelfSignup).mockReturnValue(new Promise((_, reject) => { fail = reject; }));
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  const mode = await screen.findByRole("group", { name: "Self-signup" });
+  await waitFor(() => expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeChecked());
+  await userEvent.click(within(mode).getByRole("radio", { name: /^On/ }));
+  expect(within(mode).getByRole("radio", { name: /^On/ })).toBeDisabled();
+  expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeDisabled();
+  await userEvent.click(within(mode).getByRole("radio", { name: /^Off/ }));
+  expect(AdminAccountRequests.setSelfSignup).toHaveBeenCalledOnce();
+  await act(async () => { fail(new ApiError(500, "x")); });
+  expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't save that setting.");
+  expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeChecked();
+  expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeEnabled();
+});
+
+it("shows Saved in the success tone", async () => {
+  vi.mocked(AdminAccountRequests.setSelfSignup).mockResolvedValue({ selfSignup: "request" });
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  const mode = await screen.findByRole("group", { name: "Self-signup" });
+  await waitFor(() => expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeChecked());
+  await userEvent.click(within(mode).getByRole("radio", { name: /^On/ }));
+  expect(await screen.findByText("Saved")).toHaveClass("text-success");
 });
 
 it("keeps the church time zone behind its Save button", async () => {

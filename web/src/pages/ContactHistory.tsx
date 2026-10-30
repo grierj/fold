@@ -199,6 +199,10 @@ function HistoryView({ initialId }: { initialId: string }) {
     setSelection({ personId, filters: { ...draft, ...bounds }, days: { from: draft.from, until: draft.until } });
   }
 
+  // A collapsed Filters button still says when the list below is filtered, so an
+  // admin doesn't read a narrowed list as the whole history.
+  const appliedCount = selection ? [selection.filters.purpose, selection.filters.action, selection.days.from, selection.days.until].filter(Boolean).length : 0;
+
   if (authority === 401) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   if (authority === 403) return <div className="max-w-3xl mx-auto px-4 py-8"><h1 className="text-2xl font-bold">Contact access history</h1><p>This history is no longer available to you. Ask an active adult church admin for help.</p></div>;
   return <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
@@ -211,7 +215,7 @@ function HistoryView({ initialId }: { initialId: string }) {
     }}>
       <ContactHistoryPersonPicker value={person} name={names[person]} error={personError} onChange={(id) => { setPerson(id); setPersonError(""); }} onPick={(id) => show(id, null)} onKnown={knownPerson} onFailure={pickerFailure} />
       <div className="space-y-4">
-        <Button variant="secondary" aria-expanded={filtersOpen} aria-controls="history-filters" onClick={() => setFiltersOpen((open) => !open)}>Filters</Button>
+        <Button variant="secondary" aria-expanded={filtersOpen} aria-controls="history-filters" onClick={() => setFiltersOpen((open) => !open)}>{appliedCount ? `Filters (${appliedCount} applied)` : "Filters"}</Button>
         {filtersOpen && <div id="history-filters" className="space-y-4 rounded-lg border border-border bg-surface p-4">
           <Choices legend="Purpose" optional><div className="grid sm:grid-cols-2 gap-x-4">{purposes.map((p) => <Radio key={p.value} name="history-purpose" label={p.label} value={p.value} checked={draft.purpose === p.value} onChange={() => setDraft({ ...draft, purpose: p.value })} />)}</div></Choices>
           <Field label="Action" optional><Select value={draft.action} options={[{ value: "", label: "All actions" }, ...Object.entries(actions).map(([value, label]) => ({ value, label }))]} onChange={(e) => setDraft({ ...draft, action: e.target.value })} /></Field>

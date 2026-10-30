@@ -433,8 +433,9 @@ func notifyGroupDecided(tx *gorm.DB, g *models.Group, actor uint, approved bool)
 	return notify.Send(tx, notify.Msg{
 		Kind: kind, To: leaderIDs(tx, g.ID), Actor: &actor,
 		SubjectType: "group", SubjectID: g.ID, Link: "/groups/" + strconv.FormatUint(uint64(g.ID), 10),
-		Vars:      notify.Vars{Group: g.Name}, // group-ok: its own leaders
-		DedupeKey: fmt.Sprintf("%s:%d", kind, g.ID),
+		Vars: notify.Vars{Group: g.Name}, // group-ok: its own leaders
+		// No dedupe key: the pending → decided transition sends it once, and a
+		// group set back to pending and decided again earns a new notice.
 	})
 }
 

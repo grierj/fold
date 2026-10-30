@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef, useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Link, Navigate, NavLink, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { AccountRequests, Profile as ProfileApi } from "../api";
 import { useAuth } from "../auth";
@@ -31,7 +31,7 @@ const sectionGroups: { heading: string; items: Section[] }[] = [
     { id: "privacy", label: "Privacy", description: "Hide your contact info from leaders" },
   ] },
   { heading: "Family", items: [
-    { id: "household", label: "Household", description: "People you sign up with you", adultOnly: true },
+    { id: "household", label: "Household", description: "Family members you sign up with you", adultOnly: true },
     { id: "guardian", label: "Parent or guardian link", description: "Connect a parent or guardian", adultOnly: true },
   ] },
   { heading: "Sharing", items: [
@@ -157,7 +157,7 @@ function ProfileDetails() {
   const ph = phone ?? user?.phone ?? "";
   const tz = zone ?? user?.timezone ?? "";
   // Leaving with edits that aren't saved yet asks first (DEC-98).
-  const { guard } = useUnsavedChanges(!!user && (dn !== user.displayName || fullName !== user.name || ph !== user.phone || tz !== user.timezone));
+  const { guard } = useUnsavedChanges(!!user && (dn.trim() !== user.displayName || fullName.trim() !== user.name || ph.trim() !== user.phone || tz.trim() !== user.timezone));
   if (!user) return null;
   const focalX = user.avatarFocalX;
   const focalY = user.avatarFocalY;
@@ -223,26 +223,26 @@ function ProfilePrivacy() {
   const { user, refresh } = useAuth();
   const [value, setValue] = useState<boolean | null>(null);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const latest = useRef(0);
   if (!user) return null;
   if (user.accountType === "teen") return <p className="text-text-muted">Your email and phone are always hidden from group leaders and event hosts. You, admins, and your confirmed guardians can still see them.</p>;
   const hideContact = value ?? user.hideContactFromLeaders;
   async function change(next: boolean) {
-    const request = ++latest.current;
-    setValue(next); setSaved(false); setError(null);
+    // The box is disabled while a save is in flight, so changes are one at a
+    // time and a failure goes back to the value from before this save.
+    setSaving(true); setValue(next); setSaved(false); setError(null);
     try {
       await ProfileApi.update({ hideContactFromLeaders: next }); await refresh();
-      if (request === latest.current) setSaved(true);
+      setSaved(true);
     } catch (err) {
-      if (request !== latest.current) return;
       setValue(null);
       setError(errorText(err, "We couldn't save your changes."));
-    }
+    } finally { setSaving(false); }
   }
   return <div className="bg-surface rounded-lg border border-border p-6 space-y-3">
     {error && <FormError>{error}</FormError>}
-    <Checkbox label="Hide my contact info from group leaders" description="Hide your email and phone from group leaders and event hosts. Admins can still see them." checked={hideContact} onChange={(e) => void change(e.target.checked)} />
+    <Checkbox label="Hide my contact info from group leaders" description="Hide your email and phone from group leaders and event hosts. Admins can still see them." checked={hideContact} disabled={saving} onChange={(e) => void change(e.target.checked)} />
     <p role="status" className="text-success text-sm">{saved ? "Saved" : ""}</p>
   </div>;
 }

@@ -590,8 +590,34 @@ describe("EventDetail header actions and ?manage (DEC-99)", () => {
     renderPage();
     const edit = await screen.findByRole("button", { name: "Edit event" });
     expect(screen.queryByRole("link", { name: "Edit event" })).not.toBeInTheDocument();
+    expect(edit).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(edit);
-    expect(screen.getByRole("button", { name: "Close editor" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Edit event" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.queryByRole("button", { name: "Close editor" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Edit event" }));
+    expect(screen.getByRole("button", { name: "Edit event" })).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("scrolls the editor into view and focuses its first field when it opens", async () => {
+    vi.mocked(Events.get).mockResolvedValue(page);
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "Edit event" }));
+    expect(scroll).toHaveBeenCalled();
+    expect(screen.getByLabelText("Title")).toHaveFocus();
+  });
+
+  it("keeps Edit and More side by side in one row at every width", async () => {
+    vi.mocked(Events.get).mockResolvedValue(page);
+    renderPage();
+    const edit = await screen.findByRole("button", { name: "Edit event" });
+    const more = screen.getByRole("button", { name: "More event actions" });
+    const row = edit.parentElement as HTMLElement;
+    expect(row).toContainElement(more);
+    expect(row).toHaveClass("flex");
+    expect(row).not.toHaveClass("flex-col");
+    expect(edit).toHaveClass("flex-1");
   });
 
   it("shows neither to someone who cannot manage the event", async () => {

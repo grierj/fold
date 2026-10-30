@@ -52,6 +52,16 @@ function EventDetailContent() {
   const seriesFeedbackRevision = useRef(0);
   const loadRevision = useRef(0);
   const rsvpMutationGate = useRsvpMutationGate();
+  const editorRef = useRef<HTMLDivElement>(null);
+
+  // Opening the editor brings it into view and puts the cursor in its first
+  // field, so a screen reader and a keyboard follow the button they pressed.
+  useEffect(() => {
+    if (!editing) return;
+    const editor = editorRef.current;
+    editor?.scrollIntoView?.({ block: "start" });
+    editor?.querySelector<HTMLElement>("input, textarea, select")?.focus({ preventScroll: true });
+  }, [editing]);
 
   // Quiet refreshes keep ordinary RSVP drafts mounted. A terminal refresh
   // invalidates protected data immediately, and only the newest request may
@@ -139,9 +149,9 @@ function EventDetailContent() {
           <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} churchWide={event.churchWide} />
         </div>
         {canManage && (
-          <div className="mt-3 flex flex-col gap-2 sm:mt-0 sm:shrink-0 sm:flex-row [&_[aria-haspopup]]:w-full sm:[&_[aria-haspopup]]:w-auto">
-            <Button variant="secondary" aria-expanded={editing} onClick={() => setEditing((v) => !v)}>
-              {editing ? "Close editor" : event.recurrenceRule ? "Edit series" : "Edit event"}
+          <div className="mt-3 flex gap-2 sm:mt-0 sm:shrink-0">
+            <Button variant="secondary" layout="flex-1 sm:flex-none" aria-expanded={editing} onClick={() => setEditing((v) => !v)}>
+              {event.recurrenceRule ? "Edit series" : "Edit event"}
             </Button>
             <Menu label="More event actions" items={[{ label: "Delete event", onSelect: () => void deleteEvent(), danger: true }]} />
           </div>
@@ -164,7 +174,7 @@ function EventDetailContent() {
       )}
 
       {canManage && editing && (
-        <div className="mt-4">
+        <div ref={editorRef} className="mt-4">
           <SeriesEditor
             series={{ ...event, eventId: event.id }}
             idPrefix={`ev${event.id}`}

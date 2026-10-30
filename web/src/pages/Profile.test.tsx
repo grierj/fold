@@ -55,7 +55,7 @@ it("groups the rows under You, Family and Sharing, each with a one-line descript
   renderProfile();
   const rows: Record<string, [string, string][]> = {
     You: [["Profile details", "Name, photo and time zone"], ["Email and password", "How you sign in"], ["Privacy", "Hide your contact info from leaders"]],
-    Family: [["Household", "People you sign up with you"], ["Parent or guardian link", "Connect a parent or guardian"]],
+    Family: [["Household", "Family members you sign up with you"], ["Parent or guardian link", "Connect a parent or guardian"]],
     Sharing: [["Calendar feed", "Add Fold dates to your phone's calendar"], ["Invite someone", "Ask an admin to let someone in"], ["Contact and add requests", "Requests to reach or add you"]],
   };
   expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["You", "Family", "Sharing"]);
@@ -177,6 +177,29 @@ it("puts the privacy box back and says what went wrong when saving fails, withou
   await userEvent.click(screen.getByRole("checkbox", { name: privacyLabel }));
   expect(await screen.findByText("Saved")).toBeInTheDocument();
   expect(Profile.update).toHaveBeenLastCalledWith({ hideContactFromLeaders: true });
+});
+
+it("disables the privacy box while it saves, so a second change waits for the first", async () => {
+  let finish: (v: { user: User }) => void = () => {};
+  vi.mocked(Profile.update).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  renderProfile("/profile/privacy");
+  const toggle = screen.getByRole("checkbox", { name: privacyLabel });
+  await userEvent.click(toggle);
+  expect(toggle).toBeDisabled();
+  await userEvent.click(toggle);
+  expect(Profile.update).toHaveBeenCalledOnce();
+  await act(async () => { finish({ user: adult }); });
+  expect(await screen.findByText("Saved")).toHaveClass("text-success");
+  expect(toggle).toBeEnabled();
+});
+
+it("does not count trailing spaces as unsaved profile edits", async () => {
+  renderProfile("/profile/details");
+  const closing = () => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
+  await userEvent.type(screen.getByLabelText("Full name"), "   ");
+  expect(closing()).toBe(false);
+  await userEvent.type(screen.getByLabelText("Full name"), "x");
+  expect(closing()).toBe(true);
 });
 
 it("lists Full name first, then an optional Preferred name with its hint, and shows initials until there is a photo", () => {

@@ -235,3 +235,18 @@ it("renames the saved-ID lookup and explains who it is for", async () => {
   await userEvent.click(screen.getByText("Look up a deleted account"));
   expect(screen.getByText(/For someone whose account was deleted; ask whoever has their old ID\./)).toBeInTheDocument();
 });
+
+it("counts the applied filters on the collapsed Filters button", async () => {
+  mount(); await screen.findByText("Person's decision: Approved");
+  expect(screen.getByRole("button", { name: "Filters" })).toBeInTheDocument();
+  await openFilters();
+  await userEvent.click(screen.getByLabelText("Direct contact"));
+  await userEvent.selectOptions(screen.getByLabelText("Action (optional)"), "contact.reveal");
+  await userEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+  await waitFor(() => expect(ContactHistory.list).toHaveBeenLastCalledWith("9223372036854775807", { ...empty, purpose: "contact", action: "contact.reveal" }));
+  const toggle = await screen.findByRole("button", { name: "Filters (2 applied)" });
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  await userEvent.click(toggle);
+  expect(screen.queryByRole("button", { name: "Apply filters" })).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Filters (2 applied)" })).toHaveAttribute("aria-expanded", "false");
+});

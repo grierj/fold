@@ -1091,7 +1091,7 @@ function ChurchTimezone() {
         <Button variant="secondary" layout="w-full sm:w-auto" type="submit" disabled={busy || tz.trim() === saved}>
           {busy ? "Saving…" : "Save time zone"}
         </Button>
-        {ok && <span role="status" className="text-sm text-text-muted">Saved</span>}
+        {ok && <span role="status" className="text-sm text-success">Saved</span>}
       </FormActions>
       {error && <FormError>{error}</FormError>}
     </Form>
@@ -1187,7 +1187,7 @@ function SelfSignupSetting() {
   const [mode, setMode] = useState<"request" | "off">("request");
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
-  const latest = useRef(0);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -1203,20 +1203,22 @@ function SelfSignupSetting() {
   }, []);
 
   async function change(next: "request" | "off") {
+    // The options are disabled while a save is in flight, so changes are one
+    // at a time and a failure goes back to the value from before this save.
     const previous = mode;
-    const request = ++latest.current;
+    setSaving(true);
     setMode(next);
     setError(null);
     setOk(false);
     try {
       const r = await AdminAccountRequests.setSelfSignup(next);
-      if (request !== latest.current) return;
       setMode(r.selfSignup);
       setOk(true);
     } catch (err) {
-      if (request !== latest.current) return;
       setMode(previous);
       setError(errorText(err, "We couldn't save that setting."));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -1228,6 +1230,7 @@ function SelfSignupSetting() {
           label="On"
           description="Requests wait for an admin's approval."
           checked={mode === "request"}
+          disabled={saving}
           onChange={() => void change("request")}
         />
         <Radio
@@ -1235,10 +1238,11 @@ function SelfSignupSetting() {
           label="Off"
           description="The church office creates accounts."
           checked={mode === "off"}
+          disabled={saving}
           onChange={() => void change("off")}
         />
       </Choices>
-      <p role="status" className="text-sm text-text-muted">{ok ? "Saved" : ""}</p>
+      <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
       {error && <FormError>{error}</FormError>}
     </div>
   );

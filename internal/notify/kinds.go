@@ -291,7 +291,7 @@ func init() {
 	register(Kind{
 		Key: GroupApproved, Category: CatGroups, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
-			return or(v.Group, "Your group") + " was approved", "People can find it now. Schedule its first meeting."
+			return or(v.Group, "Your group") + " was approved", "It's live now. Schedule its first meeting."
 		},
 	})
 	register(Kind{

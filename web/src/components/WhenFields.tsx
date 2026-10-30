@@ -150,6 +150,7 @@ export function WhenFields({
           </span>
           <Button
             variant="link"
+            aria-label="Change time zone"
             onClick={() => {
               setZoneOpen(true);
               setTimeout(() => document.getElementById(zoneId)?.focus(), 0);

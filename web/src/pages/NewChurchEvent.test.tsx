@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import { Events } from "../api";
+import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { NewChurchEvent } from "./NewChurchEvent";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 1 }, loading: false, isAdmin: true }) }));
@@ -15,7 +16,7 @@ vi.mock("../api", async (importActual) => ({
 function renderForm() {
   const router = createMemoryRouter(
     [
-      { path: "/events/new", element: <NewChurchEvent /> },
+      { path: "/events/new", element: <><UnsavedChangesBlocker /><NewChurchEvent /></> },
       { path: "/events/:id", element: <p>Event page</p> },
       { path: "/elsewhere", element: <p>Elsewhere page</p> },
     ],

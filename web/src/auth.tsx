@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { Auth as AuthApi, Profile, ensureCsrf } from "./api";
 import { errorCode } from "./lib/errors";
 import { browserTimeZone } from "./lib/when";
+import { leaveWithoutAsking } from "./lib/unsavedChanges";
 import type { User } from "./types";
 
 // clearClientData removes everything the SPA keeps in browser storage.
@@ -89,6 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     setUser(null);
     clearClientData();
+    leaveWithoutAsking();
     window.location.replace("/");
   }, []);
 

@@ -24,7 +24,7 @@ import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { Avatar } from "../components/Avatar";
 import { ImageUpload } from "../components/ImageUpload";
 import { coverSrc } from "../lib/covers";
-import { CalendarIcon } from "../components/icons";
+import { CalendarIcon, ChevronDownIcon } from "../components/icons";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Missing } from "./NotFound";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -228,12 +228,21 @@ function GroupForm({
   const [moreOpen, setMoreOpen] = useState(initial.moreOpen);
   const limitRef = useRef<HTMLInputElement>(null);
   const moreId = useId();
+  const summaryId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const dirty = name !== initial.name || description !== initial.description || location !== initial.location
     || tags !== initial.tags.join(", ") || visibility !== (initial.visibility ?? "public") || memberLimit !== initialLimit
     || coverFile !== null || coverFocal !== null || removeCover;
   const { guard, markSaved } = useUnsavedChanges(dirty);
+  // What a closed "More options" still tells you, so nothing in it is a surprise.
+  const tagList = tags.split(",").map((t) => t.trim()).filter(Boolean);
+  const hasPhoto = !!coverFile || (!!initial.imageUrl && !removeCover);
+  const moreSummary = [
+    tagList.length ? `Tags: ${tagList.join(", ")}` : "No tags",
+    memberLimit.trim() ? `Limit ${memberLimit.trim()}` : "No member limit",
+    hasPhoto ? "Photo cover" : "Pattern cover",
+  ].join(" · ");
 
   return (
     <Form noValidate
@@ -310,9 +319,11 @@ function GroupForm({
         </Choices>
       </section>
       <section>
-        <Button variant="link" aria-expanded={moreOpen} aria-controls={moreId} onClick={() => setMoreOpen(!moreOpen)}>
+        <Button variant="link" aria-expanded={moreOpen} aria-controls={moreId} aria-describedby={moreOpen ? undefined : summaryId} onClick={() => setMoreOpen(!moreOpen)}>
           More options
+          <ChevronDownIcon className={`ml-1 size-5 ${moreOpen ? "rotate-180" : ""}`} />
         </Button>
+        {!moreOpen && <p id={summaryId} className="text-sm text-text-muted">{moreSummary}</p>}
         {/* Hidden, not unmounted: what's typed or picked here survives closing it. */}
         <div id={moreId} hidden={!moreOpen} className="mt-4 space-y-6">
           <Field id="group-tags" label="Tags" optional hint="Separate tags with commas, for example young-adults, bible-study.">

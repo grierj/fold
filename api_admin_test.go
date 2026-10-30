@@ -1213,8 +1213,33 @@ func TestLeadersHearGroupDecisions(t *testing.T) {
 	}
 	notice("group.approved", edited)
 
+	// Set back to pending and approved again: a second decision is a second notice.
+	if w := admin.do("PUT", "/api/v1/groups/"+approved, map[string]any{"status": models.GroupPending}, true); w.Code != http.StatusOK {
+		t.Fatalf("back to pending: %d %s", w.Code, w.Body.String())
+	}
+	if w := admin.do("POST", "/api/v1/admin/groups/"+approved+"/approve", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("approve again: %d %s", w.Code, w.Body.String())
+	}
+	if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ? AND subject_id = ?", leader.ID, "group.approved", approved); n != 2 {
+		t.Fatalf("approved notices after a second decision: %d, want 2", n)
+	}
+
+	// A leader archiving their own pending group isn't an admin's decision, so
+	// a co-leader hears nothing.
+	coLeader := newTestUser(t, app, "co-leader", "password1234", models.RoleMember)
+	withdrawn := create("Withdrawn idea")
+	var wg models.Group
+	app.DB.First(&wg, withdrawn)
+	addMember(t, app, coLeader, &wg, models.MembershipLeader)
+	if w := lc.do("PUT", "/api/v1/groups/"+withdrawn, map[string]any{"status": models.GroupArchived}, true); w.Code != http.StatusOK {
+		t.Fatalf("leader archives own pending group: %d %s", w.Code, w.Body.String())
+	}
+	if n := contactCount(t, app, &models.Notification{}, "subject_id = ? AND kind IN ?", withdrawn, []string{"group.approved", "group.rejected"}); n != 0 {
+		t.Fatalf("a leader's own withdrawal sent %d decision notices", n)
+	}
+
 	// The deciding admin, who isn't a leader, gets nothing; nobody else does either.
-	if n := contactCount(t, app, &models.Notification{}, "kind IN ? AND user_id <> ?", []string{"group.approved", "group.rejected"}, leader.ID); n != 0 {
+	if n := contactCount(t, app, &models.Notification{}, "kind IN ? AND user_id NOT IN ?", []string{"group.approved", "group.rejected"}, []uint{leader.ID}); n != 0 {
 		t.Fatalf("%d decision notices went to someone other than the leader", n)
 	}
 }

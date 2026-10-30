@@ -149,3 +149,22 @@ it("says a teen can only be asked by name when the email belongs to a teen", asy
   await userEvent.click(screen.getByRole("button", { name: "Add member" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Select this person by name, then choose Ask to add.");
 });
+
+it("moves focus to the field it switches to, in both directions", async () => {
+  panel(); await openPanel();
+  await userEvent.click(screen.getByRole("button", { name: "Use an email instead" }));
+  expect(screen.getByLabelText("Email address")).toHaveFocus();
+  await userEvent.click(screen.getByRole("button", { name: "Search by name instead" }));
+  expect(screen.getByRole("combobox", { name: "Find a person by name" })).toHaveFocus();
+});
+
+it("keeps one status region in the page so a screen reader announces the text when it appears", async () => {
+  vi.mocked(Groups.addMember).mockResolvedValue({});
+  panel(); await openPanel();
+  const status = screen.getAllByRole("status")[0];
+  expect(status).toBeEmptyDOMElement();
+  await pickPat();
+  await userEvent.click(screen.getByRole("button", { name: "Add member" }));
+  await screen.findByText("Added Pat Lee.");
+  expect(screen.getAllByRole("status")[0]).toBe(status);
+});

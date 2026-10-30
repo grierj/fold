@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Groups } from "../api";
+import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { NewEvent } from "./NewEvent";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false }) }));
@@ -19,7 +20,7 @@ vi.mock("../api", async (importActual) => ({
 function renderForm() {
   const router = createMemoryRouter(
     [
-      { path: "/groups/:id/events/new", element: <NewEvent /> },
+      { path: "/groups/:id/events/new", element: <><UnsavedChangesBlocker /><NewEvent /></> },
       { path: "/groups/:id", element: <p>Group page</p> },
       { path: "/elsewhere", element: <p>Elsewhere page</p> },
     ],
@@ -157,9 +158,9 @@ describe("NewEvent", () => {
     renderForm();
     await ready();
     expect(screen.queryByRole("combobox", { name: "Time zone" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Change" }));
+    await userEvent.click(screen.getByRole("button", { name: "Change time zone" }));
     const zone = screen.getByRole("combobox", { name: "Time zone" });
     expect(zone).toHaveAccessibleDescription(/church's time zone/);
-    expect(within(document.querySelector("form")!).queryByRole("button", { name: "Change" })).not.toBeInTheDocument();
+    expect(within(document.querySelector("form")!).queryByRole("button", { name: "Change time zone" })).not.toBeInTheDocument();
   });
 });
