@@ -309,6 +309,7 @@ func (a *App) apiMyGroups(c *gin.Context) {
 	a.DB.Preload("Group").Where("user_id = ? AND status = ?", u.ID, "active").
 		Order("joined_at").Find(&memberships)
 	groups := make([]models.Group, 0, len(memberships))
+	roles := make(map[uint]string, len(memberships))
 	for i := range memberships {
 		// Include pending and archived groups this person still belongs to.
 		// The directory (GET /groups) stays limited to active groups.
@@ -316,8 +317,9 @@ func (a *App) apiMyGroups(c *gin.Context) {
 			continue
 		}
 		groups = append(groups, memberships[i].Group)
+		roles[memberships[i].GroupID] = memberships[i].Role
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
+	c.JSON(http.StatusOK, gin.H{"groups": a.viewerGroupList(groups, roles)})
 }
 
 // ---------------------------------------------------------------------------

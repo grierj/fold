@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { Groups } from "../api";
 import type { GroupSummary } from "../types";
 import { GroupCard } from "../components/GroupCard";
@@ -12,9 +12,43 @@ import { Skeleton } from "../components/ui/Skeleton";
 import { ButtonLink } from "../components/ui/Button";
 
 // The server exposes GET /api/v1/me/groups for this.
+// A person in no groups also sees up to three groups meeting soon (DEC-94):
+// directory groups with a next meeting that they aren't in. The directory is
+// already sorted soonest first, and a failure just hides the section.
+const SOON_LIMIT = 3;
+
+function MeetingSoon() {
+  const [groups, setGroups] = useState<GroupSummary[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    Groups.list()
+      .then(({ groups }) => {
+        if (alive) setGroups(groups.filter((g) => g.nextEventAt && !g.myRole).slice(0, SOON_LIMIT));
+      })
+      .catch(() => {
+        if (alive) setGroups([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  // Nothing is shown until we know something qualifies, so the heading never
+  // flashes in and vanishes.
+  if (!groups || groups.length === 0) return null;
+  return (
+    <section aria-labelledby="meeting-soon" className="mt-10">
+      <h2 id="meeting-soon" className="text-xl font-bold mb-4">
+        Groups meeting soon
+      </h2>
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        {groups.map((g) => <GroupCard key={g.id} group={g} headingLevel={3} />)}
+      </div>
+    </section>
+  );
+}
+
 export function MyGroups() {
   const { user, loading: authLoading } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
   const departureStatus = (location.state as { departureStatus?: string } | null)?.departureStatus;
   const [groups, setGroups] = useState<GroupSummary[]>([]);
@@ -73,31 +107,32 @@ export function MyGroups() {
       )}
       {!loading && error && <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />}
       {!loading && !error && groups.length === 0 && (
-        <EmptyState
-          illustration={<Illustration name="empty-groups" />}
-          title="You're not in any groups yet"
-          body="Groups you join show up here, with their next event."
-          action={
-            <>
-              <ButtonLink to="/" variant="primary" layout="w-full sm:w-auto">
-                Browse groups
-              </ButtonLink>
-              <ButtonLink to="/groups/new" variant="secondary" layout="w-full sm:w-auto">
-                Start a group
-              </ButtonLink>
-            </>
-          }
-        />
+        <>
+          <EmptyState
+            illustration={<Illustration name="empty-groups" />}
+            title="You're not in any groups yet"
+            body="Groups you join show up here, with their next event."
+            action={
+              <div className="flex w-full flex-col items-center gap-2 sm:w-auto">
+                <ButtonLink to="/#groups" variant="primary" layout="w-full sm:w-auto">
+                  Browse groups
+                </ButtonLink>
+                <p className="text-sm text-text-muted">
+                  or{" "}
+                  <Link to="/groups/new" className="text-link">
+                    start a group
+                  </Link>
+                </p>
+              </div>
+            }
+          />
+          <MeetingSoon />
+        </>
       )}
       {!loading && groups.length > 0 && (
         <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {groups.map((g) => (
-            <GroupCard
-              key={g.id}
-              group={g}
-              headingLevel={2}
-              onTagClick={(tag) => navigate(`/?tag=${encodeURIComponent(tag)}`)}
-            />
+            <GroupCard key={g.id} group={g} headingLevel={2} showRole={false} />
           ))}
         </div>
       )}

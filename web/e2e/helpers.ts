@@ -88,6 +88,10 @@ export async function fromMore(scope: Page | Locator, item: string | RegExp, men
 // page first. The login form itself is still covered by signIn (smoke, session
 // and the specs that test sign-in).
 export async function signInTo(page: Page, name: string, path: string) {
+  // Leave the app first: a page still running it can fetch a new CSRF cookie
+  // between the token below and the login POST, which then fails as
+  // "CSRF token invalid" (seen on contact-requests.spec.ts in CI).
+  await page.goto("about:blank");
   await page.context().clearCookies();
   const csrf = async () => (await (await page.request.get("/api/v1/auth/csrf")).json()).csrfToken as string;
   const login = await page.request.post("/api/v1/auth/login", {

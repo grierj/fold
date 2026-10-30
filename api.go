@@ -114,6 +114,9 @@ type groupSummaryJSON struct {
 	DeletionRequested bool       `json:"deletionRequested"`
 	// MemberLimit caps active members (DEC-39); null means unlimited.
 	MemberLimit *int `json:"memberLimit"`
+	// MyRole is the viewer's own active role, "leader" or "member", on the
+	// directory and My groups lists only (DEC-94); absent otherwise.
+	MyRole string `json:"myRole,omitempty"`
 }
 
 type memberJSON struct {

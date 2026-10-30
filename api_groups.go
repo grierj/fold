@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -56,7 +57,52 @@ func (a *App) apiListGroups(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
+	c.JSON(http.StatusOK, gin.H{"groups": a.viewerGroupList(groups, a.viewerRoles(apiUser(c), groups))})
+}
+
+// viewerRoles maps each listed group the viewer actively belongs to onto
+// their role there; nil for a signed-out viewer.
+func (a *App) viewerRoles(me *models.User, groups []models.Group) map[uint]string {
+	if me == nil || len(groups) == 0 {
+		return nil
+	}
+	ids := make([]uint, len(groups))
+	for i := range groups {
+		ids[i] = groups[i].ID
+	}
+	var rows []models.Membership
+	if err := a.DB.Select("group_id", "role").Where("user_id = ? AND status = ? AND group_id IN ?", me.ID, "active", ids).Find(&rows).Error; err != nil {
+		// The list still works; it just loses its "You're in" labels.
+		log.Printf("group list roles for user %d: %v", me.ID, err)
+		return nil
+	}
+	roles := make(map[uint]string, len(rows))
+	for _, m := range rows {
+		roles[m.GroupID] = m.Role
+	}
+	return roles
+}
+
+// viewerGroupList is a group list as its viewer browses it (DEC-94): each
+// summary carries the viewer's own role from roles, and the list runs by
+// next meeting, soonest first, then by name, with groups that have no
+// upcoming date last.
+func (a *App) viewerGroupList(groups []models.Group, roles map[uint]string) []groupSummaryJSON {
+	out := a.groupSummaries(groups)
+	for i := range out {
+		out[i].MyRole = roles[out[i].ID]
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		x, y := out[i].NextEventAt, out[j].NextEventAt
+		if (x == nil) != (y == nil) {
+			return x != nil
+		}
+		if x != nil && !x.Equal(*y) {
+			return x.Before(*y)
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out
 }
 
 func (a *App) apiCreateGroup(c *gin.Context) {

@@ -25,7 +25,9 @@ test("an admin schedules a church-wide event in the church time zone", async ({ 
   await expect(page.getByText("Church-wide event")).toBeVisible();
   await expect(page.getByText(/^Hosted by/)).toHaveCount(0);
 
-  await page.goto("/");
+  // The Church events block is for signed-out visitors (DEC-94): signed in,
+  // the date reaches people through "Coming up for you".
+  await signOut(page);
   await expect(page.getByRole("heading", { name: "Church events" })).toBeVisible();
   await expect(page.getByRole("link", { name: /Church potluck/ })).toBeVisible();
   // Home lists these under "Church events", so the card names no host (DEC-99).
