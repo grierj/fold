@@ -12,7 +12,7 @@ import { FormActions } from "./ui/FormActions";
 import { Button } from "./ui/Button";
 import { EventOptions } from "./EventOptions";
 import { WhenFields } from "./WhenFields";
-import { RoomField } from "./RoomField";
+import { RoomField, RoomSeriesHint } from "./RoomField";
 import { focusSeatLimit, isSeatsError, seatsFrom, seatsProblem, type SeatsValue } from "./SeatsField";
 import { focusVideoUrl, isVideoError, videoProblem, type VideoValue } from "./VideoField";
 import { focusRemoteCapacity, isRemoteError, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
@@ -258,6 +258,7 @@ export function SeriesEditor({
       <Field id={`s-loc-${idPrefix}`} label="Location" optional hint={locationHint}>
         <Input value={location} onChange={(e) => setLocation(e.target.value)} />
       </Field>
+      {instance.recurrenceRule !== "" && <RoomSeriesHint />}
       {roomDate && instance.recurrenceRule === "" && (
         <RoomField eventId={instance.eventId} date={roomDate} idPrefix={idPrefix} onChanged={onRoomChanged} />
       )}

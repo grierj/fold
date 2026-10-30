@@ -42,10 +42,12 @@ it("loads the rooms for the date and words each option", async () => {
   expect(labels).toEqual([
     "No room",
     "Fellowship Hall · Main (80 seats)",
-    "Chapel — booked then",
-    "Closet · Annex (1 seat) — too small",
+    "Chapel — in use at this time",
+    "Closet · Annex (1 seat) — may be too small",
   ]);
   expect(box).toHaveValue("none");
+  expect(screen.getByText("A room that's in use can only be booked by an admin. Ask an admin if you need it.")).toBeInTheDocument();
+  expect(screen.getByText(/Closing this form won't undo it\./)).toBeInTheDocument();
 });
 
 it("shows a loading line, not a blocked editor, until the rooms arrive", async () => {
@@ -68,6 +70,7 @@ it("lets an admin pick a busy room", async () => {
   actor.isAdmin = true;
   show();
   await select();
+  expect(screen.queryByText(/can only be booked by an admin/)).not.toBeInTheDocument();
   expect(screen.getByRole("option", { name: /^Chapel/ })).toBeEnabled();
 });
 
@@ -109,8 +112,11 @@ it("offers an admin Book anyway with a required reason, and resends it", async (
   await userEvent.selectOptions(await select(), "2");
   const reason = await screen.findByRole("textbox", { name: /^Reason for double-booking/ });
   expect(reason).toHaveAttribute("maxlength", "500");
+  expect(screen.getByRole("alert")).toHaveTextContent("That room is in use at this time. Give a reason to book it anyway.");
+  await waitFor(() => expect(reason).toHaveFocus());
   await userEvent.click(screen.getByRole("button", { name: "Book anyway" }));
   expect(await screen.findByText("Say why you are double-booking this room.")).toBeInTheDocument();
+  expect(reason).toHaveFocus();
   expect(DateRooms.set).toHaveBeenCalledTimes(1);
   await userEvent.type(reason, "Choir moved");
   await userEvent.click(screen.getByRole("button", { name: "Book anyway" }));
@@ -123,8 +129,9 @@ it("warns, in words, when a date lost its room by moving", async () => {
   vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [hall], booking: booked({ status: "requested" }) });
   show();
   const box = await select();
-  expect(screen.getByText(/Lost when the date moved\. Pick another room\./)).toBeInTheDocument();
+  expect(screen.getByText(/Fellowship Hall was taken at the new time, so this date has no room\. Pick another room\./)).toBeInTheDocument();
   expect(box).toHaveValue("");
+  expect(screen.getByRole("status")).toHaveTextContent("Pick another room.");
   expect(screen.queryByRole("button", { name: "Setup and cleanup times" })).not.toBeInTheDocument();
 });
 
@@ -168,7 +175,31 @@ it("refuses minutes outside 0 to 240 without asking the server", async () => {
   await userEvent.type(setup, "300");
   await userEvent.click(screen.getByRole("button", { name: "Save times" }));
   expect(await screen.findByText("Enter a whole number of minutes from 0 to 240 for both.")).toBeInTheDocument();
+  expect(setup).toHaveFocus();
   expect(DateRooms.set).not.toHaveBeenCalled();
+});
+
+it("saves the times on Enter without submitting the editor around them", async () => {
+  vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [hall], booking: booked() });
+  vi.mocked(DateRooms.set).mockResolvedValue({ booking: booked({ setupMinutes: 45 }) });
+  actor.isAdmin = true;
+  const onSubmit = vi.fn((e: { preventDefault: () => void }) => e.preventDefault());
+  render(<Form noValidate onSubmit={onSubmit}><RoomField eventId={7} date="2026-12-01" idPrefix="t" /></Form>);
+  await select();
+  await userEvent.click(screen.getByRole("button", { name: "Setup and cleanup times" }));
+  const setup = screen.getByRole("spinbutton", { name: "Setup minutes" });
+  await userEvent.clear(setup);
+  await userEvent.type(setup, "45{Enter}");
+  expect(DateRooms.set).toHaveBeenCalledWith(7, "2026-12-01", { roomId: 1, setupMinutes: 45, teardownMinutes: 0 });
+  expect(onSubmit).not.toHaveBeenCalled();
+});
+
+it("announces the too-small warning in the status region", async () => {
+  vi.mocked(DateRooms.set).mockResolvedValue({ booking: booked({ roomId: 3, roomName: "Closet", tooSmall: true }) });
+  show();
+  await userEvent.selectOptions(await select(), "3");
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("This room seats fewer people than this date allows."));
+  expect(screen.getAllByRole("status")).toHaveLength(1);
 });
 
 it("shows nothing, and asks for no rooms, while rooms are off", async () => {
@@ -177,6 +208,13 @@ it("shows nothing, and asks for no rooms, while rooms are off", async () => {
   await waitFor(() => expect(Site.get).toHaveBeenCalled());
   expect(container).toBeEmptyDOMElement();
   expect(DateRooms.list).not.toHaveBeenCalled();
+});
+
+it("shows nothing, not an error, when the site settings fail to load", async () => {
+  vi.mocked(Site.get).mockRejectedValue(new ApiError(500, "down", { code: "server_error" }));
+  const { container } = render(<RoomField eventId={7} date="2026-12-01" idPrefix="t" />);
+  await waitFor(() => expect(Site.get).toHaveBeenCalled());
+  expect(container).toBeEmptyDOMElement();
 });
 
 it("offers a retry when the rooms fail to load", async () => {

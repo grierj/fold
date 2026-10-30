@@ -69,6 +69,7 @@ var errorCodes = map[string]string{
 	"room name is required":                                       "missing_field",
 	"that room is already booked then":                            "room_busy",
 	"only an admin can book this room":                            "room_restricted",
+	"only an admin can change this booking":                       "not_allowed",
 	"the reason must be 500 characters or fewer":                  "too_long",
 	"only an admin can change a booking's setup and cleanup time": "not_allowed",
 	"building is too long":                                        "too_long",

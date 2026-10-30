@@ -229,3 +229,114 @@ func TestRoomBookingMovesWithItsDate(t *testing.T) {
 		t.Fatalf("notice title %q", n.Title)
 	}
 }
+
+// Review cases (M2.1b): admin-only bookings stay admin-only, a failed change
+// keeps the old room, a re-book keeps an admin's padding, and outsiders and
+// cancelled dates are refused.
+func TestRoomBookingGuards(t *testing.T) {
+	f := newBookingFixture(t)
+	var chapel struct {
+		Room roomJSON `json:"room"`
+	}
+	decodeJSON(t, f.admin.do("POST", "/api/v1/admin/rooms", map[string]any{"name": "Chapel"}, true), &chapel)
+
+	// Changing to a busy room fails and keeps the room the date had.
+	f.book(t, f.leader, f.eventA, map[string]any{"roomId": f.hall.ID})
+	f.book(t, f.leader, f.eventB, map[string]any{"roomId": chapel.Room.ID})
+	if code, _ := f.book(t, f.leader, f.eventB, map[string]any{"roomId": f.hall.ID}); code != http.StatusConflict {
+		t.Fatalf("changing B to the busy hall: %d", code)
+	}
+	var b models.RoomBooking
+	f.app.DB.Joins("JOIN event_occurrences o ON o.id = room_bookings.occurrence_id").Where("o.event_id = ?", f.eventB.ID).First(&b)
+	if b.RoomID != chapel.Room.ID || b.Status != models.BookingConfirmed {
+		t.Fatalf("B should keep the chapel: %+v", b)
+	}
+
+	// An admin books the restricted nursery for B with 10 minutes' setup. A
+	// leader can't release or replace it; the admin re-booking the same
+	// room keeps the override.
+	if code, body := f.book(t, f.admin, f.eventB, map[string]any{"roomId": f.nursery.ID, "setupMinutes": 10}); code != http.StatusOK || !strings.Contains(body, `"setupMinutes":10`) {
+		t.Fatalf("admin booking the nursery: %d %s", code, body)
+	}
+	if code, _ := f.book(t, f.leader, f.eventB, map[string]any{"roomId": nil}); code != http.StatusForbidden {
+		t.Fatalf("leader releasing the admin's nursery booking: %d", code)
+	}
+	if code, body := f.book(t, f.admin, f.eventB, map[string]any{"roomId": f.nursery.ID}); code != http.StatusOK || !strings.Contains(body, `"setupMinutes":10`) {
+		t.Fatalf("re-booking the same room should keep the override: %d %s", code, body)
+	}
+
+	// A leader of another group can't see or book this event's rooms.
+	strangerUser := newTestUser(t, f.app, "stranger", "password1234", models.RoleMember)
+	stranger := loginAPI(t, f.app, "stranger", "password1234")
+	newTestGroup(t, f.app, strangerUser, "Elsewhere", models.GroupActive)
+	if w := stranger.do("GET", f.path(f.eventA, "/rooms"), nil, false); w.Code != http.StatusForbidden && w.Code != http.StatusNotFound {
+		t.Fatalf("outsider picker: %d", w.Code)
+	}
+	if code, _ := f.book(t, stranger, f.eventA, map[string]any{"roomId": nil}); code != http.StatusForbidden && code != http.StatusNotFound {
+		t.Fatalf("outsider booking: %d", code)
+	}
+	if w := newAPIClient(t, f.app).do("GET", f.path(f.eventA, "/rooms"), nil, false); w.Code != http.StatusUnauthorized {
+		t.Fatalf("signed out picker: %d", w.Code)
+	}
+
+	// A cancelled date takes no booking.
+	f.leader.do("POST", "/api/v1/events/"+itoa(f.eventA.ID)+"/cancel", map[string]any{"date": feedDate(f.startOn)}, true)
+	if code, _ := f.book(t, f.leader, f.eventA, map[string]any{"roomId": chapel.Room.ID}); code != http.StatusNotFound {
+		t.Fatalf("booking a cancelled date: %d", code)
+	}
+}
+
+// A series edit moves a booked date's room with it, loses it to a conflict
+// (an admin's double-booking counts), and frees it when the date is dropped.
+// The leader who made the edit is told about the lost room too.
+func TestRoomBookingSeriesEdits(t *testing.T) {
+	f := newBookingFixture(t)
+	series := createFeedEvent(t, f.leader, f.group, "Weekly", f.startOn.AddDate(0, 0, 1), "FREQ=WEEKLY;COUNT=3")
+	second := feedDate(f.startOn.AddDate(0, 0, 8))
+	bookDate := func(c *apiClient, date string, body map[string]any) int {
+		return c.do("PUT", "/api/v1/events/"+itoa(series.ID)+"/dates/"+date+"/room", body, true).Code
+	}
+	if code := bookDate(f.leader, second, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
+		t.Fatalf("book the second date: %d", code)
+	}
+	booking := func() models.RoomBooking {
+		var b models.RoomBooking
+		f.app.DB.Joins("JOIN event_occurrences o ON o.id = room_bookings.occurrence_id").
+			Where("o.event_id = ? AND o.original_date = ?", series.ID, second).First(&b)
+		return b
+	}
+
+	// Move the series an hour later: the booking follows.
+	later := f.startOn.AddDate(0, 0, 1).Add(time.Hour)
+	if w := f.leader.do("PUT", "/api/v1/events/"+itoa(series.ID), map[string]any{"startsLocal": later.Format("2006-01-02T15:04")}, true); w.Code != http.StatusOK {
+		t.Fatalf("series edit: %d %s", w.Code, w.Body.String())
+	}
+	if b := booking(); b.Status != models.BookingConfirmed || !b.StartsAt.Equal(later.AddDate(0, 0, 7)) {
+		t.Fatalf("booking after the series moved: %+v", b)
+	}
+
+	// An admin double-books the hall at 22:00 on that date; moving the
+	// series onto it loses the room, and the leader who moved it is told.
+	clash := createFeedEvent(t, f.admin, f.group, "Admin night", f.startOn.AddDate(0, 0, 8).Add(3*time.Hour), "")
+	if w := f.admin.do("PUT", "/api/v1/events/"+itoa(clash.ID)+"/dates/"+second+"/room", map[string]any{"roomId": f.hall.ID, "overlapReason": "Shared"}, true); w.Code != http.StatusOK {
+		t.Fatalf("admin booking: %d %s", w.Code, w.Body.String())
+	}
+	onto := f.startOn.AddDate(0, 0, 1).Add(3 * time.Hour)
+	if w := f.leader.do("PUT", "/api/v1/events/"+itoa(series.ID), map[string]any{"startsLocal": onto.Format("2006-01-02T15:04")}, true); w.Code != http.StatusOK {
+		t.Fatalf("series edit onto the double-booking: %d %s", w.Code, w.Body.String())
+	}
+	if b := booking(); b.Status != models.BookingRequested {
+		t.Fatalf("moving onto a double-booking should lose the room: %+v", b)
+	}
+	if contactCount(t, f.app, &models.Notification{}, "user_id = ? AND kind = ?", f.leaderUser.ID, notify.RoomLost) != 1 {
+		t.Fatal("the leader who moved the series should be told the room was lost")
+	}
+
+	// Dropping the date from the series frees its booking.
+	if w := f.leader.do("PUT", "/api/v1/events/"+itoa(series.ID), map[string]any{"recurrenceRule": "FREQ=WEEKLY;COUNT=1"}, true); w.Code != http.StatusOK {
+		t.Fatalf("shorten series: %d %s", w.Code, w.Body.String())
+	}
+	if n := contactCount(t, f.app, &models.RoomBooking{}, "occurrence_id IN (SELECT id FROM event_occurrences WHERE event_id = ?)", series.ID); n != 0 {
+		t.Fatalf("%d bookings left on dropped dates", n)
+	}
+}

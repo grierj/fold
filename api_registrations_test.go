@@ -1720,7 +1720,9 @@ func TestHouseholdDeclineStormDoesNotDeadlock(t *testing.T) {
 
 // Read budgets for the hot registration paths (Whittler, PR 110). Master
 // before slice 2: solo PUT 8, GET /events/:id 14. Household facts add a
-// bounded, per-request set; this keeps them from growing per list.
+// bounded, per-request set; this keeps them from growing per list. Rooms
+// (M2.1b) add one read per list of dates for the booked room, whether rooms
+// are on or off.
 func TestRegistrationReadBudget(t *testing.T) {
 	app := testApp(t)
 	admin, gid := openGroup(t, app, "Reads")
@@ -1739,8 +1741,8 @@ func TestRegistrationReadBudget(t *testing.T) {
 	}
 	n = 0
 	apiDo(t, c, "GET", "/api/v1/events/"+itoa(eventID), nil, http.StatusOK)
-	if n > 22 {
-		t.Fatalf("holder GET read %d times, budget 22", n)
+	if n > 23 {
+		t.Fatalf("holder GET read %d times, budget 23", n)
 	}
 	_ = newTestUser(t, app, "solo", "password1234", "member")
 	solo := loginAPI(t, app, "solo", "password1234")
@@ -1751,13 +1753,13 @@ func TestRegistrationReadBudget(t *testing.T) {
 	}
 	n = 0
 	apiDo(t, solo, "GET", "/api/v1/events/"+itoa(eventID), nil, http.StatusOK)
-	if n > 20 {
-		t.Fatalf("member GET read %d times, budget 20", n)
+	if n > 21 {
+		t.Fatalf("member GET read %d times, budget 21", n)
 	}
 	n = 0
 	apiDo(t, admin, "GET", "/api/v1/events/"+itoa(eventID), nil, http.StatusOK)
-	if n > 21 {
-		t.Fatalf("admin GET read %d times, budget 21", n)
+	if n > 22 {
+		t.Fatalf("admin GET read %d times, budget 22", n)
 	}
 	// GET /me/household (Whittler, PR 111): reads don't grow per person or
 	// per account (18 before batching, 9 before slice 3; the pending-approval

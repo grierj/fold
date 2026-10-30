@@ -35,6 +35,29 @@ const maxOverlapReason = 500
 // table's CHECK compares padded_range against the same formula.
 const paddedRangeSQL = `tstzrange(?::timestamptz - make_interval(mins => ?::int), ?::timestamptz + make_interval(mins => ?::int), '[)')`
 
+// heldByOverlap reports an admin's double-booking holding a room for the
+// given padded time. Double-bookings sit outside the exclusion constraint,
+// so booking and moving check for them here: they count as busy for
+// everyone else (9.2).
+func heldByOverlap(tx *gorm.DB, roomID, occurrenceID uint, start, end time.Time, setup, teardown int) (bool, error) {
+	var held bool
+	err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM room_bookings WHERE room_id = ? AND status = ? AND allow_overlap
+		AND occurrence_id <> ? AND padded_range && `+paddedRangeSQL+`)`,
+		roomID, models.BookingConfirmed, occurrenceID, start, setup, end, teardown).Scan(&held).Error
+	return held, err
+}
+
+// lockRoom serializes booking writes per room, so the double-booking check
+// above can't race another booking of the same room. Callers lock the
+// occurrence first and the room second, so the order never inverts.
+func lockRoom(tx *gorm.DB, roomID uint) (*models.Room, error) {
+	var r models.Room
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&r, roomID).Error; err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // isOverlap reports the exclusion constraint refusing a booking.
 func isOverlap(err error) bool {
 	var pgErr *pgconn.PgError
@@ -102,9 +125,9 @@ func seatsWanted(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence) int
 	if cap := effectiveCapacity(ev, occ); cap != nil {
 		want = *cap
 	}
-	var going int
-	db.Raw(`SELECT COALESCE(SUM(1 + guest_count), 0) FROM registrations WHERE occurrence_id = ? AND status = ?`,
-		occ.ID, models.RegGoing).Scan(&going)
+	// The same in-person count capacity uses: listed accounts only, remote
+	// attendees aside. A failed count leaves just the cap; it's a warning.
+	going, _ := seatsUsed(db, occ.ID)
 	if going > want {
 		want = going
 	}
@@ -219,13 +242,32 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		}
 	}
 	errRoomGone, errRestricted, errBusy := errors.New("room gone"), errors.New("restricted"), errors.New("busy")
+	errDateGone, errAdminBooking := errors.New("date gone"), errors.New("admin booking")
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if _, err := lockOccurrence(tx, occ.ID); err != nil {
+		// Book against the date as it is under the lock: a reschedule or a
+		// cancel that committed since it was read must win.
+		locked, err := lockOccurrence(tx, occ.ID)
+		if err != nil {
 			return err
 		}
+		if locked.Status != models.OccurrenceScheduled {
+			return errDateGone
+		}
+		occ = locked
 		var old models.RoomBooking
 		hadOld := tx.Where("occurrence_id = ?", occ.ID).First(&old).Error == nil
 		if hadOld {
+			// A booking only an admin could make (a restricted room, or a
+			// double-booking) is only an admin's to change or release.
+			if !policy.CanDoubleBookRoom(me) {
+				var oldRoom models.Room
+				if err := tx.First(&oldRoom, old.RoomID).Error; err != nil {
+					return err
+				}
+				if oldRoom.Restricted || old.AllowOverlap {
+					return errAdminBooking
+				}
+			}
 			if err := tx.Delete(&old).Error; err != nil {
 				return err
 			}
@@ -237,17 +279,23 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 			return audit.Write(tx, audit.Entry{Actor: &user.ID, Action: audit.RoomBookingReleased, TargetType: "occurrence", TargetID: occ.ID,
 				Meta: map[string]any{"roomId": old.RoomID, "eventId": ev.ID, "date": occ.OriginalDate}, IP: c.ClientIP()})
 		}
-		var room models.Room
-		if err := tx.Clauses(clause.Locking{Strength: "SHARE"}).Where("id = ? AND active", *body.RoomID).First(&room).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return errRoomGone
-			}
+		lockedRoom, err := lockRoom(tx, *body.RoomID)
+		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && !lockedRoom.Active) {
+			return errRoomGone
+		}
+		if err != nil {
 			return err
 		}
+		room := *lockedRoom
 		if !policy.CanBookRoom(me, true, room.Restricted) {
 			return errRestricted
 		}
+		// The room's usual padding, unless this is the same room again: then
+		// an admin's override on the booking is kept (DEC-101).
 		setup, teardown := room.DefaultSetupMinutes, room.DefaultTeardownMinutes
+		if hadOld && old.RoomID == room.ID {
+			setup, teardown = old.SetupMinutes, old.TeardownMinutes
+		}
 		if body.SetupMinutes != nil {
 			setup = *body.SetupMinutes
 		}
@@ -261,18 +309,14 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 				occ.StartsAt, setup, occ.EndsAt, teardown,
 				models.BookingConfirmed, overlap, why, user.ID).Error
 		}
-		// An admin's double-booking sits outside the exclusion constraint,
-		// so it is checked here too: no one books over it without a reason.
-		var heldByOverlap bool
-		if err := tx.Raw(`SELECT EXISTS (SELECT 1 FROM room_bookings WHERE room_id = ? AND status = ? AND allow_overlap
-			AND occurrence_id <> ? AND padded_range && `+paddedRangeSQL+`)`,
-			room.ID, models.BookingConfirmed, occ.ID, occ.StartsAt, setup, occ.EndsAt, teardown).Scan(&heldByOverlap).Error; err != nil {
+		held, err := heldByOverlap(tx, room.ID, occ.ID, occ.StartsAt, occ.EndsAt, setup, teardown)
+		if err != nil {
 			return err
 		}
 		tx.SavePoint("book")
 		overlap := false
-		err := errBusy
-		if !heldByOverlap {
+		err = errBusy
+		if !held {
 			err = insert(false, "")
 		}
 		if err != nil {
@@ -302,6 +346,12 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		return audit.Write(tx, audit.Entry{Actor: &user.ID, Action: action, TargetType: "occurrence", TargetID: occ.ID, Meta: meta, IP: c.ClientIP()})
 	})
 	switch {
+	case errors.Is(err, errDateGone):
+		jsonError(c, http.StatusNotFound, "that date is not on this event")
+		return
+	case errors.Is(err, errAdminBooking):
+		jsonError(c, http.StatusForbidden, "only an admin can change this booking")
+		return
 	case errors.Is(err, errRoomGone):
 		jsonError(c, http.StatusNotFound, "room not found")
 		return
@@ -336,7 +386,7 @@ func releaseRoomBookings(tx *gorm.DB, occurrenceIDs []uint) error {
 // same transaction (5.3, 9.2). A confirmed booking that now conflicts stays
 // as requested, holding nothing, and the event's leaders or hosts get one
 // notice for all its lost dates. Notification ids to email are returned.
-func moveRoomBookings(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, actor uint) ([]uint, error) {
+func moveRoomBookings(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint) ([]uint, error) {
 	if len(occurrenceIDs) == 0 {
 		return nil, nil
 	}
@@ -357,13 +407,33 @@ func moveRoomBookings(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, actor
 			return tx.Exec(`UPDATE room_bookings SET starts_at = ?, ends_at = ?, padded_range = `+paddedRangeSQL+`, status = ?, updated_at = now() WHERE id = ?`,
 				occ.StartsAt, occ.EndsAt, occ.StartsAt, b.SetupMinutes, occ.EndsAt, b.TeardownMinutes, status, b.ID).Error
 		}
-		savepoint := fmt.Sprintf("move%d", b.ID)
-		tx.SavePoint(savepoint)
-		if err := move(b.Status); err != nil {
-			if !isOverlap(err) {
+		if _, err := lockRoom(tx, b.RoomID); err != nil {
+			return nil, err
+		}
+		// A confirmed booking keeps its room only if neither a confirmed
+		// booking (the constraint) nor an admin's double-booking holds it
+		// at the new time. An admin's own double-booking moves as it is:
+		// the admin chose to share that room.
+		held := false
+		if b.Status == models.BookingConfirmed && !b.AllowOverlap {
+			var err error
+			if held, err = heldByOverlap(tx, b.RoomID, occ.ID, occ.StartsAt, occ.EndsAt, b.SetupMinutes, b.TeardownMinutes); err != nil {
 				return nil, err
 			}
-			tx.RollbackTo(savepoint)
+		}
+		savepoint := fmt.Sprintf("move%d", b.ID)
+		tx.SavePoint(savepoint)
+		var err error = errLostRoom
+		if !held {
+			err = move(b.Status)
+		}
+		if err != nil {
+			if err != errLostRoom && !isOverlap(err) {
+				return nil, err
+			}
+			if err != errLostRoom {
+				tx.RollbackTo(savepoint)
+			}
 			if err := move(models.BookingRequested); err != nil {
 				return nil, err
 			}
@@ -373,12 +443,16 @@ func moveRoomBookings(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, actor
 	if len(lost) == 0 {
 		return nil, nil
 	}
-	return notifyRoomLost(tx, ev, lost, actor)
+	return notifyRoomLost(tx, ev, lost)
 }
 
+var errLostRoom = errors.New("room held at the new time")
+
 // notifyRoomLost tells the event's leaders (or a church-wide event's hosts)
-// which dates lost their room, in one notice (9.2).
-func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string, actor uint) ([]uint, error) {
+// which dates lost their room, in one notice (9.2). The person who moved
+// the date is told too (no Actor): the move saved, and a lost room is easy
+// to miss on a page that no longer shows it.
+func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string) ([]uint, error) {
 	var to []uint
 	if ev.GroupID != nil {
 		to = leaderIDs(tx, *ev.GroupID)
@@ -390,7 +464,7 @@ func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string, actor uint) (
 		change = fmt.Sprintf("%d dates", len(dates))
 	}
 	return notify.Send(tx, notify.Msg{
-		Kind: notify.RoomLost, To: to, Actor: &actor,
+		Kind: notify.RoomLost, To: to,
 		SubjectType: "event", SubjectID: ev.ID, Link: fmt.Sprintf("/events/%d", ev.ID),
 		Vars: notify.Vars{Event: ev.Title, Change: change}, // group-ok: the event's own leaders and hosts
 		Data: map[string]any{"eventId": ev.ID, "dates": dates},
@@ -398,10 +472,12 @@ func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string, actor uint) (
 }
 
 // occurrenceRooms maps dates to their confirmed booking's room, for showing
-// the room as the place (9.2). Empty while rooms are off.
+// the room as the place (9.2). Empty while rooms are off. One read: the
+// rooms switch is checked inside the same query, so a list of dates pays
+// exactly one read for rooms whether they are on or off.
 func (a *App) occurrenceRooms(db *gorm.DB, occurrenceIDs []uint) map[uint]*occurrenceRoomJSON {
 	out := map[uint]*occurrenceRoomJSON{}
-	if len(occurrenceIDs) == 0 || !a.roomsEnabled() {
+	if len(occurrenceIDs) == 0 {
 		return out
 	}
 	var rows []struct {
@@ -411,7 +487,8 @@ func (a *App) occurrenceRooms(db *gorm.DB, occurrenceIDs []uint) map[uint]*occur
 		Building     string
 	}
 	db.Raw(`SELECT b.occurrence_id, r.id, r.name, r.building FROM room_bookings b JOIN rooms r ON r.id = b.room_id
-		WHERE b.occurrence_id IN ? AND b.status = ?`, occurrenceIDs, models.BookingConfirmed).Scan(&rows)
+		WHERE b.occurrence_id IN ? AND b.status = ?
+		AND EXISTS (SELECT 1 FROM settings WHERE key = ? AND value = 'true')`, occurrenceIDs, models.BookingConfirmed, settingRoomsEnabled).Scan(&rows)
 	for _, r := range rows {
 		out[r.OccurrenceID] = &occurrenceRoomJSON{ID: r.ID, Name: r.Name, Building: r.Building}
 	}

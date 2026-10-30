@@ -953,12 +953,13 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if err != nil {
 			return err
 		}
-		// Cancelled dates free their rooms; moved and restored dates take
-		// their bookings along (9.2).
+		// Cancelled dates free their rooms; moved dates take their bookings
+		// along (9.2). A restored date was series-cancelled, which freed its
+		// room, so it comes back without one.
 		if err := releaseRoomBookings(tx, cancelled); err != nil {
 			return err
 		}
-		ids, err = moveRoomBookings(tx, &locked, append(append([]uint{}, moved...), restored...), me.ID)
+		ids, err = moveRoomBookings(tx, &locked, moved)
 		emailed = append(emailed, ids...)
 		if err != nil {
 			return err
@@ -1364,7 +1365,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		placeChanged := newPlace != oldPlace
 		if timeChanged {
 			// The date's room moves with it, or is lost to a conflict (9.2).
-			ids, err := moveRoomBookings(tx, ev, []uint{o.ID}, me.ID)
+			ids, err := moveRoomBookings(tx, ev, []uint{o.ID})
 			emailed = append(emailed, ids...)
 			if err != nil {
 				return err
@@ -1401,6 +1402,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 			emailed = append(emailed, ids...)
 		}
 		inst = occurrenceToJSON(ev, &o, groupLoc)
+		inst.Room = a.occurrenceRooms(a.DB, []uint{o.ID})[o.ID]
 		applyVideoReveal(&inst, ev, false, true) // managers see the link
 		inst.Visibility = policy.EffectiveVisibility(ev.Visibility, o.VisibilityOverride)
 		inst.LeaderOpened = ev.LeaderOpened

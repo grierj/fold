@@ -229,6 +229,18 @@ describe("SeriesEditor form layout (DEC-95)", () => {
       expect(DateRooms.list).not.toHaveBeenCalled();
     });
 
+    it("points a series at Edit this date, only while rooms are on", async () => {
+      roomsOn();
+      const series = { ...single, recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" };
+      const { unmount } = render(<SeriesEditor series={series} idPrefix="room-hint" onSaved={() => {}} />);
+      expect(await screen.findByText("To book a room, use Edit this date on a date's card.")).toBeInTheDocument();
+      unmount();
+      vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+      render(<SeriesEditor series={series} idPrefix="room-hint-off" onSaved={() => {}} />);
+      await screen.findByRole("button", { name: "Save series" });
+      expect(screen.queryByText(/To book a room/)).not.toBeInTheDocument();
+    });
+
     it("is hidden when rooms are off", async () => {
       vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
       vi.mocked(DateRooms.list).mockClear();
