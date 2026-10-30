@@ -22,14 +22,19 @@ export function Join() {
       .finally(() => setLoaded(true));
   }, []);
 
+  // "Fold" is the default name, not a church's (the header treats it the same way).
+  const church = site && site !== "Fold" ? site : "";
+
   return (
     <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-bold mb-2">Join {site || "Fold"}</h1>
-      <p className="text-text-muted mb-6 text-sm">
-        Ask for an account below. An admin reviews every request, and we email you the
-        decision — approved requests get a link to set a password. Already have an
-        account?{" "}
-        <Link to="/login" className="inline-flex min-h-11 items-center text-primary font-semibold">Log in</Link>.
+      <h1 className="text-3xl font-bold mb-2">{church ? `Request an account at ${church}` : "Request an account"}</h1>
+      <ol className="list-decimal pl-5 mb-4 space-y-1 text-sm text-text-muted">
+        <li>Send your request.</li>
+        <li>An admin reviews it.</li>
+        <li>We email you a link to set your password.</li>
+      </ol>
+      <p className="text-sm text-text-muted mb-6">
+        Already have an account? <Link to="/login" className="text-link">Log in</Link>
       </p>
       {loaded && mode === "off" ? (
         <div className="bg-surface rounded-lg border border-border p-6 text-sm text-text-muted">

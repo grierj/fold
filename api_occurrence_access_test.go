@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -689,5 +690,72 @@ func TestOccurrenceDateChurchWideOrganizer(t *testing.T) {
 	decodeJSON(t, w, &body)
 	if row := body.Occurrence; row.HostedBy != f.app.siteName() || row.GroupID != nil || row.GroupName != "" {
 		t.Fatalf("church-wide organizer: %+v", row)
+	}
+}
+
+// The one-date download (DEC-93) is the date page in another format: the same
+// 404s, the same video rule, and the feeds' UID.
+func TestOccurrenceCalendarFollowsTheDatePage(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	path := dateReadPath(f.event.ID, f.dates[1].OriginalDate) + "/calendar.ics"
+	for name, client := range map[string]*apiClient{"stranger": f.stranger, "signed out": newAPIClient(t, f.app)} {
+		if w := client.do("GET", path, nil, false); w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "VCALENDAR") {
+			t.Fatalf("%s: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	if w := f.client.do("GET", dateReadPath(f.event.ID, f.dates[0].OriginalDate)+"/calendar.ics", nil, false); w.Code != http.StatusNotFound {
+		t.Fatalf("another date of the hidden series: %d", w.Code)
+	}
+
+	w := f.client.do("GET", path, nil, false)
+	body := w.Body.String()
+	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/calendar") ||
+		w.Header().Get("Content-Disposition") != `attachment; filename="event-`+f.dates[1].OriginalDate+`.ics"` {
+		t.Fatalf("download: %d %v", w.Code, w.Header())
+	}
+	for _, want := range []string{"BEGIN:VEVENT", "SUMMARY:Invited date title", "LOCATION:Invited date place", "private-video", "STATUS:CONFIRMED"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("going download lacks %q:\n%s", want, body)
+		}
+	}
+	for _, leak := range []string{"Hidden series title", "Hidden group identity", "X-WR-CALNAME"} {
+		if strings.Contains(body, leak) {
+			t.Fatalf("download leaks %q:\n%s", leak, body)
+		}
+	}
+	feed := string(events.RenderFeed(mustBuildFeed(t, f.app, f.recipient, feedOptions{personal: true, scope: models.CalendarFeedAll}, time.Now().UTC())))
+	uid := regexp.MustCompile(`UID:[^\r\n]+`).FindString(body)
+	if uid == "" || !strings.Contains(feed, uid) {
+		t.Fatalf("UID %q differs from the personal feed:\n%s", uid, feed)
+	}
+
+	if err := f.app.DB.Model(&models.Registration{}).Where("id = ?", f.access.RegistrationID).Update("status", models.RegMaybe).Error; err != nil {
+		t.Fatal(err)
+	}
+	body = f.client.do("GET", path, nil, false).Body.String()
+	if strings.Contains(body, "private-video") || !strings.Contains(body, "STATUS:TENTATIVE") {
+		t.Fatalf("maybe download:\n%s", body)
+	}
+}
+
+func TestOccurrenceCalendarPublicDateSignedOut(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	w := f.admin.do("POST", "/api/v1/events", map[string]any{
+		"title": "Church picnic", "startsLocal": feedStart(10).Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC",
+	}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create church event: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	var date models.EventOccurrence
+	if err := f.app.DB.Where("event_id = ?", created.Event.ID).First(&date).Error; err != nil {
+		t.Fatal(err)
+	}
+	w = newAPIClient(t, f.app).do("GET", dateReadPath(created.Event.ID, date.OriginalDate)+"/calendar.ics", nil, false)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "SUMMARY:Church picnic") || strings.Contains(w.Body.String(), "STATUS:") {
+		t.Fatalf("public date: %d %s", w.Code, w.Body.String())
 	}
 }

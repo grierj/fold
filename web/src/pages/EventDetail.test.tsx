@@ -43,6 +43,17 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+// A series date has no whole-series buttons (DEC-92): its answer opens the
+// scope dialog, and "All future dates" answers every date.
+async function answerAll(group: HTMLElement, name: "Going" | "Maybe" | "Can't go") {
+  await userEvent.click(within(group).getByRole("button", { name }));
+  await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
+}
+async function chooseDatesForMe(form: HTMLElement) {
+  await userEvent.click(within(form).getByRole("button", { name: "Choose dates for my answer" }));
+  await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
+}
+
 async function editDate() {
   renderPage();
   await userEvent.click(await screen.findByRole("button", { name: "More for 2026-12-01" }));
@@ -111,11 +122,13 @@ it("serializes sibling series actions synchronously and releases after rejection
   vi.mocked(Events.registerSeries).mockReturnValue(pending.promise);
 
   renderPage();
-  const seriesButtons = await screen.findAllByRole("button", { name: "Maybe for all" });
-  const answerGroups = screen.getAllByRole("group", { name: "Your answer" });
+  const answerGroups = await screen.findAllByRole("group", { name: "Your answer" });
+  await userEvent.click(within(answerGroups[0]).getByRole("button", { name: "Maybe" }));
+  await userEvent.click(within(answerGroups[1]).getByRole("button", { name: "Maybe" }));
+  const allFuture = screen.getAllByRole("button", { name: "All future dates" });
   await act(() => {
-    seriesButtons[0].click();
-    seriesButtons[1].click();
+    allFuture[0].click();
+    allFuture[1].click();
   });
   expect(Events.registerSeries).toHaveBeenCalledTimes(1);
   expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeDisabled();
@@ -124,17 +137,17 @@ it("serializes sibling series actions synchronously and releases after rejection
   await waitFor(() => expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeEnabled());
 
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-  await userEvent.click(screen.getAllByRole("button", { name: "Can't go to any" })[0]);
+  await answerAll(answerGroups[0], "Can't go");
   expect(confirm).toHaveBeenCalledOnce();
   expect(Events.registerSeries).toHaveBeenCalledTimes(1);
-  expect(screen.getAllByRole("button", { name: "Maybe for all" })[1]).toBeEnabled();
+  expect(within(answerGroups[1]).getByRole("button", { name: "Maybe" })).toBeEnabled();
 
   vi.mocked(Events.registerSeries).mockResolvedValue({
     eventId: 7, scope: "all_future", status: "maybe",
     results: dates.map((row) => ({ occurrenceId: row.id, date: row.date, before: {}, after: { registrationId: row.id + 10, status: "maybe" as const } })),
     refusals: [],
   });
-  await userEvent.click(screen.getAllByRole("button", { name: "Maybe for all" })[1]);
+  await answerAll(answerGroups[1], "Maybe");
   expect(Events.registerSeries).toHaveBeenCalledTimes(2);
 });
 
@@ -156,11 +169,11 @@ it("blocks sibling date and Undo mutations while their requests are pending, the
   await userEvent.click(within(answerGroups[0]).getByRole("button", { name: "Maybe" }));
   await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
   expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeDisabled();
-  expect(screen.getAllByRole("button", { name: "Maybe for all" })[1]).toBeDisabled();
+  expect(within(answerGroups[1]).getByRole("button", { name: "Maybe" })).toBeDisabled();
   await act(async () => datePending.reject(new Error("offline")));
   await waitFor(() => expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeEnabled());
 
-  await userEvent.click(screen.getAllByRole("button", { name: "Maybe for all" })[0]);
+  await answerAll(answerGroups[0], "Maybe");
   const undo = await screen.findByRole("button", { name: "Undo" });
   await userEvent.click(undo);
   expect(within(answerGroups[1]).getByRole("button", { name: "Going" })).toBeDisabled();
@@ -181,9 +194,9 @@ it("clears a sibling card's series Undo after a one-date answer", async () => {
     guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "in_person",
   }, people: [] });
   renderPage();
-  await userEvent.click((await screen.findAllByRole("button", { name: "Maybe for all" }))[0]);
+  const answerGroups = await screen.findAllByRole("group", { name: "Your answer" });
+  await answerAll(answerGroups[0], "Maybe");
   expect(await screen.findByRole("button", { name: "Undo" })).toBeInTheDocument();
-  const answerGroups = screen.getAllByRole("group", { name: "Your answer" });
   await userEvent.click(within(answerGroups[1]).getByRole("button", { name: "Going" }));
   await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
   await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
@@ -217,15 +230,18 @@ it("uses series Apply results before its parent GET and rejects that older GET a
 
   renderPage();
   const cards = await screen.findAllByRole("group", { name: "Your answer" });
-  await userEvent.click(within(cards[0].parentElement!.parentElement!).getByRole("button", { name: "Going to all dates" }));
+  await answerAll(cards[0], "Going");
   await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(2));
   const sibling = within(cards[1].parentElement!.parentElement!);
   expect(sibling.getByRole("radio", { name: "Remote" })).toBeChecked();
   expect(sibling.getByLabelText("Extra guests")).toHaveValue(2);
+  // Childcare is folded into one summary line until changed (DEC-92).
+  expect(sibling.getByText(/Childcare for 2 \(ages 4 and 6\)/)).toBeInTheDocument();
+  await userEvent.click(sibling.getByRole("button", { name: "Change childcare request" }));
   expect(sibling.getByLabelText(/^Children needing childcare/)).toHaveValue("2");
   expect(sibling.getByLabelText(/^Ages/)).toHaveValue("4 and 6");
 
-  await userEvent.click(sibling.getByRole("button", { name: "Save" }));
+  await userEvent.click(sibling.getByRole("button", { name: "Save childcare" }));
   await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
   expect(Events.register).toHaveBeenLastCalledWith(7, {
     status: "going", date: second.date, guestCount: 2, attendanceMode: "remote",
@@ -274,7 +290,7 @@ it("maps series Undo to not answered before its parent GET and cannot stale-save
   const cards = await screen.findAllByRole("group", { name: "Your answer" });
   const first = within(cards[0].parentElement!.parentElement!);
   const sibling = within(cards[1].parentElement!.parentElement!);
-  await userEvent.click(first.getByRole("button", { name: "Going to all dates" }));
+  await answerAll(cards[0], "Going");
   await userEvent.click(await first.findByRole("button", { name: "Undo" }));
   await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
   for (const name of ["Going", "Maybe", "Can't go"]) {
@@ -328,7 +344,7 @@ it("uses series Apply results in household forms while the parent GET is held an
   const sibling = within(forms[1]);
   await userEvent.click(firstForm.getByRole("checkbox", { name: "Mary" }));
   await userEvent.selectOptions(firstForm.getByLabelText("Answer for Mary"), "maybe");
-  await userEvent.click(firstForm.getByRole("button", { name: "Going to all dates" }));
+  await chooseDatesForMe(forms[0]);
   await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(2));
   expect(within(sibling.getByRole("group", { name: "How you will attend" })).getByRole("radio", { name: "Remote" })).toBeChecked();
   expect(sibling.getByLabelText("Extra guests")).toHaveValue(2);
@@ -390,7 +406,7 @@ it("maps series Undo to no answer in household forms before the parent GET and s
   const sibling = within(forms[1]);
   await userEvent.click(first.getByRole("checkbox", { name: "Mary" }));
   await userEvent.selectOptions(first.getByLabelText("Answer for Mary"), "maybe");
-  await userEvent.click(first.getByRole("button", { name: "Going to all dates" }));
+  await chooseDatesForMe(forms[0]);
   await userEvent.click(await first.findByRole("button", { name: "Undo" }));
   await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
   expect(sibling.getByRole("checkbox", { name: "Me" })).not.toBeChecked();
@@ -422,8 +438,9 @@ it("clears protected event data while a terminal Undo refresh is still pending",
     refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
   });
   vi.mocked(Events.undoSeriesRegistration).mockRejectedValue(new ApiError(409, "revoked", { code: "undo_authority_revoked" }));
+  vi.mocked(Households.mine).mockResolvedValue({ household: null });
   renderPage();
-  await userEvent.click(await screen.findByRole("button", { name: "Maybe for all" }));
+  await answerAll(await screen.findByRole("group", { name: "Your answer" }), "Maybe");
   await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
   await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
   expect(screen.queryByRole("heading", { name: "Hybrid study" })).not.toBeInTheDocument();
@@ -447,8 +464,9 @@ it("keeps the newest event refresh when an older quiet request resolves last", a
     refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
   });
   vi.mocked(Events.undoSeriesRegistration).mockRejectedValue(new ApiError(409, "changed", { code: "undo_changed" }));
+  vi.mocked(Households.mine).mockResolvedValue({ household: null });
   renderPage();
-  await userEvent.click(await screen.findByRole("button", { name: "Maybe for all" }));
+  await answerAll(await screen.findByRole("group", { name: "Your answer" }), "Maybe");
   await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
   await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(3));
   expect(screen.queryByRole("heading", { name: "Hybrid study" })).not.toBeInTheDocument();
@@ -477,4 +495,72 @@ it("shares one household fetch across dates and refreshes server state after chi
   await userEvent.click(within(editors[0]).getByRole("button", { name: "Save answers" }));
   await waitFor(() => expect(Events.get).toHaveBeenCalledTimes(before + 2));
   expect(Households.mine).toHaveBeenCalledTimes(householdBefore + 1);
+});
+
+describe("EventDetail when line and date actions (DEC-92, DEC-93)", () => {
+  // Noon UTC keeps the day and weekday the same in any real zone.
+  const noon = { startsAt: "2026-12-01T12:00:00Z", endsAt: "2026-12-01T13:30:00Z", startsLocal: "2026-12-01T12:00", endsLocal: "2026-12-01T13:30", tzid: "UTC" };
+  const series = { ...page.event, ...noon, recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" };
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(Households.mine).mockResolvedValue({ household: null });
+  });
+
+  it("says when under the title, drops the list heading and slims the card for a single date", async () => {
+    vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, ...noon }, occurrences: [occurrence({ ...noon, title: "Hybrid study", location: "Hall" })], canManage: false });
+    renderPage();
+    expect(await screen.findByText(/^Tuesday, Dec 1(, \d{4})? · \d/)).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Upcoming dates" })).not.toBeInTheDocument();
+    // The card does not say the title or place again; only the header does.
+    const card = screen.getByRole("article", { name: "Hybrid study" });
+    expect(within(card).getByRole("heading", { name: "Hybrid study", level: 3 })).toHaveClass("sr-only");
+    expect(within(card).queryByText("Hall")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Hall")).toHaveLength(1);
+    expect(within(card).getByRole("group", { name: "Your answer" })).toBeInTheDocument();
+    // One set of date actions, in the header, linking to the event page.
+    expect(screen.getAllByRole("link", { name: /^Add to calendar/ })).toHaveLength(1);
+    expect(screen.getByRole("link", { name: "Add to calendar" })).toHaveAttribute("href", "/api/v1/events/7/dates/2026-12-01/calendar.ics");
+    expect(within(card).queryByRole("link", { name: /^Add to calendar/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps a single date's leader More menu", async () => {
+    vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, ...noon }, occurrences: [occurrence(noon)], canManage: true });
+    renderPage();
+    expect(await screen.findByRole("button", { name: "More for 2026-12-01" })).toBeInTheDocument();
+  });
+
+  it("shows a date's own title or place when it differs from the header", async () => {
+    vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, ...noon }, occurrences: [occurrence({ ...noon, title: "Hybrid study, special", location: "Chapel" })] });
+    renderPage();
+    const card = await screen.findByRole("article", { name: "Hybrid study, special" });
+    expect(within(card).getByText("Chapel")).toBeInTheDocument();
+  });
+
+  it("describes a series and keeps the list, with actions inside each card", async () => {
+    const dates = [occurrence({ ...noon, recurrenceRule: series.recurrenceRule }), occurrence({ id: 2, date: "2026-12-08", startsAt: "2026-12-08T12:00:00Z", endsAt: "2026-12-08T13:30:00Z", recurrenceRule: series.recurrenceRule, tzid: "UTC" })];
+    vi.mocked(Events.get).mockResolvedValue({ ...page, event: series, occurrences: dates, canManage: false });
+    renderPage();
+    expect(await screen.findByText(/^Every Tuesday · .+ · next Dec 1/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Upcoming dates" })).toBeInTheDocument();
+    const links = screen.getAllByRole("link", { name: /^Add to calendar/ });
+    expect(links.map((l) => l.getAttribute("href"))).toEqual([
+      "/api/v1/events/7/dates/2026-12-01/calendar.ics",
+      "/api/v1/events/7/dates/2026-12-08/calendar.ics",
+    ]);
+    for (const link of links) expect(link.closest("article")).not.toBeNull();
+  });
+
+  it("keeps the list for an event with no recurrence rule but several dates", async () => {
+    vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, ...noon }, occurrences: [occurrence(noon), occurrence({ id: 2, date: "2026-12-08", startsAt: "2026-12-08T12:00:00Z", endsAt: "2026-12-08T13:00:00Z", tzid: "UTC" })] });
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Upcoming dates" })).toBeInTheDocument();
+  });
+
+  it("calls a church-wide event church-wide", async () => {
+    vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, ...noon, churchWide: true, hostedBy: "Fold" } });
+    renderPage();
+    expect(await screen.findByText("Church-wide event")).toBeInTheDocument();
+    expect(screen.queryByText(/Hosted by/)).not.toBeInTheDocument();
+  });
 });

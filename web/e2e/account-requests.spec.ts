@@ -22,10 +22,10 @@ async function markAllRead(page: import("@playwright/test").Page) {
 
 test("join page: age gate, self wording, and a stored request", async ({ page }) => {
   await page.goto("/");
-  const joinLink = page.locator("header").getByRole("link", { name: "Join", exact: true });
+  const joinLink = page.locator("header").getByRole("link", { name: "Sign up", exact: true });
   await expect(joinLink).toBeVisible();
   await joinLink.click();
-  await expect(page.getByRole("heading", { name: /Join/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Request an account/ })).toBeVisible();
   await expect(page.getByText("This is the address you will sign in with.")).toBeVisible();
 
   // Under 13: the household explanation replaces the submit button.

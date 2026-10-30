@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import type { GroupSummary } from "../types";
 import { focalPosition } from "../lib/image";
-import { formatWhen } from "../lib/when";
+import { formatNextMeeting } from "../lib/when";
 import { coverSrc } from "../lib/covers";
 import { CalendarIcon } from "./icons";
 import { Chip } from "./ui/Chip";
@@ -20,6 +20,7 @@ export function GroupCard({
   selectedTags?: string[];
   headingLevel?: 2 | 3;
 }) {
+  const next = group.nextEventAt ? formatNextMeeting(group.nextEventAt) : null;
   const Heading = headingLevel === 2 ? "h2" : "h3";
   const selectedLower = selectedTags.map((t) => t.toLowerCase());
   const isSelected = (t: string) => selectedLower.includes(t.toLowerCase());
@@ -86,9 +87,15 @@ export function GroupCard({
             {group.memberCount === 1 ? "member" : "members"}
             {group.leaderName ? ` · Organized by ${group.leaderName}` : ""}
           </div>
-          <div className={group.nextEventAt ? "text-primary-hover font-medium" : "text-text-muted"}>
-            {group.nextEventAt ? (
-              formatWhen(group.nextEventAt)
+          <div className={next?.soon ? "text-success-on-subtle font-semibold" : next ? "text-primary-hover font-medium" : "text-text-muted"}>
+            {next ? (
+              next.soon ? (
+                // Today or Tonight: the word carries the meaning, the dot only decorates (DEC-99).
+                <span className="inline-flex items-center gap-1.5">
+                  <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-success" />
+                  {next.text}
+                </span>
+              ) : next.text
             ) : (
               <span className="inline-flex items-center gap-1">
                 <CalendarIcon className="h-4 w-4" />

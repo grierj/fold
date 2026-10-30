@@ -6,9 +6,11 @@ import { ERROR_COPY, errorCode, errorText } from "../lib/errors";
 import { ApiError } from "../api";
 import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
+import { useSiteName } from "../lib/useSiteName";
 
 export function Login() {
   const { login, user } = useAuth();
+  const site = useSiteName();
   const navigate = useNavigate();
   const location = useLocation();
   const [email, setEmail] = useState("");
@@ -46,7 +48,8 @@ export function Login() {
 
   return (
     <div className="max-w-md mx-auto px-4 py-12">
-      <h1 className="text-3xl font-bold mb-6">Log in to Fold</h1>
+      {/* The church's name, as the header shows it ("Fold" when it has none); plain "Log in" until it loads. */}
+      <h1 className="text-3xl font-bold mb-6">{site === undefined ? "Log in" : `Log in to ${site || "Fold"}`}</h1>
       <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
         {error && (waiting
           ? <p role="status" className="rounded-md border border-border bg-sunken p-3 text-text">{error}</p>
@@ -81,7 +84,7 @@ export function Login() {
       {waiting && <ButtonLink variant="secondary" to="/calendar" layout="mt-4 w-full">Browse public events</ButtonLink>}
       <p className="text-sm text-text-muted mt-4 text-center">
         New here?{" "}
-        <Link to="/join" className="inline-flex min-h-11 items-center text-primary font-semibold">
+        <Link to="/join" className="text-link">
           Request an account
         </Link>{" "}
         — an admin reviews every request.

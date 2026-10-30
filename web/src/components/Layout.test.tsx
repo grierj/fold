@@ -23,8 +23,22 @@ it("allows the church name to wrap and keeps signed-out controls on one line", a
   expect(screen.getAllByText(/powered by Fold/i)).toHaveLength(1);
   const nav = screen.getByRole("navigation", { name: "Main" });
   expect(within(nav).getByRole("link", { name: "Log in" })).toHaveClass("whitespace-nowrap");
-  expect(within(nav).getByRole("link", { name: "Join" })).toHaveClass("whitespace-nowrap");
+  expect(within(nav).getByRole("link", { name: "Sign up" })).toHaveClass("whitespace-nowrap");
   expect(within(nav).getByRole("link", { name: "Calendar" }).parentElement).toHaveClass("hidden", "sm:block");
+});
+
+it("turns the header's Log in into a plain link on the sign-in pages", async () => {
+  render(<MemoryRouter initialEntries={["/login"]}><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
+  await screen.findByText("Grace Community Church");
+  const login = within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Log in" });
+  expect(login).not.toHaveClass("btn-primary");
+  expect(login).not.toHaveClass("btn-secondary");
+});
+
+it("keeps Log in a solid button elsewhere", async () => {
+  render(<MemoryRouter initialEntries={["/calendar"]}><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
+  await screen.findByText("Grace Community Church");
+  expect(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Log in" })).toHaveClass("btn-primary");
 });
 
 it("keeps scroll offsets in sync with a wrapping header and cleans up", async () => {
@@ -64,13 +78,13 @@ it("moves keyboard focus into main when the skip link is activated", async () =>
   expect(main.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
 });
 
-it("uses a labelled icon-only phone action so the church name gets the space", async () => {
+it("uses a labelled phone pill so the church name keeps its space", async () => {
   auth.mockReturnValue({ user: { id: 1, name: "Sam", displayName: "Sam" }, loading: false, logout: vi.fn(), isAdmin: false });
   render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
   await screen.findByText("Grace Community Church");
-  const actions = screen.getAllByRole("link", { name: "Start a group" });
+  const actions = screen.getAllByRole("link", { name: "New group" });
   const phone = actions.find((a) => a.classList.contains("sm:hidden"));
   expect(phone).toBeDefined();
-  expect(phone).toHaveClass("min-h-11", "min-w-11");
-  expect(phone?.textContent).toBe("");
+  expect(phone).toHaveClass("min-h-11", "whitespace-nowrap");
+  expect(phone).toHaveTextContent("New group");
 });

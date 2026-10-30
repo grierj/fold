@@ -49,6 +49,7 @@ function EventRow({
   canManage,
   showDescription,
   moreDates,
+  totalKnown,
   loggedIn,
   onRsvp,
   people,
@@ -65,7 +66,9 @@ function EventRow({
   canManage: boolean;
   showDescription: boolean;
   // A series shows its next date only, plus a link to the rest (DEC-63).
+  // moreDates counts the loaded rest; totalKnown says the loaded dates are all of them.
   moreDates: number;
+  totalKnown: boolean;
   loggedIn: boolean;
   onRsvp: () => void;
   people: HouseholdPerson[];
@@ -112,11 +115,6 @@ function EventRow({
         {showDescription && instance.description && <p className="text-sm text-text-muted whitespace-pre-wrap">{instance.description}</p>}
         {instance.overridden && <div className="text-sm text-text-muted">This date was edited on its own, so series changes leave it alone.</div>}
         <Attendance instance={instance} />
-        {moreDates > 0 && (
-          <Link to={`/events/${instance.eventId}`} className="inline-flex min-h-11 items-center text-sm font-medium text-primary">
-            {moreDates} more {moreDates === 1 ? "date" : "dates"} loaded
-          </Link>
-        )}
         {loggedIn && (
           <div className="mt-2">
             <RsvpButtons instance={instance} people={people} onChange={onRsvp} seriesFeedback={seriesFeedback}
@@ -127,6 +125,13 @@ function EventRow({
           <div className="mt-2">
             <GuestRegistrationForm instance={instance} />
           </div>
+        )}
+        {/* Below the answer controls (DEC-99). "See all N" only when the page holds every
+            date; a truncated list or an open-ended series says "See more dates". */}
+        {moreDates > 0 && (
+          <Link to={`/events/${instance.eventId}`} className="inline-flex min-h-11 items-center text-sm font-medium text-primary">
+            {totalKnown ? `See all ${moreDates + 1} dates` : "See more dates"}
+          </Link>
         )}
         {editor === "date" && <DateEditor instance={instance} onSaved={onChanged} onClose={() => setEditor(null)} />}
         {editor === "series" && (
@@ -774,14 +779,20 @@ function GroupDetailContent() {
                   />
                 </>
               )}
-              {(group.visibility !== "invite_only" || isMember) && !(canManage && isMember) && (
-                <button
-                  onClick={toggleJoin}
-                  disabled={joinBusy || !!departureTarget}
-                  className={isMember ? "btn-secondary" : "btn-primary"}
-                >
-                  {joinBusy ? "…" : isMember ? "Leave group" : "Join this group"}
-                </button>
+              {isMember && !canManage && (
+                /* A plain member's cover offers "You're a member" with Leave group inside it,
+                   the menu leaders use, so a stray tap can't start leaving (DEC-92; the
+                   DEC-74 confirmation is unchanged). */
+                <Menu
+                  label="You're a member"
+                  text="✓ You're a member"
+                  items={[{ label: "Leave group", onSelect: () => void toggleJoin(), disabled: joinBusy || !!departureTarget }]}
+                />
+              )}
+              {group.visibility !== "invite_only" && !isMember && (
+                <Button variant="primary" onClick={toggleJoin} disabled={joinBusy || !!departureTarget}>
+                  {joinBusy ? "…" : "Join this group"}
+                </Button>
               )}
             </div>
           </div>
@@ -843,15 +854,15 @@ function GroupDetailContent() {
                 {events.length === 0 && (
                   <EmptyState
                     illustration={<Illustration name="no-events" />}
-                    title="No upcoming events"
+                    title={canManage ? "Schedule your group's first meeting" : "No upcoming events"}
                     body={
                       canManage
-                        ? "Schedule one so members can RSVP."
+                        ? "It takes about a minute."
                         : "When a leader schedules something, it will show up here."
                     }
                     action={
                       canManage ? (
-                        <ButtonLink to={`/groups/${group.id}/events/new`} variant="secondary" layout="w-full sm:w-auto">
+                        <ButtonLink to={`/groups/${group.id}/events/new`} variant="primary" layout="w-full sm:w-auto">
                           Schedule event
                         </ButtonLink>
                       ) : undefined
@@ -865,7 +876,7 @@ function GroupDetailContent() {
                 )}
                 {detail.truncated && (
                   <div className="flex flex-wrap items-center gap-x-2">
-                    <span className="text-sm text-text-muted">{events.length} dates loaded.</span>
+                    <span className="text-sm text-text-muted">Showing the next {events.length} dates.</span>
                     <ButtonLink variant="link" to={`/calendar?group=${group.id}`}>
                       See all dates in the calendar
                     </ButtonLink>
@@ -882,6 +893,7 @@ function GroupDetailContent() {
                     canManage={canManage}
                     showDescription
                     moreDates={(datesPerEvent.get(m.eventId) ?? 1) - 1}
+                    totalKnown={!detail.hasMore && !detail.truncated && (!m.recurrenceRule || !!m.rruleUntil || /(^|;)COUNT=/i.test(m.recurrenceRule))}
                     loggedIn={!!user}
                     onRsvp={handleRsvp}
                     people={people}

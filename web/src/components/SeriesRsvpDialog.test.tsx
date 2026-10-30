@@ -33,3 +33,8 @@ it("offers all three scopes with 44px option targets", async () => {
     expect(choose).toHaveBeenLastCalledWith(scope);
   }
 });
+
+it("says new dates are not answered for you", () => {
+  render(<SeriesRsvpDialog answer="Going" onChoose={vi.fn()} onCancel={vi.fn()} />);
+  expect(screen.getByRole("dialog")).toHaveTextContent("New dates added later won't be answered for you.");
+});

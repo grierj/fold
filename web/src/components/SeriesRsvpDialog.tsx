@@ -50,6 +50,7 @@ export function SeriesRsvpDialog({ answer, disabled = false, onChoose, onCancel 
         <Button variant="secondary" layout="w-full min-h-11 justify-start text-left" disabled={disabled} onClick={() => onChoose("this_and_following")}>This and following dates</Button>
         <Button variant="secondary" layout="w-full min-h-11 justify-start text-left" disabled={disabled} onClick={() => onChoose("all_future")}>All future dates</Button>
       </div>
+      <p className="text-sm text-text-muted">New dates added later won&apos;t be answered for you.</p>
       <Button variant="secondary" layout="w-full" onClick={onCancel}>Cancel</Button>
     </div>
   </div>;

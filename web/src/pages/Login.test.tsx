@@ -7,6 +7,10 @@ import { Login } from "./Login";
 
 const login = vi.fn();
 vi.mock("../auth", () => ({ useAuth: () => ({ login, user: null }) }));
+vi.mock("../api", async (original) => ({
+  ...(await original<typeof import("../api")>()),
+  Site: { get: vi.fn().mockResolvedValue({ name: "Grace Community Church" }) },
+}));
 
 function renderLogin() {
   return render(
@@ -27,9 +31,14 @@ describe("Login", () => {
   it("gives the account-request link a phone-sized target without changing prose line height", () => {
     renderLogin();
     const link = screen.getByRole("link", { name: "Request an account" });
-    expect(link).toHaveClass("inline-flex", "min-h-11", "items-center");
+    expect(link).toHaveClass("text-link");
     expect(link).toHaveAttribute("href", "/join");
     expect(link.parentElement?.className).not.toMatch(/leading-/);
+  });
+
+  it("names the church in the page title", async () => {
+    renderLogin();
+    expect(await screen.findByRole("heading", { name: "Log in to Grace Community Church" })).toBeInTheDocument();
   });
 
   it("signs in with email and password, then goes home", async () => {
@@ -51,7 +60,7 @@ describe("Login", () => {
     expect(await screen.findByRole("status")).toHaveTextContent("waiting for a parent or guardian's consent");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Browse public events" })).toHaveAttribute("href", "/calendar");
-    expect(screen.getByRole("heading", { name: "Log in to Fold" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Log in to Grace Community Church" })).toBeInTheDocument();
   });
 
   it("shows one message for any bad email or password", async () => {

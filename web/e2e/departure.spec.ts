@@ -12,6 +12,12 @@ async function screenshot(page: import("@playwright/test").Page, name: string) {
   await page.screenshot({ path: `${proof}/${name}.png`, fullPage: true, animations: "disabled", caret: "hide" });
 }
 
+// A plain member leaves from the "You're a member" menu on the cover (DEC-92).
+async function leaveFromMemberMenu(page: import("@playwright/test").Page) {
+  await page.getByRole("button", { name: "You're a member" }).click();
+  await page.getByRole("menuitem", { name: "Leave group" }).click();
+}
+
 async function assertDialogQuality(page: import("@playwright/test").Page) {
   const dialog = page.getByRole("dialog");
   const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze();
@@ -84,10 +90,10 @@ test("a delayed pre-leave group response cannot restore leader controls or roste
 
   // A voluntary leaver rejoins themselves, without a manager restoring them.
   await page.getByRole("button", { name: "Join this group" }).click();
-  await expect(page.getByRole("button", { name: "Leave group", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "You're a member" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Schedule event" })).toHaveCount(0);
   await page.reload();
-  await expect(page.getByRole("button", { name: "Leave group", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "You're a member" })).toBeVisible();
   await screenshot(page, "departure-self-rejoined-390");
 });
 
@@ -137,7 +143,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
 
   await signInTo(page, memberLogin, `/groups/${selfGroup.id}`);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "Leave group", exact: true }).click();
+  await leaveFromMemberMenu(page);
   await expect(page.getByRole("dialog", { name: new RegExp(`Leave Departure private ${suffix}`) })).toBeVisible();
   await expect(page.getByText(/3 upcoming dates, including 2 dates you said Going to/)).toBeVisible();
   await expect(page.getByRole("checkbox", { name: /Keep Kept underway private date/ })).toBeChecked();
@@ -271,7 +277,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   const zeroGroup = await makeGroup(`Zero departure ${suffix}`, "public");
   await asAdmin("POST", `/admin/groups/${zeroGroup.id}/members`, { userId: zero.id, role: "member" });
   await signInTo(page, zeroLogin, `/groups/${zeroGroup.id}`);
-  await page.getByRole("button", { name: "Leave group", exact: true }).click();
+  await leaveFromMemberMenu(page);
   await expect(page.getByText("Your past attendance stays.")).toBeVisible();
   await expect(page.getByText(/0 upcoming dates?/i)).toHaveCount(0);
   await assertDialogQuality(page);
@@ -284,7 +290,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Stay" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Leave group", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "You're a member" })).toBeVisible();
 
   // A new registration makes the zero-date snapshot stale. The UI refreshes defaults and requires a second confirmation.
   const staleGroup = await makeGroup(`Stale departure ${suffix}`, "public");
@@ -293,13 +299,14 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   const staleEvent = await createEvent(staleGroup.id, "New stale public date", staleAt, "public");
   const staleApi = await apiAs(request, staleLogin);
   await signInTo(page, staleLogin, `/groups/${staleGroup.id}`);
-  await page.getByRole("button", { name: "Leave group", exact: true }).click();
+  await leaveFromMemberMenu(page);
   await expect(page.getByText("Your past attendance stays.")).toBeVisible();
   await staleApi("PUT", `/events/${staleEvent.id}/registrations`, { date: staleAt.slice(0, 10), status: "going", attendanceMode: "in_person", people: [] });
   await page.getByRole("dialog").getByRole("button", { name: "Leave group" }).click();
   await expect(page.getByRole("alert")).toHaveText(/refreshed the choices and restored the safest defaults/);
   await expect(page.getByRole("checkbox", { name: /Keep New stale public date/ })).not.toBeChecked();
-  await expect(page.getByRole("button", { name: "Leave group", exact: true }).first()).toBeDisabled();
+  // The group page behind the dialog no longer shows a Leave button; Leave group sits in the member menu (DEC-92).
+  await expect(page.getByRole("button", { name: "You're a member" })).toBeVisible();
   await screenshot(page, "departure-stale-recovered-390");
   await page.getByRole("dialog").getByRole("button", { name: "Leave group" }).click();
   await expect(page.getByText("0 dates kept · 1 date ended.")).toBeVisible();

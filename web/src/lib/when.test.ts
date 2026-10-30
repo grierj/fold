@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, historyDayBounds, zoneNote } from "./when";
+import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, historyDayBounds, zoneNote, formatNextMeeting } from "./when";
 
 // Saturday Oct 17 2026, 7:00 PM in Los Angeles (PDT, UTC-7) = 02:00 UTC Sunday.
 const laSat7pm = "2026-10-18T02:00:00Z";
@@ -146,5 +146,18 @@ describe("historyDayBounds", () => {
     expect(historyDayBounds("2026-02-30", "", "UTC")).toBeNull();
     expect(historyDayBounds("2026-10-03", "2026-10-01", "UTC")).toBeNull();
     expect(historyDayBounds("2026-10-01", "", "Mars/Olympus_Mons")).toBeNull();
+  });
+});
+
+describe("formatNextMeeting", () => {
+  const now = new Date("2026-10-18T15:00:00Z"); // Sunday 9 AM in Boise
+  it("says Today before 5 PM and Tonight from 5 PM, in the viewer's zone", () => {
+    expect(formatNextMeeting("2026-10-18T22:01:00Z", "America/Boise", now)).toEqual({ soon: true, text: "Today · 4:01 PM" });
+    expect(formatNextMeeting("2026-10-18T23:00:00Z", "America/Boise", now)).toEqual({ soon: true, text: "Tonight · 5:00 PM" });
+    expect(formatNextMeeting("2026-10-19T01:00:00Z", "America/Boise", now)).toEqual({ soon: true, text: "Tonight · 7:00 PM" });
+  });
+  it("keeps the viewer-zone day and the ordinary wording for other days", () => {
+    expect(formatNextMeeting("2026-10-19T01:00:00Z", "America/New_York", now)).toEqual({ soon: true, text: "Tonight · 9:00 PM" });
+    expect(formatNextMeeting("2026-10-19T23:00:00Z", "America/Boise", now)).toEqual({ soon: false, text: "Tomorrow at 5:00 PM" });
   });
 });

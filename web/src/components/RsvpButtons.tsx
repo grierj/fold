@@ -1,8 +1,9 @@
 import { Form } from "./ui/Form";
+import { CheckIcon } from "./icons";
 import { Link } from "react-router-dom";
 import { ChildcareRequestField, childcareCountProblem } from "./ChildcareRequestField";
 import { Button } from "./ui/Button";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Events } from "../api";
 import type { AttendanceMode, EventOccurrence, RegistrationBatch, RegistrationCommand, HouseholdAnswer, RegistrationResponse, HouseholdRegistration, MyHouseholdRegistration, RegistrationStatus, HouseholdPerson, SeriesRegistrationResponse, SeriesRegistrationState } from "../types";
 import { errorCode, errorText } from "../lib/errors";
@@ -101,10 +102,10 @@ function useActorSeriesRsvp({
     onSeriesFeedback?.(instance.eventId, instance.date, [actorResultFromRegistration(registration)]);
   }
 
-  async function applySeries(answer: SeriesAnswer, scope: Exclude<SeriesRsvpScope, "just_this_date">) {
-    if (answer.status === "declined" && !window.confirm("Can't go to these dates? They will be removed from your calendar and personal feed.")) return;
+  async function applySeries(answer: SeriesAnswer, scope: Exclude<SeriesRsvpScope, "just_this_date">): Promise<boolean> {
+    if (answer.status === "declined" && !window.confirm("Can't go to these dates? They will be removed from your calendar and personal feed.")) return false;
     const release = mutationGate.acquire();
-    if (!release) return;
+    if (!release) return false;
     setError(null);
     try {
       const result = await Events.registerSeries(instance.eventId, {
@@ -120,8 +121,10 @@ function useActorSeriesRsvp({
       onSeriesFeedback?.(instance.eventId, instance.date, result.results.map(({ date, after }) => ({ date, after })));
       onChange({ registration: null, people: [] });
       queueMicrotask(() => statusRef.current?.focus());
+      return true;
     } catch (e) {
       setError(errorText(e, "We couldn't save your series answer."));
+      return false;
     } finally {
       release();
     }
@@ -162,33 +165,35 @@ function useActorSeriesRsvp({
 
 type SeriesController = ReturnType<typeof useActorSeriesRsvp>;
 
-function SeriesFeedback({ series }: { series: SeriesController }) {
+// The one status region. A series result or Undo message wins; otherwise
+// `fallback` is the standing line for the viewer's own answer (DEC-92), so
+// screen readers hear it here and there is no second live region.
+function SeriesFeedback({ series, fallback }: { series: SeriesController; fallback?: ReactNode }) {
   return <>
-    <div ref={series.statusRef} role="status" tabIndex={-1} className="text-sm text-text-muted mb-2">
-      {series.statusMessage}{series.undo && <Button variant="link" layout="ml-2" disabled={series.mutationBusy} onClick={() => void series.undoSeries()}>Undo</Button>}
+    <div ref={series.statusRef} role="status" tabIndex={-1} className="text-sm text-text-muted mt-2 empty:mt-0 mb-2 empty:mb-0">
+      {series.statusMessage || fallback}{series.undo && <Button variant="link" layout="ml-2" disabled={series.mutationBusy} onClick={() => void series.undoSeries()}>Undo</Button>}
     </div>
     {series.error && <FormError layout="mt-1">{series.error}</FormError>}
   </>;
 }
 
-function SeriesWholeActions({ disabled, onApply }: {
-  disabled: boolean;
-  onApply: (status: RegistrationStatus) => void;
-}) {
-  return <div className="mt-3 border-t border-border pt-3">
-    <p className="text-sm font-semibold mb-2">Answer the whole series</p>
-    <div className="flex flex-col sm:flex-row sm:flex-wrap gap-2">
-      <Button variant="secondary" layout="w-full sm:w-auto" disabled={disabled} onClick={() => onApply("going")}>Going to all dates</Button>
-      <Button variant="secondary" layout="w-full sm:w-auto" disabled={disabled} onClick={() => onApply("maybe")}>Maybe for all</Button>
-      <Button variant="danger-outline" layout="w-full sm:w-auto" disabled={disabled} onClick={() => onApply("declined")}>Can&apos;t go to any</Button>
-    </div>
-    <p className="text-sm text-text-muted mt-2">New dates added later won&apos;t be answered for you.</p>
-  </div>;
+// Standing confirmation under the control (DEC-92). Waitlisted, full and
+// remote-pool states keep their own copy above the control.
+function answerLine(status: string | null | undefined): ReactNode {
+  if (status === "going") return <><CheckIcon className="inline h-4 w-4 mr-1 align-text-bottom text-success-on-subtle" />You&apos;re going. See you there!</>;
+  if (status === "maybe") return "You said maybe. Change it anytime.";
+  if (status === "declined") return "Got it. Only the leaders see this.";
+  return null;
 }
 
-function SeriesScopeDialog({ series, onJustThisDate }: {
+// "Childcare for 2 (ages 3 and 7)": one child reads "1 child".
+const childcareSummary = (count: number, ages: string) =>
+  `Childcare for ${count === 1 ? "1 child" : count}${ages.trim() ? ` (ages ${ages.trim()})` : ""}`;
+
+function SeriesScopeDialog({ series, onJustThisDate, onApplied }: {
   series: SeriesController;
   onJustThisDate: (answer: SeriesAnswer) => void;
+  onApplied?: () => void;
 }) {
   if (!series.pending) return null;
   return <SeriesRsvpDialog answer={answerLabel(series.pending.status)} disabled={series.mutationBusy} onCancel={() => series.setPending(null)} onChoose={(scope) => {
@@ -196,7 +201,7 @@ function SeriesScopeDialog({ series, onJustThisDate }: {
     series.setPending(null);
     if (!answer) return;
     if (scope === "just_this_date") onJustThisDate(answer);
-    else void series.applySeries(answer, scope);
+    else void series.applySeries(answer, scope).then((applied) => { if (applied) onApplied?.(); });
   }} />;
 }
 
@@ -270,11 +275,24 @@ function SingleRsvpButtons({
   const [ages, setAges] = useState(instance.myChildcareAgesNote ?? "");
   const [childcareError, setChildcareError] = useState<string | null>(null);
   const [childcareFullError, setChildcareFullError] = useState(false);
+  // Childcare stays one link until used (DEC-92). `savedCare` is what the
+  // server holds; `children`/`ages` are the draft while the fields are open.
+  const [savedCare, setSavedCare] = useState({ count: instance.myChildcareCount ?? 0, ages: instance.myChildcareAgesNote ?? "" });
+  const [editingCare, setEditingCare] = useState(false);
+  const careRef = useRef<HTMLDivElement>(null);
+  const careFocus = useRef<"field" | "toggle" | null>(null);
+  useEffect(() => {
+    const target = careFocus.current;
+    careFocus.current = null;
+    if (target === "field") careRef.current?.querySelector<HTMLElement>("input")?.focus();
+    else if (target === "toggle") careRef.current?.querySelector<HTMLElement>("button")?.focus();
+  }, [editingCare]);
   useActorDraftReconciliation(instance, seriesFeedback, (saved) => {
     setGuests(saved.guests);
     setMode(saved.mode);
     setChildren(String(saved.children));
     setAges(saved.ages);
+    setSavedCare({ count: saved.children, ages: saved.ages });
   });
   const series = useActorSeriesRsvp({ instance, onChange, seriesFeedback, onSeriesFeedback, onTerminalRefresh, mutationGate });
 
@@ -324,6 +342,7 @@ function SingleRsvpButtons({
       if (!registration) return;
       series.reportDateMutation(registration);
       onChange(result);
+      setEditingCare(false);
       if (switching) {
         series.announce(registration.status === "waitlisted"
           ? `You're on the ${answer.attendanceMode === "remote" ? "remote" : "in-person"} waitlist.`
@@ -331,11 +350,12 @@ function SingleRsvpButtons({
       } else if (instance.childcareAvailable && answer.status === "going") {
         setChildren(String(registration.childcareCount));
         setAges(registration.childcareAgesNote);
+        setSavedCare({ count: registration.childcareCount, ages: registration.childcareAgesNote });
+        // A saved going answer is confirmed by the standing line (DEC-92);
+        // the childcare summary below it carries the count.
         series.announce(registration.status === "waitlisted"
           ? `You're on the ${answer.attendanceMode === "remote" ? "remote" : "in-person"} waitlist.`
-          : `Saved: going, ${registration.childcareCount > 0
-            ? `${registration.childcareCount} ${registration.childcareCount === 1 ? "child" : "children"} in childcare`
-            : "no childcare"}`);
+          : "");
       }
     } catch (e) {
       if (switching) setMode(myMode);
@@ -367,6 +387,20 @@ function SingleRsvpButtons({
     void choose(answerFor("going", mode, { childcareCount: Number(children), childcareAgesNote: ages.trim() }));
   }
 
+  function openChildcare() {
+    careFocus.current = "field";
+    setEditingCare(true);
+  }
+
+  function cancelChildcare() {
+    careFocus.current = "toggle";
+    setChildren(String(savedCare.count));
+    setAges(savedCare.ages);
+    setChildcareError(null);
+    setChildcareFullError(false);
+    setEditingCare(false);
+  }
+
   if (removed) {
     return <div className="text-sm text-text-muted">A leader or host removed your registration for this date. Ask them to add you back.</div>;
   }
@@ -386,7 +420,6 @@ function SingleRsvpButtons({
         {mine !== "going" && `Tap Going to attend ${mode === "remote" ? "remotely" : "in person"}.`}
       </div>
     </div>}
-    <SeriesFeedback series={series} />
     <div className="flex gap-2 flex-wrap items-center">
       <div role="group" aria-label="Your answer" className="flex w-full sm:max-w-sm">
         {OPTIONS.map((o) => {
@@ -400,18 +433,25 @@ function SingleRsvpButtons({
           onChange={(e) => setGuests(Math.max(0, Math.min(instance.guestsAllowed, Number(e.target.value))))} layout="w-28" />
       </Field>}
     </div>
-    {instance.recurrenceRule && <SeriesWholeActions disabled={disabled} onApply={(status) => void series.applySeries(answerFor(status), "all_future")} />}
-    {instance.childcareAvailable && mine === "going" && <div className="mt-3 space-y-3">
-      <ChildcareRequestField count={children} ages={ages} onCount={setChildren} onAges={setAges}
-        error={childcareError} disabled={disabled} full={instance.childcareFull} />
-      <div className="flex flex-wrap gap-2">
-        <Button variant="primary" disabled={disabled} onClick={saveChildcare}>{busy === "going" ? "Saving…" : "Save"}</Button>
-        {childcareFullError && <Button variant="secondary" disabled={disabled}
-          onClick={() => void choose(answerFor("going", mode, { childcareCount: 0, childcareAgesNote: "" }))}>Clear childcare request</Button>}
+    <SeriesFeedback series={series} fallback={answerLine(mine)} />
+    {instance.childcareAvailable && mine === "going" && (editingCare
+      ? <div ref={careRef} className="mt-3 space-y-3">
+        <ChildcareRequestField count={children} ages={ages} onCount={setChildren} onAges={setAges}
+          error={childcareError} disabled={disabled} full={instance.childcareFull} />
+        <div className="flex flex-wrap gap-2">
+          <Button variant="primary" disabled={disabled} onClick={saveChildcare}>{busy === "going" ? "Saving…" : "Save childcare"}</Button>
+          <Button variant="secondary" disabled={disabled} onClick={cancelChildcare}>Cancel</Button>
+          {childcareFullError && <Button variant="secondary" disabled={disabled}
+            onClick={() => void choose(answerFor("going", mode, { childcareCount: 0, childcareAgesNote: "" }))}>Clear childcare request</Button>}
+        </div>
       </div>
-    </div>}
+      : <div ref={careRef} className="mt-3 text-sm">
+        {savedCare.count > 0
+          ? <>{childcareSummary(savedCare.count, savedCare.ages)} · <Button variant="link" aria-label="Change childcare request" onClick={openChildcare}>Change</Button></>
+          : <Button variant="link" onClick={openChildcare}>Bringing children? Request childcare</Button>}
+      </div>)}
     {error && <FormError layout="mt-1">{error}</FormError>}
-    <SeriesScopeDialog series={series} onJustThisDate={(answer) => void choose(answer, false, true)} />
+    <SeriesScopeDialog series={series} onJustThisDate={(answer) => void choose(answer, false, true)} onApplied={() => setEditingCare(false)} />
   </div>;
 }
 
@@ -492,18 +532,6 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
     }
     setChildcareError(null);
     series.setPending(answerFor());
-  }
-
-  function applyWholeSeries(status: RegistrationStatus) {
-    if (status === "going" && instance.childcareAvailable) {
-      const problem = childcareCountProblem(children);
-      if (problem) {
-        showFieldErrors(root.current, () => setChildcareError(problem));
-        return;
-      }
-    }
-    setChildcareError(null);
-    void series.applySeries(answerFor(status), "all_future");
   }
 
   async function saveActorDate(answer: SeriesAnswer) {
@@ -616,7 +644,6 @@ function HouseholdRsvp({ instance, people, onChange, seriesFeedback, onSeriesFee
     })}
     {instance.capacity !== null && (instance.spotsLeft ?? 1) <= 0 && <p>In-person seats are full.{instance.waitlistEnabled ? " New answers may be waitlisted." : " Ask a leader for help."}</p>}
     {instance.childcareFull && <p>Childcare is full for this date.</p>}
-    {instance.recurrenceRule && instance.myRegistration !== "removed" && <SeriesWholeActions disabled={disabled} onApply={applyWholeSeries} />}
     {instance.recurrenceRule && <SeriesFeedback series={series} />}
     {error && <FormError>{error}</FormError>}
     <p role="status" className="text-sm text-text-muted">{message}</p>

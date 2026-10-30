@@ -41,6 +41,18 @@ export function formatWhen(iso: string, zone = browserTimeZone(), now = new Date
   return `${fmt(iso, zone, { weekday: "short", month: "short", day: "numeric" })} at ${time}`;
 }
 
+// A group card's next-meeting line (DEC-99). When the meeting is today in the
+// viewer's zone it leads with "Today" (or "Tonight" from 5 PM on) and a
+// separate time, so the card can show the word in the success tone; any other
+// day is formatWhen's text with `soon` false.
+export function formatNextMeeting(iso: string, zone = browserTimeZone(), now = new Date()): { soon: boolean; text: string } {
+  if (ymd(new Date(iso), zone) !== ymd(now, zone)) return { soon: false, text: formatWhen(iso, zone, now) };
+  const hour = Number(fmt(iso, zone, { hour: "numeric", hourCycle: "h23" }));
+  const lead = hour >= 17 ? "Tonight" : "Today";
+  const time = formatTime(iso, zone);
+  return { soon: true, text: `${lead} · ${time}` };
+}
+
 export function formatWhenRange(start: string, end: string, zone = browserTimeZone(), now = new Date()): string {
   if (ymd(new Date(start), zone) === ymd(new Date(end), zone)) {
     return `${formatWhen(start, zone, now)} – ${formatTime(end, zone)}`;
@@ -214,4 +226,38 @@ export function historyDayBounds(from: string, until: string, zone: string): { f
   } catch {
     return null;
   }
+}
+
+// --- The event page's "when" line (DEC-92) ---
+// Pieces for "Thursday, Nov 5 · 5:30–8:00 PM" and "Every Wednesday · … · next
+// Nov 4". repeat.ts assembles them; the formatting stays here.
+
+// "Wednesday" for a weekday index (0 = Sunday), in the browser's language.
+export function weekdayLongName(index: number): string {
+  // 2026-10-18 is a Sunday.
+  return fmt(asDate(`2026-10-${String(18 + index).padStart(2, "0")}`), "UTC", { weekday: "long" });
+}
+
+// "Thursday, Nov 5", with the year only when it isn't the viewer's current one.
+export function formatEventDay(iso: string, zone = browserTimeZone(), now = new Date()): string {
+  const otherYear = dayOf(iso, zone).slice(0, 4) !== ymd(now, zone).slice(0, 4);
+  return fmt(iso, zone, { weekday: "long", month: "short", day: "numeric", ...(otherYear ? { year: "numeric" } : {}) });
+}
+
+// "Nov 4", or "Nov 4, 2027" in another year.
+export function formatShortDay(iso: string, zone = browserTimeZone(), now = new Date()): string {
+  const otherYear = dayOf(iso, zone).slice(0, 4) !== ymd(now, zone).slice(0, 4);
+  return fmt(iso, zone, { month: "short", day: "numeric", ...(otherYear ? { year: "numeric" } : {}) });
+}
+
+// "5:30–8:00 PM": the shared AM/PM is said once. A start with nothing after
+// it (a 24-hour clock) or an end on another day keeps both full times.
+export function formatTimeRange(start: string, end: string, zone = browserTimeZone()): string {
+  const from = formatTime(start, zone);
+  if (!end || end === start) return from;
+  const to = formatTime(end, zone);
+  if (dayOf(start, zone) !== dayOf(end, zone)) return `${from}–${to}`;
+  const tail = (s: string) => s.match(/\D+$/)?.[0] ?? "";
+  const shared = tail(from) !== "" && tail(from) === tail(to);
+  return `${shared ? from.slice(0, from.length - tail(from).length) : from}–${to}`;
 }

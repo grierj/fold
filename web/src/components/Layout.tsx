@@ -17,8 +17,9 @@ import { FoldMark } from "./FoldMark";
 // (scroll-padding in index.css).
 const topLink = ({ isActive }: { isActive: boolean }) =>
   `inline-flex items-center min-h-11 px-2 rounded-md whitespace-nowrap ${isActive ? "text-primary" : "text-text-muted hover:text-primary"}`;
-const iconLink = ({ isActive }: { isActive: boolean }) =>
-  `inline-flex items-center justify-center min-h-11 min-w-11 rounded-full ${isActive ? "text-primary" : "text-text-muted hover:text-primary"}`;
+// The phone's "+ New group" (DEC-62: a labeled pill, not a bare icon).
+const pill = ({ isActive }: { isActive: boolean }) =>
+  `inline-flex items-center gap-1 min-h-11 px-3 rounded-full border whitespace-nowrap font-semibold ${isActive ? "border-primary-border bg-primary-subtle text-primary-on-subtle" : "border-border-strong text-primary"}`;
 const tab = ({ isActive }: { isActive: boolean }) =>
   `flex flex-1 flex-col items-center justify-center gap-0.5 min-h-14 whitespace-nowrap text-xs font-medium ${isActive ? "text-primary" : "text-text-muted"}`;
 
@@ -37,6 +38,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
     observer?.observe(element);
     return () => { observer?.disconnect(); document.documentElement.style.removeProperty("--fold-header-height"); };
   }, []);
+  const plainLogin = ["/login", "/join", "/forgot-password"].some((p) => pathname === p || pathname.startsWith(`${p}/`));
   const signedIn = !loading && !!user;
   // One poller for the bell and the phone tab (they show the same count).
   const badge = useBadge(pathname + search, signedIn);
@@ -80,12 +82,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <NavLink to="/" end className={topLink}>Home</NavLink>
                   <NavLink to="/calendar" className={topLink}>Calendar</NavLink>
                   <NavLink to="/my-groups" className={topLink}>My groups</NavLink>
-                  <NavLink to="/groups/new" className={topLink}>Start a group</NavLink>
+                  <NavLink to="/groups/new" className={topLink}>New group</NavLink>
                   {isAdmin && <NavLink to="/admin" className={topLink}>Admin</NavLink>}
                 </div>
-                {/* On phones, keep room for the church's name; Admin is on Me. */}
-                <NavLink to="/groups/new" aria-label="Start a group" title="Start a group" className={(a) => `sm:hidden shrink-0 ${iconLink(a)}`}>
-                  <PlusIcon />
+                {/* On phones a labeled pill that leaves the church's name its room
+                    (the name clamps at two lines); Admin is on Me. */}
+                <NavLink to="/groups/new" className={(a) => `sm:hidden shrink-0 ${pill(a)}`}>
+                  <PlusIcon className="h-4 w-4" />
+                  New group
                 </NavLink>
                 <div className="hidden sm:flex items-center gap-2">
                   <NotificationBell badge={badge} />
@@ -108,10 +112,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
             ) : (
               <>
                 <div className="hidden sm:block"><NavLink to="/calendar" className={topLink}>Calendar</NavLink></div>
-                <NavLink to="/join" className={topLink}>Join</NavLink>
+                <NavLink to="/join" className={topLink}>Sign up</NavLink>
                 {/* On an invitation the form is the main action, and a waiting teen
-                    can't sign in yet, so Log in steps back (PR 111 N3). */}
-                <NavLink to="/login" className={`${pathname.startsWith("/invite") ? "btn-secondary" : "btn-primary"} text-sm whitespace-nowrap`}>Log in</NavLink>
+                    can't sign in yet, so Log in steps back (PR 111 N3). On the
+                    sign-in, join and password pages the form has its own button,
+                    so the header's is a plain link (DEC-99). */}
+                <NavLink to="/login" className={plainLogin ? topLink : `${pathname.startsWith("/invite") ? "btn-secondary" : "btn-primary"} text-sm whitespace-nowrap`}>Log in</NavLink>
               </>
             )}
           </nav>

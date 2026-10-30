@@ -7,9 +7,26 @@ import { occurrence } from "../test/occurrence";
 describe("Attendance", () => {
   it("uses singular and full seat wording (PR 110 N4)", () => {
     const { rerender } = render(<Attendance instance={occurrence({ capacity: 1, spotsLeft: 1 })} />);
-    expect(screen.getByText(/1 of 1 seat left/)).toBeInTheDocument();
+    expect(screen.getByText("Only 1 seat left")).toBeInTheDocument();
     rerender(<Attendance instance={occurrence({ capacity: 1, spotsLeft: 0, remoteAvailable: true, remoteCapacity: 2, remoteSpotsLeft: 0 })} />);
     expect(screen.getByText(/Seats full · Remote seats full/)).toBeInTheDocument();
+  });
+
+  it("warns in words at five seats or fewer, and counts plainly above that (DEC-99)", () => {
+    const { rerender } = render(<Attendance instance={occurrence({ capacity: 20, spotsLeft: 5 })} />);
+    const warn = screen.getByText("Only 5 seats left");
+    expect(warn).toHaveClass("text-warning-on-subtle");
+    rerender(<Attendance instance={occurrence({ capacity: 20, spotsLeft: 6 })} />);
+    expect(screen.queryByText(/Only/)).not.toBeInTheDocument();
+    expect(screen.getByText(/6 of 20 seats left/)).toBeInTheDocument();
+    rerender(<Attendance instance={occurrence({ capacity: 20, spotsLeft: 0 })} />);
+    expect(screen.getByText(/Seats full/)).toBeInTheDocument();
+  });
+
+  it("leaves the remote seat line alone", () => {
+    render(<Attendance instance={occurrence({ remoteAvailable: true, remoteCapacity: 10, remoteSpotsLeft: 2 })} />);
+    expect(screen.getByText(/2 of 10 remote seats left/)).toBeInTheDocument();
+    expect(screen.queryByText(/Only/)).not.toBeInTheDocument();
   });
 
   it("counts remote seats and marks remote attendees with a neutral badge", async () => {

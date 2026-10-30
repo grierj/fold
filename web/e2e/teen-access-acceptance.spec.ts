@@ -51,7 +51,7 @@ test("a consented teen joins general events with restricted roles, private ident
   expect((await page.request.get("/api/v1/auth/me")).status()).toBe(200);
   await page.goto(`/groups/${group.id}`);
   await page.getByRole("button", { name: "Join this group", exact: true }).click();
-  await expect(page.getByRole("button", { name: "Leave group", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "You're a member" })).toBeVisible();
   for (const occurrence of [event, churchEvent]) {
     await page.goto(`/events/${occurrence.id}`);
     await page.getByRole("button", { name: "Going", exact: true }).click();

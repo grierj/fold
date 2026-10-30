@@ -34,6 +34,21 @@ describe("GroupCard", () => {
     expect(screen.getByText(/No upcoming events/)).toBeInTheDocument();
   });
 
+  it("shows Today in the success tone with a separate time, and Tonight from 5 PM", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2035-06-15T15:00:00Z")); // 9 AM in Boise
+      const { unmount } = renderCard({ group: { ...group, nextEventAt: "2035-06-15T22:01:00Z" } }); // 4:01 PM
+      const today = screen.getByText("Today · 4:01 PM");
+      expect(today.parentElement).toHaveClass("text-success-on-subtle");
+      unmount();
+      renderCard({ group: { ...group, nextEventAt: "2035-06-16T01:00:00Z" } }); // 7:00 PM
+      expect(screen.getByText("Tonight · 7:00 PM")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("dates the next event in the viewer's zone (Boise in tests), not by its UTC date", () => {
     render(
       <MemoryRouter>

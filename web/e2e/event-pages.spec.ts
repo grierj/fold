@@ -3,7 +3,7 @@ import type { GroupDetailResponse } from "../src/types";
 import { apiAs, signIn } from "./helpers";
 
 // UI makeover PR 6 (DEC-63): one primary action per view with the rest in
-// a More menu, a series as its next date plus "N more", attendance counts
+// a More menu, a series as its next date plus "See all N dates", attendance counts
 // first with names behind an expand, and a segmented Going / Maybe /
 // Can't go where Can't go never lists anyone.
 async function seriesGroup(request: Parameters<typeof apiAs>[0]) {
@@ -39,12 +39,12 @@ test("the leader group page at 390 shows one primary action and a keyboard-frien
     await expect(page.getByRole("button", { name, exact: true })).toHaveCount(0);
   }
 
-  // The series is one card: its next date plus "2 more dates loaded".
+  // The series is one card: its next date plus "See all 3 dates" (a bounded series with every date loaded, DEC-99).
   const card = page.getByRole("article", { name: "Segmented night", exact: true });
   await expect(card).toHaveCount(1);
-  await expect(card.getByRole("link", { name: "2 more dates loaded" })).toBeVisible();
+  await expect(card.getByRole("link", { name: "See all 3 dates" })).toBeVisible();
   const long = page.getByRole("article", { name: "Long series", exact: true });
-  await expect(long.getByRole("link", { name: /^1[0-2] more dates loaded$/ })).toBeVisible();
+  await expect(long.getByRole("link", { name: /^See (all \d+|more) dates$/ })).toBeVisible();
 
   // The menu works from the keyboard and opens fully on screen.
   const more = page.getByRole("button", { name: "More group actions" });
@@ -70,7 +70,7 @@ test("the leader group page at 390 shows one primary action and a keyboard-frien
 
   // On the event page, sign-ups are managed from the date's More menu, in
   // their own panel with a labeled full-width field.
-  await card.getByRole("link", { name: /more dates/ }).click();
+  await card.getByRole("link", { name: /See (all \d+|more) dates/ }).click();
   await expect(page.getByRole("region", { name: "Manage sign-ups" })).toHaveCount(0);
   await page.getByRole("button", { name: /^More for / }).first().click();
   await page.getByRole("menuitem", { name: "Manage sign-ups" }).click();
@@ -121,7 +121,8 @@ test("group dates continue across page boundaries to exhaustion without duplicat
     expect(body.nextCursor !== "").toBe(hasMore);
     await expect(card).toHaveCount(1);
     await expect(page.getByRole("article")).toHaveCount(1);
-    await expect(card.getByRole("link", { name: `${seenIDs.size - 1} more dates loaded`, exact: true })).toBeVisible();
+    // A truncated list says "See more dates"; "See all N" only once every date is loaded (DEC-99).
+    await expect(card.getByRole("link", { name: hasMore ? "See more dates" : `See all ${seenIDs.size} dates`, exact: true })).toBeVisible();
     await expect(page.getByText("Hidden daily series", { exact: true })).toHaveCount(0);
     if (hasMore) {
       await expect(loadMore).toBeVisible();

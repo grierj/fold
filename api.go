@@ -659,6 +659,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/events/video/jitsi", a.apiAuth(), a.apiGenerateJitsiLink)
 	v1.GET("/events/:id", a.optionalUser(), a.apiGetEvent)
 	v1.GET("/events/:id/dates/:date", a.optionalUser(), a.apiGetOccurrenceDate)
+	v1.GET("/events/:id/dates/:date/calendar.ics", a.optionalUser(), a.apiOccurrenceCalendar)
 	v1.GET("/events/:id/occurrences/:date/visibility-impact", a.apiAuth(), a.apiDateVisibilityImpact)
 	v1.POST("/events/:id/dates/:date/decline", a.apiAuth(), a.apiDeclineOccurrence)
 	v1.POST("/events/:id/dates/:date/block", a.apiAuth(), a.apiBlockOccurrence)
