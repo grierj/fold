@@ -86,3 +86,19 @@ it("ignores a late saved-ID lookup after the selected ID changes", async () => {
   expect(onKnown).not.toHaveBeenCalledWith(expect.objectContaining({ id: "9007199254740992" }));
   expect(onFailure).not.toHaveBeenCalled();
 });
+
+it("tells the page when a person is chosen from the list, but not when the ID box is typed in", async () => {
+  vi.mocked(ContactHistory.people).mockResolvedValue({ people: [{ id: "353", name: "Harper History", email: "harper@example.com" }] });
+  const onPick = vi.fn();
+  const Wrapper = () => {
+    const [value, setValue] = useState("");
+    return <ContactHistoryPersonPicker value={value} name={undefined} error="" onChange={setValue} onPick={onPick} onKnown={vi.fn()} onFailure={vi.fn()} />;
+  };
+  render(<Wrapper />);
+  await screen.findByRole("option", { name: "Harper History — harper@example.com" });
+  await userEvent.click(screen.getByText("Look up a deleted account"));
+  await userEvent.type(screen.getByLabelText("Saved person ID"), "12");
+  expect(onPick).not.toHaveBeenCalled();
+  await userEvent.selectOptions(screen.getByLabelText("Person"), "353");
+  expect(onPick).toHaveBeenCalledWith("353");
+});

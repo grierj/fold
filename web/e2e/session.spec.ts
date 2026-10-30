@@ -50,7 +50,7 @@ test("an admin signing in after a member's new group sees the notice", async ({ 
   await page.goto("/groups/new");
   await page.getByLabel("Group name").fill("Sam's new study");
   await page.getByRole("button", { name: "Create group" }).click();
-  await expect(page.getByRole("heading", { name: "Pending approval" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /An admin will review “Sam's new study”/ })).toBeVisible();
   await signOut(page);
 
   await signIn(page, "grier");

@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -41,13 +41,35 @@ it("opens a short hub without mounting forms or fetching the calendar feed", () 
   renderProfile();
   expect(screen.getByRole("heading", { level: 1, name: "Your profile" })).toBeInTheDocument();
   expect(screen.getByText("Pat")).toBeInTheDocument();
-  for (const name of ["Profile details", "Privacy", "Email and password", "Calendar feed", "Household", "Parent or guardian link", "Invite someone", "Requests"]) {
-    expect(screen.getByRole("link", { name })).toBeInTheDocument();
+  for (const name of ["Profile details", "Privacy", "Email and password", "Calendar feed", "Household", "Parent or guardian link", "Invite someone", "Contact and add requests"]) {
+    expect(screen.getByRole("link", { name: new RegExp(`^${name}`) })).toBeInTheDocument();
   }
+  expect(screen.queryByRole("link", { name: "Requests" })).not.toBeInTheDocument();
   expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   expect(screen.queryByText("Household loaded")).not.toBeInTheDocument();
   expect(screen.queryByText("Guardian links loaded")).not.toBeInTheDocument();
   expect(get).not.toHaveBeenCalled();
+});
+
+it("groups the rows under You, Family and Sharing, each with a one-line description", () => {
+  renderProfile();
+  const rows: Record<string, [string, string][]> = {
+    You: [["Profile details", "Name, photo and time zone"], ["Email and password", "How you sign in"], ["Privacy", "Hide your contact info from leaders"]],
+    Family: [["Household", "Family members you sign up with you"], ["Parent or guardian link", "Connect a parent or guardian"]],
+    Sharing: [["Calendar feed", "Add Fold dates to your phone's calendar"], ["Invite someone", "Ask an admin to let someone in"], ["Contact and add requests", "Requests to reach or add you"]],
+  };
+  expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["You", "Family", "Sharing"]);
+  for (const [heading, links] of Object.entries(rows)) {
+    const group = screen.getByRole("group", { name: heading });
+    expect(within(group).getAllByRole("link").map((l) => l.textContent?.replace("›", ""))).toEqual(links.map(([label, description]) => `${label} ${description}`));
+    for (const [label, description] of links) expect(within(group).getByRole("link", { name: `${label} ${description}` })).toBeInTheDocument();
+  }
+});
+
+it("hides the Family group from a teen", () => {
+  actor.user = { ...adult, accountType: "teen" };
+  renderProfile();
+  expect(screen.getAllByRole("heading", { level: 2 }).map((h) => h.textContent)).toEqual(["You", "Sharing"]);
 });
 
 it("loads only the chosen setting, supports a bookmarked page and returns to the hub", async () => {
@@ -118,39 +140,112 @@ it("saves details without silently submitting a privacy choice", async () => {
   expect(await screen.findByText("Profile saved.")).toBeInTheDocument();
 });
 
-it("defaults adult privacy off and saves only that choice", async () => {
+it("saves the privacy choice the moment it changes, with no Save button", async () => {
   renderProfile("/profile/privacy");
-  expect(screen.getByRole("checkbox", { name: privacyLabel })).not.toBeChecked();
-  await userEvent.click(screen.getByRole("button", { name: "Save privacy" }));
-  expect(Profile.update).toHaveBeenCalledWith({ hideContactFromLeaders: false });
+  const toggle = screen.getByRole("checkbox", { name: privacyLabel });
+  expect(toggle).not.toBeChecked();
+  expect(screen.queryByRole("button", { name: "Save privacy" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/Save your privacy choice/)).not.toBeInTheDocument();
+  expect(Profile.update).not.toHaveBeenCalled();
+  await userEvent.click(toggle);
+  expect(Profile.update).toHaveBeenCalledWith({ hideContactFromLeaders: true });
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
+  expect(screen.getByRole("status")).toHaveTextContent("Saved");
   expect(actor.refresh).toHaveBeenCalledOnce();
-  expect(await screen.findByText("Privacy saved.")).toBeInTheDocument();
+  expect(toggle).toBeChecked();
 });
 
-it("saves a hidden adult choice and can turn it back off", async () => {
+it("saves turning a hidden choice back off", async () => {
   actor.user = { ...adult, hideContactFromLeaders: true };
   renderProfile("/profile/privacy");
   const toggle = screen.getByRole("checkbox", { name: privacyLabel });
   expect(toggle).toBeChecked();
-  await userEvent.click(screen.getByRole("button", { name: "Save privacy" }));
-  expect(Profile.update).toHaveBeenLastCalledWith({ hideContactFromLeaders: true });
   await userEvent.click(toggle);
-  await userEvent.click(screen.getByRole("button", { name: "Save privacy" }));
   expect(Profile.update).toHaveBeenLastCalledWith({ hideContactFromLeaders: false });
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
 });
 
-it("keeps an adult privacy draft after a failed save and never exposes server text", async () => {
+it("puts the privacy box back and says what went wrong when saving fails, without server text", async () => {
   vi.mocked(Profile.update).mockRejectedValueOnce(new ApiError(500, "private server text"));
   renderProfile("/profile/privacy");
   await userEvent.click(screen.getByRole("checkbox", { name: privacyLabel }));
-  await userEvent.click(screen.getByRole("button", { name: "Save privacy" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't save your changes.");
-  expect(screen.getByRole("checkbox", { name: privacyLabel })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: privacyLabel })).not.toBeChecked();
+  expect(screen.queryByText("Saved")).not.toBeInTheDocument();
   expect(screen.queryByText("private server text")).not.toBeInTheDocument();
   expect(actor.refresh).not.toHaveBeenCalled();
-  await userEvent.click(screen.getByRole("button", { name: "Save privacy" }));
-  expect(await screen.findByText("Privacy saved.")).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("checkbox", { name: privacyLabel }));
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
   expect(Profile.update).toHaveBeenLastCalledWith({ hideContactFromLeaders: true });
+});
+
+it("disables the privacy box while it saves, so a second change waits for the first", async () => {
+  let finish: (v: { user: User }) => void = () => {};
+  vi.mocked(Profile.update).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+  renderProfile("/profile/privacy");
+  const toggle = screen.getByRole("checkbox", { name: privacyLabel });
+  await userEvent.click(toggle);
+  expect(toggle).toBeDisabled();
+  await userEvent.click(toggle);
+  expect(Profile.update).toHaveBeenCalledOnce();
+  await act(async () => { finish({ user: adult }); });
+  expect(await screen.findByText("Saved")).toHaveClass("text-success");
+  expect(toggle).toBeEnabled();
+});
+
+it("does not count trailing spaces as unsaved profile edits", async () => {
+  renderProfile("/profile/details");
+  const closing = () => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
+  await userEvent.type(screen.getByLabelText("Full name"), "   ");
+  expect(closing()).toBe(false);
+  await userEvent.type(screen.getByLabelText("Full name"), "x");
+  expect(closing()).toBe(true);
+});
+
+it("lists Full name first, then an optional Preferred name with its hint, and shows initials until there is a photo", () => {
+  renderProfile("/profile/details");
+  const boxes = screen.getAllByRole("textbox").map((el) => el.id);
+  expect(boxes.indexOf("profile-full-name")).toBeLessThan(boxes.indexOf("profile-display-name"));
+  const preferred = screen.getByLabelText(/^Preferred name/);
+  expect(preferred).toHaveValue("Pat");
+  expect(preferred).toHaveAccessibleDescription("We’ll use this in lists, for example Bob instead of Robert.");
+  expect(screen.queryByLabelText(/^Display name/)).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Choose photo" })).toBeInTheDocument();
+  expect(screen.getByText("P")).toBeInTheDocument();
+  expect(screen.queryByText("Tap or click the image to move the focal point — faces stay centered when cropped.")).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Change your sign-in email" })).not.toBeInTheDocument();
+});
+
+it("saves a changed preferred name under the same API key", async () => {
+  renderProfile("/profile/details");
+  const preferred = screen.getByLabelText(/^Preferred name/);
+  await userEvent.clear(preferred);
+  await userEvent.type(preferred, "Patty");
+  await userEvent.click(screen.getByRole("button", { name: "Save profile" }));
+  expect(Profile.update).toHaveBeenCalledWith({ displayName: "Patty", name: "Pat Smith", phone: adult.phone, timezone: "America/Boise" });
+});
+
+it("asks before the tab closes while profile details have unsaved edits", async () => {
+  renderProfile("/profile/details");
+  const closing = () => { const e = new Event("beforeunload", { cancelable: true }); window.dispatchEvent(e); return e.defaultPrevented; };
+  expect(closing()).toBe(false);
+  await userEvent.type(screen.getByLabelText("Full name"), "x");
+  expect(closing()).toBe(true);
+});
+
+it("shows the invite hints and the review line", () => {
+  renderProfile("/profile/invite");
+  expect(screen.getByText("Ask for an account for a friend, who only hears from us once it’s approved.")).toBeInTheDocument();
+  expect(screen.getByText("Teen and child accounts need a parent or guardian.")).toBeInTheDocument();
+  expect(screen.getByText("An admin reviews it first.")).toBeInTheDocument();
+});
+
+it("embeds the household under its own h1 without a second heading", async () => {
+  renderProfile("/profile/household");
+  await act(async () => { chunk.finish(); await chunk.ready; });
+  expect(await screen.findByText("Household loaded")).toBeInTheDocument();
+  expect(screen.getAllByRole("heading", { level: 1 }).map((h) => h.textContent)).toEqual(["Household"]);
+  expect(screen.queryByRole("heading", { name: "My household" })).not.toBeInTheDocument();
 });
 
 it("explains immutable teen privacy without editing or saving it", () => {
@@ -158,7 +253,6 @@ it("explains immutable teen privacy without editing or saving it", () => {
   renderProfile("/profile/privacy");
   expect(screen.getByText(/Your email and phone are always hidden from group leaders and event hosts/)).toBeInTheDocument();
   expect(screen.queryByRole("checkbox", { name: privacyLabel })).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Save privacy" })).not.toBeInTheDocument();
   expect(Profile.update).not.toHaveBeenCalled();
 });
 
@@ -175,7 +269,7 @@ it.each(["household", "guardian", "invite", "unknown"])("returns a teen's unavai
   actor.user = { ...adult, accountType: "teen", hideContactFromLeaders: true };
   renderProfile(`/profile/${section}`);
   expect(screen.getByRole("heading", { level: 1, name: "Your profile" })).toBeInTheDocument();
-  for (const name of ["Household", "Parent or guardian link", "Invite someone"]) expect(screen.queryByRole("link", { name })).not.toBeInTheDocument();
+  for (const name of ["Household", "Parent or guardian link", "Invite someone"]) expect(screen.queryByRole("link", { name: new RegExp(`^${name}`) })).not.toBeInTheDocument();
   expect(screen.queryByText("Household loaded")).not.toBeInTheDocument();
   expect(screen.queryByText("Guardian links loaded")).not.toBeInTheDocument();
   expect(Profile.update).not.toHaveBeenCalled();

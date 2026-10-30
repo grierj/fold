@@ -36,6 +36,7 @@ test("group teen ask uses opaque selection, both approvals and neutral hidden pr
   await expect(membersTab).toHaveAttribute("aria-selected", "true");
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
   await expect(membersPanel).toBeVisible();
+  await page.getByRole("button", { name: "Add people" }).click();
   const picker = page.getByRole("combobox", { name: "Find a person by name" });
   await picker.fill("Ask Teen"); await expect(await soon(page.getByRole("option", { name: /Ask Teen/ }))).toBeVisible();
   await picker.press("ArrowDown"); await picker.press("Enter");

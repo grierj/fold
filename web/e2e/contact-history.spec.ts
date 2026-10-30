@@ -97,6 +97,8 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   save("actual-history", json); save("domain-ids", { personId, adultId: String(adult.id), groupId: String(group.id) });
   await capture(page, "loaded");
 
+  // Purpose, action and dates sit under "Filters" (DEC-99).
+  await page.getByRole("button", { name: "Filters", exact: true }).click();
   await page.getByLabel("Direct contact", { exact: true }).check();
   await page.getByLabel("Action (optional)").selectOption("contact.reveal");
   await page.getByLabel("From (optional)").fill("2020-01-01");
@@ -160,15 +162,15 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   // Retention uses the manual field, not a live-account lookup or test route.
   await (await apiAs(request, adminName))("DELETE", `/admin/users/${adult.id}`);
   await page.goto("/admin/contact-history");
-  await (await soon(page.getByText("Use a saved person ID", { exact: true }))).click();
+  await (await soon(page.getByText("Look up a deleted account", { exact: true }))).click();
   const savedPersonID = page.getByLabel("Saved person ID", { exact: true });
   await savedPersonID.fill(String(adult.id));
-  await page.getByRole("button", { name: "Apply filters" }).click();
+  await page.getByRole("button", { name: "Show history" }).click();
   await expect(page.getByRole("heading", { name: "Contact requested", exact: true })).toBeVisible();
   const retained = await (await page.request.get(`/api/v1/admin/users/${String(adult.id)}/contact-history`)).json(); save("deleted-retained", retained);
   expect(retained.entries.some((e: { action: string }) => e.action === "contact.requested")).toBe(true);
   await savedPersonID.fill("9223372036854775807");
-  await page.getByRole("button", { name: "Apply filters" }).click();
+  await page.getByRole("button", { name: "Show history" }).click();
   await expect(page.getByText("No matching history", { exact: true })).toBeVisible();
 
   await signInTo(page, leaderLogin, historyPath);

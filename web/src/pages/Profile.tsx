@@ -13,6 +13,7 @@ import { CalendarFeedCard } from "../components/CalendarFeedCard";
 import { ProfileEmailForm, ProfilePasswordForm } from "../components/ProfileSecurityForms";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { errorText } from "../lib/errors";
+import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { Checkbox, Field, FormError, Input } from "../components/ui/Field";
 import { Skeleton } from "../components/ui/Skeleton";
 import { HouseholdSkeleton } from "../components/HouseholdSkeleton";
@@ -20,15 +21,24 @@ import { HouseholdSkeleton } from "../components/HouseholdSkeleton";
 const HouseholdCard = lazy(() => import("../components/HouseholdCard").then((m) => ({ default: m.HouseholdCard })));
 const GuardianConsentCard = lazy(() => import("../components/GuardianConsentCard").then((m) => ({ default: m.GuardianConsentCard })));
 
-const sections: { id: string; label: string; adultOnly?: boolean }[] = [
-  { id: "details", label: "Profile details" },
-  { id: "privacy", label: "Privacy" },
-  { id: "security", label: "Email and password" },
-  { id: "calendar", label: "Calendar feed" },
-  { id: "household", label: "Household", adultOnly: true },
-  { id: "guardian", label: "Parent or guardian link", adultOnly: true },
-  { id: "invite", label: "Invite someone", adultOnly: true },
-  { id: "requests", label: "Requests" },
+type Section = { id: string; label: string; description: string; adultOnly?: boolean };
+
+// Me groups its rows under quiet headings, each with a one-line description (DEC-99).
+const sectionGroups: { heading: string; items: Section[] }[] = [
+  { heading: "You", items: [
+    { id: "details", label: "Profile details", description: "Name, photo and time zone" },
+    { id: "security", label: "Email and password", description: "How you sign in" },
+    { id: "privacy", label: "Privacy", description: "Hide your contact info from leaders" },
+  ] },
+  { heading: "Family", items: [
+    { id: "household", label: "Household", description: "Family members you sign up with you", adultOnly: true },
+    { id: "guardian", label: "Parent or guardian link", description: "Connect a parent or guardian", adultOnly: true },
+  ] },
+  { heading: "Sharing", items: [
+    { id: "calendar", label: "Calendar feed", description: "Add Fold dates to your phone's calendar" },
+    { id: "invite", label: "Invite someone", description: "Ask an admin to let someone in", adultOnly: true },
+    { id: "requests", label: "Contact and add requests", description: "Requests to reach or add you" },
+  ] },
 ];
 
 export function ProfilePage() {
@@ -42,14 +52,33 @@ export function ProfilePage() {
     <Link to="/login" state={{ from: location.pathname + location.search }} className="text-primary font-semibold">Log in</Link> to view your profile.
   </div>;
 
-  const available = sections.filter((item) => !item.adultOnly || user.accountType !== "teen");
-  const selected = available.find((item) => item.id === section);
+  const groups = sectionGroups
+    .map((group) => ({ ...group, items: group.items.filter((item) => !item.adultOnly || user.accountType !== "teen") }))
+    .filter((group) => group.items.length > 0);
+  const selected = groups.flatMap((group) => group.items).find((item) => item.id === section);
   if (section && !selected) return <Navigate to="/profile" replace />;
   const publicName = user.displayName || user.name || "Member";
-  const menu = <nav aria-label="Profile settings" className="rounded-lg border border-border bg-surface divide-y divide-border overflow-hidden">
-    {available.map((item) => <NavLink key={item.id} to={`/profile/${item.id}`} className={({ isActive }) => `flex min-h-11 items-center justify-between gap-3 px-4 py-2 ${isActive ? "bg-primary-subtle text-primary font-semibold" : "text-text hover:bg-page"}`}>
-      <span>{item.label}</span><span aria-hidden="true" className="shrink-0">›</span>
-    </NavLink>)}
+  // The hub shows headings and descriptions; the desktop sidebar keeps the
+  // headings but not the descriptions, so it stays short.
+  const menu = (hub: boolean) => <nav aria-label="Profile settings" className="space-y-5">
+    {groups.map((group) => {
+      const headingId = `profile-group-${hub ? "hub" : "side"}-${group.heading}`;
+      return <div key={group.heading} role="group" aria-labelledby={headingId}>
+        {hub
+          ? <h2 id={headingId} className="mb-2 text-sm font-semibold text-text-muted">{group.heading}</h2>
+          : <p id={headingId} className="mb-2 text-sm font-semibold text-text-muted">{group.heading}</p>}
+        <div className="rounded-lg border border-border bg-surface divide-y divide-border overflow-hidden">
+          {group.items.map((item) => <NavLink key={item.id} to={`/profile/${item.id}`} className={({ isActive }) => `flex min-h-11 items-center justify-between gap-3 px-4 py-2 ${isActive ? "bg-primary-subtle text-primary font-semibold" : "text-text hover:bg-page"}`}>
+            <span className="min-w-0">
+              {/* The link's name is its whole visible text, label then description (axe label-content-name-mismatch). */}
+              <span className="block">{item.label}</span>
+              {hub && <>{" "}<span className="block text-sm font-normal text-text-muted">{item.description}</span></>}
+            </span>
+            <span aria-hidden="true" className="shrink-0">›</span>
+          </NavLink>)}
+        </div>
+      </div>;
+    })}
   </nav>;
 
   if (!selected) return <div className="max-w-xl mx-auto px-4 py-8 space-y-6 wrap-anywhere">
@@ -59,7 +88,7 @@ export function ProfilePage() {
       <div><p className="text-xl font-semibold">{publicName}</p><p className="text-text-muted">Choose what you want to update.</p></div>
     </div>
     {isAdmin && <Link to="/admin" className="sm:hidden flex min-h-11 items-center gap-3 rounded-lg border border-border bg-surface px-4 font-medium"><AdminIcon />Admin</Link>}
-    {menu}
+    {menu(true)}
     {/* The header already offers Log out on desktop; phones reach it here. */}
     <Button variant="secondary" layout="sm:hidden w-full" onClick={logout}>Log out</Button>
   </div>;
@@ -76,7 +105,7 @@ export function ProfilePage() {
     <div className="sm:grid sm:grid-cols-3 sm:gap-8">
       <aside className="hidden sm:block space-y-4">
         <ButtonLink variant="link" to="/profile">Your profile</ButtonLink>
-        {menu}
+        {menu(false)}
       </aside>
       <div className="min-w-0 sm:col-span-2 space-y-6">
         <ButtonLink variant="link" to="/profile" layout="sm:hidden">Back to your profile</ButtonLink>
@@ -92,10 +121,10 @@ export function ProfilePage() {
             {securityTab === "email" ? <ProfileEmailForm /> : <ProfilePasswordForm />}
           </>}
           {section === "calendar" && <CalendarFeedCard showHeading={false} />}
-          {section === "household" && <Suspense fallback={<HouseholdSkeleton />}><HouseholdCard /></Suspense>}
+          {section === "household" && <Suspense fallback={<HouseholdSkeleton showHeading={false} />}><HouseholdCard showHeading={false} /></Suspense>}
           {section === "guardian" && <Suspense fallback={<Skeleton kind="lines" count={3} label="Loading your guardian links…" />}><GuardianConsentCard /></Suspense>}
           {section === "invite" && <div className="space-y-4">
-            <p className="text-text-muted">Ask for an account for a friend. An admin reviews it first, and your friend only hears from us once it’s approved. Leaders and admins can also send a direct invitation from the Admin page.</p>
+            <p className="text-text-muted">Ask for an account for a friend, who only hears from us once it’s approved.</p>
             <AccountRequestForm submitLabel="Ask an admin to invite them" subject="friend" onSubmit={(data) => AccountRequests.inviteFriend(data)} />
           </div>}
           {section === "requests" && <div className="space-y-4">
@@ -123,11 +152,13 @@ function ProfileDetails() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dn = displayName ?? user?.displayName ?? "";
+  const fullName = name ?? user?.name ?? "";
+  const ph = phone ?? user?.phone ?? "";
+  const tz = zone ?? user?.timezone ?? "";
+  // Leaving with edits that aren't saved yet asks first (DEC-98).
+  const { guard } = useUnsavedChanges(!!user && (dn.trim() !== user.displayName || fullName.trim() !== user.name || ph.trim() !== user.phone || tz.trim() !== user.timezone));
   if (!user) return null;
-  const dn = displayName ?? user.displayName;
-  const fullName = name ?? user.name;
-  const ph = phone ?? user.phone;
-  const tz = zone ?? user.timezone;
   const focalX = user.avatarFocalX;
   const focalY = user.avatarFocalY;
 
@@ -167,45 +198,51 @@ function ProfileDetails() {
   }
   return <div className="space-y-6">
     {user.accountType !== "teen" && <div className="bg-surface rounded-lg border border-border p-6">
-      <ImageUpload key={user.avatarUrl || "none"} label="Profile picture" initialUrl={user.avatarUrl || undefined} initialFocal={{ x: focalX, y: focalY }} maxDim={512} aspectClass="aspect-square max-w-48!" onFile={savePictureFile} onFocal={saveFocal} />
+      <ImageUpload key={user.avatarUrl || "none"} label="Profile picture" initialUrl={user.avatarUrl || undefined} initialFocal={{ x: focalX, y: focalY }} maxDim={512} aspectClass="aspect-square max-w-48!" placeholderName={user.displayName || user.name || "Member"} onFile={savePictureFile} onFocal={saveFocal} />
       <p className="text-xs text-text-muted mt-3">A new picture is saved as soon as you choose it.</p>
       {pictureStatus && <p role="status" className="text-success text-sm mt-3">{pictureStatus}</p>}
       {pictureError && <FormError layout="mt-3">{pictureError}</FormError>}
       {user.avatarUrl && <Button variant="danger-outline" layout="mt-3" onClick={removeAvatar} disabled={pictureBusy}>Remove picture</Button>}
     </div>}
     <Form noValidate onSubmit={save} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+      {guard}
       {error && <FormError>{error}</FormError>}
       {saved && <p role="status" className="text-success text-sm">Profile saved.</p>}
-      <Field id="profile-display-name" label="Display name" optional hint="How your name appears to others."><Input value={dn} onChange={(e) => setDisplayName(e.target.value)} maxLength={100} /></Field>
       <Field id="profile-full-name" label="Full name"><Input value={fullName} onChange={(e) => setName(e.target.value)} maxLength={100} /></Field>
+      <Field id="profile-display-name" label="Preferred name" optional hint="We’ll use this in lists, for example Bob instead of Robert."><Input value={dn} onChange={(e) => setDisplayName(e.target.value)} maxLength={100} /></Field>
       <Field id="profile-phone" label="Phone" optional><Input type="tel" value={ph} onChange={(e) => setPhone(e.target.value)} maxLength={30} /></Field>
       <Field id="profile-tz" label="Time zone for emails" hint="Emails show event times in this zone. On screen, times always follow this device’s clock."><ZonePicker value={tz} onChange={setZone} /></Field>
       <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={saving}>{saving ? "Saving…" : "Save profile"}</Button>
     </Form>
-    <ButtonLink variant="link" to="/profile/security">Change your sign-in email</ButtonLink>
   </div>;
 }
 
+// One on/off choice saves the moment it changes (DEC-98). If saving fails the
+// box goes back to what it was and says why.
 function ProfilePrivacy() {
   const { user, refresh } = useAuth();
   const [value, setValue] = useState<boolean | null>(null);
-  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   if (!user) return null;
   if (user.accountType === "teen") return <p className="text-text-muted">Your email and phone are always hidden from group leaders and event hosts. You, admins, and your confirmed guardians can still see them.</p>;
   const hideContact = value ?? user.hideContactFromLeaders;
-  async function save(e: React.FormEvent) {
-    e.preventDefault(); setSaving(true); setError(null); setSaved(false);
+  async function change(next: boolean) {
+    // The box is disabled while a save is in flight, so changes are one at a
+    // time and a failure goes back to the value from before this save.
+    setSaving(true); setValue(next); setSaved(false); setError(null);
     try {
-      await ProfileApi.update({ hideContactFromLeaders: hideContact }); await refresh(); setSaved(true);
-    } catch (err) { setError(errorText(err, "We couldn't save your changes.")); }
-    finally { setSaving(false); }
+      await ProfileApi.update({ hideContactFromLeaders: next }); await refresh();
+      setSaved(true);
+    } catch (err) {
+      setValue(null);
+      setError(errorText(err, "We couldn't save your changes."));
+    } finally { setSaving(false); }
   }
-  return <Form noValidate onSubmit={save} className="bg-surface rounded-lg border border-border p-6 space-y-4">
+  return <div className="bg-surface rounded-lg border border-border p-6 space-y-3">
     {error && <FormError>{error}</FormError>}
-    {saved && <p role="status" className="text-success text-sm">Privacy saved.</p>}
-    <Checkbox label="Hide my contact info from group leaders" description="Hide your email and phone from group leaders and event hosts. Admins can still see them. Save your privacy choice to apply it." checked={hideContact} disabled={saving} onChange={(e) => { setValue(e.target.checked); setSaved(false); }} />
-    <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={saving}>{saving ? "Saving…" : "Save privacy"}</Button>
-  </Form>;
+    <Checkbox label="Hide my contact info from group leaders" description="Hide your email and phone from group leaders and event hosts. Admins can still see them." checked={hideContact} disabled={saving} onChange={(e) => void change(e.target.checked)} />
+    <p role="status" className="text-success text-sm">{saved ? "Saved" : ""}</p>
+  </div>;
 }

@@ -1162,3 +1162,84 @@ func TestAdminCreateUserAuditRecordsRole(t *testing.T) {
 		t.Fatalf("creation audit meta: %s", entry.MetaJSON)
 	}
 }
+
+// A leader hears how an admin decided their new group, whether the admin used
+// Approve/Reject or edited the group's status (DEC-96).
+func TestLeadersHearGroupDecisions(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	lc := loginAPI(t, app, "leader", "password1234")
+	create := func(name string) string {
+		t.Helper()
+		var body struct {
+			Group groupSummaryJSON `json:"group"`
+		}
+		decodeJSON(t, lc.do("POST", "/api/v1/groups", map[string]any{"name": name}, true), &body)
+		if body.Group.Status != models.GroupPending {
+			t.Fatalf("%s: status %q, want pending", name, body.Group.Status)
+		}
+		return itoa(body.Group.ID)
+	}
+	notice := func(kind, gid string) models.Notification {
+		t.Helper()
+		var n models.Notification
+		if err := app.DB.Where("user_id = ? AND kind = ? AND subject_id = ?", leader.ID, kind, gid).First(&n).Error; err != nil {
+			t.Fatalf("%s for group %s: %v", kind, gid, err)
+		}
+		return n
+	}
+
+	approved := create("Choir")
+	if w := admin.do("POST", "/api/v1/admin/groups/"+approved+"/approve", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", w.Code, w.Body.String())
+	}
+	if n := notice("group.approved", approved); n.Title != "Choir was approved" || n.Link != "/groups/"+approved {
+		t.Fatalf("approved notice: %+v", n)
+	}
+
+	rejected := create("Night hikes")
+	if w := admin.do("POST", "/api/v1/admin/groups/"+rejected+"/reject", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("reject: %d %s", w.Code, w.Body.String())
+	}
+	if n := notice("group.rejected", rejected); n.Title != "Night hikes wasn't approved" {
+		t.Fatalf("rejected notice: %+v", n)
+	}
+
+	edited := create("Book club")
+	if w := admin.do("PUT", "/api/v1/groups/"+edited, map[string]any{"status": models.GroupActive}, true); w.Code != http.StatusOK {
+		t.Fatalf("activate by edit: %d %s", w.Code, w.Body.String())
+	}
+	notice("group.approved", edited)
+
+	// Set back to pending and approved again: a second decision is a second notice.
+	if w := admin.do("PUT", "/api/v1/groups/"+approved, map[string]any{"status": models.GroupPending}, true); w.Code != http.StatusOK {
+		t.Fatalf("back to pending: %d %s", w.Code, w.Body.String())
+	}
+	if w := admin.do("POST", "/api/v1/admin/groups/"+approved+"/approve", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("approve again: %d %s", w.Code, w.Body.String())
+	}
+	if n := contactCount(t, app, &models.Notification{}, "user_id = ? AND kind = ? AND subject_id = ?", leader.ID, "group.approved", approved); n != 2 {
+		t.Fatalf("approved notices after a second decision: %d, want 2", n)
+	}
+
+	// A leader archiving their own pending group isn't an admin's decision, so
+	// a co-leader hears nothing.
+	coLeader := newTestUser(t, app, "co-leader", "password1234", models.RoleMember)
+	withdrawn := create("Withdrawn idea")
+	var wg models.Group
+	app.DB.First(&wg, withdrawn)
+	addMember(t, app, coLeader, &wg, models.MembershipLeader)
+	if w := lc.do("PUT", "/api/v1/groups/"+withdrawn, map[string]any{"status": models.GroupArchived}, true); w.Code != http.StatusOK {
+		t.Fatalf("leader archives own pending group: %d %s", w.Code, w.Body.String())
+	}
+	if n := contactCount(t, app, &models.Notification{}, "subject_id = ? AND kind IN ?", withdrawn, []string{"group.approved", "group.rejected"}); n != 0 {
+		t.Fatalf("a leader's own withdrawal sent %d decision notices", n)
+	}
+
+	// The deciding admin, who isn't a leader, gets nothing; nobody else does either.
+	if n := contactCount(t, app, &models.Notification{}, "kind IN ? AND user_id NOT IN ?", []string{"group.approved", "group.rejected"}, []uint{leader.ID}); n != 0 {
+		t.Fatalf("%d decision notices went to someone other than the leader", n)
+	}
+}

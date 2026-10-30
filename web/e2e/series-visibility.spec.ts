@@ -19,18 +19,20 @@ test("visibility is chosen at creation and edited inside Edit series", async ({ 
   const schedule = async (title: string, days: number, choice?: string) => {
     await page.goto(`/groups/${group.id}/events/new`);
     const vis = (v: string) => page.getByRole("group", { name: "Who can see this event" }).locator(`input[value="${v}"]`);
+    // Visibility lives under More options, closed on create (DEC-95).
+    await page.getByRole("button", { name: "More options" }).click();
     await expect(vis("private")).toBeChecked();
     await page.getByLabel("Title (optional)").fill(title);
-    await page.getByLabel("Date").fill(futureDate(days));
+    await page.getByLabel("Date", { exact: true }).fill(futureDate(days));
     await page.getByLabel("Start time").fill("19:00");
     if (choice) {
       await vis(choice).check();
       await expect(page.getByText("Only leaders will see who signed up")).toBeVisible();
       await page.getByLabel("Reason (optional)").fill("Open rehearsal");
     }
-    // Turning on "Repeat weekly" selects the start date's weekday. Clicking
+    // Choosing "Every week" selects the start date's weekday. Clicking
     // a fixed day here toggled it off whenever that date was a Monday.
-    await page.getByText("Repeat weekly").click();
+    await page.getByRole("button", { name: "Every week" }).click();
     await page.getByRole("button", { name: "Schedule event" }).click();
     await expect(page).toHaveURL(new RegExp(`/groups/${group.id}$`));
   };

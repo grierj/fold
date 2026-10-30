@@ -34,7 +34,15 @@ describe("AccountRequestForm age gate (M1.3, DEC-8)", () => {
     render(<AccountRequestForm submitLabel="Ask an admin to invite them" subject="friend" onSubmit={onSubmit} />);
     expect(screen.getByText("This is the address they will sign in with.")).toBeInTheDocument();
     expect(screen.getByText("Their age")).toBeInTheDocument();
+    expect(screen.getByText("Teen and child accounts need a parent or guardian.")).toBeInTheDocument();
+    expect(screen.getByText("An admin reviews it first.")).toBeInTheDocument();
     expect(screen.queryByText("This is the address you will sign in with.")).not.toBeInTheDocument();
+  });
+
+  it("leaves the friend-only lines off the self-signup form", () => {
+    render(<AccountRequestForm submitLabel="Request an account" onSubmit={vi.fn()} />);
+    expect(screen.queryByText("Teen and child accounts need a parent or guardian.")).not.toBeInTheDocument();
+    expect(screen.queryByText("An admin reviews it first.")).not.toBeInTheDocument();
   });
 
   it("adults submit without a birth date", async () => {

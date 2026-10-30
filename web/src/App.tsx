@@ -10,6 +10,7 @@ import { Skeleton } from "./components/ui/Skeleton";
 import { NotFound } from "./pages/NotFound";
 import { setOnUnauthorized } from "./api";
 import { useAuth } from "./auth";
+import { UnsavedChangesBlocker } from "./lib/unsavedChanges";
 
 const NewGroup = lazy(() => import("./pages/NewGroup").then((m) => ({ default: m.NewGroup })));
 const NewEvent = lazy(() => import("./pages/NewEvent").then((m) => ({ default: m.NewEvent })));
@@ -57,6 +58,7 @@ export default function App() {
     // header, so nothing fetched for the previous user (or while signed out)
     // survives. Routes wait for the session check so pages fetch once.
     <Layout key={user ? `${user.id}:${user.status}` : "anon"}>
+      <UnsavedChangesBlocker />
       <Suspense fallback={<Skeleton kind="page" label="Loading page…" />}>
       <Routes>
         <Route path="/" element={<Home />} />

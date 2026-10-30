@@ -81,7 +81,7 @@ export function AccountRequestForm({
       <Field id="arq-phone" label="Phone" optional>
         <Input type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} maxLength={30} autoComplete="tel" />
       </Field>
-      <AccountAgeFields id="arq" label={friend ? "Their age" : "Your age"} ageBand={ageBand} birthDate={birthDate} onAgeBand={setAgeBand} onBirthDate={setBirthDate} />
+      <AccountAgeFields id="arq" label={friend ? "Their age" : "Your age"} hint={friend ? "Teen and child accounts need a parent or guardian." : undefined} ageBand={ageBand} birthDate={birthDate} onAgeBand={setAgeBand} onBirthDate={setBirthDate} />
       {ageBand === "teen" && !friend && <Field id="arq-guardian" label="Parent or guardian's email" optional hint="An admin checks every guardian link. Your guardian needs their own adult account before they can give consent.">
         <Input type="email" value={guardianEmail} onChange={(e) => setGuardianEmail(e.target.value)} maxLength={254} />
       </Field>}
@@ -90,9 +90,12 @@ export function AccountRequestForm({
       </Field>
       <Honeypot value={website} onChange={setWebsite} />
       {ageBand !== "under13" && (
-        <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
-          {busy ? "Sending…" : submitLabel}
-        </Button>
+        <div className="space-y-2">
+          <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
+            {busy ? "Sending…" : submitLabel}
+          </Button>
+          {friend && <p className="text-sm text-text-muted">An admin reviews it first.</p>}
+        </div>
       )}
     </Form>
   );

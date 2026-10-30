@@ -1,16 +1,18 @@
+import type { ReactNode } from "react";
 import type { AgeBand } from "../types";
 import { Choices, Field, Input, Radio } from "./ui/Field";
 
-export function AccountAgeFields({ id, label = "Your age", ageBand, birthDate, onAgeBand, onBirthDate }: {
+export function AccountAgeFields({ id, label = "Your age", hint, ageBand, birthDate, onAgeBand, onBirthDate }: {
   id: string;
   label?: string;
+  hint?: ReactNode;
   ageBand: AgeBand;
   birthDate: string;
   onAgeBand: (value: AgeBand) => void;
   onBirthDate: (value: string) => void;
 }) {
   return <>
-    <Choices legend={label}>
+    <Choices legend={label} hint={hint}>
       <Radio name={`${id}-age`} label="18 or older" checked={ageBand === "adult"} onChange={() => onAgeBand("adult")} />
       <Radio name={`${id}-age`} label="13 to 17" checked={ageBand === "teen"} onChange={() => onAgeBand("teen")} />
       <Radio name={`${id}-age`} label="Under 13" checked={ageBand === "under13"} onChange={() => onAgeBand("under13")} />

@@ -109,7 +109,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     await page.goto("/notifications");
     await (await soon(page.getByRole("link", { name: /You have a date invitation/ }))).click();
     await expect(page).toHaveURL(new RegExp(path + "$"));
-    await expect(await soon(page.getByText("Your answer: Going", { exact: true }))).toBeVisible();
+    await expect(await soon(page.getByText("You're going. See you there!", { exact: true }))).toBeVisible();
     const exact = await (await page.request.get(`/api/v1${path}`)).json();
     for (const key of ["groupId", "groupName", "hostedBy", "hosts", "attendees", "removedRegistrations", "recurrenceRule", "seriesTitle", "description", "canManage", "myHouseholdRegistrations", "myChildcareCount", "myChildcareAgesNote"]) expect(exact.occurrence).not.toHaveProperty(key);
     expect(exact.occurrence.canSeeVideo).toBe(true); expect(exact.occurrence.videoUrl).toBe("https://example.com/exact-private-call");
@@ -129,7 +129,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     // rather than clear the accepted request's options with invented defaults.
     await page.goto(otherPath);
     await (await soon(page.getByRole("button", { name: "Going", exact: true }))).click();
-    await expect(page.getByText("Your answer: Going", { exact: true })).toBeVisible();
+    await expect(page.getByText("You're going. See you there!", { exact: true })).toBeVisible();
     const retained = await admin("GET", `/events/${event.id}`);
     const retainedCare = retained.occurrences[1].attendees.find((a: { userId: number }) => a.userId === user.id);
     expect(retainedCare.childcareCount).toBe(1); expect(retainedCare.childcareAgesNote).toBe("Age 5, keep this care request");
@@ -141,7 +141,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     save(`${scenario}-calendar`, calendar);
     for (const hidden of [`/events/${event.id}`, `/groups/${group.id}`, `/events/${event.id}/dates/${sibling.date}`]) expect((await page.request.get(`/api/v1${hidden}`)).status()).toBe(404);
     await selectedLink.focus(); await page.keyboard.press("Enter");
-    await expect(await soon(page.getByText("Your answer: Going", { exact: true }))).toBeVisible();
+    await expect(await soon(page.getByText("You're going. See you there!", { exact: true }))).toBeVisible();
     // Own scoped RSVP, not household/proxy or ordinary RSVP. The real server
     // returns the current answer after each save; mode/guests are explicit.
     if (scenario === "adult-decline") {
@@ -154,7 +154,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
       await admin("PUT", `/events/${event.id}`, { capacity: 10 });
       await page.getByLabel("Guests", { exact: true }).fill("0");
       await page.getByRole("button", { name: "Maybe", exact: true }).click();
-      await expect(page.getByText("Your answer: Maybe", { exact: true })).toBeVisible();
+      await expect(page.getByText("You said maybe. Change it anytime.", { exact: true })).toBeVisible();
       await expect(page.getByRole("link", { name: /Join video call/ })).toHaveCount(0);
       const maybe = await (await page.request.get(`/api/v1${path}`)).json();
       expect(maybe.occurrence.canSeeVideo).toBe(false); expect(maybe.occurrence).not.toHaveProperty("videoUrl");

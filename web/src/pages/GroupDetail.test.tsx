@@ -1,15 +1,16 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
+import { Link, MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError, Events, Groups, Households, People } from "../api";
 import type { GroupDetailResponse, Household, User } from "../types";
 import { occurrence } from "../test/occurrence";
+import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { GroupDetail } from "./GroupDetail";
 
 const actor = vi.hoisted(() => ({ user: { id: 2, accountType: "adult", hideContactFromLeaders: false } as User | null }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, isAdmin: false }) }));
-vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), People: { search: vi.fn() }, Groups: { get: vi.fn(), addMember: vi.fn(), join: vi.fn(), departurePreview: vi.fn(), confirmDeparture: vi.fn(), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() }, Events: { register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() }, Households: { mine: vi.fn() } }));
+vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), People: { search: vi.fn() }, Groups: { get: vi.fn(), update: vi.fn(), addMember: vi.fn(), join: vi.fn(), departurePreview: vi.fn(), confirmDeparture: vi.fn(), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() }, Events: { register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() }, Households: { mine: vi.fn() } }));
 const family: Household = { id: 1, name: "Family", address: "", createdBy: 2, accounts: [], people: [{ id: 3, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary", kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] };
 const page: GroupDetailResponse = { group: { id: 1, name: "Family group", description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Hall", leaderName: "Leader", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null }, members: [], upcomingEvents: [occurrence({})], truncated: false, hasMore: false, nextCursor: "", canManage: false, isMember: true };
 function open() { render(<MemoryRouter initialEntries={["/groups/1"]}><Routes><Route path="/groups/:id" element={<GroupDetail />} /></Routes></MemoryRouter>); }
@@ -207,11 +208,11 @@ it.each(["group_full", "teen_add_approval_required", "people_selection_unavailab
   vi.mocked(Groups.addMember).mockRejectedValueOnce(new ApiError(409, "private", { code })).mockResolvedValueOnce({});
   vi.spyOn(window, "confirm").mockReturnValue(true);
   open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
+  await userEvent.click(screen.getByRole("button", { name: "Add people" }));
   await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
-  expect(screen.getByLabelText("Add a member by email")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Add member" }));
-  expect(Groups.addMember).toHaveBeenNthCalledWith(1, "1", { selectionId: "opaque" });
-  if (code === "group_full") expect(Groups.addMember).toHaveBeenLastCalledWith("1", { selectionId: "opaque" }, true);
+  expect(Groups.addMember).toHaveBeenNthCalledWith(1, 1, { selectionId: "opaque" });
+  if (code === "group_full") expect(Groups.addMember).toHaveBeenLastCalledWith(1, { selectionId: "opaque" }, true);
   else { expect(Groups.addMember).toHaveBeenCalledTimes(1); expect(screen.getByRole("alert")).not.toHaveTextContent("private"); }
 });
 
@@ -220,8 +221,9 @@ it("offers an explicit Ask to add for a selected teen instead of direct add", as
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
   open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
+  await userEvent.click(screen.getByRole("button", { name: "Add people" }));
   await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
-  expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
+  expect(screen.getByText(/Adding a teen needs their approval/)).toHaveAttribute("role", "status");
   expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
   await userEvent.click(screen.getByRole("button", { name: "Ask to add" }));
   expect(screen.getByRole("button", { name: "Send ask to add" })).toBeInTheDocument();
@@ -530,4 +532,86 @@ it("invites a signed-out visitor to log in to join, and sends them to log in", a
   expect(screen.queryByRole("button", { name: "Join this group" })).not.toBeInTheDocument();
   await userEvent.click(await screen.findByRole("button", { name: "Log in to join" }));
   expect(await screen.findByRole("heading", { name: "Login page" })).toBeInTheDocument();
+});
+
+function Where() { const l = useLocation(); return <p>At {l.pathname}{l.search}</p>; }
+
+it("adds Manage sign-ups to each date's More menu for leaders, opening that date on the event page", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
+  render(<MemoryRouter initialEntries={["/groups/1"]}><Routes>
+    <Route path="/groups/:id" element={<GroupDetail />} />
+    <Route path="/events/:id" element={<Where />} />
+  </Routes></MemoryRouter>);
+  await userEvent.click(await screen.findByRole("button", { name: "More for Supper on 2026-12-01" }));
+  expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Edit this date", "Manage sign-ups", "Edit event", "Cancel this date"]);
+  await userEvent.click(screen.getByRole("menuitem", { name: "Manage sign-ups" }));
+  expect(await screen.findByText("At /events/7?manage=2026-12-01")).toBeInTheDocument();
+});
+
+it("keeps Manage sign-ups away from people who can't manage the group", async () => {
+  open();
+  await screen.findByRole("tablist");
+  expect(screen.queryByRole("button", { name: /^More for Supper/ })).not.toBeInTheDocument();
+});
+
+it("replaces the three add forms with one Add people button on the Members tab", async () => {
+  actor.user = { id: 2, status: "active", accountType: "adult" } as User;
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
+  open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
+  expect(screen.getAllByRole("button", { name: "Add people" })).toHaveLength(1);
+  for (const old of ["Invite someone to Fold", "Add a member by email", "Find a person by name"]) expect(screen.queryByLabelText(old)).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Add people" }));
+  expect(screen.getByRole("combobox", { name: "Find a person by name" })).toBeInTheDocument();
+});
+
+it("shows no Add people to someone who can't manage the group", async () => {
+  open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
+  expect(screen.queryByRole("button", { name: "Add people" })).not.toBeInTheDocument();
+});
+
+async function openEditor() {
+  await userEvent.click(await screen.findByRole("button", { name: "More group actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Edit group" }));
+}
+
+it("opens More options when editing, with tags, member limit and cover inside", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true, group: { ...page.group, tags: ["young-adults"], memberLimit: 12 } });
+  open(); await openEditor();
+  const more = screen.getByRole("button", { name: "More options" });
+  expect(more).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByLabelText(/Tags/)).toBeVisible();
+  expect(screen.getByLabelText(/Member limit/)).toHaveValue(12);
+  expect(screen.getByText("Cover image")).toBeVisible();
+  await userEvent.click(more);
+  expect(more).toHaveAttribute("aria-expanded", "false");
+  expect(screen.getByLabelText(/Tags/)).not.toBeVisible();
+  expect(screen.getByLabelText("Group name")).toBeVisible();
+});
+
+it("asks before leaving an edited group form, and not once saved", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
+  vi.mocked(Groups.update).mockResolvedValue({ group: page.group });
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const router = createMemoryRouter([
+    { path: "/groups/:id", element: <><UnsavedChangesBlocker /><Link to="/elsewhere">Elsewhere</Link><GroupDetail /></> },
+    { path: "/elsewhere", element: <p>Elsewhere page</p> },
+  ], { initialEntries: ["/groups/1"] });
+  render(<RouterProvider router={router} />);
+  await userEvent.click(await screen.findByRole("button", { name: "More group actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Edit group" }));
+  await userEvent.click(screen.getByRole("link", { name: "Elsewhere" }));
+  expect(confirm).not.toHaveBeenCalled(); // nothing edited yet
+  await router.navigate("/groups/1");
+  await userEvent.click(await screen.findByRole("button", { name: "More group actions" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Edit group" }));
+  await userEvent.type(screen.getByLabelText("Group name"), " Two");
+  await userEvent.click(screen.getByRole("link", { name: "Elsewhere" }));
+  expect(confirm).toHaveBeenCalledWith("Leave without saving? Your changes will be lost.");
+  expect(screen.queryByText("Elsewhere page")).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Save group" }));
+  await waitFor(() => expect(Groups.update).toHaveBeenCalled());
+  confirm.mockClear();
+  await userEvent.click(await screen.findByRole("link", { name: "Elsewhere" }));
+  expect(screen.getByText("Elsewhere page")).toBeInTheDocument();
+  expect(confirm).not.toHaveBeenCalled();
 });

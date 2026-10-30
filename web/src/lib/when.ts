@@ -268,3 +268,10 @@ export function greeting(now = new Date()): string {
   const hour = now.getHours();
   return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 }
+
+// The zone on an event form's When line: "Mountain time", or "UTC" (the
+// generic name of UTC reads oddly). Empty until the zone is known (DEC-95).
+export function zoneTimeName(tzid: string): string {
+  if (!tzid) return "";
+  return tzid === "UTC" || tzid === "Etc/UTC" ? "UTC" : zoneName(tzid);
+}

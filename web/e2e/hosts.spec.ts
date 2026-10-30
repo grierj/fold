@@ -10,11 +10,12 @@ function futureDate(days: number): string {
 test("an admin schedules a church-wide event in the church time zone", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/events/new");
+  await page.getByRole("button", { name: "Change time zone" }).click();
   await expect(page.getByLabel("Time zone")).toHaveAttribute("title", /America\/Boise$/);
 
   await page.getByLabel("Title").fill("Church potluck");
   await page.getByLabel("Description (optional)").fill("Bring a side dish.");
-  await page.getByLabel("Date").fill(futureDate(18));
+  await page.getByLabel("Date", { exact: true }).fill(futureDate(18));
   await page.getByLabel("Start time").fill("18:00");
   await page.getByRole("button", { name: "Schedule event" }).click();
 

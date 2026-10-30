@@ -1,13 +1,16 @@
 import { useEffect, useState } from "react";
 import { ContactHistory, retainedPersonId } from "../contact-history-api";
 import type { ContactHistoryPerson } from "../types";
+import { Button } from "./ui/Button";
 import { Field, Input, Select } from "./ui/Field";
 
-export function ContactHistoryPersonPicker({ value, name, error, onChange, onKnown, onFailure }: {
+export function ContactHistoryPersonPicker({ value, name, error, onChange, onPick, onKnown, onFailure }: {
   value: string;
   name?: string;
   error: string;
   onChange: (id: string) => void;
+  // Called when a person is chosen from the list, so the page can show their history at once.
+  onPick?: (id: string) => void;
   onKnown: (person: ContactHistoryPerson) => void;
   onFailure: (error: unknown) => void;
 }) {
@@ -71,14 +74,18 @@ export function ContactHistoryPersonPicker({ value, name, error, onChange, onKno
           onKnown(person);
         }
         onChange(id);
+        if (id) onPick?.(id);
       }} />
     </Field>
-    {!busy && !people.length && query.trim() && <p className="text-sm text-text-muted">No matching people. For a deleted account, use its saved person ID below.</p>}
+    {!busy && !people.length && query.trim() && <p className="text-sm text-text-muted">No matching people. For a deleted account, use "Look up a deleted account" below.</p>}
     <details open={advanced || Boolean(error)} onToggle={(e) => setAdvanced(e.currentTarget.open)}>
-      <summary className="min-h-11 cursor-pointer py-2 text-sm text-text-muted">Use a saved person ID</summary>
-      <Field id="history-retained-person-id" label="Saved person ID" hint="For a deleted account, enter the ID saved before it was deleted. Use digits only." error={error}>
-        <Input inputMode="numeric" value={value} onChange={(e) => onChange(e.target.value)} autoComplete="off" />
-      </Field>
+      <summary className="min-h-11 cursor-pointer py-2 text-sm text-text-muted">Look up a deleted account</summary>
+      <div className="space-y-3">
+        <Field id="history-retained-person-id" label="Saved person ID" hint="For someone whose account was deleted; ask whoever has their old ID. Use digits only." error={error}>
+          <Input inputMode="numeric" value={value} onChange={(e) => onChange(e.target.value)} autoComplete="off" />
+        </Field>
+        <Button variant="secondary" type="submit">Show history</Button>
+      </div>
     </details>
   </div>;
 }

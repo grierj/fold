@@ -81,6 +81,7 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		outcome, auditAction = "rejected", audit.GroupRejected
 	}
 	errHandled := errors.New("already handled")
+	var emailed []uint
 	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
 		set := map[string]any{"status": status}
 		if tags != nil {
@@ -100,6 +101,11 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &me.ID, outcome); err != nil {
 			return err
 		}
+		ids, err := notifyGroupDecided(tx, &g, me.ID, outcome == "approved")
+		if err != nil {
+			return err
+		}
+		emailed = ids
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction, TargetType: "group", TargetID: g.ID, IP: c.ClientIP()})
 	})
 	if errors.Is(err, errHandled) {
@@ -110,6 +116,7 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		jsonError(c, http.StatusInternalServerError, "could not "+action+" group")
 		return
 	}
+	a.deliverNotificationEmails(emailed)
 	if action == notify.ActionApproveGroup {
 		c.JSON(http.StatusOK, gin.H{"group": a.groupSummary(&g)})
 		return

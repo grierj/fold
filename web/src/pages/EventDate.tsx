@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
 import { Dates } from "../date-api";
@@ -11,7 +11,11 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Choices, Field, FormError, Input, Radio } from "../components/ui/Field";
 import { SegmentButton } from "../components/ui/SegmentButton";
 import { errorText } from "../lib/errors";
-import { formatWhenRange, heldIn } from "../lib/when";
+import { heldIn } from "../lib/when";
+import { dateLine } from "../lib/repeat";
+import { DateBadge } from "../components/DateBadge";
+import { answerLine } from "../components/RsvpButtons";
+import { DateActions } from "../components/DateActions";
 
 export function EventDatePage() {
   const { user } = useAuth();
@@ -82,30 +86,56 @@ function DateDetail({ id, date }: { id: string; date: string }) {
     }
   }
   const zone = occurrence && heldIn(occurrence.startsAt, occurrence.tzid);
+  const when = occurrence ? dateLine(occurrence.startsAt, occurrence.endsAt) : "";
+  const standing = occurrence && user ? standingLine(occurrence.myRegistration) : null;
   return <div className="max-w-2xl mx-auto px-4 py-6 space-y-5 wrap-anywhere">
-    <h1 className="text-2xl font-bold">{occurrence?.title || "Event date"}</h1>
-    {occurrence?.visibility && <EventIntro hostedBy={occurrence.hostedBy} groupName={occurrence.groupName} groupId={occurrence.groupId} />}
-    <div className="flex flex-wrap gap-2"><ButtonLink variant="link" to="/calendar">Back to calendar</ButtonLink></div>
+    <div>
+      {/* The link says where it goes for screen readers and is also not confused with the nav's Calendar tab. */}
+      <ButtonLink variant="link" to="/calendar"><span aria-hidden="true">‹ Calendar</span><span className="sr-only">Back to calendar</span></ButtonLink>
+      <h1 className="text-2xl font-bold">{occurrence?.title || "Event date"}</h1>
+      {/* hostedBy with no group can be a church-wide event or a hidden group's fallback, so it keeps "Hosted by" (DEC-99). */}
+      {occurrence?.visibility && <EventIntro hostedBy={occurrence.hostedBy} groupName={occurrence.groupName} groupId={occurrence.groupId} />}
+    </div>
     {!loaded && <p role="status">Loading this date…</p>}
     {loaded && !occurrence && <EmptyState title="This date is not available" body="Your invitation may have ended, or this date may not be available to you. Check your calendar for dates you can open." />}
     {occurrence && <section aria-label="This event date" className="bg-surface border border-border rounded-lg p-4 space-y-4">
-      <p>{formatWhenRange(occurrence.startsAt, occurrence.endsAt)}</p>
-      {zone && <p className="text-sm text-text-muted">{zone}</p>}
-      {occurrence.location && <p>{occurrence.location}</p>}
+      <div className="flex gap-4">
+        <DateBadge at={occurrence.startsAt} />
+        <div className="min-w-0 grow">
+          <p className="font-medium">{when}</p>
+          {zone && <p className="text-sm text-text-muted">{zone}</p>}
+          {occurrence.location && <p className="text-text-muted">{occurrence.location}</p>}
+        </div>
+      </div>
+      <DateActions eventId={occurrence.eventId} date={occurrence.date} sharePath={occurrence.dateUrl} title={occurrence.title} when={when} />
       {!user && occurrence.visibility === "public" && <GuestRegistrationForm instance={occurrence} />}
-      <p className="text-text-muted">You're invited to this date.</p>
-      {user && <p role="status" className="font-semibold">Your answer: {occurrence.myRegistration === "going" ? "Going" : occurrence.myRegistration === "maybe" ? "Maybe" : occurrence.myRegistration === "waitlisted" ? "Waitlisted" : occurrence.myRegistration === "declined" ? "Can't go" : occurrence.myRegistration === "cancelled" ? "Cancelled" : "Not answered"}</p>}
+      {/* Only a real exact-date invitation (DEC-75): canDecline is true for those reads alone. */}
+      {occurrence.canDecline && <p className="text-text-muted">You're invited to this date.</p>}
       {occurrence.myAttendanceMode && <p>Attending: {occurrence.myAttendanceMode === "remote" ? "Remote" : "In person"}{occurrence.myGuestCount !== undefined ? ` · Guests: ${occurrence.myGuestCount}` : ""}</p>}
       {occurrence.canSeeVideo && occurrence.videoUrl && <ButtonLink variant="secondary" to={occurrence.videoUrl} external>Join video call (opens in a new tab)</ButtonLink>}
       {occurrence.videoHidden && !(occurrence.canSeeVideo && occurrence.videoUrl) && <p className="text-sm text-text-muted">The video link is not available to you. Check your answer or return to this page to check again.</p>}
       {error && <FormError>{error}</FormError>}
       {(occurrence.canDecline || occurrence.canRegister) && <DateAnswer occurrence={occurrence} busy={busy} onAnswer={answer} />}
+      {/* The standing line is this card's one status region, as on the event page (DEC-92). */}
+      {user && <p role="status" className="text-sm text-text-muted empty:hidden">{standing}</p>}
       <div className="flex flex-wrap gap-2">
         {occurrence.canDecline && <Button variant="danger-outline" disabled={busy} onClick={() => void end("decline")}>Can't go</Button>}
         {occurrence.canBlock && <Button variant="danger-outline" disabled={busy} onClick={() => void end("block")}>Don't add me again</Button>}
       </div>
     </section>}
   </div>;
+}
+
+// The same standing confirmation the event page shows under its answer
+// control (DEC-92). The segments show going and maybe by fill alone, so this
+// line is what says it in words, and the only place waitlisted and
+// cancelled are named.
+function standingLine(status: EventDate["myRegistration"]): ReactNode {
+  switch (status) {
+    case "waitlisted": return "You're on the waitlist. We'll email you if a spot opens.";
+    case "cancelled": return "Your sign-up was cancelled.";
+    default: return answerLine(status);
+  }
 }
 
 function DateAnswer({ occurrence, busy, onAnswer }: { occurrence: EventDate; busy: boolean; onAnswer: (status: "going" | "maybe" | "declined", options: { attendanceMode?: AttendanceMode; guestCount?: number }) => Promise<void> }) {
@@ -117,7 +147,8 @@ function DateAnswer({ occurrence, busy, onAnswer }: { occurrence: EventDate; bus
   const showGuests = (occurrence.myGuestCount !== undefined || (occurrence.canRegister && !occurrence.canDecline)) && (guestMax > 0 || (occurrence.myGuestCount ?? 0) > 0);
   const options = { ...(mode === undefined ? {} : { attendanceMode: mode }), ...(showGuests ? { guestCount: Number(guests) } : {}) };
   return <div className="space-y-3">
-    <p className="text-sm text-text-muted">Answer just for you. If you choose Going and it’s full, you’ll join the waitlist.</p>
+    {/* The date JSON carries no capacity, so this can only be a general hint; it is moot once Going is saved. */}
+    {occurrence.myRegistration !== "going" && occurrence.myRegistration !== "waitlisted" && <p className="text-sm text-text-muted">If it’s full, Going puts you on the waitlist.</p>}
     {(occurrence.remoteAvailable || mode === "remote") && mode !== undefined && <Choices legend="How will you attend?" hint="Choose in person or remotely. Space is checked when you save.">
       <Radio name={modeName} label="In person" checked={mode === "in_person"} disabled={busy} onChange={() => setMode("in_person")} />
       <Radio name={modeName} label="Remote" description={!occurrence.remoteAvailable ? "No longer available. Choose in person to change your answer." : undefined} checked={mode === "remote"} disabled={busy || !occurrence.remoteAvailable} onChange={() => setMode("remote")} />

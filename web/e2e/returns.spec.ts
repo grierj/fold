@@ -24,7 +24,10 @@ test("left-out account is told to ask a leader, who adds them over the limit", a
   await expect(membersPanel).toBeVisible();
   await expect(page.locator("#waiting")).toHaveCount(0);
   await expect(page.getByText("Pat Returner")).toHaveCount(0);
-  await page.getByLabel("Add a member by email").fill("pat@example.com");
+  // One Add people panel (DEC-99): the email path is one click from the name search.
+  await page.getByRole("button", { name: "Add people" }).click();
+  await page.getByRole("button", { name: "Use an email instead" }).click();
+  await page.getByLabel("Email address").fill("pat@example.com");
   await page.getByRole("button", { name: "Add member", exact: true }).click();
   await expect(page.getByRole("listitem").filter({ hasText: "Pat Returner" })).toBeVisible();
   await expect(page.getByText("4 of 3 members")).toBeVisible();

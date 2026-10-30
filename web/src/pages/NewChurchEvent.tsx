@@ -1,21 +1,24 @@
 import { Form } from "../components/ui/Form";
-import { ChildcareField, childcareBody, childcareProblem, emptyChildcare, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "../components/ChildcareField";
+import { childcareBody, childcareProblem, emptyChildcare, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "../components/ChildcareField";
 import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
-import { ZonePicker } from "../components/ui/ZonePicker";
-import { WeekdayPicker } from "../components/WeekdayPicker";
+import { WhenFields } from "../components/WhenFields";
+import { EventOptions } from "../components/EventOptions";
+import { emptySeats, focusSeatLimit, isSeatsError, seatsBody, seatsProblem, type SeatsValue } from "../components/SeatsField";
 import { FormActions } from "../components/ui/FormActions";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Events } from "../api";
 import { useAuth } from "../auth";
-import { weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
+import { useWhenState } from "../lib/useWhenState";
+import { useDirty } from "../lib/useDirty";
+import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { errorText } from "../lib/errors";
-import { VideoField, focusVideoUrl, isVideoError, videoProblem, emptyVideo, type VideoValue } from "../components/VideoField";
-import { RemoteField, focusRemoteCapacity, isRemoteError, emptyRemote, remoteBody, remoteProblem, type RemoteValue } from "../components/RemoteField";
-import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
-import { Button } from "../components/ui/Button";
+import { focusVideoUrl, isVideoError, videoProblem, emptyVideo, type VideoValue } from "../components/VideoField";
+import { focusRemoteCapacity, isRemoteError, emptyRemote, remoteBody, remoteProblem, type RemoteValue } from "../components/RemoteField";
+import { Field, FormError, Input, Textarea } from "../components/ui/Field";
+import { Button, ButtonLink } from "../components/ui/Button";
 import { Skeleton } from "../components/ui/Skeleton";
 
 export function NewChurchEvent() {
@@ -23,9 +26,8 @@ export function NewChurchEvent() {
   const { user, loading, isAdmin } = useAuth();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [date, setDate] = useState("");
-  const [startTime, setStartTime] = useState("19:00");
-  const [durationMin, setDurationMin] = useState(90);
+  const when = useWhenState({ date: "", time: "19:00", duration: 90, recurring: false, days: [] });
+  const { date, time: startTime, duration: durationMin, recurring, days } = when;
   const { tzid, setTzid } = useEventZone();
   const [location, setLocation] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("public");
@@ -33,17 +35,21 @@ export function NewChurchEvent() {
   const [video, setVideo] = useState<VideoValue>(emptyVideo);
   const [childcare, setChildcare] = useState<ChildcareValue>(emptyChildcare);
   const [remote, setRemote] = useState<RemoteValue>(emptyRemote);
-  const [recurring, setRecurring] = useState(false);
-  const [days, setDays] = useState<string[]>([]);
+  const [seats, setSeats] = useState<SeatsValue>(emptySeats);
+  // Closed on create; a problem inside it opens it (DEC-95).
+  const [moreOpen, setMoreOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [seatsError, setSeatsError] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [childcareError, setChildcareError] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
-  function toggleDay(v: string) {
-    setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
-  }
+  const dirty = useDirty(
+    { title, description, date, startTime, durationMin, recurring, days, tzid, location, visibility, hostEmail, video, childcare, remote, seats },
+    !loading && tzid !== "",
+  );
+  const { guard, markSaved } = useUnsavedChanges(dirty);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -63,10 +69,19 @@ export function NewChurchEvent() {
       setError("Pick at least one day to repeat weekly.");
       return;
     }
+    const seatsMsg = seatsProblem(seats);
+    setSeatsError(seatsMsg);
+    if (seatsMsg) {
+      setError(seatsMsg);
+      setMoreOpen(true);
+      focusSeatLimit("church-event");
+      return;
+    }
     const videoMsg = videoProblem(video);
     setVideoError(videoMsg);
     if (videoMsg) {
       setError(videoMsg);
+      setMoreOpen(true);
       focusVideoUrl("church-event");
       return;
     }
@@ -74,6 +89,7 @@ export function NewChurchEvent() {
     setChildcareError(childcareMsg);
     if (childcareMsg) {
       setError(childcareMsg);
+      setMoreOpen(true);
       focusChildcareCapacity("church-event");
       return;
     }
@@ -81,6 +97,7 @@ export function NewChurchEvent() {
     setRemoteError(remoteMsg);
     if (remoteMsg) {
       setError(remoteMsg);
+      setMoreOpen(true);
       focusRemoteCapacity("church-event");
       return;
     }
@@ -100,13 +117,17 @@ export function NewChurchEvent() {
         videoProvider: video.provider,
         videoUrl: video.provider === "none" ? "" : video.url.trim(),
         videoReveal: video.reveal,
+        ...seatsBody(seats),
         ...remoteBody(remote),
         ...childcareBody(childcare),
       });
+      markSaved();
       navigate(`/events/${event.id}`);
     } catch (err) {
       const msg = errorText(err, "We couldn't schedule the event.");
       setError(msg);
+      if (isSeatsError(err) || isChildcareCapacityError(err) || isRemoteError(err) || isVideoError(err)) setMoreOpen(true);
+      if (isSeatsError(err)) { setSeatsError(msg); focusSeatLimit("church-event"); }
       if (isChildcareCapacityError(err)) { setChildcareError(msg); focusChildcareCapacity("church-event"); }
       if (isRemoteError(err)) {
         setRemoteError(msg);
@@ -153,6 +174,7 @@ export function NewChurchEvent() {
       <h1 className="text-3xl font-bold mb-2">Schedule a church-wide event</h1>
       <p className="text-text-muted mb-6">You are a host. Add another host if someone else should run it.</p>
       <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
+        {guard}
         {error && <FormError>{error}</FormError>}
         <Field id="church-event-title" label="Title">
           <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
@@ -165,91 +187,56 @@ export function NewChurchEvent() {
             onChange={(e) => setDescription(e.target.value)}
           />
         </Field>
-        <div className="grid sm:grid-cols-2 gap-4">
-          <Field id="church-event-date" label="Date">
-            <Input
-              type="date"
-              value={date}
-              onChange={(e) => {
-                const v = e.target.value;
-                setDate(v);
-                if (recurring && days.length === 0 && v) setDays([weekdayCode(v)]);
-              }}
-              required
-            />
-          </Field>
-          <Field id="church-event-time" label="Start time">
-            <Input
-              type="time"
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              required
-            />
-          </Field>
-        </div>
-        <Field id="church-event-duration" label="Duration (minutes)">
-          <Input
-            type="number"
-            min={1}
-            max={10080}
-            step={1}
-            value={durationMin}
-            onChange={(e) => setDurationMin(Number(e.target.value))}
-            layout="sm:w-44"
-          />
-        </Field>
-        <Field
-          id="church-event-tz"
-          label="Time zone"
-          hint="The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving."
-        >
-          <ZonePicker value={tzid} onChange={setTzid} />
-        </Field>
+        <WhenFields
+          idPrefix="church-event"
+          when={when}
+          tzid={tzid}
+          onTzid={setTzid}
+          zoneHint="The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving."
+        />
         <Field id="church-event-location" label="Location" optional>
           <Input value={location} onChange={(e) => setLocation(e.target.value)} />
         </Field>
-        <VisibilityField
-          id="church-event-visibility"
-          churchWide
-          value={visibility}
-          onChange={setVisibility}
-          reason=""
-          onReason={() => {}}
-        />
         <Field id="church-event-host" label="Another host's email" optional hint="They must already have an account.">
           <Input type="email" value={hostEmail} onChange={(e) => setHostEmail(e.target.value)} />
         </Field>
-        <div className="border-t border-border pt-4">
-          <VideoField idPrefix="church-event" value={video} onChange={setVideo} error={videoError} />
-        </div>
-        <div className="border-t border-border pt-4">
-          <ChildcareField idPrefix={"church-event"} value={childcare} onChange={setChildcare} error={childcareError} />
-        </div>
-        <div className="border-t border-border pt-4">
-          <RemoteField idPrefix="church-event" value={remote} onChange={setRemote} error={remoteError} />
-        </div>
-        <div className="border-t border-border pt-4">
-          <Checkbox
-            label="Repeat weekly"
-            checked={recurring}
-            onChange={(e) => {
-              setRecurring(e.target.checked);
-              if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
-            }}
-          />
-          {recurring && (
-            <div className="mt-2">
-              <WeekdayPicker days={days} onToggle={toggleDay} />
-            </div>
-          )}
-        </div>
+        <EventOptions
+          idPrefix="church-event"
+          open={moreOpen}
+          onOpenChange={setMoreOpen}
+          visibility={{
+            value: visibility,
+            field: (
+              <VisibilityField
+                id="church-event-visibility"
+                churchWide
+                value={visibility}
+                onChange={setVisibility}
+                reason=""
+                onReason={() => {}}
+              />
+            ),
+          }}
+          seats={seats}
+          onSeats={setSeats}
+          seatsError={seatsError}
+          video={video}
+          onVideo={setVideo}
+          videoError={videoError}
+          remote={remote}
+          onRemote={setRemote}
+          remoteError={remoteError}
+          childcare={childcare}
+          onChildcare={setChildcare}
+          childcareError={childcareError}
+        />
         <FormActions>
           <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
             {busy ? "Scheduling…" : "Schedule event"}
           </Button>
-          <Link to="/" className="btn-secondary w-full sm:w-auto">
+          <ButtonLink to="/" variant="secondary" layout="w-full sm:w-auto">
             Cancel
-          </Link>
+          </ButtonLink>
         </FormActions>
       </Form>
     </div>

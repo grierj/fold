@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -20,11 +20,12 @@ it("renders only date disclosures, never hidden parent/group/host/roster/househo
   const row = { ...occurrence(), groupName: "SECRET GROUP", groupId: 88, hosts: [{ name: "SECRET HOST" }], attendees: [{ name: "SECRET ATTENDEE" }], description: "SECRET DESCRIPTION" };
   vi.mocked(Dates.get).mockResolvedValue({ occurrence: row });
   mount(); await screen.findByText("One invited date");
-  expect(screen.getByText("Your answer: Going")).toBeInTheDocument();
+  expect(screen.getByText("You're going. See you there!")).toBeInTheDocument();
+  expect(screen.queryByText(/Your answer:/)).not.toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-pressed", "false");
   expect(screen.queryByText(/SECRET/)).not.toBeInTheDocument();
-  expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["/calendar", "https://example.com/private-call"]);
+  expect(screen.getAllByRole("link").map((a) => a.getAttribute("href"))).toEqual(["/calendar", "/api/v1/events/7/dates/2026-12-01/calendar.ics", "https://example.com/private-call"]);
   expect(screen.queryByRole("button", { name: /Manage|household|contact|all dates|Maybe for all|Can't go to any/i })).not.toBeInTheDocument();
 });
 
@@ -46,7 +47,7 @@ it("saves only own scoped answer/mode/guest fields, preserves unsupported care b
   vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ myRegistration: "waitlisted", myAttendanceMode: "in_person", myGuestCount: 2, canSeeVideo: false, videoUrl: undefined, videoHidden: true }) });
   await userEvent.click(screen.getByRole("button", { name: "Going" }));
   expect(Dates.register).toHaveBeenCalledWith("7", "2026-12-01", { status: "going", attendanceMode: "in_person", guestCount: 2 });
-  await screen.findByText("Your answer: Waitlisted");
+  await screen.findByText(/^You're on the waitlist/);
   expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.queryByRole("link", { name: /Join video call/ })).not.toBeInTheDocument();
   expect(screen.getByLabelText("Guests")).toHaveValue(2);
@@ -83,7 +84,8 @@ it.each([
   ["going", "Going"], ["waitlisted", "Going"], ["maybe", "Maybe"], ["declined", "Can't go"], [null, null],
 ] as const)("maps %s to only the matching exact-date segment", async (status, selected) => {
   vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canRegister: true, canDecline: false, canBlock: false, myRegistration: status, myAttendanceMode: undefined, myGuestCount: undefined }) });
-  mount(); await screen.findByText(`Your answer: ${status === "waitlisted" ? "Waitlisted" : status === "going" ? "Going" : status === "maybe" ? "Maybe" : status === "declined" ? "Can't go" : "Not answered"}`);
+  mount(); await screen.findByText("One invited date");
+  expect(screen.getByRole("status")).toHaveTextContent(status === "waitlisted" ? /on the waitlist/ : status === "going" ? "You're going. See you there!" : status === "maybe" ? "You said maybe" : status === "declined" ? "Got it. Only the leaders see this." : /^$/);
   for (const name of ["Going", "Maybe", "Can't go"]) {
     expect(screen.getByRole("button", { name })).toHaveAttribute("aria-pressed", String(name === selected));
   }
@@ -200,14 +202,50 @@ it("ignores an initial read that resolves after unmount", async () => {
  expect(screen.getByLabelText("In person")).toBeChecked(); expect(screen.getByLabelText("Guests")).toHaveValue(0);
  await userEvent.click(screen.getByLabelText("Remote")); fireEvent.change(screen.getByLabelText("Guests"), {target:{value:"2"}});
  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({canRegister:true,canDecline:false,canBlock:false,myAttendanceMode:"remote",myGuestCount:2}) });
- await userEvent.click(screen.getByRole("button",{name:"Going"})); await screen.findByText("Your answer: Going");
+ await userEvent.click(screen.getByRole("button",{name:"Going"})); await screen.findByText("You're going. See you there!");
  expect(Events.register).toHaveBeenCalledWith(7,{date:"2026-12-01",status:"going",attendanceMode:"remote",guestCount:2});
  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({canRegister:true,canDecline:false,canBlock:false,myRegistration:"declined"}) });
- await userEvent.click(screen.getByRole("button",{name:"Can't go"})); await screen.findByText("Your answer: Can't go");
+ await userEvent.click(screen.getByRole("button",{name:"Can't go"})); await screen.findByText("Got it. Only the leaders see this.");
  expect(Events.register).toHaveBeenLastCalledWith(7,{date:"2026-12-01",status:"declined"}); expect(Dates.end).not.toHaveBeenCalled(); expect(Dates.register).not.toHaveBeenCalled(); expect(window.confirm).not.toHaveBeenCalled();
  });
 
 it("shows a retained cancelled answer when the date is visible again", async () => {
  vi.mocked(Dates.get).mockResolvedValue({occurrence:occurrence({canRegister:true,canDecline:false,canBlock:false,myRegistration:"cancelled"})});
- mount(); expect(await screen.findByText("Your answer: Cancelled")).toBeInTheDocument();
+ mount(); expect(await screen.findByText("Your sign-up was cancelled.")).toBeInTheDocument();
+});
+
+it("lays the date out like the event page card: back link, when line, tile, place and date actions", async () => {
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ startsAt: "2026-12-01T12:00:00Z", endsAt: "2026-12-01T13:30:00Z", startsLocal: "2026-12-01T12:00", endsLocal: "2026-12-01T13:30" }) });
+  mount();
+  const title = await screen.findByRole("heading", { level: 1, name: "One invited date" });
+  const back = screen.getByRole("link", { name: "Back to calendar" });
+  expect(back).toHaveTextContent("‹ Calendar");
+  expect(back.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const card = screen.getByRole("region", { name: "This event date" });
+  expect(within(card).getByText(/^Tuesday, Dec 1(, \d{4})? · \d/)).toBeInTheDocument();
+  expect(within(card).getByText("Dec")).toBeInTheDocument();
+  expect(within(card).getByText("Room 2")).toBeInTheDocument();
+  expect(within(card).getByRole("link", { name: "Add to calendar" })).toHaveAttribute("href", "/api/v1/events/7/dates/2026-12-01/calendar.ics");
+  expect(within(card).getByRole("button", { name: "Share" })).toBeInTheDocument();
+  // The date JSON has no counts, so none are shown.
+  expect(within(card).queryByText(/seats|spots|\bgoing\b.*\d/i)).not.toBeInTheDocument();
+});
+
+it("says \"invited\" only for a real exact-date invitation", async () => {
+  mount();
+  expect(await screen.findByText("You're invited to this date.")).toBeInTheDocument();
+  cleanup();
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canRegister: true, canDecline: false, canBlock: false, visibility: "public", hostedBy: "Church" }) });
+  mount(); await screen.findByText("One invited date");
+  expect(screen.queryByText(/invited to this date/)).not.toBeInTheDocument();
+});
+
+it("shows the waitlist hint only before Going is saved", async () => {
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ myRegistration: "maybe" }) });
+  mount();
+  expect(await screen.findByText("If it’s full, Going puts you on the waitlist.")).toBeInTheDocument();
+  cleanup();
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ myRegistration: "going" }) });
+  mount(); await screen.findByText("One invited date");
+  expect(screen.queryByText(/Going puts you on the waitlist/)).not.toBeInTheDocument();
 });

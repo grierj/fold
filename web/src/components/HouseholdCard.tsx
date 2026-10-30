@@ -36,14 +36,16 @@ export function personProblems(d: Draft, today: string): { firstName?: string; b
   return out;
 }
 
-function PersonForm({ initial, onSave, onCancel, heading, careVisible = true, identityLocked = false }: {
+function PersonForm({ initial, onSave, onCancel, heading, level, careVisible = true, identityLocked = false }: {
   careVisible?: boolean;
   identityLocked?: boolean;
   initial: Draft;
   onSave: (input: HouseholdPersonInput) => Promise<void>;
   onCancel: () => void;
   heading: string;
+  level: "h2" | "h3";
 }) {
+  const Heading = level;
   const [d, setD] = useState(initial);
   const [careTouched, setCareTouched] = useState(false);
   const [shown, setShown] = useState<ReturnType<typeof personProblems>>({});
@@ -80,7 +82,7 @@ function PersonForm({ initial, onSave, onCancel, heading, careVisible = true, id
 
   return (
     <Form noValidate ref={formRef} onSubmit={submit} aria-label={heading} className="space-y-4 mt-4 rounded-lg border border-border p-4">
-      <h3 className="font-semibold">{heading}</h3>
+      <Heading className="font-semibold">{heading}</Heading>
       {identityLocked && <p className="text-sm text-text-muted">The account is waiting for consent and guardian confirmation. You can update care notes and photo settings here. Ask your church office for help with identity changes.</p>}
       <Field label="First name" error={shown.firstName}>
         <Input readOnly={identityLocked} value={d.firstName} onChange={(e) => set({ firstName: e.target.value })} autoComplete="off" />
@@ -113,7 +115,9 @@ function toDraft(p: HouseholdPerson): Draft {
   return { firstName: p.firstName, lastName: p.lastName, kind: p.kind, birthDate: p.birthDate ?? "", careNotes: p.careNotes ?? "", photoConsent: p.photoConsent };
 }
 
-export function HouseholdCard() {
+// showHeading=false under a page that already has the h1 "Household" (the
+// Profile section); the region keeps its "My household" name.
+export function HouseholdCard({ showHeading = true }: { showHeading?: boolean }) {
   const [household, setHousehold] = useState<Household | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -149,8 +153,8 @@ export function HouseholdCard() {
         ? root?.querySelector<HTMLElement>(`[data-person="${target}"] button`)
         : target === "add"
           ? root?.querySelector<HTMLElement>("[data-add]")
-          : root?.querySelector<HTMLElement>("h2");
-    (el ?? root?.querySelector<HTMLElement>("h2"))?.focus();
+          : root?.querySelector<HTMLElement>("#household-heading");
+    (el ?? root?.querySelector<HTMLElement>("#household-heading") ?? root)?.focus();
   }, [household, editing, converting]);
 
   async function remove(p: HouseholdPerson) {
@@ -173,11 +177,14 @@ export function HouseholdCard() {
     </span>
   );
 
-  if (loading) return <HouseholdSkeleton />;
+  // Under the page's own h1 the household name is the first sub-heading.
+  const Sub = showHeading ? "h3" : "h2";
+
+  if (loading) return <HouseholdSkeleton showHeading={showHeading} />;
 
   return (
-    <section ref={cardRef} className="mt-6" aria-labelledby="household-heading">
-      <h2 id="household-heading" tabIndex={-1} className="text-xl font-bold mb-1 focus:outline-none">My household</h2>
+    <section ref={cardRef} className={`${showHeading ? "mt-6 " : ""}focus:outline-none`} tabIndex={showHeading ? undefined : -1} aria-labelledby={showHeading ? "household-heading" : undefined} aria-label={showHeading ? undefined : "My household"}>
+      {showHeading && <h2 id="household-heading" tabIndex={-1} className="text-xl font-bold mb-1 focus:outline-none">My household</h2>}
       <p className="text-sm mb-2"><a className="inline-flex min-h-11 items-center text-primary underline" href="/help/members">Accounts and household help</a></p>
       <p role="status" aria-live="polite" className="sr-only">{status}</p>
       {!loading && loadError && <ErrorNotice message={loadError} onRetry={() => { setLoading(true); load(); }} />}
@@ -192,7 +199,7 @@ export function HouseholdCard() {
       {household && (
         <div className="my-3">
           <div className="flex flex-wrap items-center gap-3">
-            <h3 className="font-semibold break-words min-w-0">{household.name}</h3>
+            <Sub className="font-semibold break-words min-w-0">{household.name}</Sub>
             <Button variant="secondary" disabled={metadata} onClick={(e) => { metadataInvoker.current = e.currentTarget; setEditing(null); setMetadata(true); }}>Rename</Button>
           </div>
           <p className="text-sm text-text-muted whitespace-pre-wrap break-words mt-2">{household.address || "No household address yet."}</p>
@@ -220,6 +227,7 @@ export function HouseholdCard() {
                     careVisible={p.careNotes !== undefined}
                     identityLocked={p.conversion?.state === "awaiting_consent"}
                     heading={`Edit ${p.name}`}
+                    level={Sub}
                     onCancel={() => { focusNext.current = p.id; setEditing(null); }}
                     onSave={async (input) => {
                       await Households.updatePerson(p.id, input);
@@ -267,6 +275,7 @@ export function HouseholdCard() {
         <PersonForm
           initial={emptyDraft}
           heading="Add a household member"
+          level={Sub}
           onCancel={() => { focusNext.current = "add"; setEditing(null); }}
           onSave={async (input) => {
             const { person } = await Households.addPerson(input);

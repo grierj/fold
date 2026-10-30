@@ -1,21 +1,24 @@
 import { Form } from "../components/ui/Form";
-import { ChildcareField, childcareBody, childcareProblem, emptyChildcare, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "../components/ChildcareField";
+import { childcareBody, childcareProblem, emptyChildcare, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "../components/ChildcareField";
 import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
-import { ZonePicker } from "../components/ui/ZonePicker";
-import { WeekdayPicker } from "../components/WeekdayPicker";
+import { WhenFields } from "../components/WhenFields";
+import { EventOptions } from "../components/EventOptions";
+import { emptySeats, focusSeatLimit, isSeatsError, seatsBody, seatsProblem, type SeatsValue } from "../components/SeatsField";
 import { FormActions } from "../components/ui/FormActions";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Groups } from "../api";
 import { useAuth } from "../auth";
-import { weekdayCode } from "../lib/eventForm";
 import { useEventZone } from "../lib/useEventZone";
+import { useWhenState } from "../lib/useWhenState";
+import { useDirty } from "../lib/useDirty";
+import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { errorText } from "../lib/errors";
-import { VideoField, focusVideoUrl, isVideoError, videoProblem, emptyVideo, type VideoValue } from "../components/VideoField";
-import { RemoteField, focusRemoteCapacity, isRemoteError, emptyRemote, remoteBody, remoteProblem, type RemoteValue } from "../components/RemoteField";
-import { Checkbox, Field, FormError, Input, Textarea } from "../components/ui/Field";
-import { Button } from "../components/ui/Button";
+import { focusVideoUrl, isVideoError, videoProblem, emptyVideo, type VideoValue } from "../components/VideoField";
+import { focusRemoteCapacity, isRemoteError, emptyRemote, remoteBody, remoteProblem, type RemoteValue } from "../components/RemoteField";
+import { Field, FormError, Input, Textarea } from "../components/ui/Field";
+import { Button, ButtonLink } from "../components/ui/Button";
 import { Skeleton } from "../components/ui/Skeleton";
 
 export function NewEvent() {
@@ -28,9 +31,8 @@ export function NewEvent() {
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [date, setDate] = useState("");
-  const [startTime, setStartTime] = useState("19:00");
-  const [durationMin, setDurationMin] = useState(90);
+  const when = useWhenState({ date: "", time: "19:00", duration: 90, recurring: false, days: [] });
+  const { date, time: startTime, duration: durationMin, recurring, days } = when;
   const { tzid, setTzid } = useEventZone();
   const [location, setLocation] = useState("");
   // Asked at creation, defaulting to the group's value (DEC-51).
@@ -40,13 +42,21 @@ export function NewEvent() {
   const [video, setVideo] = useState<VideoValue>(emptyVideo);
   const [childcare, setChildcare] = useState<ChildcareValue>(emptyChildcare);
   const [remote, setRemote] = useState<RemoteValue>(emptyRemote);
-  const [recurring, setRecurring] = useState(false);
-  const [days, setDays] = useState<string[]>([]);
+  const [seats, setSeats] = useState<SeatsValue>(emptySeats);
+  // Closed on create; a problem inside it opens it (DEC-95).
+  const [moreOpen, setMoreOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [seatsError, setSeatsError] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [childcareError, setChildcareError] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
+
+  const dirty = useDirty(
+    { title, description, date, startTime, durationMin, recurring, days, tzid, location, visibility, visReason, video, childcare, remote, seats },
+    !loading && !authLoading && tzid !== "",
+  );
+  const { guard, markSaved } = useUnsavedChanges(dirty);
 
   useEffect(() => {
     if (!id) return;
@@ -71,15 +81,6 @@ export function NewEvent() {
     };
   }, [id]);
 
-  function toggleDay(v: string) {
-    setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
-  }
-
-  function onRecurring(checked: boolean) {
-    setRecurring(checked);
-    if (checked && days.length === 0 && date) setDays([weekdayCode(date)]);
-  }
-
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!date) {
@@ -94,10 +95,19 @@ export function NewEvent() {
       setError("Pick at least one day to repeat weekly.");
       return;
     }
+    const seatsMsg = seatsProblem(seats);
+    setSeatsError(seatsMsg);
+    if (seatsMsg) {
+      setError(seatsMsg);
+      setMoreOpen(true);
+      focusSeatLimit("event");
+      return;
+    }
     const videoMsg = videoProblem(video);
     setVideoError(videoMsg);
     if (videoMsg) {
       setError(videoMsg);
+      setMoreOpen(true);
       focusVideoUrl("event");
       return;
     }
@@ -105,6 +115,7 @@ export function NewEvent() {
     setChildcareError(childcareMsg);
     if (childcareMsg) {
       setError(childcareMsg);
+      setMoreOpen(true);
       focusChildcareCapacity("event");
       return;
     }
@@ -112,6 +123,7 @@ export function NewEvent() {
     setRemoteError(remoteMsg);
     if (remoteMsg) {
       setError(remoteMsg);
+      setMoreOpen(true);
       focusRemoteCapacity("event");
       return;
     }
@@ -131,13 +143,17 @@ export function NewEvent() {
         videoProvider: video.provider,
         videoUrl: video.provider === "none" ? "" : video.url.trim(),
         videoReveal: video.reveal,
+        ...seatsBody(seats),
         ...remoteBody(remote),
         ...childcareBody(childcare),
       });
+      markSaved();
       navigate(`/groups/${id}`);
     } catch (err) {
       const msg = errorText(err, "We couldn't schedule the event.");
       setError(msg);
+      if (isSeatsError(err) || isChildcareCapacityError(err) || isRemoteError(err) || isVideoError(err)) setMoreOpen(true);
+      if (isSeatsError(err)) { setSeatsError(msg); focusSeatLimit("event"); }
       if (isChildcareCapacityError(err)) { setChildcareError(msg); focusChildcareCapacity("event"); }
       if (isRemoteError(err)) {
         setRemoteError(msg);
@@ -194,6 +210,7 @@ export function NewEvent() {
         for <span className="font-semibold">{groupName}</span>
       </p>
       <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
+        {guard}
         {error && <FormError>{error}</FormError>}
         <Field id="event-title" label="Title" optional hint="Leave it blank to use the group's name.">
           <Input
@@ -210,48 +227,13 @@ export function NewEvent() {
             onChange={(e) => setDescription(e.target.value)}
           />
         </Field>
-        <div className="grid sm:grid-cols-2 gap-4">
-          <Field id="event-date" label="Date">
-            <Input
-              type="date"
-              value={date}
-              onChange={(e) => {
-                const v = e.target.value;
-                setDate(v);
-                if (recurring && days.length === 0 && v) setDays([weekdayCode(v)]);
-              }}
-              required
-            />
-          </Field>
-          <Field id="event-time" label="Start time">
-            <Input
-              type="time"
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-              required
-            />
-          </Field>
-        </div>
-        <div>
-          <Field id="event-duration" label="Duration (minutes)">
-            <Input
-              type="number"
-              min={1}
-              max={10080}
-              step={1}
-              value={durationMin}
-              onChange={(e) => setDurationMin(Number(e.target.value))}
-              layout="sm:w-44"
-            />
-          </Field>
-        </div>
-        <Field
-          id="event-tz"
-          label="Time zone"
-          hint="The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving."
-        >
-          <ZonePicker value={tzid} onChange={setTzid} />
-        </Field>
+        <WhenFields
+          idPrefix="event"
+          when={when}
+          tzid={tzid}
+          onTzid={setTzid}
+          zoneHint="The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving."
+        />
         <Field id="event-location" label="Location" optional hint="Leave it blank to use the group's location.">
           <Input
             value={location}
@@ -259,39 +241,44 @@ export function NewEvent() {
             placeholder="e.g. Room 201, Main Campus"
           />
         </Field>
-        <VisibilityField
-          id="event-visibility"
-          value={visibility}
-          onChange={setVisibility}
-          groupName={groupName}
-          groupVisibility={groupVisibility}
-          reason={visReason}
-          onReason={setVisReason}
+        <EventOptions
+          idPrefix="event"
+          open={moreOpen}
+          onOpenChange={setMoreOpen}
+          visibility={{
+            value: visibility,
+            field: (
+              <VisibilityField
+                id="event-visibility"
+                value={visibility}
+                onChange={setVisibility}
+                groupName={groupName}
+                groupVisibility={groupVisibility}
+                reason={visReason}
+                onReason={setVisReason}
+              />
+            ),
+          }}
+          seats={seats}
+          onSeats={setSeats}
+          seatsError={seatsError}
+          video={video}
+          onVideo={setVideo}
+          videoError={videoError}
+          remote={remote}
+          onRemote={setRemote}
+          remoteError={remoteError}
+          childcare={childcare}
+          onChildcare={setChildcare}
+          childcareError={childcareError}
         />
-        <div className="border-t border-border pt-4">
-          <VideoField idPrefix="event" value={video} onChange={setVideo} error={videoError} />
-        </div>
-        <div className="border-t border-border pt-4">
-          <ChildcareField idPrefix={"event"} value={childcare} onChange={setChildcare} error={childcareError} />
-        </div>
-        <div className="border-t border-border pt-4">
-          <RemoteField idPrefix="event" value={remote} onChange={setRemote} error={remoteError} />
-        </div>
-        <div className="border-t border-border pt-4">
-          <Checkbox label="Repeat weekly" checked={recurring} onChange={(e) => onRecurring(e.target.checked)} />
-          {recurring && (
-            <div className="mt-2">
-              <WeekdayPicker days={days} onToggle={toggleDay} />
-            </div>
-          )}
-        </div>
         <FormActions>
           <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
             {busy ? "Scheduling…" : "Schedule event"}
           </Button>
-          <Link to={`/groups/${id}`} className="btn-secondary w-full sm:w-auto">
+          <ButtonLink to={`/groups/${id}`} variant="secondary" layout="w-full sm:w-auto">
             Cancel
-          </Link>
+          </ButtonLink>
         </FormActions>
       </Form>
     </div>
