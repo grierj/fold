@@ -201,6 +201,38 @@ func TestCalendarMineNarrowsPerOccurrence(t *testing.T) {
 	}
 }
 
+// Nothing is a signed-out visitor's own, so a public church-wide date shows
+// without a "Not answered" state (DEC-99); signed in, it is in their scope.
+func TestSignedOutCalendarHasNoOwnScope(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "calendar scope admin", "password1234", models.RoleAdmin)
+	newTestUser(t, app, "calendar scope member", "password1234", models.RoleMember)
+	ac := loginAPI(t, app, admin.Name, "password1234")
+	start := feedStart(3)
+	if w := ac.do("POST", "/api/v1/events", map[string]any{
+		"title": "Open picnic", "startsLocal": start.Format("2006-01-02T15:04"), "durationMinutes": 60, "tzid": "UTC", "visibility": models.VisibilityPublic,
+	}, true); w.Code != http.StatusCreated {
+		t.Fatalf("create church event: %d %s", w.Code, w.Body.String())
+	}
+	query := "from=" + start.AddDate(0, 0, -1).Format("2006-01-02") + "&to=" + start.AddDate(0, 0, 2).Format("2006-01-02") + "&tz=UTC"
+	ownScope := func(client *apiClient) (bool, bool) {
+		t.Helper()
+		page, _ := getCalendar(t, client, query, http.StatusOK)
+		for _, o := range page.Occurrences {
+			if o.Title == "Open picnic" {
+				return true, o.OwnScope
+			}
+		}
+		return false, false
+	}
+	if listed, own := ownScope(newAPIClient(t, app)); !listed || own {
+		t.Fatalf("signed out: listed=%v ownScope=%v, want listed and not own", listed, own)
+	}
+	if listed, own := ownScope(loginAPI(t, app, "calendar scope member", "password1234")); !listed || !own {
+		t.Fatalf("signed in: listed=%v ownScope=%v, want listed and own", listed, own)
+	}
+}
+
 func TestAnonymousEverythingUsesThirtyDayWindow(t *testing.T) {
 	app := testApp(t)
 	now := time.Date(2030, 1, 15, 12, 0, 0, 0, time.UTC)

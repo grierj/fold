@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it } from "vitest";
 import type { CalendarOccurrence } from "../../types";
-import { DaySection, EventChip, EventRow } from "./EventRow";
+import { DaySection, EventChip, EventRow, StatusBadge } from "./EventRow";
 
 const occ = (o: Partial<CalendarOccurrence>): CalendarOccurrence => ({
   eventId: 7,
@@ -139,4 +139,36 @@ it.each([EventRow, EventChip])("prefers the server's exact date URL and does not
   wrap(<Component occ={occ({ dateUrl: "/events/7/dates/2026-10-22", groupName: undefined, groupId: undefined, hostedBy: undefined })} />);
   expect(screen.getByRole("link")).toHaveAttribute("href", "/events/7/dates/2026-10-22");
   expect(screen.queryByText(/Hosted by|undefined/)).not.toBeInTheDocument();
+});
+
+describe("StatusBadge (DEC-99: quiet text, DEC-71 words kept)", () => {
+  it.each([
+    ["maybe", "Maybe"], ["waitlisted", "Waitlisted"], ["declined", "Can't go"], ["not_answered", "Not answered"],
+  ] as const)("renders %s as muted text with no border or fill", (state, label) => {
+    render(<StatusBadge state={state} />);
+    const badge = screen.getByLabelText(label);
+    expect(badge).toHaveTextContent(label);
+    expect(badge).toHaveClass("text-text-muted");
+    expect(badge.className).not.toMatch(/border|bg-|rounded|px-/);
+  });
+
+  it("gives Going the success tone and its check icon", () => {
+    render(<StatusBadge state="going" />);
+    const badge = screen.getByLabelText("Going");
+    expect(badge).toHaveClass("text-success-on-subtle");
+    expect(badge.className).not.toMatch(/border|bg-/);
+    expect(badge.querySelector("svg")).not.toBeNull();
+  });
+
+  it("takes the card's own foreground on a solid Going card", () => {
+    render(<StatusBadge state="going" solid />);
+    expect(screen.getByLabelText("Going")).toHaveClass("text-primary-foreground");
+  });
+
+  it("keeps the clock on Waitlisted and renders nothing without a state", () => {
+    const { container, rerender } = render(<StatusBadge state="waitlisted" />);
+    expect(container.querySelector("svg")).not.toBeNull();
+    rerender(<StatusBadge state={null} />);
+    expect(container).toBeEmptyDOMElement();
+  });
 });

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fold/internal/audit"
 	"fold/internal/notify"
@@ -54,18 +56,36 @@ func (a *App) apiApproveGroup(c *gin.Context) {
 		}
 		tags = &joined
 	}
-	a.decideGroup(c, notify.ActionApproveGroup, body.FromNotification, models.GroupActive, tags)
+	a.decideGroup(c, notify.ActionApproveGroup, body.FromNotification, models.GroupActive, tags, "")
 }
+
+// maxRejectMessage bounds the optional message to a rejected group's leaders.
+const maxRejectMessage = 500
+
+// contactPattern spots an email address or phone number in free text that
+// would become notification text, which never carries contact details (5.12).
+var contactPattern = regexp.MustCompile(`@|\+?\d[\d\s().-]{6,}\d`)
 
 func (a *App) apiRejectGroup(c *gin.Context) {
 	var body struct {
-		FromNotification *uint `json:"fromNotification"`
+		FromNotification *uint  `json:"fromNotification"`
+		Message          string `json:"message"`
 	}
 	_ = c.ShouldBindJSON(&body)
-	a.decideGroup(c, "reject", body.FromNotification, models.GroupArchived, nil)
+	// An optional message to the leaders, carried on their notice (DEC-96).
+	message := strings.TrimSpace(body.Message)
+	if utf8.RuneCountInString(message) > maxRejectMessage {
+		jsonError(c, http.StatusBadRequest, "message must be 500 characters or fewer")
+		return
+	}
+	if contactPattern.MatchString(message) {
+		jsonError(c, http.StatusBadRequest, "leave contact details out of the message")
+		return
+	}
+	a.decideGroup(c, "reject", body.FromNotification, models.GroupArchived, nil, message)
 }
 
-func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint, status string, tags *string) {
+func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint, status string, tags *string, note string) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var g models.Group
 	if err := a.DB.First(&g, id).Error; err != nil {
@@ -101,12 +121,16 @@ func (a *App) decideGroup(c *gin.Context, action string, fromNotification *uint,
 		if _, err := notify.Resolve(tx, notify.GroupPending, g.ID, &me.ID, outcome); err != nil {
 			return err
 		}
-		ids, err := notifyGroupDecided(tx, &g, me.ID, outcome == "approved")
+		ids, err := notifyGroupDecided(tx, &g, me.ID, outcome == "approved", note)
 		if err != nil {
 			return err
 		}
 		emailed = ids
-		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction, TargetType: "group", TargetID: g.ID, IP: c.ClientIP()})
+		var meta map[string]any
+		if note != "" {
+			meta = map[string]any{"message": note}
+		}
+		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: auditAction, TargetType: "group", TargetID: g.ID, Meta: meta, IP: c.ClientIP()})
 	})
 	if errors.Is(err, errHandled) {
 		a.alreadyHandled(c, notify.GroupPending, g.ID)

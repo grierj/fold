@@ -24,6 +24,9 @@ type CalendarFacts struct {
 	ExactDate     bool
 	PublicDate    bool
 	StartsAt      time.Time
+	// SignedOut: a visitor with no account has no own scope, so no date reads
+	// as theirs (no "Not answered" on church-wide dates, DEC-99).
+	SignedOut bool
 }
 
 type CalendarDecision struct {
@@ -38,7 +41,7 @@ func DecideCalendar(scope CalendarScope, facts CalendarFacts, now time.Time) Cal
 		return CalendarDecision{}
 	}
 	answered := facts.OwnStatus != ""
-	own := facts.GroupMember || facts.ChurchWide || facts.Host || answered || facts.HouseholdDate || facts.ExactDate
+	own := !facts.SignedOut && (facts.GroupMember || facts.ChurchWide || facts.Host || answered || facts.HouseholdDate || facts.ExactDate)
 	decision := CalendarDecision{OwnScope: own}
 
 	// Can't-go dates remain discoverable in Everything but disappear from

@@ -10,6 +10,7 @@ import { Tabs } from "../components/ui/Tabs";
 import { roleLabel, accountStatusLabel, groupStatusLabel } from "../lib/status";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
+import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
@@ -24,6 +25,8 @@ import { errorCode, errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, Input, Radio, Select, showFieldErrors, Textarea } from "../components/ui/Field";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { EmptyState } from "../components/ui/EmptyState";
+import { Chip } from "../components/ui/Chip";
+import { SearchBox } from "../components/ui/SearchBox";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 import { ContactHistory } from "../contact-history-api";
@@ -37,9 +40,15 @@ const TeenConsentPanel = lazy(() => import("../components/TeenConsentPanel"));
 // Approvals
 // ---------------------------------------------------------------------------
 
-function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => void }) {
+type Decision = { kind: "approved" | "rejected"; id: number; name: string };
+
+function PendingCard({ group, onDone }: { group: GroupSummary; onDone: (decision: Decision) => void }) {
   const [tags, setTags] = useState(group.tags.join(", "));
+  // The leader's tags show as plain text; the field opens only on "Edit tags",
+  // and only edited tags are sent (DEC-99).
+  const [editingTags, setEditingTags] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function approve() {
@@ -48,12 +57,14 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => voi
     try {
       await Admin.approve(
         group.id,
-        tags
-          .split(",")
-          .map((t) => t.trim())
-          .filter(Boolean)
+        editingTags
+          ? tags
+              .split(",")
+              .map((t) => t.trim())
+              .filter(Boolean)
+          : undefined
       );
-      onDone();
+      onDone({ kind: "approved", id: group.id, name: group.name });
     } catch (e) {
       setError(errorText(e, "We couldn't approve that."));
     } finally {
@@ -61,18 +72,10 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => voi
     }
   }
 
-  async function reject() {
-    if (!confirm(`Reject “${group.name}”? This cannot be undone.`)) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await Admin.reject(group.id);
-      onDone();
-    } catch (e) {
-      setError(errorText(e, "We couldn't reject that."));
-    } finally {
-      setBusy(false);
-    }
+  async function reject(message: string) {
+    await Admin.reject(group.id, message || undefined);
+    setRejecting(false);
+    onDone({ kind: "rejected", id: group.id, name: group.name });
   }
 
   return (
@@ -91,20 +94,28 @@ function PendingCard({ group, onDone }: { group: GroupSummary; onDone: () => voi
           </p>
         </div>
       </div>
-      <div className="mt-4">
-        <Field id="admin-tags" label="Tags" optional hint="Separate tags with commas, for example young-adults, bible-study.">
-          <Input value={tags} onChange={(e) => setTags(e.target.value)} />
-        </Field>
-      </div>
+      {editingTags ? (
+        <div className="mt-4">
+          <Field id={`admin-tags-${group.id}`} label="Tags" optional hint="Separate tags with commas, for example young-adults, bible-study.">
+            <Input value={tags} onChange={(e) => setTags(e.target.value)} />
+          </Field>
+        </div>
+      ) : (
+        <p className="mt-3 flex flex-wrap items-center gap-x-3 text-sm text-text-muted">
+          <span>Tags: {group.tags.length > 0 ? group.tags.join(", ") : "none"}</span>
+          <Button variant="link" onClick={() => setEditingTags(true)}>Edit tags</Button>
+        </p>
+      )}
       {error && <FormError layout="mt-2">{error}</FormError>}
       <div className="flex gap-3 mt-4">
         <Button variant="primary" onClick={approve} disabled={busy}>
           {busy ? "…" : "Approve"}
         </Button>
-        <Button variant="danger-outline" onClick={reject} disabled={busy}>
+        <Button variant="danger-outline" onClick={() => setRejecting(true)} disabled={busy}>
           Reject
         </Button>
       </div>
+      {rejecting && <RejectGroupDialog groupName={group.name} onReject={reject} onCancel={() => setRejecting(false)} />}
     </div>
   );
 }
@@ -252,13 +263,17 @@ function AccountRequestCard({ request, onDone }: { request: AccountRequest; onDo
   );
 }
 
-function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
+function ApprovalsTab({ onCount, onGroupDecided }: { onCount: (n: number) => void; onGroupDecided: () => void }) {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [deletions, setDeletions] = useState<GroupSummary[]>([]);
   const [requests, setRequests] = useState<AccountRequest[]>([]);
   const [links, setLinks] = useState<GuardianLink[]>([]);
   const [nominations, setNominations] = useState<GuardianNomination[]>([]);
   const [announce, setAnnounce] = useState("");
+  // What the admin just decided on a new group; stays until the next action or
+  // a change of tab (the tab unmounts), so the outcome is never a flash.
+  const [decision, setDecision] = useState<Decision | null>(null);
+  const decisionRef = useRef<HTMLParagraphElement>(null);
   const focusLinks = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -287,6 +302,17 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
     load();
   }, [load]);
 
+  // The decided card is gone from the list, so focus moves to the outcome.
+  useEffect(() => {
+    if (decision) decisionRef.current?.focus();
+  }, [decision]);
+
+  // Any other decision clears the line: it described the one before.
+  const loadAfterOther = useCallback(() => {
+    setDecision(null);
+    void load();
+  }, [load]);
+
   // After a confirm or reject the card goes away: focus the next link card,
   // or the section heading, or the tab content when nothing is left (M1).
   const rootRef = useRef<HTMLDivElement>(null);
@@ -301,6 +327,14 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
   return (
     <div ref={rootRef} tabIndex={-1} className="focus:outline-none">
       <p role="status" aria-live="polite" className="sr-only">{announce}</p>
+      {decision && (
+        <p ref={decisionRef} role="status" tabIndex={-1} className="mb-4 rounded-lg border border-border bg-sunken px-4 py-3 text-sm focus:outline-none">
+          “{decision.name}” {decision.kind}. Its leaders were told.
+          {decision.kind === "approved" && (
+            <>{" "}<Link to={`/groups/${decision.id}`} className="text-link">View group</Link></>
+          )}
+        </p>
+      )}
       {loading && <Skeleton kind="lines" />}
       {!loading && error && <ErrorNotice message={error} onRetry={load} />}
       {!loading && !error && groups.length === 0 && deletions.length === 0 && requests.length === 0 && links.length === 0 && nominations.length === 0 && (
@@ -314,7 +348,7 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
         <div className="space-y-4 mb-8">
           <h2 className="text-xl font-bold">Account requests</h2>
           {requests.map((r) => (
-            <AccountRequestCard key={r.id} request={r} onDone={load} />
+            <AccountRequestCard key={r.id} request={r} onDone={loadAfterOther} />
           ))}
         </div>
       )}
@@ -328,7 +362,7 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
               onDone={(msg) => {
                 setAnnounce(msg);
                 focusLinks.current = true;
-                load();
+                loadAfterOther();
               }}
             />
           ))}
@@ -347,7 +381,15 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
         <div className="space-y-4">
           <h2 className="text-xl font-bold">New groups</h2>
           {groups.map((g) => (
-            <PendingCard key={g.id} group={g} onDone={load} />
+            <PendingCard
+              key={g.id}
+              group={g}
+              onDone={(d) => {
+                setDecision(d);
+                onGroupDecided();
+                void load();
+              }}
+            />
           ))}
         </div>
       )}
@@ -355,7 +397,7 @@ function ApprovalsTab({ onCount }: { onCount: (n: number) => void }) {
         <div className="space-y-4 mt-8">
           <h2 className="text-xl font-bold">Deletion requests</h2>
           {deletions.map((g) => (
-            <DeletionCard key={g.id} group={g} onDone={load} />
+            <DeletionCard key={g.id} group={g} onDone={loadAfterOther} />
           ))}
         </div>
       )}
@@ -533,13 +575,21 @@ function MemberManager({ group, users, onUnavailable, fallbackFocus }: {
   );
 }
 
-function GroupsTab({ users }: { users: User[] }) {
+// Pending groups wait on the admin, so they lead; the rest follow by name (DEC-99).
+function sortGroups(groups: GroupSummary[]): GroupSummary[] {
+  const rank = (g: GroupSummary) => (g.status === "pending" ? 0 : 1);
+  return [...groups].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+}
+
+function GroupsTab({ users, onCount }: { users: User[]; onCount: (n: number) => void }) {
   const [groups, setGroups] = useState<GroupSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const [openMembers, setOpenMembers] = useState<number | null>(null);
   const [deletingId, setDeletingId] = useState<number | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleted, setDeleted] = useState("");
   const [retry, setRetry] = useState(0);
   const manageMemberButtons = useRef(new Map<number, HTMLButtonElement>());
   const closeMembers = useCallback((groupId: number) => {
@@ -553,21 +603,25 @@ function GroupsTab({ users }: { users: User[] }) {
       try {
         const { groups } = await AdminGroups.list();
         setGroups(groups);
+        onCount(groups.length);
       } catch (e) {
         setError(errorText(e, "We couldn't load the groups."));
       } finally {
         setLoading(false);
       }
     })();
-  }, [retry]);
+  }, [retry, onCount]);
 
   async function deleteGroup(g: GroupSummary) {
     if (!confirm(`Delete “${g.name}”? This removes the group, its members, and its events.`)) return;
     setDeletingId(g.id);
     setDeleteError(null);
+    setDeleted("");
     try {
       await Admin.deleteGroup(g.id);
       setGroups((prev) => prev.filter((x) => x.id !== g.id));
+      onCount(groups.length - 1);
+      setDeleted(`“${g.name}” was deleted.`);
       setOpenMembers((v) => (v === g.id ? null : v));
     } catch (e) {
       setDeleteError(errorText(e, "We couldn't delete that."));
@@ -579,10 +633,15 @@ function GroupsTab({ users }: { users: User[] }) {
   if (loading) return <Skeleton kind="lines" />;
   if (error) return <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />;
 
+  const needle = query.trim().toLowerCase();
+  const shown = sortGroups(groups).filter((g) => !needle || g.name.toLowerCase().includes(needle) || g.leaderName.toLowerCase().includes(needle));
+
   return (
     <div className="space-y-3">
+      {groups.length > 0 && <SearchBox id="admin-group-search" label="Search groups" value={query} onChange={setQuery} />}
       {deleteError && <FormError>{deleteError}</FormError>}
-      {groups.map((g) => (
+      <p role="status" className="text-sm text-text-muted empty:hidden">{deleted}</p>
+      {shown.map((g) => (
         <div key={g.id} className="bg-surface rounded-lg border border-border p-5">
           <div className="flex items-center gap-3 flex-wrap">
             <div className="grow min-w-0">
@@ -590,17 +649,16 @@ function GroupsTab({ users }: { users: User[] }) {
                 {g.name}
               </Link>
               <div className="text-xs text-text-muted mt-0.5">
-                <span
-                  className={`inline-block rounded-full px-2 py-0.5 font-semibold ${
-                    g.status === "active"
-                      ? "bg-success-subtle text-success-on-subtle"
-                      : g.status === "pending"
-                        ? "bg-warning-subtle text-warning-on-subtle"
-                        : "bg-sunken text-text-muted"
-                  }`}
-                >
-                  {groupStatusLabel(g.status)}
-                </span>
+                {/* Only what needs attention gets a label; "Active" is the usual case (DEC-99). */}
+                {g.status !== "active" && (
+                  <span
+                    className={`inline-block rounded-full px-2 py-0.5 font-semibold ${
+                      g.status === "pending" ? "bg-warning-subtle text-warning-on-subtle" : "bg-sunken text-text-muted"
+                    }`}
+                  >
+                    {groupStatusLabel(g.status)}
+                  </span>
+                )}
                 {g.visibility === "invite_only" && (
                   <span className="ml-1.5 inline-block rounded-full px-2 py-0.5 font-semibold bg-inverse text-inverse-foreground">
                     Invite only
@@ -621,19 +679,25 @@ function GroupsTab({ users }: { users: User[] }) {
             >
               {openMembers === g.id ? "Hide members" : "Manage members"}
             </Button>
-            <ButtonLink to={`/groups/${g.id}`} variant="secondary">Open & edit</ButtonLink>
-            <Button variant="danger-outline" onClick={() => deleteGroup(g)} disabled={deletingId === g.id}>
-              {deletingId === g.id ? "…" : "Delete"}
-            </Button>
+            {/* Manage members is the row's one action; Delete lives in More (DEC-63). */}
+            <Menu
+              label={`More for ${g.name}`}
+              items={[{ label: "Delete", onSelect: () => void deleteGroup(g), danger: true, disabled: deletingId === g.id }]}
+            />
           </div>
           {openMembers === g.id && <MemberManager group={g} users={users} onUnavailable={closeMembers}
             fallbackFocus={() => manageMemberButtons.current.get(g.id)?.focus()} />}
         </div>
       ))}
       {groups.length === 0 && (
-        <div className="bg-surface rounded-lg border border-border p-8 text-center text-text-muted">
-          No groups yet.
-        </div>
+        <EmptyState title="No groups yet" body="Groups people start, and groups you add, show up here." />
+      )}
+      {groups.length > 0 && shown.length === 0 && (
+        <EmptyState
+          title="No groups match"
+          body="Try a different name, or clear the search."
+          action={<Button variant="secondary" onClick={() => setQuery("")}>Clear search</Button>}
+        />
       )}
     </div>
   );
@@ -803,8 +867,21 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
   );
 }
 
+type UserFilter = "all" | "admin" | "disabled" | "invited";
+const USER_FILTERS: { id: UserFilter; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "admin", label: "Admins" },
+  { id: "disabled", label: "Disabled" },
+  { id: "invited", label: "Invited" },
+];
+function matchesUserFilter(u: User, filter: UserFilter): boolean {
+  return filter === "all" || (filter === "admin" ? u.role === "admin" : u.status === filter);
+}
+
 function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState<UserFilter>("all");
   // Your own row has no Disable or Delete: the server refuses both
   // ("you cannot disable/delete your own account"), so don't offer them.
   const { user: me } = useAuth();
@@ -899,6 +976,9 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   // Deleting or disabling opens a panel that also picks successors (DEC-36).
   const [leaving, setLeaving] = useState<{ id: number; action: "delete" | "disable" } | null>(null);
 
+  const needle = query.trim().toLowerCase();
+  const shown = users.filter((u) => matchesUserFilter(u, filter) && (!needle || [u.name, u.displayName, u.email].some((v) => v.toLowerCase().includes(needle))));
+
   return (
     <div>
       <div className="flex flex-wrap justify-end gap-2 mb-4">
@@ -916,10 +996,27 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
           onCancel={() => setCreating(false)}
         />
       )}
+      {users.length > 0 && (
+        <div className="mb-4 space-y-3">
+          <SearchBox id="admin-user-search" label="Search by name or email" value={query} onChange={setQuery} />
+          <div role="group" aria-label="Filter users" className="flex flex-wrap gap-2">
+            {USER_FILTERS.map((f) => (
+              <Chip key={f.id} selected={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</Chip>
+            ))}
+          </div>
+        </div>
+      )}
+      {users.length > 0 && shown.length === 0 && (
+        <EmptyState
+          title="No one matches"
+          body="Try a different name or email, or choose another filter."
+          action={<Button variant="secondary" onClick={() => { setQuery(""); setFilter("all"); }}>Clear search and filter</Button>}
+        />
+      )}
       {/* Below md each user is a stacked card with Edit and More (PR #65
           review F1); from md up it's a table. */}
       {/* Not overflow-hidden: a row's More menu must be able to open past the card. */}
-      <div className="bg-surface rounded-lg border border-border overflow-visible">
+      {(users.length === 0 || shown.length > 0) && <div className="bg-surface rounded-lg border border-border overflow-visible">
         <table className="block md:table w-full text-sm">
           <thead className="hidden md:table-header-group">
             <tr className="text-left text-text-muted border-b border-border">
@@ -930,7 +1027,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
             </tr>
           </thead>
           <tbody className="block md:table-row-group divide-y divide-border">
-            {users.map((u) => (
+            {shown.map((u) => (
               <tr key={u.id} className="block md:table-row">
                 <td className="block md:table-cell px-4 pt-3 md:py-3">
                   <div className="flex items-center gap-2">
@@ -1025,7 +1122,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </div>}
     </div>
   );
 }
@@ -1257,11 +1354,16 @@ export function AdminPage() {
   const [pendingCount, setPendingCount] = useState(0);
   const [users, setUsers] = useState<User[]>([]);
   const [usersLoading, setUsersLoading] = useState(true);
+  // Counts for the Users and Groups chips; unknown (null) until loaded, so a
+  // failed load shows no number rather than a wrong one.
+  const [userCount, setUserCount] = useState<number | null>(null);
+  const [groupCount, setGroupCount] = useState<number | null>(null);
 
   const loadUsers = useCallback(async () => {
     try {
       const { users } = await AdminUsers.list();
       setUsers(users);
+      setUserCount(users.length);
     } catch {
       // Users tab shows its own empty state on failure.
     } finally {
@@ -1269,10 +1371,23 @@ export function AdminPage() {
     }
   }, []);
 
+  // The count for the Groups chip comes from the same list the tab shows, loaded
+  // once up front (no extra endpoint); the tab reports its own changes after.
+  const loadGroupCount = useCallback(async () => {
+    try {
+      const { groups } = await AdminGroups.list();
+      setGroupCount(groups.length);
+    } catch {
+      // The Groups tab shows its own error.
+    }
+  }, []);
+
   useEffect(() => {
-    if (!authLoading && user && isAdmin) loadUsers();
-    else if (!authLoading) setUsersLoading(false);
-  }, [authLoading, user, isAdmin, loadUsers]);
+    if (!authLoading && user && isAdmin) {
+      loadUsers();
+      void loadGroupCount();
+    } else if (!authLoading) setUsersLoading(false);
+  }, [authLoading, user, isAdmin, loadUsers, loadGroupCount]);
 
   if (!authLoading && (!user || !isAdmin)) {
     return (
@@ -1283,10 +1398,10 @@ export function AdminPage() {
     );
   }
 
-  const tabs: { id: AdminTab; label: string; badge?: number }[] = [
+  const tabs: { id: AdminTab; label: string; badge?: number; count?: number | null }[] = [
     { id: "approvals", label: "Approvals", badge: pendingCount },
-    { id: "groups", label: "Groups" },
-    { id: "users", label: "Users" },
+    { id: "groups", label: "Groups", count: groupCount },
+    { id: "users", label: "Users", count: userCount },
     { id: "invite", label: "Invite" },
     { id: "settings", label: "Settings" },
   ];
@@ -1298,12 +1413,12 @@ export function AdminPage() {
         onChange={(value) => setSearchParams(value === "approvals" ? {} : { tab: value })}
         options={tabs.map((t) => ({
           id: t.id,
-          accessibleName: t.badge ? `${t.label}, ${t.badge} waiting` : t.label,
+          accessibleName: t.badge ? `${t.label}, ${t.badge} waiting` : t.count != null ? `${t.label}, ${t.count}` : t.label,
           label: <>{t.label}{t.badge ? (
             <span aria-hidden="true" className="ml-1.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-xs">
               {" "}{t.badge}
             </span>
-          ) : null}</>,
+          ) : null}{t.count != null && <span className="font-normal">{" "}{t.count}</span>}</>,
         }))}>
 
       {tab === "settings" && <section aria-labelledby="admin-settings-heading">
@@ -1312,8 +1427,8 @@ export function AdminPage() {
         <SelfSignupSetting />
         <ButtonLink to="/events/new" variant="secondary">Schedule a church-wide event</ButtonLink>
       </section>}
-      {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} />}
-      {tab === "groups" && <GroupsTab users={users} />}
+      {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} onGroupDecided={loadGroupCount} />}
+      {tab === "groups" && <GroupsTab users={users} onCount={setGroupCount} />}
       {tab === "users" && (
         usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}

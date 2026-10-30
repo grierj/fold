@@ -179,7 +179,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 		}
 		_, rel := groupAndRel(ev, groups, rels)
 		status := scopeFacts.ownStatus[occ.ID]
-		decision := calendarScopeDecision(scope, true, ev, occ, rel, hosted[ev.ID], scopeFacts.household[occ.ID], exact, status, now)
+		decision := calendarScopeDecision(scope, me != nil, true, ev, occ, rel, hosted[ev.ID], scopeFacts.household[occ.ID], exact, status, now)
 		if !decision.Include {
 			continue
 		}

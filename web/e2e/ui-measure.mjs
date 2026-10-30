@@ -43,6 +43,9 @@ export const measure = () => {
     .filter((e) => vis(e) && !e.closest("[aria-hidden=true]"))
     .filter((e) => {
       const r = e.getBoundingClientRect();
+      // A tab bar scrolls sideways inside its own bar on purpose (DEC-99); the
+      // active tab is kept in view and a half-shown chip signals there is more.
+      if (e.matches("[role=tab]")) return false;
       if (r.left < -1 || r.right > window.innerWidth + 1) return true;
       for (let a = e.parentElement; a && a !== document.body; a = a.parentElement) {
         const s = getComputedStyle(a);

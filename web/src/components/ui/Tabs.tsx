@@ -1,9 +1,11 @@
-import { useId, type KeyboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, type KeyboardEvent, type ReactNode } from "react";
 
 type Option<T extends string> = { id: T; label: ReactNode; accessibleName?: string };
 
 // Automatic-activation tabs: one Tab stop, arrows (wrapping), Home and End.
 // The active panel follows in reading order; overflow stays inside the bar.
+// Chip tabs are one row that scrolls sideways inside the bar on phones, never
+// wrapping onto uneven rows (DEC-99); the padding keeps focus rings unclipped.
 export function Tabs<T extends string>({ label, options, value, onChange, variant = "underline", children }: {
   label: string;
   options: Option<T>[];
@@ -13,6 +15,11 @@ export function Tabs<T extends string>({ label, options, value, onChange, varian
   children: ReactNode;
 }) {
   const id = useId();
+  const list = useRef<HTMLDivElement>(null);
+  // A bookmarked tab off the edge of a phone-width row scrolls into view.
+  useEffect(() => {
+    list.current?.querySelector<HTMLElement>("[aria-selected=true]")?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [value]);
   function onKeyDown(event: KeyboardEvent<HTMLButtonElement>, index: number) {
     const next = {
       ArrowRight: (index + 1) % options.length,
@@ -29,8 +36,8 @@ export function Tabs<T extends string>({ label, options, value, onChange, varian
   }
   return <>
     <nav aria-label={label} className="mb-6 overflow-x-auto border-b border-border">
-      <div role="tablist" aria-label={label} className={variant === "chips"
-        ? "grid min-w-max grid-cols-[auto_auto_auto] gap-2 pb-4 sm:flex sm:flex-wrap"
+      <div ref={list} role="tablist" aria-label={label} className={variant === "chips"
+        ? "flex min-w-max gap-2 px-1 pt-1 pb-4"
         : "flex min-w-max gap-6"}>
         {options.map((option, index) => <button
           key={option.id}

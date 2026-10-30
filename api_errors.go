@@ -64,6 +64,8 @@ var errorCodes = map[string]string{
 	"current password is incorrect":                      "wrong_password",
 	"password must be at least 10 characters":            "password_too_short",
 	"password must be at most 72 bytes":                  "password_too_long",
+	"message must be 500 characters or fewer":            "too_long",
+	"leave contact details out of the message":           "message_has_contact",
 	"that link is invalid or has expired":                "link_expired",
 	"enter a different valid email for the guardian":     "invalid_guardian_email",
 	"that invitation is invalid or has expired":          "link_expired",

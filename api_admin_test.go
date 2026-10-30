@@ -1243,3 +1243,50 @@ func TestLeadersHearGroupDecisions(t *testing.T) {
 		t.Fatalf("%d decision notices went to someone other than the leader", n)
 	}
 }
+
+// A reject may carry a short message to the leaders (DEC-96). It reaches the
+// notice and the audit row, and like all notification text it never carries
+// an email address or phone number.
+func TestRejectMessageReachesLeaders(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	lc := loginAPI(t, app, "leader", "password1234")
+	var body struct {
+		Group groupSummaryJSON `json:"group"`
+	}
+	decodeJSON(t, lc.do("POST", "/api/v1/groups", map[string]any{"name": "Late night karaoke"}, true), &body)
+	gid := itoa(body.Group.ID)
+
+	for msg, code := range map[string]string{
+		"Write to pastor@example.org": "message_has_contact",
+		"Call me at 208-555-0143":     "message_has_contact",
+		strings.Repeat("x", 501):      "too_long",
+	} {
+		w := admin.do("POST", "/api/v1/admin/groups/"+gid+"/reject", map[string]any{"message": msg}, true)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"`+code+`"`) {
+			t.Fatalf("message %.30q: %d %s, want 400 %s", msg, w.Code, w.Body.String(), code)
+		}
+	}
+	var g models.Group
+	app.DB.First(&g, body.Group.ID)
+	if g.Status != models.GroupPending {
+		t.Fatalf("a refused message still decided the group: %s", g.Status)
+	}
+
+	msg := "We already run a similar group on Fridays. Join that one!"
+	if w := admin.do("POST", "/api/v1/admin/groups/"+gid+"/reject", map[string]any{"message": "  " + msg + "  "}, true); w.Code != http.StatusOK {
+		t.Fatalf("reject: %d %s", w.Code, w.Body.String())
+	}
+	var n models.Notification
+	if err := app.DB.Where("user_id = ? AND kind = ?", leader.ID, "group.rejected").First(&n).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n.Body != "An admin decided not to add it. Their note: "+msg {
+		t.Fatalf("notice body %q", n.Body)
+	}
+	if contactCount(t, app, &models.AuditLog{}, "action = ? AND target_id = ? AND meta_json->>'message' = ?", audit.GroupRejected, body.Group.ID, msg) != 1 {
+		t.Fatal("the audit row should keep the message")
+	}
+}

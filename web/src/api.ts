@@ -473,9 +473,12 @@ export const Invitations = {
 
 export const Admin = {
   pending: () => api<{ groups: GroupSummary[] }>("/admin/pending"),
-  approve: (id: number | string, tags: string[]) =>
+  // Tags are sent only when the admin edited them; left out, the leader's own stay.
+  approve: (id: number | string, tags?: string[]) =>
     api<{ group: GroupSummary }>(`/admin/groups/${id}/approve`, { method: "POST", body: { tags } }),
-  reject: (id: number | string) => api<unknown>(`/admin/groups/${id}/reject`, { method: "POST" }),
+  // The optional message goes to the leaders on their notice (DEC-96).
+  reject: (id: number | string, message?: string) =>
+    api<unknown>(`/admin/groups/${id}/reject`, { method: "POST", body: message ? { message } : undefined }),
   deletions: () => api<{ groups: GroupSummary[] }>("/admin/deletions"),
   rejectDeletion: (id: number | string) =>
     api<unknown>(`/admin/groups/${id}/reject-deletion`, { method: "POST" }),

@@ -481,7 +481,7 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			// Only an admin's decision is news to the leaders; a leader
 			// archiving their own pending group is not "an admin decided".
 			if policy.IsAdmin(asPerson(u)) {
-				ids, err := notifyGroupDecided(tx, g, u.ID, g.Status == models.GroupActive)
+				ids, err := notifyGroupDecided(tx, g, u.ID, g.Status == models.GroupActive, "")
 				if err != nil {
 					return err
 				}

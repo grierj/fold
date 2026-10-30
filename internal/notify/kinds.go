@@ -297,7 +297,11 @@ func init() {
 	register(Kind{
 		Key: GroupRejected, Category: CatGroups, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
-			return or(v.Group, "Your group") + " wasn't approved", "An admin decided not to add it. Ask an admin if you have questions."
+			body := "An admin decided not to add it. Ask an admin if you have questions."
+			if v.Note != "" {
+				body = "An admin decided not to add it. Their note: " + v.Note
+			}
+			return or(v.Group, "Your group") + " wasn't approved", body
 		},
 	})
 	register(Kind{

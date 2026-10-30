@@ -61,7 +61,7 @@ test("an admin on a phone reaches Admin from Me and can't disable or delete them
   await expect(page.getByRole("banner").getByRole("link", { name: "Admin" })).toBeHidden();
   await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: "Me", exact: true }).click();
   await page.getByRole("main").getByRole("link", { name: "Admin", exact: true }).click();
-  await page.getByRole("tablist", { name: "Admin sections", exact: true }).getByRole("tab", { name: "Users", exact: true }).click();
+  await page.getByRole("tablist", { name: "Admin sections", exact: true }).getByRole("tab", { name: /^Users/ }).click();
   const own = page.getByRole("row").filter({ hasText: "grier@" });
   await expect(own.getByRole("button", { name: "Edit" })).toBeVisible();
   await own.getByRole("button", { name: /^More for/ }).click();

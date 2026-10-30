@@ -425,7 +425,7 @@ func notifyGroupPending(tx *gorm.DB, g *models.Group, actor uint) ([]uint, error
 // notifyGroupDecided tells a pending group's leaders how an admin decided
 // it (DEC-96), in the decision's transaction. A leader may always see their
 // own group, approved or not.
-func notifyGroupDecided(tx *gorm.DB, g *models.Group, actor uint, approved bool) ([]uint, error) {
+func notifyGroupDecided(tx *gorm.DB, g *models.Group, actor uint, approved bool, note string) ([]uint, error) {
 	kind := notify.GroupRejected
 	if approved {
 		kind = notify.GroupApproved
@@ -433,7 +433,7 @@ func notifyGroupDecided(tx *gorm.DB, g *models.Group, actor uint, approved bool)
 	return notify.Send(tx, notify.Msg{
 		Kind: kind, To: leaderIDs(tx, g.ID), Actor: &actor,
 		SubjectType: "group", SubjectID: g.ID, Link: "/groups/" + strconv.FormatUint(uint64(g.ID), 10),
-		Vars: notify.Vars{Group: g.Name}, // group-ok: its own leaders
+		Vars: notify.Vars{Group: g.Name, Note: note}, // group-ok: its own leaders
 		// No dedupe key: the pending → decided transition sends it once, and a
 		// group set back to pending and decided again earns a new notice.
 	})
