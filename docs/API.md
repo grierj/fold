@@ -819,7 +819,9 @@ when childcare is full. Hand-promoting a specific person returns 409
 Promotion runs again when a going registration lowers its guest or childcare
 count, switches attendance mode (freeing a seat in its previous pool), cancels,
 declines, moves to maybe, is removed, or its account is disabled. This includes
-manager re-adds that reduce a count or switch modes. Increasing effective
+manager re-adds that reduce a count or switch modes. Editing a registration
+that remains waitlisted also retries promotion using its updated request (for
+example, after lowering its guest or childcare count). Increasing effective
 attendance capacity (in-person or remote, including by clearing a limit or
 changing a per-date override), raising `childcareCapacity`, clearing its limit,
 or turning childcare off also retries promotion for future scheduled dates.
