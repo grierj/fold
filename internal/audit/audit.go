@@ -230,6 +230,13 @@ const (
 	// SelfSignupChanged: an admin turned self-signup between request
 	// and off (DEC-4). Target type is setting; meta has mode.
 	SelfSignupChanged = "setting.self_signup_changed"
+	// RoomsEnabledChanged: an admin turned rooms on or off (M2.1a, 9.1).
+	// Target type is setting; meta has enabled.
+	RoomsEnabledChanged = "setting.rooms_enabled_changed"
+	// RoomCreated / RoomUpdated: an admin added or edited a room (M2.1a).
+	// Target type is room; RoomUpdated's meta lists the changed fields.
+	RoomCreated = "room.created"
+	RoomUpdated = "room.updated"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

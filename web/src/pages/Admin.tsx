@@ -9,12 +9,13 @@ import { Badge } from "../components/ui/Badge";
 import { Tabs } from "../components/ui/Tabs";
 import { roleLabel, accountStatusLabel, groupStatusLabel } from "../lib/status";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
+import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminRooms, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
 import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
+import { RoomsTab, sortRooms } from "../components/admin/RoomsTab";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
-import type { AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, User } from "../types";
+import type { AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, Room, User } from "../types";
 import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
@@ -32,7 +33,7 @@ import { Skeleton } from "../components/ui/Skeleton";
 import { ContactHistory } from "../contact-history-api";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 
-type AdminTab = "approvals" | "groups" | "users" | "invite" | "settings";
+type AdminTab = "approvals" | "groups" | "rooms" | "users" | "invite" | "settings";
 
 const TeenConsentPanel = lazy(() => import("../components/TeenConsentPanel"));
 
@@ -1345,11 +1346,60 @@ function SelfSignupSetting() {
   );
 }
 
+// Rooms on/off (PLAN 9.1, M2.1a). One on/off choice, so like self-signup it
+// saves when changed and goes back if saving fails (DEC-98). Turning it on
+// shows the Rooms tab at once; turning it off hides rooms and deletes nothing.
+// `enabled` is what AdminPage already read from /site (null until it answers).
+function RoomsSetting({ enabled, onChanged }: { enabled: boolean | null; onChanged: (enabled: boolean) => void }) {
+  // The choice shown while a save is in flight; null means show `enabled`.
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  async function change(next: boolean) {
+    setSaving(true);
+    setPending(next);
+    setError(null);
+    setOk(false);
+    try {
+      const r = await AdminRooms.setEnabled(next);
+      onChanged(r.roomsEnabled);
+      setOk(true);
+    } catch (err) {
+      setError(errorText(err, "We couldn't save that setting."));
+    } finally {
+      setPending(null);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mb-6 max-w-xl space-y-2">
+      <Checkbox
+        label="Use rooms"
+        description="Book rooms for events and see what's booked. Turning this off hides rooms; nothing is deleted."
+        checked={pending ?? enabled === true}
+        disabled={saving || enabled === null}
+        onChange={(e) => void change(e.target.checked)}
+      />
+      <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
+      {error && <FormError>{error}</FormError>}
+    </div>
+  );
+}
+
 export function AdminPage() {
   const { user, loading: authLoading, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab");
-  const tab: AdminTab = requestedTab && ["approvals", "groups", "users", "invite", "settings"].includes(requestedTab)
+  // Whether rooms are on: unknown (null) until /site answers. The Rooms tab
+  // exists only while they are on; a bookmarked one waits for the answer.
+  const [roomsEnabled, setRoomsEnabled] = useState<boolean | null>(null);
+  // /site failing leaves roomsEnabled unknown; a bookmarked Rooms tab then says so and offers a retry.
+  const [siteError, setSiteError] = useState<string | null>(null);
+  const roomsShown = roomsEnabled === true || (roomsEnabled === null && requestedTab === "rooms");
+  const tab: AdminTab = requestedTab && ["approvals", "groups", "users", "invite", "settings", ...(roomsShown ? ["rooms"] : [])].includes(requestedTab)
     ? requestedTab as AdminTab : "approvals";
   const [pendingCount, setPendingCount] = useState(0);
   const [users, setUsers] = useState<User[]>([]);
@@ -1362,6 +1412,10 @@ export function AdminPage() {
   const [groups, setGroups] = useState<GroupSummary[] | null>(null);
   const [groupsError, setGroupsError] = useState<string | null>(null);
   const groupCount = groups ? groups.length : null;
+  // Loaded once here like the groups: the Rooms chip counts the list the tab shows.
+  const [rooms, setRooms] = useState<Room[] | null>(null);
+  const [roomsError, setRoomsError] = useState<string | null>(null);
+  const roomCount = rooms ? rooms.length : null;
 
   const loadUsers = useCallback(async () => {
     try {
@@ -1386,14 +1440,33 @@ export function AdminPage() {
       setGroupsError(errorText(e, "We couldn't load the groups."));
     }
   }, []);
+  const loadRooms = useCallback(async () => {
+    setRoomsError(null);
+    try {
+      const { rooms } = await AdminRooms.list();
+      setRooms(rooms);
+    } catch (e) {
+      setRoomsError(errorText(e, "We couldn't load the rooms."));
+    }
+  }, []);
+  const loadSite = useCallback(() => {
+    setSiteError(null);
+    Site.get().then((s) => setRoomsEnabled(!!s.roomsEnabled), (e) => setSiteError(errorText(e, "We couldn't load the rooms.")));
+  }, []);
+  const roomSaved = useCallback((room: Room) => setRooms((prev) => sortRooms([...(prev ?? []).filter((r) => r.id !== room.id), room])), []);
   const groupDeleted = useCallback((id: number) => setGroups((prev) => prev && prev.filter((g) => g.id !== id)), []);
 
   useEffect(() => {
     if (!authLoading && user && isAdmin) {
       loadUsers();
       void loadGroups();
+      loadSite();
     } else if (!authLoading) setUsersLoading(false);
-  }, [authLoading, user, isAdmin, loadUsers, loadGroups]);
+  }, [authLoading, user, isAdmin, loadUsers, loadGroups, loadSite]);
+
+  useEffect(() => {
+    if (roomsEnabled) void loadRooms();
+  }, [roomsEnabled, loadRooms]);
 
   if (!authLoading && (!user || !isAdmin)) {
     return (
@@ -1407,6 +1480,7 @@ export function AdminPage() {
   const tabs: { id: AdminTab; label: string; badge?: number; count?: number | null }[] = [
     { id: "approvals", label: "Approvals", badge: pendingCount },
     { id: "groups", label: "Groups", count: groupCount },
+    ...(roomsShown ? [{ id: "rooms" as const, label: "Rooms", count: roomCount }] : []),
     { id: "users", label: "Users", count: userCount },
     { id: "invite", label: "Invite" },
     { id: "settings", label: "Settings" },
@@ -1431,10 +1505,13 @@ export function AdminPage() {
         <h2 id="admin-settings-heading" className="text-xl font-bold mb-4">Church settings</h2>
         <ChurchTimezone />
         <SelfSignupSetting />
+        <RoomsSetting enabled={roomsEnabled} onChanged={setRoomsEnabled} />
         <ButtonLink to="/events/new" variant="secondary">Schedule a church-wide event</ButtonLink>
       </section>}
       {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} onGroupDecided={loadGroups} />}
       {tab === "groups" && <GroupsTab users={users} groups={groups} error={groupsError} reload={loadGroups} onDeleted={groupDeleted} />}
+      {tab === "rooms" && <RoomsTab rooms={rooms} error={roomsEnabled === null ? siteError : roomsError}
+        reload={roomsEnabled === null ? loadSite : loadRooms} onSaved={roomSaved} />}
       {tab === "users" && (
         usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}

@@ -1137,6 +1137,19 @@ and the primary contact, the account is deleted (memberships end) or disabled (m
 as plain member). Audit: `membership.role_changed` per group
 with `reason` `account_deleted` or `account_disabled` and
 `departingUserId`, plus `user.deleted` or `user.disabled`.
+### Rooms (M2.1a)
+
+Rooms are optional (PLAN 9.1). While the `rooms_enabled` setting is off, every room route answers 404, for anyone, and `GET /api/v1/site` reports `roomsEnabled: false`.
+
+```
+PUT  /api/v1/admin/settings/rooms {enabled: boolean} → 200 {roomsEnabled}   (admin; audited setting.rooms_enabled_changed)
+GET  /api/v1/admin/rooms            → 200 {rooms: [room]}                 (admin; active first, then building and name)
+POST /api/v1/admin/rooms            → 201 {room}                          (admin; audited room.created)
+PUT  /api/v1/admin/rooms/:id        → 200 {room}                          (admin; absent fields keep their value; audited room.updated with the changed fields)
+```
+
+`room` is `{id, name, building, capacity, features, notes, active, restricted, defaultSetupMinutes, defaultTeardownMinutes}`. Bodies take the same fields (all optional on edit); a new room is always active, so `active` only matters on edit. `name` is required, at most 100 characters, and unique per building whatever the letter case (409 `room_name_taken`); `building` at most 100, `features` 500, `notes` 2000 (notes are for admins). `capacity` is a whole number from 1 to 100000, or null for no limit. Setup and teardown minutes are 0 to 240 and are copied into each booking (DEC-101). There is no delete: set `active: false`, and bookings keep their history.
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

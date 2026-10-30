@@ -840,3 +840,18 @@ export interface ContactHistoryResponse {
 export interface NotificationSettings {
   optionalEmailOff: boolean;
 }
+
+// A bookable room (M2.1a). Admins manage rooms; notes are for admins only.
+// Bookings copy the default setup and cleanup minutes (DEC-101).
+export interface Room {
+  id: number;
+  name: string;
+  building: string;
+  capacity: number | null;
+  features: string;
+  notes: string;
+  active: boolean;
+  restricted: boolean;
+  defaultSetupMinutes: number;
+  defaultTeardownMinutes: number;
+}

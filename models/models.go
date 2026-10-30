@@ -782,6 +782,23 @@ type TeenConsent struct {
 	At           time.Time `gorm:"not null;default:clock_timestamp()"`
 }
 
+// Room is one bookable room (M2.1, 5.3, 9.1). Rooms are deactivated, never
+// deleted. Bookings copy the default padding (DEC-101). Notes are for admins.
+type Room struct {
+	ID                     uint   `gorm:"primaryKey"`
+	Name                   string `gorm:"not null"`
+	Building               string `gorm:"not null;default:''"`
+	Capacity               *int
+	Features               string    `gorm:"not null;default:''"`
+	Notes                  string    `gorm:"not null;default:''"`
+	Active                 bool      `gorm:"not null;default:true"`
+	Restricted             bool      `gorm:"not null;default:false"`
+	DefaultSetupMinutes    int       `gorm:"not null;default:0"`
+	DefaultTeardownMinutes int       `gorm:"not null;default:0"`
+	CreatedAt              time.Time `gorm:"not null;default:now()"`
+	UpdatedAt              time.Time `gorm:"not null;default:now()"`
+}
+
 // Consent is one append-only consent record (5.3, 5.12). The latest row per
 // (user, channel, scope) is in force. DEC-97 writes the first ones: "Turn off
 // all optional email" stores an email opt-out per optional notification
@@ -914,7 +931,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
-		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{},
+		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{},
 	}
 }
 
