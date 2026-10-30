@@ -9,6 +9,7 @@ import { OccurrenceCard } from "../components/OccurrenceCard";
 import { EventIntro } from "../components/EventIntro";
 import { Attendance } from "../components/Attendance";
 import { DateEditor } from "../components/DateEditor";
+import { NeedsRoomList } from "../components/NeedsRoomList";
 import { Menu } from "../components/ui/Menu";
 import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
@@ -54,6 +55,10 @@ function EventDetailContent() {
   const loadRevision = useRef(0);
   const rsvpMutationGate = useRsvpMutationGate();
   const editorRef = useRef<HTMLDivElement>(null);
+  // Rooms changed (a series room, a date's room, a cancelled or moved date): ask for the dates that need one again.
+  const [roomsRevision, setRoomsRevision] = useState(0);
+  // "Pick a room" asks one date's card to open its editor; seq makes a second ask count.
+  const [pickRequest, setPickRequest] = useState<{ date: string; seq: number } | null>(null);
 
   // Opening the editor brings it into view and puts the cursor in its first
   // field, so a screen reader and a keyboard follow the button they pressed.
@@ -182,8 +187,8 @@ function EventDetailContent() {
             series={{ ...event, eventId: event.id }}
             idPrefix={`ev${event.id}`}
             roomDate={single ? next.date : undefined}
-            onRoomChanged={() => void load(true)}
-            onSaved={() => { setEditing(false); void load(); }}
+            onRoomChanged={() => { setRoomsRevision((n) => n + 1); void load(true); }}
+            onSaved={() => { setEditing(false); setRoomsRevision((n) => n + 1); void load(); }}
             onClose={() => setEditing(false)}
           />
           {canSetVisibility && (
@@ -199,6 +204,15 @@ function EventDetailContent() {
             />
           )}
         </div>
+      )}
+
+      {canManage && (
+        <NeedsRoomList
+          eventId={event.id}
+          revision={roomsRevision}
+          hasDate={(d) => occurrences.some((o) => o.date === d)}
+          onPick={(d) => setPickRequest((r) => ({ date: d, seq: (r?.seq ?? 0) + 1 }))}
+        />
       )}
 
       {!single && <h2 className="text-xl font-bold mt-8 mb-3">Upcoming dates</h2>}
@@ -217,13 +231,14 @@ function EventDetailContent() {
             loggedIn={!!user}
             canManage={canManage}
             manageRequested={canManage && manageDate === m.date}
+            editRequest={pickRequest?.date === m.date ? pickRequest.seq : 0}
             onRsvp={handleRsvp}
             people={people}
             seriesFeedback={seriesFeedback}
             mutationGate={rsvpMutationGate}
             onSeriesFeedback={reportSeriesFeedback}
             onTerminalRefresh={() => void load(true, true)}
-            onChanged={() => void load(true)}
+            onChanged={() => { setRoomsRevision((n) => n + 1); void load(true); }}
             onNeedLogin={() => navigate("/login", { state: { from: `/events/${id}` } })}
           />
         ))}
@@ -240,6 +255,7 @@ function DateRow({
   loggedIn,
   canManage,
   manageRequested,
+  editRequest,
   onRsvp,
   people,
   seriesFeedback,
@@ -258,6 +274,8 @@ function DateRow({
   canManage: boolean;
   // ?manage=<this date> asked for the Manage sign-ups panel to open (DEC-99).
   manageRequested: boolean;
+  // Counts up each time "Pick a room" asks for this date's editor; 0 when it hasn't.
+  editRequest: number;
   onRsvp: () => void;
   people: HouseholdPerson[];
   seriesFeedback: SeriesFeedbackSignal | null;
@@ -276,6 +294,23 @@ function DateRow({
     setManaging(true);
     manageRef.current?.scrollIntoView?.({ block: "start" });
   }, [manageRequested]);
+  // "Pick a room" on the dates-that-need-a-room list opens this date's editor and moves to it, once per ask.
+  const editorRef = useRef<HTMLDivElement>(null);
+  const handledRequest = useRef(0);
+  // The editor was opened by "Pick a room", so its Room control takes the cursor.
+  const [focusRoom, setFocusRoom] = useState(false);
+  useEffect(() => {
+    if (editRequest > 0 && editRequest !== handledRequest.current) {
+      setEditingDate(true);
+      setFocusRoom(true);
+    }
+  }, [editRequest]);
+  useEffect(() => {
+    if (editRequest === 0 || editRequest === handledRequest.current || !editingDate) return;
+    handledRequest.current = editRequest;
+    const editor = editorRef.current;
+    editor?.scrollIntoView?.({ block: "start" });
+  }, [editRequest, editingDate]);
   const [cancelling, setCancelling] = useState(false);
   const time = formatTime(instance.startsAt);
   const held = heldIn(instance.startsAt, instance.tzid);
@@ -310,7 +345,7 @@ function DateRow({
         tone="quiet"
         label={`More for ${instance.date}`}
         items={[
-          { label: "Edit this date", onSelect: () => setEditingDate((v) => !v) },
+          { label: "Edit this date", onSelect: () => { setFocusRoom(false); setEditingDate((v) => !v); } },
           { label: "Manage sign-ups", onSelect: () => setManaging((v) => !v) },
           { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
         ]}
@@ -351,15 +386,18 @@ function DateRow({
           )}
         </div>
         {editingDate && (
+          <div ref={editorRef} className="scroll-mt-4">
           <DateEditor
             instance={instance}
             onRoomChanged={onChanged}
+            focusRoom={focusRoom}
             onSaved={() => {
               setEditingDate(false);
               onChanged();
             }}
             onClose={() => setEditingDate(false)}
           />
+          </div>
         )}
         {canManage && managing && <div ref={manageRef} className="scroll-mt-4"><Suspense fallback={<Skeleton kind="lines" />}><ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} /></Suspense></div>}
     </div>

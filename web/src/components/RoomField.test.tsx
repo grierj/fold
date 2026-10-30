@@ -224,3 +224,18 @@ it("offers a retry when the rooms fail to load", async () => {
   expect(await select()).toBeInTheDocument();
   expect(DateRooms.list).toHaveBeenCalledTimes(2);
 });
+
+it("puts the cursor in the Room select once the rooms load, only when asked", async () => {
+  let release!: (v: { rooms: RoomPickerItem[]; booking: null }) => void;
+  vi.mocked(DateRooms.list).mockReturnValue(new Promise((r) => { release = r; }));
+  render(<RoomField eventId={7} date="2026-12-01" idPrefix="t" focusOnLoad />);
+  expect(await screen.findByText("Loading rooms…")).toBeInTheDocument();
+  release({ rooms: [hall], booking: null });
+  const box = await select();
+  await waitFor(() => expect(box).toHaveFocus());
+});
+
+it("leaves focus alone without focusOnLoad", async () => {
+  show();
+  expect(await select()).not.toHaveFocus();
+});

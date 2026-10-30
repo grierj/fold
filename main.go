@@ -158,9 +158,11 @@ func newMailer(cfg Config, db *gorm.DB) mail.Sender {
 func (a *App) startOccurrenceTicker(ctx context.Context) {
 	go func() {
 		run := func() {
-			if err := events.ExtendLocked(ctx, a.DB, time.Now().UTC()); err != nil {
+			var emailed []uint
+			if err := events.ExtendLocked(ctx, a.DB, time.Now().UTC(), a.afterExtend(&emailed)); err != nil {
 				log.Printf("occurrences: %v", err)
 			}
+			a.deliverNotificationEmails(emailed)
 			if err := a.sweepContacts(ctx, time.Now().UTC()); err != nil {
 				log.Printf("contact lifecycle: %v", err)
 			}

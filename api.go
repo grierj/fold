@@ -665,6 +665,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// Room bookings (M2.1b): whoever runs the event books its dates.
 	v1.GET("/events/:id/dates/:date/rooms", a.roomsOn(), a.apiAuth(), a.apiDateRooms)
 	v1.PUT("/events/:id/dates/:date/room", a.roomsOn(), a.apiAuth(), a.apiSetDateRoom)
+	v1.GET("/events/:id/rooms", a.roomsOn(), a.apiAuth(), a.apiSeriesRooms)
+	v1.PUT("/events/:id/room", a.roomsOn(), a.apiAuth(), a.apiSetSeriesRoom)
+	v1.POST("/rooms/check", a.roomsOn(), a.apiAuth(), a.apiCheckRooms)
 	v1.GET("/events", a.optionalUser(), a.apiListOpenEvents)
 	// The calendar (M1.6): every occurrence the viewer may see over a
 	// date range, as slim rows with no attendee data.

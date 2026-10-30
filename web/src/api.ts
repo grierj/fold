@@ -133,6 +133,10 @@ import type {
   Room,
   RoomBooking,
   RoomPickerItem,
+  SeriesRoom,
+  NeedsRoom,
+  SeriesBooking,
+  OccurrenceRoom,
   NotificationSettings as NotificationSettingsData,
   NotificationFeed,
   NotificationFilter,
@@ -251,6 +255,7 @@ export const Groups = {
       location?: string;
       recurrenceRule?: string;
       visibility?: Visibility;
+      roomId?: number;
       visibilityReason?: string;
       capacity?: number | null;
       waitlistEnabled?: boolean;
@@ -337,6 +342,7 @@ export const Events = {
     tzid: string;
     location?: string;
     recurrenceRule?: string;
+    roomId?: number;
     visibility?: Visibility;
     hosts?: string[];
     capacity?: number | null;
@@ -727,4 +733,21 @@ export const DateRooms = {
     api<{ rooms: RoomPickerItem[]; booking: RoomBooking | null }>(`/events/${eventId}/dates/${date}/rooms`),
   set: (eventId: number, date: string, body: DateRoomInput) =>
     api<{ booking: RoomBooking | null }>(`/events/${eventId}/dates/${date}/room`, { method: "PUT", body }),
+};
+
+// A room for the whole series (M2.1c). Booking it books every scheduled
+// future date; dates the room is busy on come back in `lost` and in the
+// event's needsRoom list (DEC-103). roomId null stops the series room. Only
+// an admin's overlapReason double-books busy dates instead.
+export const SeriesRooms = {
+  list: (eventId: number) =>
+    api<{ rooms: SeriesRoom[]; dates: number; defaultRoom: OccurrenceRoom | null; needsRoom: NeedsRoom[] }>(
+      `/events/${eventId}/rooms`,
+    ),
+  set: (eventId: number, body: { roomId: number | null; overlapReason?: string }) =>
+    api<SeriesBooking>(`/events/${eventId}/room`, { method: "PUT", body }),
+  // Rooms for an event not yet created: the create form sends its date
+  // fields (and groupId for a group event) and books with roomId on create.
+  check: (body: Record<string, unknown>) =>
+    api<{ rooms: SeriesRoom[]; dates: number }>(`/rooms/check`, { method: "POST", body }),
 };

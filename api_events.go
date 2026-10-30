@@ -523,6 +523,9 @@ type eventBody struct {
 	VideoProvider *string `json:"videoProvider"`
 	VideoURL      *string `json:"videoUrl"`
 	VideoReveal   *string `json:"videoReveal"`
+	// Create only: the room for every date (M2.1c). A series edit changes
+	// it through PUT /events/:id/room.
+	RoomID *uint `json:"roomId"`
 }
 
 // specFrom builds the series rule from the body over base (nil on create),
@@ -810,8 +813,14 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 				}
 			}
 		}
-		return events.Ensure(tx, &ev, time.Now().UTC())
+		if err := events.Ensure(tx, &ev, time.Now().UTC()); err != nil {
+			return err
+		}
+		return a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
 	})
+	if createRoomFailed(c, err) {
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not create event")
 		return
@@ -910,7 +919,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if err := tx.Save(&locked).Error; err != nil {
 			return err
 		}
-		var cancelled, moved, restored []uint
+		var cancelled, moved, restored, added []uint
 		for _, act := range actions {
 			switch act.Kind {
 			case "move":
@@ -946,6 +955,7 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 				if err := tx.Create(&row).Error; err != nil {
 					return err
 				}
+				added = append(added, row.ID)
 			}
 		}
 		ids, err := notifyOccurrencesCancelled(tx, me.ID, cancelled)
@@ -954,12 +964,12 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 			return err
 		}
 		// Cancelled dates free their rooms; moved dates take their bookings
-		// along (9.2). A restored date was series-cancelled, which freed its
-		// room, so it comes back without one.
+		// along (9.2). Added dates, and restored ones (whose series cancel
+		// freed their room), get the series room if there is one.
 		if err := releaseRoomBookings(tx, cancelled); err != nil {
 			return err
 		}
-		ids, err = moveRoomBookings(tx, &locked, moved)
+		ids, err = settleDateRooms(tx, &locked, moved, append(added, restored...), &me.ID)
 		emailed = append(emailed, ids...)
 		if err != nil {
 			return err
@@ -1365,7 +1375,7 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		placeChanged := newPlace != oldPlace
 		if timeChanged {
 			// The date's room moves with it, or is lost to a conflict (9.2).
-			ids, err := moveRoomBookings(tx, ev, []uint{o.ID})
+			ids, err := settleDateRooms(tx, ev, []uint{o.ID}, nil, &me.ID)
 			emailed = append(emailed, ids...)
 			if err != nil {
 				return err

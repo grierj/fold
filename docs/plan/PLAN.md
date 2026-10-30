@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-102.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-104.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-102; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-104; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-102) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-104) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -1678,7 +1678,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - Acceptance: two concurrent bookings of overlapping padded ranges, exactly one wins (database and API); padding edges (touching ranges don't conflict); leaders can't book restricted rooms; the double-book reason is audited; a moved date keeps or loses its room as above.
 - **M2.1c Series bookings and moving dates**
   - Database: nullable `events.default_room_id` referencing `rooms` (5.3).
-  - API and internals: "Book for the whole series" books every generated date and stores `events.default_room_id`; the daily extender books new dates as it generates them, and a new date that conflicts is `requested` with the same `room.lost` notice (moves already landed in M2.1b). Feeds put the room name in the ICS `LOCATION` (8.2).
+  - API and internals: "Book for the whole series" books every generated date and stores `events.default_room_id`; dates the room is busy on are booked `requested` and listed, not refused (DEC-103). The daily extender books new dates as it generates them, and a new date that conflicts is `requested` with the same `room.lost` notice (moves already landed in M2.1b); series edits that add or restore dates do the same. Feeds put the room name in the ICS `LOCATION` (8.2).
   - UI: the event create forms get the Room field (with "whole series" for a series); the event page lists dates that lost their room with a "Pick a room" action.
   - Acceptance: a series of 10 books 10 dates; editing the series time moves every booking; a moved date that now conflicts is `requested` and named in one notice; the extender books new dates and handles conflicts the same way.
 - **M2.1d Requested bookings and matching old locations**
@@ -2127,6 +2127,8 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-100 | **A room suggestion's event type is its group's tags** (Grier, Oct 30, 2026; Phase 2 review). Events get no category field. For 9.3 Rule 3 two events are the same type when their groups share a tag; a church-wide event has no tags and skips the type filter, while Rule 4 still ranks same-series and same-group use first. | 5.3, 9.3, M2.3 |
 | DEC-101 | **Rooms carry their setup and teardown time** (Grier, Oct 30, 2026; M2.1 planning). An admin gives each room default setup and teardown minutes (0 unless set, at most 240). A booking copies them into its own padding, so leaders never enter it; an admin may override the padding on one booking. Conflicts compare the padded ranges (9.2). | 5.3, 9.2, M2.1 |
 | DEC-102 | **Room bookings can need an admin's approval** (Grier, Oct 30, 2026; M2.1 planning). A setting, "Room bookings need an admin's approval" (`room_bookings_need_approval`, default off). Off, a leader's or host's booking is confirmed at once and only conflicts block it (DEC-30). On, it starts `requested`, holds nothing, and appears in the admin "Needs a room" list as a task; admins' own bookings always confirm at once. The setting ships with that list in M2.1d. | 5.3, 9.2, M2.1 |
+| DEC-103 | **Booking a series books the free dates and flags the rest** (Grier, Oct 30, 2026; M2.1c). When a room is busy on some dates of a series, "Book for the whole series" still books the free dates; the busy ones get a `requested` booking that holds nothing and show on the event page as needing a room. The picker warns first ("in use on 2 of 10 dates"). An admin may double-book the busy dates with a reason instead. Moved dates and the daily extender behave the same way. | 9.2, M2.1c |
+| DEC-104 | **A restricted room shows as the place** (Grier, Oct 30, 2026; PR #192). "Restricted" limits who may book a room, not who may know where an event is: a date booked in a restricted room shows the room's name as its place, in pages and calendars, to anyone who can see that date. Restricted rooms stay out of room lists, pickers, the by-room view and room feeds for non-admins. | 9.1, 9.2, M2.1, M2.2 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 

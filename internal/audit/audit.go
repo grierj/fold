@@ -245,6 +245,10 @@ const (
 	// RoomBookingOverlap: an admin double-booked a room over a conflict;
 	// meta adds the reason (9.2).
 	RoomBookingOverlap = "room_booking.overlap"
+	// RoomBookingSeries: a series room was booked or stopped (M2.1c).
+	// Target type is event; meta has roomId, previousRoomId, the counts
+	// booked, kept and released, the lost dates, and any overlap reason.
+	RoomBookingSeries = "room_booking.series"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

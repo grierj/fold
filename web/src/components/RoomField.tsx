@@ -23,13 +23,15 @@ function optionLabel(room: RoomPickerItem): string {
 // action with its own conflict answer, so a choice is saved at once and never
 // waits for the form's Save. While it loads or fails, the rest of the form
 // still works. It shows nothing while rooms are off.
-export function RoomField({ eventId, date, idPrefix, onChanged }: {
+export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
   eventId: number;
   // The occurrence's original YYYY-MM-DD.
   date: string;
   idPrefix: string;
   // A booking was made, changed or released: the page behind may show the new place.
   onChanged?: () => void;
+  // Put the cursor in the Room select once the rooms load (a "Pick a room" action opened this).
+  focusOnLoad?: boolean;
 }) {
   const { isAdmin } = useAuth();
   const id = `${idPrefix}-room`;
@@ -88,6 +90,13 @@ export function RoomField({ eventId, date, idPrefix, onChanged }: {
     }
   }, [eventId, date]);
   useEffect(() => { void load(); }, [load]);
+
+  const focused = useRef(false);
+  useEffect(() => {
+    if (!focusOnLoad || focused.current || loading || loadError || !enabled) return;
+    focused.current = true;
+    document.getElementById(id)?.focus();
+  }, [focusOnLoad, loading, loadError, enabled, id]);
 
   // An admin's conflict answer moves focus to the reason it asks for.
   useEffect(() => {
@@ -260,18 +269,4 @@ export function RoomField({ eventId, date, idPrefix, onChanged }: {
       )}
     </div>
   );
-}
-
-// The one-line pointer a series editor shows where the Room control would be:
-// a recurring series can't be booked as a whole, only a date at a time. It
-// asks the same question RoomField does and shows nothing while rooms are off.
-export function RoomSeriesHint() {
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    Site.get().then((site) => { if (alive) setEnabled(site.roomsEnabled === true); }, () => {});
-    return () => { alive = false; };
-  }, []);
-  if (!enabled) return null;
-  return <p className="text-sm text-text-muted">To book a room, use Edit this date on a date's card.</p>;
 }

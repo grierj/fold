@@ -1203,8 +1203,9 @@ func TestFeedDateProjectionReadBudget(t *testing.T) {
 		if i == 1 {
 			baseline = reads
 		}
-		if reads != baseline || reads > 4 {
-			t.Fatalf("%d events: %d reads, baseline=%d cap=4", i, reads, baseline)
+		// Five: the room lookup (M2.1c) is one read per feed, on or off.
+		if reads != baseline || reads > 5 {
+			t.Fatalf("%d events: %d reads, baseline=%d cap=5", i, reads, baseline)
 		}
 		t.Logf("%d events: %d reads", i, reads)
 	}

@@ -320,7 +320,7 @@ func (a *App) apiOccurrenceCalendar(c *gin.Context) {
 		WindowEnd:   out.EndsAt.Add(24 * time.Hour),
 		Singles: []events.FeedSingle{{
 			EventID: out.EventID, OriginalDate: out.Date, Title: out.Title,
-			Location: out.Location, TZID: out.TZID, StartsAt: out.StartsAt, EndsAt: out.EndsAt,
+			Location: placeLine(out.Room, out.Location), TZID: out.TZID, StartsAt: out.StartsAt, EndsAt: out.EndsAt,
 			VideoURL: out.VideoURL, RemoteAvailable: out.RemoteAvailable,
 			URL: a.emailBaseURL() + out.DateURL, Status: status,
 		}},

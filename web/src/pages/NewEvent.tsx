@@ -4,6 +4,7 @@ import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
 import { WhenFields } from "../components/WhenFields";
 import { EventOptions } from "../components/EventOptions";
+import { CreateRoomField, scheduleFields, scheduleReady } from "../components/CreateRoomField";
 import { emptySeats, focusSeatLimit, isSeatsError, seatsBody, seatsProblem, type SeatsValue } from "../components/SeatsField";
 import { FormActions } from "../components/ui/FormActions";
 import { useEffect, useState } from "react";
@@ -43,6 +44,8 @@ export function NewEvent() {
   const [childcare, setChildcare] = useState<ChildcareValue>(emptyChildcare);
   const [remote, setRemote] = useState<RemoteValue>(emptyRemote);
   const [seats, setSeats] = useState<SeatsValue>(emptySeats);
+  // The room for every date; the event page lists any dates it is busy on.
+  const [roomId, setRoomId] = useState<number | null>(null);
   // Closed on create; a problem inside it opens it (DEC-95).
   const [moreOpen, setMoreOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -53,7 +56,7 @@ export function NewEvent() {
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
   const dirty = useDirty(
-    { title, description, date, startTime, durationMin, recurring, days, tzid, location, visibility, visReason, video, childcare, remote, seats },
+    { title, description, date, startTime, durationMin, recurring, days, tzid, location, visibility, visReason, video, childcare, remote, seats, roomId },
     !loading && !authLoading && tzid !== "",
   );
   const { guard, markSaved } = useUnsavedChanges(dirty);
@@ -130,14 +133,11 @@ export function NewEvent() {
     setBusy(true);
     setError(null);
     try {
-      await Groups.createEvent(id!, {
+      const { event } = await Groups.createEvent(id!, {
         title: title.trim(),
         description: description.trim(),
-        startsLocal: `${date}T${startTime}`,
-        durationMinutes: durationMin,
-        tzid: tzid.trim(),
+        ...scheduleFields(when, tzid, seats),
         location: location.trim(),
-        recurrenceRule: recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "",
         visibility,
         ...(visReason.trim() ? { visibilityReason: visReason.trim() } : {}),
         videoProvider: video.provider,
@@ -146,9 +146,12 @@ export function NewEvent() {
         ...seatsBody(seats),
         ...remoteBody(remote),
         ...childcareBody(childcare),
+        ...(roomId !== null ? { roomId } : {}),
       });
       markSaved();
-      navigate(`/groups/${id}`);
+      // A room may be busy on some dates, which then need one; the event page lists them. A check can be stale
+      // or still pending at submit, so any chosen room goes there.
+      navigate(roomId !== null ? `/events/${event.id}` : `/groups/${id}`);
     } catch (err) {
       const msg = errorText(err, "We couldn't schedule the event.");
       setError(msg);
@@ -241,6 +244,13 @@ export function NewEvent() {
             placeholder="e.g. Room 201, Main Campus"
           />
         </Field>
+        <CreateRoomField
+          id="event-room"
+          schedule={scheduleReady(when, tzid, seats) ? scheduleFields(when, tzid, seats) : null}
+          groupId={Number(id)}
+          roomId={roomId}
+          onChange={setRoomId}
+        />
         <EventOptions
           idPrefix="event"
           open={moreOpen}

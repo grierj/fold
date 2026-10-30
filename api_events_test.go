@@ -496,7 +496,7 @@ func TestExtendInsertsOnlyMissingDates(t *testing.T) {
 	if n < 70 || n > 90 {
 		t.Fatalf("18-month weekly count %d", n)
 	}
-	if err := events.Extend(app.DB, time.Now().UTC()); err != nil {
+	if err := events.Extend(app.DB, time.Now().UTC(), nil); err != nil {
 		t.Fatal(err)
 	}
 	var again int64
@@ -510,7 +510,7 @@ func TestExtendInsertsOnlyMissingDates(t *testing.T) {
 		t.Fatal(err)
 	}
 	app.DB.Model(&cancel).Update("status", models.OccurrenceCancelled)
-	if err := events.Extend(app.DB, time.Now().UTC()); err != nil {
+	if err := events.Extend(app.DB, time.Now().UTC(), nil); err != nil {
 		t.Fatal(err)
 	}
 	var kept models.EventOccurrence
@@ -543,7 +543,7 @@ func TestExtendInsertsOnlyMissingDates(t *testing.T) {
 	if err := conn.QueryRowContext(ctx, "SELECT pg_try_advisory_lock($1)", events.LockID).Scan(&got); err != nil || !got {
 		t.Fatalf("lock: got %v err %v", got, err)
 	}
-	if err := events.ExtendLocked(ctx, app.DB, time.Now().UTC()); err != nil {
+	if err := events.ExtendLocked(ctx, app.DB, time.Now().UTC(), nil); err != nil {
 		t.Fatal(err)
 	}
 	var missing int64
@@ -554,7 +554,7 @@ func TestExtendInsertsOnlyMissingDates(t *testing.T) {
 	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_unlock($1)", events.LockID); err != nil {
 		t.Fatal(err)
 	}
-	if err := events.ExtendLocked(ctx, app.DB, time.Now().UTC()); err != nil {
+	if err := events.ExtendLocked(ctx, app.DB, time.Now().UTC(), nil); err != nil {
 		t.Fatal(err)
 	}
 	app.DB.Model(&models.EventOccurrence{}).Where("event_id = ? AND original_date = ?", created.Event.ID, drop.OriginalDate).Count(&missing)
@@ -1503,7 +1503,7 @@ func TestExtendContinuesPastABadEvent(t *testing.T) {
 		"tzid": "UTC", "recurrenceRule": weeklyRule(start),
 	}, true), &good)
 	app.DB.Where("event_id = ?", good.Event.ID).Delete(&models.EventOccurrence{})
-	err := events.Extend(app.DB, time.Now().UTC())
+	err := events.Extend(app.DB, time.Now().UTC(), nil)
 	if err == nil || !errors.Is(err, events.ErrTooFrequent) {
 		t.Fatalf("want the bad event's error, got %v", err)
 	}
