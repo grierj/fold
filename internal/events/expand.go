@@ -4,6 +4,7 @@
 package events
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -21,6 +22,25 @@ const WallLayout = "2006-01-02T15:04"
 // MaxDurationMinutes is seven days. Longer than a retreat, shorter than a
 // series.
 const MaxDurationMinutes = 7 * 24 * 60
+
+// MaxOccurrences is the most dates a series may have in the two years before
+// the horizon (a daily event has about 730), so it measures how dense a rule
+// is, not how old the series is. MaxExpandSteps bounds the whole walk from
+// the series start (a daily series begun in the 1750s). Together they stop a
+// rule such as FREQ=DAILY;BYHOUR=0,...,23 or an absurd start date from
+// exhausting memory or CPU.
+const (
+	MaxOccurrences = 2000
+	MaxExpandSteps = 100000
+)
+
+// ErrTooManyDates means the rule makes more dates than MaxOccurrences. The
+// wording is sent to the person as is and has copy in the SPA (DEC-61).
+var ErrTooManyDates = errors.New("that repeat rule makes too many dates")
+
+// ErrTooFrequent means the rule repeats more than once a day (HOURLY,
+// MINUTELY or SECONDLY).
+var ErrTooFrequent = errors.New("that repeat rule repeats more than once a day")
 
 // Spec is the series rule. StartsLocal is a wall clock in TZID.
 type Spec struct {
@@ -121,17 +141,42 @@ func Expand(spec Spec, horizonEnd time.Time) ([]When, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid recurrence rule")
 	}
+	// Events repeat at most once a day (Grier, Oct 29, 2026). BYHOUR and the
+	// like are still held by MaxOccurrences.
+	if r.OrigOptions.Freq >= rrule.HOURLY {
+		return nil, ErrTooFrequent
+	}
 	if horizonEnd.Before(start) {
 		horizonEnd = start
 	}
-	times := r.Between(start.Add(-time.Second), horizonEnd, true)
-	out := make([]When, 0, len(times))
-	for _, t := range times {
+	// Walk the rule with the iterator instead of Between so a rule such as
+	// FREQ=SECONDLY stops at the cap instead of building millions of times
+	// in memory first. Occurrences arrive in order, so the first one past
+	// the end date or the horizon ends the walk.
+	next := r.Iterator()
+	var out []When
+	denseFrom, dense := horizonEnd.AddDate(-2, 0, 0), 0
+	for steps := 0; ; steps++ {
+		if steps >= MaxExpandSteps {
+			return nil, ErrTooManyDates
+		}
+		t, ok := next()
+		if !ok || t.After(horizonEnd) {
+			break
+		}
 		w := whenOf(t.In(loc), dur, loc)
 		if until != "" && w.OriginalDate > until {
-			continue
+			break
+		}
+		if !t.Before(denseFrom) {
+			if dense++; dense > MaxOccurrences {
+				return nil, ErrTooManyDates
+			}
 		}
 		out = append(out, w)
+	}
+	if out == nil {
+		out = []When{}
 	}
 	return out, nil
 }

@@ -43,7 +43,16 @@ func (a *App) canRegisterDateIn(tx *gorm.DB, u *models.User, ev *models.Event, o
 	if tx.Where("id = ? AND event_id = ? AND status = ?", occurrenceID, ev.ID, models.OccurrenceScheduled).First(&occ).Error != nil {
 		return false
 	}
-	return a.canRegisterIn(tx, u, dateEvent(ev, &occ))
+	return a.canRegisterDate(tx, u, ev, &occ)
+}
+
+// canRegisterDate is canRegisterDateIn for a caller that already holds the
+// occurrence row.
+func (a *App) canRegisterDate(tx *gorm.DB, u *models.User, ev *models.Event, occ *models.EventOccurrence) bool {
+	if occ.EventID != ev.ID || occ.Status != models.OccurrenceScheduled {
+		return false
+	}
+	return a.canRegisterIn(tx, u, dateEvent(ev, occ))
 }
 
 func laterTime(a, b time.Time) time.Time {

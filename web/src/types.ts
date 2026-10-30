@@ -530,7 +530,6 @@ export interface CalendarFeed {
 export interface HouseholdPerson {
   conversion?: HouseholdConversion;
   canConvert: boolean;
-  convertBlocked?: "teen";
   age?: number;
   id: number;
   householdId: number;

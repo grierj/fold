@@ -79,7 +79,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	}
 	if body.DisplayName != nil {
 		dn := strings.TrimSpace(*body.DisplayName)
-		if len(dn) > 100 {
+		if utf8.RuneCountInString(dn) > 100 {
 			jsonError(c, http.StatusBadRequest, "display name must be at most 100 characters")
 			return
 		}
@@ -114,6 +114,17 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	if body.AvatarFocal != nil {
 		updates["avatar_focal_x"] = clampFocal(body.AvatarFocal.X)
 		updates["avatar_focal_y"] = clampFocal(body.AvatarFocal.Y)
+	}
+	// An email change proves the current password before anything is saved,
+	// so a wrong password leaves the other fields as they were.
+	if emailChange != nil {
+		if !validEmail(normalizeEmail(*emailChange)) {
+			jsonError(c, http.StatusBadRequest, "enter a valid email address")
+			return
+		}
+		if !a.reauthenticate(c, u, body.CurrentPassword) {
+			return
+		}
 	}
 	if len(updates) == 0 && emailChange == nil {
 		c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(u)})
@@ -152,7 +163,7 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 	// Refresh the request-scoped user so later handlers see the update.
 	c.Set("apiUser", &updated)
 	if emailChange != nil {
-		a.apiRequestEmailChange(c, u, normalizeEmail(*emailChange), body.CurrentPassword)
+		a.apiRequestEmailChange(c, u, normalizeEmail(*emailChange))
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(&updated)})
@@ -161,15 +172,9 @@ func (a *App) apiUpdateMe(c *gin.Context) {
 // apiRequestEmailChange starts a verified email change (10.1, M1.2): a
 // verification link goes to the new address, a notice to the old one. The
 // change applies only after verification, and then ends every other
-// session.
-func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail, currentPassword string) {
-	if !validEmail(newEmail) {
-		jsonError(c, http.StatusBadRequest, "enter a valid email address")
-		return
-	}
-	if !a.reauthenticate(c, u, currentPassword) {
-		return
-	}
+// session. The caller has already checked the new address and the current
+// password.
+func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail string) {
 	// Validate the proof against locked credentials before any address lookup.
 	// Quotas retain their independently committed transactions; token issuance
 	// below rechecks this exact epoch, without nesting a second DB connection.
@@ -517,7 +522,8 @@ func (a *App) apiDeleteAvatar(c *gin.Context) {
 }
 
 // uploadKeyFromURL returns the storage key for an /uploads/... URL, or
-// false when the URL isn't a locally stored upload (e.g. an external link).
+// false when the value isn't a locally stored upload (a group without
+// a cover has an empty URL; covers are only ever set by upload).
 func uploadKeyFromURL(raw string) (string, bool) {
 	const prefix = "/uploads/"
 	if !strings.HasPrefix(raw, prefix) {
@@ -636,7 +642,6 @@ func (a *App) serveUpload(c *gin.Context) {
 
 type householdPersonJSON struct {
 	Conversion              *conversionJSON `json:"conversion,omitempty"`
-	ConvertBlocked          string          `json:"convertBlocked,omitempty"`
 	CanConvert              bool            `json:"canConvert"`
 	ID                      uint            `json:"id"`
 	HouseholdID             uint            `json:"householdId"`
@@ -764,18 +769,27 @@ func (a *App) manageMyHousehold(c *gin.Context) (*models.Household, bool) {
 // guardianLinksForPeople loads every guardian link for the people, by
 // person id, oldest first.
 func guardianLinksForPeople(db *gorm.DB, personIDs []uint) map[uint][]models.GuardianLink {
+	out, _ := loadGuardianLinks(db, personIDs)
+	return out
+}
+
+// loadGuardianLinks is guardianLinksForPeople for callers that can report a
+// failed read; a partial map is never returned alongside an error.
+func loadGuardianLinks(db *gorm.DB, personIDs []uint) (map[uint][]models.GuardianLink, error) {
 	out := map[uint][]models.GuardianLink{}
 	if len(personIDs) == 0 {
-		return out
+		return out, nil
 	}
 	var links []models.GuardianLink
-	db.Where("person_id IN ?", personIDs).Order("id").Find(&links)
+	if err := db.Where("person_id IN ?", personIDs).Order("id").Find(&links).Error; err != nil {
+		return nil, err
+	}
 	for _, l := range links {
 		if l.PersonID != nil {
 			out[*l.PersonID] = append(out[*l.PersonID], l)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // effectiveLink is a person's link status for display: a confirmed link
@@ -832,9 +846,7 @@ func (a *App) toHouseholdPersonJSON(person *models.HouseholdPerson, links []mode
 	if err != nil {
 		return householdPersonJSON{}, err
 	}
-	blocked := ""
 	return householdPersonJSON{
-		ConvertBlocked:          blocked,
 		CanConvert:              canConvert,
 		RegistrationEligibility: eligibility, Age: facts.AgeYears,
 		ID: person.ID, HouseholdID: person.HouseholdID,
@@ -853,14 +865,21 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 		People:    []householdPersonJSON{}, Accounts: []householdAccountJSON{},
 	}
 	var people []models.HouseholdPerson
-	a.DB.Where("household_id = ? AND converted_user_id IS NULL", household.ID).Order("id").Find(&people)
+	if err := a.DB.Where("household_id = ? AND converted_user_id IS NULL", household.ID).Order("id").Find(&people).Error; err != nil {
+		return out, err
+	}
 	ids := make([]uint, 0, len(people))
 	for i := range people {
 		ids = append(ids, people[i].ID)
 	}
-	links := guardianLinksForPeople(a.DB, ids)
+	links, err := loadGuardianLinks(a.DB, ids)
+	if err != nil {
+		return out, err
+	}
 	var accounts []models.HouseholdAccount
-	a.DB.Where("household_id = ?", household.ID).Order("id").Find(&accounts)
+	if err := a.DB.Where("household_id = ?", household.ID).Order("id").Find(&accounts).Error; err != nil {
+		return out, err
+	}
 	var rel policy.HouseholdRel
 	for _, acct := range accounts {
 		if viewer != nil && acct.UserID == viewer.ID {
@@ -873,7 +892,9 @@ func (a *App) toHouseholdJSON(household *models.Household, viewer *models.User) 
 	}
 	var invitations []models.Invitation
 	if len(ids) > 0 {
-		a.DB.Where("household_person_id IN ? AND accepted_at IS NULL AND revoked_at IS NULL", ids).Find(&invitations)
+		if err := a.DB.Where("household_person_id IN ? AND accepted_at IS NULL AND revoked_at IS NULL", ids).Find(&invitations).Error; err != nil {
+			return out, err
+		}
 	}
 	conversions := map[uint]conversionJSON{}
 	for i := range invitations {
@@ -1021,7 +1042,7 @@ func (a *App) apiUpdateMyHousehold(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, "name is required")
 			return
 		}
-		if len(name) > 100 {
+		if utf8.RuneCountInString(name) > 100 {
 			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
 			return
 		}
@@ -1110,7 +1131,7 @@ func (a *App) parseHouseholdPersonInput(c *gin.Context, body householdPersonInpu
 		jsonError(c, http.StatusBadRequest, "first name is required")
 		return models.HouseholdPerson{}, false
 	}
-	if len(first) > 100 || len(last) > 100 {
+	if utf8.RuneCountInString(first) > 100 || utf8.RuneCountInString(last) > 100 {
 		jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
 		return models.HouseholdPerson{}, false
 	}
@@ -1198,12 +1219,7 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 		return
 	}
 	a.deliverNotificationEmails(emailed)
-	links := guardianLinksForPeople(a.DB, []uint{person.ID})
-	batch, err := a.loadConversionBatch(a.DB, me, person.HouseholdID, []uint{person.ID})
-	var row householdPersonJSON
-	if err == nil {
-		row, err = a.toHouseholdPersonJSON(&person, links[person.ID], me, batch)
-	}
+	row, err := a.householdPersonRow(a.DB, &person, me)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load that person")
 		return
@@ -1268,7 +1284,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, "first name is required")
 			return
 		}
-		if len(first) > 100 {
+		if utf8.RuneCountInString(first) > 100 {
 			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
 			return
 		}
@@ -1276,7 +1292,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 	}
 	if body.LastName != nil {
 		last := strings.TrimSpace(*body.LastName)
-		if len(last) > 100 {
+		if utf8.RuneCountInString(last) > 100 {
 			jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
 			return
 		}
@@ -1413,12 +1429,7 @@ func (a *App) apiUpdateHouseholdPerson(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load that person")
 		return
 	}
-	links := guardianLinksForPeople(a.DB, []uint{fresh.ID})
-	batch, err := a.loadConversionBatch(a.DB, me, fresh.HouseholdID, []uint{fresh.ID})
-	var row householdPersonJSON
-	if err == nil {
-		row, err = a.toHouseholdPersonJSON(&fresh, links[fresh.ID], me, batch)
-	}
+	row, err := a.householdPersonRow(a.DB, &fresh, me)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load that person")
 		return

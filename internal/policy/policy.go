@@ -421,6 +421,14 @@ func GroupHasRoom(limit *int, count int) bool {
 	return limit == nil || count < *limit
 }
 
+// CanAddToGroup reports whether a manager may add someone to a group with
+// this status. Leading a group an admin has not approved (pending) or has
+// closed (archived) grants no power to add people; admins may (Grier, Oct
+// 29, 2026).
+func CanAddToGroup(actor *Person, groupStatus string) bool {
+	return groupStatus == GroupActive || IsAdmin(actor)
+}
+
 // CanInviteFriend reports whether p may use the member "invite a
 // friend" door (5.10, DEC-4, M1.3): a signed-in adult member. It always
 // creates an account request an admin decides, never an account, so
@@ -437,10 +445,29 @@ func InlineApproveAccountOK(accountType string, hasWarnings bool) bool {
 	return accountType == "adult" && !hasWarnings
 }
 
+// LeadsApprovedGroup reports whether any of the given group statuses (one
+// per group p actively leads) is active. Leader-only powers that reach past
+// one group, such as inviting a person into Fold, count only for a group an
+// admin has approved: a pending or archived (rejected) group gives none.
+func LeadsApprovedGroup(statuses []string) bool {
+	for _, s := range statuses {
+		if s == GroupActive {
+			return true
+		}
+	}
+	return false
+}
+
+// CanInviteIntoGroup reports whether an invitation may name a group with
+// this status. Only an active group can accept a new member, so an
+// invitation into any other group could never be accepted.
+func CanInviteIntoGroup(groupStatus string) bool { return groupStatus == GroupActive }
+
 // CanInvite reports whether p may create an invitation (5.10, DEC-4, M1.2).
 // Admins may invite anyone, into any group or none. Leaders may invite into
 // a group they lead, or with no group at all. leadsTarget is p's leadership
-// in the named group; leadsAnywhere covers the no-group case. Hosts,
+// in the named group; leadsAnywhere is LeadsApprovedGroup for the no-group
+// case (leading only a pending or rejected group is not enough). Hosts,
 // members, teens and guests may not invite (a member's "invite a friend"
 // creates an account request instead, M1.3).
 func CanInvite(p *Person, groupNamed, leadsTarget, leadsAnywhere bool) bool {

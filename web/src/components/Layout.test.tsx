@@ -7,6 +7,7 @@ import { Layout } from "./Layout";
 const { auth } = vi.hoisted(() => ({ auth: vi.fn() }));
 vi.mock("../auth", () => ({ useAuth: auth }));
 vi.mock("../api", () => ({ Site: { get: () => Promise.resolve({ name: "Grace Community Church" }) } }));
+vi.mock("../lib/notifications", () => ({ useBadge: () => ({ unread: 0, waiting: 0, loaded: false }) }));
 vi.mock("./Notifications", () => ({ NotificationBell: () => null, NotificationTab: () => null }));
 beforeEach(() => auth.mockReturnValue({ user: null, loading: false, logout: vi.fn(), isAdmin: false }));
 

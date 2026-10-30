@@ -89,7 +89,11 @@ func (a *App) apiNotificationBadge(c *gin.Context) {
 func (a *App) apiNotifications(c *gin.Context) {
 	me := apiUser(c).ID
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	page, ok := notify.Feed(a.DB, me, c.Query("filter"), c.Query("before"), limit)
+	page, ok, err := notify.Feed(a.DB, me, c.Query("filter"), c.Query("before"), limit)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load notifications")
+		return
+	}
 	if !ok {
 		jsonError(c, http.StatusBadRequest, "unknown filter or cursor")
 		return
@@ -132,11 +136,16 @@ func (a *App) apiNotificationsSeen(c *gin.Context) {
 }
 
 // notificationToggle serves POST|DELETE /notifications/:id/read and /archive.
-func (a *App) notificationToggle(set func(db *gorm.DB, userID, id uint, on bool) bool) gin.HandlerFunc {
+func (a *App) notificationToggle(set func(db *gorm.DB, userID, id uint, on bool) (bool, error)) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 		me := apiUser(c).ID
-		if !set(a.DB, me, uint(id), c.Request.Method == http.MethodPost) {
+		found, err := set(a.DB, me, uint(id), c.Request.Method == http.MethodPost)
+		if err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not update notifications")
+			return
+		}
+		if !found {
 			jsonError(c, http.StatusNotFound, "notification not found")
 			return
 		}
@@ -207,9 +216,16 @@ func (a *App) alreadyHandled(c *gin.Context, kind string, subjectID uint) {
 // ---------------------------------------------------------------------------
 
 func adminIDs(tx *gorm.DB) []uint {
-	var ids []uint
-	tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Pluck("id", &ids)
+	ids, _ := activeAdminIDs(tx)
 	return ids
+}
+
+// activeAdminIDs lists the active admins in id order, for callers that must
+// fail when the read does.
+func activeAdminIDs(tx *gorm.DB) ([]uint, error) {
+	var ids []uint
+	err := tx.Model(&models.User{}).Where("role = ? AND status = ?", models.RoleAdmin, models.UserActive).Order("id").Pluck("id", &ids).Error
+	return ids, err
 }
 
 func leaderIDs(tx *gorm.DB, groupID uint) []uint {
@@ -530,6 +546,20 @@ func notifyNotRestored(tx *gorm.DB, actor *uint, g *models.Group, userID uint) (
 // see the group gets no group name, place, or link (PR #41). Each item
 // archives itself when the date would have ended.
 func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint, error) {
+	return notifyOccurrences(tx, actor, occIDs, notify.OccurrenceCancelled)
+}
+
+// notifyOccurrencesRestored tells the same people, by the same privacy
+// rules, that dates a series edit had cancelled are back on. Their
+// registrations were never touched by the cancellation, so the notice says
+// the sign-up is still there rather than asking them to register again.
+func notifyOccurrencesRestored(tx *gorm.DB, actor uint, occIDs []uint) ([]uint, error) {
+	return notifyOccurrences(tx, actor, occIDs, notify.OccurrenceRestored)
+}
+
+// notifyOccurrences is the shared fan-out of the cancelled and restored
+// notices: one stored item per person per date.
+func notifyOccurrences(tx *gorm.DB, actor uint, occIDs []uint, kind string) ([]uint, error) {
 	if len(occIDs) == 0 {
 		return nil, nil
 	}
@@ -598,10 +628,12 @@ func notifyOccurrencesCancelled(tx *gorm.DB, actor uint, occIDs []uint) ([]uint,
 			end = o.StartsAt
 		}
 		sent, err := notify.Send(tx, notify.Msg{
-			Kind: notify.OccurrenceCancelled, To: []uint{r.UserID}, Actor: &actor,
+			Kind: kind, To: []uint{r.UserID}, Actor: &actor,
 			SubjectType: "occurrence", SubjectID: o.ID, Link: link, Vars: vars,
-			Data:      map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
-			DedupeKey: fmt.Sprintf("event.cancelled:%d", o.ID), ExpiresAt: &end,
+			Data: map[string]any{"eventId": ev.ID, "date": o.OriginalDate},
+			// A date can be cancelled, restored and cancelled again, so the key
+			// carries the moment of this change (the row was just updated).
+			DedupeKey: fmt.Sprintf("%s:%d:%d", kind, o.ID, o.UpdatedAt.UnixNano()), ExpiresAt: &end,
 		})
 		if err != nil {
 			return nil, err

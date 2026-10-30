@@ -314,7 +314,18 @@ var textEscaper = strings.NewReplacer(
 	"\n", `\n`,
 )
 
-func escapeText(s string) string { return textEscaper.Replace(s) }
+// escapeText escapes a TEXT value. Other control characters (NUL, ESC, DEL and
+// the rest of C0) are dropped: they are not valid in iCalendar text, and a
+// stray one can break a client's parser. Tab stays; CR and LF become \n.
+func escapeText(s string) string {
+	clean := strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\t' && r != '\r' && r != '\n') || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	return textEscaper.Replace(clean)
+}
 
 // foldLine folds at 75 octets (RFC 5545) without splitting a rune.
 func foldLine(s string) string {

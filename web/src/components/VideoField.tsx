@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Events } from "../api";
-import { errorText } from "../lib/errors";
+import { errorCode, errorText } from "../lib/errors";
 import type { VideoProvider, VideoReveal } from "../types";
 import { Button } from "./ui/Button";
 import { Choices, Field, Input, Radio, Select } from "./ui/Field";
@@ -35,7 +35,10 @@ export function videoProblem(v: VideoValue): string | null {
 }
 
 // isVideoError tells a form whether a server error is about the video link.
-export const isVideoError = (msg: string) => /video link/i.test(msg);
+export const isVideoError = (err: unknown) => {
+  const code = errorCode(err);
+  return code === "invalid_video_url" || code === "invalid_video_provider" || code === "invalid_video_reveal";
+};
 
 // focusVideoUrl moves focus to the link input after an error.
 export function focusVideoUrl(idPrefix: string) {

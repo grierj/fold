@@ -27,10 +27,19 @@ setup("first-run setup and seed data", async ({ page, request }) => {
   await page.locator("[name=name]").fill("Grier");
   await page.locator("[name=email]").fill(email("grier"));
   await page.locator("[name=age_band]").check();
-  // A bcrypt failure reaches the same generic recovery UI as an unavailable
-  // database, without interrupting Postgres or storing an administrator.
+  // bcrypt refuses more than 72 bytes, so the form says so next to the field.
   await page.locator("[name=password]").fill("p".repeat(73));
   await page.locator("[name=password_confirm]").fill("p".repeat(73));
+  await page.getByRole("button", { name: "Create site" }).click();
+  await expect(page.getByRole("alert")).toContainText("Use at most 72 bytes");
+  await expect(page.locator("[name=password]")).toHaveValue("");
+  await expect(page.locator("[name=site_name]")).toHaveValue("Fold e2e");
+  // Postgres refuses a NUL in text, so the insert fails and reaches the same
+  // generic recovery UI as an unavailable database, without interrupting
+  // Postgres or storing an administrator.
+  await page.locator("[name=name]").fill("Grier\u0000");
+  await page.locator("[name=password]").fill(PASSWORD);
+  await page.locator("[name=password_confirm]").fill(PASSWORD);
   await page.getByRole("button", { name: "Create site" }).click();
   const alert = page.getByRole("alert");
   await expect(alert).toContainText("We couldn't create your account. Try again.");
@@ -47,6 +56,7 @@ setup("first-run setup and seed data", async ({ page, request }) => {
   }
   await page.getByRole("link", { name: "Return to the setup form to try again" }).click();
   await expect(page.locator("form")).toBeFocused();
+  await page.locator("[name=name]").fill("Grier");
   await page.locator("[name=password]").fill(PASSWORD);
   await page.locator("[name=password_confirm]").fill(PASSWORD);
   await page.getByRole("button", { name: "Create site" }).click();

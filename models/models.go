@@ -1,6 +1,7 @@
 package models
 
 import (
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -89,6 +90,12 @@ const (
 	OccurrenceCancelled = "cancelled"
 )
 
+// Why an occurrence was cancelled (EventOccurrence.CancelSource).
+const (
+	CancelSourceSeries = "series" // a series edit dropped the date from the rule
+	CancelSourceManual = "manual" // a person cancelled this one date
+)
+
 // Account statuses (5.3). Active accounts with passwords get ordinary
 // access; pending-consent teens can authenticate only to the waiting page.
 // Account lifecycle states.
@@ -173,9 +180,13 @@ func (u *User) PublicName() string {
 	return "Member"
 }
 
+// PasswordCost is the bcrypt cost of new password hashes. Tests lower it to
+// bcrypt.MinCost; production never changes it.
+var PasswordCost = bcrypt.DefaultCost
+
 // SetPassword stores a bcrypt hash of plain (it does not save the row).
 func (u *User) SetPassword(plain string) error {
-	hashed, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	hashed, err := bcrypt.GenerateFromPassword([]byte(plain), PasswordCost)
 	if err != nil {
 		return err
 	}
@@ -184,15 +195,25 @@ func (u *User) SetPassword(plain string) error {
 	return nil
 }
 
-// dummyHash is compared against when there is no real hash, so a missing
-// account or password costs the same time as a wrong password.
-var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("not a real password"), bcrypt.DefaultCost)
+// dummyHashes holds, per cost, the hash compared against when there is no
+// real hash, so a missing account or password costs the same time as a wrong
+// password.
+var dummyHashes sync.Map
+
+func dummyHash() []byte {
+	if h, ok := dummyHashes.Load(PasswordCost); ok {
+		return h.([]byte)
+	}
+	h, _ := bcrypt.GenerateFromPassword([]byte("not a real password"), PasswordCost)
+	dummyHashes.Store(PasswordCost, h)
+	return h
+}
 
 // CheckPassword reports whether password matches. It is always false when
 // no password is set, and takes about the same time either way.
 func (u *User) CheckPassword(password string) bool {
 	if u == nil || u.PasswordHash == nil {
-		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		_ = bcrypt.CompareHashAndPassword(dummyHash(), []byte(password))
 		return false
 	}
 	return bcrypt.CompareHashAndPassword([]byte(*u.PasswordHash), []byte(password)) == nil
@@ -332,8 +353,13 @@ type EventOccurrence struct {
 	// RemoteCapacityOverride replaces the event's remote capacity for
 	// this date (M1.8 slice 2); nil means the date uses the event's.
 	RemoteCapacityOverride *int
-	CreatedAt              time.Time
-	UpdatedAt              time.Time
+	// CancelSource records why a cancelled date was cancelled: CancelSourceSeries
+	// (a series edit dropped it), CancelSourceManual (a person cancelled it), or
+	// empty (scheduled, or cancelled before this was tracked, which is treated
+	// like manual). Cleared whenever the date goes back to scheduled.
+	CancelSource string `gorm:"type:text;not null;default:''"`
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // TimeFrozen reports a per-date clock override. A series edit does not
@@ -342,10 +368,20 @@ func (o EventOccurrence) TimeFrozen() bool {
 	return o.StartsAtOverride != nil || o.DurationOverride != nil
 }
 
-// Customized reports a per-date override or a cancellation. A series edit
-// leaves the row alone: it does not move the clock and does not drop the date.
+// Customized reports a per-date override or a person's cancellation. A series
+// edit leaves the row alone: it does not move the clock and does not drop the
+// date. A date the series itself cancelled is not an override by itself: the
+// series edit that dropped it may bring it back (SeriesCancelled).
 func (o EventOccurrence) Customized() bool {
-	return o.VisibilityOverride != nil || o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil || o.Status == OccurrenceCancelled
+	return o.VisibilityOverride != nil || o.TimeFrozen() || o.TitleOverride != nil || o.LocationOverride != nil ||
+		(o.Status == OccurrenceCancelled && !o.SeriesCancelled())
+}
+
+// SeriesCancelled reports a date a series edit cancelled because the rule no
+// longer included it. Only these dates come back when a later rule includes
+// them again; a date with no recorded source counts as a person's choice.
+func (o EventOccurrence) SeriesCancelled() bool {
+	return o.Status == OccurrenceCancelled && o.CancelSource == CancelSourceSeries
 }
 
 // Membership is a user's roster entry in a group.

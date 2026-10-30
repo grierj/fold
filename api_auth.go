@@ -127,26 +127,14 @@ func (a *App) reserveLoginAttempt(ctx context.Context, keys []string) (bool, err
 	allowed := true
 	err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		for _, key := range keys {
-			var row struct {
-				Failures int
-				Locked   bool
-			}
-			err := tx.Raw(`
-INSERT INTO login_throttles (key, failures, window_start) VALUES (?, 1, now())
-ON CONFLICT (key) DO UPDATE SET
-  failures = CASE WHEN login_throttles.window_start < now() - ?::interval
-                  THEN 1 ELSE login_throttles.failures + 1 END,
-  window_start = CASE WHEN login_throttles.window_start < now() - ?::interval
-                      THEN now() ELSE login_throttles.window_start END
-RETURNING failures, COALESCE(locked_until > now(), false) AS locked`,
-				key, window, window).Scan(&row).Error
+			failures, locked, err := countThrottleHit(tx, key, loginWindow)
 			if err != nil {
 				return err
 			}
 			switch {
-			case row.Locked:
+			case locked:
 				allowed = false
-			case row.Failures > failureLimit(key):
+			case failures > failureLimit(key):
 				allowed = false
 				if err := tx.Exec(`UPDATE login_throttles
 SET locked_until = now() + ?::interval, failures = 0, window_start = now()
@@ -155,11 +143,38 @@ WHERE key = ?`, window, key).Error; err != nil {
 				}
 			}
 		}
-		// Old rows carry no information; keep the table small.
-		return tx.Exec(`DELETE FROM login_throttles
-WHERE window_start < now() - interval '1 day' AND (locked_until IS NULL OR locked_until < now())`).Error
+		return nil
 	})
 	return allowed, err
+}
+
+// countThrottleHit is the one upsert behind every throttle: it counts one
+// hit for key, starting over when the key's window has passed, and reports
+// the running count and whether the key is locked. Callers that do not use
+// lockouts ignore locked.
+func countThrottleHit(tx *gorm.DB, key string, window time.Duration) (failures int, locked bool, err error) {
+	windowArg := fmt.Sprintf("%d seconds", int(window.Seconds()))
+	var row struct {
+		Failures int
+		Locked   bool
+	}
+	err = tx.Raw(`
+INSERT INTO login_throttles (key, failures, window_start) VALUES (?, 1, now())
+ON CONFLICT (key) DO UPDATE SET
+  failures = CASE WHEN login_throttles.window_start < now() - ?::interval
+                  THEN 1 ELSE login_throttles.failures + 1 END,
+  window_start = CASE WHEN login_throttles.window_start < now() - ?::interval
+                      THEN now() ELSE login_throttles.window_start END
+RETURNING failures, COALESCE(locked_until > now(), false) AS locked`,
+		key, windowArg, windowArg).Scan(&row).Error
+	return row.Failures, row.Locked, err
+}
+
+// pruneLoginThrottles drops rows that carry no information. The daily
+// ticker runs it; hits no longer pay for the cleanup.
+func (a *App) pruneLoginThrottles(ctx context.Context) error {
+	return a.DB.WithContext(ctx).Exec(`DELETE FROM login_throttles
+WHERE window_start < now() - interval '1 day' AND (locked_until IS NULL OR locked_until < now())`).Error
 }
 
 // lockLoginKeysAtLimit runs after a failed attempt (already counted by
@@ -222,9 +237,7 @@ func (a *App) apiChangePassword(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "current and new passwords are required")
 		return
 	}
-	if len(body.Password) < minPasswordLength {
-		jsonError(c, http.StatusBadRequest,
-			"password must be at least 10 characters")
+	if !checkNewPassword(c, body.Password) {
 		return
 	}
 	if !a.reauthenticate(c, u, body.Current) {
@@ -325,22 +338,7 @@ const (
 // limit within window. It shares the login_throttles table under its own
 // key prefix; the login lockout never reads these keys.
 func (a *App) throttleAllow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
-	var failures int
-	windowArg := fmt.Sprintf("%d seconds", int(window.Seconds()))
-	err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Raw(`
-INSERT INTO login_throttles (key, failures, window_start) VALUES (?, 1, now())
-ON CONFLICT (key) DO UPDATE SET
-  failures = CASE WHEN login_throttles.window_start < now() - ?::interval
-                  THEN 1 ELSE login_throttles.failures + 1 END,
-  window_start = CASE WHEN login_throttles.window_start < now() - ?::interval
-                      THEN now() ELSE login_throttles.window_start END
-RETURNING failures`, key, windowArg, windowArg).Scan(&failures).Error; err != nil {
-			return err
-		}
-		return tx.Exec(`DELETE FROM login_throttles
-WHERE window_start < now() - interval '1 day' AND (locked_until IS NULL OR locked_until < now())`).Error
-	})
+	failures, err := a.throttleHit(ctx, key, window)
 	return failures <= limit, err
 }
 
@@ -494,24 +492,16 @@ func (a *App) apiConfirmPasswordReset(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "token and password are required")
 		return
 	}
-	if len(body.Password) < minPasswordLength {
-		jsonError(c, http.StatusBadRequest, "password must be at least 10 characters")
+	if !checkNewPassword(c, body.Password) {
 		return
 	}
 	var fresh models.User
 	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), models.TokenPasswordReset, body.Token, body.Password)
 	if err == nil {
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
-			u, err := lockAccountTokenUser(tx, models.TokenPasswordReset, body.Token)
+			u, _, err := lockAndConsumeAccountToken(tx, models.TokenPasswordReset, body.Token)
 			if err != nil {
 				return err
-			}
-			tok, err := consumeAccountToken(tx, models.TokenPasswordReset, body.Token)
-			if err != nil {
-				return err
-			}
-			if tok.UserID != u.ID {
-				return errTokenInvalid
 			}
 			if err := replacePasswordIn(tx, u, passwordHash); err != nil {
 				return err

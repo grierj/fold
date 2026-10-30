@@ -67,7 +67,7 @@ export function ResetPassword() {
       <h1 className="text-3xl font-bold mb-6">Choose a new password</h1>
       <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
         {error && <FormError>{error}</FormError>}
-        <Field id="rp-password" label="New password" hint="Must be at least 10 characters.">
+        <Field id="rp-password" label="New password" hint="Must be at least 10 characters, and at most 72 bytes (accents and emoji take more).">
           <Input
             type="password"
             value={password}

@@ -2204,3 +2204,92 @@ func TestRemoteCapacityNullDoesNotPromoteDisabledPool(t *testing.T) {
 		})
 	}
 }
+
+// A viewer who cannot register for an event gets the same 404 a missing event
+// gets, whatever the body says about guests, childcare, or the date; a viewer
+// who can see the event still gets the event-specific answers.
+func TestRegisterHiddenEventAnswersLikeMissingEvent(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HiddenOracle")
+	id, date := seedCappedEventWithGuests(t, app, admin, gid, nil, false, 0)
+	setVisibility(t, admin, id, models.VisibilityInviteOnly, "", http.StatusOK)
+	newTestUser(t, app, "oracleout", "password1234", models.RoleMember)
+	out := loginAPI(t, app, "oracleout", "password1234")
+
+	missing := apiDo(t, out, "PUT", "/api/v1/events/999999/registrations", map[string]any{"date": date, "status": "going"}, http.StatusNotFound)
+	path := fmt.Sprintf("/api/v1/events/%d/registrations", id)
+	for name, body := range map[string]map[string]any{
+		"too many guests": {"date": date, "status": "going", "guestCount": 3},
+		"childcare":       {"date": date, "status": "going", "childcareCount": 1},
+		"unknown date":    {"date": "2001-01-01", "status": "going"},
+		"plain":           {"date": date, "status": "going"},
+	} {
+		if got := apiDo(t, out, "PUT", path, body, http.StatusNotFound); got != missing {
+			t.Fatalf("%s: hidden event answered %s, a missing event answers %s", name, got, missing)
+		}
+	}
+
+	// The same requests from someone who may register keep their own answers.
+	apiDo(t, admin, "PUT", path, map[string]any{"date": date, "status": "going", "guestCount": 3}, http.StatusBadRequest)
+	apiDo(t, admin, "PUT", path, map[string]any{"date": date, "status": "going", "childcareCount": 1}, http.StatusBadRequest)
+	if got := apiDo(t, admin, "PUT", path, map[string]any{"date": "2001-01-01", "status": "going"}, http.StatusNotFound); !strings.Contains(got, "that date is not on this event") {
+		t.Fatalf("visible event, unknown date: %s", got)
+	}
+}
+
+// Re-adding a household person who already holds a seat is idempotent even
+// when that seat is the last one.
+func TestHouseholdReAddOnFullEventKeepsOwnSeat(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "HouseholdReAdd")
+	id, date := seedCappedEvent(t, app, admin, gid, intPtr(1), false)
+	holder, _, spouse, _ := householdFamily(t, app, admin, "readdholder")
+	add := map[string]any{"date": date, "personId": spouse.ID, "registeredBy": holder.ID}
+	path := "/api/v1/events/" + itoa(id) + "/registrations/add"
+	apiDo(t, admin, "POST", path, add, http.StatusOK)
+	apiDo(t, admin, "POST", path, add, http.StatusOK)
+	var occ models.EventOccurrence
+	if err := app.DB.First(&occ, "event_id = ?", id).Error; err != nil {
+		t.Fatal(err)
+	}
+	if n := countRegs(t, app, occ.ID, models.RegGoing); n != 1 {
+		t.Fatalf("going rows = %d, want 1", n)
+	}
+}
+
+// Waitlist order is (waitlisted_at, id) among listed accounts; the position
+// is a count, so equal timestamps tie-break on id.
+func TestWaitlistPositionCountsLineOrder(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "PositionOrder")
+	id, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+	var occ models.EventOccurrence
+	var ids []uint
+	for _, n := range []string{"posholder", "posa", "posb", "posc"} {
+		newTestUser(t, app, n, "password1234", models.RoleMember)
+		c := loginAPI(t, app, n, "password1234")
+		if code, body := registerAs(c, id, date, "going", nil); code != http.StatusOK {
+			t.Fatalf("register: %d %s", code, body)
+		}
+	}
+	if err := app.DB.First(&occ, "event_id = ?", id).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Tie the three waiters on the same instant: id decides.
+	same := time.Now().UTC()
+	if err := app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND status = ?", occ.ID, models.RegWaitlisted).Update("waitlisted_at", same).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND status = ?", occ.ID, models.RegWaitlisted).Order("id").Pluck("id", &ids).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i, regID := range ids {
+		got, err := waitlistPosition(app.DB, occ.ID, regID)
+		if err != nil || got != i+1 {
+			t.Fatalf("position of %d = %d (%v), want %d", regID, got, err, i+1)
+		}
+	}
+	if got, _ := waitlistPosition(app.DB, occ.ID, 0); got != 0 {
+		t.Fatalf("unknown registration position = %d", got)
+	}
+}

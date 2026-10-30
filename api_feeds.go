@@ -246,10 +246,9 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) (e
 // every hidden, declined, out-of-window, or differently answered recurrence
 // explicit, so an RRULE can never reintroduce it in a calendar client.
 func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, rawScope string, now time.Time, occs []models.EventOccurrence, scoped map[uint]*occurrenceRead, vs visibleSet) (events.Feed, error) {
-	ids := make([]uint, len(occs))
-	for i := range occs {
-		ids[i] = occs[i].ID
-	}
+	// Only scheduled dates the viewer may see are looked up; the loop below
+	// skips every other date before it reads these facts.
+	ids := visibleOccurrenceIDs(vs, viewer, occs, scoped)
 	facts, err := a.loadCalendarScopeBatch(viewer, ids)
 	if err != nil {
 		return events.Feed{}, err
@@ -258,7 +257,7 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 	if rawScope == models.CalendarFeedAll {
 		scope = policy.CalendarScopeAll
 	}
-	householdGoing, err := householdGoingMap(a.DB, ids, viewer, false)
+	householdGoing, err := householdGoingChunked(a.DB, ids, viewer, false)
 	if err != nil {
 		return events.Feed{}, err
 	}

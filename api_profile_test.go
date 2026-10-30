@@ -1103,3 +1103,44 @@ func TestProfileContactPrivacyAuditFailureRollsBack(t *testing.T) {
 		t.Fatalf("audit failure committed profile: %+v", adult)
 	}
 }
+
+// A refused email change is all-or-nothing: the other fields in the same
+// request are not saved when the password proof fails.
+func TestEmailChangeWrongPasswordSavesNothingElse(t *testing.T) {
+	app := testApp(t)
+	alice := newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	if err := app.DB.Model(alice).Updates(map[string]any{"name": "Alice Original", "phone": "555-0100"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	ac := loginAPI(t, app, "alice", "password1234")
+	w := ac.do("PUT", "/api/v1/me", map[string]string{
+		"name": "Changed Name", "phone": "555-9999",
+		"email": "elsewhere@example.com", "currentPassword": "not-the-password",
+	}, true)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status: %d %s", w.Code, w.Body.String())
+	}
+	var got models.User
+	if err := app.DB.First(&got, alice.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "Alice Original" || got.Phone != "555-0100" {
+		t.Fatalf("profile changed despite the refused email change: name=%q phone=%q", got.Name, got.Phone)
+	}
+	// With the right password the name and the email request both go through.
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{
+		"name": "Changed Name", "email": "elsewhere@example.com", "currentPassword": "password1234",
+	}, http.StatusOK)
+	if err := app.DB.First(&got, alice.ID).Error; err != nil || got.Name != "Changed Name" {
+		t.Fatalf("name after a good proof: %q %v", got.Name, err)
+	}
+}
+
+func TestProfileNameLimitCountsCharactersNotBytes(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "alice", "password1234", models.RoleMember)
+	ac := loginAPI(t, app, "alice", "password1234")
+	long := strings.Repeat("é", 100) // 200 bytes, 100 characters
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"displayName": long}, http.StatusOK)
+	apiDo(t, ac, "PUT", "/api/v1/me", map[string]string{"displayName": long + "é"}, http.StatusBadRequest)
+}

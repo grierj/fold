@@ -164,6 +164,9 @@ func (a *App) startOccurrenceTicker(ctx context.Context) {
 			if err := a.sweepContacts(ctx, time.Now().UTC()); err != nil {
 				log.Printf("contact lifecycle: %v", err)
 			}
+			if err := a.pruneLoginThrottles(ctx); err != nil {
+				log.Printf("login throttles: %v", err)
+			}
 		}
 		run()
 		tick := time.NewTicker(24 * time.Hour)

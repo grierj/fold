@@ -62,19 +62,26 @@ type childcareRequest struct {
 	ChildcareAgesNote *string `json:"childcareAgesNote"`
 }
 
-func (r childcareRequest) validate(c *gin.Context, ev *models.Event) bool {
+// problem is the first thing wrong with the request, in words, or "". A nil
+// event skips the checks that depend on the event's childcare setting.
+func (r childcareRequest) problem(ev *models.Event) string {
 	if r.ChildcareCount != nil {
 		if *r.ChildcareCount < 0 || *r.ChildcareCount > 20 {
-			jsonError(c, http.StatusBadRequest, "childcareCount must be a whole number from 0 to 20")
-			return false
+			return "childcareCount must be a whole number from 0 to 20"
 		}
-		if *r.ChildcareCount > 0 && !ev.ChildcareAvailable {
-			jsonError(c, http.StatusBadRequest, errChildcareUnavailable.Error())
-			return false
+		if ev != nil && *r.ChildcareCount > 0 && !ev.ChildcareAvailable {
+			return errChildcareUnavailable.Error()
 		}
 	}
 	if r.ChildcareAgesNote != nil && utf8.RuneCountInString(strings.TrimSpace(*r.ChildcareAgesNote)) > 200 {
-		jsonError(c, http.StatusBadRequest, "childcare age note must be 200 characters or fewer")
+		return "childcare age note must be 200 characters or fewer"
+	}
+	return ""
+}
+
+func (r childcareRequest) validate(c *gin.Context, ev *models.Event) bool {
+	if msg := r.problem(ev); msg != "" {
+		jsonError(c, http.StatusBadRequest, msg)
 		return false
 	}
 	return true

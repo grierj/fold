@@ -720,7 +720,7 @@ function UserForm({
         </Choices>
         {creating && (
           <div className="sm:col-span-2">
-            <Field id="admin-password" label="Password" optional hint="At least 10 characters. Leave blank to create an invited account that can't sign in until a password is set.">
+            <Field id="admin-password" label="Password" optional hint="At least 10 characters, and at most 72 bytes (accents and emoji take more). Leave blank to create an invited account that can't sign in until a password is set.">
               <Input
                 type="password"
                 value={form.password}
@@ -787,7 +787,7 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
   return (
     <Form noValidate onSubmit={reset} className="mt-2 max-w-xl space-y-4">
       {error && <FormError>{error}</FormError>}
-      <Field id="admin-new-password-for" label={`New password for ${user.email}`} hint="Must be at least 10 characters.">
+      <Field id="admin-new-password-for" label={`New password for ${user.email}`} hint="Must be at least 10 characters, and at most 72 bytes (accents and emoji take more).">
         <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
       </Field>
       <FormActions>

@@ -7,7 +7,7 @@ description: Drive the Fold church small-group web app in a browser against an i
 
 Fold's primary surface is the web UI served by the `fold` binary. The same process also serves the JSON API under `/api/v1`. The `fold` CLI (`serve`, `healthcheck`, `migrate`, `version`) and `docker compose up` are the production process and deploy, not the surface this skill drives. Browser checks use Playwright from `web/node_modules` against an instance this skill started.
 
-Do not drive `make dev`. That server uses the shared dev database named `fold` on port 8080. Do not drive `make e2e` or `web/e2e/server.sh` for a one-off proof. That script drops and recreates one shared `<database>_e2e` database, writes its binary to `/tmp/fold-e2e`, and listens on `E2E_PORT` (default 18090). Two of those runs corrupt each other. `verify-fold up` gives each run its own database, port, work directory, and proof directory, so two verification runs can proceed together. Never point a run at a database whose name is `fold` or ends in `_e2e`.
+Do not drive `make dev`. That server uses the shared dev database named `fold` on port 8080. Do not drive `make e2e` or `web/e2e/server.sh` for a one-off proof. That script drops and recreates one shared `<database>_e2e` database, writes its binary to `/tmp/fold-e2e`, and listens on `E2E_PORT` (default 18090); `make e2e` runs one per shard with `<database>_e2e_<n>`, `/tmp/fold-e2e-<n>` and port `18090+n`. Two of those runs corrupt each other. `verify-fold up` gives each run its own database, port, work directory, and proof directory, so two verification runs can proceed together. Never point a run at a database whose name is `fold`, ends in `_e2e`, or contains `_e2e_`.
 
 ## Launch
 

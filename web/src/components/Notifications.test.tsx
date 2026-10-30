@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Notification } from "../types";
+import { useBadge } from "../lib/notifications";
 import { NotificationBell, NotificationTab } from "./Notifications";
 
 const api = vi.hoisted(() => ({
@@ -38,10 +39,18 @@ const task = item({
   actions: [{ key: "approve", label: "Approve" }], link: "/admin?tab=approvals",
 });
 
+// Layout owns the badge poller and hands the result to both.
+function Bell() {
+  return <NotificationBell badge={useBadge("")} />;
+}
+function Tab() {
+  return <NotificationTab badge={useBadge("")} className={() => ""} />;
+}
+
 function renderBell() {
   return render(
     <MemoryRouter>
-      <NotificationBell />
+      <Bell />
     </MemoryRouter>
   );
 }
@@ -57,7 +66,7 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 it("includes the phone tab's visible count and caption in its accessible name", async () => {
-  render(<MemoryRouter><NotificationTab className={() => ""} /></MemoryRouter>);
+  render(<MemoryRouter><Tab /></MemoryRouter>);
   const tab = await screen.findByRole("link", { name: "2 Alerts, 1 unread, 1 waiting on you" });
   expect(tab.textContent).toBe("2 Alerts");
 });

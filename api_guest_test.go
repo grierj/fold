@@ -1211,6 +1211,7 @@ func TestGuestRegistrationDefersMailForEveryAddressKind(t *testing.T) {
 }
 
 func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
+	realPasswordCost(t)
 	// Calibrate a deliberately loose lower bound instead of hard-coding the
 	// machine's bcrypt speed. Observe work at the account lookup, not at the
 	// end of the request: the padding must precede all address-dependent work.
@@ -1256,7 +1257,7 @@ func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
 			}
 			if tt.exhausted {
 				if tt.account {
-					seedThrottle("guestreg:hint:"+email, guestVerifyPerHour)
+					seedThrottle("guestreg:hint:"+email+":h", guestVerifyPerHour)
 				} else {
 					for range guestVerifyPerHour {
 						_, hash, err := createInvitationToken()
@@ -1316,6 +1317,64 @@ func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
 				if jobs != wantJobs {
 					t.Fatalf("mail jobs = %d, want %d", jobs, wantJobs)
 				}
+			}
+		})
+	}
+}
+
+// A guest who redeems a second link must not be counted against their own
+// seat: on a full event with no waitlist they stay going, and on a waitlist
+// they keep their place in line (mirrors registerLocked).
+func TestGuestReconfirmDoesNotCountOwnSeat(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		waitlist bool
+	}{{"going stays going", false}, {"waitlist place is kept", true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := testApp(t)
+			newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			admin := loginAPI(t, app, "admin", "password1234")
+			gid := createGroupAs(t, admin, "Garden Club", models.VisibilityPublic)
+			ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID),
+				map[string]any{"capacity": 1, "waitlistEnabled": tt.waitlist}, http.StatusOK)
+			var occ models.EventOccurrence
+			app.DB.Where("event_id = ?", ev.ID).First(&occ)
+
+			if tt.waitlist {
+				// A member holds the one seat so the guest waitlists.
+				member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+				var g models.Group
+				app.DB.First(&g, gid)
+				addMember(t, app, member, &g, models.MembershipMember)
+				mc := loginAPI(t, app, "member", "password1234")
+				if code, _ := registerAs(mc, ev.ID, occ.OriginalDate, "going", nil); code != http.StatusOK {
+					t.Fatalf("member going: %d", code)
+				}
+			}
+			anon := anonClient(t, app, "10.4.9.1")
+			first, _ := guestConfirm(t, app, anon, ev.ID, "Gail Guest", "gail@example.com", false)
+			want := models.RegGoing
+			if tt.waitlist {
+				want = models.RegWaitlisted
+			}
+			if first.Status != want {
+				t.Fatalf("first confirm status = %q, want %q", first.Status, want)
+			}
+			user := guestUser(t, app, "gail@example.com")
+			before := guestRegistrationRow(t, app, user.ID)
+
+			second, _ := guestConfirm(t, app, anon, ev.ID, "Gail Guest", "gail@example.com", false)
+			if second.Status != want {
+				t.Fatalf("second confirm status = %q, want %q", second.Status, want)
+			}
+			after := guestRegistrationRow(t, app, user.ID)
+			if after.Status != want || after.ID != before.ID {
+				t.Fatalf("registration changed: %+v -> %+v", before, after)
+			}
+			if tt.waitlist && (before.WaitlistedAt == nil || after.WaitlistedAt == nil ||
+				!before.WaitlistedAt.Equal(*after.WaitlistedAt)) {
+				t.Fatalf("waitlist place lost: %v -> %v", before.WaitlistedAt, after.WaitlistedAt)
 			}
 		})
 	}

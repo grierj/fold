@@ -122,9 +122,19 @@ func (a *App) apiCalendar(c *gin.Context) {
 		return
 	}
 	var occs []models.EventOccurrence
-	if len(visibleIDs) > 0 {
-		a.DB.Where("event_id IN ? AND status = ? AND starts_at >= ? AND starts_at < ?",
-			visibleIDs, models.OccurrenceScheduled, windowStart.UTC(), windowEnd.UTC()).Order("starts_at").Find(&occs)
+	// Chunked so a huge event list stays under the bind-parameter limit; the
+	// merged rows are sorted below. A failed read is a 500, not an empty month.
+	if err := eachIDChunk(visibleIDs, func(chunk []uint) error {
+		var part []models.EventOccurrence
+		if err := a.DB.Where("event_id IN ? AND status = ? AND starts_at >= ? AND starts_at < ?",
+			chunk, models.OccurrenceScheduled, windowStart.UTC(), windowEnd.UTC()).Order("starts_at").Find(&part).Error; err != nil {
+			return err
+		}
+		occs = append(occs, part...)
+		return nil
+	}); err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load the calendar")
+		return
 	}
 	for _, read := range scoped {
 		if byID[read.Event.ID] == nil {
@@ -138,10 +148,9 @@ func (a *App) apiCalendar(c *gin.Context) {
 		return occs[i].StartsAt.Before(occs[j].StartsAt)
 	})
 
-	occIDs := make([]uint, len(occs))
-	for i := range occs {
-		occIDs[i] = occs[i].ID
-	}
+	// Only scheduled dates the viewer may see are looked up; the loop below
+	// skips every other date before it reads these facts.
+	occIDs := visibleOccurrenceIDs(vs, me, occs, scoped)
 	scopeFacts, err := a.loadCalendarScopeBatch(me, occIDs)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the calendar")

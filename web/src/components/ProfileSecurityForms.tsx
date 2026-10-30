@@ -89,6 +89,10 @@ export function ProfilePasswordForm() {
       showFieldErrors(form, () => setPasswordFieldError({ field: "new", message: "Password must be at least 10 characters." }));
       return;
     }
+    if (new TextEncoder().encode(newPassword).length > 72) {
+      showFieldErrors(form, () => setPasswordFieldError({ field: "new", message: "That password is too long. Use at most 72 bytes — about 72 letters, fewer with accents or emoji." }));
+      return;
+    }
     if (newPassword !== confirmPassword) {
       showFieldErrors(form, () => setPasswordFieldError({ field: "confirm", message: "Passwords do not match." }));
       return;
@@ -125,7 +129,7 @@ export function ProfilePasswordForm() {
       <Field
         id="new-password"
         label="New password"
-        hint="Must be at least 10 characters."
+        hint="Must be at least 10 characters, and at most 72 bytes (accents and emoji take more)."
         error={passwordFieldError?.field === "new" && passwordFieldError.message}
       >
         <Input

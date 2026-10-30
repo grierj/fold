@@ -138,12 +138,12 @@ export function NewEvent() {
     } catch (err) {
       const msg = errorText(err, "We couldn't schedule the event.");
       setError(msg);
-      if (isChildcareCapacityError(msg)) { setChildcareError(msg); focusChildcareCapacity("event"); }
-      if (isRemoteError(msg)) {
+      if (isChildcareCapacityError(err)) { setChildcareError(msg); focusChildcareCapacity("event"); }
+      if (isRemoteError(err)) {
         setRemoteError(msg);
         focusRemoteCapacity("event");
       }
-      if (isVideoError(msg)) {
+      if (isVideoError(err)) {
         setVideoError(msg);
         focusVideoUrl("event");
       }

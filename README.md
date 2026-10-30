@@ -105,11 +105,11 @@ specified in `docs/DEPLOY-DIGITALOCEAN.md`.
 ## Tests
 
 ```bash
-make test   # go test ./... on Postgres; starts the dev database if DATABASE_URL is unset
+make test   # go test ./... on Postgres (root package sharded); starts the dev database if DATABASE_URL is unset
 make lint   # shell, Go (vet/gofmt/staticcheck), and web lint
 make deadcode # production reachability gate; test database and registry inspection seams are allow-listed
 cd web && npm test   # Vitest component tests
-make e2e    # Playwright browser tests (first run: cd web && npx playwright install chromium)
+make e2e    # Playwright browser tests in parallel shards (first run: cd web && npx playwright install chromium)
 ```
 
 ## Documentation

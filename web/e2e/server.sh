@@ -8,13 +8,19 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 base="${DATABASE_URL%%\?*}"          # postgres://u:p@host:port/db
 query="${DATABASE_URL#"$base"}"      # ?sslmode=disable, or empty
-db="${base##*/}_e2e"
+# E2E_SHARD (e2e/run.sh) gives each parallel shard its own database.
+db="${base##*/}_e2e${E2E_SHARD:+_$E2E_SHARD}"
 PGOPTIONS="-c client_min_messages=warning" psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q \
   -c "DROP DATABASE IF EXISTS \"$db\" WITH (FORCE)" -c "CREATE DATABASE \"$db\""
 
-work="${TMPDIR:-/tmp}/fold-e2e"
+work="${TMPDIR:-/tmp}/fold-e2e${E2E_SHARD:+-$E2E_SHARD}"
 rm -rf "$work" && mkdir -p "$work"
-(cd "$root" && go build -o "$work/fold" .)
+# e2e/run.sh builds the binary once and shares it through FOLD_E2E_BIN.
+if [ -n "${FOLD_E2E_BIN:-}" ]; then
+  cp "$FOLD_E2E_BIN" "$work/fold"
+else
+  (cd "$root" && go build -o "$work/fold" .)
+fi
 
 # Production by default. The invitation scenarios use dev mode's outbox.
 # Cookies work over plain http on 127.0.0.1 in either mode.

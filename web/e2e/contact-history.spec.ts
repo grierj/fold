@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { apiAs, email, fromMore, PASSWORD, signIn } from "./helpers";
+import { apiAs, email, fromMore, PASSWORD, signIn, signInTo, soon } from "./helpers";
 import type { ContactHistoryResponse } from "../src/types";
 // @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
@@ -44,7 +44,7 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: leader.id, role: "leader" });
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: adult.id, role: "member" });
   await (await apiAs(request, adultLogin))("PUT", "/me", { hideContactFromLeaders: true });
-  await signIn(page, leaderLogin); await page.goto(`/groups/${group.id}`);
+  await signInTo(page, leaderLogin, `/groups/${group.id}`);
   const addCSRF = (await (await page.request.get("/api/v1/auth/csrf")).json()).csrfToken;
   const addition = await page.request.post(`/api/v1/groups/${group.id}/members`, { headers: { "X-CSRF-Token": addCSRF }, data: { email: added.email } });
   expect(addition.ok()).toBe(true);
@@ -56,22 +56,22 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
   await expect(membersPanel).toBeVisible();
   await page.getByRole("button", { name: "Request direct contact" }).click();
-  await page.getByLabel("Email and phone", { exact: true }).check();
+  await (await soon(page.getByLabel("Email and phone", { exact: true }))).check();
   await page.getByLabel(/Reason/).fill("PRIVATE HISTORY REASON");
   await page.getByRole("button", { name: "Send request" }).click();
   await page.getByRole("link", { name: "View request", exact: true }).click();
   const contactPath = new URL(page.url()).pathname;
-  await expect(page.getByRole("button", { name: "Withdraw request" })).toBeVisible();
-  await signIn(page, adultLogin); await page.goto(contactPath);
+  await expect(await soon(page.getByRole("button", { name: "Withdraw request" }))).toBeVisible();
+  await signInTo(page, adultLogin, contactPath);
   await page.getByRole("button", { name: "Approve sharing" }).click();
   await expect(page.getByRole("button", { name: "Revoke access" })).toBeVisible();
-  await signIn(page, leaderLogin); await page.goto(contactPath);
+  await signInTo(page, leaderLogin, contactPath);
   await page.getByRole("button", { name: "Reveal contact details" }).click();
   await expect(page.getByRole("region", { name: "Revealed contact details" })).toContainText(email(adultLogin));
   await page.getByRole("button", { name: "Close contact details" }).click();
   const { grants } = await (await page.request.get("/api/v1/contact-grants")).json();
   const grant = grants.find((g: { subjectUserId: number }) => g.subjectUserId === adult.id);
-  await signIn(page, adultLogin); await page.goto(contactPath);
+  await signInTo(page, adultLogin, contactPath);
   await page.getByRole("button", { name: "Revoke access" }).click();
   await signIn(page, leaderLogin);
   const csrf = (await (await page.request.get("/api/v1/auth/csrf")).json()).csrfToken;
@@ -80,7 +80,7 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
 
   const personId = String(leader.id);
   const historyPath = `/admin/users/${personId}/contact-history`;
-  await signIn(page, adminName); await page.goto("/admin?tab=users");
+  await signInTo(page, adminName, "/admin?tab=users");
   await expect(page.getByRole("button", { name: `More for History Leader ${suffix}` })).toBeVisible();
   await capture(page, "admin-users");
   await fromMore(page, "Contact access history", `More for History Leader ${suffix}`);
@@ -160,7 +160,7 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   // Retention uses the manual field, not a live-account lookup or test route.
   await (await apiAs(request, adminName))("DELETE", `/admin/users/${adult.id}`);
   await page.goto("/admin/contact-history");
-  await page.getByText("Use a saved person ID", { exact: true }).click();
+  await (await soon(page.getByText("Use a saved person ID", { exact: true }))).click();
   const savedPersonID = page.getByLabel("Saved person ID", { exact: true });
   await savedPersonID.fill(String(adult.id));
   await page.getByRole("button", { name: "Apply filters" }).click();
@@ -171,7 +171,7 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   await page.getByRole("button", { name: "Apply filters" }).click();
   await expect(page.getByText("No matching history", { exact: true })).toBeVisible();
 
-  await signIn(page, leaderLogin); await page.goto(historyPath);
+  await signInTo(page, leaderLogin, historyPath);
   await expect(page.getByText("This page is for church admins only.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Export all matching CSV" })).toHaveCount(0);
   const refusedJSON = await page.request.get(`/api/v1${historyPath}`);

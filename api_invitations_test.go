@@ -342,3 +342,86 @@ func TestInvitationIntoFullGroup(t *testing.T) {
 		t.Fatalf("over-limit join not audited")
 	}
 }
+
+// Leader-only powers count only for groups an admin has approved: a member
+// who leads just a pending or rejected group can't invite people into Fold,
+// and nobody can invite into a group that isn't active.
+func TestInvitePowerNeedsAnApprovedGroup(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "root", "password1234", models.RoleAdmin)
+	pendingLeader := newTestUser(t, app, "pend", "password1234", models.RoleMember)
+	rejectedLeader := newTestUser(t, app, "rej", "password1234", models.RoleMember)
+	activeLeader := newTestUser(t, app, "act", "password1234", models.RoleMember)
+	mixedLeader := newTestUser(t, app, "mixed", "password1234", models.RoleMember)
+	pending := newTestGroup(t, app, pendingLeader, "Pending", models.GroupPending)
+	newTestGroup(t, app, rejectedLeader, "Rejected", models.GroupArchived)
+	newTestGroup(t, app, activeLeader, "Active", models.GroupActive)
+	newTestGroup(t, app, mixedLeader, "Mixed pending", models.GroupPending)
+	newTestGroup(t, app, mixedLeader, "Mixed active", models.GroupActive)
+
+	invite := func(c *apiClient, email string, gid *uint) *httptest.ResponseRecorder {
+		body := map[string]any{"email": email}
+		if gid != nil {
+			body["groupId"] = *gid
+		}
+		return c.do("POST", "/api/v1/invitations", body, true)
+	}
+	for _, name := range []string{"pend", "rej"} {
+		w := invite(loginAPI(t, app, name, "password1234"), name+"@example.com", nil)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s leader, no group: %d %s, want 403", name, w.Code, w.Body.String())
+		}
+	}
+	// The leader of a pending group is refused for that group too, with the
+	// approval wording rather than a bare 403.
+	pc := loginAPI(t, app, "pend", "password1234")
+	if w := invite(pc, "pend2@example.com", &pending.ID); w.Code != http.StatusConflict {
+		t.Errorf("pending leader into pending group: %d, want 409", w.Code)
+	}
+	// An admin can't invite into a pending group either: it could never be accepted.
+	ac := loginAPI(t, app, "root", "password1234")
+	w := invite(ac, "adm@example.com", &pending.ID)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"code":"group_not_approved"`) {
+		t.Errorf("admin into pending group: %d %s, want 409 group_not_approved", w.Code, w.Body.String())
+	}
+	var n int64
+	app.DB.Model(&models.Invitation{}).Where("email IN ?", []string{"adm@example.com", "pend2@example.com"}).Count(&n)
+	if n != 0 {
+		t.Errorf("%d invitations stored for a group that isn't active", n)
+	}
+	// An active-group leader still can, with a group or without.
+	lc := loginAPI(t, app, "act", "password1234")
+	if w := invite(lc, "newact@example.com", nil); w.Code != http.StatusCreated {
+		t.Errorf("active leader, no group: %d %s", w.Code, w.Body.String())
+	}
+	var active models.Group
+	app.DB.Where("name = ?", "Active").First(&active)
+	if w := invite(lc, "act2@example.com", &active.ID); w.Code != http.StatusCreated {
+		t.Errorf("active leader into active group: %d %s", w.Code, w.Body.String())
+	}
+	// Leading one approved group is enough even beside a pending one.
+	if w := invite(loginAPI(t, app, "mixed", "password1234"), "newmixed@example.com", nil); w.Code != http.StatusCreated {
+		t.Errorf("mixed leader, no group: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// An invitation sent while the inviter led an approved group dies when that
+// group stops being active and the inviter leads nothing else approved.
+func TestInvitationAcceptRechecksApprovedGroupLeadership(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Soon rejected", models.GroupActive)
+	apiDo(t, loginAPI(t, app, "leader", "password1234"), "POST", "/api/v1/invitations", map[string]any{"email": "new@example.com"}, http.StatusCreated)
+	token := tokenInEmail(t, latestEmail(t, app, "new@example.com"))
+	app.DB.Model(g).Update("status", models.GroupArchived)
+	anon := anonClient(t, app, "192.0.2.3")
+	w := anon.do("POST", "/api/v1/invitations/accept", map[string]any{"token": token, "name": "New Person", "password": "password1234", "ageBand": "adult"}, true)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("accept after the group was rejected: %d %s, want 400", w.Code, w.Body.String())
+	}
+	var count int64
+	app.DB.Model(&models.User{}).Where("email = ?", "new@example.com").Count(&count)
+	if count != 0 {
+		t.Fatal("account created from a rejected leader's invitation")
+	}
+}

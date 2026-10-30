@@ -3,6 +3,7 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import { useSiteName } from "../lib/useSiteName";
 import { usePageTitle } from "../lib/usePageTitle";
 import { useAuth } from "../auth";
+import { useBadge } from "../lib/notifications";
 import { Avatar } from "./Avatar";
 import { CalendarIcon, GroupsIcon, HomeIcon, MeIcon, PlusIcon } from "./icons";
 import { NotificationBell, NotificationTab } from "./Notifications";
@@ -22,7 +23,7 @@ const tab = ({ isActive }: { isActive: boolean }) =>
   `flex flex-1 flex-col items-center justify-center gap-0.5 min-h-14 whitespace-nowrap text-xs font-medium ${isActive ? "text-primary" : "text-text-muted"}`;
 
 export function Layout({ children }: { children: React.ReactNode }) {
-  const { pathname } = useLocation();
+  const { pathname, search } = useLocation();
   const { user, loading, logout, isAdmin } = useAuth();
   const site = useSiteName();
   usePageTitle(site, pathname);
@@ -37,6 +38,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
     return () => { observer?.disconnect(); document.documentElement.style.removeProperty("--fold-header-height"); };
   }, []);
   const signedIn = !loading && !!user;
+  // One poller for the bell and the phone tab (they show the same count).
+  const badge = useBadge(pathname + search, signedIn);
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -85,7 +88,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <PlusIcon />
                 </NavLink>
                 <div className="hidden sm:flex items-center gap-2">
-                  <NotificationBell />
+                  <NotificationBell badge={badge} />
                   <Link to="/profile" className="flex items-center gap-2 min-h-11 px-1 text-text-muted hover:text-primary" title="Your profile">
                     <Avatar
                       url={user.avatarUrl || undefined}
@@ -132,7 +135,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <GroupsIcon />
             My groups
           </NavLink>
-          <NotificationTab className={tab} />
+          <NotificationTab badge={badge} className={tab} />
           <NavLink to="/profile" className={tab}>
             <MeIcon />
             Me

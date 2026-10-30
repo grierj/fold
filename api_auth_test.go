@@ -249,6 +249,7 @@ func TestLoginThrottlePerEmailAndIP(t *testing.T) {
 }
 
 func TestLoginDoesNotRevealAccounts(t *testing.T) {
+	realPasswordCost(t)
 	app := testApp(t)
 	newTestUser(t, app, "alice", "password1234", models.RoleMember)
 
@@ -803,6 +804,7 @@ func TestReauthenticationReservationHoldsUnderParallelRequests(t *testing.T) {
 }
 
 func TestPasswordResetBudgetGatesAccountWork(t *testing.T) {
+	realPasswordCost(t)
 	start := time.Now()
 	(&models.User{}).CheckPassword("not a real password")
 	minimumWork := time.Since(start) / 3

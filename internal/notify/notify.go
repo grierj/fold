@@ -181,7 +181,7 @@ func merge(tx *gorm.DB, k Kind, m Msg, uid uint, now time.Time) (bool, uint, err
 func Resolve(tx *gorm.DB, kind string, subjectID uint, by *uint, resolution string) (int64, error) {
 	res := tx.Model(&models.Notification{}).
 		Where("kind = ? AND subject_id = ? AND waiting AND resolved_at IS NULL", kind, subjectID).
-		Updates(map[string]any{"resolved_at": time.Now().UTC(), "resolved_by_id": by, "resolution": resolution})
+		UpdateColumns(map[string]any{"resolved_at": time.Now().UTC(), "resolved_by_id": by, "resolution": resolution})
 	return res.RowsAffected, res.Error
 }
 
@@ -237,8 +237,9 @@ type FeedPage struct {
 }
 
 // Feed returns the user's notifications for filter, newest activity first,
-// after the cursor before. ok is false for an unknown filter or cursor.
-func Feed(db *gorm.DB, userID uint, filter, before string, limit int) (FeedPage, bool) {
+// after the cursor before. ok is false for an unknown filter or cursor; err
+// is a failed read.
+func Feed(db *gorm.DB, userID uint, filter, before string, limit int) (FeedPage, bool, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
@@ -255,26 +256,32 @@ func Feed(db *gorm.DB, userID uint, filter, before string, limit int) (FeedPage,
 	case FilterArchived:
 		q = q.Where(sqlArchive)
 	default:
-		return page, false
+		return page, false, nil
 	}
 	if filter == "" || filter == FilterAll || filter == FilterUnread {
-		own().Where(sqlLive + " AND " + sqlTask).Count(&page.WaitingTotal)
-		own().Where(sqlLive + " AND " + sqlTask).Order("created_at, id").Limit(5).Find(&page.Waiting)
+		if err := own().Where(sqlLive + " AND " + sqlTask).Count(&page.WaitingTotal).Error; err != nil {
+			return page, true, err
+		}
+		if err := own().Where(sqlLive + " AND " + sqlTask).Order("created_at, id").Limit(5).Find(&page.Waiting).Error; err != nil {
+			return page, true, err
+		}
 	}
 	if before != "" {
 		at, id, ok := parseCursor(before)
 		if !ok {
-			return page, false
+			return page, false, nil
 		}
 		q = q.Where("(updated_at, id) < (?, ?)", at, id)
 	}
-	q.Order("updated_at DESC, id DESC").Limit(limit + 1).Find(&page.Items)
+	if err := q.Order("updated_at DESC, id DESC").Limit(limit + 1).Find(&page.Items).Error; err != nil {
+		return page, true, err
+	}
 	if len(page.Items) > limit {
 		page.Items = page.Items[:limit]
 		last := page.Items[limit-1]
 		page.Next = fmt.Sprintf("%d.%d", last.UpdatedAt.UnixMicro(), last.ID)
 	}
-	return page, true
+	return page, true, nil
 }
 
 func parseCursor(s string) (time.Time, uint, bool) {
@@ -297,40 +304,43 @@ func Get(db *gorm.DB, userID, id uint) (models.Notification, bool) {
 	return n, err == nil
 }
 
-// SetRead marks one of the user's rows read (or unread again).
-func SetRead(db *gorm.DB, userID, id uint, read bool) bool {
+// SetRead marks one of the user's rows read (or unread again). found is false
+// for a row that isn't the user's; err is a failed write.
+func SetRead(db *gorm.DB, userID, id uint, read bool) (bool, error) {
 	return setTime(db, userID, id, "read_at", read)
 }
 
 // SetArchived archives one of the user's rows, or restores it (Undo).
-func SetArchived(db *gorm.DB, userID, id uint, archived bool) bool {
+func SetArchived(db *gorm.DB, userID, id uint, archived bool) (bool, error) {
 	return setTime(db, userID, id, "archived_at", archived)
 }
 
-func setTime(db *gorm.DB, userID, id uint, col string, on bool) bool {
+// setTime flips a timestamp column. It uses UpdateColumn so updated_at, which
+// orders the feed and drives retention, only moves when the content does.
+func setTime(db *gorm.DB, userID, id uint, col string, on bool) (bool, error) {
 	if _, ok := Get(db, userID, id); !ok {
-		return false
+		return false, nil
 	}
 	var v any
 	if on {
 		v = gorm.Expr("coalesce(" + col + ", now())")
 	}
-	db.Model(&models.Notification{}).Where("id = ? AND user_id = ?", id, userID).Update(col, v)
-	return true
+	err := db.Model(&models.Notification{}).Where("id = ? AND user_id = ?", id, userID).UpdateColumn(col, v).Error
+	return err == nil, err
 }
 
 // ReadAll marks every ordinary item read. Open tasks stay counted until
 // they are resolved (6.13 #2).
 func ReadAll(db *gorm.DB, userID uint) error {
 	return db.Model(&models.Notification{}).
-		Where("user_id = ? AND "+sqlUnread, userID).Update("read_at", gorm.Expr("now()")).Error
+		Where("user_id = ? AND "+sqlUnread, userID).UpdateColumn("read_at", gorm.Expr("now()")).Error
 }
 
 // ArchiveRead archives every read item that isn't an open task.
 func ArchiveRead(db *gorm.DB, userID uint) error {
 	return db.Model(&models.Notification{}).
 		Where("user_id = ? AND archived_at IS NULL AND read_at IS NOT NULL AND NOT ("+sqlTask+")", userID).
-		Update("archived_at", gorm.Expr("now()")).Error
+		UpdateColumn("archived_at", gorm.Expr("now()")).Error
 }
 
 // Seen stamps seen_at on the user's rows the panel showed (kept for the
@@ -340,7 +350,7 @@ func Seen(db *gorm.DB, userID uint, ids []uint) error {
 		return nil
 	}
 	return db.Model(&models.Notification{}).
-		Where("user_id = ? AND id IN ? AND seen_at IS NULL", userID, ids).Update("seen_at", gorm.Expr("now()")).Error
+		Where("user_id = ? AND id IN ? AND seen_at IS NULL", userID, ids).UpdateColumn("seen_at", gorm.Expr("now()")).Error
 }
 
 // Prune is the daily retention cleanup (DEC-45). Open tasks are kept

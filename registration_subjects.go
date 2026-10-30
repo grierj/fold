@@ -112,14 +112,7 @@ func (a *App) householdClock(now time.Time) time.Time {
 // eligibleRegistration reads current eligibility without taking earlier-order
 // holder/household locks after the caller has locked an occurrence.
 func (a *App) eligibleRegistration(tx *gorm.DB, r models.Registration, ev *models.Event, now time.Time) bool {
-	return a.eligibleRegistrationForHolder(tx, r, ev, now, nil)
-}
-
-func (a *App) eligibleRegistrationForHolder(tx *gorm.DB, r models.Registration, ev *models.Event, now time.Time, override *models.User) bool {
 	f := a.loadSubjectFacts(tx, []models.Registration{r}, nil)
-	if override != nil {
-		f.users[override.ID] = override
-	}
 	f.clock = func() time.Time { return a.householdClock(now) }
 	return f.eligible(a, tx, r, ev, map[uint]bool{})
 }

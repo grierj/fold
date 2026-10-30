@@ -313,6 +313,22 @@ func TestGroupHasRoom(t *testing.T) {
 	}
 }
 
+func TestCanAddToGroup(t *testing.T) {
+	for _, tc := range []struct {
+		actor  *Person
+		status string
+		want   bool
+	}{
+		{adult, GroupActive, true}, {adult, GroupPending, false}, {adult, GroupArchived, false},
+		{admin, GroupActive, true}, {admin, GroupPending, true}, {admin, GroupArchived, true},
+		{nil, GroupActive, true}, {nil, GroupPending, false},
+	} {
+		if got := CanAddToGroup(tc.actor, tc.status); got != tc.want {
+			t.Errorf("CanAddToGroup(%+v, %q) = %v, want %v", tc.actor, tc.status, got, tc.want)
+		}
+	}
+}
+
 // Section 6, accounts doors (DEC-4, DEC-44, M1.3): a member's
 // invite-a-friend always waits for an admin; only admins decide; inline
 // approval from the bell is for adult requests with no warnings only.
@@ -1109,5 +1125,34 @@ func TestCanChooseHouseholdGuardian(t *testing.T) {
 				t.Fatalf("got %t, want %t", got, tt.want)
 			}
 		})
+	}
+}
+
+// Leader-only powers count only for groups an admin has approved.
+func TestLeadsApprovedGroup(t *testing.T) {
+	cases := []struct {
+		name     string
+		statuses []string
+		want     bool
+	}{
+		{"no groups", nil, false},
+		{"active group", []string{GroupActive}, true},
+		{"pending group only", []string{GroupPending}, false},
+		{"archived (rejected) group only", []string{GroupArchived}, false},
+		{"pending and archived", []string{GroupPending, GroupArchived}, false},
+		{"pending and active", []string{GroupPending, GroupActive}, true},
+	}
+	for _, c := range cases {
+		if got := LeadsApprovedGroup(c.statuses); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestCanInviteIntoGroup(t *testing.T) {
+	for status, want := range map[string]bool{GroupActive: true, GroupPending: false, GroupArchived: false, "": false} {
+		if got := CanInviteIntoGroup(status); got != want {
+			t.Errorf("status %q: got %v, want %v", status, got, want)
+		}
 	}
 }

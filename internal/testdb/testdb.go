@@ -88,7 +88,9 @@ func Fresh(t testing.TB, migrated bool) string {
 	return name
 }
 
-// URL returns DATABASE_URL pointed at database name.
+// URL returns DATABASE_URL pointed at database name. Its sessions commit
+// without waiting for the WAL flush: test data never needs to survive a
+// crash, and most test time is otherwise spent waiting on commits.
 func URL(name string) (string, error) {
 	base := os.Getenv("DATABASE_URL")
 	if base == "" {
@@ -99,6 +101,9 @@ func URL(name string) (string, error) {
 		return "", fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
 	u.Path = "/" + name
+	q := u.Query()
+	q.Set("synchronous_commit", "off")
+	u.RawQuery = q.Encode()
 	return u.String(), nil
 }
 
@@ -228,16 +233,55 @@ func dropDB(name string) error {
 	return err
 }
 
+var (
+	resetOnce sync.Once
+	resetSQL  string // fast path: delete rows and rewind sequences
+	truncSQL  string // fallback when the role cannot skip triggers
+	resetErr  error
+)
+
+// truncate empties every model table and restarts its ids. TRUNCATE of
+// every table costs about a quarter second per test, so it deletes the
+// (few) rows instead, with triggers and foreign keys off for the
+// transaction (session_replication_role needs a superuser, which the dev
+// and CI databases are; other roles fall back to TRUNCATE).
 func truncate(db *gorm.DB) error {
+	resetOnce.Do(func() { resetSQL, truncSQL, resetErr = resetStatements(db) })
+	if resetErr != nil {
+		return resetErr
+	}
+	if err := db.Transaction(func(tx *gorm.DB) error { return tx.Exec(resetSQL).Error }); err == nil {
+		return nil
+	}
+	return db.Exec(truncSQL).Error
+}
+
+func resetStatements(db *gorm.DB) (string, string, error) {
 	tables := make([]string, 0, len(models.All()))
 	for _, m := range models.All() {
 		stmt := &gorm.Statement{DB: db}
 		if err := stmt.Parse(m); err != nil {
-			return err
+			return "", "", err
 		}
 		tables = append(tables, stmt.Schema.Table)
 	}
-	return db.Exec("TRUNCATE TABLE " + strings.Join(tables, ", ") + " RESTART IDENTITY CASCADE").Error
+	var seqs []string
+	if err := db.Raw(`SELECT pg_get_serial_sequence(c.table_name, c.column_name)
+		FROM information_schema.columns c
+		WHERE c.table_schema = 'public' AND c.table_name IN ?
+		  AND pg_get_serial_sequence(c.table_name, c.column_name) IS NOT NULL`, tables).
+		Scan(&seqs).Error; err != nil {
+		return "", "", err
+	}
+	var b strings.Builder
+	b.WriteString("SET LOCAL session_replication_role = replica;")
+	for _, t := range tables {
+		b.WriteString(" DELETE FROM " + t + ";")
+	}
+	for _, s := range seqs {
+		b.WriteString(" SELECT setval('" + s + "', 1, false);")
+	}
+	return b.String(), "TRUNCATE TABLE " + strings.Join(tables, ", ") + " RESTART IDENTITY CASCADE", nil
 }
 
 func migrationsHash() string {

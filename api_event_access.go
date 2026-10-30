@@ -247,7 +247,12 @@ func (a *App) apiListOpenEvents(c *gin.Context) {
 	me := apiUser(c)
 	now := time.Now().UTC()
 	from, to, start := upcomingWindow(now)
-	c.JSON(http.StatusOK, gin.H{"events": a.occurrencesForEvents(a.openEventIDs(me), from, to, &start, me)})
+	listed, err := a.occurrencesForEventsErr(a.openEventIDs(me), from, to, &start, me)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load events")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"events": listed})
 }
 
 func (a *App) apiGetEvent(c *gin.Context) {
@@ -258,9 +263,14 @@ func (a *App) apiGetEvent(c *gin.Context) {
 	now := time.Now().UTC()
 	from, to, start := upcomingWindow(now)
 	manage, setVis := a.eventPermissions(apiUser(c), f)
+	listed, err := a.occurrencesForEventsErr([]uint{ev.ID}, from, to, &start, apiUser(c))
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load events")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"event":            a.presentEvent(ev, apiUser(c), f),
-		"occurrences":      a.occurrencesForEvents([]uint{ev.ID}, from, to, &start, apiUser(c)),
+		"occurrences":      listed,
 		"canManage":        manage,
 		"canSetVisibility": setVis,
 	})
@@ -318,7 +328,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 	if !ok {
 		return
 	}
-	spec, ok := a.specFrom(c, body.eventBody, nil, true)
+	spec, _, ok := a.specFrom(c, body.eventBody, nil, true)
 	if !ok {
 		return
 	}
@@ -355,6 +365,10 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 			if err := tx.Create(&models.EventHost{EventID: ev.ID, UserID: id, AddedBy: creator.ID}).Error; err != nil {
 				return err
 			}
+		}
+		if err := audit.Write(tx, audit.Entry{Actor: &creator.ID, Action: audit.EventCreated, TargetType: "event", TargetID: ev.ID,
+			Meta: map[string]any{"churchWide": true, "visibility": ev.Visibility, "hostIds": hostIDs}, IP: c.ClientIP()}); err != nil {
+			return err
 		}
 		return events.Ensure(tx, &ev, time.Now().UTC())
 	})
@@ -535,8 +549,19 @@ func (a *App) apiAddEventHost(c *gin.Context) {
 		jsonError(c, code, msg)
 		return
 	}
-	row := models.EventHost{EventID: ev.ID, UserID: target.ID, AddedBy: apiUser(c).ID}
-	if err := a.DB.Where("event_id = ? AND user_id = ?", ev.ID, target.ID).FirstOrCreate(&row).Error; err != nil {
+	me := apiUser(c)
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		var have int64
+		if err := tx.Model(&models.EventHost{}).Where("event_id = ? AND user_id = ?", ev.ID, target.ID).Count(&have).Error; err != nil || have > 0 {
+			return err // already a host: nothing changes, so nothing is audited
+		}
+		if err := tx.Create(&models.EventHost{EventID: ev.ID, UserID: target.ID, AddedBy: me.ID}).Error; err != nil {
+			return err
+		}
+		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.EventHostAdded, TargetType: "event", TargetID: ev.ID,
+			Meta: map[string]any{"userId": target.ID}, IP: c.ClientIP()})
+	})
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not add host")
 		return
 	}
@@ -572,7 +597,12 @@ func (a *App) apiRemoveEventHost(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, "a church-wide event needs at least one host")
 			return errLastHost
 		}
-		return tx.Where("event_id = ? AND user_id = ?", ev.ID, uid).Delete(&models.EventHost{}).Error
+		if err := tx.Where("event_id = ? AND user_id = ?", ev.ID, uid).Delete(&models.EventHost{}).Error; err != nil {
+			return err
+		}
+		me := apiUser(c)
+		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.EventHostRemoved, TargetType: "event", TargetID: ev.ID,
+			Meta: map[string]any{"userId": uid}, IP: c.ClientIP()})
 	})
 	if err == errHostGone || err == errLastHost {
 		return

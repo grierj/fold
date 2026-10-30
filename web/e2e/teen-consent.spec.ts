@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
-import { apiAs, attemptPendingSignIn, fromMore, PASSWORD, signIn } from "./helpers";
+import { apiAs, attemptPendingSignIn, fromMore, PASSWORD, signIn, signInTo, soon } from "./helpers";
 // @ts-expect-error shared browser measurement is plain JavaScript
 import { measure } from "./ui-measure.mjs";
 
@@ -30,11 +30,10 @@ test("admin scoped consent enables sign-in, revokes it, and keeps history", asyn
   const teenPage = await teenContext.newPage();
   try {
     await attemptPendingSignIn(teenPage, "consent-casey");
-    await signIn(page, "grier");
-    await page.goto("/admin?tab=users");
+    await signInTo(page, "grier", "/admin?tab=users");
     await fromMore(page, "Manage consent", "More for Consent Casey");
     const panel = page.locator('[aria-label="Consent for Consent Casey"]');
-    await panel.getByRole("button", { name: "Grant consent" }).click();
+    await (await soon(panel.getByRole("button", { name: "Grant consent" }))).click();
     await expect(panel.getByLabel("Consent evidence")).toBeFocused();
     await shoot(page, "consent-evidence-required");
     await panel.getByRole("radio", { name: "SMS", exact: true }).click();
@@ -61,7 +60,7 @@ test("admin scoped consent enables sign-in, revokes it, and keeps history", asyn
     await shoot(page, "consent-revoked");
     await page.reload();
     await fromMore(page, "Manage consent", "More for Consent Casey");
-    await panel.getByText("Consent history (3)").click();
+    await (await soon(panel.getByText("Consent history (3)"))).click();
     await expect(panel.getByText("Parent signed SMS form at church office")).toBeVisible();
   } finally { await teenContext.close(); }
 });
@@ -69,14 +68,13 @@ test("admin scoped consent enables sign-in, revokes it, and keeps history", asyn
 test("admin approves a teen request and records account consent together", async ({ page }) => {
   test.setTimeout(process.env.SCREENS_DIR ? 90_000 : 30_000);
   await page.goto("/join");
-  await page.getByLabel("13 to 17", { exact: true }).click();
+  await (await soon(page.getByLabel("13 to 17", { exact: true }))).click();
   await page.getByLabel("Birth date").fill(birthDate);
   await page.getByLabel("Full name").fill("Approval Jordan");
   await page.getByLabel("Email", { exact: true }).fill("consent-jordan@example.com");
   await page.getByRole("button", { name: "Request an account" }).click();
   await expect(page.getByText(/check your email/i)).toBeVisible();
-  await signIn(page, "grier");
-  await page.goto("/admin");
+  await signInTo(page, "grier", "/admin");
   const card = page.getByText("Approval Jordan", { exact: true }).locator("xpath=ancestor::div[contains(@class,'rounded-lg')][1]");
   await card.getByRole("checkbox", { name: /Grant account consent with approval/ }).check();
   await card.getByRole("button", { name: "Approve", exact: true }).click();
@@ -88,7 +86,7 @@ test("admin approves a teen request and records account consent together", async
   await page.goto("/admin?tab=users");
   await fromMore(page, "Manage consent", "More for Approval Jordan");
   const panel = page.locator('[aria-label="Consent for Approval Jordan"]');
-  await expect(panel.getByText("They still need to set a password before they can sign in.")).toBeVisible();
+  await expect(await soon(panel.getByText("They still need to set a password before they can sign in."))).toBeVisible();
   await panel.getByText("Consent history (1)").click();
   await expect(panel.getByText("Signed parent form received today")).toBeVisible();
 });

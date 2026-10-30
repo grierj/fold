@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -61,8 +62,20 @@ func uintToStringTest(u uint) string {
 }
 
 // TestMain gives this package one migrated Postgres database and drops it
-// afterwards (internal/testdb).
-func TestMain(m *testing.M) { os.Exit(testdb.Main(m)) }
+// afterwards (internal/testdb). Password hashes use the cheapest bcrypt cost;
+// tests that measure timing call realPasswordCost.
+func TestMain(m *testing.M) {
+	models.PasswordCost = bcrypt.MinCost
+	os.Exit(testdb.Main(m))
+}
+
+// realPasswordCost restores production bcrypt cost for one test, so timing
+// checks see real work. Call it before creating users.
+func realPasswordCost(t *testing.T) {
+	t.Helper()
+	models.PasswordCost = bcrypt.DefaultCost
+	t.Cleanup(func() { models.PasswordCost = bcrypt.MinCost })
+}
 
 // testApp builds an App for handler tests on the package's Postgres
 // database, emptied before each test. Tests in this package do not call

@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Profile as ProfileApi, ApiError } from "../api";
+import { Profile as ProfileApi } from "../api";
 import { useAuth } from "../auth";
 import { ButtonLink } from "../components/ui/Button";
 
@@ -12,20 +12,21 @@ export function VerifyEmail() {
   const { refresh } = useAuth();
   const [state, setState] = useState<"working" | "done" | "error">("working");
 
+  // The token is single-use: redeem it once per token, even when StrictMode
+  // runs this effect twice.
+  const redeemed = useRef<string | null>(null);
+
   useEffect(() => {
     if (!token) {
       setState("error");
       return;
     }
+    if (redeemed.current === token) return;
+    redeemed.current = token;
     ProfileApi.verifyEmail(token)
       .then(() => refresh())
       .then(() => setState("done"))
-      .catch((e: unknown) => {
-        if (!(e instanceof ApiError && e.status === 400)) {
-          // fall through to the generic error screen
-        }
-        setState("error");
-      });
+      .catch(() => setState("error"));
   }, [token, refresh]);
 
   return (

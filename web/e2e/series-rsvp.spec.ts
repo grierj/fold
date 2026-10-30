@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type APIRequestContext, type Page, type Request, type Route } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { apiAs, signIn } from "./helpers";
+import { apiAs, signInTo } from "./helpers";
 import { formatCalendarDay } from "../src/lib/when";
 // @ts-expect-error plain JS measurement shared with verify-ui
 import { measure } from "./ui-measure.mjs";
@@ -143,8 +143,7 @@ test("all three series scopes submit, keyboard focus is contained, bulk Can't go
   const event = await createEvent(request, "Series scope browser proof", 5, "FREQ=WEEKLY;COUNT=4");
 
   await page.setViewportSize({ width: 390, height: 900 });
-  await signIn(page, "sam");
-  await page.goto(`/events/${event.id}`);
+  await signInTo(page, "sam", `/events/${event.id}`);
   await expect(answerGroups(page)).toHaveCount(4);
 
   const firstGoing = answerGroups(page).first().getByRole("button", { name: "Going" });
@@ -209,8 +208,7 @@ test("all three series scopes submit, keyboard focus is contained, bulk Can't go
   await capture(page, "series-bulk-cant-go-result");
 
   const single = await createEvent(request, "Single date bypass browser proof", 8, "");
-  await signIn(page, "sam");
-  await page.goto(`/events/${single.id}`);
+  await signInTo(page, "sam", `/events/${single.id}`);
   await answerGroups(page).getByRole("button", { name: "Maybe" }).click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect(answerGroups(page).getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-pressed", "true");
@@ -233,8 +231,7 @@ test("non-household sibling fields refresh after a series answer and Undo withou
   }
 
   await page.setViewportSize({ width: 390, height: 900 });
-  await signIn(page, "sam");
-  await page.goto(`/events/${event.id}`);
+  await signInTo(page, "sam", `/events/${event.id}`);
   await expect(page.getByRole("form", { name: "Household answers" })).toHaveCount(0);
   await expect(answerGroups(page)).toHaveCount(2);
   const cards = page.locator(".bg-surface.rounded-lg.border-border");
@@ -310,8 +307,7 @@ test("page-wide mutation serialization blocks sibling saves while committed Appl
       guestCount: 0, childcareCount: 0, childcareAgesNote: "",
     });
   }
-  await signIn(page, "sam");
-  await page.goto(`/events/${solo.id}`);
+  await signInTo(page, "sam", `/events/${solo.id}`);
   await expect(answerGroups(page)).toHaveCount(2);
   const cards = page.locator(".bg-surface.rounded-lg.border-border");
   const firstCard = cards.first();
@@ -360,8 +356,7 @@ test("page-wide mutation serialization blocks sibling saves while committed Appl
   const household = await createEvent(request, "Held household Undo serialization proof", 29, "FREQ=WEEKLY;COUNT=2");
   const parent = await apiAs(request, "household-parent");
   const householdDetail = await parent("GET", `/events/${household.id}`) as { occurrences: { date: string }[] };
-  await signIn(page, "household-parent");
-  await page.goto(`/events/${household.id}`);
+  await signInTo(page, "household-parent", `/events/${household.id}`);
   const forms = page.getByRole("form", { name: "Household answers" });
   await expect(forms).toHaveCount(2);
   const firstForm = forms.first();
@@ -425,8 +420,7 @@ test("Apply and Undo publish authoritative sibling state before delayed parent G
     date: detail.occurrences[1].date, status: "going", attendanceMode: "in_person",
     guestCount: 0, childcareCount: 0, childcareAgesNote: "",
   });
-  await signIn(page, "sam");
-  await page.goto(`/events/${soloApply.id}`);
+  await signInTo(page, "sam", `/events/${soloApply.id}`);
   await expect(answerGroups(page)).toHaveCount(2);
   let cards = page.locator(".bg-surface.rounded-lg.border-border");
   let firstCard = cards.first();
@@ -453,8 +447,7 @@ test("Apply and Undo publish authoritative sibling state before delayed parent G
   await expect(siblingCard.getByRole("radio", { name: "Remote" })).toBeChecked();
 
   const soloUndo = await createEvent(request, "Solo delayed Undo proof", 33, "FREQ=WEEKLY;COUNT=2");
-  await signIn(page, "sam");
-  await page.goto(`/events/${soloUndo.id}`);
+  await signInTo(page, "sam", `/events/${soloUndo.id}`);
   await expect(answerGroups(page)).toHaveCount(2);
   await page.getByRole("button", { name: "Maybe for all" }).first().click();
   await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
@@ -481,8 +474,7 @@ test("Apply and Undo publish authoritative sibling state before delayed parent G
     guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10,
     childcareAvailable: true, childcareCapacity: 10,
   });
-  await signIn(page, "household-parent");
-  await page.goto(`/events/${householdApply.id}`);
+  await signInTo(page, "household-parent", `/events/${householdApply.id}`);
   let forms = page.getByRole("form", { name: "Household answers" });
   await expect(forms).toHaveCount(2);
   let firstForm = forms.first();
@@ -520,8 +512,7 @@ test("Apply and Undo publish authoritative sibling state before delayed parent G
     guestsAllowed: 2, remoteAvailable: true, remoteCapacity: 10,
     childcareAvailable: true, childcareCapacity: 10,
   });
-  await signIn(page, "household-parent");
-  await page.goto(`/events/${householdUndo.id}`);
+  await signInTo(page, "household-parent", `/events/${householdUndo.id}`);
   forms = page.getByRole("form", { name: "Household answers" });
   await expect(forms).toHaveCount(2);
   firstForm = forms.first();
@@ -564,8 +555,7 @@ test("a household user keeps one-date drafts while their own answer uses every s
   });
 
   await page.setViewportSize({ width: 390, height: 900 });
-  await signIn(page, "household-parent");
-  await page.goto(`/events/${event.id}`);
+  await signInTo(page, "household-parent", `/events/${event.id}`);
   const forms = page.getByRole("form", { name: "Household answers" });
   await expect(forms).toHaveCount(4);
   const first = forms.first();
@@ -653,8 +643,7 @@ test("unrelated household refreshes preserve drafts and a no-op actor bulk refre
   });
 
   await page.setViewportSize({ width: 390, height: 900 });
-  await signIn(page, "household-parent");
-  await page.goto(`/events/${event.id}`);
+  await signInTo(page, "household-parent", `/events/${event.id}`);
   const forms = page.getByRole("form", { name: "Household answers" });
   await expect(forms).toHaveCount(2);
   const first = forms.first();
@@ -709,8 +698,7 @@ test("terminal Undo after authority loss refreshes away protected event details"
     tzid: "UTC", recurrenceRule: "FREQ=WEEKLY;COUNT=2", visibility: "invite_only",
   }) as { event: { id: number } };
 
-  await signIn(page, "sam");
-  await page.goto(`/events/${event.id}`);
+  await signInTo(page, "sam", `/events/${event.id}`);
   await page.getByRole("button", { name: "Maybe for all" }).first().click();
   await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
 
@@ -748,8 +736,7 @@ test("mixed results, Undo seat loss, and Undo expiry are visible in the real bro
   await answerDate(request, "lee", mixed.id, dates[1].date, "going");
 
   await page.setViewportSize({ width: 390, height: 900 });
-  await signIn(page, "sam");
-  await page.goto(`/events/${mixed.id}`);
+  await signInTo(page, "sam", `/events/${mixed.id}`);
   await answerGroups(page).first().getByRole("button", { name: "Going" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
   const mixedStatus = page.getByRole("status").filter({ hasText: /Going to 1 date/ });
@@ -766,8 +753,7 @@ test("mixed results, Undo seat loss, and Undo expiry are visible in the real bro
   const seatDate = (await eventDates(request, seatLoss.id))[0].date;
   await answerDate(request, "sam", seatLoss.id, seatDate, "going");
   await answerDate(request, "lee", seatLoss.id, seatDate, "going");
-  await signIn(page, "sam");
-  await page.goto(`/events/${seatLoss.id}`);
+  await signInTo(page, "sam", `/events/${seatLoss.id}`);
   await answerGroups(page).getByRole("button", { name: "Maybe" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
   await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
@@ -780,13 +766,16 @@ test("mixed results, Undo seat loss, and Undo expiry are visible in the real bro
   await capture(page, "series-undo-seat-loss-result");
 
   const expiry = await createEvent(request, "Undo expiry browser proof", 24, "FREQ=WEEKLY;COUNT=1");
-  await signIn(page, "sam");
-  await page.goto(`/events/${expiry.id}`);
+  // The Undo window is a client setTimeout from the server's undoExpiresAt (RsvpButtons.tsx), so a fake clock
+  // that jumps past it proves the same expiry without waiting 10 real seconds.
+  await page.clock.install();
+  await signInTo(page, "sam", `/events/${expiry.id}`);
   await answerGroups(page).getByRole("button", { name: "Maybe" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
   await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
   await capture(page, "series-undo-available-result");
-  await expect(page.getByRole("status")).toContainText("The 10-second Undo time has ended. You can change your answers again from the event.", { timeout: 12_000 });
+  await page.clock.fastForward(11_000);
+  await expect(page.getByRole("status")).toContainText("The 10-second Undo time has ended. You can change your answers again from the event.");
   await expect(page.getByRole("button", { name: "Undo" })).toHaveCount(0);
   await capture(page, "series-undo-expired-result");
 

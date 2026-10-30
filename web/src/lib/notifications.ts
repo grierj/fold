@@ -19,7 +19,7 @@ const POLL_MS = 60_000;
 // useBadge polls GET /notifications/badge every 60 s while the tab is
 // visible, and refetches on focus, on navigation (refreshKey), when coming
 // back online, and after any change. It pauses while the tab is hidden.
-export function useBadge(refreshKey: string): Badge & { loaded: boolean } {
+export function useBadge(refreshKey: string, enabled = true): Badge & { loaded: boolean } {
   const [badge, setBadge] = useState<Badge & { loaded: boolean }>({ unread: 0, waiting: 0, loaded: false });
   const etag = useRef("");
   const load = useCallback(async () => {
@@ -36,10 +36,11 @@ export function useBadge(refreshKey: string): Badge & { loaded: boolean } {
   }, []);
 
   useEffect(() => {
-    load();
-  }, [load, refreshKey]);
+    if (enabled) load();
+  }, [load, refreshKey, enabled]);
 
   useEffect(() => {
+    if (!enabled) return;
     const onVisible = () => {
       if (document.visibilityState === "visible") load();
     };
@@ -55,7 +56,7 @@ export function useBadge(refreshKey: string): Badge & { loaded: boolean } {
       document.removeEventListener("visibilitychange", onVisible);
       clearInterval(t);
     };
-  }, [load]);
+  }, [load, enabled]);
   return badge;
 }
 
@@ -108,9 +109,15 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
   const [busy, setBusy] = useState<Record<number, boolean>>({});
   const [handled, setHandled] = useState<Record<number, string>>({});
 
+  // Each reload (and each filter change) starts a new revision; a response
+  // from an older revision is dropped so it can't overwrite newer rows.
+  const rev = useRef(0);
+
   const reload = useCallback(async () => {
+    const mine = ++rev.current;
     try {
       const f = await Api.list(filter);
+      if (mine !== rev.current) return;
       setState({ waiting: f.waiting, waitingTotal: f.waitingTotal, items: f.notifications, next: f.next });
       setError(false);
       setLoadedAt(new Date());
@@ -118,9 +125,9 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
         Api.seen([...f.waiting, ...f.notifications].map((n) => n.id)).catch(() => {});
       }
     } catch {
-      setError(true);
+      if (mine === rev.current) setError(true);
     } finally {
-      setLoading(false);
+      if (mine === rev.current) setLoading(false);
     }
   }, [filter]);
 
@@ -137,17 +144,20 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
       window.removeEventListener(CHANGED, reload);
       window.removeEventListener("online", on);
       window.removeEventListener("offline", off);
+      rev.current++;
     };
   }, [reload, enabled]);
 
   const showMore = useCallback(async () => {
     if (!state.next) return;
+    const mine = rev.current;
     setLoadingMore(true);
     try {
       const f = await Api.list(filter, state.next);
+      if (mine !== rev.current) return;
       setState((s) => ({ ...s, items: [...s.items, ...f.notifications], next: f.next }));
     } catch {
-      setError(true);
+      if (mine === rev.current) setError(true);
     } finally {
       setLoadingMore(false);
     }
@@ -178,7 +188,12 @@ export function useFeed(filter: NotificationFilter, enabled = true): Feed {
   }, []);
 
   const readAll = useCallback(async () => {
-    await Api.readAll();
+    try {
+      await Api.readAll();
+    } catch {
+      // Like the archive actions: the rows stay as they were, so nothing
+      // changed on screen. (The "Couldn't refresh" line is about reloads.)
+    }
     notificationsChanged();
   }, []);
 

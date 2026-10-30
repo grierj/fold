@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { apiAs, email, fromMore, PASSWORD, signIn } from "./helpers";
+import { apiAs, email, fromMore, PASSWORD, signIn, signInTo, soon } from "./helpers";
 // @ts-expect-error plain JS measurement shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 import type { EventOccurrence } from "../src/types";
@@ -76,9 +76,9 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     if (teen) {
       await page.goto("/admin?tab=groups");
       const card = page.locator("div.bg-surface").filter({ has: page.getByRole("link", { name: group.name, exact: true }) });
-      await card.getByRole("button", { name: "Manage members", exact: true }).click();
+      await (await soon(card.getByRole("button", { name: "Manage members", exact: true }))).click();
       await card.getByRole("combobox", { name: "Find a person by name" }).fill(name);
-      await card.getByRole("option", { name: new RegExp(name) }).click();
+      await (await soon(card.getByRole("option", { name: new RegExp(name) }))).click();
       await expect(card.getByRole("group", { name: "Role" })).toHaveCount(0);
       await card.getByRole("button", { name: "Ask to add", exact: true }).click();
       await expect(card.getByRole("button", { name: "Send ask to add" })).toBeVisible();
@@ -87,7 +87,7 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     await page.goto(`/events/${event.id}`);
     await fromMore(page, "Manage sign-ups", /More for/);
     const picker = page.getByRole("combobox", { name: "Find a person by name" });
-    await picker.fill(name); await expect(page.getByRole("option", { name: new RegExp(name) })).toBeVisible();
+    await (await soon(picker)).fill(name); await expect(await soon(page.getByRole("option", { name: new RegExp(name) }))).toBeVisible();
     await picker.press("ArrowDown"); await picker.press("Enter");
     if (!teen) {
       await page.getByRole("button", { name: "Add", exact: true }).click();
@@ -98,18 +98,18 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     await page.getByRole("link", { name: "View ask", exact: true }).click();
     const askPath = new URL(page.url()).pathname;
     if (teen) {
-      await page.getByRole("button", { name: "Approve adding" }).click();
+      await (await soon(page.getByRole("button", { name: "Approve adding" }))).click();
       await expect(page.getByText("Not added yet", { exact: true })).toBeVisible();
     }
-    await signIn(page, login); await page.goto("/notifications");
+    await signInTo(page, login, "/notifications");
     await page.getByRole("link", { name: /Review an ask to add/ }).click();
     await expect(page).toHaveURL(new RegExp(askPath + "$"));
-    await page.getByRole("button", { name: "Approve adding" }).focus(); await page.keyboard.press("Enter");
+    await (await soon(page.getByRole("button", { name: "Approve adding" }))).focus(); await page.keyboard.press("Enter");
     await expect(page.getByText("Added", { exact: true })).toBeVisible();
     await page.goto("/notifications");
-    await page.getByRole("link", { name: /You have a date invitation/ }).click();
+    await (await soon(page.getByRole("link", { name: /You have a date invitation/ }))).click();
     await expect(page).toHaveURL(new RegExp(path + "$"));
-    await expect(page.getByText("Your answer: Going", { exact: true })).toBeVisible();
+    await expect(await soon(page.getByText("Your answer: Going", { exact: true }))).toBeVisible();
     const exact = await (await page.request.get(`/api/v1${path}`)).json();
     for (const key of ["groupId", "groupName", "hostedBy", "hosts", "attendees", "removedRegistrations", "recurrenceRule", "seriesTitle", "description", "canManage", "myHouseholdRegistrations", "myChildcareCount", "myChildcareAgesNote"]) expect(exact.occurrence).not.toHaveProperty(key);
     expect(exact.occurrence.canSeeVideo).toBe(true); expect(exact.occurrence.videoUrl).toBe("https://example.com/exact-private-call");
@@ -123,25 +123,25 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
     const person = search.people.find((row: { displayName: string }) => row.displayName === name);
     const second = await admin("POST", "/add-requests", { selectionId: person.selectionId, contextType: "event", contextId: event.id, occurrenceId: other.id, childcareCount: 1, childcareAgesNote: "Age 5, keep this care request" });
     if (teen) await admin("POST", `/add-requests/${second.request.id}/decision`, { party: "admin", decision: "approved" });
-    await page.goto(`/add-requests/${second.request.id}`); await page.getByRole("button", { name: "Approve adding" }).click();
+    await page.goto(`/add-requests/${second.request.id}`); await (await soon(page.getByRole("button", { name: "Approve adding" }))).click();
     await expect(page.getByText("Added", { exact: true })).toBeVisible();
     // The sanitized DTO cannot edit care. A normal own save must omit care
     // rather than clear the accepted request's options with invented defaults.
     await page.goto(otherPath);
-    await page.getByRole("button", { name: "Going", exact: true }).click();
+    await (await soon(page.getByRole("button", { name: "Going", exact: true }))).click();
     await expect(page.getByText("Your answer: Going", { exact: true })).toBeVisible();
     const retained = await admin("GET", `/events/${event.id}`);
     const retainedCare = retained.occurrences[1].attendees.find((a: { userId: number }) => a.userId === user.id);
     expect(retainedCare.childcareCount).toBe(1); expect(retainedCare.childcareAgesNote).toBe("Age 5, keep this care request");
     save(`${scenario}-care-preserved`, retainedCare);
-    await page.goto("/calendar"); await page.getByRole("button", { name: "Just mine", exact: true }).click();
+    await page.goto("/calendar"); await (await soon(page.getByRole("button", { name: "Just mine", exact: true }))).click();
     const selectedLink = page.locator(`main a[href="${path}"]`);
     await expect(selectedLink).toBeVisible(); await expect(page.locator(`main a[href="${otherPath}"]`)).toBeVisible();
     const calendar = await (await page.request.get(`/api/v1/calendar?from=${selected.date}&to=${sibling.date}&tz=UTC&mine=1`)).json();
     save(`${scenario}-calendar`, calendar);
     for (const hidden of [`/events/${event.id}`, `/groups/${group.id}`, `/events/${event.id}/dates/${sibling.date}`]) expect((await page.request.get(`/api/v1${hidden}`)).status()).toBe(404);
     await selectedLink.focus(); await page.keyboard.press("Enter");
-    await expect(page.getByText("Your answer: Going", { exact: true })).toBeVisible();
+    await expect(await soon(page.getByText("Your answer: Going", { exact: true }))).toBeVisible();
     // Own scoped RSVP, not household/proxy or ordinary RSVP. The real server
     // returns the current answer after each save; mode/guests are explicit.
     if (scenario === "adult-decline") {
@@ -170,21 +170,21 @@ for (const scenario of ["adult-decline", "adult-block", "teen-removal"] as const
 
     // Roster provenance comes only from the manager response, never source inference.
     const managerContext = await browser.newContext({ baseURL: test.info().project.use.baseURL });
-    const managerPage = await managerContext.newPage(); await signIn(managerPage, adminName); await managerPage.goto(`/events/${event.id}`);
+    const managerPage = await managerContext.newPage(); await signInTo(managerPage, adminName, `/events/${event.id}`);
     await fromMore(managerPage, "Manage sign-ups", /More for/);
-    await expect(managerPage.getByText("Added by a leader", { exact: true })).toBeVisible();
+    await expect(await soon(managerPage.getByText("Added by a leader", { exact: true }))).toBeVisible();
     await capture(managerPage, `${scenario}-manager-provenance`);
     await managerContext.close();
 
     if (teen) {
       const guardianContext = await browser.newContext({ baseURL: test.info().project.use.baseURL });
-      const guardianPage = await guardianContext.newPage(); await signIn(guardianPage, guardianLogin); await guardianPage.goto("/notifications");
+      const guardianPage = await guardianContext.newPage(); await signInTo(guardianPage, guardianLogin, "/notifications");
       const notices = await (await guardianPage.request.get("/api/v1/notifications")).json();
       const serialized = JSON.stringify(notices);
       expect(serialized).not.toContain(title); expect(serialized).not.toContain(group.name); expect(serialized).not.toContain("Invited date room");
       save("guardian-opaque-notices", notices);
       await guardianPage.getByRole("link", { name: /You have a date invitation/ }).first().click();
-      await expect(guardianPage.getByText("This date is not available", { exact: true })).toBeVisible();
+      await expect(await soon(guardianPage.getByText("This date is not available", { exact: true }))).toBeVisible();
       expect((await guardianPage.request.get(`/api/v1${path}`)).status()).toBe(404);
       await capture(guardianPage, "guardian-no-date-authority"); await guardianContext.close();
     }

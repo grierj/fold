@@ -35,20 +35,16 @@ type soleLedGroupJSON struct {
 // soleLedGroups lists the groups, in any status, where userID is the only
 // active leader.
 func soleLedGroups(db *gorm.DB, userID uint) ([]models.Group, error) {
+	// The count is leaderCount's as a correlated subquery: active leaders
+	// whose accounts still exist and aren't disabled.
 	var groups []models.Group
 	err := db.Where(`id IN (SELECT group_id FROM memberships
-		WHERE user_id = ? AND role = ? AND status = 'active')`, userID, models.MembershipLeader).
+		WHERE user_id = ? AND role = ? AND status = 'active')
+		AND (SELECT count(*) FROM memberships m `+listedUsers("m")+`
+		WHERE m.group_id = groups.id AND m.role = ? AND m.status = 'active') = 1`,
+		userID, models.MembershipLeader, models.MembershipLeader).
 		Order("name").Find(&groups).Error
-	if err != nil {
-		return nil, err
-	}
-	out := groups[:0]
-	for _, g := range groups {
-		if leaderCount(db, g.ID) == 1 {
-			out = append(out, g)
-		}
-	}
-	return out, nil
+	return groups, err
 }
 
 // successorCandidates: the group's other active members who may lead, then
@@ -58,10 +54,23 @@ func successorCandidates(db *gorm.DB, groupID, leaving uint) []successorJSON {
 	db.Where(`id <> ? AND status = 'active' AND (role = ? OR id IN (SELECT user_id FROM memberships
 		WHERE group_id = ? AND status = 'active'))`, leaving, models.RoleAdmin, groupID).
 		Order("name, id").Find(&users)
+	// One query for the candidates' memberships in this group, any status.
+	ids := make([]uint, len(users))
+	for i := range users {
+		ids[i] = users[i].ID
+	}
+	rels := map[uint]policy.Rel{}
+	if len(ids) > 0 {
+		var ms []models.Membership
+		db.Where("group_id = ? AND user_id IN ?", groupID, ids).Find(&ms)
+		for _, m := range ms {
+			rels[m.UserID] = membershipRel(m)
+		}
+	}
 	out := []successorJSON{}
 	for i := range users {
 		p := asPerson(&users[i])
-		if policy.CanBeSuccessor(p, relIn(db, users[i].ID, groupID)) {
+		if policy.CanBeSuccessor(p, rels[users[i].ID]) {
 			out = append(out, successorJSON{ID: users[i].ID, Name: users[i].PublicName(), Admin: p.Admin})
 		}
 	}
@@ -111,8 +120,16 @@ func handOffLeadership(c *gin.Context, tx *gorm.DB, leaving uint, successors map
 	for _, g := range groups {
 		sid := successors[strconv.FormatUint(uint64(g.ID), 10)]
 		var s models.User
-		if sid == 0 || sid == leaving || tx.First(&s, sid).Error != nil || s.Status != models.UserActive ||
-			!policy.CanBeSuccessor(asPerson(&s), relIn(tx, sid, g.ID)) {
+		valid := false
+		if sid != 0 && sid != leaving {
+			// Only a missing user is the caller's mistake (400).
+			if err := tx.First(&s, sid).Error; err == nil {
+				valid = s.Status == models.UserActive && policy.CanBeSuccessor(asPerson(&s), relIn(tx, sid, g.ID))
+			} else if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, err
+			}
+		}
+		if !valid {
 			missing = append(missing, soleLedGroupJSON{ID: g.ID, Name: g.Name, Status: g.Status,
 				Candidates: successorCandidates(tx, g.ID, leaving)})
 			continue

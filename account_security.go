@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"time"
 
 	"fold/models"
 
@@ -58,6 +59,46 @@ func lockAccountTokenUser(tx *gorm.DB, kind, raw string) (*models.User, error) {
 		return nil, errTokenInvalid
 	}
 	return &user, nil
+}
+
+// lockAndConsumeAccountToken is lockAccountTokenUser followed by the atomic
+// single-use claim, with one token lookup instead of two. The order is the
+// same: contact gate, then the user lock, then the claim. The claim is an
+// UPDATE ... WHERE used_at IS NULL, so a racing second redeemer gets
+// errTokenInvalid.
+func lockAndConsumeAccountToken(tx *gorm.DB, kind, raw string) (*models.User, *models.AccountToken, error) {
+	if err := lockContacts(tx); err != nil {
+		return nil, nil, err
+	}
+	var tok models.AccountToken
+	if err := tx.Where("kind = ? AND token_hash = ? AND used_at IS NULL AND expires_at > now()", kind, hashToken(raw)).First(&tok).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, errTokenInvalid
+		}
+		return nil, nil, err
+	}
+	var user models.User
+	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&user, tok.UserID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil, errTokenInvalid
+		}
+		return nil, nil, err
+	}
+	if user.Status == models.UserDisabled {
+		return nil, nil, errTokenInvalid
+	}
+	now := time.Now().UTC()
+	res := tx.Model(&models.AccountToken{}).
+		Where("id = ? AND used_at IS NULL AND expires_at > now()", tok.ID).
+		Update("used_at", now)
+	if res.Error != nil {
+		return nil, nil, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil, nil, errTokenInvalid // lost the race: someone else used it
+	}
+	tok.UsedAt = &now
+	return &user, &tok, nil
 }
 
 // prepareTokenPassword rejects bogus capabilities before paying bcrypt's cost,

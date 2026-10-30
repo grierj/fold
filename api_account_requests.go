@@ -125,18 +125,7 @@ func (a *App) accountRequestHit(ctx context.Context, ip string) (int, error) {
 // restarts and is shared by every replica. Public forms each use their
 // own key prefix, so one form's traffic never throttles another's.
 func (a *App) throttleHit(ctx context.Context, key string, window time.Duration) (int, error) {
-	var failures int
-	windowArg := fmt.Sprintf("%d seconds", int(window.Seconds()))
-	err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		return tx.Raw(`
-INSERT INTO login_throttles (key, failures, window_start) VALUES (?, 1, now())
-ON CONFLICT (key) DO UPDATE SET
-  failures = CASE WHEN login_throttles.window_start < now() - ?::interval
-                  THEN 1 ELSE login_throttles.failures + 1 END,
-  window_start = CASE WHEN login_throttles.window_start < now() - ?::interval
-                      THEN now() ELSE login_throttles.window_start END
-RETURNING failures`, key, windowArg, windowArg).Scan(&failures).Error
-	})
+	failures, _, err := countThrottleHit(a.DB.WithContext(ctx), key, window)
 	return failures, err
 }
 
@@ -220,7 +209,7 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 		// tells a prober the form is being watched: answer as usual and
 		// log it (DEC-52). Nothing is stored and nobody is emailed.
 		log.Printf("account request rate limited: ip=%s source=%s", c.ClientIP(), source)
-		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		a.answerAccountRequest(c, source)
 		return false
 	}
 	if ok, err := a.throttleAllow(ctx, "acctreq:site", publicSignupSiteLimit, time.Hour); err != nil || !ok {
@@ -260,7 +249,7 @@ func (a *App) storeAccountRequest(c *gin.Context, v validatedRequest, source str
 				}
 			})
 		}
-		c.JSON(http.StatusOK, gin.H{"message": signupThanks})
+		a.answerAccountRequest(c, source)
 		return false
 	}
 	var pending int64
@@ -703,8 +692,7 @@ func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "token and password are required")
 		return
 	}
-	if len(body.Password) < minPasswordLength {
-		jsonError(c, http.StatusBadRequest, "password must be at least 10 characters")
+	if !checkNewPassword(c, body.Password) {
 		return
 	}
 	var fresh models.User
@@ -712,16 +700,9 @@ func (a *App) apiConfirmAccountSetup(c *gin.Context) {
 	passwordHash, err := prepareTokenPassword(a.DB.WithContext(c.Request.Context()), models.TokenAccountSetup, body.Token, body.Password)
 	if err == nil {
 		err = a.DB.Transaction(func(tx *gorm.DB) error {
-			u, err := lockAccountTokenUser(tx, models.TokenAccountSetup, body.Token)
+			u, _, err := lockAndConsumeAccountToken(tx, models.TokenAccountSetup, body.Token)
 			if err != nil {
 				return err
-			}
-			tok, err := consumeAccountToken(tx, models.TokenAccountSetup, body.Token)
-			if err != nil {
-				return err
-			}
-			if tok.UserID != u.ID {
-				return errTokenInvalid
 			}
 			pendingConsent = u.Status == models.UserPendingConsent
 			if err := replacePasswordIn(tx, u, passwordHash); err != nil {
@@ -783,8 +764,10 @@ func (a *App) apiSetSelfSignup(c *gin.Context) {
 // lazily from the admin queue and daily from the ticker (5.5).
 func (a *App) expirePendingRequests() (int64, error) {
 	var ids []uint
-	a.DB.Model(&models.AccountRequest{}).
-		Where("status = ? AND expires_at <= now()", models.RequestPending).Pluck("id", &ids)
+	if err := a.DB.Model(&models.AccountRequest{}).
+		Where("status = ? AND expires_at <= now()", models.RequestPending).Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
 	var done int64
 	for _, id := range ids {
 		err := a.DB.Transaction(func(tx *gorm.DB) error {

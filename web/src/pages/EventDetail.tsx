@@ -30,6 +30,12 @@ const ManageRoster = lazy(() => import("../components/ManageRoster").then((modul
 
 export function EventDetail() {
   const { id } = useParams<{ id: string }>();
+  // Another event must never inherit the editor, feedback or pending loads.
+  return <EventDetailContent key={id} />;
+}
+
+function EventDetailContent() {
+  const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user, loading: authLoading, isAdmin } = useAuth();
   const { people, error: householdError, retry: retryHousehold } = useHousehold(user);

@@ -65,7 +65,7 @@ export function SetPassword() {
       <h1 className="text-3xl font-bold mb-6">Set your password</h1>
       <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
         {error && <FormError>{error}</FormError>}
-        <Field id="sp-password" label="Password" hint="Must be at least 10 characters.">
+        <Field id="sp-password" label="Password" hint="Must be at least 10 characters, and at most 72 bytes (accents and emoji take more).">
           <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" required />
         </Field>
         <Field id="sp-confirm" label="Confirm password" error={mismatch && "The passwords don't match."}>

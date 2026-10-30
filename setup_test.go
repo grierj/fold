@@ -271,3 +271,15 @@ func TestSetupCreateFailureOffersFocusedRecovery(t *testing.T) {
 		}
 	}
 }
+
+func TestSetupInputRejectsPasswordOver72Bytes(t *testing.T) {
+	in := validSetupInput()
+	in.Password, in.Confirm = strings.Repeat("a", 73), strings.Repeat("a", 73)
+	if got := in.fieldErrors(); len(got) != 1 || got["password"] == "" {
+		t.Fatalf("want only password, got %v", got)
+	}
+	in.Password, in.Confirm = strings.Repeat("a", 72), strings.Repeat("a", 72)
+	if got := in.fieldErrors(); len(got) != 0 {
+		t.Fatalf("72 bytes: %v", got)
+	}
+}

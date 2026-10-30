@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -206,8 +207,15 @@ func historyMetaID(key string) string {
 
 func contactHistoryQuery(tx *gorm.DB, f contactHistoryFilter) *gorm.DB {
 	pairs := tx.Where("1=0")
-	for action, target := range contactHistoryTargets {
-		pairs = pairs.Or("l.action = ? AND l.target_type = ?", action, target)
+	// Sorted, so the SQL text is the same on every request and pgx reuses the
+	// prepared statement.
+	actions := make([]string, 0, len(contactHistoryTargets))
+	for action := range contactHistoryTargets {
+		actions = append(actions, action)
+	}
+	sort.Strings(actions)
+	for _, action := range actions {
+		pairs = pairs.Or("l.action = ? AND l.target_type = ?", action, contactHistoryTargets[action])
 	}
 	pairs = pairs.Or("l.action = ? AND l.target_type = ?", audit.ContactRefused, "contact_endpoint").Or("l.action = ? AND l.target_type = ?", audit.AddRefused, "add_endpoint").Or("l.action = ? AND l.target_type = ?", audit.OccurrenceRefused, "occurrence_endpoint")
 	inner := tx.Table("audit_logs l").Select(`l.id, l.at, l.action, l.actor_id,

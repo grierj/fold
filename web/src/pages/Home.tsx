@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Events, Groups } from "../api";
 import type { EventOccurrence, GroupSummary } from "../types";
@@ -47,6 +47,9 @@ export function Home() {
   // without filters, so a link that opens with tags already selected still
   // offers all the others. Selected tags are always shown too.
   const [tagChoices, setTagChoices] = useState<string[]>([]);
+  // When the page opens with no tag selected, the first (unfiltered) group
+  // list doubles as the chip source, so it isn't fetched twice.
+  const choicesFromList = useRef(tagKey === "");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openEvents, setOpenEvents] = useState<EventOccurrence[]>([]);
@@ -82,6 +85,10 @@ export function Home() {
     const tags = tagKey ? tagKey.split("\u0000") : [];
     Groups.list(debounced, tags)
       .then(({ groups }) => {
+        if (choicesFromList.current && tags.length === 0 && debounced === "") {
+          choicesFromList.current = false;
+          setTagChoices(groups.flatMap((g) => g.tags));
+        }
         if (!alive) return;
         setGroups(groups);
       })
@@ -111,6 +118,7 @@ export function Home() {
   }, []);
 
   useEffect(() => {
+    if (choicesFromList.current) return;
     let alive = true;
     Groups.list()
       .then(({ groups }) => {

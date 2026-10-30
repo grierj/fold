@@ -1539,3 +1539,23 @@ func TestDepartureSnapshotClockBoundariesOnly(t *testing.T) {
 		t.Fatal("crossing the date end did not stale snapshot")
 	}
 }
+
+func TestDepartureLeaderMayRemoveDisabledAdminMember(t *testing.T) {
+	f := newDepartureTestFixture(t)
+	disabledAdmin := newTestUser(t, f.app, "departure disabled admin", "password1234", models.RoleAdmin)
+	addMember(t, f.app, disabledAdmin, f.group, models.MembershipMember)
+	if err := f.app.DB.Model(disabledAdmin).Update("status", models.UserDisabled).Error; err != nil {
+		t.Fatal(err)
+	}
+	previewPath := "/api/v1/groups/" + itoa(f.group.ID) + "/members/" + itoa(disabledAdmin.ID) + "/departure-preview"
+	removePath := "/api/v1/groups/" + itoa(f.group.ID) + "/members/" + itoa(disabledAdmin.ID) + "/departure"
+	// A disabled admin has no admin powers (asPerson), so a leader may remove
+	// them, and the confirm step must agree with the preview.
+	preview := getDeparturePreview(t, f.leaderC, previewPath, http.StatusOK)
+	if w := confirmDeparturePreview(t, f.leaderC, "POST", removePath, preview, nil, ""); w.Code != http.StatusOK {
+		t.Fatalf("leader confirming removal of a disabled admin: %d %s", w.Code, w.Body.String())
+	}
+	if got := membershipStatus(f.app, disabledAdmin, f.group); got != memberRemoved {
+		t.Fatalf("membership status=%q, want removed", got)
+	}
+}

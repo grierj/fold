@@ -30,6 +30,13 @@ func lockContacts(tx *gorm.DB) error {
 	return tx.Exec("SELECT pg_advisory_xact_lock(?)", contactLockID).Error
 }
 
+// lockContactsShared is the gate for pure reads: readers run together and wait
+// only for writers, who take the exclusive lock above on the same id. Use it
+// only where nothing but append-only rows (such as a refusal audit) is written.
+func lockContactsShared(tx *gorm.DB) error {
+	return tx.Exec("SELECT pg_advisory_xact_lock_shared(?)", contactLockID).Error
+}
+
 type contactChange struct {
 	UserID  uint
 	EventID uint

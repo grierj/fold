@@ -56,8 +56,16 @@ const (
 	// MemberAdded records an actual manager-initiated ordinary member addition.
 	MemberAdded = "membership.added"
 
-	// UserCreated: an admin created an account. Target is the new user.
+	// UserCreated: an admin created an account. Target is the new user. Meta has role.
 	UserCreated = "user.created"
+
+	// UserRoleChanged: an admin changed an account's site role (admin or
+	// member). Target is the user; meta has oldRole and newRole.
+	UserRoleChanged = "user.role_changed"
+
+	// UserEmailChanged: an admin changed an account's login email. Target is
+	// the user; meta has oldEmail and newEmail, as EmailChanged does.
+	UserEmailChanged = "user.email_changed"
 
 	// UserDeleted: an admin deleted an account. Target is the user. Any
 	// sole-leader handoff is recorded as RoleChanged rows with reason
@@ -98,6 +106,25 @@ const (
 	// notification.
 	VisibilityChanged = "event.visibility_changed"
 
+	// EventCreated: a group event or a church-wide event was created.
+	// Target is the event. Meta: groupId (absent when church-wide),
+	// churchWide, visibility, and hostIds for a church-wide event.
+	EventCreated = "event.created"
+
+	// EventDeleted: an event and its dates were deleted. Target is the
+	// event. Meta: title, groupId (absent when church-wide).
+	EventDeleted = "event.deleted"
+
+	// EventDatesRestored: a series edit whose rule includes dates an earlier
+	// series edit had cancelled brought them back on (cancel_source series).
+	// Target is the event. Meta: dates (original dates), occurrenceIds.
+	EventDatesRestored = "event.dates_restored"
+
+	// EventHostAdded and EventHostRemoved: a church-wide event's host list
+	// changed. Target is the event. Meta: userId.
+	EventHostAdded   = "event.host_added"
+	EventHostRemoved = "event.host_removed"
+
 	// RegistrationCancelled: an event became more private (its group was
 	// made more private, DEC-48) and this person could no longer see it, so
 	// their registrations on upcoming dates were removed. Target is the
@@ -136,6 +163,10 @@ const (
 	// resolved in the same transaction.
 	GroupApproved = "group.approved"
 	GroupRejected = "group.rejected"
+
+	// GroupDeleted: an admin deleted a group (and its events). Target is the
+	// group; meta has its name, since the row is gone.
+	GroupDeleted = "group.deleted"
 
 	// InvitationCreated: an admin or leader invited someone (M1.2, DEC-4).
 	// Target is the invitation; meta has email and the optional groupId and

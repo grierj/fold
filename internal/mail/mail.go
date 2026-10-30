@@ -8,9 +8,12 @@ package mail
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"mime"
 	"net"
 	"net/smtp"
 	"net/url"
@@ -200,7 +203,12 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 	}
 	// Subjects come from templates that interpolate names; a newline in one
 	// must never become a header boundary.
-	subject := strings.NewReplacer("\r", " ", "\n", " ").Replace(m.Subject)
+	// Non-ASCII subjects go out as RFC 2047 encoded words; ASCII is unchanged.
+	subject := mime.QEncoding.Encode("utf-8", strings.NewReplacer("\r", " ", "\n", " ").Replace(m.Subject))
+	msgID, err := messageID(fromAddress(from))
+	if err != nil {
+		return fmt.Errorf("mail: message id: %w", err)
+	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", s.addr)
 	if err != nil {
@@ -251,8 +259,8 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 	if err != nil {
 		return fmt.Errorf("mail: data: %w", err)
 	}
-	if _, err := fmt.Fprintf(w, "From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n",
-		from, m.To, subject, m.Text); err != nil {
+	if _, err := fmt.Fprintf(w, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n",
+		from, m.To, subject, time.Now().Format(time.RFC1123Z), msgID, m.Text); err != nil {
 		w.Close()
 		return fmt.Errorf("mail: write: %w", err)
 	}
@@ -260,6 +268,19 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 		return fmt.Errorf("mail: send: %w", err)
 	}
 	return c.Quit()
+}
+
+// messageID makes a unique Message-ID in the sender's domain.
+func messageID(addr string) (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	domain := "localhost"
+	if i := strings.LastIndex(addr, "@"); i >= 0 && i < len(addr)-1 {
+		domain = addr[i+1:]
+	}
+	return "<" + hex.EncodeToString(b) + "@" + domain + ">", nil
 }
 
 // fromAddress strips a display name ("Fold <a@b>") to the bare address for

@@ -1119,3 +1119,46 @@ func TestAdminCreateUserAuditAndRollback(t *testing.T) {
 		t.Fatal("creation rollback or no-notification contract failed")
 	}
 }
+
+func TestAdminRoleAndEmailChangesAreAudited(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	c := loginAPI(t, app, "admin", "password1234")
+	newTestUser(t, app, "second admin", "password1234", models.RoleAdmin)
+	u := newTestUser(t, app, "plain", "password1234", models.RoleMember)
+	path := "/api/v1/admin/users/" + itoa(u.ID)
+
+	apiDo(t, c, "PUT", path, map[string]any{"role": models.RoleAdmin}, http.StatusOK)
+	apiDo(t, c, "PUT", path, map[string]any{"role": models.RoleAdmin}, http.StatusOK) // no change, no row
+	rows, metas := auditRows(t, app, audit.UserRoleChanged)
+	if len(rows) != 1 || rows[0].TargetID != u.ID || rows[0].TargetType != "user" || rows[0].ActorID == nil || *rows[0].ActorID != admin.ID ||
+		metas[0].OldRole != models.RoleMember || metas[0].NewRole != models.RoleAdmin {
+		t.Fatalf("role audit: %+v %+v", rows, metas)
+	}
+
+	apiDo(t, c, "PUT", path, map[string]any{"email": "changed@example.com"}, http.StatusOK)
+	rows, _ = auditRows(t, app, audit.UserEmailChanged)
+	if len(rows) != 1 || rows[0].TargetID != u.ID || !strings.Contains(rows[0].MetaJSON, "changed@example.com") || !strings.Contains(rows[0].MetaJSON, u.Email) {
+		t.Fatalf("email audit: %+v", rows)
+	}
+
+	// A name-only edit writes neither.
+	apiDo(t, c, "PUT", path, map[string]any{"name": "Renamed"}, http.StatusOK)
+	if auditCount(t, app, audit.UserRoleChanged) != 1 || auditCount(t, app, audit.UserEmailChanged) != 1 {
+		t.Fatal("name-only edit wrote an audit row")
+	}
+}
+
+func TestAdminCreateUserAuditRecordsRole(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	c := loginAPI(t, app, "admin", "password1234")
+	apiDo(t, c, "POST", "/api/v1/admin/users", map[string]any{"ageBand": "adult", "email": "newadmin@example.com", "name": "New Admin", "role": models.RoleAdmin}, http.StatusCreated)
+	var entry models.AuditLog
+	if err := app.DB.Where("action = ?", audit.UserCreated).First(&entry).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.ReplaceAll(entry.MetaJSON, " ", ""), `"role":"admin"`) {
+		t.Fatalf("creation audit meta: %s", entry.MetaJSON)
+	}
+}
