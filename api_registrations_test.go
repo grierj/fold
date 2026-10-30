@@ -36,12 +36,7 @@ func TestParseRemoteCapacity(t *testing.T) {
 		{name: "negative date", raw: "-2", allowZero: true, wantError: "remote seat limit for this date must be a whole number from 0 to 100000, or empty"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			var raw *json.RawMessage
-			if tt.raw != "" {
-				value := json.RawMessage(tt.raw)
-				raw = &value
-			}
-			got, set, msg := parseRemoteCapacity(raw, tt.allowZero)
+			got, set, msg := parseRemoteCapacity(json.RawMessage(tt.raw), tt.allowZero)
 			if !intPtrEqual(got, tt.want) || set != tt.wantSet || msg != tt.wantError {
 				t.Fatalf("got (%v, %t, %q), want (%v, %t, %q)", got, set, msg, tt.want, tt.wantSet, tt.wantError)
 			}
@@ -2079,6 +2074,48 @@ func TestManagerHouseholdModeSwitchPromotesWaitlist(t *testing.T) {
 			}
 			if promoted.Status != want || (promoted.PromotedAt != nil) != !insideCutoff || promoted.AttendanceMode != models.AttendanceInPerson {
 				t.Fatalf("waiter after mode switch: %+v, want %s", promoted, want)
+			}
+		})
+	}
+}
+
+func TestRemoteCapacityNullPromotesWaitlist(t *testing.T) {
+	for _, scope := range []string{"event", "date"} {
+		t.Run(scope, func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "Remote reset")
+			capacity := intPtr(1)
+			if scope == "date" {
+				capacity = nil
+			}
+			eventID, date := seedRemoteEvent(t, app, admin, gid, nil, capacity, true)
+			path, field := fmt.Sprintf("/api/v1/events/%d", eventID), "remoteCapacity"
+			if scope == "date" {
+				path += "/occurrences/" + date
+				field = "remoteCapacityOverride"
+				apiDo(t, admin, "PUT", path, map[string]any{field: 1}, http.StatusOK)
+			}
+			var g models.Group
+			if err := app.DB.First(&g, gid).Error; err != nil {
+				t.Fatal(err)
+			}
+			_, first := mkUser(t, app, &g, "first remote")
+			secondUser, second := mkUser(t, app, &g, "waiting remote")
+			for _, client := range []*apiClient{first, second} {
+				if code, body := registerModeAs(client, eventID, date, models.RegGoing, models.AttendanceRemote); code != http.StatusOK {
+					t.Fatalf("register: %d %s", code, body)
+				}
+			}
+			var occ models.EventOccurrence
+			if err := app.DB.Where("event_id = ? AND original_date = ?", eventID, date).First(&occ).Error; err != nil {
+				t.Fatal(err)
+			}
+			if got := regStatus(t, app, secondUser.ID, occ.ID); got != models.RegWaitlisted {
+				t.Fatalf("before reset: %s", got)
+			}
+			apiDo(t, admin, "PUT", path, map[string]any{field: nil}, http.StatusOK)
+			if got := regStatus(t, app, secondUser.ID, occ.ID); got != models.RegGoing {
+				t.Fatalf("unlimited remote reset did not promote: %s", got)
 			}
 		})
 	}

@@ -202,9 +202,34 @@ func TestRemoteSeatLimitValidation(t *testing.T) {
 	if occ.RemoteCapacityOverride == nil || *occ.RemoteCapacityOverride != 0 {
 		t.Fatalf("zero per-date override was not stored: %+v", occ.RemoteCapacityOverride)
 	}
+	apiDo(t, admin, "PUT", datePath, map[string]any{"title": "Same remote limit"}, http.StatusOK)
+	occ = models.EventOccurrence{}
+	app.DB.Where("event_id = ? AND original_date = ?", eventID, date).First(&occ)
+	if occ.RemoteCapacityOverride == nil || *occ.RemoteCapacityOverride != 0 {
+		t.Fatal("omitted remoteCapacityOverride changed the stored limit")
+	}
 	apiDo(t, admin, "PUT", datePath, map[string]any{"remoteCapacityOverride": nil}, http.StatusOK)
+	occ = models.EventOccurrence{}
+	app.DB.Where("event_id = ? AND original_date = ?", eventID, date).First(&occ)
+	if occ.RemoteCapacityOverride != nil {
+		t.Fatal("explicit null did not clear remoteCapacityOverride")
+	}
 	apiDo(t, admin, "PUT", path, map[string]any{"remoteCapacity": 1}, http.StatusOK)
+	apiDo(t, admin, "PUT", path, map[string]any{"title": "Same series remote limit"}, http.StatusOK)
+	ev = models.Event{}
+	app.DB.First(&ev, eventID)
+	if ev.RemoteCapacity == nil || *ev.RemoteCapacity != 1 {
+		t.Fatal("omitted remoteCapacity changed the stored limit")
+	}
 	apiDo(t, admin, "PUT", path, map[string]any{"remoteCapacity": nil}, http.StatusOK)
+	ev = models.Event{}
+	app.DB.First(&ev, eventID)
+	if ev.RemoteCapacity != nil {
+		t.Fatal("explicit null did not clear remoteCapacity")
+	}
+	if raw := unfoldFeed(feedBody(t, newAPIClient(t, app), "/cal/public.ics")); !strings.Contains(raw, "Remote attendance available") {
+		t.Fatalf("cleared remote capacity did not advertise unlimited remote attendance: %s", raw)
+	}
 	apiDo(t, admin, "PUT", path, map[string]any{"remoteAvailable": false}, http.StatusOK)
 }
 

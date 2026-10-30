@@ -66,15 +66,15 @@ func parseCapacity(raw *json.RawMessage) (cap *int, set bool, msg string) {
 
 // parseRemoteCapacity permits 0 only for a per-date override, to close
 // remote seats on that date. For an event, uncheck remote attendance.
-func parseRemoteCapacity(raw *json.RawMessage, allowZero bool) (cap *int, set bool, msg string) {
-	if raw == nil {
+func parseRemoteCapacity(raw json.RawMessage, allowZero bool) (cap *int, set bool, msg string) {
+	if len(raw) == 0 {
 		return nil, false, ""
 	}
-	if bytes.Equal(bytes.TrimSpace(*raw), []byte("null")) {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, true, ""
 	}
 	var n int
-	if json.Unmarshal(*raw, &n) != nil || n < 0 || n > 100000 {
+	if json.Unmarshal(raw, &n) != nil || n < 0 || n > 100000 {
 		if allowZero {
 			return nil, false, "remote seat limit for this date must be a whole number from 0 to 100000, or empty"
 		}

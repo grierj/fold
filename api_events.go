@@ -484,12 +484,12 @@ type eventBody struct {
 	GuestsAllowed   *json.RawMessage `json:"guestsAllowed"`
 	// Remote attendance (M1.8 slice 2). RemoteCapacity is raw JSON like
 	// Capacity: null clears to unlimited; a set limit must be positive.
-	RemoteAvailable    *bool            `json:"remoteAvailable"`
-	RemoteCapacity     *json.RawMessage `json:"remoteCapacity"`
-	ChildcareAvailable *bool            `json:"childcareAvailable"`
-	ChildcareNotes     *string          `json:"childcareNotes"`
-	ChildcareCapacity  json.RawMessage  `json:"childcareCapacity"`
-	ChildcareAges      *string          `json:"childcareAges"`
+	RemoteAvailable    *bool           `json:"remoteAvailable"`
+	RemoteCapacity     json.RawMessage `json:"remoteCapacity"`
+	ChildcareAvailable *bool           `json:"childcareAvailable"`
+	ChildcareNotes     *string         `json:"childcareNotes"`
+	ChildcareCapacity  json.RawMessage `json:"childcareCapacity"`
+	ChildcareAges      *string         `json:"childcareAges"`
 	// Video link (5.8, M1.8); see parseVideoEdits in api_video.go.
 	VideoProvider *string `json:"videoProvider"`
 	VideoURL      *string `json:"videoUrl"`
@@ -1078,10 +1078,10 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		CapacityOverride *json.RawMessage `json:"capacityOverride"`
 		// RemoteCapacityOverride mirrors CapacityOverride for the
 		// remote pool (M1.8 slice 2); null uses the event's cap.
-		RemoteCapacityOverride *json.RawMessage `json:"remoteCapacityOverride"`
-		Visibility             json.RawMessage  `json:"visibility"`
-		Reason                 string           `json:"reason"`
-		Confirm                bool             `json:"confirm"`
+		RemoteCapacityOverride json.RawMessage `json:"remoteCapacityOverride"`
+		Visibility             json.RawMessage `json:"visibility"`
+		Reason                 string          `json:"reason"`
+		Confirm                bool            `json:"confirm"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")
