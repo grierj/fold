@@ -530,21 +530,23 @@ func (a *App) myHouseholdAnswers(occurrenceIDs []uint, viewer *models.User, fact
 	return out
 }
 
-func householdGoingMap(db *gorm.DB, occurrenceIDs []uint, viewer *models.User, remoteOnly bool) map[uint]bool {
+func householdGoingMap(db *gorm.DB, occurrenceIDs []uint, viewer *models.User, remoteOnly bool) (map[uint]bool, error) {
 	out := map[uint]bool{}
 	if viewer == nil || len(occurrenceIDs) == 0 {
-		return out
+		return out, nil
 	}
 	var ids []uint
 	q := db.Model(&models.Registration{}).Joins(listedRegistrations()).Where("registrations.registered_by = ? AND registrations.occurrence_id IN ? AND registrations.status = ?", viewer.ID, occurrenceIDs, models.RegGoing)
 	if remoteOnly {
 		q = q.Where("registrations.attendance_mode = ?", models.AttendanceRemote)
 	}
-	q.Pluck("registrations.occurrence_id", &ids)
+	if err := q.Pluck("registrations.occurrence_id", &ids).Error; err != nil {
+		return nil, err
+	}
 	for _, id := range ids {
 		out[id] = true
 	}
-	return out
+	return out, nil
 }
 
 // Recovery data comes only from this event's audited dropped rows. It is

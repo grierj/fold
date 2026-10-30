@@ -716,10 +716,10 @@ func TestDepartureSupersedesManagerAccessForExactEndLifecycle(t *testing.T) {
 			if err != nil || calendarAt[occ.ID] != nil {
 				t.Fatalf("calendar access at exact end: %v %+v", err, calendarAt)
 			}
-			if feed := f.app.buildFeed(f.subject, feedOptions{personal: true, scope: models.CalendarFeedMine}, before); len(feed.Singles) != 1 {
+			if feed := mustBuildFeed(t, f.app, f.subject, feedOptions{personal: true, scope: models.CalendarFeedMine}, before); len(feed.Singles) != 1 {
 				t.Fatalf("feed before end=%+v", feed.Singles)
 			}
-			if feed := f.app.buildFeed(f.subject, feedOptions{personal: true, scope: models.CalendarFeedMine}, boundary); len(feed.Singles) != 0 {
+			if feed := mustBuildFeed(t, f.app, f.subject, feedOptions{personal: true, scope: models.CalendarFeedMine}, boundary); len(feed.Singles) != 0 {
 				t.Fatalf("feed at exact end=%+v", feed.Singles)
 			}
 

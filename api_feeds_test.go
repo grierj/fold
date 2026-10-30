@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"fold/models"
 
 	ics "github.com/arran4/golang-ical"
+	"gorm.io/gorm"
 )
 
 // feedStart is an evening a fixed number of days out, always inside the
@@ -1157,7 +1159,7 @@ func TestFeedDateWindowIgnoresSeriesAnchor(t *testing.T) {
 		}
 	}
 	for _, opts := range []feedOptions{{}, {onlyGroupID: &group.ID}} {
-		feed := app.buildFeed(nil, opts, now)
+		feed := mustBuildFeed(t, app, nil, opts, now)
 		if len(feed.Singles) != 3 {
 			t.Fatalf("window exported %d dates, want from, until-1s and moved-in date", len(feed.Singles))
 		}
@@ -1188,7 +1190,7 @@ func TestFeedDateProjectionReadBudget(t *testing.T) {
 			continue
 		}
 		counter := countDBReads(t, app.DB)
-		feed := app.buildFeed(nil, feedOptions{}, now)
+		feed := mustBuildFeed(t, app, nil, feedOptions{}, now)
 		reads := counter.Reads()
 		counter.Stop()
 		if len(feed.Singles) != i {
@@ -1202,4 +1204,77 @@ func TestFeedDateProjectionReadBudget(t *testing.T) {
 		}
 		t.Logf("%d events: %d reads", i, reads)
 	}
+}
+
+func TestFeedReadFailuresNeverPublishSnapshots(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Feed read failures")
+	createVideoEvent(t, admin, gid, map[string]any{"remoteAvailable": true, "videoProvider": "link", "videoUrl": videoLink, "videoReveal": "registered_only"})
+	var group models.Group
+	if err := app.DB.First(&group, gid).Error; err != nil {
+		t.Fatal(err)
+	}
+	_, member := mkUser(t, app, &group, "feed reader")
+	personal := createFeedLink(t, member, models.CalendarFeedMine)
+	anon := newAPIClient(t, app)
+	for _, path := range []string{"/cal/public.ics", "/cal/groups/" + gid + ".ics", personal} {
+		t.Run(path, func(t *testing.T) {
+			before := fetchFeed(t, anon, path)
+			if before.Code != http.StatusOK || !strings.Contains(before.Body.String(), "BEGIN:VEVENT") || before.Header().Get("ETag") == "" {
+				t.Fatalf("missing baseline snapshot: %d %s", before.Code, before.Body.String())
+			}
+			type failedRead struct {
+				table string
+				read  int
+			}
+			failures := []failedRead{{"events", 1}, {"groups", 1}, {"event_occurrences", 1}}
+			if path == personal {
+				failures = append(failures, failedRead{"calendar_tokens", 1}, failedRead{"users", 1},
+					failedRead{"memberships", 1}, failedRead{"event_hosts", 1}, failedRead{"occurrence_accesses", 1},
+					failedRead{"registrations", 1}, failedRead{"registrations", 2}, failedRead{"registrations", 3})
+			} else if strings.HasPrefix(path, "/cal/groups/") {
+				failures = append(failures, failedRead{"groups", 2})
+			}
+			for _, failure := range failures {
+				t.Run(fmt.Sprintf("%s/read%d", failure.table, failure.read), func(t *testing.T) {
+					reads := 0
+					const callback = "test:fail_feed_read"
+					if err := app.DB.Callback().Query().Before("gorm:query").Register(callback, func(tx *gorm.DB) {
+						if tx.Statement.Table == failure.table {
+							reads++
+							if reads == failure.read {
+								_ = tx.AddError(errors.New("calendar database unavailable"))
+							}
+						}
+					}); err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = app.DB.Callback().Query().Remove(callback) })
+					for _, etag := range []string{"", before.Header().Get("ETag"), "*"} {
+						reads = 0
+						w := fetchFeedIf(t, anon, path, etag)
+						if reads < failure.read {
+							t.Fatalf("failure was not injected: %d reads", reads)
+						}
+						if w.Code != http.StatusInternalServerError || w.Header().Get("ETag") != "" || w.Header().Get("Cache-Control") != "no-store" || strings.Contains(w.Body.String(), "BEGIN:VCALENDAR") {
+							t.Errorf("failed read published snapshot with If-None-Match=%q: status=%d headers=%v body=%s", etag, w.Code, w.Header(), w.Body.String())
+						}
+					}
+					_ = app.DB.Callback().Query().Remove(callback)
+					if recovered := fetchFeedIf(t, anon, path, before.Header().Get("ETag")); recovered.Code != http.StatusNotModified {
+						t.Fatalf("same snapshot did not recover after failed read: %d %s", recovered.Code, recovered.Body.String())
+					}
+				})
+			}
+		})
+	}
+}
+
+func mustBuildFeed(t *testing.T, app *App, viewer *models.User, opts feedOptions, now time.Time) events.Feed {
+	t.Helper()
+	feed, err := app.buildFeed(viewer, opts, now)
+	if err != nil {
+		t.Fatalf("build feed: %v", err)
+	}
+	return feed
 }

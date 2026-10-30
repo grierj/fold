@@ -277,7 +277,7 @@ func TestOccurrenceDateReadLiveFactsFailClosed(t *testing.T) {
 			if len(page.Occurrences) != 0 {
 				t.Fatal("calendar retained invalid invitation", raw)
 			}
-			feed := f.app.buildFeed(f.recipient, feedOptions{personal: true, scope: models.CalendarFeedAll}, time.Now().UTC())
+			feed := mustBuildFeed(t, f.app, f.recipient, feedOptions{personal: true, scope: models.CalendarFeedAll}, time.Now().UTC())
 			if len(feed.Singles) != 0 {
 				t.Fatal("feed retained invalid invitation", feed)
 			}
@@ -362,7 +362,7 @@ func TestOccurrenceDateReadTeenConsentAndVideoAreCurrent(t *testing.T) {
 	if w.Code != 200 || strings.Contains(w.Body.String(), "private-video") || !strings.Contains(w.Body.String(), `"canSeeVideo":false`) || !strings.Contains(w.Body.String(), `"videoHidden":true`) {
 		t.Fatal(w.Code, w.Body.String())
 	}
-	raw := string(events.RenderFeed(f.app.buildFeed(f.recipient, feedOptions{personal: true, scope: models.CalendarFeedAll}, time.Now().UTC())))
+	raw := string(events.RenderFeed(mustBuildFeed(t, f.app, f.recipient, feedOptions{personal: true, scope: models.CalendarFeedAll}, time.Now().UTC())))
 	if strings.Contains(raw, "private-video") {
 		t.Fatal("feed inherited video authority", raw)
 	}
@@ -387,7 +387,7 @@ func TestOccurrenceDateReadPendingAskAndRegistrationAreNotAuthority(t *testing.T
 	if len(page.Occurrences) != 0 {
 		t.Fatal("pending ask or registration widened calendar", raw)
 	}
-	feed := f.app.buildFeed(f.other, feedOptions{personal: true, scope: models.CalendarFeedAll}, now)
+	feed := mustBuildFeed(t, f.app, f.other, feedOptions{personal: true, scope: models.CalendarFeedAll}, now)
 	if len(feed.Singles) != 0 {
 		t.Fatal("pending ask or registration widened feed", feed)
 	}
@@ -539,14 +539,14 @@ func TestDepartureOccurrenceAccessRetainsOnlyTheSanitizedDate(t *testing.T) {
 			if strings.Contains(calendarRaw, "Retained hidden group") || strings.Contains(calendarRaw, "Retained hidden series") || strings.Contains(calendarRaw, "groupId") {
 				t.Fatal("calendar leaked retained parent", calendarRaw)
 			}
-			feed := f.app.buildFeed(f.recipient, feedOptions{personal: true, scope: models.CalendarFeedMine}, time.Now().UTC())
+			feed := mustBuildFeed(t, f.app, f.recipient, feedOptions{personal: true, scope: models.CalendarFeedMine}, time.Now().UTC())
 			feedRaw := string(events.RenderFeed(feed))
 			if len(feed.Singles) != 1 || !strings.Contains(feedRaw, "Retained date title") || strings.Contains(feedRaw, "Retained hidden group") || strings.Contains(feedRaw, "Retained hidden series") {
 				t.Fatalf("retained personal feed widened: %s", feedRaw)
 			}
-			publicRaw := string(events.RenderFeed(f.app.buildFeed(nil, feedOptions{name: "Public"}, time.Now().UTC())))
+			publicRaw := string(events.RenderFeed(mustBuildFeed(t, f.app, nil, feedOptions{name: "Public"}, time.Now().UTC())))
 			gid := f.group
-			groupRaw := string(events.RenderFeed(f.app.buildFeed(nil, feedOptions{name: "Group", onlyGroupID: &gid}, time.Now().UTC())))
+			groupRaw := string(events.RenderFeed(mustBuildFeed(t, f.app, nil, feedOptions{name: "Group", onlyGroupID: &gid}, time.Now().UTC())))
 			if strings.Contains(publicRaw+groupRaw, "Retained date title") {
 				t.Fatal("exact-date authority changed a public/group feed")
 			}

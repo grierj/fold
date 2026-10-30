@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -61,8 +62,18 @@ func serveFeed(c *gin.Context, body []byte) {
 	c.Data(http.StatusOK, "text/calendar; charset=utf-8", body)
 }
 
+func feedUnavailable(c *gin.Context, err error) {
+	log.Printf("calendar feed unavailable: %v", err)
+	c.Header("Cache-Control", "no-store")
+	c.String(http.StatusInternalServerError, "calendar unavailable")
+}
+
 func (a *App) feedPublic(c *gin.Context) {
-	feed := a.buildFeed(nil, feedOptions{name: a.siteName()}, time.Now().UTC())
+	feed, err := a.buildFeed(nil, feedOptions{name: a.siteName()}, time.Now().UTC())
+	if err != nil {
+		feedUnavailable(c, err)
+		return
+	}
 	serveFeed(c, events.RenderFeed(feed))
 }
 
@@ -73,15 +84,22 @@ func (a *App) feedGroup(c *gin.Context) {
 		return
 	}
 	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil ||
-		g.Status != models.GroupActive || g.Visibility != models.VisibilityPublic {
+	if err := a.DB.First(&g, id).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		feedUnavailable(c, err)
+		return
+	}
+	if g.ID == 0 || g.Status != models.GroupActive || g.Visibility != models.VisibilityPublic {
 		feedNotFound(c)
 		return
 	}
-	feed := a.buildFeed(nil, feedOptions{
+	feed, err := a.buildFeed(nil, feedOptions{
 		name:        g.Name, // group-ok: this feed only serves active public groups
 		onlyGroupID: &g.ID,
 	}, time.Now().UTC())
+	if err != nil {
+		feedUnavailable(c, err)
+		return
+	}
 	serveFeed(c, events.RenderFeed(feed))
 }
 
@@ -94,21 +112,33 @@ func (a *App) feedPersonal(c *gin.Context) {
 	raw := strings.TrimSuffix(param, ".ics")
 	var tok models.CalendarToken
 	if err := a.DB.Where("token_hash = ?", hashToken(raw)).First(&tok).Error; err != nil {
-		feedNotFound(c)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			feedNotFound(c)
+		} else {
+			feedUnavailable(c, err)
+		}
 		return
 	}
 	// A disabled or deleted owner's link stops working, with the same
 	// plain 404 as a token that never existed.
 	var owner models.User
-	if err := a.DB.First(&owner, tok.UserID).Error; err != nil || owner.Status != models.UserActive {
+	if err := a.DB.First(&owner, tok.UserID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		feedUnavailable(c, err)
+		return
+	}
+	if owner.ID == 0 || owner.Status != models.UserActive {
 		feedNotFound(c)
 		return
 	}
-	feed := a.buildFeed(&owner, feedOptions{
+	feed, err := a.buildFeed(&owner, feedOptions{
 		name:     a.siteName(),
 		personal: true,
 		scope:    tok.Scope,
 	}, time.Now().UTC())
+	if err != nil {
+		feedUnavailable(c, err)
+		return
+	}
 	serveFeed(c, events.RenderFeed(feed))
 }
 
@@ -122,7 +152,7 @@ type feedOptions struct {
 // buildFeed projects authorized scheduled dates inside the export window.
 // Parent candidates never grant series access; group fallback locations and
 // parent details are separately checked before reaching the renderer.
-func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) events.Feed {
+func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) (events.Feed, error) {
 	windowStart, windowEnd := feedWindow(now)
 	feed := events.Feed{
 		Name: opts.name, Host: a.feedHost(),
@@ -138,24 +168,26 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 	}
 	vs, err := a.dateCandidates(viewer, q)
 	if err != nil {
-		return feed
+		return events.Feed{}, err
 	}
 	scoped := map[uint]*occurrenceRead{}
 	if opts.personal && viewer != nil && opts.onlyGroupID == nil {
 		scoped, err = a.scopedOccurrenceReads(viewer, a.DB.Where("starts_at >= ? AND starts_at < ?", windowStart, windowEnd), now)
 		if err != nil {
-			return feed
+			return events.Feed{}, err
 		}
 	}
 	if len(vs.IDs) == 0 {
-		return feed
+		return feed, nil
 	}
 
 	var occs []models.EventOccurrence
 	// Keep the candidate restriction in SQL rather than expanding an
 	// unbounded event-ID list into PostgreSQL bind parameters.
-	a.DB.Where("event_id IN (?) AND starts_at >= ? AND starts_at < ?", q.Select("id"), windowStart, windowEnd).
-		Order("starts_at").Find(&occs)
+	if err := a.DB.Where("event_id IN (?) AND starts_at >= ? AND starts_at < ?", q.Select("id"), windowStart, windowEnd).
+		Order("starts_at").Find(&occs).Error; err != nil {
+		return events.Feed{}, err
+	}
 	if opts.personal && viewer != nil {
 		return a.buildPersonalFeedSingles(feed, viewer, opts.scope, now, occs, scoped, vs)
 	}
@@ -186,26 +218,29 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) ev
 			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: "CONFIRMED",
 		})
 	}
-	return feed
+	return feed, nil
 }
 
 // buildPersonalFeedSingles expands personal feeds date by date. That makes
 // every hidden, declined, out-of-window, or differently answered recurrence
 // explicit, so an RRULE can never reintroduce it in a calendar client.
-func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, rawScope string, now time.Time, occs []models.EventOccurrence, scoped map[uint]*occurrenceRead, vs visibleSet) events.Feed {
+func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, rawScope string, now time.Time, occs []models.EventOccurrence, scoped map[uint]*occurrenceRead, vs visibleSet) (events.Feed, error) {
 	ids := make([]uint, len(occs))
 	for i := range occs {
 		ids[i] = occs[i].ID
 	}
 	facts, err := a.loadCalendarScopeBatch(viewer, ids)
 	if err != nil {
-		return feed
+		return events.Feed{}, err
 	}
 	scope := policy.CalendarScopeMine
 	if rawScope == models.CalendarFeedAll {
 		scope = policy.CalendarScopeAll
 	}
-	householdGoing := householdGoingMap(a.DB, ids, viewer, false)
+	householdGoing, err := householdGoingMap(a.DB, ids, viewer, false)
+	if err != nil {
+		return events.Feed{}, err
+	}
 	viewerAdmin := asPerson(viewer).Admin
 	for i := range occs {
 		occ := &occs[i]
@@ -271,7 +306,7 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: status,
 		})
 	}
-	return feed
+	return feed, nil
 }
 
 type feedSeriesDetails struct {

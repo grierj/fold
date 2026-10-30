@@ -35,51 +35,57 @@ func viewOf(ev *models.Event, host bool) policy.EventView {
 	}
 }
 
-func (a *App) groupsByID(ids map[uint]struct{}) map[uint]*models.Group {
+func (a *App) groupsByID(ids map[uint]struct{}) (map[uint]*models.Group, error) {
 	out := map[uint]*models.Group{}
 	if len(ids) == 0 {
-		return out
+		return out, nil
 	}
 	list := make([]uint, 0, len(ids))
 	for id := range ids {
 		list = append(list, id)
 	}
 	var gs []models.Group
-	a.DB.Where("id IN ?", list).Find(&gs)
+	if err := a.DB.Where("id IN ?", list).Find(&gs).Error; err != nil {
+		return nil, err
+	}
 	for i := range gs {
 		out[gs[i].ID] = &gs[i]
 	}
-	return out
+	return out, nil
 }
 
-func (a *App) relsFor(u *models.User, ids map[uint]struct{}) map[uint]policy.Rel {
+func (a *App) relsFor(u *models.User, ids map[uint]struct{}) (map[uint]policy.Rel, error) {
 	out := map[uint]policy.Rel{}
 	if u == nil || len(ids) == 0 {
-		return out
+		return out, nil
 	}
 	list := make([]uint, 0, len(ids))
 	for id := range ids {
 		list = append(list, id)
 	}
 	var ms []models.Membership
-	a.DB.Where("user_id = ? AND group_id IN ?", u.ID, list).Find(&ms)
+	if err := a.DB.Where("user_id = ? AND group_id IN ?", u.ID, list).Find(&ms).Error; err != nil {
+		return nil, err
+	}
 	for _, m := range ms {
 		out[m.GroupID] = membershipRel(m)
 	}
-	return out
+	return out, nil
 }
 
-func (a *App) hostedEventIDs(u *models.User, eventIDs []uint) map[uint]bool {
+func (a *App) hostedEventIDs(u *models.User, eventIDs []uint) (map[uint]bool, error) {
 	out := map[uint]bool{}
 	if u == nil || len(eventIDs) == 0 {
-		return out
+		return out, nil
 	}
 	var rows []models.EventHost
-	a.DB.Where("user_id = ? AND event_id IN ?", u.ID, eventIDs).Find(&rows)
+	if err := a.DB.Where("user_id = ? AND event_id IN ?", u.ID, eventIDs).Find(&rows).Error; err != nil {
+		return nil, err
+	}
 	for _, h := range rows {
 		out[h.EventID] = true
 	}
-	return out
+	return out, nil
 }
 
 func groupAndRel(ev *models.Event, groups map[uint]*models.Group, rels map[uint]policy.Rel) (*models.Group, policy.Rel) {
@@ -625,13 +631,23 @@ func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted, date
 			gset[*evs[i].GroupID] = struct{}{}
 		}
 	}
+	var err error
 	if withDeleted {
-		vs.Groups = a.groupsByIDUnscoped(gset)
+		vs.Groups, err = a.groupsByIDUnscoped(gset)
 	} else {
-		vs.Groups = a.groupsByID(gset)
+		vs.Groups, err = a.groupsByID(gset)
 	}
-	vs.Rels = a.relsFor(viewer, gset)
-	vs.Hosted = a.hostedEventIDs(viewer, ids)
+	if err != nil {
+		return vs, err
+	}
+	vs.Rels, err = a.relsFor(viewer, gset)
+	if err != nil {
+		return vs, err
+	}
+	vs.Hosted, err = a.hostedEventIDs(viewer, ids)
+	if err != nil {
+		return vs, err
+	}
 	p := asPerson(viewer)
 	for i := range evs {
 		ev := evs[i]
@@ -656,19 +672,21 @@ func (a *App) eventCandidates(viewer *models.User, q *gorm.DB, withDeleted, date
 
 // groupsByIDUnscoped is groupsByID including soft-deleted groups, for the
 // admin "show deleted events" switch only (DEC-68).
-func (a *App) groupsByIDUnscoped(ids map[uint]struct{}) map[uint]*models.Group {
+func (a *App) groupsByIDUnscoped(ids map[uint]struct{}) (map[uint]*models.Group, error) {
 	out := map[uint]*models.Group{}
 	if len(ids) == 0 {
-		return out
+		return out, nil
 	}
 	list := make([]uint, 0, len(ids))
 	for id := range ids {
 		list = append(list, id)
 	}
 	var gs []models.Group
-	a.DB.Unscoped().Where("id IN ?", list).Find(&gs)
+	if err := a.DB.Unscoped().Where("id IN ?", list).Find(&gs).Error; err != nil {
+		return nil, err
+	}
 	for i := range gs {
 		out[gs[i].ID] = &gs[i]
 	}
-	return out
+	return out, nil
 }

@@ -69,7 +69,7 @@ func TestOpenedDateDiscoveryAndFeedPrivacy(t *testing.T) {
 	if len(listed) != 1 || listed[0].GroupID != nil || listed[0].RecurrenceRule != "" || listed[0].Location != "" || listed[0].AttendeesVisible {
 		t.Fatalf("list: %+v", listed)
 	}
-	feed := events.RenderFeed(app.buildFeed(nil, feedOptions{name: "Church"}, time.Now().UTC()))
+	feed := events.RenderFeed(mustBuildFeed(t, app, nil, feedOptions{name: "Church"}, time.Now().UTC()))
 	if strings.Contains(string(feed), "RRULE") || strings.Count(string(feed), "BEGIN:VEVENT") != 1 || !strings.Contains(string(feed), "/dates/"+dates[0].OriginalDate) || strings.Contains(string(feed), "SECRET") {
 		t.Fatalf("feed: %s", feed)
 	}
@@ -295,7 +295,7 @@ func TestDateVisibilityFeedsUseStandaloneEntriesAndInvalidateETags(t *testing.T)
 		t.Fatalf("partial recurrence feed: %s", body)
 	}
 	for _, opts := range []feedOptions{{name: "Public"}, {name: "Group", onlyGroupID: ev.GroupID}} {
-		feed := events.RenderFeed(app.buildFeed(nil, opts, time.Now().UTC()))
+		feed := events.RenderFeed(mustBuildFeed(t, app, nil, opts, time.Now().UTC()))
 		if strings.Contains(string(feed), "RRULE") || strings.Count(string(feed), "BEGIN:VEVENT") != 3 {
 			t.Fatalf("feed leaks hidden date: %s", feed)
 		}

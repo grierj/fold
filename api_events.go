@@ -211,7 +211,7 @@ func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startA
 	householdVideo := map[uint]bool{}
 	if me != nil {
 		if _, inHousehold := facts.accounts[me.ID]; inHousehold {
-			householdVideo = householdGoingMap(a.DB, ids, me, true)
+			householdVideo, _ = householdGoingMap(a.DB, ids, me, true)
 		}
 	}
 
