@@ -86,6 +86,19 @@ func TestRoomCatalog(t *testing.T) {
 		}
 	}
 
+	// A new room is always active, whatever the body says.
+	var fresh struct {
+		Room roomJSON `json:"room"`
+	}
+	decodeJSON(t, admin.do("POST", "/api/v1/admin/rooms", map[string]any{"name": "Chapel", "active": false}, true), &fresh)
+	if !fresh.Room.Active {
+		t.Fatalf("a new room should be active: %+v", fresh.Room)
+	}
+	// Renaming into a taken name is the same conflict.
+	if w := admin.do("PUT", "/api/v1/admin/rooms/"+itoa(fresh.Room.ID), map[string]any{"name": "Fellowship Hall", "building": "Main"}, true); w.Code != http.StatusConflict {
+		t.Fatalf("rename into a taken name: %d %s", w.Code, w.Body.String())
+	}
+
 	// Edit keeps absent fields, clears capacity with null, and audits what changed.
 	id := itoa(hall.ID)
 	var updated struct {
@@ -114,11 +127,13 @@ func TestRoomCatalog(t *testing.T) {
 		Rooms []roomJSON `json:"rooms"`
 	}
 	decodeJSON(t, admin.do("GET", "/api/v1/admin/rooms", nil, false), &list)
-	if len(list.Rooms) != 2 || list.Rooms[len(list.Rooms)-1].ID != hall.ID || list.Rooms[len(list.Rooms)-1].Active {
+	if len(list.Rooms) != 3 || list.Rooms[len(list.Rooms)-1].ID != hall.ID || list.Rooms[len(list.Rooms)-1].Active {
 		t.Fatalf("list should keep the inactive room, last: %+v", list.Rooms)
 	}
-	if w := admin.do("PUT", "/api/v1/admin/rooms/999999", map[string]any{"active": true}, true); w.Code != http.StatusNotFound {
-		t.Fatalf("unknown room: %d", w.Code)
+	for _, missing := range []string{"999999", "18446744073709551615", "abc"} {
+		if w := admin.do("PUT", "/api/v1/admin/rooms/"+missing, map[string]any{"active": true}, true); w.Code != http.StatusNotFound {
+			t.Fatalf("unknown room %s: %d", missing, w.Code)
+		}
 	}
 
 	// Off again: hidden again, nothing deleted.
@@ -126,7 +141,7 @@ func TestRoomCatalog(t *testing.T) {
 	if w := admin.do("GET", "/api/v1/admin/rooms", nil, false); w.Code != http.StatusNotFound {
 		t.Fatalf("rooms off again: %d", w.Code)
 	}
-	if contactCount(t, app, &models.Room{}, "1=1") != 2 {
+	if contactCount(t, app, &models.Room{}, "1=1") != 3 {
 		t.Fatal("turning rooms off must not delete rooms")
 	}
 }

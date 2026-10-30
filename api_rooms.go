@@ -104,13 +104,13 @@ type roomBody struct {
 // changed, or an error message for a field that is out of bounds.
 func (b roomBody) apply(r *models.Room) ([]string, string) {
 	var changed []string
-	text := func(field string, v *string, max int, dst *string) string {
+	text := func(field string, v *string, max int, dst *string, tooLong string) string {
 		if v == nil {
 			return ""
 		}
 		s := strings.TrimSpace(*v)
 		if utf8.RuneCountInString(s) > max {
-			return field + " is too long"
+			return tooLong
 		}
 		if s != *dst {
 			*dst = s
@@ -119,10 +119,14 @@ func (b roomBody) apply(r *models.Room) ([]string, string) {
 		return ""
 	}
 	for _, check := range []func() string{
-		func() string { return text("name", b.Name, maxRoomName, &r.Name) },
-		func() string { return text("building", b.Building, maxRoomBuilding, &r.Building) },
-		func() string { return text("features", b.Features, maxRoomFeatures, &r.Features) },
-		func() string { return text("notes", b.Notes, maxRoomNotes, &r.Notes) },
+		func() string { return text("name", b.Name, maxRoomName, &r.Name, "name is too long") },
+		func() string {
+			return text("building", b.Building, maxRoomBuilding, &r.Building, "building is too long")
+		},
+		func() string {
+			return text("features", b.Features, maxRoomFeatures, &r.Features, "features is too long")
+		},
+		func() string { return text("notes", b.Notes, maxRoomNotes, &r.Notes, "notes is too long") },
 	} {
 		if msg := check(); msg != "" {
 			return nil, msg
@@ -216,6 +220,8 @@ func (a *App) apiAdminCreateRoom(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
+	// A new room is always active; deactivating is an edit.
+	body.Active = nil
 	room := models.Room{Active: true}
 	if _, msg := body.apply(&room); msg != "" {
 		jsonError(c, http.StatusBadRequest, msg)
@@ -241,7 +247,7 @@ func (a *App) apiAdminCreateRoom(c *gin.Context) {
 }
 
 func (a *App) apiAdminUpdateRoom(c *gin.Context) {
-	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	id, err := strconv.ParseUint(c.Param("id"), 10, 63)
 	if err != nil || id == 0 {
 		jsonError(c, http.StatusNotFound, "room not found")
 		return

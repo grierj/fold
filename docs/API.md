@@ -1148,7 +1148,7 @@ POST /api/v1/admin/rooms            → 201 {room}                          (adm
 PUT  /api/v1/admin/rooms/:id        → 200 {room}                          (admin; absent fields keep their value; audited room.updated with the changed fields)
 ```
 
-`room` is `{id, name, building, capacity, features, notes, active, restricted, defaultSetupMinutes, defaultTeardownMinutes}`. Bodies take the same fields (all optional on edit). `name` is required, at most 100 characters, and unique per building whatever the letter case (409 `room_name_taken`); `building` at most 100, `features` 500, `notes` 2000 (notes are for admins). `capacity` is a whole number from 1 to 100000, or null for no limit. Setup and teardown minutes are 0 to 240 and are copied into each booking (DEC-101). There is no delete: set `active: false`, and bookings keep their history.
+`room` is `{id, name, building, capacity, features, notes, active, restricted, defaultSetupMinutes, defaultTeardownMinutes}`. Bodies take the same fields (all optional on edit); a new room is always active, so `active` only matters on edit. `name` is required, at most 100 characters, and unique per building whatever the letter case (409 `room_name_taken`); `building` at most 100, `features` 500, `notes` 2000 (notes are for admins). `capacity` is a whole number from 1 to 100000, or null for no limit. Setup and teardown minutes are 0 to 240 and are copied into each booking (DEC-101). There is no delete: set `active: false`, and bookings keep their history.
 
 ### Notifications
 

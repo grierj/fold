@@ -701,6 +701,26 @@ it("opens a bookmarked Rooms tab once /site says rooms are on", async () => {
   expect(screen.getByRole("tab", { name: /^Rooms/ })).toHaveAttribute("aria-selected", "true");
 });
 
+it("asks /site once and hands the answer to the rooms switch", async () => {
+  withRooms(true);
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  const box = await screen.findByRole("checkbox", { name: /Use rooms/ });
+  await waitFor(() => expect(box).toBeChecked());
+  // The page, the church time zone, its zone picker and self-signup each read it; the rooms switch no longer does.
+  expect(Site.get).toHaveBeenCalledTimes(4);
+});
+
+it("says so, with a retry, when /site fails on a bookmarked Rooms tab", async () => {
+  vi.mocked(Site.get).mockRejectedValueOnce(new ApiError(500, "private server text"));
+  vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall] });
+  render(<MemoryRouter initialEntries={["/admin?tab=rooms"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't load the rooms.");
+  expect(screen.queryByText("private server text")).not.toBeInTheDocument();
+  withRooms(true);
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByText("Fellowship Hall")).toBeInTheDocument();
+});
+
 it("reads the rooms switch from /site and saves it the moment it changes, then shows the tab", async () => {
   vi.mocked(AdminRooms.setEnabled).mockResolvedValue({ roomsEnabled: true });
   render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);

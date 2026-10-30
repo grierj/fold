@@ -82,8 +82,8 @@ describe("adding a room", () => {
     expect(screen.getByLabelText("Notes for admins (optional)")).toHaveAccessibleDescription("Only admins see this");
     expect(screen.getByRole("checkbox", { name: /Only admins can book this room/ })).toBeInTheDocument();
     expect(screen.getByText("For rooms like the nursery")).toBeInTheDocument();
-    expect(screen.getByLabelText("Setup minutes (optional)")).toHaveAccessibleDescription("Added before and after each booking so the next group doesn't walk in on setup");
-    expect(screen.getByLabelText("Cleanup minutes (optional)")).toBeInTheDocument();
+    expect(screen.getByLabelText("Setup minutes (optional)")).toHaveAccessibleDescription("Held before each booking. Leave blank for none.");
+    expect(screen.getByLabelText("Cleanup minutes (optional)")).toHaveAccessibleDescription("Held after each booking. Leave blank for none.");
   });
 
   it("asks for a name before saving", async () => {
@@ -148,6 +148,30 @@ describe("adding a room", () => {
     expect(screen.queryByRole("form")).not.toBeInTheDocument();
     expect(AdminRooms.create).not.toHaveBeenCalled();
   });
+
+  it("moves focus to the first field when the form opens, and back to Add room on Cancel", async () => {
+    await open();
+    expect(screen.getByLabelText(/^Name/)).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Add room" })).toHaveFocus();
+  });
+
+  it("returns focus to the empty state's Add room button on Cancel", async () => {
+    render(<Harness initial={[]} />);
+    await userEvent.click(screen.getByRole("button", { name: "Add room" }));
+    expect(screen.getByLabelText(/^Name/)).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Add room" })).toHaveFocus();
+  });
+
+  it("holds the other openers while the form is open, so edits are never replaced", async () => {
+    render(<Harness initial={[hall, room(2, "Nursery")]} />);
+    await userEvent.click(screen.getByRole("button", { name: "Add room" }));
+    expect(screen.getByRole("button", { name: "Edit Fellowship Hall" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit Nursery" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Edit Nursery" })).toBeEnabled();
+  });
 });
 
 describe("editing a room", () => {
@@ -156,6 +180,23 @@ describe("editing a room", () => {
     await userEvent.click(screen.getByRole("button", { name: "Edit Fellowship Hall" }));
     return screen.getByRole("form", { name: "Edit Fellowship Hall" });
   }
+
+  it("moves focus to the first field, and back to that room's Edit button on Cancel", async () => {
+    await open();
+    expect(screen.getByLabelText(/^Name/)).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Edit Fellowship Hall" })).toHaveFocus();
+  });
+
+  it("keeps unsaved edits when another room's Edit or Add room is tried", async () => {
+    await open();
+    await userEvent.type(screen.getByLabelText(/^Name/), " 2");
+    expect(screen.getByRole("button", { name: "Edit Nursery" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add room" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Edit Nursery" }));
+    expect(screen.getByRole("form", { name: "Edit Fellowship Hall" })).toBeInTheDocument();
+    expect(screen.getByLabelText(/^Name/)).toHaveValue("Fellowship Hall 2");
+  });
 
   it("opens the same form with the room's values", async () => {
     await open();
@@ -194,12 +235,12 @@ describe("editing a room", () => {
 });
 
 describe("deactivating and reactivating", () => {
-  it("deactivates from the More menu without asking", async () => {
+  it("deactivates with one plain button and no confirmation", async () => {
     vi.mocked(AdminRooms.update).mockResolvedValue({ room: { ...hall, active: false } });
     const confirmSpy = vi.spyOn(window, "confirm");
     render(<Harness initial={[hall]} />);
-    await userEvent.click(screen.getByRole("button", { name: "More for Fellowship Hall" }));
-    await userEvent.click(screen.getByRole("menuitem", { name: "Deactivate" }));
+    expect(screen.queryByRole("button", { name: /^More for/ })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Deactivate Fellowship Hall" }));
     expect(AdminRooms.update).toHaveBeenCalledWith(1, { active: false });
     expect(confirmSpy).not.toHaveBeenCalled();
     expect(await screen.findByText("“Fellowship Hall” deactivated.")).toBeInTheDocument();
@@ -211,9 +252,8 @@ describe("deactivating and reactivating", () => {
     const off = { ...hall, active: false };
     vi.mocked(AdminRooms.update).mockResolvedValue({ room: hall });
     render(<Harness initial={[off]} />);
-    await userEvent.click(screen.getByRole("button", { name: "More for Fellowship Hall" }));
-    expect(screen.queryByRole("menuitem", { name: "Deactivate" })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("menuitem", { name: "Reactivate" }));
+    expect(screen.queryByRole("button", { name: "Deactivate Fellowship Hall" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Reactivate Fellowship Hall" }));
     expect(AdminRooms.update).toHaveBeenCalledWith(1, { active: true });
     expect(await screen.findByText("“Fellowship Hall” reactivated.")).toBeInTheDocument();
     expect(screen.queryByText("Inactive")).not.toBeInTheDocument();
@@ -222,8 +262,7 @@ describe("deactivating and reactivating", () => {
   it("says so when it can't change the room", async () => {
     vi.mocked(AdminRooms.update).mockRejectedValue(new ApiError(500, "x"));
     render(<Harness initial={[hall]} />);
-    await userEvent.click(screen.getByRole("button", { name: "More for Fellowship Hall" }));
-    await userEvent.click(screen.getByRole("menuitem", { name: "Deactivate" }));
+    await userEvent.click(screen.getByRole("button", { name: "Deactivate Fellowship Hall" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't deactivate that room.");
     expect(screen.queryByText("Inactive")).not.toBeInTheDocument();
   });

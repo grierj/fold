@@ -1652,7 +1652,7 @@ Phase 1 is done (v0.3), merged through PR #184. It delivered events with time zo
 
 ### 14.5 Phase 2: Rooms
 
-Rooms are optional (9.1) and touch the database, API and UI together, so every milestone ships as thin slices in this order (14.1): the database change, then the API and internals, then the UI. A slice may land hidden behind `rooms_enabled` until its UI exists. Nothing for rooms exists yet: no tables, no setting, no endpoints. In the release table rooms are v0.6, after email (v0.4) and the MVP (v0.5); they may run in parallel with Phase 3 because they share only events and occurrences.
+Rooms are optional (9.1) and touch the database, API and UI together, so every milestone ships as thin slices in this order (14.1): the database change, then the API and internals, then the UI. A slice may land hidden behind `rooms_enabled` until its UI exists. M2.1a (the room catalog and the rooms switch) is built. In the release table rooms are v0.6, after email (v0.4) and the MVP (v0.5); they may run in parallel with Phase 3 because they share only events and occurrences.
 
 Design defaults for this phase (decided here so slices don't reopen them; change them in review if wrong):
 

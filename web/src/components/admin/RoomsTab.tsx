@@ -7,7 +7,6 @@ import { EmptyState } from "../ui/EmptyState";
 import { Checkbox, Field, FormError, focusFirstInvalid, Input, Textarea } from "../ui/Field";
 import { Form } from "../ui/Form";
 import { FormActions } from "../ui/FormActions";
-import { Menu } from "../ui/Menu";
 import { ErrorNotice } from "../ErrorNotice";
 import { Skeleton } from "../ui/Skeleton";
 import { errorCode, errorText } from "../../lib/errors";
@@ -61,6 +60,11 @@ function RoomFormPanel({ room, onSaved, onCancel }: {
   const dirty = (Object.keys(initial) as (keyof RoomForm)[]).some((k) => form[k] !== initial[k]);
   const { guard, markSaved } = useUnsavedChanges(dirty);
   const set = <K extends keyof RoomForm>(key: K, value: RoomForm[K]) => setForm((f) => ({ ...f, [key]: value }));
+
+  // The button that opened the form is gone, so focus starts on the first field.
+  useEffect(() => {
+    formEl.current?.querySelector<HTMLElement>("input, textarea, select")?.focus();
+  }, []);
 
   // The name error renders after the failed save; focus its field then.
   useEffect(() => {
@@ -130,11 +134,11 @@ function RoomFormPanel({ room, onSaved, onCancel }: {
       </Field>
       <Checkbox id={`${idPrefix}-restricted`} label="Only admins can book this room" description="For rooms like the nursery"
         checked={form.restricted} onChange={(e) => set("restricted", e.target.checked)} />
-      <Field id={`${idPrefix}-setup`} label="Setup minutes" optional hint="Added before and after each booking so the next group doesn't walk in on setup">
+      <Field id={`${idPrefix}-setup`} label="Setup minutes" optional hint="Held before each booking. Leave blank for none.">
         <Input type="number" inputMode="numeric" min={0} max={240} step={1} layout="w-28"
           value={form.setup} onChange={(e) => set("setup", e.target.value)} />
       </Field>
-      <Field id={`${idPrefix}-cleanup`} label="Cleanup minutes" optional>
+      <Field id={`${idPrefix}-cleanup`} label="Cleanup minutes" optional hint="Held after each booking. Leave blank for none.">
         <Input type="number" inputMode="numeric" min={0} max={240} step={1} layout="w-28"
           value={form.cleanup} onChange={(e) => set("cleanup", e.target.value)} />
       </Field>
@@ -162,6 +166,20 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
   const [actionError, setActionError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<number | null>(null);
   const statusRef = useRef<HTMLParagraphElement>(null);
+  const rootEl = useRef<HTMLDivElement>(null);
+  // Which opener button gets focus back after Cancel: "new" or a room id.
+  const [returnTo, setReturnTo] = useState<"new" | number | null>(null);
+
+  useEffect(() => {
+    if (returnTo === null || open !== null) return;
+    rootEl.current?.querySelector<HTMLElement>(`[data-opener="${returnTo}"]`)?.focus();
+    setReturnTo(null);
+  }, [returnTo, open]);
+
+  function cancel() {
+    setReturnTo(open);
+    setOpen(null);
+  }
 
   // The form and its trigger go away on save, so focus moves to the line that says what happened.
   useEffect(() => {
@@ -197,17 +215,18 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
   }
 
   return (
-    <div className="space-y-3">
+    <div ref={rootEl} className="space-y-3">
       {actionError && <FormError>{actionError}</FormError>}
       {/* Always rendered so screen readers announce the text when it arrives; empty, it takes no room. */}
       <p ref={statusRef} role="status" tabIndex={-1} className={status ? "text-sm text-text-muted focus:outline-none" : "sr-only"}>{status}</p>
       {open === "new" ? (
-        <RoomFormPanel onSaved={(r) => saved(r, "added")} onCancel={() => setOpen(null)} />
+        <RoomFormPanel onSaved={(r) => saved(r, "added")} onCancel={cancel} />
       ) : rooms.length > 0 && (
-        <div><Button variant="secondary" onClick={startAdding}>Add room</Button></div>
+        // While another room's form is open, switching would drop its edits, so the openers wait.
+        <div><Button variant="secondary" data-opener="new" disabled={open !== null} onClick={startAdding}>Add room</Button></div>
       )}
       {sortRooms(rooms).map((r) => open === r.id ? (
-        <RoomFormPanel key={r.id} room={r} onSaved={(saved_) => saved(saved_, "saved")} onCancel={() => setOpen(null)} />
+        <RoomFormPanel key={r.id} room={r} onSaved={(saved_) => saved(saved_, "saved")} onCancel={cancel} />
       ) : (
         <div key={r.id} className="bg-surface rounded-lg border border-border p-5">
           <div className="flex items-center gap-3 flex-wrap">
@@ -219,15 +238,10 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
               </div>
               {details(r) && <p className="text-sm text-text-muted mt-0.5">{details(r)}</p>}
             </div>
-            <Button variant="secondary" aria-label={`Edit ${r.name}`} onClick={() => { setStatus(""); setOpen(r.id); }}>Edit</Button>
-            <Menu
-              label={`More for ${r.name}`}
-              items={[{
-                label: r.active ? "Deactivate" : "Reactivate",
-                onSelect: () => void setActive(r, !r.active),
-                disabled: busyId === r.id,
-              }]}
-            />
+            <Button variant="secondary" data-opener={r.id} aria-label={`Edit ${r.name}`} disabled={open !== null}
+              onClick={() => { setStatus(""); setOpen(r.id); }}>Edit</Button>
+            <Button variant="secondary" aria-label={`${r.active ? "Deactivate" : "Reactivate"} ${r.name}`} disabled={busyId === r.id}
+              onClick={() => void setActive(r, !r.active)}>{r.active ? "Deactivate" : "Reactivate"}</Button>
           </div>
         </div>
       ))}
@@ -235,7 +249,7 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
         <EmptyState
           title="No rooms yet"
           body="Add the rooms your church books, like the fellowship hall or classrooms."
-          action={<Button variant="primary" onClick={startAdding}>Add room</Button>}
+          action={<Button variant="primary" data-opener="new" onClick={startAdding}>Add room</Button>}
         />
       )}
     </div>

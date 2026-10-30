@@ -1349,40 +1349,27 @@ function SelfSignupSetting() {
 // Rooms on/off (PLAN 9.1, M2.1a). One on/off choice, so like self-signup it
 // saves when changed and goes back if saving fails (DEC-98). Turning it on
 // shows the Rooms tab at once; turning it off hides rooms and deletes nothing.
-function RoomsSetting({ onChanged }: { onChanged: (enabled: boolean) => void }) {
-  const [enabled, setEnabled] = useState(false);
+// `enabled` is what AdminPage already read from /site (null until it answers).
+function RoomsSetting({ enabled, onChanged }: { enabled: boolean | null; onChanged: (enabled: boolean) => void }) {
+  // The choice shown while a save is in flight; null means show `enabled`.
+  const [pending, setPending] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    Site.get()
-      .then((s) => {
-        if (!alive) return;
-        setEnabled(!!s.roomsEnabled);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
-  }, []);
-
   async function change(next: boolean) {
-    const previous = enabled;
     setSaving(true);
-    setEnabled(next);
+    setPending(next);
     setError(null);
     setOk(false);
     try {
       const r = await AdminRooms.setEnabled(next);
-      setEnabled(r.roomsEnabled);
       onChanged(r.roomsEnabled);
       setOk(true);
     } catch (err) {
-      setEnabled(previous);
       setError(errorText(err, "We couldn't save that setting."));
     } finally {
+      setPending(null);
       setSaving(false);
     }
   }
@@ -1392,8 +1379,8 @@ function RoomsSetting({ onChanged }: { onChanged: (enabled: boolean) => void }) 
       <Checkbox
         label="Use rooms"
         description="Book rooms for events and see what's booked. Turning this off hides rooms; nothing is deleted."
-        checked={enabled}
-        disabled={saving}
+        checked={pending ?? enabled === true}
+        disabled={saving || enabled === null}
         onChange={(e) => void change(e.target.checked)}
       />
       <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
@@ -1409,6 +1396,8 @@ export function AdminPage() {
   // Whether rooms are on: unknown (null) until /site answers. The Rooms tab
   // exists only while they are on; a bookmarked one waits for the answer.
   const [roomsEnabled, setRoomsEnabled] = useState<boolean | null>(null);
+  // /site failing leaves roomsEnabled unknown; a bookmarked Rooms tab then says so and offers a retry.
+  const [siteError, setSiteError] = useState<string | null>(null);
   const roomsShown = roomsEnabled === true || (roomsEnabled === null && requestedTab === "rooms");
   const tab: AdminTab = requestedTab && ["approvals", "groups", "users", "invite", "settings", ...(roomsShown ? ["rooms"] : [])].includes(requestedTab)
     ? requestedTab as AdminTab : "approvals";
@@ -1460,6 +1449,10 @@ export function AdminPage() {
       setRoomsError(errorText(e, "We couldn't load the rooms."));
     }
   }, []);
+  const loadSite = useCallback(() => {
+    setSiteError(null);
+    Site.get().then((s) => setRoomsEnabled(!!s.roomsEnabled), (e) => setSiteError(errorText(e, "We couldn't load the rooms.")));
+  }, []);
   const roomSaved = useCallback((room: Room) => setRooms((prev) => sortRooms([...(prev ?? []).filter((r) => r.id !== room.id), room])), []);
   const groupDeleted = useCallback((id: number) => setGroups((prev) => prev && prev.filter((g) => g.id !== id)), []);
 
@@ -1467,9 +1460,9 @@ export function AdminPage() {
     if (!authLoading && user && isAdmin) {
       loadUsers();
       void loadGroups();
-      Site.get().then((s) => setRoomsEnabled(!!s.roomsEnabled), () => {});
+      loadSite();
     } else if (!authLoading) setUsersLoading(false);
-  }, [authLoading, user, isAdmin, loadUsers, loadGroups]);
+  }, [authLoading, user, isAdmin, loadUsers, loadGroups, loadSite]);
 
   useEffect(() => {
     if (roomsEnabled) void loadRooms();
@@ -1512,12 +1505,13 @@ export function AdminPage() {
         <h2 id="admin-settings-heading" className="text-xl font-bold mb-4">Church settings</h2>
         <ChurchTimezone />
         <SelfSignupSetting />
-        <RoomsSetting onChanged={setRoomsEnabled} />
+        <RoomsSetting enabled={roomsEnabled} onChanged={setRoomsEnabled} />
         <ButtonLink to="/events/new" variant="secondary">Schedule a church-wide event</ButtonLink>
       </section>}
       {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} onGroupDecided={loadGroups} />}
       {tab === "groups" && <GroupsTab users={users} groups={groups} error={groupsError} reload={loadGroups} onDeleted={groupDeleted} />}
-      {tab === "rooms" && <RoomsTab rooms={rooms} error={roomsError} reload={loadRooms} onSaved={roomSaved} />}
+      {tab === "rooms" && <RoomsTab rooms={rooms} error={roomsEnabled === null ? siteError : roomsError}
+        reload={roomsEnabled === null ? loadSite : loadRooms} onSaved={roomSaved} />}
       {tab === "users" && (
         usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}
