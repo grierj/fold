@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type APIRequestContext, type Page, type Request, type Route } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Locator, type Page, type Request, type Route } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { apiAs, signInTo } from "./helpers";
 import { formatCalendarDay } from "../src/lib/when";
@@ -34,6 +34,19 @@ async function answerDate(request: APIRequestContext, user: string, eventId: num
 
 function answerGroups(page: Page) {
   return page.getByRole("group", { name: "Your answer" });
+}
+
+// Childcare folds away until used (DEC-92), and a series date has no
+// whole-series buttons: its Going / Maybe / Can't go open the scope dialog.
+const requestCare = (card: Locator) => card.getByRole("button", { name: "Bringing children? Request childcare" }).click();
+const changeCare = (card: Locator) => card.getByRole("button", { name: "Change childcare request" }).click();
+async function answerAllFuture(page: Page, control: Locator, answer: "Going" | "Maybe" | "Can't go") {
+  await control.getByRole("button", { name: answer, exact: true }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
+}
+async function chooseDatesForMe(page: Page, form: Locator) {
+  await form.getByRole("button", { name: "Choose dates for my answer" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
 }
 
 async function holdNextPostResponse(page: Page, path: string) {
@@ -197,7 +210,7 @@ test("all three series scopes submit, keyboard focus is contained, bulk Can't go
     confirmMessage = confirm.message();
     await confirm.accept();
   });
-  await page.getByRole("button", { name: "Can't go to any" }).first().click();
+  await answerAllFuture(page, answerGroups(page).first(), "Can't go");
   expect(confirmMessage).toContain("removed from your calendar and personal feed");
   await expect(page.getByRole("status").filter({ hasText: /Can't go to 4 dates/ })).toBeVisible();
   await expect(page.getByRole("status").filter({ hasText: "Maybe for 4 dates" })).toHaveCount(0);
@@ -241,15 +254,18 @@ test("non-household sibling fields refresh after a series answer and Undo withou
   await first.getByLabel("Extra guests").fill("2");
   await first.getByRole("radio", { name: "Remote" }).click();
   await expect(first.getByRole("status")).toContainText("Switched to remote");
+  await requestCare(first);
   await first.getByLabel(/^Children needing childcare/).fill("2");
   await first.getByLabel(/^Ages/).fill("4 and 6");
-  await first.getByRole("button", { name: "Save" }).click();
+  await first.getByRole("button", { name: "Save childcare" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
   await expect(first.getByRole("button", { name: "Undo" })).toBeVisible();
 
   for (const card of [first, second]) {
     await expect(card.getByRole("radio", { name: "Remote" })).toBeChecked();
     await expect(card.getByLabel("Extra guests")).toHaveValue("2");
+    await expect(card.getByText("Childcare for 2 (ages 4 and 6)")).toBeVisible();
+    await changeCare(card);
     await expect(card.getByLabel(/^Children needing childcare/)).toHaveValue("2");
     await expect(card.getByLabel(/^Ages/)).toHaveValue("4 and 6");
   }
@@ -276,13 +292,13 @@ test("non-household sibling fields refresh after a series answer and Undo withou
 
   const subsequentRequest = page.waitForRequest((request) => request.method() === "PUT"
     && request.url().endsWith(`/api/v1/events/${event.id}/registrations`));
-  await second.getByRole("button", { name: "Save" }).click();
+  await second.getByRole("button", { name: "Save childcare" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Just this date" }).click();
   expect((await subsequentRequest).postDataJSON()).toEqual({
     status: "going", date: before.occurrences[1].date, guestCount: 0, attendanceMode: "in_person",
     childcareCount: 0, childcareAgesNote: "",
   });
-  await expect(second.getByRole("status")).toContainText("Saved: going, no childcare");
+  await expect(second.getByRole("status")).toContainText("You're going. See you there!");
   const afterSave = await sam("GET", `/events/${event.id}`) as {
     occurrences: { myAttendanceMode: string; myGuestCount: number; myChildcareCount: number; myChildcareAgesNote: string }[];
   };
@@ -315,6 +331,7 @@ test("page-wide mutation serialization blocks sibling saves while committed Appl
   await firstCard.getByRole("radio", { name: "Remote" }).click();
   await expect(firstCard.getByRole("status")).toContainText("Switched to remote");
   await firstCard.getByLabel("Extra guests").fill("2");
+  await requestCare(firstCard);
   await firstCard.getByLabel(/^Children needing childcare/).fill("2");
   await firstCard.getByLabel(/^Ages/).fill("4 and 6");
 
@@ -324,7 +341,7 @@ test("page-wide mutation serialization blocks sibling saves while committed Appl
   };
   page.on("request", countSoloOrdinary);
   const heldApply = await holdNextPostResponse(page, `/api/v1/events/${solo.id}/series-registrations`);
-  await firstCard.getByRole("button", { name: "Save" }).click();
+  await firstCard.getByRole("button", { name: "Save childcare" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
   await heldApply.committed;
   await expect(siblingCard.getByRole("button", { name: "Maybe", exact: true })).toBeDisabled();
@@ -340,11 +357,12 @@ test("page-wide mutation serialization blocks sibling saves while committed Appl
   await expect(siblingCard.getByRole("button", { name: "Maybe", exact: true })).toBeEnabled();
   await expect(siblingCard.getByRole("radio", { name: "Remote" })).toBeChecked();
   await expect(siblingCard.getByLabel("Extra guests")).toHaveValue("2");
+  await changeCare(siblingCard);
   await expect(siblingCard.getByLabel(/^Children needing childcare/)).toHaveValue("2");
   await expect(siblingCard.getByLabel(/^Ages/)).toHaveValue("4 and 6");
   const soloSave = page.waitForRequest((request) => request.method() === "PUT"
     && request.url().endsWith(`/api/v1/events/${solo.id}/registrations`));
-  await siblingCard.getByRole("button", { name: "Save" }).click();
+  await siblingCard.getByRole("button", { name: "Save childcare" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Just this date" }).click();
   expect((await soloSave).postDataJSON()).toEqual({
     status: "going", date: soloDetail.occurrences[1].date, guestCount: 2, attendanceMode: "remote",
@@ -364,7 +382,7 @@ test("page-wide mutation serialization blocks sibling saves while committed Appl
   await firstForm.getByRole("checkbox", { name: "Me" }).click();
   await firstForm.getByRole("checkbox", { name: "Mary" }).click();
   await firstForm.getByLabel("Answer for Mary").selectOption("maybe");
-  await firstForm.getByRole("button", { name: "Going to all dates" }).click();
+  await chooseDatesForMe(page, firstForm);
   await expect(firstForm.getByRole("button", { name: "Undo" })).toBeVisible();
 
   ordinaryRequests = 0;
@@ -426,30 +444,32 @@ test("Apply and Undo publish authoritative sibling state before delayed parent G
   let firstCard = cards.first();
   let siblingCard = cards.nth(1);
   const soloApplyRefresh = await holdNextEventRefresh(page, soloApply.id);
-  await firstCard.getByRole("button", { name: "Save" }).click();
+  await changeCare(firstCard);
+  await firstCard.getByRole("button", { name: "Save childcare" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "All future dates" }).click();
   await soloApplyRefresh.started;
   await expect(siblingCard.getByRole("radio", { name: "Remote" })).toBeChecked();
   await expect(siblingCard.getByLabel("Extra guests")).toHaveValue("2");
+  await changeCare(siblingCard);
   await expect(siblingCard.getByLabel(/^Children needing childcare/)).toHaveValue("2");
   await expect(siblingCard.getByLabel(/^Ages/)).toHaveValue("4 and 6");
   await capture(page, "series-atomic-solo-apply-held", true, [390]);
   let saveRequest = page.waitForRequest((request) => request.method() === "PUT"
     && request.url().endsWith(`/api/v1/events/${soloApply.id}/registrations`));
-  await siblingCard.getByRole("button", { name: "Save" }).click();
+  await siblingCard.getByRole("button", { name: "Save childcare" }).click();
   await page.getByRole("dialog").getByRole("button", { name: "Just this date" }).click();
   expect((await saveRequest).postDataJSON()).toEqual({
     status: "going", date: detail.occurrences[1].date, guestCount: 2, attendanceMode: "remote",
     childcareCount: 2, childcareAgesNote: "4 and 6",
   });
-  await expect(siblingCard.getByRole("status")).toContainText("Saved: going");
+  await expect(siblingCard.getByRole("status")).toContainText("You're going. See you there!");
   await soloApplyRefresh.release();
   await expect(siblingCard.getByRole("radio", { name: "Remote" })).toBeChecked();
 
   const soloUndo = await createEvent(request, "Solo delayed Undo proof", 33, "FREQ=WEEKLY;COUNT=2");
   await signInTo(page, "sam", `/events/${soloUndo.id}`);
   await expect(answerGroups(page)).toHaveCount(2);
-  await page.getByRole("button", { name: "Maybe for all" }).first().click();
+  await answerAllFuture(page, answerGroups(page).first(), "Maybe");
   await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
   const soloUndoRefresh = await holdNextEventRefresh(page, soloUndo.id);
   await page.getByRole("button", { name: "Undo" }).click();
@@ -487,7 +507,7 @@ test("Apply and Undo publish authoritative sibling state before delayed parent G
   await firstForm.getByRole("checkbox", { name: "Mary" }).click();
   await firstForm.getByLabel("Answer for Mary").selectOption("maybe");
   const householdApplyRefresh = await holdNextEventRefresh(page, householdApply.id);
-  await firstForm.getByRole("button", { name: "Going to all dates" }).click();
+  await chooseDatesForMe(page, firstForm);
   await householdApplyRefresh.started;
   await expect(siblingForm.getByRole("checkbox", { name: "Me" })).toBeChecked();
   await expect(siblingForm.getByRole("group", { name: "How you will attend" }).getByRole("radio", { name: "Remote" })).toBeChecked();
@@ -524,7 +544,7 @@ test("Apply and Undo publish authoritative sibling state before delayed parent G
   await firstForm.getByLabel(/^Ages/).fill("4 and 6");
   await firstForm.getByRole("checkbox", { name: "Mary" }).click();
   await firstForm.getByLabel("Answer for Mary").selectOption("maybe");
-  await firstForm.getByRole("button", { name: "Going to all dates" }).click();
+  await chooseDatesForMe(page, firstForm);
   await expect(firstForm.getByRole("button", { name: "Undo" })).toBeVisible();
   const householdUndoRefresh = await holdNextEventRefresh(page, householdUndo.id);
   await firstForm.getByRole("button", { name: "Undo" }).click();
@@ -596,7 +616,8 @@ test("a household user keeps one-date drafts while their own answer uses every s
   await first.getByLabel("Extra guests").fill("2");
   await first.getByLabel(/^Other children needing childcare/).fill("2");
   await first.getByLabel(/^Ages/).fill("unsaved draft");
-  await first.getByRole("button", { name: "Maybe for all" }).click();
+  await first.getByLabel("Answer for you").selectOption("maybe");
+  await chooseDatesForMe(page, first);
   await expect(page.getByRole("status").filter({ hasText: "Maybe for 4 dates" })).toHaveCount(1);
   const refreshed = await parent("GET", `/events/${event.id}`) as {
     occurrences: { myRegistration: string | null; myAttendanceMode: "in_person" | "remote"; myGuestCount: number; myChildcareCount: number; myChildcareAgesNote: string }[];
@@ -671,7 +692,7 @@ test("unrelated household refreshes preserve drafts and a no-op actor bulk refre
   await expect(first.getByLabel("Answer for Mary")).toHaveValue("maybe");
 
   await second.getByRole("checkbox", { name: "Me" }).click();
-  await second.getByRole("button", { name: "Going to all dates" }).click();
+  await chooseDatesForMe(page, second);
   await expect(page.getByRole("status").filter({ hasText: "Going to 2 dates" })).toBeVisible();
   await expect(first.getByLabel("Answer for you")).toHaveValue("going");
   await expect(first.getByRole("group", { name: "How you will attend" }).getByRole("radio", { name: "In person" })).toBeChecked();
@@ -699,7 +720,7 @@ test("terminal Undo after authority loss refreshes away protected event details"
   }) as { event: { id: number } };
 
   await signInTo(page, "sam", `/events/${event.id}`);
-  await page.getByRole("button", { name: "Maybe for all" }).first().click();
+  await answerAllFuture(page, answerGroups(page).first(), "Maybe");
   await expect(page.getByRole("button", { name: "Undo" })).toBeVisible();
 
   const { departure } = await admin("GET", `/groups/${group.id}/members/${sam!.id}/departure-preview`) as { departure: { snapshot: string } };

@@ -211,7 +211,7 @@ export function Home() {
 
       {openEvents.length > 0 && (
         <section className="max-w-6xl mx-auto px-4 pt-8">
-          <h2 className="text-2xl font-bold mb-4">Church Events</h2>
+          <h2 className="text-2xl font-bold mb-4">Church events</h2>
           <div className="space-y-3">
             {openEvents.map((ev) => (
               <Link
@@ -227,7 +227,6 @@ export function Home() {
                     {ev.location ? ` · ${ev.location}` : ""}
                   </div>
                   {ev.description && <div className="text-sm text-text-muted line-clamp-2">{ev.description}</div>}
-                  {ev.hostedBy && <div className="text-sm text-text-muted">Hosted by {ev.hostedBy}</div>}
                 </div>
               </Link>
             ))}
@@ -237,7 +236,7 @@ export function Home() {
 
       {/* Group grid */}
       <section className="max-w-6xl mx-auto px-4 py-8">
-        <h2 className="text-2xl font-bold mb-4">Church Groups</h2>
+        <h2 className="text-2xl font-bold mb-4">Groups</h2>
         {/* The skeleton is for the first load only: while a new search or tag
             loads, the last results stay put instead of blinking out. */}
         {loading && groups.length === 0 && (

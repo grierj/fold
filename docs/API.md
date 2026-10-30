@@ -1652,6 +1652,16 @@ invalid, cancelled, deleted, or unauthorized dates return 404; signed-out
 requests for nonpublic dates return 404. GET has no side effects and does not approve an ask.
 Pending asks and ordinary registration rows alone confer no extra visibility.
 
+`GET /api/v1/events/:id/dates/:date/calendar.ics` (DEC-93) downloads that date
+as a one-event iCalendar file (`text/calendar`, `Content-Disposition:
+attachment; filename="event-YYYY-MM-DD.ics"`). It uses the same load as the
+JSON read above, so the same requests get 404 (JSON) and the file carries only
+the date's own title, place, times, remote line, exact-date URL and, when the
+JSON would show it, the video link. `STATUS` is `CONFIRMED` for your Going,
+`TENTATIVE` for Maybe or Waitlisted, and absent otherwise. The `UID` matches
+the feeds', so a calendar that also subscribes keeps one copy. No calendar
+name, description, hosts or attendees.
+
 `EventDate` has exactly these fields (optional keys marked `?`):
 
 ```text

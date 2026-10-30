@@ -33,7 +33,8 @@ test("event times follow the browser's zone, with one 'held in' line on the even
   await expect(card.getByText(/Held in/)).toHaveCount(0);
 
   await page.goto(`/events/${event.id}`);
-  await expect(page.getByText(/^12:30 AM/)).toBeVisible();
+  // A single-date event says when in its header line (DEC-92), still in the browser's zone.
+  await expect(page.getByText(/ · 12:30–1:30 AM$/)).toBeVisible();
   await expect(page.getByText(/^Held in Mountain time \(\w{3}, 10:30 PM M[DS]T\)$/)).toBeVisible();
 
   // The per-date editor edits the event's own clock and says which zone.

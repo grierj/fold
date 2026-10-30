@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from "react";
+import { createPortal } from "react-dom";
 import { Button } from "./ui/Button";
 
 export type SeriesRsvpScope = "just_this_date" | "this_and_following" | "all_future";
@@ -11,11 +12,20 @@ export function SeriesRsvpDialog({ answer, disabled = false, onChoose, onCancel 
 }) {
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
+  const overlay = useRef<HTMLDivElement>(null);
 
+  // A modal: the overlay sits directly in <body>, and everything else is inert
+  // while it is open, so taps, focus, screen readers and target-size checks
+  // never reach the page behind it.
   useEffect(() => {
     const returnTo = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const behind = Array.from(document.body.children).filter((el) => el !== overlay.current && !el.hasAttribute("inert"));
+    behind.forEach((el) => el.setAttribute("inert", ""));
     panel.current?.querySelector<HTMLElement>("button")?.focus();
-    return () => returnTo?.focus();
+    return () => {
+      behind.forEach((el) => el.removeAttribute("inert"));
+      returnTo?.focus();
+    };
   }, []);
 
   function keyDown(event: React.KeyboardEvent<HTMLDivElement>) {
@@ -38,7 +48,7 @@ export function SeriesRsvpDialog({ answer, disabled = false, onChoose, onCancel 
     }
   }
 
-  return <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" onMouseDown={(event) => {
+  return createPortal(<div ref={overlay} className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 p-0 sm:p-4" onMouseDown={(event) => {
     if (event.target === event.currentTarget) onCancel();
   }}>
     <div ref={panel} role="dialog" aria-modal="true" aria-labelledby={titleId} onKeyDown={keyDown}
@@ -50,7 +60,8 @@ export function SeriesRsvpDialog({ answer, disabled = false, onChoose, onCancel 
         <Button variant="secondary" layout="w-full min-h-11 justify-start text-left" disabled={disabled} onClick={() => onChoose("this_and_following")}>This and following dates</Button>
         <Button variant="secondary" layout="w-full min-h-11 justify-start text-left" disabled={disabled} onClick={() => onChoose("all_future")}>All future dates</Button>
       </div>
+      <p className="text-sm text-text-muted">New dates added later won&apos;t be answered for you.</p>
       <Button variant="secondary" layout="w-full" onClick={onCancel}>Cancel</Button>
     </div>
-  </div>;
+  </div>, document.body);
 }

@@ -9,9 +9,12 @@ vi.mock("../api", () => ({
 
 it("keeps the login link phone-sized without enlarging the surrounding prose", async () => {
   render(<MemoryRouter><Join /></MemoryRouter>);
-  await screen.findByRole("heading", { name: "Join Grace" });
+  await screen.findByRole("heading", { name: "Request an account at Grace" });
+  expect(screen.getByText("Send your request.")).toBeInTheDocument();
+  expect(screen.getByText("An admin reviews it.")).toBeInTheDocument();
+  expect(screen.getByText("We email you a link to set your password.")).toBeInTheDocument();
   const link = screen.getByRole("link", { name: "Log in" });
   expect(link).toHaveAttribute("href", "/login");
-  expect(link).toHaveClass("inline-flex", "min-h-11", "items-center");
+  expect(link).toHaveClass("text-link");
   expect(link.parentElement?.className).not.toMatch(/leading-/);
 });

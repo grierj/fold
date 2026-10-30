@@ -21,12 +21,15 @@ test("an admin schedules a church-wide event in the church time zone", async ({ 
   await expect(page).toHaveURL(/\/events\/\d+$/);
   await expect(page.getByRole("heading", { name: "Church potluck", level: 1 })).toBeVisible();
   await expect(page.getByText("Bring a side dish.")).toBeVisible();
-  await expect(page.getByText("Hosted by Fold e2e")).toBeVisible();
+  // A church-wide event says so rather than naming the church (DEC-99).
+  await expect(page.getByText("Church-wide event")).toBeVisible();
+  await expect(page.getByText(/^Hosted by/)).toHaveCount(0);
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Church Events" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Church events" })).toBeVisible();
   await expect(page.getByRole("link", { name: /Church potluck/ })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Church potluck/ })).toContainText("Hosted by Fold e2e");
+  // Home lists these under "Church events", so the card names no host (DEC-99).
+  await expect(page.getByRole("link", { name: /Church potluck/ })).not.toContainText("Hosted by");
 });
 
 test("opening an invite-only group's event hides the group and the names", async ({ page, request }) => {

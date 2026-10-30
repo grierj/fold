@@ -143,7 +143,8 @@ describe("RsvpButtons", () => {
     expect(screen.getByRole("status")).not.toHaveTextContent("2026-12-01");
 
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-    await userEvent.click(screen.getByRole("button", { name: "Can't go to any" }));
+    await userEvent.click(screen.getByRole("button", { name: "Can't go" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
     expect(confirm).toHaveBeenCalled();
     expect(Events.registerSeries).toHaveBeenCalledTimes(1);
   });
@@ -156,7 +157,8 @@ describe("RsvpButtons", () => {
     });
     const instance = occurrence({ recurrenceRule: "FREQ=WEEKLY" });
     const view = render(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: instance.date, revision: 1, actorResults: [{ date: instance.date, after: {} }] }} />);
-    await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
+    await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
     expect(await screen.findByRole("status")).toHaveTextContent("Maybe for 1 date");
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
     view.rerender(<RsvpButtons instance={instance} onChange={() => {}} seriesFeedback={{ eventId: instance.eventId, date: "2026-12-08", revision: 2, actorResults: [{ date: "2026-12-08", after: {} }] }} />);
@@ -176,7 +178,8 @@ describe("RsvpButtons", () => {
     } });
     const onSeriesFeedback = vi.fn();
     render(<RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY" })} onChange={() => {}} onSeriesFeedback={onSeriesFeedback} />);
-    await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
+    await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
     expect(await screen.findByRole("button", { name: "Undo" })).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
     await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
@@ -203,7 +206,8 @@ describe("RsvpButtons", () => {
     vi.mocked(Events.undoSeriesRegistration).mockRejectedValue(new ApiError(409, "terminal", { code }));
     const onTerminalRefresh = vi.fn();
     render(<RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY" })} onChange={() => {}} onTerminalRefresh={onTerminalRefresh} />);
-    await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
+    await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
     await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
     expect(await screen.findByRole("alert")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument();
@@ -218,7 +222,8 @@ describe("RsvpButtons", () => {
       refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 250).toISOString(),
     });
     render(<RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY" })} onChange={() => {}} />);
-    await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
+    await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
     expect(await screen.findByRole("button", { name: "Undo" })).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByRole("button", { name: "Undo" })).not.toBeInTheDocument());
     expect(screen.getByRole("status")).toHaveTextContent("The 10-second Undo time has ended. You can change your answers again from the event.");
@@ -241,6 +246,79 @@ describe("RsvpButtons", () => {
   });
 });
 
+
+describe("series dates and the standing answer line (DEC-92)", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it("has no repeated whole-series block; the dialog is the way to answer every date", async () => {
+    vi.mocked(Events.registerSeries).mockResolvedValue({ eventId: 7, scope: "all_future", date: "2026-12-01", status: "maybe", results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "maybe" } }], refusals: [] });
+    render(<RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY" })} onChange={() => {}} />);
+    expect(screen.queryByText("Answer the whole series")).not.toBeInTheDocument();
+    for (const name of ["Going to all dates", "Maybe for all", "Can't go to any"]) {
+      expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
+    expect(screen.getByText("New dates added later won't be answered for you.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
+    expect(Events.registerSeries).toHaveBeenCalledWith(7, expect.objectContaining({ status: "maybe", scope: "all_future" }));
+  });
+
+  it("household series dates have no whole-series block either and reach all_future through the dialog", async () => {
+    vi.mocked(Events.registerSeries).mockResolvedValue({ eventId: 7, scope: "all_future", date: "2026-12-01", status: "going", results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "going" } }], refusals: [] });
+    const mary: import("../types").HouseholdPerson = { id: 18, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary", kind: "adult", age: 35, photoConsent: false, linkStatus: "confirmed", registrationEligibility: "eligible", createdBy: 3 };
+    render(<MemoryRouter><RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY" })} people={[mary]} onChange={() => {}} /></MemoryRouter>);
+    expect(screen.queryByText("Answer the whole series")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Going to all dates" })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("checkbox", { name: "Me" }));
+    await userEvent.click(screen.getByRole("button", { name: "Choose dates for my answer" }));
+    expect(screen.getByText("New dates added later won't be answered for you.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
+    expect(Events.registerSeries).toHaveBeenCalledWith(7, expect.objectContaining({ status: "going", scope: "all_future" }));
+  });
+
+  it.each([
+    ["going", "You're going. See you there!"],
+    ["maybe", "You said maybe. Change it anytime."],
+    ["declined", "Got it. Only the leaders see this."],
+  ] as const)("says what happened for a standing %s answer, in the one status region", (status, line) => {
+    render(<RsvpButtons instance={occurrence({ myRegistration: status })} onChange={() => {}} />);
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByRole("status")).toHaveTextContent(line);
+    // It sits under the control, not above it.
+    const control = screen.getByRole("group", { name: "Your answer" });
+    expect(control.compareDocumentPosition(screen.getByRole("status")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("shows nothing before an answer, and leaves waitlisted copy alone", () => {
+    const view = render(<RsvpButtons instance={occurrence({})} onChange={() => {}} />);
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    view.unmount();
+    render(<RsvpButtons instance={occurrence({ myRegistration: "waitlisted", myWaitlistPosition: 2, waitlistEnabled: true })} onChange={() => {}} />);
+    expect(screen.getByText(/Waitlisted — position 2/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+  });
+
+  it("shows the line after answering a single date", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ people: [], registration: { registrationId: 31, userId: 3, eventId: 7, occurrenceId: 1, date: "2026-12-01", status: "maybe", guestCount: 0, childcareCount: 0, childcareAgesNote: "", waitlistPosition: null, attendanceMode: "in_person" } });
+    function Saved() {
+      const [instance, setInstance] = useState(occurrence({}));
+      return <RsvpButtons instance={instance} onChange={({ registration }) => registration && setInstance((old) => ({ ...old, myRegistration: registration.status }))} />;
+    }
+    render(<Saved />);
+    await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
+    expect(await screen.findByText("You said maybe. Change it anytime.")).toBeInTheDocument();
+  });
+
+  it("lets a series result win over the standing line", async () => {
+    vi.mocked(Events.registerSeries).mockResolvedValue({ eventId: 7, scope: "all_future", status: "going", results: [1, 2, 3].map((n) => ({ occurrenceId: n, date: `2026-12-0${n}`, before: {}, after: { registrationId: n, status: "going" as const } })), refusals: [] });
+    render(<RsvpButtons instance={occurrence({ recurrenceRule: "FREQ=WEEKLY", myRegistration: "going" })} onChange={() => {}} />);
+    expect(screen.getByRole("status")).toHaveTextContent("You're going. See you there!");
+    await userEvent.click(screen.getByRole("button", { name: "Going" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
+    expect(await screen.findByText(/Going to 3 dates/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).not.toHaveTextContent("See you there");
+  });
+});
 
 describe("single RSVP series refreshes", () => {
   beforeEach(() => vi.resetAllMocks());
@@ -296,18 +374,21 @@ describe("single RSVP series refreshes", () => {
     await userEvent.click(first.getByRole("radio", { name: "Remote" }));
     await userEvent.clear(first.getByLabelText("Extra guests"));
     await userEvent.type(first.getByLabelText("Extra guests"), "2");
+    await userEvent.click(first.getByRole("button", { name: "Bringing children? Request childcare" }));
     await userEvent.clear(first.getByLabelText(/^Children needing childcare/));
     await userEvent.type(first.getByLabelText(/^Children needing childcare/), "2");
     await userEvent.type(first.getByLabelText(/^Ages/), "4 and 6");
-    await userEvent.click(first.getByRole("button", { name: "Save" }));
+    await userEvent.click(first.getByRole("button", { name: "Save childcare" }));
     await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
 
     await waitFor(() => expect(second.getByRole("radio", { name: "Remote" })).toBeChecked());
     expect(second.getByLabelText("Extra guests")).toHaveValue(2);
+    expect(second.getByText(/Childcare for 2 \(ages 4 and 6\)/)).toBeInTheDocument();
+    await userEvent.click(second.getByRole("button", { name: "Change childcare request" }));
     expect(second.getByLabelText(/^Children needing childcare/)).toHaveValue("2");
     expect(second.getByLabelText(/^Ages/)).toHaveValue("4 and 6");
 
-    await userEvent.click(second.getByRole("button", { name: "Save" }));
+    await userEvent.click(second.getByRole("button", { name: "Save childcare" }));
     await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
     expect(Events.register).toHaveBeenLastCalledWith(7, {
       status: "going", date: "2026-12-08", guestCount: 2, attendanceMode: "remote",
@@ -344,19 +425,21 @@ describe("single RSVP series refreshes", () => {
     await userEvent.click(first.getByRole("radio", { name: "Remote" }));
     await userEvent.clear(first.getByLabelText("Extra guests"));
     await userEvent.type(first.getByLabelText("Extra guests"), "2");
+    await userEvent.click(first.getByRole("button", { name: "Bringing children? Request childcare" }));
     await userEvent.clear(first.getByLabelText(/^Children needing childcare/));
     await userEvent.type(first.getByLabelText(/^Children needing childcare/), "2");
     await userEvent.type(first.getByLabelText(/^Ages/), "4 and 6");
-    await userEvent.click(first.getByRole("button", { name: "Save" }));
+    await userEvent.click(first.getByRole("button", { name: "Save childcare" }));
     await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
     await userEvent.click(await first.findByRole("button", { name: "Undo" }));
 
     await waitFor(() => expect(second.getByRole("radio", { name: "In person" })).toBeChecked());
     expect(second.getByLabelText("Extra guests")).toHaveValue(0);
+    await userEvent.click(second.getByRole("button", { name: "Bringing children? Request childcare" }));
     expect(second.getByLabelText(/^Children needing childcare/)).toHaveValue("0");
     expect(second.getByLabelText(/^Ages/)).toHaveValue("");
 
-    await userEvent.click(second.getByRole("button", { name: "Save" }));
+    await userEvent.click(second.getByRole("button", { name: "Save childcare" }));
     await userEvent.click(screen.getByRole("button", { name: "Just this date" }));
     expect(Events.register).toHaveBeenLastCalledWith(7, {
       status: "going", date: "2026-12-08", guestCount: 0, attendanceMode: "in_person",
@@ -397,6 +480,7 @@ describe("single RSVP series refreshes", () => {
       await userEvent.click(card.getByRole("radio", { name: "Remote" }));
       await userEvent.clear(card.getByLabelText("Extra guests"));
       await userEvent.type(card.getByLabelText("Extra guests"), "2");
+      await userEvent.click(card.getByRole("button", { name: "Bringing children? Request childcare" }));
       await userEvent.clear(card.getByLabelText(/^Children needing childcare/));
       await userEvent.type(card.getByLabelText(/^Children needing childcare/), "2");
       await userEvent.type(card.getByLabelText(/^Ages/), "draft ages");
@@ -446,7 +530,7 @@ describe("remote attendance changes", () => {
     await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
     await waitFor(() => expect(screen.getByRole("radio", { name: "In person" })).toBeChecked());
     expect(screen.getByRole("alert")).toHaveTextContent("We couldn't reach Fold. Check your connection and try again.");
-    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(screen.getByRole("status")).not.toHaveTextContent("Switched");
   });
 
   it("names the remote pool if a switch is refused because it filled up", async () => {
@@ -495,7 +579,9 @@ describe("childcare RSVP", () => {
     }))} />;
   }
 
-  it("saves Going with zero children before showing it as selected", async () => {
+  const REQUEST = { name: "Bringing children? Request childcare" };
+
+  it("saves Going with zero children before showing it as selected, with childcare folded away", async () => {
     let complete = () => {};
     vi.mocked(Events.register).mockImplementation(() => new Promise((resolve) => {
       complete = () => resolve({ people: [], registration });
@@ -506,12 +592,13 @@ describe("childcare RSVP", () => {
     await userEvent.click(going);
     expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, { status: "going", date: "2026-12-01", guestCount: 0, attendanceMode: undefined, ...{ childcareCount: 0, childcareAgesNote: "" } });
     expect(going).toHaveAttribute("aria-pressed", "false");
-    expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", REQUEST)).not.toBeInTheDocument();
     await act(async () => complete());
     expect(going).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText("Childcare for this date")).toBeInTheDocument();
-    expect(screen.getByLabelText(/^Children needing childcare/)).toHaveValue("0");
-    expect(screen.getByRole("status")).toHaveTextContent("Saved: going, no childcare");
+    expect(screen.getByRole("button", REQUEST)).toBeInTheDocument();
+    expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Children needing childcare/)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("You're going. See you there!");
     expect(screen.getByRole("status")).toHaveFocus();
   });
 
@@ -520,24 +607,75 @@ describe("childcare RSVP", () => {
     render(<SavedRsvp />);
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "false");
-    expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", REQUEST)).not.toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("We couldn't reach Fold.");
   });
 
-  it.each([1, 2, 0])("saves %s children separately and announces the saved request", async (count) => {
-    vi.mocked(Events.register).mockResolvedValue({ people: [], registration: { ...registration, childcareCount: count, childcareAgesNote: "3 and 7" } });
+  it("reveals the fields from the link, and Cancel folds them away without saving", async () => {
     render(<SavedRsvp initial={occurrence({ childcareAvailable: true, myRegistration: "going" })} />);
+    await userEvent.click(screen.getByRole("button", REQUEST));
+    expect(screen.queryByRole("button", REQUEST)).not.toBeInTheDocument();
+    const count = screen.getByLabelText(/^Children needing childcare/);
+    expect(count).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Save childcare" })).toBeInTheDocument();
+    await userEvent.clear(count);
+    await userEvent.type(count, "3");
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(Events.register).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(/^Children needing childcare/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", REQUEST)).toHaveFocus();
+    await userEvent.click(screen.getByRole("button", REQUEST));
+    expect(screen.getByLabelText(/^Children needing childcare/)).toHaveValue("0");
+  });
+
+  it.each([
+    [1, "Childcare for 1 child (ages 3)", "3"],
+    [2, "Childcare for 2 (ages 3 and 7)", "3 and 7"],
+    [2, "Childcare for 2", ""],
+  ])("saves %s children (%s), then shows a summary with Change", async (count, summary, ages) => {
+    vi.mocked(Events.register).mockResolvedValue({ people: [], registration: { ...registration, childcareCount: count, childcareAgesNote: ages } });
+    render(<SavedRsvp initial={occurrence({ childcareAvailable: true, myRegistration: "going" })} />);
+    await userEvent.click(screen.getByRole("button", REQUEST));
     const input = screen.getByLabelText(/^Children needing childcare/);
     await userEvent.clear(input);
     await userEvent.type(input, String(count));
-    await userEvent.type(screen.getByLabelText(/^Ages/), " 3 and 7 ");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
-    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, { status: "going", date: "2026-12-01", guestCount: 0, attendanceMode: undefined, ...{ childcareCount: count, childcareAgesNote: "3 and 7" } });
-    expect(screen.getByRole("status")).toHaveTextContent(count === 0 ? "Saved: going, no childcare"
-      : count === 1 ? "Saved: going, 1 child in childcare" : "Saved: going, 2 children in childcare");
+    if (ages) await userEvent.type(screen.getByLabelText(/^Ages/), ` ${ages} `);
+    await userEvent.click(screen.getByRole("button", { name: "Save childcare" }));
+    expect(Events.register).toHaveBeenCalledExactlyOnceWith(7, { status: "going", date: "2026-12-01", guestCount: 0, attendanceMode: undefined, ...{ childcareCount: count, childcareAgesNote: ages } });
+    expect(screen.getByRole("status")).toHaveTextContent("You're going. See you there!");
     expect(screen.getByRole("status")).toHaveFocus();
-    expect(screen.getByRole("button", { name: "Save" })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Children needing childcare/)).not.toBeInTheDocument();
+    expect(screen.getByText((_, el) => el?.tagName === "DIV" && el.textContent === `${summary} · Change`)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(screen.getByRole("button", { name: "Change childcare request" }));
+    expect(screen.getByLabelText(/^Children needing childcare/)).toHaveValue(String(count));
+    expect(screen.getByLabelText(/^Ages/)).toHaveValue(ages);
+  });
+
+  it("folds the fields away after the childcare is saved for all future dates", async () => {
+    vi.mocked(Events.registerSeries).mockResolvedValue({ eventId: 7, scope: "all_future", status: "going", results: [{ occurrenceId: 1, date: "2026-12-01", before: {}, after: { registrationId: 4, status: "going", childcareCount: 2, childcareAgesNote: "3 and 7" } }], refusals: [] });
+    render(<SavedRsvp initial={occurrence({ recurrenceRule: "FREQ=WEEKLY", childcareAvailable: true, myRegistration: "going" })} />);
+    await userEvent.click(screen.getByRole("button", REQUEST));
+    await userEvent.clear(screen.getByLabelText(/^Children needing childcare/));
+    await userEvent.type(screen.getByLabelText(/^Children needing childcare/), "2");
+    await userEvent.type(screen.getByLabelText(/^Ages/), "3 and 7");
+    await userEvent.click(screen.getByRole("button", { name: "Save childcare" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
+    expect(await screen.findByText(/Going to 1 date/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Children needing childcare/)).not.toBeInTheDocument();
+  });
+
+  it("returns to the link when the request is saved as zero", async () => {
+    vi.mocked(Events.register).mockResolvedValue({ people: [], registration });
+    render(<SavedRsvp initial={occurrence({ childcareAvailable: true, myRegistration: "going", myChildcareCount: 2, myChildcareAgesNote: "3 and 7" })} />);
+    expect(screen.getByText((_, el) => el?.tagName === "DIV" && el.textContent === "Childcare for 2 (ages 3 and 7) · Change")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Change childcare request" }));
+    expect(screen.getByLabelText(/^Children needing childcare/)).toHaveValue("2");
+    await userEvent.clear(screen.getByLabelText(/^Children needing childcare/));
+    await userEvent.type(screen.getByLabelText(/^Children needing childcare/), "0");
+    await userEvent.click(screen.getByRole("button", { name: "Save childcare" }));
+    expect(await screen.findByRole("button", REQUEST)).toBeInTheDocument();
+    expect(screen.queryByText(/Childcare for 2/)).not.toBeInTheDocument();
   });
 
   it("ties a full response to the count and offers Clear childcare request", async () => {
@@ -545,11 +683,12 @@ describe("childcare RSVP", () => {
       .mockRejectedValueOnce(new ApiError(409, "childcare is full for this date", { code: "childcare_full" }))
       .mockResolvedValueOnce({ people: [], registration });
     render(<SavedRsvp initial={occurrence({ childcareAvailable: true, myRegistration: "going" })} />);
+    await userEvent.click(screen.getByRole("button", REQUEST));
     const count = screen.getByLabelText(/^Children needing childcare/);
     await userEvent.clear(count);
     await userEvent.type(count, "2");
     await userEvent.type(screen.getByLabelText(/^Ages/), "3 and 7");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save childcare" }));
     expect(count).toHaveValue("2");
     expect(count).toHaveAttribute("aria-invalid", "true");
     expect(count).toHaveAccessibleDescription(expect.stringContaining("Childcare is full for this date. Your answers haven't changed."));
@@ -559,41 +698,46 @@ describe("childcare RSVP", () => {
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
     await userEvent.click(screen.getByRole("button", { name: "Clear childcare request" }));
     expect(Events.register).toHaveBeenLastCalledWith(7, { status: "going", date: "2026-12-01", guestCount: 0, attendanceMode: undefined, ...{ childcareCount: 0, childcareAgesNote: "" } });
-    expect(screen.getByRole("status")).toHaveTextContent("Saved: going, no childcare");
+    expect(screen.getByRole("status")).toHaveTextContent("You're going. See you there!");
     expect(screen.getByRole("status")).toHaveFocus();
-    expect(count).not.toHaveAttribute("aria-invalid");
     expect(screen.queryByRole("button", { name: "Clear childcare request" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", REQUEST)).toBeInTheDocument();
   });
 
   it("prefills your request, focuses invalid counts, and leaves Maybe independent", async () => {
     vi.mocked(Events.register).mockResolvedValue({ people: [], registration: { ...registration, status: "maybe", childcareCount: 2, childcareAgesNote: "3 and 5" } });
     render(<SavedRsvp initial={occurrence({ childcareAvailable: true, myRegistration: "going", myChildcareCount: 2, myChildcareAgesNote: "3 and 5" })} />);
+    await userEvent.click(screen.getByRole("button", { name: "Change childcare request" }));
     const count = screen.getByLabelText(/^Children needing childcare/);
     expect(count).toHaveValue("2");
     await userEvent.clear(count);
     await userEvent.type(count, "abc");
-    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await userEvent.click(screen.getByRole("button", { name: "Save childcare" }));
     expect(count).toHaveAttribute("aria-invalid", "true");
     expect(count).toHaveFocus();
     expect(Events.register).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole("button", { name: "Maybe" }));
     expect(Events.register).toHaveBeenCalledWith(7, { status: "maybe", date: "2026-12-01", guestCount: 0, attendanceMode: undefined });
     expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Childcare for 2/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", REQUEST)).not.toBeInTheDocument();
   });
 
   it("disables a known full count while still saving Going without childcare", async () => {
     vi.mocked(Events.register).mockResolvedValue({ people: [], registration });
     render(<SavedRsvp initial={occurrence({ childcareAvailable: true, childcareFull: true })} />);
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
+    await userEvent.click(screen.getByRole("button", REQUEST));
     const count = screen.getByLabelText(/^Children needing childcare/);
     expect(count).toBeDisabled();
     expect(count).toHaveAccessibleDescription("Childcare is full for this date");
-    expect(screen.getByRole("status")).toHaveTextContent("Saved: going, no childcare");
+    expect(screen.getByRole("status")).toHaveTextContent("You're going. See you there!");
   });
 
   it("switches attendance using saved childcare rather than an unsaved draft", async () => {
     vi.mocked(Events.register).mockResolvedValue({ people: [], registration: { ...registration, attendanceMode: "remote", childcareCount: 2 } });
     render(<SavedRsvp initial={occurrence({ childcareAvailable: true, remoteAvailable: true, myRegistration: "going", myChildcareCount: 2 })} />);
+    await userEvent.click(screen.getByRole("button", { name: "Change childcare request" }));
     await userEvent.clear(screen.getByLabelText(/^Children needing childcare/));
     await userEvent.type(screen.getByLabelText(/^Children needing childcare/), "abc");
     await userEvent.click(screen.getByRole("radio", { name: "Remote" }));
@@ -606,8 +750,9 @@ describe("childcare RSVP", () => {
     render(<SavedRsvp initial={occurrence({ childcareAvailable: true, waitlistEnabled: true })} />);
     await userEvent.click(screen.getByRole("button", { name: "Going" }));
     expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.queryByText("Childcare for this date")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", REQUEST)).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("You're on the in-person waitlist.");
+    expect(screen.getByRole("status")).not.toHaveTextContent("See you there");
   });
 });
 
@@ -701,7 +846,8 @@ describe("named household answers", () => {
     expect(Events.registerSeries).toHaveBeenLastCalledWith(7, expect.not.objectContaining({ people: expect.anything() }));
     expect(screen.getByRole("checkbox", { name: "Mary" })).toBeChecked();
 
-    await userEvent.click(screen.getByRole("button", { name: "Maybe for all" }));
+    await userEvent.click(screen.getByRole("button", { name: "Choose dates for my answer" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
     expect(Events.registerSeries).toHaveBeenLastCalledWith(7, expect.objectContaining({
       status: "maybe", scope: "all_future", guestCount: 0,
     }));
@@ -771,7 +917,8 @@ describe("named household answers", () => {
 
     const refreshedSecond = within(forms[1]);
     await userEvent.click(refreshedSecond.getByRole("checkbox", { name: "Me" }));
-    await userEvent.click(refreshedSecond.getByRole("button", { name: "Going to all dates" }));
+    await userEvent.click(refreshedSecond.getByRole("button", { name: "Choose dates for my answer" }));
+    await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
     await waitFor(() => expect(Events.registerSeries).toHaveBeenCalled());
 
     forms = screen.getAllByRole("form", { name: "Household answers" });

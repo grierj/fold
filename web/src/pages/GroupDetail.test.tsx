@@ -111,7 +111,8 @@ it("shows the authoritative series result on a group card while its parent GET i
   });
 
   open();
-  await userEvent.click(await screen.findByRole("button", { name: "Going to all dates" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Going" }));
+  await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
   await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(2));
   expect(screen.getByRole("button", { name: "Going" })).toHaveAttribute("aria-pressed", "true");
   expect(screen.getByText(/Waitlisted — position 3/)).toBeInTheDocument();
@@ -133,8 +134,10 @@ it("clears protected group data while a terminal Undo refresh is still pending",
     refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
   });
   vi.mocked(Events.undoSeriesRegistration).mockRejectedValue(new ApiError(409, "revoked", { code: "undo_authority_revoked" }));
+  vi.mocked(Households.mine).mockResolvedValue({ household: null });
   open();
-  await userEvent.click(await screen.findByRole("button", { name: "Maybe for all" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Maybe" }));
+  await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
   await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
   await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(3));
   expect(screen.queryByRole("heading", { name: "Family group" })).not.toBeInTheDocument();
@@ -158,8 +161,10 @@ it("keeps the newest group refresh when an older quiet request resolves last", a
     refusals: [], undoToken: "undo-token", undoExpiresAt: new Date(Date.now() + 10_000).toISOString(),
   });
   vi.mocked(Events.undoSeriesRegistration).mockRejectedValue(new ApiError(409, "changed", { code: "undo_changed" }));
+  vi.mocked(Households.mine).mockResolvedValue({ household: null });
   open();
-  await userEvent.click(await screen.findByRole("button", { name: "Maybe for all" }));
+  await userEvent.click(await screen.findByRole("button", { name: "Maybe" }));
+  await userEvent.click(screen.getByRole("button", { name: "All future dates" }));
   await userEvent.click(await screen.findByRole("button", { name: "Undo" }));
   await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(3));
   expect(screen.queryByRole("heading", { name: "Family group" })).not.toBeInTheDocument();
@@ -226,7 +231,8 @@ it("offers an explicit Ask to add for a selected teen instead of direct add", as
 it("routes self-leave through preview and explicit snapshot confirmation", async () => {
   vi.mocked(Groups.get).mockResolvedValueOnce(page).mockResolvedValueOnce({ ...page, isMember: false });
   open();
-  await userEvent.click(await screen.findByRole("button", { name: "Leave group" }));
+  await userEvent.click(await screen.findByRole("button", { name: "You're a member" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Leave group" }));
   const dialog = await screen.findByRole("dialog", { name: "Leave Family group?" });
   expect(Groups.confirmDeparture).not.toHaveBeenCalled();
   await userEvent.click(within(dialog).getByRole("button", { name: "Leave group" }));
@@ -275,7 +281,8 @@ it("does not let a stale post-leave rejection redirect a newer group view", asyn
     .mockResolvedValueOnce(nextGroup);
 
   openWithSwitcher();
-  await userEvent.click(await screen.findByRole("button", { name: "Leave group" }));
+  await userEvent.click(await screen.findByRole("button", { name: "You're a member" }));
+  await userEvent.click(screen.getByRole("menuitem", { name: "Leave group" }));
   await userEvent.click(within(await screen.findByRole("dialog", { name: "Leave Family group?" })).getByRole("button", { name: "Leave group" }));
   await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(2));
   await userEvent.click(screen.getByRole("button", { name: "Open next group" }));
@@ -313,8 +320,39 @@ it("links to the full group calendar when upcoming dates are truncated", async (
   const upcomingEvents = Array.from({ length: 25 }, (_, i) => occurrence({ id: i + 1, eventId: i + 1 }));
   vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents, truncated: true });
   open();
-  expect(await screen.findByText("25 dates loaded.")).toBeVisible();
+  expect(await screen.findByText("Showing the next 25 dates.")).toBeVisible();
   expect(screen.getByRole("link", { name: "See all dates in the calendar" })).toHaveAttribute("href", "/calendar?group=1");
+});
+
+it("says how many dates a complete bounded series has", async () => {
+  const dates = [occurrence({ id: 1, date: "2026-12-01" }), occurrence({ id: 2, date: "2026-12-08" }), occurrence({ id: 3, date: "2026-12-15" })]
+    .map((d) => ({ ...d, recurrenceRule: "FREQ=WEEKLY", rruleUntil: "2026-12-15" }));
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents: dates });
+  open();
+  expect(await screen.findByRole("link", { name: "See all 3 dates" })).toHaveAttribute("href", "/events/7");
+});
+
+it("offers a plain member a You're a member menu and a leader the nudge on an empty group", async () => {
+  open();
+  const menu = await screen.findByRole("button", { name: "You're a member" });
+  expect(menu).toHaveAttribute("aria-haspopup", "menu");
+  expect(screen.queryByRole("button", { name: "Leave group" })).not.toBeInTheDocument();
+});
+
+it("nudges a leader to schedule the first meeting on a group with no dates", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true, upcomingEvents: [] });
+  open();
+  expect(await screen.findByText("Schedule your group's first meeting")).toBeVisible();
+  expect(screen.getByText("It takes about a minute.")).toBeVisible();
+  const links = screen.getAllByRole("link", { name: "Schedule event" });
+  expect(links.some((a) => a.classList.contains("btn-primary") && a.getAttribute("href") === "/groups/1/events/new")).toBe(true);
+});
+
+it("keeps the plain empty state for a member", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents: [] });
+  open();
+  expect(await screen.findByText("No upcoming events")).toBeVisible();
+  expect(screen.queryByText("Schedule your group's first meeting")).not.toBeInTheDocument();
 });
 
 it("does not show a truncation notice for a complete upcoming list", async () => {
@@ -330,7 +368,7 @@ it("merges continuation pages without duplicate dates and counts only loaded ser
   open();
   await userEvent.click(await screen.findByRole("button", { name: "Load more dates" }));
   expect(Groups.get).toHaveBeenLastCalledWith("1", { cursor: "page-two" });
-  expect(await screen.findByRole("link", { name: "1 more date loaded" })).toHaveAttribute("href", "/events/7");
+  expect(await screen.findByRole("link", { name: "See more dates" })).toHaveAttribute("href", "/events/7");
   expect(screen.queryByText(/next 90 days/)).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Load more dates" })).not.toBeInTheDocument();
   expect(screen.getAllByRole("form", { name: "Household answers" })).toHaveLength(1);
@@ -407,13 +445,13 @@ it("keeps loading a series beyond 100 dates using the latest page metadata", asy
     .mockResolvedValueOnce({ ...page, upcomingEvents: dates.slice(100) });
   open();
   await userEvent.click(await screen.findByRole("button", { name: "Load more dates" }));
-  expect(await screen.findByText("100 dates loaded.")).toBeVisible();
-  expect(screen.getByRole("link", { name: "99 more dates loaded" })).toBeVisible();
+  expect(await screen.findByText("Showing the next 100 dates.")).toBeVisible();
+  expect(screen.getByRole("link", { name: "See more dates" })).toBeVisible();
   await userEvent.click(screen.getByRole("button", { name: "Load more dates" }));
   expect(Groups.get).toHaveBeenLastCalledWith("1", { cursor: "after-100" });
-  expect(await screen.findByRole("link", { name: "125 more dates loaded" })).toBeVisible();
+  expect(await screen.findByRole("link", { name: "See more dates" })).toBeVisible();
   expect(screen.queryByRole("button", { name: "Load more dates" })).not.toBeInTheDocument();
-  expect(screen.queryByText("100 dates loaded.")).not.toBeInTheDocument();
+  expect(screen.queryByText("Showing the next 100 dates.")).not.toBeInTheDocument();
   expect(screen.getAllByRole("form", { name: "Household answers" })).toHaveLength(1);
 });
 

@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Button } from "./ui/Button";
 import { AttendeeDetails } from "./AttendeeDetails";
 import type { EventOccurrence } from "../types";
@@ -30,7 +30,7 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
       <div>
         {going === 0 && maybe === 0 ? "No one yet" : `${going} going${maybe ? ` · ${maybe} maybe` : ""}`}
         {declined ? ` · ${declined} can't go` : ""}
-        {instance.capacity !== null && ` · ${seatsLeft(instance.spotsLeft ?? 0, instance.capacity, "")}`}
+        {instance.capacity !== null && <> · {seatsLeft(instance.spotsLeft ?? 0, instance.capacity, "")}</>}
         {instance.remoteAvailable && instance.remoteCapacity === 0 && " · No remote seats on this date"}
         {instance.remoteAvailable &&
           instance.remoteCapacity !== null &&
@@ -68,8 +68,12 @@ export function Attendance({ instance }: { instance: EventOccurrence }) {
   );
 }
 
-// "0 of 1 seat left", "In-person seats full" (Illuminator, PR 110 N4).
-function seatsLeft(left: number, capacity: number, kind: "" | "remote "): string {
+// "0 of 1 seat left", "In-person seats full" (Illuminator, PR 110 N4). One to
+// five in-person seats left read "Only 3 seats left" in the warning tone
+// (DEC-99); the words carry the meaning, color only echoes it. Remote seats
+// keep the plain count.
+function seatsLeft(left: number, capacity: number, kind: "" | "remote "): ReactNode {
   if (left <= 0) return kind ? "Remote seats full" : "Seats full";
+  if (!kind && left <= 5) return <span className="font-semibold text-warning-on-subtle">Only {left} {left === 1 ? "seat" : "seats"} left</span>;
   return `${left} of ${capacity} ${kind}${capacity === 1 ? "seat" : "seats"} left`;
 }

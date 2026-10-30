@@ -24,7 +24,7 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
   const heading = (name: string) => (p: Page) => p.getByRole("heading", { name, level: 1 });
   return [
     { id: "home-signed-out", who: null, path: "/", ready: (p) => p.getByText("Room 201 class").first() },
-    { id: "login", who: null, path: "/login", ready: heading("Log in to Fold") },
+    { id: "login", who: null, path: "/login", ready: heading("Log in to") },
     { id: "join", who: null, path: "/join", ready: (p) => p.locator("main") },
     { id: "home", who: "sam", path: "/", ready: (p) => p.getByText("Room 201 class").first() },
     { id: "my-groups", who: "sam", path: "/my-groups", ready: (p) => p.getByText("Room 201 class").first() },

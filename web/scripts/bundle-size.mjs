@@ -3,7 +3,8 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 
-const BUDGET_GZIP_KB = 140;
+// Raised from 140 for the product-audit slices (Grier, Oct 30, 2026); trim later.
+const BUDGET_GZIP_KB = 160;
 const html = readFileSync("dist/index.html", "utf8");
 const entry = html.match(/<script[^>]+src="\/assets\/([^"]+\.js)"/)?.[1];
 if (!entry || !readdirSync("dist/assets").includes(entry)) {

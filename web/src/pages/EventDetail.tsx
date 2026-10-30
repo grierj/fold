@@ -16,7 +16,9 @@ import { ExternalLinkIcon } from "../components/icons";
 import { EventVisibilityControl } from "../components/EventVisibility";
 import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
+import { DateActions } from "../components/DateActions";
 import { formatTime, heldIn } from "../lib/when";
+import { dateLine, whenLine } from "../lib/repeat";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, HouseholdPerson } from "../types";
 import { errorText } from "../lib/errors";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -111,6 +113,10 @@ function EventDetailContent() {
 
   const { event, occurrences, canManage, canSetVisibility } = page;
   const title = event.title || (event.hostedBy ? "Church event" : event.groupName || "Event");
+  // A single date reads as one fact in the header, with no list around it (DEC-92).
+  const single = !event.recurrenceRule && occurrences.length === 1;
+  const next = occurrences[0];
+  const line = whenLine(event.recurrenceRule, occurrences);
 
   async function deleteEvent() {
     if (!confirm(`Delete “${title}”? This removes every date and its registrations.`)) return;
@@ -125,8 +131,11 @@ function EventDetailContent() {
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-2">{title}</h1>
-      <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} />
+      <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} churchWide={event.churchWide} />
+      {line && <p className="mt-1 font-medium wrap-anywhere">{line}</p>}
+      {single && heldIn(next.startsAt, next.tzid) && <p className="text-sm text-text-muted">{heldIn(next.startsAt, next.tzid)}</p>}
       {event.location && <p className="text-text-muted mt-1 wrap-anywhere">{event.location}</p>}
+      {single && line && <DateActions eventId={event.id} date={next.date} sharePath={`/events/${event.id}`} title={title} when={line} />}
       {event.childcareAvailable && <div className="mt-3 text-text-muted">
         <p>Childcare available{event.childcareAges && ` · ${event.childcareAges}`}</p>
         {event.childcareNotes && <p className="whitespace-pre-wrap">{event.childcareNotes}</p>}
@@ -170,16 +179,19 @@ function EventDetailContent() {
         </div>
       )}
 
-      <h2 className="text-xl font-bold mt-8 mb-3">Upcoming dates</h2>
+      {!single && <h2 className="text-xl font-bold mt-8 mb-3">Upcoming dates</h2>}
       {householdError && <ErrorNotice message={householdError} onRetry={retryHousehold} />}
       {occurrences.length === 0 && (
         <EmptyState title="No upcoming dates." body="This event has no more dates on the calendar." />
       )}
-      <div className="space-y-3">
+      <div className={single ? "mt-6 space-y-3" : "space-y-3"}>
         {occurrences.map((m) => (
           <DateRow
             key={`${m.eventId}-${m.date}`}
             instance={m}
+            single={single}
+            eventTitle={title}
+            headerLocation={event.location}
             loggedIn={!!user}
             canManage={canManage}
             onRsvp={handleRsvp}
@@ -199,6 +211,9 @@ function EventDetailContent() {
 
 function DateRow({
   instance,
+  single,
+  eventTitle,
+  headerLocation,
   loggedIn,
   canManage,
   onRsvp,
@@ -211,6 +226,10 @@ function DateRow({
   onNeedLogin,
 }: {
   instance: EventOccurrence;
+  // The page header already says this date's title, place and time.
+  single: boolean;
+  eventTitle: string;
+  headerLocation: string;
   loggedIn: boolean;
   canManage: boolean;
   onRsvp: () => void;
@@ -242,9 +261,15 @@ function DateRow({
   }
 
   return (
-    <OccurrenceCard at={instance.startsAt} title={instance.title || "Church event"}
+    <OccurrenceCard at={instance.startsAt} title={instance.title || "Church event"} compact={single}
       notice={canManage && instance.visibilityOverride && <p className="text-xs text-text-muted">Visibility changed for this date</p>}
-      meta={<>
+      meta={single ? (
+        // Only what this date changed from the header.
+        (instance.title && instance.title !== eventTitle) || (instance.location && instance.location !== headerLocation) ? <>
+          {instance.title && instance.title !== eventTitle && <div className="font-semibold">{instance.title}</div>}
+          {instance.location && instance.location !== headerLocation && <div className="text-sm text-text-muted">{instance.location}</div>}
+        </> : null
+      ) : <>
         <div className="text-sm text-text-muted">{time}{instance.location ? ` · ${instance.location}` : ""}</div>
         {held && <div className="text-sm text-text-muted">{held}</div>}
       </>}
@@ -304,6 +329,10 @@ function DateRow({
         )}
         {canManage && managing && <Suspense fallback={<Skeleton kind="lines" />}><ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} /></Suspense>}
     </div>
+        {!single && (
+          <DateActions eventId={instance.eventId} date={instance.date} sharePath={`/events/${instance.eventId}/dates/${instance.date}`}
+            title={instance.title || eventTitle} when={dateLine(instance.startsAt, instance.endsAt)} nameDate />
+        )}
     </OccurrenceCard>
   );
 }

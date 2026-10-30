@@ -288,35 +288,77 @@ func presentOccurrenceDate(ev *models.Event, occ *models.EventOccurrence, groupL
 }
 
 func (a *App) apiGetOccurrenceDate(c *gin.Context) {
+	if out, ok := a.loadOccurrenceDate(c); ok {
+		c.JSON(http.StatusOK, gin.H{"occurrence": out})
+	}
+}
+
+// apiOccurrenceCalendar downloads one date as an .ics file (DEC-93). It goes
+// through the same load as the date page, so it shows exactly what that page
+// may show: the video link only when the page would, and no description,
+// hosts or attendees. The UID matches the feeds', so a calendar that also
+// subscribes to a feed keeps one copy.
+func (a *App) apiOccurrenceCalendar(c *gin.Context) {
+	out, ok := a.loadOccurrenceDate(c)
+	if !ok {
+		return
+	}
+	status := ""
+	if out.MyRegistration != nil {
+		switch *out.MyRegistration {
+		case models.RegGoing:
+			status = "CONFIRMED"
+		case models.RegMaybe, models.RegWaitlisted:
+			status = "TENTATIVE"
+		}
+	}
+	body := events.RenderFeed(events.Feed{
+		Host:        a.feedHost(),
+		WindowStart: out.StartsAt.Add(-24 * time.Hour),
+		WindowEnd:   out.EndsAt.Add(24 * time.Hour),
+		Singles: []events.FeedSingle{{
+			EventID: out.EventID, OriginalDate: out.Date, Title: out.Title,
+			Location: out.Location, TZID: out.TZID, StartsAt: out.StartsAt, EndsAt: out.EndsAt,
+			VideoURL: out.VideoURL, RemoteAvailable: out.RemoteAvailable,
+			URL: a.emailBaseURL() + out.DateURL, Status: status,
+		}},
+	})
+	c.Header("Content-Disposition", `attachment; filename="event-`+out.Date+`.ics"`)
+	c.Data(http.StatusOK, "text/calendar; charset=utf-8", body)
+}
+
+// loadOccurrenceDate authorizes and presents one date for the date page and
+// its calendar download. It answers the error itself when ok is false.
+func (a *App) loadOccurrenceDate(c *gin.Context) (dateOccurrenceJSON, bool) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	date := c.Param("date")
 	if _, dateErr := time.Parse("2006-01-02", date); err != nil || id == 0 || dateErr != nil {
 		jsonError(c, http.StatusNotFound, "event not found")
-		return
+		return dateOccurrenceJSON{}, false
 	}
 	me, now := apiUser(c), time.Now().UTC()
 	vs, err := a.dateCandidates(me, a.DB.Where("id = ?", id))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load this date")
-		return
+		return dateOccurrenceJSON{}, false
 	}
 	q := a.DB.Where("event_id = ? AND original_date = ? AND status = ?", id, date, models.OccurrenceScheduled)
 	scoped, err := a.scopedOccurrenceReads(me, q, now)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load this date")
-		return
+		return dateOccurrenceJSON{}, false
 	}
 	var occ models.EventOccurrence
 	if err := q.First(&occ).Error; err != nil {
 		jsonError(c, http.StatusNotFound, "event not found")
-		return
+		return dateOccurrenceJSON{}, false
 	}
 	ev := vs.ByID[uint(id)]
 	ordinary := vs.canSeeDate(me, ev, &occ)
 	invited := scoped[occ.ID]
 	if !ordinary && invited == nil {
 		jsonError(c, http.StatusNotFound, "event not found")
-		return
+		return dateOccurrenceJSON{}, false
 	}
 	var reg models.Registration
 	groupLocation, manager, attendees := "", false, false
@@ -353,7 +395,7 @@ func (a *App) apiGetOccurrenceDate(c *gin.Context) {
 			out.HostedBy = a.siteName()
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"occurrence": out})
+	return out, true
 }
 
 // occurrenceAccountsIn uses the same latest-consent ordering as the single-user

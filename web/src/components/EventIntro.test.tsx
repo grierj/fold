@@ -21,6 +21,16 @@ describe("opened events", () => {
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 
+  it("calls a church-wide event church-wide instead of naming the church", () => {
+    render(
+      <MemoryRouter>
+        <EventIntro hostedBy="Fold" churchWide />
+      </MemoryRouter>
+    );
+    expect(screen.getByText("Church-wide event")).toBeInTheDocument();
+    expect(screen.queryByText(/Fold/)).not.toBeInTheDocument();
+  });
+
   it("links the group when the viewer can see it", () => {
     render(
       <MemoryRouter>
