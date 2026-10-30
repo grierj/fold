@@ -1150,6 +1150,22 @@ PUT  /api/v1/admin/rooms/:id        → 200 {room}                          (adm
 
 `room` is `{id, name, building, capacity, features, notes, active, restricted, defaultSetupMinutes, defaultTeardownMinutes}`. Bodies take the same fields (all optional on edit); a new room is always active, so `active` only matters on edit. `name` is required, at most 100 characters, and unique per building whatever the letter case (409 `room_name_taken`); `building` at most 100, `features` 500, `notes` 2000 (notes are for admins). `capacity` is a whole number from 1 to 100000, or null for no limit. Setup and teardown minutes are 0 to 240 and are copied into each booking (DEC-101). There is no delete: set `active: false`, and bookings keep their history.
 
+### Room bookings (M2.1b)
+
+While rooms are on (`roomsEnabled`), whoever runs an event (its group's leaders, a church-wide event's hosts, admins) books a room for one date. Every route here is 404 while rooms are off.
+
+```
+GET /api/v1/events/:id/dates/:date/rooms → 200 {rooms: [roomPickerItem], booking: roomBooking | null}
+PUT /api/v1/events/:id/dates/:date/room {roomId: number | null, overlapReason?, setupMinutes?, teardownMinutes?}
+    → 200 {booking: roomBooking | null} | 403 room_restricted | 404 | 409 room_busy
+```
+
+`:date` is the occurrence's original `YYYY-MM-DD`. `roomPickerItem` is `{id, name, building, capacity, features, restricted, busy, tooSmall}`: active rooms the caller may book (restricted rooms only for admins). `busy` means another confirmed booking holds the room for this date's padded time and never says whose; `tooSmall` means the date's seat cap or going count is above the room's capacity, a warning only. `roomBooking` is `{roomId, roomName, building, status, setupMinutes, teardownMinutes, doubleBooked, tooSmall}`.
+
+A booking copies the room's setup and teardown minutes (DEC-101); only an admin may send `setupMinutes`/`teardownMinutes` (0 to 240) to override them for this booking. `roomId: null` releases the date's room; booking another room replaces it. Confirmed bookings of one room never overlap once padded: the database refuses it, so of two concurrent bookings exactly one wins and the other gets 409 `room_busy`. An admin may book over a conflict by sending `overlapReason` (at most 500 characters); that booking is `doubleBooked`, audited as `room_booking.overlap` with the reason, and still counts as busy for everyone else. Booking and releasing are audited (`room_booking.booked`, `room_booking.released`).
+
+Cancelling a date releases its room. Moving a date (a per-date reschedule, a series edit, or a DEC-91 restore) moves its booking in the same transaction; if the room is taken at the new time, the booking becomes `requested` and holds nothing, and the event's leaders or hosts get one `room.lost` notice for that edit (the person who made the change is not notified). Event and date JSON carry `room?: {id, name, building}` for a confirmed booking, which the page shows as the place (typed location after it).
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

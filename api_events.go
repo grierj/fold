@@ -232,6 +232,11 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 	}
 
 	siteName := ""
+	keptIDs := make([]uint, len(kept))
+	for i := range kept {
+		keptIDs[i] = kept[i].ID
+	}
+	rooms := a.occurrenceRooms(a.DB, keptIDs)
 	for i := range kept {
 		o := &kept[i]
 		ev := byID[o.EventID]
@@ -246,6 +251,7 @@ func (a *App) occurrencesForEventsAfterErr(eventIDs []uint, from, to string, sta
 			loc = shown.Location
 		}
 		inst := occurrenceToJSON(ev, o, loc)
+		inst.Room = rooms[o.ID]
 		inst.MyHouseholdRegistrations = ownHousehold[o.ID]
 		if inst.MyHouseholdRegistrations == nil {
 			inst.MyHouseholdRegistrations = []myHouseholdRegistrationJSON{}
@@ -947,6 +953,16 @@ func (a *App) apiUpdateEvent(c *gin.Context) {
 		if err != nil {
 			return err
 		}
+		// Cancelled dates free their rooms; moved and restored dates take
+		// their bookings along (9.2).
+		if err := releaseRoomBookings(tx, cancelled); err != nil {
+			return err
+		}
+		ids, err = moveRoomBookings(tx, &locked, append(append([]uint{}, moved...), restored...), me.ID)
+		emailed = append(emailed, ids...)
+		if err != nil {
+			return err
+		}
 		ids, err = restoreSeriesDates(tx, me.ID, c.ClientIP(), &locked, restored)
 		emailed = append(emailed, ids...)
 		if err != nil {
@@ -1170,7 +1186,11 @@ func (a *App) apiCancelOccurrence(c *gin.Context) {
 		}
 		ids, err := notifyOccurrencesCancelled(tx, apiUser(c).ID, []uint{occ.ID})
 		emailed = append(emailed, ids...)
-		return err
+		if err != nil {
+			return err
+		}
+		// A cancelled date frees its room (9.2).
+		return releaseRoomBookings(tx, []uint{occ.ID})
 	})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not cancel")
@@ -1342,6 +1362,14 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		// combined variant when both changed.
 		timeChanged := !o.StartsAt.Equal(oldStart) || !o.EndsAt.Equal(oldEnd)
 		placeChanged := newPlace != oldPlace
+		if timeChanged {
+			// The date's room moves with it, or is lost to a conflict (9.2).
+			ids, err := moveRoomBookings(tx, ev, []uint{o.ID}, me.ID)
+			emailed = append(emailed, ids...)
+			if err != nil {
+				return err
+			}
+		}
 		if timeChanged || placeChanged {
 			variant := "time"
 			if placeChanged {

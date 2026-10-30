@@ -235,6 +235,8 @@ export interface EventOccurrence {
   groupId?: number;
   groupName?: string;
   hostedBy?: string;
+  // The date's confirmed room, shown as its place (M2.1b).
+  room?: OccurrenceRoom;
   // False means the caller gets a count only. Names are omitted in that case.
   attendeesVisible?: boolean;
   attendees?: Attendee[];
@@ -771,6 +773,7 @@ export interface EventDate {
  hostedBy?: string;
  groupId?: number;
  groupName?: string;
+ room?: OccurrenceRoom;
   id: number;
   eventId: number;
   date: string;
@@ -854,4 +857,36 @@ export interface Room {
   restricted: boolean;
   defaultSetupMinutes: number;
   defaultTeardownMinutes: number;
+}
+
+// The room a date is booked in, shown as its place (M2.1b, 9.2).
+export interface OccurrenceRoom {
+  id: number;
+  name: string;
+  building: string;
+}
+
+// A room in a date's room picker (M2.1b). Busy and too-small never say who
+// holds the room; too-small is a warning, not a block.
+export interface RoomPickerItem {
+  id: number;
+  name: string;
+  building: string;
+  capacity: number | null;
+  features: string;
+  restricted: boolean;
+  busy: boolean;
+  tooSmall: boolean;
+}
+
+// A date's booking as the people running the event see it (M2.1b).
+export interface RoomBooking {
+  roomId: number;
+  roomName: string;
+  building: string;
+  status: "confirmed" | "requested" | "rejected";
+  setupMinutes: number;
+  teardownMinutes: number;
+  doubleBooked: boolean;
+  tooSmall: boolean;
 }

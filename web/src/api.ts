@@ -131,6 +131,8 @@ import type {
   Member,
   Notification,
   Room,
+  RoomBooking,
+  RoomPickerItem,
   NotificationSettings as NotificationSettingsData,
   NotificationFeed,
   NotificationFilter,
@@ -708,4 +710,21 @@ export const AdminRooms = {
   create: (body: RoomInput) => api<{ room: Room }>("/admin/rooms", { method: "POST", body }),
   update: (id: number, body: RoomInput) => api<{ room: Room }>(`/admin/rooms/${id}`, { method: "PUT", body }),
   setEnabled: (enabled: boolean) => api<{ roomsEnabled: boolean }>("/admin/settings/rooms", { method: "PUT", body: { enabled } }),
+};
+
+// Booking a room for one date (M2.1b). `:date` is the occurrence's original
+// YYYY-MM-DD. Every route answers 404 while rooms are off. Only an admin may
+// send overlapReason (to book over a conflict) or the two padding overrides.
+export interface DateRoomInput {
+  roomId: number | null;
+  overlapReason?: string;
+  setupMinutes?: number;
+  teardownMinutes?: number;
+}
+
+export const DateRooms = {
+  list: (eventId: number, date: string) =>
+    api<{ rooms: RoomPickerItem[]; booking: RoomBooking | null }>(`/events/${eventId}/dates/${date}/rooms`),
+  set: (eventId: number, date: string, body: DateRoomInput) =>
+    api<{ booking: RoomBooking | null }>(`/events/${eventId}/dates/${date}/room`, { method: "PUT", body }),
 };

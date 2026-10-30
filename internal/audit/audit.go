@@ -237,6 +237,14 @@ const (
 	// Target type is room; RoomUpdated's meta lists the changed fields.
 	RoomCreated = "room.created"
 	RoomUpdated = "room.updated"
+	// RoomBookingBooked / RoomBookingReleased: a date's room was booked
+	// (or changed) or released (M2.1b). Target type is occurrence; meta has
+	// roomId, eventId, date and the padding.
+	RoomBookingBooked   = "room_booking.booked"
+	RoomBookingReleased = "room_booking.released"
+	// RoomBookingOverlap: an admin double-booked a room over a conflict;
+	// meta adds the reason (9.2).
+	RoomBookingOverlap = "room_booking.overlap"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

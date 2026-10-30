@@ -650,3 +650,38 @@ describe("EventDetail header actions and ?manage (DEC-99)", () => {
     expect(screen.queryByRole("region", { name: "Manage sign-ups" })).not.toBeInTheDocument();
   });
 });
+
+describe("EventDetail shows a booked room as the place (M2.1b)", () => {
+  const room = { id: 1, name: "Fellowship Hall", building: "Main" };
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(Households.mine).mockResolvedValue({ household: null });
+  });
+
+  it("puts the room in a single date's header, with the typed location after it", async () => {
+    vi.mocked(Events.get).mockResolvedValue({ ...page, occurrences: [occurrence({ room })], canManage: false });
+    renderPage();
+    expect(await screen.findByText("Fellowship Hall · Main · Hall")).toBeInTheDocument();
+  });
+
+  it("puts the room on a series date's card and leaves the series header's typed location", async () => {
+    vi.mocked(Events.get).mockResolvedValue({
+      ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" },
+      occurrences: [occurrence({ recurrenceRule: "FREQ=WEEKLY;BYDAY=TU", room }), occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" })],
+      canManage: false,
+    });
+    renderPage();
+    const cards = await screen.findAllByRole("article");
+    expect(within(cards[0]).getByText(/ · Fellowship Hall · Main · Hall$/)).toBeInTheDocument();
+    expect(within(cards[1]).getByText(/ · Hall$/)).not.toHaveTextContent("Fellowship Hall");
+    // The header names the series' typed location only.
+    expect(screen.getByText("Hall", { selector: "p" })).toBeInTheDocument();
+  });
+
+  it("shows the typed location exactly as before without a room", async () => {
+    vi.mocked(Events.get).mockResolvedValue({ ...page, canManage: false });
+    renderPage();
+    expect(await screen.findByText("Hall")).toBeInTheDocument();
+    expect(screen.queryByText(/Fellowship Hall/)).not.toBeInTheDocument();
+  });
+});
