@@ -317,7 +317,7 @@ func (a *App) apiMyGroups(c *gin.Context) {
 		}
 		groups = append(groups, memberships[i].Group)
 	}
-	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
+	c.JSON(http.StatusOK, gin.H{"groups": a.viewerGroupList(u, groups)})
 }
 
 // ---------------------------------------------------------------------------

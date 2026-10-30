@@ -1,5 +1,4 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { GroupCard } from "./GroupCard";
@@ -64,19 +63,41 @@ describe("GroupCard", () => {
     expect(screen.queryByText(/Jun 16/)).not.toBeInTheDocument();
   });
 
-  it("toggles the directory filter from a tag", async () => {
-    const onTagClick = vi.fn();
-    renderCard({ onTagClick, selectedTags: ["adults"] });
-    await userEvent.click(screen.getByRole("button", { name: /bible-study/ }));
-    expect(onTagClick).toHaveBeenCalledWith("bible-study");
-    expect(screen.getByRole("button", { name: "adults" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "adults" })).toHaveClass("chip", "min-h-11", "min-w-11");
-    expect(screen.getByRole("button", { name: "bible-study" })).toHaveAttribute("aria-pressed", "false");
+  it("shows tags as quiet text, not controls, and no organizer line", () => {
+    renderCard();
+    expect(screen.getByText("bible-study · adults")).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Organized by/)).not.toBeInTheDocument();
   });
 
-  it("marks a selected tag whatever its case, like the filter", () => {
-    renderCard({ onTagClick: vi.fn(), selectedTags: ["ADULTS"] });
-    expect(screen.getByRole("button", { name: "adults" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("button", { name: "adults" })).toHaveClass("chip");
+  it("is one link and lists the next meeting right under the name, then members and place", () => {
+    renderCard({ group: { ...group, nextEventAt: "2035-06-16T01:00:00Z" } });
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    const lines = screen.getByRole("heading", { level: 3 }).parentElement!.children;
+    const texts = Array.from(lines).map((el) => el.textContent);
+    const at = (needle: RegExp) => texts.findIndex((t) => needle.test(t ?? ""));
+    expect(at(/Tuesday Bible Study/)).toBeLessThan(at(/Jun 15/));
+    expect(at(/Jun 15/)).toBeLessThan(at(/4 members · Room 201/));
+    expect(at(/4 members · Room 201/)).toBeLessThan(at(/bible-study · adults/));
+    expect(at(/Jun 15/)).toBe(at(/Tuesday Bible Study/) + 1);
+  });
+
+  it("says whether you lead or are in the group", () => {
+    const { unmount } = renderCard({ group: { ...group, myRole: "leader" } });
+    expect(screen.getByText("You lead")).toBeInTheDocument();
+    unmount();
+    const second = renderCard({ group: { ...group, myRole: "member" } });
+    expect(screen.getByText("You're in")).toBeInTheDocument();
+    second.unmount();
+    renderCard({ group });
+    expect(screen.queryByText(/You lead|You're in/)).not.toBeInTheDocument();
+  });
+
+  it("showRole off keeps only You lead", () => {
+    const { unmount } = renderCard({ group: { ...group, myRole: "member" }, showRole: false });
+    expect(screen.queryByText("You're in")).not.toBeInTheDocument();
+    unmount();
+    renderCard({ group: { ...group, myRole: "leader" }, showRole: false });
+    expect(screen.getByText("You lead")).toBeInTheDocument();
   });
 });

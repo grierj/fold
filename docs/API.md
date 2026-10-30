@@ -376,7 +376,11 @@ Pending and archived groups stay limited to their leaders and admins.
 
 `groupSummary`: `{id, name, description, tags[], imageUrl, coverFocalX,
 coverFocalY, location, leaderName, memberCount, nextEventAt (UTC; the SPA shows it in the browser's zone, DEC-57),
-status, leaderId, visibility, deletionRequested, memberLimit}`.
+status, leaderId, visibility, deletionRequested, memberLimit, myRole?}`.
+`myRole` (`leader` or `member`) is the viewer's own active role, sent only on
+`GET /groups` and `GET /me/groups` and only for groups they belong to (DEC-94).
+Those two lists run by `nextEventAt`, soonest first, with groups that have no
+upcoming date last, then by name.
 `memberLimit` is null
 for no limit (DEC-39); `memberCount` counts active members of listed accounts. `leaderId` and `leaderName` are the
 displayed primary contact only (one of the leaders); they grant nothing.

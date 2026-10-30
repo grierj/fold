@@ -473,3 +473,40 @@ it("uses a uniform cover scrim, foreground roles and an inverse primary action",
   expect(document.querySelector(".bg-inverse\\/75")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Schedule event" })).toHaveClass("btn-primary-inverse");
 });
+
+it("clamps the description above the tabs and Read more opens About", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, group: { ...page.group, description: "We meet to read and pray together." } });
+  open();
+  const text = await screen.findByText("We meet to read and pray together.");
+  expect(text).toHaveClass("line-clamp-3");
+  expect(text.compareDocumentPosition(screen.getByRole("tablist")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  await userEvent.click(screen.getByRole("button", { name: "Read more" }));
+  expect(screen.getByRole("tab", { name: "About" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("heading", { name: "About this group" })).toBeInTheDocument();
+  await waitFor(() => expect(screen.getByRole("tab", { name: "About" })).toHaveFocus());
+});
+
+it("shows neither the clamp nor Read more when the description is empty", async () => {
+  open();
+  await screen.findByRole("tablist");
+  expect(screen.queryByRole("button", { name: "Read more" })).not.toBeInTheDocument();
+});
+
+it("puts the calendar subscription after the date cards", async () => {
+  open();
+  const link = await screen.findByRole("link", { name: "Subscribe in your calendar" });
+  const form = screen.getByRole("form", { name: "Household answers" });
+  expect(form.compareDocumentPosition(link) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it("invites a signed-out visitor to log in to join, and sends them to log in", async () => {
+  actor.user = null;
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, isMember: false });
+  render(<MemoryRouter initialEntries={["/groups/1"]}><Routes>
+    <Route path="/groups/:id" element={<GroupDetail />} />
+    <Route path="/login" element={<h1>Login page</h1>} />
+  </Routes></MemoryRouter>);
+  expect(screen.queryByRole("button", { name: "Join this group" })).not.toBeInTheDocument();
+  await userEvent.click(await screen.findByRole("button", { name: "Log in to join" }));
+  expect(await screen.findByRole("heading", { name: "Login page" })).toBeInTheDocument();
+});

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -56,7 +57,40 @@ func (a *App) apiListGroups(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"groups": a.groupSummaries(groups)})
+	c.JSON(http.StatusOK, gin.H{"groups": a.viewerGroupList(apiUser(c), groups)})
+}
+
+// viewerGroupList is a group list as its viewer browses it (DEC-94): each
+// summary carries the viewer's own role, and the list runs by next meeting,
+// soonest first, then by name, with groups that have no upcoming date last.
+func (a *App) viewerGroupList(me *models.User, groups []models.Group) []groupSummaryJSON {
+	out := a.groupSummaries(groups)
+	if me != nil && len(out) > 0 {
+		ids := make([]uint, len(out))
+		for i := range out {
+			ids[i] = out[i].ID
+		}
+		var rows []models.Membership
+		a.DB.Select("group_id", "role").Where("user_id = ? AND status = ? AND group_id IN ?", me.ID, "active", ids).Find(&rows)
+		roles := make(map[uint]string, len(rows))
+		for _, m := range rows {
+			roles[m.GroupID] = m.Role
+		}
+		for i := range out {
+			out[i].MyRole = roles[out[i].ID]
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		x, y := out[i].NextEventAt, out[j].NextEventAt
+		if (x == nil) != (y == nil) {
+			return x != nil
+		}
+		if x != nil && !x.Equal(*y) {
+			return x.Before(*y)
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out
 }
 
 func (a *App) apiCreateGroup(c *gin.Context) {

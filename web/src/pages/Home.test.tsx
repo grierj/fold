@@ -1,8 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { GroupSummary } from "../types";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CalendarOccurrence, GroupSummary } from "../types";
 import { Home } from "./Home";
 
 function group(id: number, name: string, tags: string[]): GroupSummary {
@@ -10,7 +10,7 @@ function group(id: number, name: string, tags: string[]): GroupSummary {
     id, name, description: "", tags, imageUrl: "", coverFocalX: 50, coverFocalY: 50,
     location: "", leaderName: "Grier", memberCount: 1, nextEventAt: null, status: "active",
     leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null,
-  };
+  } as GroupSummary;
 }
 
 const all = [
@@ -22,12 +22,16 @@ const all = [
 
 // Same rules as the API: search narrows, and any selected tag matches (OR,
 // case-insensitive).
-const { list, auth } = vi.hoisted(() => ({ list: vi.fn(), auth: vi.fn() }));
+const { list, auth, site, calendar, openEvents } = vi.hoisted(() => ({
+  list: vi.fn(), auth: vi.fn(), site: vi.fn(), calendar: vi.fn(), openEvents: vi.fn(),
+}));
 vi.mock("../auth", () => ({ useAuth: auth }));
 vi.mock("../api", async (importActual) => ({
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
   Groups: { list },
-  Events: { listOpen: () => Promise.resolve({ events: [] }) },
+  Events: { listOpen: openEvents },
+  Site: { get: site },
+  Calendar: { list: calendar },
 }));
 function listLikeTheAPI(search = "", tags: string[] = []) {
   const want = tags.map((t) => t.toLowerCase());
@@ -57,24 +61,21 @@ async function chips() {
 
 const summary = () => screen.getByText(/Showing groups tagged/);
 
+beforeEach(() => {
+  site.mockReset();
+  site.mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "request" });
+  calendar.mockReset();
+  calendar.mockResolvedValue({ occurrences: [], truncated: false });
+  openEvents.mockReset();
+  openEvents.mockResolvedValue({ events: [] });
+  list.mockImplementation(listLikeTheAPI);
+});
+
 describe("Home tag filters", () => {
   beforeEach(() => {
     auth.mockReturnValue({ user: null, loading: false });
     list.mockReset();
     list.mockImplementation(listLikeTheAPI);
-  });
-
-  it("offers public calendar browsing only after auth resolves signed out", async () => {
-    auth.mockReturnValue({ user: null, loading: true });
-    const { rerender } = renderHome();
-    await chips();
-    expect(screen.queryByRole("link", { name: "Browse public events" })).not.toBeInTheDocument();
-    auth.mockReturnValue({ user: null, loading: false });
-    rerender(<MemoryRouter><Home /></MemoryRouter>);
-    expect(screen.getByRole("link", { name: "Browse public events" })).toHaveAttribute("href", "/calendar");
-    auth.mockReturnValue({ user: { id: 1 }, loading: false });
-    rerender(<MemoryRouter><Home /></MemoryRouter>);
-    expect(screen.queryByRole("link", { name: "Browse public events" })).not.toBeInTheDocument();
   });
 
   it("shows no summary or markers before a tag is chosen", async () => {
@@ -154,5 +155,194 @@ describe("Home load failure", () => {
     expect(alert).toHaveTextContent("We couldn't load the groups. Please try again in a minute.");
     expect(alert).not.toHaveTextContent("boom");
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+});
+
+describe("Home signed out (DEC-94)", () => {
+  beforeEach(() => auth.mockReturnValue({ user: null, loading: false }));
+
+  it("keeps the headline, names the church and offers both buttons", async () => {
+    site.mockResolvedValue({ name: "Grace Church", timezone: "UTC", selfSignup: "request" });
+    renderHome();
+    expect(await screen.findByText("Welcome to Grace Church")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Find your people. Grow in faith together.");
+    expect(screen.getByRole("link", { name: "Request an account" })).toHaveAttribute("href", "/join");
+    expect(screen.getByRole("link", { name: "Browse public events" })).toHaveAttribute("href", "/calendar");
+    expect(calendar).not.toHaveBeenCalled();
+  });
+
+  it("omits the eyebrow for the default name", async () => {
+    renderHome();
+    await screen.findByRole("link", { name: "Request an account" });
+    expect(screen.queryByText(/Welcome to/)).not.toBeInTheDocument();
+  });
+
+  it("swaps to Log in when self-signup is off", async () => {
+    site.mockResolvedValue({ name: "Grace Church", timezone: "UTC", selfSignup: "off" });
+    renderHome();
+    expect(await screen.findByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
+    expect(screen.queryByRole("link", { name: "Request an account" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Browse public events" })).toBeInTheDocument();
+  });
+
+  it("offers no buttons until auth resolves", async () => {
+    auth.mockReturnValue({ user: null, loading: true });
+    renderHome();
+    await chips();
+    expect(screen.queryByRole("link", { name: "Browse public events" })).not.toBeInTheDocument();
+  });
+
+  it("lists church events", async () => {
+    openEvents.mockResolvedValue({ events: [{ eventId: 9, date: "2030-01-01", startsAt: "2030-01-01T18:00:00Z", title: "Potluck", location: "Hall", description: "" }] });
+    renderHome();
+    expect(await screen.findByRole("heading", { name: "Church events" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Potluck/ })).toHaveAttribute("href", "/events/9");
+    expect(screen.queryByRole("heading", { name: /Coming up/ })).not.toBeInTheDocument();
+  });
+});
+
+function occ(n: number, extra: Partial<CalendarOccurrence> = {}): CalendarOccurrence {
+  const day = String(10 + n).padStart(2, "0");
+  return {
+    eventId: n, date: `2030-01-${day}`, startsAt: `2030-01-${day}T19:00:00Z`, endsAt: `2030-01-${day}T20:00:00Z`,
+    title: `Event ${n}`, location: "", groupId: 1, groupName: "Youth Choir", churchWide: false,
+    remoteAvailable: false, childcareAvailable: false, myStatus: null, ownScope: true, ...extra,
+  };
+}
+
+describe("Home signed in (DEC-94)", () => {
+  beforeEach(() => {
+    auth.mockReturnValue({ user: { id: 1, name: "Samuel Adams", displayName: "Sam" }, loading: false });
+    // Fake only the clock, so the component's own timers and promises still run.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2030, 0, 10, 9, 0, 0));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  async function ready() {
+    await screen.findByRole("heading", { name: "Groups" });
+    await screen.findAllByRole("heading", { name: "Youth Choir" });
+  }
+
+  it.each([
+    [0, "Good morning"], [11, "Good morning"], [12, "Good afternoon"], [16, "Good afternoon"], [17, "Good evening"], [23, "Good evening"],
+  ])("greets at hour %i with %s", async (hour, hello) => {
+    vi.setSystemTime(new Date(2030, 0, 10, hour, 30, 0));
+    renderHome();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent(`${hello}, Sam`);
+    await ready();
+  });
+
+  it("falls back to the first name, then to Welcome back, never the email", async () => {
+    auth.mockReturnValue({ user: { id: 1, name: "Samuel Adams", displayName: "", email: "s@example.com" }, loading: false });
+    const { unmount } = renderHome();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Good morning, Samuel");
+    expect(screen.getByRole("heading", { level: 1 })).not.toHaveTextContent("Adams");
+    await ready();
+    unmount();
+    auth.mockReturnValue({ user: { id: 1, name: "", displayName: "", email: "s@example.com" }, loading: false });
+    renderHome();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Welcome back");
+    expect(screen.getByRole("heading", { level: 1 })).not.toHaveTextContent("example.com");
+    await ready();
+  });
+
+  it("has no hero, buttons, eyebrow or church events block", async () => {
+    openEvents.mockResolvedValue({ events: [{ eventId: 9, date: "2030-01-01", startsAt: "2030-01-01T18:00:00Z", title: "Potluck", location: "", description: "" }] });
+    renderHome();
+    await ready();
+    expect(screen.queryByText("Find your people. Grow in faith together.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Browse public events" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Request an account" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Church events" })).not.toBeInTheDocument();
+    expect(openEvents).not.toHaveBeenCalled();
+    expect(site).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Search groups")).toBeInTheDocument();
+  });
+
+  it("asks Just mine for the next 60 days and shows rows with answers and links", async () => {
+    calendar.mockResolvedValue({
+      truncated: false,
+      occurrences: [
+        occ(2, { myStatus: "maybe", location: "Room 4" }),
+        occ(1, { myStatus: "going", dateUrl: "/events/1/dates/2030-01-11" }),
+        occ(3, { churchWide: true, groupName: undefined, groupId: undefined, myStatus: "waitlisted" }),
+        occ(4, { ownScope: true, myStatus: null }),
+        occ(5),
+      ],
+    });
+    renderHome();
+    const section = (await screen.findByRole("heading", { name: "Coming up for you" })).closest("section")!;
+    expect(calendar).toHaveBeenCalledWith(expect.objectContaining({ from: "2030-01-10", to: "2030-03-11", mine: true }));
+    expect(within(section).getByRole("link", { name: "See calendar" })).toHaveAttribute("href", "/calendar?mine=1");
+    const rows = await within(section).findAllByRole("listitem");
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toHaveTextContent("Event 1");
+    expect(rows[0]).toHaveTextContent("Going");
+    expect(within(rows[0]).getByRole("link")).toHaveAttribute("href", "/events/1/dates/2030-01-11");
+    expect(rows[1]).toHaveTextContent("Maybe");
+    expect(rows[1]).toHaveTextContent("Youth Choir · Room 4");
+    expect(within(rows[1]).getByRole("link")).toHaveAttribute("href", "/events/2");
+    expect(rows[2]).toHaveTextContent("Church-wide");
+    expect(rows[2]).toHaveTextContent("Waitlisted");
+    expect(rows[3]).toHaveTextContent("Not answered");
+    expect(within(section).queryByText("Event 5")).not.toBeInTheDocument();
+    await ready();
+  });
+
+  it("skips dates that already ended or that the person can't attend", async () => {
+    calendar.mockResolvedValue({
+      truncated: false,
+      occurrences: [
+        occ(0, { startsAt: "2030-01-10T05:00:00Z", endsAt: "2030-01-10T06:00:00Z", title: "Earlier today" }),
+        occ(1, { myStatus: "declined", title: "Can't make it" }),
+        occ(2, { myStatus: "going", title: "Still on" }),
+      ],
+    });
+    renderHome();
+    expect(await screen.findByText("Still on")).toBeInTheDocument();
+    expect(screen.queryByText("Earlier today")).not.toBeInTheDocument();
+    expect(screen.queryByText("Can't make it")).not.toBeInTheDocument();
+    await ready();
+  });
+
+  it("has a short empty state", async () => {
+    renderHome();
+    expect(await screen.findByText("Nothing on your calendar yet")).toBeInTheDocument();
+    expect(screen.getByText("Join a group below and its dates show up here.")).toBeInTheDocument();
+    await ready();
+  });
+
+  it("shows a loading state in place", async () => {
+    calendar.mockReturnValue(new Promise(() => {}));
+    renderHome();
+    expect(await screen.findByText("Loading your dates…")).toBeInTheDocument();
+    await ready();
+  });
+
+  it("keeps a calendar failure to its own section, and retries", async () => {
+    const { ApiError } = await vi.importActual<typeof import("../api")>("../api");
+    calendar.mockRejectedValueOnce(new ApiError(500, "boom", { error: "server error", code: "server_error" }));
+    renderHome();
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("We couldn't load your calendar. Please try again in a minute.");
+    expect(alert).not.toHaveTextContent("boom");
+    await ready();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    calendar.mockResolvedValue({ occurrences: [occ(1, { myStatus: "going" })], truncated: false });
+    await userEvent.click(within(alert).getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Event 1")).toBeInTheDocument();
+  });
+
+  it("wraps the groups list in #groups and scrolls to it for /#groups", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    renderHome("/#groups");
+    await ready();
+    const target = screen.getByRole("heading", { name: "Groups" }).closest("section")!;
+    expect(target).toHaveAttribute("id", "groups");
+    expect(target).toContainElement(screen.getAllByRole("heading", { name: "Youth Choir" })[0]);
+    expect(scroll).toHaveBeenCalled();
+    expect(scroll.mock.contexts[0]).toBe(target);
   });
 });

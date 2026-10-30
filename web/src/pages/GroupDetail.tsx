@@ -355,6 +355,7 @@ function GroupDetailContent() {
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("events");
+  const sectionsRef = useRef<HTMLDivElement>(null);
   const [editing, setEditing] = useState(false);
   const [review, setReview] = useState<{ data: GroupFormData; impact: VisibilityImpact } | null>(null);
   const [reviewBusy, setReviewBusy] = useState(false);
@@ -480,6 +481,13 @@ function GroupDetailContent() {
   // Leadership comes from membership roles (several leaders allowed).
   const leaderCount = (members ?? []).filter((m) => m.role === "leader").length;
   const isLeader = !!user && (members ?? []).some((m) => m.id === user.id && m.role === "leader");
+
+  // "Read more" under the clamped description opens About and moves focus to
+  // that tab, so a keyboard or screen-reader user lands where the text is.
+  function showAbout() {
+    setTab("about");
+    requestAnimationFrame(() => sectionsRef.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')?.focus());
+  }
 
   async function toggleJoin() {
     if (!user) {
@@ -791,7 +799,7 @@ function GroupDetailContent() {
               )}
               {group.visibility !== "invite_only" && !isMember && (
                 <Button variant="primary" onClick={toggleJoin} disabled={joinBusy || !!departureTarget}>
-                  {joinBusy ? "…" : "Join this group"}
+                  {joinBusy ? "…" : user ? "Join this group" : "Log in to join"}
                 </Button>
               )}
             </div>
@@ -835,6 +843,15 @@ function GroupDetailContent() {
           />
         ) : (
           <>
+            {group.description.trim() && (
+              <div className="mb-6 max-w-3xl">
+                <p className="text-text-muted whitespace-pre-wrap wrap-anywhere line-clamp-3">{group.description}</p>
+                <Button variant="link" onClick={showAbout}>
+                  Read more
+                </Button>
+              </div>
+            )}
+            <div ref={sectionsRef}>
             <Tabs label="Group sections" value={tab} onChange={setTab} options={[
               { id: "events", label: "Upcoming events" },
               { id: "about", label: "About" },
@@ -843,14 +860,6 @@ function GroupDetailContent() {
             {tab === "events" && (
               <div className="space-y-3">
                 <h2 className="sr-only">Upcoming events</h2>
-                {group.visibility === "public" && group.status === "active" && (
-                  <div className="flex flex-wrap items-center gap-x-2">
-                    <ButtonLink variant="link" to={`/cal/groups/${group.id}.ics`} reloadDocument>
-                      Subscribe in your calendar
-                    </ButtonLink>
-                    <span className="text-sm text-text-muted">Adds this group&rsquo;s public events to your calendar app.</span>
-                  </div>
-                )}
                 {events.length === 0 && (
                   <EmptyState
                     illustration={<Illustration name="no-events" />}
@@ -905,6 +914,14 @@ function GroupDetailContent() {
                     onChanged={() => void load({ quiet: true })}
                   />
                 ))}
+                {group.visibility === "public" && group.status === "active" && (
+                  <div className="flex flex-wrap items-center gap-x-2">
+                    <ButtonLink variant="link" to={`/cal/groups/${group.id}.ics`} reloadDocument>
+                      Subscribe in your calendar
+                    </ButtonLink>
+                    <span className="text-sm text-text-muted">Adds this group&rsquo;s public events to your calendar app.</span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1092,6 +1109,7 @@ function GroupDetailContent() {
               </div>
             )}
             </Tabs>
+            </div>
           </>
         )}
       </div>
