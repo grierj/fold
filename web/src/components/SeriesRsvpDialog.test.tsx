@@ -38,3 +38,20 @@ it("says new dates are not answered for you", () => {
   render(<SeriesRsvpDialog answer="Going" onChoose={vi.fn()} onCancel={vi.fn()} />);
   expect(screen.getByRole("dialog")).toHaveTextContent("New dates added later won't be answered for you.");
 });
+
+it("makes the page behind it inert while open, and only while open", () => {
+  const page = document.createElement("main");
+  const alreadyInert = document.createElement("aside");
+  alreadyInert.setAttribute("inert", "");
+  document.body.append(page, alreadyInert);
+  const view = render(<SeriesRsvpDialog answer="Maybe" onChoose={vi.fn()} onCancel={vi.fn()} />);
+  const dialog = screen.getByRole("dialog");
+  expect(page).toHaveAttribute("inert");
+  expect(dialog.closest("[inert]")).toBeNull();
+  view.unmount();
+  expect(page).not.toHaveAttribute("inert");
+  // Something else made it inert; closing the dialog leaves that alone.
+  expect(alreadyInert).toHaveAttribute("inert");
+  page.remove();
+  alreadyInert.remove();
+});
