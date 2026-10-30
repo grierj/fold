@@ -78,7 +78,7 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
     expect(person).not.toHaveProperty("email"); expect(person).not.toHaveProperty("phone"); expect(person).not.toHaveProperty("id");
     expect(JSON.stringify(person)).not.toContain(hidden.name);
   }
-  await expect(page.getByRole("status")).toContainText("2 people found");
+  await expect(page.getByRole("status").filter({ hasText: "people found" })).toContainText("2 people found");
   await expect(page.getByRole("listbox", { name: "People" }).getByRole("option").filter({ hasText: shared.name })).toContainText(visible.name);
   await picker.press("ArrowDown");
   await expect(picker).toHaveAttribute("aria-activedescendant", /person-0$/);
@@ -92,7 +92,7 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   await expect(page.getByText(patName, { exact: true })).toBeVisible();
   await capture("group-adult-added");
   await picker.fill(teenName); await (await soon(page.getByRole("listbox", { name: "People" }).getByRole("option"))).click();
-  await expect(page.getByRole("status")).toContainText("Adding a teen needs their approval and an admin's approval.");
+  await expect(page.getByRole("status").filter({ hasText: "Adding a teen" })).toContainText("Adding a teen needs their approval and an admin's approval.");
   await expect(page.getByRole("button", { name: "Add member", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Ask to add", exact: true })).toBeEnabled();
   await capture("group-teen-guidance");
