@@ -178,8 +178,9 @@ function SeriesFeedback({ series, fallback }: { series: SeriesController; fallba
 }
 
 // Standing confirmation under the control (DEC-92). Waitlisted, full and
-// remote-pool states keep their own copy above the control.
-function answerLine(status: string | null | undefined): ReactNode {
+// remote-pool states keep their own copy above the control. The date page
+// shares it (EventDate.tsx).
+export function answerLine(status: string | null | undefined): ReactNode {
   if (status === "going") return <><CheckIcon className="inline h-4 w-4 mr-1 align-text-bottom text-success-on-subtle" />You&apos;re going. See you there!</>;
   if (status === "maybe") return "You said maybe. Change it anytime.";
   if (status === "declined") return "Got it. Only the leaders see this.";

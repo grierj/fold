@@ -67,6 +67,7 @@ for (let part = 0; part < UI_PARTS; part++) {
 if (partSelected("a11y", "rest")) test("the time zone picker has no moderate, serious or critical axe issues when open and filtered", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/events/new");
+  await page.getByRole("button", { name: "Change" }).click();
   const box = page.getByRole("combobox", { name: "Time zone" });
   await box.click();
   await box.fill("pac");

@@ -1162,3 +1162,59 @@ func TestAdminCreateUserAuditRecordsRole(t *testing.T) {
 		t.Fatalf("creation audit meta: %s", entry.MetaJSON)
 	}
 }
+
+// A leader hears how an admin decided their new group, whether the admin used
+// Approve/Reject or edited the group's status (DEC-96).
+func TestLeadersHearGroupDecisions(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	leader := newTestUser(t, app, "leader", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	lc := loginAPI(t, app, "leader", "password1234")
+	create := func(name string) string {
+		t.Helper()
+		var body struct {
+			Group groupSummaryJSON `json:"group"`
+		}
+		decodeJSON(t, lc.do("POST", "/api/v1/groups", map[string]any{"name": name}, true), &body)
+		if body.Group.Status != models.GroupPending {
+			t.Fatalf("%s: status %q, want pending", name, body.Group.Status)
+		}
+		return itoa(body.Group.ID)
+	}
+	notice := func(kind, gid string) models.Notification {
+		t.Helper()
+		var n models.Notification
+		if err := app.DB.Where("user_id = ? AND kind = ? AND subject_id = ?", leader.ID, kind, gid).First(&n).Error; err != nil {
+			t.Fatalf("%s for group %s: %v", kind, gid, err)
+		}
+		return n
+	}
+
+	approved := create("Choir")
+	if w := admin.do("POST", "/api/v1/admin/groups/"+approved+"/approve", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("approve: %d %s", w.Code, w.Body.String())
+	}
+	if n := notice("group.approved", approved); n.Title != "Choir was approved" || n.Link != "/groups/"+approved {
+		t.Fatalf("approved notice: %+v", n)
+	}
+
+	rejected := create("Night hikes")
+	if w := admin.do("POST", "/api/v1/admin/groups/"+rejected+"/reject", map[string]any{}, true); w.Code != http.StatusOK {
+		t.Fatalf("reject: %d %s", w.Code, w.Body.String())
+	}
+	if n := notice("group.rejected", rejected); n.Title != "Night hikes wasn't approved" {
+		t.Fatalf("rejected notice: %+v", n)
+	}
+
+	edited := create("Book club")
+	if w := admin.do("PUT", "/api/v1/groups/"+edited, map[string]any{"status": models.GroupActive}, true); w.Code != http.StatusOK {
+		t.Fatalf("activate by edit: %d %s", w.Code, w.Body.String())
+	}
+	notice("group.approved", edited)
+
+	// The deciding admin, who isn't a leader, gets nothing; nobody else does either.
+	if n := contactCount(t, app, &models.Notification{}, "kind IN ? AND user_id <> ?", []string{"group.approved", "group.rejected"}, leader.ID); n != 0 {
+		t.Fatalf("%d decision notices went to someone other than the leader", n)
+	}
+}

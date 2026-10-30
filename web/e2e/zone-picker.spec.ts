@@ -11,7 +11,10 @@ function futureDate(days: number): string {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-async function expectBrowserZoneFirst(page: Page, id: string, church = true) {
+async function expectBrowserZoneFirst(page: Page, id: string, church = true, reveal = church) {
+  // The create and edit forms name the zone on one line; Change opens the
+  // picker (DEC-95). The admin setting shows the picker at rest.
+  if (reveal) await page.getByRole("button", { name: "Change", exact: true }).click();
   const box = page.locator(`#${id}`);
   await expect(box).toHaveAttribute("role", "combobox");
   await expect(box).toHaveValue("Boise (Mountain)");
@@ -39,6 +42,7 @@ test("church-wide create form lists the browser zone first", async ({ page }) =>
 test("typing filters by region and the keyboard picks a zone", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/events/new");
+  await page.getByRole("button", { name: "Change" }).click();
   const box = page.getByRole("combobox", { name: "Time zone" });
   await box.click();
   await box.fill("pac");
@@ -68,17 +72,21 @@ test("series edit form lists the browser zone first", async ({ page, request }) 
   await signIn(page, "grier");
   await page.goto(`/groups/${group.id}`);
   await fromMore(page, "Edit series");
+  await expect(page.getByText("Mountain time", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Change", exact: true }).click();
   const id = await page.getByLabel("Time zone").getAttribute("id");
-  await expectBrowserZoneFirst(page, id!);
+  await expectBrowserZoneFirst(page, id!, true, false);
   await page.goto(`/groups/${group.id}/events/new`);
   await expectBrowserZoneFirst(page, "event-tz");
   await page.goto(`/events/${event.id}`);
   await page.getByRole("button", { name: "Edit series" }).click();
-  await expectBrowserZoneFirst(page, `s-tz-ev${event.id}`);
+  await expectBrowserZoneFirst(page, `s-ev${event.id}-tz`);
   // Same shared editor as the group page: visible labels, same fields.
-  for (const label of ["First date", "Start time", "Duration (minutes)", "Title", "Location", "Description", "Repeat until (optional)"]) {
+  for (const label of ["First date", "Start time", "Title", "Location", "Description", "Repeat until (optional)"]) {
     await expect(page.locator("label", { hasText: label }).first()).toBeVisible();
   }
+  await expect(page.getByRole("group", { name: "Duration" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "More options" })).toHaveAttribute("aria-expanded", "true");
 });
 
 test("admin church time zone setting lists the browser zone first", async ({ page }) => {

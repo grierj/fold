@@ -4,6 +4,9 @@ import { GroupCover, Groups } from "../api";
 import type { GroupSummary } from "../types";
 import { CreateGroupForm, type GroupFormData } from "./GroupDetail";
 import { useAuth } from "../auth";
+import { ButtonLink } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Illustration } from "../components/ui/Illustration";
 
 export function NewGroup() {
   const { user, loading, isAdmin } = useAuth();
@@ -46,38 +49,30 @@ export function NewGroup() {
     <div className="max-w-2xl mx-auto px-4 py-8">
       {created && created.status === "active" ? (
         // Admins' groups (and anyone else's the server activates) are live now.
-        <div className="bg-surface rounded-lg border border-border p-8 text-center">
-          <h1 className="text-2xl font-bold">Group created</h1>
-          <p className="text-text-muted mt-2">
-            <span className="font-semibold">“{created.name}”</span> is live.
-          </p>
-          <Link to={`/groups/${created.id}`} className="btn-primary inline-block mt-6">
-            Go to the group
-          </Link>
-        </div>
+        <EmptyState
+          level={1}
+          title="Group created"
+          body={<>“{created.name}” is live.</>}
+          action={
+            <>
+              <ButtonLink to={`/groups/${created.id}/events/new`} variant="primary">Schedule the first meeting</ButtonLink>
+              <ButtonLink to={`/groups/${created.id}`} variant="secondary">Go to the group</ButtonLink>
+            </>
+          }
+        />
       ) : created ? (
-        <div className="bg-surface rounded-lg border border-border p-8 text-center">
-          <div className="w-14 h-14 mx-auto rounded-full bg-warning-subtle text-warning-on-subtle flex items-center justify-center text-2xl font-bold">
-            !
-          </div>
-          <h1 className="text-2xl font-bold mt-4">Pending approval</h1>
-          <p className="text-text-muted mt-2">
-            <span className="font-semibold">“{created.name}”</span> was submitted and is waiting
-            for a church admin to approve it. You'll be able to manage it as soon as it's
-            approved.
-          </p>
-          <Link to="/" className="btn-primary inline-block mt-6">
-            Back to groups
-          </Link>
-        </div>
+        // Calm, not a warning: nothing is wrong, an admin just has to look (DEC-96).
+        <EmptyState
+          level={1}
+          illustration={<Illustration name="request-sent" />}
+          title={`Thanks! An admin will review “${created.name}”.`}
+          body="We'll let you know in Alerts when it's approved."
+          action={<ButtonLink to="/" variant="primary">Back to Home</ButtonLink>}
+        />
       ) : (
         <>
           <h1 className="text-3xl font-bold mb-2">Start a group</h1>
-          {!isAdmin && (
-            <p className="text-text-muted mb-6">
-              New groups are reviewed by a church admin before they appear in the directory.
-            </p>
-          )}
+          {!isAdmin && <p className="text-text-muted mb-6">An admin reviews new groups before they go live.</p>}
           <CreateGroupForm onSaved={create} onCancel={() => navigate("/")} />
         </>
       )}

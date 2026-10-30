@@ -57,7 +57,7 @@ describe("RemoteField", () => {
     expect(input).toHaveAttribute("inputmode", "numeric");
     expect(input).toHaveAttribute("aria-invalid", "true");
     expect(input).toHaveAccessibleDescription(expect.stringContaining(error!));
-    expect(screen.getByRole("checkbox")).toHaveAccessibleDescription("Add a video link below so remote people can join.");
+    expect(screen.getByRole("checkbox")).toHaveAccessibleDescription("Add a video link above so remote people can join.");
     focusRemoteCapacity("bad");
     await waitFor(() => expect(input).toHaveFocus());
   });

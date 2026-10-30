@@ -1,16 +1,20 @@
 import { Form } from "./ui/Form";
-import { ChildcareField, childcareBody, childcareFrom, childcareProblem, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "./ChildcareField";
+import { childcareBody, childcareFrom, childcareProblem, focusChildcareCapacity, isChildcareCapacityError, type ChildcareValue } from "./ChildcareField";
 import { useState } from "react";
 import { Events } from "../api";
 import { bydays, isSimpleWeekly, weekdayCode } from "../lib/eventForm";
 import { errorText } from "../lib/errors";
-import { Checkbox, Field, FormError, Input, Textarea } from "./ui/Field";
+import { useDirty } from "../lib/useDirty";
+import { useUnsavedChanges } from "../lib/unsavedChanges";
+import { useWhenState } from "../lib/useWhenState";
+import { Field, FormError, Input, Textarea } from "./ui/Field";
 import { FormActions } from "./ui/FormActions";
-import { ZonePicker } from "./ui/ZonePicker";
-import { WeekdayPicker } from "./WeekdayPicker";
 import { Button } from "./ui/Button";
-import { VideoField, focusVideoUrl, isVideoError, videoProblem, type VideoValue } from "./VideoField";
-import { RemoteField, focusRemoteCapacity, isRemoteError, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
+import { EventOptions } from "./EventOptions";
+import { WhenFields } from "./WhenFields";
+import { focusSeatLimit, isSeatsError, seatsFrom, seatsProblem, type SeatsValue } from "./SeatsField";
+import { focusVideoUrl, isVideoError, videoProblem, type VideoValue } from "./VideoField";
+import { focusRemoteCapacity, isRemoteError, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
 import type { VideoProvider, VideoReveal } from "../types";
 
 
@@ -54,25 +58,27 @@ export function SeriesEditor({
   onClose?: () => void;
 }) {
   const simple = isSimpleWeekly(instance.recurrenceRule);
-  const [date, setDate] = useState(instance.startsLocal.slice(0, 10));
-  const [time, setTime] = useState(instance.startsLocal.slice(11, 16) || "19:00");
-  const [duration, setDuration] = useState(instance.durationMinutes);
+  const when = useWhenState({
+    date: instance.startsLocal.slice(0, 10),
+    time: instance.startsLocal.slice(11, 16) || "19:00",
+    duration: instance.durationMinutes,
+    recurring: instance.recurrenceRule !== "",
+    days: (() => {
+      const picked = bydays(instance.recurrenceRule);
+      if (picked.length > 0) return picked;
+      if (instance.recurrenceRule.startsWith("FREQ=WEEKLY")) return [weekdayCode(instance.startsLocal.slice(0, 10))];
+      return [];
+    })(),
+  });
+  const { date, time, duration, recurring, days } = when;
   const [tzid, setTzid] = useState(instance.tzid);
   const [title, setTitle] = useState(instance.title);
   const [description, setDescription] = useState(instance.description);
   const [location, setLocation] = useState(instance.location);
-  const [recurring, setRecurring] = useState(instance.recurrenceRule !== "");
-  const [days, setDays] = useState<string[]>(() => {
-    const picked = bydays(instance.recurrenceRule);
-    if (picked.length > 0) return picked;
-    if (instance.recurrenceRule.startsWith("FREQ=WEEKLY")) return [weekdayCode(instance.startsLocal.slice(0, 10))];
-    return [];
-  });
   const [rule, setRule] = useState(instance.recurrenceRule);
   const [until, setUntil] = useState(instance.rruleUntil ?? "");
-  const [capacity, setCapacity] = useState(instance.capacity === null ? "" : String(instance.capacity));
-  const [waitlistEnabled, setWaitlistEnabled] = useState(instance.waitlistEnabled);
-  const [guestsAllowed, setGuestsAllowed] = useState(instance.guestsAllowed);
+  const initialSeats = seatsFrom(instance.capacity, instance.waitlistEnabled, instance.guestsAllowed);
+  const [seats, setSeats] = useState<SeatsValue>(initialSeats);
   const initialVideo: VideoValue = {
     provider: instance.videoProvider ?? "none",
     url: instance.videoUrl ?? "",
@@ -83,15 +89,17 @@ export function SeriesEditor({
   const [childcare, setChildcare] = useState<ChildcareValue>(initialChildcare);
   const initialRemote = remoteFrom(instance.remoteAvailable, instance.remoteCapacity);
   const [remote, setRemote] = useState<RemoteValue>(initialRemote);
+  // Open on edit, so what is already set is in view (DEC-95).
+  const [moreOpen, setMoreOpen] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [seatsError, setSeatsError] = useState<string | null>(null);
   const [videoError, setVideoError] = useState<string | null>(null);
   const [childcareError, setChildcareError] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
-  function toggleDay(v: string) {
-    setDays((prev) => (prev.includes(v) ? prev.filter((d) => d !== v) : [...prev, v]));
-  }
+  const dirty = useDirty({ date, time, duration, recurring, days, tzid, title, description, location, rule, until, seats, video, childcare, remote });
+  const { guard, markSaved } = useUnsavedChanges(dirty);
 
   async function save(e: React.FormEvent) {
     e.preventDefault();
@@ -99,10 +107,19 @@ export function SeriesEditor({
       setError("Pick at least one day to repeat weekly.");
       return;
     }
+    const seatsMsg = seatsProblem(seats);
+    setSeatsError(seatsMsg);
+    if (seatsMsg) {
+      setError(seatsMsg);
+      setMoreOpen(true);
+      focusSeatLimit(idPrefix);
+      return;
+    }
     const videoMsg = videoProblem(video);
     setVideoError(videoMsg);
     if (videoMsg) {
       setError(videoMsg);
+      setMoreOpen(true);
       focusVideoUrl(idPrefix);
       return;
     }
@@ -110,6 +127,7 @@ export function SeriesEditor({
     setChildcareError(childcareMsg);
     if (childcareMsg) {
       setError(childcareMsg);
+      setMoreOpen(true);
       focusChildcareCapacity(idPrefix);
       return;
     }
@@ -117,14 +135,15 @@ export function SeriesEditor({
     setRemoteError(remoteMsg);
     if (remoteMsg) {
       setError(remoteMsg);
+      setMoreOpen(true);
       focusRemoteCapacity(idPrefix);
       return;
     }
     setBusy(true);
     setError(null);
     const recurrenceRule = simple ? (recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "") : rule.trim();
-    const capTrimmed = capacity.trim();
-    const capInitial = instance.capacity === null ? "" : String(instance.capacity);
+    const capTrimmed = seats.capacity.trim();
+    const capInitial = initialSeats.capacity;
     // Only send capacity fields that changed: on the group page the
     // initial capacity is the date's effective value, and an untouched
     // field must not clobber a per-date override.
@@ -161,8 +180,8 @@ export function SeriesEditor({
     };
     if (JSON.stringify(childcare) !== JSON.stringify(initialChildcare)) Object.assign(body, childcareBody(childcare));
     if (capTrimmed !== capInitial) body.capacity = capTrimmed === "" ? null : Number(capTrimmed);
-    if (waitlistEnabled !== instance.waitlistEnabled) body.waitlistEnabled = waitlistEnabled;
-    if (guestsAllowed !== instance.guestsAllowed) body.guestsAllowed = guestsAllowed;
+    if (seats.waitlist !== instance.waitlistEnabled) body.waitlistEnabled = seats.waitlist;
+    if (seats.guests !== instance.guestsAllowed) body.guestsAllowed = seats.guests;
     // Same only-when-changed rule as capacity: an untouched remote cap
     // on the group page must not clobber a per-date override.
     if (remote.available !== initialRemote.available || remote.capacity.trim() !== initialRemote.capacity) {
@@ -179,10 +198,13 @@ export function SeriesEditor({
     }
     try {
       await Events.update(instance.eventId, body);
+      markSaved();
       onSaved();
     } catch (err) {
       const msg = errorText(err, "We couldn't update the series.");
       setError(msg);
+      if (isSeatsError(err) || isChildcareCapacityError(err) || isRemoteError(err) || isVideoError(err)) setMoreOpen(true);
+      if (isSeatsError(err)) { setSeatsError(msg); focusSeatLimit(idPrefix); }
       if (isChildcareCapacityError(err)) { setChildcareError(msg); focusChildcareCapacity(idPrefix); }
       if (isRemoteError(err)) {
         setRemoteError(msg);
@@ -197,42 +219,16 @@ export function SeriesEditor({
   }
 
   return (
-    <Form noValidate onSubmit={save} className="mt-3 space-y-3 border-t border-border pt-3">
+    <Form noValidate onSubmit={save} className="mt-3 space-y-4 border-t border-border pt-3">
       <p className="text-sm text-text-muted">
         This changes every future date that has not been edited on its own. Customized dates stay as they are. Dates
         the new schedule drops are cancelled, and people who were going or maybe are told.
       </p>
+      {guard}
       {error && <FormError>{error}</FormError>}
-      <div className="grid sm:grid-cols-2 gap-3">
-        <Field id={`s-date-${idPrefix}`} label="First date">
-          <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} required />
-        </Field>
-        <Field id={`s-time-${idPrefix}`} label="Start time">
-          <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} required />
-        </Field>
-      </div>
-      <div>
-        <Field id={`s-dur-${idPrefix}`} label="Duration (minutes)">
-          <Input
-            type="number"
-            min={1}
-            max={10080}
-            value={duration}
-            onChange={(e) => setDuration(Number(e.target.value))}
-          />
-        </Field>
-      </div>
-      <Field id={`s-tz-${idPrefix}`} label="Time zone">
-        <ZonePicker value={tzid} onChange={setTzid} />
+      <Field id={`s-title-${idPrefix}`} label="Title">
+        <Input value={title} onChange={(e) => setTitle(e.target.value)} />
       </Field>
-      <div className="grid sm:grid-cols-2 gap-3">
-        <Field id={`s-title-${idPrefix}`} label="Title">
-          <Input value={title} onChange={(e) => setTitle(e.target.value)} />
-        </Field>
-        <Field id={`s-loc-${idPrefix}`} label="Location" optional hint={locationHint}>
-          <Input value={location} onChange={(e) => setLocation(e.target.value)} />
-        </Field>
-      </div>
       <Field id={`s-desc-${idPrefix}`} label="Description" optional>
         <Textarea
           rows={3}
@@ -241,59 +237,36 @@ export function SeriesEditor({
           onChange={(e) => setDescription(e.target.value)}
         />
       </Field>
-      {simple ? (
-        <div>
-          <Checkbox
-            label="Repeat weekly"
-            checked={recurring}
-            onChange={(e) => {
-              setRecurring(e.target.checked);
-              if (e.target.checked && days.length === 0 && date) setDays([weekdayCode(date)]);
-            }}
-          />
-          {recurring && (
-            <div className="mt-2">
-              <WeekdayPicker days={days} onToggle={toggleDay} />
-            </div>
-          )}
-        </div>
-      ) : (
-        <Field id={`s-rule-${idPrefix}`} label="Recurrence rule">
-          <Input value={rule} onChange={(e) => setRule(e.target.value)} />
-        </Field>
-      )}
-      <Field id={`s-until-${idPrefix}`} label="Repeat until" optional>
-        <Input type="date" value={until} onChange={(e) => setUntil(e.target.value)} />
-      </Field>
-      <div className="grid sm:grid-cols-2 gap-3">
-        <Field id={`s-cap-${idPrefix}`} label="Capacity" optional hint="Seats per date. Leave it blank for no limit.">
-          <Input
-            type="number"
-            min={1}
-            placeholder="No limit"
-            value={capacity}
-            onChange={(e) => setCapacity(e.target.value)}
-          />
-        </Field>
-        <Field id={`s-guests-${idPrefix}`} label="Guests allowed" hint="Extra guests one registration may bring (0–5).">
-          <Input
-            type="number"
-            min={0}
-            max={5}
-            value={guestsAllowed}
-            onChange={(e) => setGuestsAllowed(Math.max(0, Math.min(5, Number(e.target.value))))}
-          />
-        </Field>
-      </div>
-      <Checkbox
-        label="Waitlist when full"
-        description="When the waitlist is off, a full date refuses new registrations. When it is on, extra people join the waitlist in order and move up automatically as seats open."
-        checked={waitlistEnabled}
-        onChange={(e) => setWaitlistEnabled(e.target.checked)}
+      <WhenFields
+        idPrefix={`s-${idPrefix}`}
+        when={when}
+        tzid={tzid}
+        onTzid={setTzid}
+        zoneHint="The time zone the times above are in. The clock stays put across daylight saving."
+        dateLabel="First date"
+        customRule={simple ? undefined : { value: rule, onChange: setRule }}
+        until={{ value: until, onChange: setUntil }}
       />
-      <ChildcareField idPrefix={idPrefix} value={childcare} onChange={setChildcare} error={childcareError} />
-      <RemoteField idPrefix={idPrefix} value={remote} onChange={setRemote} error={remoteError} />
-      <VideoField idPrefix={idPrefix} value={video} onChange={setVideo} error={videoError} />
+      <Field id={`s-loc-${idPrefix}`} label="Location" optional hint={locationHint}>
+        <Input value={location} onChange={(e) => setLocation(e.target.value)} />
+      </Field>
+      <EventOptions
+        idPrefix={idPrefix}
+        open={moreOpen}
+        onOpenChange={setMoreOpen}
+        seats={seats}
+        onSeats={setSeats}
+        seatsError={seatsError}
+        video={video}
+        onVideo={setVideo}
+        videoError={videoError}
+        remote={remote}
+        onRemote={setRemote}
+        remoteError={remoteError}
+        childcare={childcare}
+        onChildcare={setChildcare}
+        childcareError={childcareError}
+      />
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
           {busy ? "Saving…" : "Save series"}

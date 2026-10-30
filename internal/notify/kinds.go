@@ -35,6 +35,8 @@ const (
 	ContactUpdated          = "contact.updated"
 	GroupPending            = "group.pending"
 	GroupDeletion           = "group.deletion"
+	GroupApproved           = "group.approved"
+	GroupRejected           = "group.rejected"
 	LeadershipChanged       = "group.leadership_changed"
 	MembershipDeparture     = "membership.departure"
 	MembershipLeft          = "membership.left"
@@ -283,6 +285,19 @@ func init() {
 		},
 		RenderEmailSafe: func(v Vars) (string, string) {
 			return "Your group membership ended", fmt.Sprintf("%d upcoming dates were kept and %d ended. Sign in to Fold to review your upcoming dates.", v.KeptCount, v.EndedCount)
+		},
+	})
+	// A leader hears how an admin decided their new group (DEC-96).
+	register(Kind{
+		Key: GroupApproved, Category: CatGroups, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return or(v.Group, "Your group") + " was approved", "People can find it now. Schedule its first meeting."
+		},
+	})
+	register(Kind{
+		Key: GroupRejected, Category: CatGroups, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return or(v.Group, "Your group") + " wasn't approved", "An admin decided not to add it. Ask an admin if you have questions."
 		},
 	})
 	register(Kind{

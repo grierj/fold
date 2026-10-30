@@ -1,17 +1,17 @@
 import { Tabs } from "../components/ui/Tabs";
 import { Form } from "../components/ui/Form";
 import { DateEditor } from "../components/DateEditor";
-import { AddRequestForm } from "../components/AddRequestForm";
-import { PeoplePicker } from "../components/ui/PeoplePicker";
+import { AddPeople } from "../components/AddPeople";
 import { RequestContactButton } from "../components/RequestContactButton";
 import { ContactDetails } from "../components/ContactDetails";
 import { Badge } from "../components/ui/Badge";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
-import type { DepartureConfirmation, PersonSearchResult, EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
+import { ApiError, Events, GroupCover, Groups } from "../api";
+import type { DepartureConfirmation, EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
 import { useAuth } from "../auth";
 import { OccurrenceCard } from "../components/OccurrenceCard";
 import { Attendance } from "../components/Attendance";
@@ -32,11 +32,12 @@ import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 import { focalPosition, prepareUpload } from "../lib/image";
 import { formatTime, formatWhen } from "../lib/when";
-import { errorCode, errorText } from "../lib/errors";
+import { errorText } from "../lib/errors";
 import { Checkbox, Choices, Field, FormError, HiddenFileInput, Input, Radio, Textarea } from "../components/ui/Field";
 import { FormActions } from "../components/ui/FormActions";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { applyActorRsvpResults, type ActorRsvpResult, type SeriesFeedbackSignal } from "../lib/rsvpFeedback";
+import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { useRsvpMutationGate, type RsvpMutationGate } from "../lib/useRsvpMutationGate";
 
 type Tab = "events" | "about" | "members";
@@ -79,6 +80,7 @@ function EventRow({
   onCancelled: (eventId: number, date: string) => void;
   onChanged: () => void;
 }) {
+  const navigate = useNavigate();
   const [cancelling, setCancelling] = useState(false);
   const [editor, setEditor] = useState<null | "date" | "series">(null);
   const time = formatTime(instance.startsAt);
@@ -107,6 +109,8 @@ function EventRow({
         label={`More for ${name} on ${instance.date}`}
         items={[
           { label: "Edit this date", onSelect: () => setEditor(editor === "date" ? null : "date") },
+          // The event page opens its Manage sign-ups panel for this date (DEC-99).
+          { label: "Manage sign-ups", onSelect: () => navigate(`/events/${instance.eventId}?manage=${instance.date}`) },
           { label: instance.recurrenceRule ? "Edit series" : "Edit event", onSelect: () => setEditor(editor === "series" ? null : "series") },
           { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
         ]}
@@ -199,11 +203,16 @@ function GroupForm({
   initial: {
     name: string; description: string; location: string; tags: string[];
     imageUrl: string; coverFocalX: number; coverFocalY: number;
+    // The id the no-photo pattern comes from (coverSrc); 0 for a group with no id yet.
+    coverId: number;
     visibility?: Visibility;
     memberLimit?: number | null;
+    // Tags, member limit and cover start open when editing, closed on create (DEC-100).
+    moreOpen: boolean;
   };
   saveLabel: string;
-  onSaved: (data: GroupFormData) => Promise<void>;
+  // Resolve false to say nothing was saved (the leader still has a review to confirm).
+  onSaved: (data: GroupFormData) => Promise<void | false>;
   onCancel: () => void;
 }) {
   const [name, setName] = useState(initial.name);
@@ -214,19 +223,32 @@ function GroupForm({
   const [coverFile, setCoverFile] = useState<File | null>(null);
   const [coverFocal, setCoverFocal] = useState<{ x: number; y: number } | null>(null);
   const [visibility, setVisibility] = useState<Visibility>(initial.visibility ?? "public");
-  const [memberLimit, setMemberLimit] = useState(initial.memberLimit ? String(initial.memberLimit) : "");
+  const initialLimit = initial.memberLimit ? String(initial.memberLimit) : "";
+  const [memberLimit, setMemberLimit] = useState(initialLimit);
+  const [moreOpen, setMoreOpen] = useState(initial.moreOpen);
+  const limitRef = useRef<HTMLInputElement>(null);
+  const moreId = useId();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dirty = name !== initial.name || description !== initial.description || location !== initial.location
+    || tags !== initial.tags.join(", ") || visibility !== (initial.visibility ?? "public") || memberLimit !== initialLimit
+    || coverFile !== null || coverFocal !== null || removeCover;
+  const { guard, markSaved } = useUnsavedChanges(dirty);
 
   return (
     <Form noValidate
       className="bg-surface rounded-lg border border-border p-6 space-y-6"
+      // A bad member limit inside the closed section opens it before the form
+      // checks its fields, so the error shows and focus can land on the field.
+      onSubmitCapture={() => {
+        if (!moreOpen && limitRef.current && !limitRef.current.validity.valid) flushSync(() => setMoreOpen(true));
+      }}
       onSubmit={async (e) => {
         e.preventDefault();
         setBusy(true);
         setError(null);
         try {
-          await onSaved({
+          const saved = await onSaved({
             name,
             description,
             location,
@@ -240,6 +262,7 @@ function GroupForm({
             visibility,
             memberLimit: memberLimit.trim() ? Number(memberLimit) : null,
           });
+          if (saved !== false) markSaved();
         } catch (err) {
           setError(errorText(err, "We couldn't save your changes."));
         } finally {
@@ -247,6 +270,7 @@ function GroupForm({
         }
       }}
     >
+      {guard}
       {error && <FormError>{error}</FormError>}
       <section className="space-y-4">
         <h2 className="text-base font-semibold">About the group</h2>
@@ -259,15 +283,8 @@ function GroupForm({
         <Field id="group-location" label="Location" optional hint="Where it usually meets, for example Room 201, Main Campus.">
           <Input value={location} onChange={(e) => setLocation(e.target.value)} />
         </Field>
-        <Field id="group-tags" label="Tags" optional hint="Separate tags with commas, for example young-adults, bible-study.">
-          <Input value={tags} onChange={(e) => setTags(e.target.value)} />
-        </Field>
       </section>
-      <section className="space-y-4">
-        <h2 className="text-base font-semibold">Who can join</h2>
-        <Field id="member-limit" label="Member limit" optional hint="For a room with a fixed capacity. When it's full, people can't join on their own; leaders can still add someone. Leave it blank for no limit.">
-          <Input type="number" min={1} step={1} value={memberLimit} onChange={(e) => setMemberLimit(e.target.value)} layout="sm:w-44" />
-        </Field>
+      <section>
         <Choices legend="Who can see this group">
           <Radio
             name="visibility"
@@ -293,20 +310,35 @@ function GroupForm({
         </Choices>
       </section>
       <section>
-        <ImageUpload
-          label="Cover image"
-          initialUrl={initial.imageUrl || undefined}
-          initialFocal={{ x: initial.coverFocalX, y: initial.coverFocalY }}
-          maxDim={1600}
-          aspectClass="aspect-video"
-          onFile={setCoverFile}
-          onFocal={setCoverFocal}
-        />
-        {initial.imageUrl && !coverFile && (
-          <div className="mt-2">
-            <Checkbox label="Remove the current cover" checked={removeCover} onChange={(e) => setRemoveCover(e.target.checked)} />
+        <Button variant="link" aria-expanded={moreOpen} aria-controls={moreId} onClick={() => setMoreOpen(!moreOpen)}>
+          More options
+        </Button>
+        {/* Hidden, not unmounted: what's typed or picked here survives closing it. */}
+        <div id={moreId} hidden={!moreOpen} className="mt-4 space-y-6">
+          <Field id="group-tags" label="Tags" optional hint="Separate tags with commas, for example young-adults, bible-study.">
+            <Input value={tags} onChange={(e) => setTags(e.target.value)} />
+          </Field>
+          <Field id="member-limit" label="Member limit" optional hint="For a room with a fixed capacity. When it's full, people can't join on their own; leaders can still add someone. Leave it blank for no limit.">
+            <Input ref={limitRef} type="number" min={1} step={1} value={memberLimit} onChange={(e) => setMemberLimit(e.target.value)} layout="sm:w-44" />
+          </Field>
+          <div>
+            <ImageUpload
+              label="Cover image"
+              initialUrl={initial.imageUrl || undefined}
+              placeholderSrc={coverSrc({ id: initial.coverId })}
+              initialFocal={{ x: initial.coverFocalX, y: initial.coverFocalY }}
+              maxDim={1600}
+              aspectClass="aspect-video"
+              onFile={setCoverFile}
+              onFocal={setCoverFocal}
+            />
+            {initial.imageUrl && !coverFile && (
+              <div className="mt-2">
+                <Checkbox label="Remove the current cover" checked={removeCover} onChange={(e) => setRemoveCover(e.target.checked)} />
+              </div>
+            )}
           </div>
-        )}
+        </div>
       </section>
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>
@@ -329,6 +361,8 @@ export function CreateGroupForm({ onSaved, onCancel }: {
     <GroupForm
       initial={{
         name: "", description: "", location: "", tags: [], imageUrl: "",
+        // No id yet, so the cover pattern is the one coverSrc gives id 0.
+        coverId: 0, moreOpen: false,
         coverFocalX: 50, coverFocalY: 50, visibility: "public",
       }}
       saveLabel="Create group"
@@ -393,14 +427,7 @@ function GroupDetailContent() {
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [joinBusy, setJoinBusy] = useState(false);
   const [coverBusy, setCoverBusy] = useState(false);
-  const [memberEmail, setMemberEmail] = useState("");
-  const [memberSelection, setMemberSelection] = useState<PersonSearchResult | null>(null);
-  const [askMember, setAskMember] = useState<PersonSearchResult | null>(null);
   const [memberBusy, setMemberBusy] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteBusy, setInviteBusy] = useState(false);
-  const [inviteOverLimit, setInviteOverLimit] = useState(false);
-  const [inviteStatus, setInviteStatus] = useState<string | null>(null);
   const [memberError, setMemberError] = useState<string | null>(null);
   const [departureTarget, setDepartureTarget] = useState<{ subjectId?: number; allowNote: boolean } | null>(null);
   const [departureStatus, setDepartureStatus] = useState<string | null>(null);
@@ -582,14 +609,14 @@ function GroupDetailContent() {
     );
   }
 
-  async function saveEdit(data: GroupFormData) {
+  async function saveEdit(data: GroupFormData): Promise<void | false> {
     // Making the group more private can change its events (DEC-48): show
     // the leader the list and get a decision before anything is saved.
     if (visibilityRank(data.visibility) < visibilityRank(group.visibility)) {
       const impact = await Groups.visibilityImpact(id!, data.visibility);
       if (impact.tightened.length > 0 || impact.leaderOpened.length > 0) {
         setReview({ data, impact });
-        return;
+        return false;
       }
     }
     await commitEdit(data);
@@ -656,56 +683,6 @@ function GroupDetailContent() {
     setMemberError(null);
     setDepartureStatus(null);
     setDepartureTarget({ subjectId: memberId, allowNote: true });
-  }
-
-  async function addMember(e: React.FormEvent) {
-    e.preventDefault();
-    const email = memberEmail.trim();
-    if (memberSelection?.teen) { setAskMember(memberSelection); return; }
-    if (!email && !memberSelection) return;
-    const target = memberSelection ? { selectionId: memberSelection.selectionId } : email;
-    setMemberBusy(true);
-    setMemberError(null);
-    try {
-      try {
-        await Groups.addMember(id!, target);
-      } catch (err) {
-        // Full group: going over the limit is an explicit, audited choice (DEC-39).
-        if (errorCode(err) !== "group_full") throw err;
-        if (!confirm(`“${group.name}” is full (${group.memberCount} of ${group.memberLimit}). Add ${memberSelection?.displayName ?? email} anyway?`)) return;
-        await Groups.addMember(id!, target, true);
-      }
-      setMemberEmail("");
-      setMemberSelection(null);
-      await load();
-    } catch (e) {
-      setMemberError(errorCode(e) === "teen_add_approval_required" ? "Select this person by name, then choose Ask to add. An email address cannot be used to send an ask." : errorText(e, "We couldn't add that person."));
-    } finally {
-      setMemberBusy(false);
-    }
-  }
-
-  // Invite someone to Fold and into this group (M1.2, 5.10). Leaders
-  // invite only into groups they lead; the person sets a password on
-  // acceptance. Going over the member limit is an explicit, audited
-  // choice (DEC-39).
-  async function inviteMember(e: React.FormEvent) {
-    e.preventDefault();
-    const email = inviteEmail.trim();
-    if (!email) return;
-    setInviteBusy(true);
-    setMemberError(null);
-    setInviteStatus(null);
-    try {
-      await Invitations.create({ email, groupId: Number(id), overLimit: inviteOverLimit });
-      setInviteEmail("");
-      setInviteOverLimit(false);
-      setInviteStatus(`Invitation sent to ${email}.`);
-    } catch (err) {
-      setMemberError(errorText(err, "We couldn't send the invitation."));
-    } finally {
-      setInviteBusy(false);
-    }
   }
 
   async function requestDeletion() {
@@ -865,6 +842,8 @@ function GroupDetailContent() {
               imageUrl: group.imageUrl,
               coverFocalX: group.coverFocalX,
               coverFocalY: group.coverFocalY,
+              coverId: group.id,
+              moreOpen: true,
               visibility: group.visibility,
               memberLimit: group.memberLimit,
             }}
@@ -1058,53 +1037,14 @@ function GroupDetailContent() {
                       <p className="text-text-muted">No members yet.</p>
                     )}
                     {canManage && (
-                      <>
-                      <Form noValidate onSubmit={inviteMember} className="mt-4 flex gap-2 flex-wrap items-end">
-                        <div className="grow min-w-48">
-                          <Field id="invite-member" label="Invite someone to Fold">
-                            <Input
-                              value={inviteEmail}
-                              onChange={(e) => setInviteEmail(e.target.value)}
-                              type="email"
-                              placeholder="name@example.com"
-                              autoComplete="off"
-                            />
-                          </Field>
-                        </div>
-                        <Button variant="secondary" type="submit" disabled={inviteBusy || !inviteEmail.trim()}>
-                          {inviteBusy ? "Sending…" : "Send invite"}
-                        </Button>
-                        {group.memberLimit != null && group.memberCount >= group.memberLimit && (
-                          <div className="w-full">
-                            <Checkbox
-                              label="Invite over the limit anyway"
-                              description="This group is full. Going over the limit is logged."
-                              checked={inviteOverLimit}
-                              onChange={(e) => setInviteOverLimit(e.target.checked)}
-                            />
-                          </div>
-                        )}
-                      </Form>
-                      {inviteStatus && <p className="text-success text-sm mt-2">{inviteStatus}</p>}
-                      <Form noValidate onSubmit={addMember} className="mt-4 space-y-3">
-                        {user?.status === "active" && user.accountType === "adult" && <Field label="Find a person by name"><PeoplePicker value={memberSelection} disabled={memberBusy} onChange={(person) => { setMemberSelection(person); setAskMember(null); setMemberEmail(""); setMemberError(null); }} /></Field>}
-                        <div className="grow min-w-48">
-                          <Field id="add-member" label="Add a member by email">
-                            <Input
-                              value={memberEmail}
-                              onChange={(e) => { setMemberEmail(e.target.value); setMemberSelection(null); setAskMember(null); }}
-                              type="email"
-                              placeholder="name@example.com"
-                              autoComplete="off"
-                            />
-                          </Field>
-                        </div>
-                        <Button variant="secondary" type="submit" disabled={memberBusy || (!memberSelection && !memberEmail.trim())}>
-                          {memberBusy ? "Adding…" : memberSelection?.teen ? "Ask to add" : "Add member"}
-                        </Button>
-                      </Form>
-                      {askMember && user?.status === "active" && user.accountType === "adult" && <AddRequestForm key={askMember.selectionId} person={askMember} scope={{ contextType: "group", contextId: Number(id) }} full={group.memberLimit !== null && group.memberCount >= group.memberLimit} onClose={() => setAskMember(null)} />}
-                      </>
+                      <AddPeople
+                        groupId={group.id}
+                        groupName={group.name}
+                        memberCount={group.memberCount}
+                        memberLimit={group.memberLimit}
+                        canSearch={user?.status === "active" && user.accountType === "adult"}
+                        onAdded={() => load({ quiet: true })}
+                      />
                     )}
                     {isLeader && (
                       <div className="mt-6 border-t border-border pt-4">

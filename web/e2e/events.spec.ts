@@ -13,6 +13,9 @@ test("a new series defaults to the church time zone", async ({ page }) => {
   await page.getByRole("heading", { name: "Room 201 class" }).click();
   await page.getByRole("link", { name: "Schedule event" }).click();
   await expect(page).toHaveURL(/\/groups\/\d+\/events\/new/);
+  // The form names the zone on one line; Change opens the shared picker (DEC-95).
+  await expect(page.getByText("Mountain time", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Change" }).click();
   const tz = page.getByRole("combobox", { name: "Time zone" });
   await expect(tz).toHaveValue("Boise (Mountain)");
   await tz.click();
@@ -25,7 +28,7 @@ test("a new series defaults to the church time zone", async ({ page }) => {
   const when = new Date(Date.now() + 20 * 24 * 60 * 60 * 1000);
   const ymd = when.toISOString().slice(0, 10);
   await page.getByLabel("Title (optional)").fill("Wednesday class");
-  await page.getByLabel("Date").fill(ymd);
+  await page.getByLabel("Date", { exact: true }).fill(ymd);
   await page.getByLabel("Start time").fill("19:00");
   await page.getByRole("button", { name: "Schedule event" }).click();
 

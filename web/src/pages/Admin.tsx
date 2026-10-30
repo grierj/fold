@@ -27,6 +27,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
 import { ContactHistory } from "../contact-history-api";
+import { useUnsavedChanges } from "../lib/unsavedChanges";
 
 type AdminTab = "approvals" | "groups" | "users" | "invite" | "settings";
 
@@ -1039,6 +1040,8 @@ function ChurchTimezone() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
+  // Leaving with an unsaved zone asks first (DEC-98).
+  const { guard } = useUnsavedChanges(saved !== "" && tz.trim() !== saved);
 
   useEffect(() => {
     let alive = true;
@@ -1073,6 +1076,7 @@ function ChurchTimezone() {
 
   return (
     <Form noValidate onSubmit={save} className="mb-6 max-w-xl space-y-4">
+      {guard}
       <Field id="church-tz" label="Church time zone" hint="New events start in this time zone; leaders can pick another when they schedule.">
         <ZonePicker
           forChurchSetting
@@ -1087,7 +1091,7 @@ function ChurchTimezone() {
         <Button variant="secondary" layout="w-full sm:w-auto" type="submit" disabled={busy || tz.trim() === saved}>
           {busy ? "Saving…" : "Save time zone"}
         </Button>
-        {ok && <span className="text-sm text-text-muted">Saved</span>}
+        {ok && <span role="status" className="text-sm text-text-muted">Saved</span>}
       </FormActions>
       {error && <FormError>{error}</FormError>}
     </Form>
@@ -1136,7 +1140,7 @@ function InviteTab() {
   return (
     <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4 max-w-xl">
       {error && <FormError>{error}</FormError>}
-      {status && <div className="text-success text-sm">{status}</div>}
+      {status && <p role="status" className="text-success text-sm">{status}</p>}
       <p className="text-sm text-text-muted">
         They'll get an email link, set a password, and join with an active account — no
         approval step.
@@ -1161,7 +1165,7 @@ function InviteTab() {
           value={groupId}
           onChange={(e) => setGroupId(e.target.value)}
         >
-          <option value="">No group — they join Fold only</option>
+          <option value="">Don't add to a group yet</option>
           {groups.map((g) => (
             <option key={g.id} value={g.id}>
               {g.name}
@@ -1177,13 +1181,13 @@ function InviteTab() {
 }
 
 // Self-signup mode (DEC-4, M1.3): request (default) or off. There is
-// no open mode; every request waits for an admin either way.
+// no open mode; every request waits for an admin either way. It is one on/off
+// choice, so it saves when changed and goes back if saving fails (DEC-98).
 function SelfSignupSetting() {
   const [mode, setMode] = useState<"request" | "off">("request");
-  const [saved, setSaved] = useState<"request" | "off">("request");
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ok, setOk] = useState(false);
+  const latest = useRef(0);
 
   useEffect(() => {
     let alive = true;
@@ -1191,7 +1195,6 @@ function SelfSignupSetting() {
       .then((s) => {
         if (!alive) return;
         setMode(s.selfSignup);
-        setSaved(s.selfSignup);
       })
       .catch(() => {});
     return () => {
@@ -1199,47 +1202,45 @@ function SelfSignupSetting() {
     };
   }, []);
 
-  async function save(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
+  async function change(next: "request" | "off") {
+    const previous = mode;
+    const request = ++latest.current;
+    setMode(next);
     setError(null);
     setOk(false);
     try {
-      const r = await AdminAccountRequests.setSelfSignup(mode);
+      const r = await AdminAccountRequests.setSelfSignup(next);
+      if (request !== latest.current) return;
       setMode(r.selfSignup);
-      setSaved(r.selfSignup);
       setOk(true);
     } catch (err) {
+      if (request !== latest.current) return;
+      setMode(previous);
       setError(errorText(err, "We couldn't save that setting."));
-    } finally {
-      setBusy(false);
     }
   }
 
   return (
-    <Form noValidate onSubmit={save} className="mb-6 max-w-xl space-y-4">
+    <div className="mb-6 max-w-xl space-y-2">
       <Choices legend="Self-signup" hint="People ask for an account on /join. Turning this off never removes existing accounts.">
         <Radio
           name="self-signup"
           label="On"
           description="Requests wait for an admin's approval."
           checked={mode === "request"}
-          onChange={() => { setMode("request"); setOk(false); }}
+          onChange={() => void change("request")}
         />
         <Radio
           name="self-signup"
           label="Off"
           description="The church office creates accounts."
           checked={mode === "off"}
-          onChange={() => { setMode("off"); setOk(false); }}
+          onChange={() => void change("off")}
         />
       </Choices>
-      <FormActions>
-        <Button variant="secondary" layout="w-full sm:w-auto" type="submit" disabled={busy || mode === saved}>{busy ? "Saving…" : "Save self-signup"}</Button>
-        {ok && <span className="text-sm text-text-muted">Saved</span>}
-      </FormActions>
+      <p role="status" className="text-sm text-text-muted">{ok ? "Saved" : ""}</p>
       {error && <FormError>{error}</FormError>}
-    </Form>
+    </div>
   );
 }
 

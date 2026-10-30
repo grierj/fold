@@ -66,9 +66,9 @@ test("a private series can open one date without opening its siblings", async ({
   await page.getByLabel("Remote", { exact: true }).check();
   await page.getByLabel("Guests", { exact: true }).fill("2");
   await page.getByRole("button", { name: "Going", exact: true }).click();
-  await expect(page.getByText("Your answer: Going")).toBeVisible();
+  await expect(page.getByText("You're going. See you there!")).toBeVisible();
   await page.getByRole("button", { name: "Can't go", exact: true }).click();
-  await expect(page.getByText("Your answer: Can't go")).toBeVisible();
+  await expect(page.getByText("Got it. Only the leaders see this.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Don't add me again" })).toHaveCount(0);
   await page.context().clearCookies();
   const sibling = futureDate(21);

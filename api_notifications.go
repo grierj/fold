@@ -422,6 +422,22 @@ func notifyGroupPending(tx *gorm.DB, g *models.Group, actor uint) ([]uint, error
 	})
 }
 
+// notifyGroupDecided tells a pending group's leaders how an admin decided
+// it (DEC-96), in the decision's transaction. A leader may always see their
+// own group, approved or not.
+func notifyGroupDecided(tx *gorm.DB, g *models.Group, actor uint, approved bool) ([]uint, error) {
+	kind := notify.GroupRejected
+	if approved {
+		kind = notify.GroupApproved
+	}
+	return notify.Send(tx, notify.Msg{
+		Kind: kind, To: leaderIDs(tx, g.ID), Actor: &actor,
+		SubjectType: "group", SubjectID: g.ID, Link: "/groups/" + strconv.FormatUint(uint64(g.ID), 10),
+		Vars:      notify.Vars{Group: g.Name}, // group-ok: its own leaders
+		DedupeKey: fmt.Sprintf("%s:%d", kind, g.ID),
+	})
+}
+
 // notifyAccountRequested asks every admin to decide an account
 // request (a task, DEC-4). Only a clean adult request carries the
 // inline Approve (DEC-44); teens and flagged requests are Review-only.

@@ -216,3 +216,22 @@ it("keeps care and photo controls available while a staged teen's identity is fi
   expect(screen.getByLabelText(/^Care notes/)).toBeEnabled();
   expect(screen.getByRole("checkbox", { name: "OK to appear in church photos" })).toBeEnabled();
 });
+
+describe("HouseholdCard under a page heading", () => {
+  it("keeps the My household heading by default", async () => {
+    mine.mockResolvedValue({ household });
+    render(<HouseholdCard />);
+    expect(await screen.findByRole("heading", { level: 3, name: "Smith household" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "My household" })).toBeInTheDocument();
+  });
+
+  it("drops it with showHeading=false, keeps the region name and steps the sub-headings up", async () => {
+    mine.mockResolvedValue({ household });
+    render(<HouseholdCard showHeading={false} />);
+    expect(await screen.findByRole("region", { name: "My household" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "My household" })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Smith household" })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Add a household member" }));
+    expect(screen.getByRole("heading", { level: 2, name: "Add a household member" })).toBeInTheDocument();
+  });
+});

@@ -56,6 +56,7 @@ function HistoryView({ initialId }: { initialId: string }) {
   const [zoneError, setZoneError] = useState("");
   const [zoneRevision, setZoneRevision] = useState(0);
   const [dateError, setDateError] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [selection, setSelection] = useState<Selection | null>(() => {
     const personId = retainedPersonId(initialId);
     return personId ? { personId, filters: emptyFilters, days: { from: "", until: "" } } : null;
@@ -174,39 +175,55 @@ function HistoryView({ initialId }: { initialId: string }) {
     finally { if (generation.current === current) { downloading.current = false; setExporting(false); } }
   }
 
+  // Shows the history for a person with the filters as drafted. Picking a person
+  // calls this at once; "Apply filters" and the deleted-account lookup submit the
+  // form and call it too. Dates need the church zone; without dates they don't.
+  function show(raw: string, form: HTMLFormElement | null) {
+    const personId = retainedPersonId(raw);
+    if (!personId) {
+      clear(); setSelection(null);
+      const message = () => setPersonError("Check the saved person ID. Use the digits saved before the account was deleted.");
+      if (form) showFieldErrors(form, message); else message();
+      return;
+    }
+    const dated = Boolean(draft.from || draft.until);
+    if (dated && !zone) return;
+    const bounds = dated ? historyDayBounds(draft.from, draft.until, zone) : { from: "", until: "" };
+    if (!bounds) {
+      setFiltersOpen(true);
+      const message = () => setDateError("Choose valid dates, with Until on or after From.");
+      if (form) showFieldErrors(form, message); else message();
+      return;
+    }
+    clear(); setPersonError(""); setDateError("");
+    setSelection({ personId, filters: { ...draft, ...bounds }, days: { from: draft.from, until: draft.until } });
+  }
+
   if (authority === 401) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   if (authority === 403) return <div className="max-w-3xl mx-auto px-4 py-8"><h1 className="text-2xl font-bold">Contact access history</h1><p>This history is no longer available to you. Ask an active adult church admin for help.</p></div>;
   return <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
     <ButtonLink variant="link" to="/admin?tab=users">Back to users</ButtonLink>
     <h1 className="text-2xl font-bold">Contact access history</h1>
-    <p className="text-text-muted">Choose a person to review when contact access was requested, shared or ended. History records what happened, not the contact details themselves. For a deleted account, you can use its saved person ID.</p>
+    <p className="text-text-muted">Choose a person to review when contact access was requested, shared or ended. History records what happened, not the contact details themselves.</p>
     <Form noValidate aria-label="History filters" className="space-y-4" onSubmit={(event) => {
       event.preventDefault();
-      const personId = retainedPersonId(person);
-      if (!personId) {
-        clear(); setSelection(null);
-        showFieldErrors(event.currentTarget, () => setPersonError("Check the saved person ID. Use the digits saved before the account was deleted."));
-        return;
-      }
-      if (!zone) return;
-      const bounds = historyDayBounds(draft.from, draft.until, zone);
-      if (!bounds) {
-        showFieldErrors(event.currentTarget, () => setDateError("Choose valid dates, with Until on or after From."));
-        return;
-      }
-      clear(); setPersonError(""); setDateError("");
-      setSelection({ personId, filters: { ...draft, ...bounds }, days: { from: draft.from, until: draft.until } });
+      show(person, event.currentTarget);
     }}>
-      <ContactHistoryPersonPicker value={person} name={names[person]} error={personError} onChange={(id) => { setPerson(id); setPersonError(""); }} onKnown={knownPerson} onFailure={pickerFailure} />
-      <Choices legend="Purpose" optional><div className="grid sm:grid-cols-2 gap-x-4">{purposes.map((p) => <Radio key={p.value} name="history-purpose" label={p.label} value={p.value} checked={draft.purpose === p.value} onChange={() => setDraft({ ...draft, purpose: p.value })} />)}</div></Choices>
-      <Field label="Action" optional><Select value={draft.action} options={[{ value: "", label: "All actions" }, ...Object.entries(actions).map(([value, label]) => ({ value, label }))]} onChange={(e) => setDraft({ ...draft, action: e.target.value })} /></Field>
-      <div className="grid sm:grid-cols-2 gap-4">
-        <Field label="From" optional hint="In church time. This whole date is included."><Input type="date" value={draft.from} onChange={(e) => { setDraft({ ...draft, from: e.target.value }); setDateError(""); }} /></Field>
-        <Field label="Until" optional hint="In church time. This whole date is included; choose From or a later date." error={dateError}><Input type="date" min={draft.from || undefined} value={draft.until} onChange={(e) => { setDraft({ ...draft, until: e.target.value }); setDateError(""); }} /></Field>
+      <ContactHistoryPersonPicker value={person} name={names[person]} error={personError} onChange={(id) => { setPerson(id); setPersonError(""); }} onPick={(id) => show(id, null)} onKnown={knownPerson} onFailure={pickerFailure} />
+      <div className="space-y-4">
+        <Button variant="secondary" aria-expanded={filtersOpen} aria-controls="history-filters" onClick={() => setFiltersOpen((open) => !open)}>Filters</Button>
+        {filtersOpen && <div id="history-filters" className="space-y-4 rounded-lg border border-border bg-surface p-4">
+          <Choices legend="Purpose" optional><div className="grid sm:grid-cols-2 gap-x-4">{purposes.map((p) => <Radio key={p.value} name="history-purpose" label={p.label} value={p.value} checked={draft.purpose === p.value} onChange={() => setDraft({ ...draft, purpose: p.value })} />)}</div></Choices>
+          <Field label="Action" optional><Select value={draft.action} options={[{ value: "", label: "All actions" }, ...Object.entries(actions).map(([value, label]) => ({ value, label }))]} onChange={(e) => setDraft({ ...draft, action: e.target.value })} /></Field>
+          <div className="grid sm:grid-cols-2 gap-4">
+            <Field label="From" optional hint="In church time. This whole date is included."><Input type="date" value={draft.from} onChange={(e) => { setDraft({ ...draft, from: e.target.value }); setDateError(""); }} /></Field>
+            <Field label="Until" optional hint="In church time. This whole date is included; choose From or a later date." error={dateError}><Input type="date" min={draft.from || undefined} value={draft.until} onChange={(e) => { setDraft({ ...draft, until: e.target.value }); setDateError(""); }} /></Field>
+          </div>
+          <p className="text-sm text-text-muted">{zone ? `Dates use church time (${zone}).` : zoneError ? "Church time isn't available yet." : "Loading church timezone…"}</p>
+          {zoneError && <div className="space-y-2"><FormError>{zoneError}</FormError><Button variant="secondary" onClick={() => setZoneRevision((n) => n + 1)}>Try loading church time again</Button></div>}
+          <Button variant="primary" type="submit" disabled={!zone}>Apply filters</Button>
+        </div>}
       </div>
-      <p className="text-sm text-text-muted">{zone ? `Dates use church time (${zone}).` : zoneError ? "Church time isn't available yet." : "Loading church timezone…"}</p>
-      {zoneError && <div className="space-y-2"><FormError>{zoneError}</FormError><Button variant="secondary" onClick={() => setZoneRevision((n) => n + 1)}>Try loading church time again</Button></div>}
-      <Button variant="primary" type="submit" disabled={!zone}>Apply filters</Button>
     </Form>
     {selection && <section aria-label="Submitted history" className="space-y-3">
       <h2 className="text-xl font-bold wrap-anywhere">History for {names[selection.personId] || `person #${selection.personId}`}</h2>
@@ -218,7 +235,7 @@ function HistoryView({ initialId }: { initialId: string }) {
       <ol className="space-y-3">{entries.map((entry) => <HistoryEntry key={entry.id} entry={entry} />)}</ol>
       {nextBefore && <Button variant="secondary" disabled={busy} onClick={() => void more()}>Load older entries</Button>}
     </section>}
-    {!selection && <EmptyState title="Choose a person" body="Find a person above, then apply filters to review their contact access history." />}
+    {!selection && <EmptyState title="Choose a person" body="Choose a person above to review their contact access history." />}
     {error && <FormError>{error}</FormError>}
     {notice && <p role="status">{notice}</p>}
   </div>;

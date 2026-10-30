@@ -67,6 +67,7 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   await expect(membersTab).toHaveAttribute("aria-selected", "true");
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
   await expect(membersPanel).toBeVisible();
+  await page.getByRole("button", { name: "Add people" }).click();
   const picker = page.getByRole("combobox", { name: "Find a person by name" });
   const options = page.getByRole("listbox", { name: "People" }).getByRole("option");
   const searchReply = page.waitForResponse((r) => r.url().includes("/people/search?") && r.request().method() === "GET");

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -32,8 +32,8 @@ const page: EventDetailResponse = {
   canManage: true, canSetVisibility: false,
 };
 
-function renderPage() {
-  render(<MemoryRouter initialEntries={["/events/7"]}><Routes><Route path="/events/:id" element={<EventDetail />} /></Routes></MemoryRouter>);
+function renderPage(path = "/events/7") {
+  render(<MemoryRouter initialEntries={[path]}><Routes><Route path="/events/:id" element={<EventDetail />} /></Routes></MemoryRouter>);
 }
 
 function deferred<T>() {
@@ -562,5 +562,65 @@ describe("EventDetail when line and date actions (DEC-92, DEC-93)", () => {
     renderPage();
     expect(await screen.findByText("Church-wide event")).toBeInTheDocument();
     expect(screen.queryByText(/Hosted by/)).not.toBeInTheDocument();
+  });
+});
+
+describe("EventDetail header actions and ?manage (DEC-99)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(Households.mine).mockResolvedValue({ household: null });
+  });
+
+  it("puts Edit series and More beside the title as secondary buttons for a manager", async () => {
+    vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: [occurrence({ recurrenceRule: "FREQ=WEEKLY" })] });
+    renderPage();
+    const edit = await screen.findByRole("button", { name: "Edit series" });
+    expect(edit).toHaveClass("btn-secondary");
+    const title = screen.getByRole("heading", { level: 1, name: "Hybrid study" });
+    expect(title.parentElement?.parentElement).toContainElement(edit);
+    const more = screen.getByRole("button", { name: "More event actions" });
+    expect(more).toHaveClass("btn-secondary");
+    expect(title.parentElement?.parentElement).toContainElement(more);
+    await userEvent.click(more);
+    expect(screen.getByRole("menuitem", { name: "Delete event" })).toBeInTheDocument();
+  });
+
+  it("calls the button Edit event for a single date and toggles the editor", async () => {
+    vi.mocked(Events.get).mockResolvedValue(page);
+    renderPage();
+    const edit = await screen.findByRole("button", { name: "Edit event" });
+    expect(screen.queryByRole("link", { name: "Edit event" })).not.toBeInTheDocument();
+    await userEvent.click(edit);
+    expect(screen.getByRole("button", { name: "Close editor" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("shows neither to someone who cannot manage the event", async () => {
+    vi.mocked(Events.get).mockResolvedValue({ ...page, canManage: false });
+    renderPage();
+    await screen.findByRole("heading", { level: 1, name: "Hybrid study" });
+    expect(screen.queryByRole("button", { name: /^Edit (series|event)$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "More event actions" })).not.toBeInTheDocument();
+  });
+
+  it("opens Manage sign-ups for the ?manage date and scrolls it into view", async () => {
+    vi.mocked(Events.get).mockResolvedValue(page);
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    renderPage("/events/7?manage=2026-12-01");
+    expect(await screen.findByRole("region", { name: "Manage sign-ups" })).toBeInTheDocument();
+    await waitFor(() => expect(scroll).toHaveBeenCalledTimes(1));
+    expect(scroll.mock.contexts[0]).toBe(screen.getByRole("region", { name: "Manage sign-ups" }).parentElement);
+  });
+
+  it("ignores ?manage for someone who cannot manage, or for a date that is not listed", async () => {
+    vi.mocked(Events.get).mockResolvedValue({ ...page, canManage: false });
+    renderPage("/events/7?manage=2026-12-01");
+    await screen.findByRole("heading", { level: 1, name: "Hybrid study" });
+    expect(screen.queryByRole("region", { name: "Manage sign-ups" })).not.toBeInTheDocument();
+    cleanup();
+    vi.mocked(Events.get).mockResolvedValue(page);
+    renderPage("/events/7?manage=2031-01-01");
+    await screen.findByRole("button", { name: "More for 2026-12-01" });
+    expect(screen.queryByRole("region", { name: "Manage sign-ups" })).not.toBeInTheDocument();
   });
 });

@@ -63,7 +63,7 @@ export function RemoteField({
     <div className="space-y-3">
       <Checkbox
         label="Remote attendance"
-        description={<span id={`remote-hint-${idPrefix}`}>Add a video link below so remote people can join.</span>}
+        description={<span id={`remote-hint-${idPrefix}`}>Add a video link above so remote people can join.</span>}
         aria-describedby={`remote-hint-${idPrefix}`}
         checked={value.available}
         onChange={(e) => onChange({ ...value, available: e.target.checked })}

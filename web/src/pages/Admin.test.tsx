@@ -1,8 +1,8 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { AdminAccountRequests, AdminGroups, AdminUsers, Groups, People, Site, ApiError } from "../api";
+import { AdminAccountRequests, AdminGroups, AdminUsers, Groups, Invitations, People, Site, ApiError } from "../api";
 import { ERROR_COPY } from "../lib/errors";
 import { ContactHistory } from "../contact-history-api";
 import type { AccountRequest, User } from "../types";
@@ -13,12 +13,13 @@ vi.mock("../contact-history-api", async (actual) => ({ ...await actual<typeof im
 vi.mock("../api", async (actual) => ({
   ...(await actual<typeof import("../api")>()),
   People: { search: vi.fn() },
-  Groups: { members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() },
+  Invitations: { create: vi.fn() },
+  Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() },
   AdminGroups: { list: vi.fn(), addMember: vi.fn() },
   Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }) },
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }) },
   AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
-  AdminAccountRequests: { list: vi.fn(), approve: vi.fn() },
+  AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },
   Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off" }) },
 }));
 
@@ -42,6 +43,9 @@ beforeEach(() => {
   vi.mocked(AdminAccountRequests.list).mockResolvedValue({ requests: [request] });
   vi.mocked(AdminAccountRequests.approve).mockReset();
   vi.mocked(Groups.members).mockReset().mockResolvedValue({ members: [] });
+  vi.mocked(Groups.list).mockReset().mockResolvedValue({ groups: [{ id: 3, name: "Choir" } as import("../types").GroupSummary] });
+  vi.mocked(Invitations.create).mockReset().mockResolvedValue({} as never);
+  vi.mocked(AdminAccountRequests.setSelfSignup).mockReset();
   vi.mocked(Groups.memberDeparturePreview).mockReset();
   vi.mocked(Groups.confirmMemberDeparture).mockReset();
 });
@@ -241,4 +245,45 @@ it("does not fall back to the first user when the selected row has no email", as
   await userEvent.click(screen.getByRole("menuitem", { name: "Contact access history" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Refresh the user list");
   expect(ContactHistory.people).not.toHaveBeenCalled();
+});
+
+it("saves self-signup the moment it changes and says Saved", async () => {
+  vi.mocked(AdminAccountRequests.setSelfSignup).mockResolvedValue({ selfSignup: "request" });
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  const mode = await screen.findByRole("group", { name: "Self-signup" });
+  await waitFor(() => expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeChecked());
+  expect(screen.queryByRole("button", { name: "Save self-signup" })).not.toBeInTheDocument();
+  await userEvent.click(within(mode).getByRole("radio", { name: /^On/ }));
+  expect(AdminAccountRequests.setSelfSignup).toHaveBeenCalledWith("request");
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
+  expect(within(mode).getByRole("radio", { name: /^On/ })).toBeChecked();
+});
+
+it("puts self-signup back and says why when saving fails", async () => {
+  vi.mocked(AdminAccountRequests.setSelfSignup).mockRejectedValue(new ApiError(500, "private server text"));
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  const mode = await screen.findByRole("group", { name: "Self-signup" });
+  await waitFor(() => expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeChecked());
+  await userEvent.click(within(mode).getByRole("radio", { name: /^On/ }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't save that setting.");
+  expect(within(mode).getByRole("radio", { name: /^Off/ })).toBeChecked();
+  expect(screen.queryByText("Saved")).not.toBeInTheDocument();
+  expect(screen.queryByText("private server text")).not.toBeInTheDocument();
+});
+
+it("keeps the church time zone behind its Save button", async () => {
+  render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByRole("button", { name: "Save time zone" })).toBeDisabled();
+});
+
+it("invites without a group by default, confirms in a status and clears the form", async () => {
+  render(<MemoryRouter initialEntries={["/admin?tab=invite"]}><AdminPage /></MemoryRouter>);
+  const group = await screen.findByRole("combobox", { name: /^Group/ });
+  expect(within(group).getByRole("option", { name: "Don't add to a group yet" })).toBeInTheDocument();
+  expect(screen.queryByRole("option", { name: /they join Fold only/ })).not.toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText("Email"), "new@example.com");
+  await userEvent.click(screen.getByRole("button", { name: "Send invitation" }));
+  expect(Invitations.create).toHaveBeenCalledWith({ email: "new@example.com", name: undefined, groupId: null });
+  expect(await screen.findByRole("status")).toHaveTextContent("Invitation sent to new@example.com.");
+  expect(screen.getByLabelText("Email")).toHaveValue("");
 });

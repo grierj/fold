@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { focalPosition, prepareUpload } from "../lib/image";
+import { Avatar } from "./Avatar";
 import { Button } from "./ui/Button";
 import { FormError, HiddenFileInput } from "./ui/Field";
 
 // ImageUpload: pick a file (resized in the browser), preview it, and click
-// to set the focal point used for object-position when cropped.
+// to set the focal point used for object-position when cropped. With no image
+// it is a compact row (a 64px stand-in and "Choose photo"); the crop box and
+// its hint only appear once there is something to crop (DEC-99).
 export function ImageUpload({
   label,
   initialUrl,
@@ -13,6 +16,8 @@ export function ImageUpload({
   aspectClass,
   onFile,
   onFocal,
+  placeholderSrc,
+  placeholderName,
 }: {
   label: string;
   initialUrl?: string;
@@ -21,6 +26,10 @@ export function ImageUpload({
   aspectClass: string; // e.g. "aspect-square" or "aspect-video"
   onFile: (file: File | null) => void;
   onFocal: (f: { x: number; y: number }) => void;
+  // The stand-in shown while there is no image: what people will see instead
+  // (a group's pattern cover), or the person's initials for an avatar.
+  placeholderSrc?: string;
+  placeholderName?: string;
 }) {
   const [preview, setPreview] = useState<string | null>(initialUrl ?? null);
   const [focal, setFocal] = useState(initialFocal);
@@ -67,6 +76,34 @@ export function ImageUpload({
     onFocal(next);
   }
 
+  const chooser = (
+    <>
+      <Button variant="secondary" onClick={() => inputRef.current?.click()} disabled={busy}>
+        {busy ? "Processing…" : preview ? "Choose different image" : "Choose photo"}
+      </Button>
+      <HiddenFileInput ref={inputRef} accept="image/jpeg,image/png,image/gif,image/webp" onChange={pick} />
+    </>
+  );
+
+  if (!preview) {
+    return (
+      <div>
+        <p className="label">{label}</p>
+        <div className="flex items-center gap-4">
+          {placeholderSrc ? (
+            <img src={placeholderSrc} alt="" className="w-16 h-16 shrink-0 rounded-md object-cover bg-sunken border border-border" />
+          ) : placeholderName ? (
+            <Avatar name={placeholderName} size="w-16 h-16" textSize="text-2xl" />
+          ) : (
+            <div aria-hidden="true" className="w-16 h-16 shrink-0 rounded-md bg-sunken border border-border" />
+          )}
+          {chooser}
+        </div>
+        {error && <FormError layout="mt-1">{error}</FormError>}
+      </div>
+    );
+  }
+
   return (
     <div>
       <p className="label">{label}</p>
@@ -75,38 +112,25 @@ export function ImageUpload({
         onClick={setPoint}
         title="Click to set the focal point"
       >
-        {preview ? (
-          <img
-            src={preview}
-            alt=""
-            className="w-full h-full object-cover pointer-events-none"
-            style={{ objectPosition: focalPosition(focal.x, focal.y) }}
-          />
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-text-muted text-sm">
-            No image
-          </div>
-        )}
-        {preview && (
-          <div
-            className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-inverse-foreground ring-1 ring-inverse shadow-sm pointer-events-none"
-            style={{ left: `${focal.x}%`, top: `${focal.y}%` }}
-          />
-        )}
+        <img
+          src={preview}
+          alt=""
+          className="w-full h-full object-cover pointer-events-none"
+          style={{ objectPosition: focalPosition(focal.x, focal.y) }}
+        />
+        <div
+          className="absolute w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-inverse-foreground ring-1 ring-inverse shadow-sm pointer-events-none"
+          style={{ left: `${focal.x}%`, top: `${focal.y}%` }}
+        />
       </div>
       <p className="text-xs text-text-muted mt-1">
         Tap or click the image to move the focal point — faces stay centered when cropped.
       </p>
       <div className="flex gap-2 mt-2">
-        <Button variant="secondary" onClick={() => inputRef.current?.click()} disabled={busy}>
-          {busy ? "Processing…" : preview ? "Choose different image" : "Choose image"}
+        {chooser}
+        <Button variant="secondary" onClick={clear}>
+          Clear
         </Button>
-        {preview && (
-          <Button variant="secondary" onClick={clear}>
-            Clear
-          </Button>
-        )}
-        <HiddenFileInput ref={inputRef} accept="image/jpeg,image/png,image/gif,image/webp" onChange={pick} />
       </div>
       {error && <FormError layout="mt-1">{error}</FormError>}
     </div>

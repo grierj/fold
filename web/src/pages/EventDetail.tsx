@@ -2,7 +2,7 @@ import { Form } from "../components/ui/Form";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ApiError, Events } from "../api";
 import { useAuth } from "../auth";
 import { OccurrenceCard } from "../components/OccurrenceCard";
@@ -39,6 +39,8 @@ export function EventDetail() {
 function EventDetailContent() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  // The group page's "Manage sign-ups" links here with ?manage=<original date> (DEC-99).
+  const manageDate = useSearchParams()[0].get("manage");
   const { user, loading: authLoading, isAdmin } = useAuth();
   const { people, error: householdError, retry: retryHousehold } = useHousehold(user);
   const [page, setPage] = useState<EventDetailResponse | null>(null);
@@ -130,8 +132,21 @@ function EventDetailContent() {
 
   return (
     <div className="max-w-3xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-2">{title}</h1>
-      <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} churchWide={event.churchWide} />
+      {/* Edit series and More sit beside the title as secondary actions; an event page has no primary one (DEC-63, DEC-65). */}
+      <div className="sm:flex sm:items-start sm:justify-between sm:gap-4">
+        <div className="min-w-0">
+          <h1 className="text-3xl font-bold mb-2 wrap-anywhere">{title}</h1>
+          <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} churchWide={event.churchWide} />
+        </div>
+        {canManage && (
+          <div className="mt-3 flex flex-col gap-2 sm:mt-0 sm:shrink-0 sm:flex-row [&_[aria-haspopup]]:w-full sm:[&_[aria-haspopup]]:w-auto">
+            <Button variant="secondary" aria-expanded={editing} onClick={() => setEditing((v) => !v)}>
+              {editing ? "Close editor" : event.recurrenceRule ? "Edit series" : "Edit event"}
+            </Button>
+            <Menu label="More event actions" items={[{ label: "Delete event", onSelect: () => void deleteEvent(), danger: true }]} />
+          </div>
+        )}
+      </div>
       {line && <p className="mt-1 font-medium wrap-anywhere">{line}</p>}
       {single && heldIn(next.startsAt, next.tzid) && <p className="text-sm text-text-muted">{heldIn(next.startsAt, next.tzid)}</p>}
       {event.location && <p className="text-text-muted mt-1 wrap-anywhere">{event.location}</p>}
@@ -148,23 +163,15 @@ function EventDetailContent() {
         <HostEditor eventId={event.id} hosts={event.hosts ?? []} onChanged={() => void load()} />
       )}
 
-      {canManage && (
+      {canManage && editing && (
         <div className="mt-4">
-          <div className="flex flex-wrap items-center gap-4">
-            <button type="button" className="inline-flex items-center min-h-11 text-sm text-primary font-medium" onClick={() => setEditing((v) => !v)}>
-              {editing ? "Close editor" : event.recurrenceRule ? "Edit series" : "Edit event"}
-            </button>
-            <Menu tone="quiet" label="More event actions" items={[{ label: "Delete event", onSelect: () => void deleteEvent(), danger: true }]} />
-          </div>
-          {editing && (
-            <SeriesEditor
-              series={{ ...event, eventId: event.id }}
-              idPrefix={`ev${event.id}`}
-              onSaved={() => { setEditing(false); void load(); }}
-              onClose={() => setEditing(false)}
-            />
-          )}
-          {editing && canSetVisibility && (
+          <SeriesEditor
+            series={{ ...event, eventId: event.id }}
+            idPrefix={`ev${event.id}`}
+            onSaved={() => { setEditing(false); void load(); }}
+            onClose={() => setEditing(false)}
+          />
+          {canSetVisibility && (
             <EventVisibilityControl
               key={`${event.id}-${event.visibility}-${event.leaderOpened}`}
               eventId={event.id}
@@ -194,6 +201,7 @@ function EventDetailContent() {
             headerLocation={event.location}
             loggedIn={!!user}
             canManage={canManage}
+            manageRequested={canManage && manageDate === m.date}
             onRsvp={handleRsvp}
             people={people}
             seriesFeedback={seriesFeedback}
@@ -216,6 +224,7 @@ function DateRow({
   headerLocation,
   loggedIn,
   canManage,
+  manageRequested,
   onRsvp,
   people,
   seriesFeedback,
@@ -232,6 +241,8 @@ function DateRow({
   headerLocation: string;
   loggedIn: boolean;
   canManage: boolean;
+  // ?manage=<this date> asked for the Manage sign-ups panel to open (DEC-99).
+  manageRequested: boolean;
   onRsvp: () => void;
   people: HouseholdPerson[];
   seriesFeedback: SeriesFeedbackSignal | null;
@@ -243,7 +254,13 @@ function DateRow({
 }) {
   const [editingDate, setEditingDate] = useState(false);
   // Manage sign-ups opens from the date's More menu (PR #66 review F1).
-  const [managing, setManaging] = useState(false);
+  const [managing, setManaging] = useState(manageRequested);
+  const manageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!manageRequested) return;
+    setManaging(true);
+    manageRef.current?.scrollIntoView?.({ block: "start" });
+  }, [manageRequested]);
   const [cancelling, setCancelling] = useState(false);
   const time = formatTime(instance.startsAt);
   const held = heldIn(instance.startsAt, instance.tzid);
@@ -327,7 +344,7 @@ function DateRow({
             onClose={() => setEditingDate(false)}
           />
         )}
-        {canManage && managing && <Suspense fallback={<Skeleton kind="lines" />}><ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} /></Suspense>}
+        {canManage && managing && <div ref={manageRef} className="scroll-mt-4"><Suspense fallback={<Skeleton kind="lines" />}><ManageRoster instance={instance} onChanged={onChanged} onClose={() => setManaging(false)} /></Suspense></div>}
     </div>
         {!single && (
           <DateActions eventId={instance.eventId} date={instance.date} sharePath={`/events/${instance.eventId}/dates/${instance.date}`}
