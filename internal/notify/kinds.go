@@ -51,6 +51,7 @@ const (
 	RegistrationRemoved     = "registration.removed"
 	RegistrationNotRestored = "registration.not_restored"
 	WaitlistCutoff          = "waitlist.cutoff"
+	RoomLost                = "room.lost"
 	HouseholdLinkPending    = "household.link_pending"
 	HouseholdConverted      = "household.converted"
 	TeenConsentChanged      = "teen_consent.changed"
@@ -478,6 +479,15 @@ func init() {
 		},
 		RenderEmailSafe: func(Vars) (string, string) {
 			return "New household link to confirm in Fold", "Someone added a child or teen to their household. Sign in to review it."
+		},
+	})
+	// A date moved and its room is booked at the new time (9.2): the
+	// booking stays requested until someone picks another room.
+	register(Kind{
+		Key: RoomLost, Category: CatEvents, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return "Room lost on " + or(v.Change, "a date") + ": " + or(v.Event, "an event"),
+				"The room you booked is taken at the new time. Pick another room on the event page."
 		},
 	})
 	register(Kind{

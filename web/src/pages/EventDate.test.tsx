@@ -249,3 +249,14 @@ it("shows the waitlist hint only before Going is saved", async () => {
   mount(); await screen.findByText("One invited date");
   expect(screen.queryByText(/Going puts you on the waitlist/)).not.toBeInTheDocument();
 });
+
+it("shows the booked room as the place, with the typed location after it (M2.1b)", async () => {
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ room: { id: 1, name: "Fellowship Hall", building: "Main" } }) });
+  mount();
+  expect(await screen.findByText("Fellowship Hall · Main · Room 2")).toBeInTheDocument();
+});
+
+it("shows only the typed location when no room is booked (M2.1b)", async () => {
+  mount();
+  expect(await screen.findByText("Room 2")).toBeInTheDocument();
+});

@@ -799,6 +799,33 @@ type Room struct {
 	UpdatedAt              time.Time `gorm:"not null;default:now()"`
 }
 
+// RoomBooking holds a room for one occurrence (M2.1b, 5.3, 9.2). The app
+// writes PaddedRange from StartsAt, EndsAt and the padding; the database
+// checks it and keeps confirmed bookings of one room from overlapping.
+type RoomBooking struct {
+	ID              uint      `gorm:"primaryKey"`
+	OccurrenceID    uint      `gorm:"not null"`
+	RoomID          uint      `gorm:"not null"`
+	StartsAt        time.Time `gorm:"not null"`
+	EndsAt          time.Time `gorm:"not null"`
+	SetupMinutes    int       `gorm:"not null;default:0"`
+	TeardownMinutes int       `gorm:"not null;default:0"`
+	PaddedRange     string    `gorm:"type:tstzrange;not null"`
+	Status          string    `gorm:"not null"`
+	AllowOverlap    bool      `gorm:"not null;default:false"`
+	OverlapReason   string    `gorm:"not null;default:''"`
+	CreatedBy       *uint
+	CreatedAt       time.Time `gorm:"not null;default:now()"`
+	UpdatedAt       time.Time `gorm:"not null;default:now()"`
+}
+
+// Room booking statuses (9.2). Only confirmed bookings hold a room.
+const (
+	BookingConfirmed = "confirmed"
+	BookingRequested = "requested"
+	BookingRejected  = "rejected"
+)
+
 // Consent is one append-only consent record (5.3, 5.12). The latest row per
 // (user, channel, scope) is in force. DEC-97 writes the first ones: "Turn off
 // all optional email" stores an email opt-out per optional notification
@@ -931,7 +958,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
-		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{},
+		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{},
 	}
 }
 

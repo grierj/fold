@@ -185,6 +185,8 @@ type occurrenceJSON struct {
 	GroupID               *uint            `json:"groupId,omitempty"`
 	GroupName             string           `json:"groupName,omitempty"`
 	HostedBy              string           `json:"hostedBy,omitempty"`
+	// Room is the date's confirmed room, shown as its place (9.2, M2.1b).
+	Room *occurrenceRoomJSON `json:"room,omitempty"`
 	// AttendeesVisible is false when the caller gets a count only. An empty
 	// allowed list is omitted; the bool is what says names were allowed.
 	AttendeesVisible         bool                          `json:"attendeesVisible"`
@@ -660,6 +662,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/admin/rooms", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminListRooms)
 	v1.POST("/admin/rooms", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminCreateRoom)
 	v1.PUT("/admin/rooms/:id", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminUpdateRoom)
+	// Room bookings (M2.1b): whoever runs the event books its dates.
+	v1.GET("/events/:id/dates/:date/rooms", a.roomsOn(), a.apiAuth(), a.apiDateRooms)
+	v1.PUT("/events/:id/dates/:date/room", a.roomsOn(), a.apiAuth(), a.apiSetDateRoom)
 	v1.GET("/events", a.optionalUser(), a.apiListOpenEvents)
 	// The calendar (M1.6): every occurrence the viewer may see over a
 	// date range, as slim rows with no attendee data.

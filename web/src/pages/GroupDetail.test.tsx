@@ -615,3 +615,14 @@ it("asks before leaving an edited group form, and not once saved", async () => {
   expect(screen.getByText("Elsewhere page")).toBeInTheDocument();
   expect(confirm).not.toHaveBeenCalled();
 });
+
+it("shows a booked room as the place on a date card, and the typed location without one (M2.1b)", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents: [
+    occurrence({ room: { id: 1, name: "Fellowship Hall", building: "Main" } }),
+    occurrence({ id: 2, eventId: 8, date: "2026-12-08", title: "Plain night" }),
+  ] });
+  open();
+  const cards = await screen.findAllByRole("article");
+  expect(within(cards[0]).getByText(/ · Fellowship Hall · Main · Hall$/)).toBeInTheDocument();
+  expect(within(cards[1]).getByText(/ · Hall$/)).not.toHaveTextContent("Fellowship");
+});

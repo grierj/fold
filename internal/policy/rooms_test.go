@@ -17,3 +17,26 @@ func TestCanManageRooms(t *testing.T) {
 		}
 	}
 }
+
+func TestRoomBookingPolicy(t *testing.T) {
+	leader, admin := &Person{ID: 1}, &Person{ID: 2, Admin: true}
+	for _, tc := range []struct {
+		name                string
+		p                   *Person
+		manages, restricted bool
+		want                bool
+	}{
+		{"leader, own event", leader, true, false, true},
+		{"leader, restricted room", leader, true, true, false},
+		{"leader, someone else's event", leader, false, false, false},
+		{"admin, restricted room", admin, true, true, true},
+		{"admin who doesn't run the event", admin, false, false, false},
+	} {
+		if got := CanBookRoom(tc.p, tc.manages, tc.restricted); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if CanDoubleBookRoom(leader) || !CanDoubleBookRoom(admin) || CanAdjustBookingPadding(leader) || !CanAdjustBookingPadding(admin) {
+		t.Error("only admins double-book or change a booking's padding")
+	}
+}

@@ -13,6 +13,7 @@ import { SegmentButton } from "../components/ui/SegmentButton";
 import { errorText } from "../lib/errors";
 import { heldIn } from "../lib/when";
 import { dateLine } from "../lib/repeat";
+import { placeLine } from "../lib/place";
 import { DateBadge } from "../components/DateBadge";
 import { answerLine } from "../components/RsvpButtons";
 import { DateActions } from "../components/DateActions";
@@ -87,6 +88,7 @@ function DateDetail({ id, date }: { id: string; date: string }) {
   }
   const zone = occurrence && heldIn(occurrence.startsAt, occurrence.tzid);
   const when = occurrence ? dateLine(occurrence.startsAt, occurrence.endsAt) : "";
+  const place = occurrence ? placeLine(occurrence.room, occurrence.location) : "";
   const standing = occurrence && user ? standingLine(occurrence.myRegistration) : null;
   return <div className="max-w-2xl mx-auto px-4 py-6 space-y-5 wrap-anywhere">
     <div>
@@ -104,7 +106,7 @@ function DateDetail({ id, date }: { id: string; date: string }) {
         <div className="min-w-0 grow">
           <p className="font-medium">{when}</p>
           {zone && <p className="text-sm text-text-muted">{zone}</p>}
-          {occurrence.location && <p className="text-text-muted">{occurrence.location}</p>}
+          {place && <p className="text-text-muted">{place}</p>}
         </div>
       </div>
       <DateActions eventId={occurrence.eventId} date={occurrence.date} sharePath={occurrence.dateUrl} title={occurrence.title} when={when} />

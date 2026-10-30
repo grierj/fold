@@ -4,9 +4,10 @@ import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { SeriesEditor } from "./SeriesEditor";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
-import { Events } from "../api";
+import { DateRooms, Events, Site } from "../api";
 
 vi.mock("../api", () => ({
+  DateRooms: { list: vi.fn() },
   ApiError: class extends Error {},
   Events: { update: vi.fn(), generateJitsi: vi.fn().mockResolvedValue({ url: "https://meet.jit.si/fold-abc123def4" }) },
   Site: { get: vi.fn().mockResolvedValue({ timezone: "UTC" }) },
@@ -200,5 +201,53 @@ describe("SeriesEditor form layout (DEC-95)", () => {
     expect(await screen.findByText("Done page")).toBeInTheDocument();
     expect(confirm).toHaveBeenCalledTimes(1);
     confirm.mockRestore();
+  });
+
+  describe("Room control (M2.1b)", () => {
+    const single = { eventId: 7, startsLocal: "2026-12-01T19:00", durationMinutes: 60, tzid: "UTC", title: "Supper", description: "", location: "Hall", recurrenceRule: "", capacity: null, waitlistEnabled: false, guestsAllowed: 0 };
+    const roomsOn = () => {
+      vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
+      vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [], booking: null });
+    };
+
+    it("sits with Location for a single-date event, outside More options", async () => {
+      roomsOn();
+      render(<SeriesEditor series={single} roomDate="2026-12-01" idPrefix="room" onSaved={() => {}} />);
+      const room = await screen.findByRole("combobox", { name: /^Room/ });
+      expect(DateRooms.list).toHaveBeenCalledWith(7, "2026-12-01");
+      const more = screen.getByRole("button", { name: "More options" });
+      expect(screen.getByRole("textbox", { name: /^Location/ }).compareDocumentPosition(room) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(room.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("is hidden for a series, whatever the date", async () => {
+      roomsOn();
+      vi.mocked(DateRooms.list).mockClear();
+      render(<SeriesEditor series={{ ...single, recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" }} roomDate="2026-12-01" idPrefix="room-series" onSaved={() => {}} />);
+      await screen.findByRole("button", { name: "Save series" });
+      expect(screen.queryByRole("combobox", { name: /^Room/ })).not.toBeInTheDocument();
+      expect(DateRooms.list).not.toHaveBeenCalled();
+    });
+
+    it("points a series at Edit this date, only while rooms are on", async () => {
+      roomsOn();
+      const series = { ...single, recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" };
+      const { unmount } = render(<SeriesEditor series={series} idPrefix="room-hint" onSaved={() => {}} />);
+      expect(await screen.findByText("To book a room, use Edit this date on a date's card.")).toBeInTheDocument();
+      unmount();
+      vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+      render(<SeriesEditor series={series} idPrefix="room-hint-off" onSaved={() => {}} />);
+      await screen.findByRole("button", { name: "Save series" });
+      expect(screen.queryByText(/To book a room/)).not.toBeInTheDocument();
+    });
+
+    it("is hidden when rooms are off", async () => {
+      vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+      vi.mocked(DateRooms.list).mockClear();
+      render(<SeriesEditor series={single} roomDate="2026-12-01" idPrefix="room-off" onSaved={() => {}} />);
+      await waitFor(() => expect(Site.get).toHaveBeenCalled());
+      expect(screen.queryByRole("combobox", { name: /^Room/ })).not.toBeInTheDocument();
+      expect(DateRooms.list).not.toHaveBeenCalled();
+    });
   });
 });

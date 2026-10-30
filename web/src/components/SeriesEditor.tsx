@@ -12,6 +12,7 @@ import { FormActions } from "./ui/FormActions";
 import { Button } from "./ui/Button";
 import { EventOptions } from "./EventOptions";
 import { WhenFields } from "./WhenFields";
+import { RoomField, RoomSeriesHint } from "./RoomField";
 import { focusSeatLimit, isSeatsError, seatsFrom, seatsProblem, type SeatsValue } from "./SeatsField";
 import { focusVideoUrl, isVideoError, videoProblem, type VideoValue } from "./VideoField";
 import { focusRemoteCapacity, isRemoteError, remoteBody, remoteFrom, remoteProblem, type RemoteValue } from "./RemoteField";
@@ -48,14 +49,21 @@ export function SeriesEditor({
   series: instance,
   idPrefix,
   locationHint,
+  roomDate,
   onSaved,
   onClose,
+  onRoomChanged,
 }: {
   series: SeriesFields;
   idPrefix: string;
   locationHint?: string;
+  // The original date of a single-date event's one occurrence. It turns on the
+  // Room control (M2.1b); a series has none until whole-series booking lands.
+  roomDate?: string;
   onSaved: () => void;
   onClose?: () => void;
+  // The room was booked or released (its own action, not part of Save).
+  onRoomChanged?: () => void;
 }) {
   const simple = isSimpleWeekly(instance.recurrenceRule);
   const when = useWhenState({
@@ -250,6 +258,10 @@ export function SeriesEditor({
       <Field id={`s-loc-${idPrefix}`} label="Location" optional hint={locationHint}>
         <Input value={location} onChange={(e) => setLocation(e.target.value)} />
       </Field>
+      {instance.recurrenceRule !== "" && <RoomSeriesHint />}
+      {roomDate && instance.recurrenceRule === "" && (
+        <RoomField eventId={instance.eventId} date={roomDate} idPrefix={idPrefix} onChanged={onRoomChanged} />
+      )}
       <EventOptions
         idPrefix={idPrefix}
         open={moreOpen}

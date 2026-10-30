@@ -18,6 +18,7 @@ import { RsvpButtons } from "../components/RsvpButtons";
 import { GuestRegistrationForm } from "../components/GuestRegistrationForm";
 import { DateActions } from "../components/DateActions";
 import { formatTime, heldIn } from "../lib/when";
+import { placeLine } from "../lib/place";
 import { dateLine, whenLine } from "../lib/repeat";
 import type { EventDetailResponse, EventHostRow, EventOccurrence, HouseholdPerson } from "../types";
 import { errorText } from "../lib/errors";
@@ -129,6 +130,8 @@ function EventDetailContent() {
   const single = !event.recurrenceRule && occurrences.length === 1;
   const next = occurrences[0];
   const line = whenLine(event.recurrenceRule, occurrences);
+  // A single date's confirmed room is its place; a series header keeps the typed location (M2.1b).
+  const headerPlace = placeLine(single ? next.room : undefined, event.location);
 
   async function deleteEvent() {
     if (!confirm(`Delete “${title}”? This removes every date and its registrations.`)) return;
@@ -159,7 +162,7 @@ function EventDetailContent() {
       </div>
       {line && <p className="mt-1 font-medium wrap-anywhere">{line}</p>}
       {single && heldIn(next.startsAt, next.tzid) && <p className="text-sm text-text-muted">{heldIn(next.startsAt, next.tzid)}</p>}
-      {event.location && <p className="text-text-muted mt-1 wrap-anywhere">{event.location}</p>}
+      {headerPlace && <p className="text-text-muted mt-1 wrap-anywhere">{headerPlace}</p>}
       {single && line && <DateActions eventId={event.id} date={next.date} sharePath={`/events/${event.id}`} title={title} when={line} />}
       {event.childcareAvailable && <div className="mt-3 text-text-muted">
         <p>Childcare available{event.childcareAges && ` · ${event.childcareAges}`}</p>
@@ -178,6 +181,8 @@ function EventDetailContent() {
           <SeriesEditor
             series={{ ...event, eventId: event.id }}
             idPrefix={`ev${event.id}`}
+            roomDate={single ? next.date : undefined}
+            onRoomChanged={() => void load(true)}
             onSaved={() => { setEditing(false); void load(); }}
             onClose={() => setEditing(false)}
           />
@@ -274,6 +279,7 @@ function DateRow({
   const [cancelling, setCancelling] = useState(false);
   const time = formatTime(instance.startsAt);
   const held = heldIn(instance.startsAt, instance.tzid);
+  const place = placeLine(instance.room, instance.location);
 
   async function cancel() {
     if (!confirm(`Cancel this date on ${instance.date}?`)) return;
@@ -297,7 +303,7 @@ function DateRow({
           {instance.location && instance.location !== headerLocation && <div className="text-sm text-text-muted">{instance.location}</div>}
         </> : null
       ) : <>
-        <div className="text-sm text-text-muted">{time}{instance.location ? ` · ${instance.location}` : ""}</div>
+        <div className="text-sm text-text-muted">{time}{place ? ` · ${place}` : ""}</div>
         {held && <div className="text-sm text-text-muted">{held}</div>}
       </>}
       menu={canManage && <Menu
@@ -347,6 +353,7 @@ function DateRow({
         {editingDate && (
           <DateEditor
             instance={instance}
+            onRoomChanged={onChanged}
             onSaved={() => {
               setEditingDate(false);
               onChanged();

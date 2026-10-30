@@ -16,6 +16,7 @@ import { useAuth } from "../auth";
 import { OccurrenceCard } from "../components/OccurrenceCard";
 import { Attendance } from "../components/Attendance";
 import { Menu } from "../components/ui/Menu";
+import { placeLine } from "../lib/place";
 import { EventVisibilityControl, visibilityRank } from "../components/EventVisibility";
 import { GroupVisibilityReview } from "../components/GroupVisibilityReview";
 import { GroupDepartureDialog } from "../components/GroupDepartureDialog";
@@ -84,7 +85,7 @@ function EventRow({
   const [cancelling, setCancelling] = useState(false);
   const [editor, setEditor] = useState<null | "date" | "series">(null);
   const time = formatTime(instance.startsAt);
-  const loc = instance.location || "";
+  const loc = placeLine(instance.room, instance.location);
   const name = instance.title || groupName;
 
   async function cancel() {
@@ -137,7 +138,7 @@ function EventRow({
             {totalKnown ? `See all ${moreDates + 1} dates` : "See more dates"}
           </Link>
         )}
-        {editor === "date" && <DateEditor instance={instance} onSaved={onChanged} onClose={() => setEditor(null)} />}
+        {editor === "date" && <DateEditor instance={instance} onSaved={onChanged} onRoomChanged={onChanged} onClose={() => setEditor(null)} />}
         {editor === "series" && (
           <>
             <SeriesEditor
@@ -164,6 +165,8 @@ function EventRow({
               }}
               idPrefix={`${instance.id}`}
               locationHint="Leave it blank to use the group's location."
+              roomDate={instance.recurrenceRule ? undefined : instance.date}
+              onRoomChanged={onChanged}
               onSaved={onChanged}
               onClose={() => setEditor(null)}
             />

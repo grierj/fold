@@ -9,6 +9,7 @@ import { Field, FormError, Input } from "./ui/Field";
 import { FormActions } from "./ui/FormActions";
 import { Button } from "./ui/Button";
 import { VisibilityField } from "./EventVisibility";
+import { RoomField } from "./RoomField";
 // DateEditor changes one occurrence only (time, duration, title,
 // location). It mirrors the group page's editor: later series changes
 // leave an edited date alone.
@@ -16,10 +17,13 @@ export function DateEditor({
   instance,
   onSaved,
   onClose,
+  onRoomChanged,
 }: {
   instance: EventOccurrence;
   onSaved: () => void;
   onClose: () => void;
+  // The room was booked or released (its own action, not part of Save).
+  onRoomChanged?: () => void;
 }) {
   const [date, setDate] = useState(instance.startsLocal.slice(0, 10));
   const [time, setTime] = useState(instance.startsLocal.slice(11, 16));
@@ -127,6 +131,7 @@ export function DateEditor({
           <Input value={location} onChange={(e) => setLocation(e.target.value)} />
         </Field>
       </div>
+      <RoomField eventId={instance.eventId} date={instance.date} idPrefix={`cev-${instance.id}`} onChanged={onRoomChanged} />
       <Field id={`cev-cap-${instance.id}`} label="Capacity for this date" optional hint="Leave it blank to use the event’s capacity.">
         <Input
           type="number"
