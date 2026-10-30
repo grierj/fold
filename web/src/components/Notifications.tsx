@@ -367,7 +367,7 @@ export function NotificationBell() {
         {count > 0 && (
           <span
             aria-hidden="true"
-            className="absolute top-0.5 right-0.5 min-w-5 h-5 px-1 rounded-full bg-primary-hover text-primary-foreground text-xs font-bold flex items-center justify-center ring-2 ring-white"
+            className="absolute top-0.5 right-0.5 min-w-5 h-5 px-1 rounded-full bg-primary-hover text-primary-foreground text-xs font-bold flex items-center justify-center ring-2 ring-surface"
           >
             {badgeText(badge)}
           </span>
@@ -423,7 +423,7 @@ export function NotificationTab({ className }: { className: (a: { isActive: bool
       <span className="relative">
         <BellIcon />
         {count > 0 && (
-          <span aria-hidden="true" className="absolute -top-1.5 -right-2.5 min-w-5 h-5 px-1 rounded-full bg-primary-hover text-primary-foreground text-xs font-bold flex items-center justify-center ring-2 ring-white">
+          <span aria-hidden="true" className="absolute -top-1.5 -right-2.5 min-w-5 h-5 px-1 rounded-full bg-primary-hover text-primary-foreground text-xs font-bold flex items-center justify-center ring-2 ring-surface">
             {badgeText(badge)}
           </span>
         )}

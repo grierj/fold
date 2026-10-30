@@ -481,6 +481,27 @@ func TestHouseholdOnlyCalendarDoesNotOverwriteOwnStatus(t *testing.T) {
 			t.Fatalf("calendar leak %s", raw)
 		}
 	}
+	if code, body := registerAs(c, eventID, date, models.RegDeclined, nil); code != http.StatusOK {
+		t.Fatalf("own Can't go: %d %s", code, body)
+	}
+	window := "from=" + date + "&to=" + date + "&tz=UTC"
+	page, raw = getCalendar(t, c, window+"&mine=1", http.StatusOK)
+	if len(page.Occurrences) != 0 {
+		t.Fatalf("household Going overrode own Can't go in Just mine: %s", raw)
+	}
+	page, raw = getCalendar(t, c, window, http.StatusOK)
+	if len(page.Occurrences) != 1 || page.Occurrences[0].MyStatus == nil || *page.Occurrences[0].MyStatus != models.RegDeclined || !page.Occurrences[0].OwnScope {
+		t.Fatalf("Everything lost own Can't go: %s", raw)
+	}
+	for _, secret := range []string{"Mary", "householdPerson", "careNotes", "birthDate"} {
+		if strings.Contains(raw, secret) {
+			t.Fatalf("declined calendar leaked household data: %s", raw)
+		}
+	}
+	var going int64
+	if err := app.DB.Model(&models.Registration{}).Where("household_person_id = ? AND status = ?", spouse.ID, models.RegGoing).Count(&going).Error; err != nil || going != 1 {
+		t.Fatalf("own Can't go changed household attendance: %d Going, err=%v", going, err)
+	}
 }
 
 func TestCalendarScopedInvitationIsOneSlimGoingDate(t *testing.T) {
@@ -610,4 +631,57 @@ func TestCalendarScopedInvitationLoadingIsBatched(t *testing.T) {
 		t.Fatalf("invitation reads grew per date: one=%d three=%d dates=%d", one, three, len(page.Occurrences))
 	}
 	t.Logf("calendar reads with 1 or 3 scoped dates: %d", one)
+}
+
+func TestCalendarHiddenGroupSiteNameReadBudget(t *testing.T) {
+	app := testApp(t)
+	creator := newTestUser(t, app, "creator", "pw", models.RoleAdmin)
+	g := newTestGroup(t, app, creator, "Hidden", models.GroupActive)
+	if err := app.DB.Model(g).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Create(&models.Setting{Key: "site_name", Value: "Our Church"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := newAPIClient(t, app)
+	client.do("GET", "/api/v1/calendar", nil, false) // Warm the setup-complete cache.
+	settings := countSiteNameReads(t, app.DB)
+	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Minute)
+	var baseline int64
+	for i := 1; i <= 30; i++ {
+		ev, _ := seedEvent(t, app, g, creator.ID, start)
+		if err := app.DB.Model(&ev).Update("visibility", models.VisibilityPublic).Error; err != nil {
+			t.Fatal(err)
+		}
+		if i != 3 && i != 30 {
+			continue
+		}
+		*settings = 0
+		counter := countDBReads(t, app.DB)
+		w := client.do("GET", "/api/v1/calendar?tz=UTC&from="+start.Format("2006-01-02")+"&to="+start.Format("2006-01-02"), nil, false)
+		reads := counter.Reads()
+		counter.Stop()
+		if w.Code != http.StatusOK {
+			t.Fatalf("calendar: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Occurrences []calendarOccurrenceJSON `json:"occurrences"`
+		}
+		decodeJSON(t, w, &body)
+		if len(body.Occurrences) != i {
+			t.Fatalf("got %d dates, want %d", len(body.Occurrences), i)
+		}
+		for _, row := range body.Occurrences {
+			if row.HostedBy != "Our Church" || row.GroupID != nil || row.GroupName != "" {
+				t.Fatalf("hidden group host: %+v", row)
+			}
+		}
+		if i == 3 {
+			baseline = reads
+		}
+		if reads != baseline || *settings != 1 {
+			t.Fatalf("%d dates: %d reads (baseline=%d), site_name=%d", i, reads, baseline, *settings)
+		}
+		t.Logf("%d dates: %d reads, site_name=%d", i, reads, *settings)
+	}
 }

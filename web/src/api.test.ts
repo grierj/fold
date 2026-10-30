@@ -37,3 +37,15 @@ it("sends only opaque selections and existing options to the three adult add end
   ]);
   vi.unstubAllGlobals();
 });
+
+it("preserves the event window and opaque cursor when requesting another group events page", async () => {
+  const response = { events: [], truncated: true, hasMore: true, nextCursor: "next" };
+  const fetcher = vi.fn(async () => new Response(JSON.stringify(response), { status: 200 }));
+  vi.stubGlobal("fetch", fetcher);
+  try {
+    await expect(Groups.events(3, "2026-10-01", "2027-03-01", { cursor: "opaque+/=", limit: 100 })).resolves.toEqual(response);
+    expect(fetcher).toHaveBeenCalledWith("/api/v1/groups/3/events?from=2026-10-01&to=2027-03-01&cursor=opaque%2B%2F%3D&limit=100", expect.anything());
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

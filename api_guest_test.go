@@ -989,3 +989,334 @@ func TestGuestManageCancellationRechecksTokenAndScopeUnderGate(t *testing.T) {
 		})
 	}
 }
+
+func TestGuestManageReauthorizesCancelledLinks(t *testing.T) {
+	for _, cancelledFirst := range []bool{false, true} {
+		t.Run(fmt.Sprint(cancelledFirst), func(t *testing.T) {
+			app := testApp(t)
+			newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			admin := loginAPI(t, app, "admin", "password1234")
+			gid := createGroupAs(t, admin, "Manage access", models.VisibilityPublic)
+			ev := scheduleGroupEvent(t, admin, gid, "Public picnic")
+			anon := anonClient(t, app, "10.4.0.33")
+			_, token := guestConfirm(t, app, anon, ev.ID, "Guest", "manage@example.com", false)
+			path := "/api/v1/guest-registrations/manage/" + token
+			if cancelledFirst {
+				apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusOK)
+				apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusOK)
+			}
+			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID), map[string]any{"visibility": "private", "confirm": true}, http.StatusOK)
+			apiDo(t, anon, "GET", path, nil, http.StatusNotFound)
+			apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusNotFound)
+			u := guestUser(t, app, "manage@example.com")
+			reg := guestRegistrationRow(t, app, u.ID)
+			if reg.Status != models.RegCancelled || reg.ManageTokenHash != hashToken(token) {
+				t.Fatalf("denial changed retained registration: %+v", reg)
+			}
+			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/visibility", ev.ID), map[string]any{"visibility": "public"}, http.StatusOK)
+			apiDo(t, anon, "GET", path, nil, http.StatusOK)
+			apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusOK)
+		})
+	}
+}
+
+func TestGuestManageReauthorizesDateOverride(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Date manage access", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Public picnic")
+	anon := anonClient(t, app, "10.4.0.34")
+	_, token := guestConfirm(t, app, anon, ev.ID, "Guest", "date-manage@example.com", false)
+	path := "/api/v1/guest-registrations/manage/" + token
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, guestDate), map[string]any{"visibility": "private", "confirm": true}, http.StatusOK)
+	apiDo(t, anon, "GET", path, nil, http.StatusNotFound)
+	apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusNotFound)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, guestDate), map[string]any{"visibility": "public"}, http.StatusOK)
+	apiDo(t, anon, "GET", path, nil, http.StatusOK)
+}
+
+func TestGuestManagePromotedMemberCurrentAccess(t *testing.T) {
+	f := newPromotedContactCancellationFixture(t)
+	if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.eventID).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/guest-registrations/manage/" + f.token
+	apiDo(t, f.anon, "GET", path, nil, http.StatusOK)
+	if err := f.app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", f.subject.ID, f.group.ID).Update("status", models.MembershipLeft).Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, f.anon, "GET", path, nil, http.StatusNotFound)
+	apiDo(t, f.anon, "POST", path+"/cancel", nil, http.StatusNotFound)
+	if err := f.app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", f.subject.ID, f.group.ID).Update("status", "active").Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, f.anon, "GET", path, nil, http.StatusOK)
+	apiDo(t, f.anon, "POST", path+"/cancel", nil, http.StatusOK)
+}
+
+func TestGuestManageInvalidTokenDoesNotWaitForContactGate(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expired=%t", expired), func(t *testing.T) {
+			f := newPromotedContactCancellationFixture(t)
+			token := "not-a-real-token"
+			if expired {
+				token = f.token
+				if err := f.app.DB.Model(&f.occ).Update("ends_at", time.Now().UTC().Add(-time.Hour)).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			gate := holdContactGate(t, f.app)
+			defer gate.Rollback()
+			response := queueContact(func() *httptest.ResponseRecorder {
+				return f.anon.do("GET", "/api/v1/guest-registrations/manage/"+token, nil, false)
+			})
+			// The gate stays held until after the response: rejection must not
+			// depend on a contact mutation finishing.
+			select {
+			case w := <-response:
+				if w.Code != http.StatusNotFound {
+					t.Fatalf("invalid token: %d %s", w.Code, w.Body.String())
+				}
+			case <-time.After(5 * time.Second):
+				gate.Rollback()
+				awaitContactResponse(t, response)
+				t.Fatal("invalid token waited for the contact gate")
+			}
+		})
+	}
+}
+
+func TestGuestManageGETRechecksTokenUnderGate(t *testing.T) {
+	f := newPromotedContactCancellationFixture(t)
+	gate := holdContactGate(t, f.app)
+	response := queueContact(func() *httptest.ResponseRecorder {
+		return f.anon.do("GET", "/api/v1/guest-registrations/manage/"+f.token, nil, false)
+	})
+	waitContactWaiters(t, f.app, 1) // preflight passed, but the gated lookup has not run
+	if err := gate.Model(&models.Registration{}).Where("user_id = ? AND occurrence_id = ?", f.subject.ID, f.occ.ID).Update("manage_token_hash", hashToken("rotated-test-token")).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := awaitContactResponse(t, response); w.Code != http.StatusNotFound {
+		t.Fatalf("rotated token authorized by stale preflight: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestGuestManageRechecksAuthorizationUnderGate(t *testing.T) {
+	for _, method := range []string{"GET", "POST"} {
+		t.Run(method, func(t *testing.T) {
+			f := newPromotedContactCancellationFixture(t)
+			if err := f.app.DB.Model(&models.Event{}).Where("id = ?", f.eventID).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+				t.Fatal(err)
+			}
+			gate := holdContactGate(t, f.app)
+			path := "/api/v1/guest-registrations/manage/" + f.token
+			if method == "POST" {
+				path += "/cancel"
+			}
+			response := queueContact(func() *httptest.ResponseRecorder { return f.anon.do(method, path, nil, true) })
+			waitContactWaiters(t, f.app, 1)
+			if err := gate.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", f.subject.ID, f.group.ID).Update("status", models.MembershipLeft).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := gate.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			if w := awaitContactResponse(t, response); w.Code != http.StatusNotFound {
+				t.Fatalf("stale authority: %d %s", w.Code, w.Body.String())
+			}
+			if regStatus(t, f.app, f.subject.ID, f.occ.ID) != models.RegGoing {
+				t.Fatal("denial cancelled registration")
+			}
+		})
+	}
+}
+
+func TestGuestManageFailsClosedOnMembershipRead(t *testing.T) {
+	f := newPromotedContactCancellationFixture(t)
+	name := "guest:test_membership_failure"
+	if err := f.app.DB.Callback().Query().Before("gorm:query").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Table == "memberships" {
+			tx.AddError(errors.New("membership lookup failed"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.app.DB.Callback().Query().Remove(name) })
+	path := "/api/v1/guest-registrations/manage/" + f.token
+	apiDo(t, f.anon, "GET", path, nil, http.StatusNotFound)
+	apiDo(t, f.anon, "POST", path+"/cancel", nil, http.StatusNotFound)
+}
+
+func TestGuestManageMemberExactDateAccess(t *testing.T) {
+	f := newOccurrenceReadFixture(t)
+	raw, hash, err := createInvitationToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.Model(&models.Registration{}).Where("id = ?", f.access.RegistrationID).Update("manage_token_hash", hash).Error; err != nil {
+		t.Fatal(err)
+	}
+	anon := anonClient(t, f.app, "10.4.0.35")
+	path := "/api/v1/guest-registrations/manage/" + raw
+	apiDo(t, anon, "GET", path, nil, http.StatusOK)
+	apiDo(t, anon, "POST", path+"/cancel", nil, http.StatusOK)
+	// Cancellation ends the independent date capability, so replay no longer
+	// has current authority even though the hash remains stored.
+	apiDo(t, anon, "GET", path, nil, http.StatusNotFound)
+}
+
+func TestGuestRegistrationDefersMailForEveryAddressKind(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
+	admin := loginAPI(t, app, "admin", "password1234")
+	gid := createGroupAs(t, admin, "Guest timing", models.VisibilityPublic)
+	ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+	guest := models.User{Name: "Returning guest", Email: "guest@example.com", Status: models.UserGuest}
+	if err := app.DB.Create(&guest).Error; err != nil {
+		t.Fatal(err)
+	}
+	var jobs []func()
+	app.background = func(f func()) { jobs = append(jobs, f) }
+	anon := anonClient(t, app, "10.4.1.1")
+	var answer string
+	for _, email := range []string{member.Email, "new@example.com", guest.Email} {
+		body := guestSubmit(t, anon, ev.ID, guestBody("Guest", email, true), http.StatusOK)
+		if answer != "" && body != answer {
+			t.Fatalf("nonuniform answer for %s: %s", email, body)
+		}
+		answer = body
+		if n := mailsTo(app, email); n != 0 {
+			t.Fatalf("mail was not deferred for %s: %d", email, n)
+		}
+	}
+	if len(jobs) != 3 {
+		t.Fatalf("deferred jobs = %d, want 3", len(jobs))
+	}
+	if guestSignupCount(t, app, member.Email) != 0 || guestSignupCount(t, app, "new@example.com") != 1 || guestSignupCount(t, app, guest.Email) != 1 {
+		t.Fatal("wrong signup rows for account/new/returning guest")
+	}
+	for _, job := range jobs {
+		job()
+	}
+	for _, email := range []string{member.Email, "new@example.com", guest.Email} {
+		if n := mailsTo(app, email); n != 1 {
+			t.Fatalf("deferred mail for %s = %d, want 1", email, n)
+		}
+	}
+}
+
+func TestGuestRegistrationWorkAndThrottleGates(t *testing.T) {
+	// Calibrate a deliberately loose lower bound instead of hard-coding the
+	// machine's bcrypt speed. Observe work at the account lookup, not at the
+	// end of the request: the padding must precede all address-dependent work.
+	start := time.Now()
+	(&models.User{}).CheckPassword("not a real password")
+	minimumWork := time.Since(start) / 3
+	for _, tt := range []struct {
+		name      string
+		account   bool
+		guest     bool
+		exhausted bool
+		gate      string
+	}{
+		{name: "new"},
+		{name: "account", account: true},
+		{name: "returning guest", guest: true},
+		{name: "new address exhausted", exhausted: true},
+		{name: "account address exhausted", account: true, exhausted: true},
+		{name: "IP exhausted", gate: "ip"},
+		{name: "site exhausted", gate: "site"},
+		{name: "honeypot", gate: "honeypot"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := testApp(t)
+			newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			admin := loginAPI(t, app, "admin", "password1234")
+			gid := createGroupAs(t, admin, "Guest gates", models.VisibilityPublic)
+			ev := scheduleGroupEvent(t, admin, gid, "Picnic")
+			email := "target@example.com"
+			if tt.account {
+				newTestUser(t, app, "target", "password1234", models.RoleMember)
+			}
+			if tt.guest {
+				if err := app.DB.Create(&models.User{Name: "Guest", Email: email, Status: models.UserGuest}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			seedThrottle := func(key string, failures int) {
+				t.Helper()
+				if err := app.DB.Create(&models.LoginThrottle{Key: key, Failures: failures, WindowStart: time.Now()}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tt.exhausted {
+				if tt.account {
+					seedThrottle("guestreg:hint:"+email, guestVerifyPerHour)
+				} else {
+					for range guestVerifyPerHour {
+						_, hash, err := createInvitationToken()
+						if err != nil {
+							t.Fatal(err)
+						}
+						var occ models.EventOccurrence
+						app.DB.Where("event_id = ?", ev.ID).First(&occ)
+						if err := app.DB.Create(&models.GuestSignup{Name: "Guest", Email: email, OccurrenceID: occ.ID, TokenHash: hash, ExpiresAt: time.Now().Add(time.Hour)}).Error; err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+			}
+			const ip = "10.4.1.2"
+			if tt.gate == "ip" {
+				seedThrottle("guestreg:ip:"+rateLimitIP(ip), guestIPLimit)
+			}
+			if tt.gate == "site" {
+				seedThrottle("guestreg:site", publicSignupSiteLimit)
+			}
+			var lookupAt time.Duration
+			var started time.Time
+			const callback = "guest:observe-account-lookup"
+			if err := app.DB.Callback().Query().Before("gorm:query").Register(callback, func(db *gorm.DB) {
+				if db.Statement.Table == "users" {
+					lookupAt = time.Since(started)
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { app.DB.Callback().Query().Remove(callback) })
+			jobs := 0
+			app.background = func(func()) { jobs++ }
+			anon := anonClient(t, app, ip)
+			body := guestBody("Guest", email, true)
+			if tt.gate == "honeypot" {
+				body["website"] = "bot"
+			}
+			started = time.Now()
+			answer := guestSubmit(t, anon, ev.ID, body, http.StatusOK)
+			if !strings.Contains(answer, signupThanks) {
+				t.Fatalf("nonuniform answer: %s", answer)
+			}
+			if tt.gate != "" {
+				if lookupAt != 0 || jobs != 0 || guestSignupCount(t, app, email) != 0 {
+					t.Fatalf("early gate inspected/stored/mailed address: lookup=%v jobs=%d", lookupAt, jobs)
+				}
+			} else {
+				if lookupAt < minimumWork {
+					t.Fatalf("account lookup before bcrypt work: %v, want >= %v", lookupAt, minimumWork)
+				}
+				wantJobs := 1
+				if tt.exhausted {
+					wantJobs = 0
+				}
+				if jobs != wantJobs {
+					t.Fatalf("mail jobs = %d, want %d", jobs, wantJobs)
+				}
+			}
+		})
+	}
+}

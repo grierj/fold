@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -127,9 +128,65 @@ func (a *App) apiCreateGroup(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"group": a.groupSummary(&g)})
 }
 
+const maxGroupUpcomingOccurrences = 25
+
+// Cursors are positions, never authority: each page rechecks date visibility.
+// StartsAt and ID match the occurrence list's deterministic sort order.
+type groupUpcomingCursor struct {
+	GroupID  uint      `json:"groupId"`
+	StartsAt time.Time `json:"startsAt"`
+	ID       uint      `json:"id"`
+}
+
+type groupDetailJSON struct {
+	Group          groupSummaryJSON `json:"group"`
+	Members        []memberJSON     `json:"members"`
+	UpcomingEvents []occurrenceJSON `json:"upcomingEvents"`
+	Truncated      bool             `json:"truncated"`
+	HasMore        bool             `json:"hasMore"`
+	NextCursor     string           `json:"nextCursor"`
+	CanManage      bool             `json:"canManage"`
+	IsMember       bool             `json:"isMember"`
+}
+
+func parseGroupUpcomingPage(c *gin.Context, groupID uint) (int, *groupUpcomingCursor, bool) {
+	limit := maxGroupUpcomingOccurrences
+	if raw, present := c.GetQuery("limit"); present {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > 100 {
+			jsonError(c, http.StatusBadRequest, "invalid upcoming date page; reload the group")
+			return 0, nil, false
+		}
+		limit = n
+	}
+	var cursor *groupUpcomingCursor
+	if raw, present := c.GetQuery("cursor"); present {
+		cursor = &groupUpcomingCursor{}
+		data, err := base64.RawURLEncoding.DecodeString(raw)
+		if len(raw) > 512 || err != nil || json.Unmarshal(data, cursor) != nil || cursor.GroupID != groupID || cursor.ID == 0 || cursor.StartsAt.IsZero() {
+			jsonError(c, http.StatusBadRequest, "invalid upcoming date page; reload the group")
+			return 0, nil, false
+		}
+	}
+	return limit, cursor, true
+}
+
+func nextGroupUpcomingCursor(groupID uint, dates []occurrenceJSON, hasMore bool) string {
+	if !hasMore {
+		return ""
+	}
+	last := dates[len(dates)-1]
+	data, _ := json.Marshal(groupUpcomingCursor{GroupID: groupID, StartsAt: last.StartsAt, ID: last.ID})
+	return base64.RawURLEncoding.EncodeToString(data)
+}
+
 func (a *App) apiGetGroup(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	g, rel, ok := a.loadGroupFor(c, uint(id))
+	if !ok {
+		return
+	}
+	limit, cursor, ok := parseGroupUpcomingPage(c, g.ID)
 	if !ok {
 		return
 	}
@@ -142,14 +199,13 @@ func (a *App) apiGetGroup(c *gin.Context) {
 	}
 
 	now := time.Now().UTC()
-	upcoming := a.buildOccurrences([]uint{g.ID}, now.Add(-24*time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02"), &now, me)
-
-	c.JSON(http.StatusOK, gin.H{
-		"group":          a.groupSummary(g),
-		"members":        memberList,
-		"upcomingEvents": upcoming,
-		"canManage":      policy.CanManageGroup(p, rel),
-		"isMember":       rel.Member,
+	var eventIDs []uint
+	a.DB.Model(&models.Event{}).Where("group_id = ?", g.ID).Pluck("id", &eventIDs)
+	upcoming, hasMore := a.occurrencesForEventsAfter(eventIDs, now.Add(-24*time.Hour).Format("2006-01-02"), now.AddDate(0, 0, 90).Format("2006-01-02"), &now, me, limit, cursor)
+	c.JSON(http.StatusOK, groupDetailJSON{
+		Group: a.groupSummary(g), Members: memberList, UpcomingEvents: upcoming,
+		Truncated: hasMore, HasMore: hasMore, NextCursor: nextGroupUpcomingCursor(g.ID, upcoming, hasMore),
+		CanManage: policy.CanManageGroup(p, rel), IsMember: rel.Member,
 	})
 }
 
@@ -184,7 +240,7 @@ func (a *App) rosterFor(groupID uint, viewer *models.User, manager bool) []membe
 
 func (a *App) apiUpdateGroup(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
-	g, rel, ok := a.loadManagedGroupID(c, uint(id))
+	g, _, ok := a.loadManagedGroupID(c, uint(id))
 	if !ok {
 		return
 	}
@@ -212,6 +268,8 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid body")
 		return
 	}
+	patch := models.Group{}
+	columns := []string{}
 	if body.Name != nil {
 		name := strings.TrimSpace(*body.Name)
 		if name == "" {
@@ -222,7 +280,8 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, "name is too long")
 			return
 		}
-		g.Name = name
+		patch.Name = name
+		columns = append(columns, "name")
 	}
 	if body.Description != nil {
 		description := strings.TrimSpace(*body.Description)
@@ -230,7 +289,8 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, "description is too long")
 			return
 		}
-		g.Description = description
+		patch.Description = description
+		columns = append(columns, "description")
 	}
 	if body.Tags != nil {
 		tags := joinTags(body.Tags)
@@ -238,11 +298,13 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, "tags are too long")
 			return
 		}
-		g.Tags = tags
+		patch.Tags = tags
+		columns = append(columns, "tags")
 	}
 	if body.CoverFocal != nil {
-		g.CoverFocalX = clampFocal(body.CoverFocal.X)
-		g.CoverFocalY = clampFocal(body.CoverFocal.Y)
+		patch.CoverFocalX = clampFocal(body.CoverFocal.X)
+		patch.CoverFocalY = clampFocal(body.CoverFocal.Y)
+		columns = append(columns, "cover_focal_x", "cover_focal_y")
 	}
 	if body.Location != nil {
 		location := strings.TrimSpace(*body.Location)
@@ -250,19 +312,16 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, "location is too long")
 			return
 		}
-		g.Location = location
+		patch.Location = location
+		columns = append(columns, "location")
 	}
 	if body.Status != nil {
 		if !validGroupStatus(*body.Status) {
 			jsonError(c, http.StatusBadRequest, "status must be pending, active, or archived")
 			return
 		}
-		// Leaders may archive their own group; only admins may (re)activate.
-		if !policy.CanSetGroupStatus(asPerson(u), rel, *body.Status) {
-			jsonError(c, http.StatusForbidden, "only admins can change status to "+*body.Status)
-			return
-		}
-		g.Status = *body.Status
+		patch.Status = *body.Status
+		columns = append(columns, "status")
 	}
 	if body.Visibility != nil {
 		visibility, msg := normalizeVisibility(*body.Visibility)
@@ -270,29 +329,83 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 			jsonError(c, http.StatusBadRequest, msg)
 			return
 		}
-		g.Visibility = visibility
+		patch.Visibility = visibility
+		columns = append(columns, "visibility")
 	}
-	var oldVis string
 	if limit, set, msg := parseMemberLimit(body.MemberLimit); msg != "" {
 		jsonError(c, http.StatusBadRequest, msg)
 		return
 	} else if set {
-		g.MemberLimit = limit
+		patch.MemberLimit = limit
+		columns = append(columns, "member_limit")
 	}
+	errHidden := errors.New("group not found")
+	errForbidden := errors.New("group edit forbidden")
 	var impact visibilityImpactJSON
 	var emailed []uint
 	err := a.contactMutation(contactChange{GroupID: g.ID}, func(tx *gorm.DB) error {
-		// Lock the row and read the stored visibility, so a concurrent change
-		// can't skip the tightening (DEC-48).
-		var locked models.Group
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, g.ID).Error; err != nil {
+		// Contact gate -> actor -> group -> membership, before domain writes.
+		var actor models.User
+		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&actor, u.ID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errSecuritySession
+			}
 			return err
 		}
-		oldVis = locked.Visibility
+		if !actor.CanSignIn() || actor.SessionVersion != u.SessionVersion {
+			return errSecuritySession
+		}
+		var locked models.Group
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&locked, g.ID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errHidden
+			}
+			return err
+		}
+		var membership models.Membership
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("group_id = ? AND user_id = ?", g.ID, actor.ID).Limit(1).Find(&membership).Error; err != nil {
+			return err
+		}
+		rel := membershipRel(membership)
+		if !policy.CanSeeGroup(asPerson(&actor), asGroup(&locked), rel) {
+			return errHidden
+		}
+		if !policy.CanManageGroup(asPerson(&actor), rel) ||
+			(body.Status != nil && !policy.CanSetGroupStatus(asPerson(&actor), rel, *body.Status)) {
+			return errForbidden
+		}
+		// Downstream visibility/audit helpers use the same fresh actor.
+		*u = actor
+		// Start with current state; omitted columns are never written.
+		*g = locked
+		if body.Name != nil {
+			g.Name = patch.Name
+		}
+		if body.Description != nil {
+			g.Description = patch.Description
+		}
+		if body.Tags != nil {
+			g.Tags = patch.Tags
+		}
+		if body.Location != nil {
+			g.Location = patch.Location
+		}
+		if body.Status != nil {
+			g.Status = patch.Status
+		}
+		if body.Visibility != nil {
+			g.Visibility = patch.Visibility
+		}
+		if body.CoverFocal != nil {
+			g.CoverFocalX, g.CoverFocalY = patch.CoverFocalX, patch.CoverFocalY
+		}
+		if len(body.MemberLimit) != 0 {
+			g.MemberLimit = patch.MemberLimit
+		}
 		if body.Visibility != nil {
 			var err error
 			var ids []uint
-			if impact, ids, err = a.applyGroupTightening(c, tx, g, oldVis, g.Visibility, body.OpenedEvents); err != nil {
+			if impact, ids, err = a.applyGroupTightening(c, tx, g, locked.Visibility, g.Visibility, body.OpenedEvents); err != nil {
 				return err
 			}
 			emailed = append(emailed, ids...)
@@ -311,8 +424,23 @@ func (a *App) apiUpdateGroup(c *gin.Context) {
 				return err
 			}
 		}
-		return tx.Save(g).Error
+		if len(columns) == 0 {
+			return nil
+		}
+		return tx.Model(g).Select(columns).Updates(g).Error
 	})
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if errors.Is(err, errHidden) {
+		jsonError(c, http.StatusNotFound, "group not found")
+		return
+	}
+	if errors.Is(err, errForbidden) {
+		jsonError(c, http.StatusForbidden, "forbidden")
+		return
+	}
 	if errors.Is(err, errNeedDecision) {
 		c.JSON(http.StatusConflict, gin.H{
 			"error":         "Choose whether to keep each event a leader opened up, or make it match the group",
@@ -355,13 +483,16 @@ func (a *App) apiJoinGroup(c *gin.Context) {
 	}
 	if !rel.Member {
 		// Self-join never goes over the member limit (DEC-39).
-		err := a.changeRole(c, g, u.ID, models.MembershipMember, "", false, nil, func(me *models.User, _, t policy.Rel, _ int) bool {
+		err := a.changeRole(c, g, u.ID, models.MembershipMember, "", false, nil, func(me, _ *models.User, _, t policy.Rel, _ int) bool {
 			return policy.CanJoinGroup(asPerson(me), asGroup(g), t)
 		})
 		switch err {
 		case nil:
 		case errGroupFull:
 			groupFull(c)
+			return
+		case errSecuritySession:
+			jsonError(c, http.StatusUnauthorized, "unauthorized")
 			return
 		case errRoleRefused:
 			jsonError(c, http.StatusForbidden, "you can't join this group")
@@ -502,11 +633,14 @@ func (a *App) apiSetMemberRole(c *gin.Context) {
 		return
 	}
 	makeLeader := body.Role == models.MembershipLeader
-	err := a.changeRole(c, g, target.ID, body.Role, "", false, nil, func(me *models.User, actor, targetRel policy.Rel, leaders int) bool {
-		return policy.CanChangeRole(asPerson(me), actor, asPerson(&target), targetRel, makeLeader, leaders)
+	err := a.changeRole(c, g, target.ID, body.Role, "", false, nil, func(me, target *models.User, actor, targetRel policy.Rel, leaders int) bool {
+		return policy.CanChangeRole(asPerson(me), actor, asPerson(target), targetRel, makeLeader, leaders)
 	})
 	switch err {
 	case nil:
+	case errSecuritySession:
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
 	case errRoleRefused:
 		jsonError(c, http.StatusBadRequest,
 			"only adult members can be made leaders, and a group must keep at least one leader")
@@ -549,7 +683,7 @@ type memberAddOptions struct {
 // membership.removed row for every removal. Direct manager additions require
 // adult actors/targets and write membership.added.
 func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, note string, overLimit bool, add *memberAddOptions,
-	allow func(me *models.User, actor, target policy.Rel, leaders int) bool) error {
+	allow func(me, target *models.User, actorRel, targetRel policy.Rel, leaders int) bool) error {
 	actor := apiUser(c)
 	var emailed []uint
 	err := a.contactMutation(contactChange{UserID: userID}, func(tx *gorm.DB) error {
@@ -561,9 +695,40 @@ func (a *App) changeRole(c *gin.Context, g *models.Group, userID uint, newRole, 
 	return err
 }
 
-// changeRoleIn requires the contact gate and caller-owned transaction. It keeps
-// the group-first lock/capacity protocol and never commits or sends emails.
-func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models.Group, userID uint, newRole, note string, overLimit bool, add *memberAddOptions, allow func(*models.User, policy.Rel, policy.Rel, int) bool, emailed *[]uint) error {
+// changeRoleIn requires the contact gate and caller-owned transaction. It locks
+// users before the group/membership capacity protocol and never commits or sends emails.
+func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models.Group, userID uint, newRole, note string, overLimit bool, add *memberAddOptions, allow func(*models.User, *models.User, policy.Rel, policy.Rel, int) bool, emailed *[]uint) error {
+	sessionErr := errSecuritySession
+	if add != nil {
+		sessionErr = errPeopleAddForbidden
+	}
+	if actor == nil {
+		return sessionErr
+	}
+	var fresh models.User
+	if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(&fresh, actor.ID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return sessionErr
+		}
+		return err
+	}
+	if !fresh.CanSignIn() || fresh.SessionVersion != actor.SessionVersion {
+		return sessionErr
+	}
+	actor = &fresh
+	target := actor
+	if userID != actor.ID {
+		target = &models.User{}
+		if err := tx.Clauses(clause.Locking{Strength: "NO KEY UPDATE"}).First(target, userID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errRoleRefused
+			}
+			return err
+		}
+	}
+	if (newRole == models.MembershipLeader || newRole == models.MembershipMember) && target.Status != models.UserActive {
+		return errRoleRefused
+	}
 	if add != nil {
 		fresh, err := peopleAddActor(tx, actor)
 		if err != nil {
@@ -587,7 +752,7 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 	if actor.ID != userID {
 		actorRel = relIn(tx, actor.ID, g.ID)
 	}
-	if !allow(actor, actorRel, targetRel, leaderCount(tx, g.ID)) {
+	if !allow(actor, target, actorRel, targetRel, leaderCount(tx, g.ID)) {
 		return errRoleRefused
 	}
 	if (add != nil && add.KeepExistingRole && targetRel.Member) || oldRole == newRole || (newRole == memberRemoved && !targetRel.Member) {
@@ -596,21 +761,9 @@ func (a *App) changeRoleIn(tx *gorm.DB, actor *models.User, ip string, g *models
 	// Adding someone (or bringing them back) needs room under the member
 	// limit, or an explicit over-limit choice, which is audited (DEC-39).
 	adding := !targetRel.Member && (newRole == models.MembershipLeader || newRole == models.MembershipMember)
-	if adding {
-		// A guest (M1.4) has no account to hold a membership with:
-		// they join a group only after an account upgrade or an
-		// invitation turns the guest row into one.
-		var target models.User
-		if err := tx.First(&target, userID).Error; err != nil || target.Status == models.UserGuest {
-			return errRoleRefused
-		}
-		if add != nil {
-			if target.Status != models.UserActive {
-				return errRoleRefused
-			}
-			if policy.TeenAddNeedsApproval(asPerson(&target)) && (add.approved == nil || !a.verifiedGroupAddIn(tx, add.approved, actor.ID, userID, g.ID)) {
-				return errTeenAddApproval
-			}
+	if adding && add != nil {
+		if policy.TeenAddNeedsApproval(asPerson(target)) && (add.approved == nil || !a.verifiedGroupAddIn(tx, add.approved, actor.ID, userID, g.ID)) {
+			return errTeenAddApproval
 		}
 	}
 	count := 0
@@ -742,7 +895,7 @@ func (a *App) apiAddGroupMember(c *gin.Context) {
 		jsonError(c, 409, errTeenAddApproval.Error())
 		return
 	}
-	err := a.changeRole(c, g, target.ID, models.MembershipMember, "", body.OverLimit, &memberAddOptions{KeepExistingRole: true}, func(me *models.User, actor, _ policy.Rel, _ int) bool {
+	err := a.changeRole(c, g, target.ID, models.MembershipMember, "", body.OverLimit, &memberAddOptions{KeepExistingRole: true}, func(me, _ *models.User, actor, _ policy.Rel, _ int) bool {
 		return policy.CanManageGroup(asPerson(me), actor)
 	})
 	switch err {

@@ -11,6 +11,7 @@ import { ApiError } from "../api";
 // success message. Sign-in's lockout and the invitation "already has an
 // account" are the deliberate exceptions.
 export const ERROR_COPY = {
+  group_upcoming_page: "Those dates couldn't be loaded. Reload the group and try again.",
   contact_history_filters: "Those history filters aren't valid. Check the dates and filters, then try again.",
   people_selection_unavailable: "That selection is no longer available. Search for the person again.",
   teen_add_approval_required: "Adding a teen needs their approval and an admin's approval. Ask your church office for help.",
@@ -39,6 +40,10 @@ export const ERROR_COPY = {
   household_conversion_person: "This household person was removed or already has an account. Reject this request; their household can ask for help if needed.",
   household_conversion_approval: "This account is waiting for an admin. Wait for their decision before sending another invitation.",
   household_conversion_open: "An invitation is already open. Cancel it before choosing a different email.",
+  household_holder: "This household needs another active adult account. Choose an eligible account holder, not your own admin account.",
+  household_exists: "This account already has a household. Use the existing household instead of creating another.",
+  household_required: "This account has no household yet. Create its household before adding people.",
+  household_guardian: "This person needs an eligible guardian. Choose an active adult account in the same household, not your own admin account.",
   household_conversion_holder: "A responsible account isn't available. Ask your church office to check it before trying again.",
   household_person_converted: "This person has their own account now. Use their account instead.",
   household_link_pending: "Waiting for an admin to confirm. Ask your church office to check the household link before signing them up.",

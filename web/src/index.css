@@ -185,6 +185,8 @@
   /* Primary and danger change both text and fill when disabled; cross-fading
      those contrasting endpoints creates low-contrast intermediate frames. */
   .btn-primary   { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-primary px-5 font-semibold text-primary-foreground hover:bg-primary-hover active:bg-primary-active disabled:bg-sunken disabled:text-text-muted disabled:cursor-not-allowed; }
+  /* Primary action on a dark cover: no page-level color overrides. */
+  .btn-primary-inverse { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-surface px-5 font-semibold text-primary hover:bg-sunken active:bg-page; }
   .btn-secondary { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md border border-border-strong bg-surface px-5 font-semibold text-text transition-colors hover:bg-sunken; }
   .btn-danger    { @apply inline-flex items-center justify-center gap-2 min-h-11 rounded-md bg-danger px-5 font-semibold text-danger-foreground hover:bg-danger-hover disabled:bg-sunken disabled:text-text-muted disabled:cursor-not-allowed; }
   /* A destructive action that sits beside the main one (Reject, Remove). */
@@ -205,10 +207,10 @@
   .listbox-option[aria-selected="true"] { @apply bg-primary-subtle text-primary-on-subtle; }
   /* "Yours" and "Church" in the zone list (as in #52). */
   .zone-tag      { @apply ml-2 inline-block rounded-full border border-primary-border bg-surface px-2 text-xs font-semibold text-primary-on-subtle; }
-  .chip          { @apply inline-flex items-center gap-1.5 min-h-11 sm:min-h-9 rounded-full border border-border-strong bg-surface px-3 text-sm font-medium text-text; }
-  .chip[aria-pressed="true"] { @apply border-primary-border bg-primary-subtle text-primary-on-subtle font-semibold; }
+  .chip          { @apply inline-flex items-center gap-1.5 min-h-11 min-w-11 rounded-full border border-border-strong bg-surface px-3 text-sm font-medium text-text; }
+  .chip[aria-pressed="true"], .chip[aria-selected="true"] { @apply border-primary-border bg-primary-subtle text-primary-on-subtle font-semibold; }
   /* Selected chips lead with a check mark (empty alt text: not read aloud). */
-  .chip[aria-pressed="true"]::before { content: "✓" / ""; }
+  .chip[aria-pressed="true"]::before, .chip[aria-selected="true"]::before { content: "✓" / ""; }
   /* A plain violet text action ("Show who's coming"), 44px tall like the
      other text links. */
   .btn-link      { @apply inline-flex items-center min-h-11 text-sm font-medium text-primary hover:underline; }

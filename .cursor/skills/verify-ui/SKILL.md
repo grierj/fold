@@ -1,6 +1,6 @@
 ---
 name: verify-ui
-description: Prove Fold's web UI looks and behaves right at phone, tablet and desktop widths. It boots an isolated Fold with verify-fold, seeds a member, a leader and an admin, loads the main pages at 390/768/1280 in Chromium, saves screenshots, and checks horizontal overflow, clipped selects, tap targets, axe (serious/critical) and token contrast. Use for any styling or layout change, a new page or control, or a UI review.
+description: Prove Fold's web UI looks and behaves right at phone, tablet and desktop widths. It boots an isolated Fold with verify-fold, seeds a member, a leader and an admin, loads the main pages at 390/768/1280 in Chromium, saves screenshots, and checks horizontal overflow, clipped selects, tap targets, axe (moderate/serious/critical) and token contrast. Use for any styling or layout change, a new page or control, or a UI review.
 ---
 
 # Verify UI
@@ -89,7 +89,7 @@ UI_PAGES=schedule-event,admin UI_WIDTHS=390 node .cursor/skills/verify-ui/drive-
 | Clipped select | The selected option's text is wider than the select's inner width (canvas measure) | The PR #51 "Church time zone: America/Los…" bug |
 | Cut off | A visible control runs past an ancestor that hides or scrolls overflow, or past either edge of the screen | The PR #65 Admin Users actions hidden in an `overflow-hidden` card |
 | Target under 24px | Any visible control (link, button, input, select, textarea, tab) is under 24×24 CSS px, counting its `<label for>`. Inline links inside running text are exempt. | WCAG 2.2 SC 2.5.8 (AA) |
-| axe | Any serious or critical violation (WCAG 2.0–2.2 A/AA tags, which include `target-size`, `label` and `color-contrast`) | Same bar as `web/e2e/a11y.spec.ts` |
+| axe | Any moderate, serious or critical violation (WCAG 2.0–2.2 A/AA tags, which include `target-size`, `label` and `color-contrast`) | Same bar as `web/e2e/a11y.spec.ts` |
 | Tab bar (layout.spec.ts only) | At 390, scrolled to the bottom, the last content sits under the fixed tab bar | PR #65 review N4 |
 | Under 44px (report only) | Controls under 44px tall at 390 are listed per page in `results.json` | The design target (TOKENS.md). Not yet a gate; compare the count to master. |
 

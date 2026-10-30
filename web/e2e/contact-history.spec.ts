@@ -49,7 +49,12 @@ test("admin user entry reviews retained history, filters and CSV; nonadmins get 
   const addition = await page.request.post(`/api/v1/groups/${group.id}/members`, { headers: { "X-CSRF-Token": addCSRF }, data: { email: added.email } });
   expect(addition.ok()).toBe(true);
   await page.reload();
-  await page.getByRole("button", { name: /^members$/i }).click();
+  const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
+    .getByRole("tab", { name: "Members", exact: true });
+  await membersTab.click();
+  await expect(membersTab).toHaveAttribute("aria-selected", "true");
+  const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
+  await expect(membersPanel).toBeVisible();
   await page.getByRole("button", { name: "Request direct contact" }).click();
   await page.getByLabel("Email and phone", { exact: true }).check();
   await page.getByLabel(/Reason/).fill("PRIVATE HISTORY REASON");

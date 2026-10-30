@@ -2,7 +2,7 @@
 
 Claim a milestone here (in its own PR or commit) before starting it.
 
-Reconciled against merged history through M1.14 departure PR #131 (merge `a18902e`, Oct 27, 2026), after the protected `test`, `web` and `provision` checks passed. “Merged” is not a production deployment. Product scope lives in [PLAN.md](docs/plan/PLAN.md); remaining conflicts are in [DOCUMENTATION-REVIEW.md](docs/plan/DOCUMENTATION-REVIEW.md).
+Reconciled against merged history through [PR #163](https://github.com/grierj/fold/pull/163) (merge `62629fb`, Oct 29, 2026), plus post-merge source inspected through `6d689bb`. Source follow-ups below are distinguished from protected PR merge receipts; this documentation reconciliation is not a fresh full-suite acceptance or a production deployment. Product decisions run through DEC-87 in [PLAN.md](docs/plan/PLAN.md); remaining conflicts are in [DOCUMENTATION-REVIEW.md](docs/plan/DOCUMENTATION-REVIEW.md).
 
 | Milestone | Status | Owner | Branch/PR |
 | --- | --- | --- | --- |
@@ -53,6 +53,26 @@ Reconciled against merged history through M1.14 departure PR #131 (merge `a18902
 | UI makeover PR 8: empty, error and loading states, covers, brand (DEC-66): every empty list says what would show up and offers the next step, missing pages offer a way home, failed loads offer Try again, slow loads show skeletons, photo-less groups get one of six patterned covers by id, the tab gets the Fold icon; placeholder illustrations and covers wait on Gilder | merged (#72) | Muse | `empty-states` |
 | UI makeover PR 9: calendar (M1.6, DEC-67): `/calendar` with Agenda, Week and Month views of every date the viewer may see, a "Just mine" chip and a group filter, times in the viewer's zone, a Calendar tab (5 tabs), and a read-only `GET /api/v1/calendar` with slim rows and no attendance | merged (#73) | Wright | `calendar` |
 
+## October 28 checkup fixes merged in #163
+
+| Change | Evidence |
+| --- | --- |
+| Session lifetime decoding, signup IPv6/site budgets, password-reset daily mail cap, uniformly deferred signup mail and fresh inviter authority | `97d7d31`, `22d0bad`, `b4c74fd`, `c6a2d58`, `afbcd8e` |
+| Current-password proof, newest-only verified email change/cancellation and atomic token/session revocation (DEC-87) | `ac2ca05`; issue #154 |
+| Voluntary `left` memberships rejoin normally while `removed` stays blocked; departed answers are cancelled rather than recorded as a new decline (DEC-86) | `1e78bc0`, `9880194`; issue #144 |
+| Seat-only manager removal retries waitlist promotion when capacity/childcare allow, outside the cutoff | `58a4d7c`; `TestRemovalPromotesOnlyWhenCapacityHasRoom`; issue #147, DEC-84 |
+| Mobile navigation/landmarks/calendar cues, inline form validation, Admin Settings tab, Profile settings hub, organizer attribution and matching browser contracts | `b5b7643`, `49fbcf2`, `7587f85`, `314eb27`, `01b0350`, `cee0faf` |
+| Contact history person/date filters, batched contact/group/guardian reads, mail Compose wiring and encrypted SMTP default outside loopback | `5b308d3`, `6ec6e7d`, `1abdb9b`, `d1d2441`, `249719f` |
+
+## Post-#163 source follow-ups
+
+These entries identify inspected implementation commits, not additional PR merge
+or production-deployment receipts.
+
+- Query bounds and batching: membership/registration indexes (`bed03ee`), historical name batches (`4718307`), one site-name read per list (`e3af1e4`), bounded group detail dates (`1e3edb9`) and a group-date window control (`0c71791`, `2fe6654`; #176-B).
+- Locked authority: admin account insertion (`84f745b`; #164), group patch state and actor reauthorization (`a360ac6`, `c34215d`, `6236c6c`; #165), guest manage-link date access (`86eed96`; #166), and opened-date public-feed parent-detail privacy (`e10030f`; #167).
+- Abuse budgets and uniform work: shared authenticated password-proof reservations (`2d09ece`; #170), balanced guest signup work/deferred mail (`48eb274`; #168), and shedding throttled password-reset account work (`6d689bb`; #169).
+
 ## Remaining follow-ups
 
 Recheck implementation before claiming an older finding. M1.14's exact-head local suites and review evidence are recorded separately; older follow-ups below are not silently closed by that milestone.
@@ -60,9 +80,7 @@ Recheck implementation before claiming an older finding. M1.14's exact-head loca
 - M1.10 phase scope: account access, guardian consent, staged conversion, birthdays, and existing roster badges are implemented and verified in #114–#118. Recipient-list composition, guardian message copies, SMS sending, and galleries remain future milestones. DEC-83 records the staged inactive-holder retry exception and independent suspension behavior.
 
 - (Illuminator, #105 N10) Watch that a stray arrow key in the "How you'll attend" radio group can't change a Going answer by accident (switching mode saves immediately).
-- (Whittler, #105) An admin re-adding someone who is already going in the same pool counts their seats twice (api_registrations.go admin add path, ~1150-1157). Fix: subtract the existing going party from used seats before the fit check.
 - (Illuminator, PR 110 N5) Use the Going/Maybe/Can't go radios for each household person instead of the "Answer for X" select (judgment call 38).
-- (M1.9 slice 2, judgment call 34) Seat-only manager removal still doesn't auto-promote; making every removal promote (5.4) is deferred.
 - (Warden, PR 110) Recheck the solo RSVP/membership-removal race against the current locked authorization path in `api_registrations.go`. It now calls `canRegisterIn` inside the transaction; this documentation pass did not establish whether all competing membership mutations serialize with that check. Do not treat the older finding as verified closed.
 - (Whittler, PR 110) Select attendee names in the attendee query so the account load can be skipped (GET /events/:id to about 18 reads).
 - (M1.14 departure-security review, P2) Disabling a Going member inside the cutoff can notify leaders, then later departure cleanup can repeat the same waitlist-cutoff notice even though no additional seat was freed. Capacity and authorization remain correct; avoid the duplicate notification in a focused follow-up.
@@ -70,4 +88,4 @@ Recheck implementation before claiming an older finding. M1.14's exact-head loca
 - Terminology (Grier, Oct 20, 2026; DEC-78): rethink the name "private" for groups. The word is overloaded, because private groups are visible to every signed-in member.
 - A confirmed household-person guardian link survives a teen-to-child kind edit; this is the retained behavior, not an unapproved new permission.
 
-Completed follow-ups removed from the queue: CI SHA pinning/read-only permissions (#100); household church-local age checks, going-path read budget, roster status placement and Profile placeholder (#111). Superseded slice briefs/judgment logs are in git history; their current rules are consolidated in PLAN and docs/API.md.
+Completed follow-ups removed from the queue: CI SHA pinning/read-only permissions (#100); household church-local age checks, going-path read budget, roster status placement and Profile placeholder (#111); seat-only manager-removal promotion (#147, DEC-84, merged in #163) and the older manager re-add double-count finding (`addAccountRegistrationLocked` already subtracts the existing Going party before checking the new party's fit; this was present at the #163 baseline). Superseded slice briefs/judgment logs are in git history; their current rules are consolidated in PLAN and docs/API.md.

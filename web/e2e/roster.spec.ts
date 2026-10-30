@@ -5,7 +5,18 @@ import { signIn } from "./helpers";
 test("leader roster labels the admin and offers no Remove for them", async ({ page }) => {
   await signIn(page, "lee");
   await page.goto("/groups/1");
-  await page.getByRole("button", { name: /^members$/i }).click();
+  const sections = page.getByRole("tablist", { name: "Group sections", exact: true });
+  const eventsTab = sections.getByRole("tab", { name: "Upcoming events", exact: true });
+  const membersTab = sections.getByRole("tab", { name: "Members", exact: true });
+  await expect(eventsTab).toHaveAttribute("aria-selected", "true");
+  await eventsTab.focus();
+  await eventsTab.press("End");
+  await expect(membersTab).toBeFocused();
+  await expect(eventsTab).toHaveAttribute("aria-selected", "false");
+  await expect(membersTab).toHaveAttribute("aria-selected", "true");
+  const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
+  await expect(membersPanel).toBeVisible();
+  await expect(membersTab).toHaveAttribute("aria-controls", await membersPanel.getAttribute("id") as string);
 
   const grier = page.getByRole("listitem").filter({ hasText: "Grier" });
   await expect(grier.getByText("Admin", { exact: true })).toBeVisible();

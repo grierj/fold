@@ -167,8 +167,7 @@ func (a *App) apiRequestEmailChange(c *gin.Context, u *models.User, newEmail, cu
 		jsonError(c, http.StatusBadRequest, "enter a valid email address")
 		return
 	}
-	if !u.CheckPassword(currentPassword) {
-		jsonError(c, http.StatusBadRequest, "current password is incorrect")
+	if !a.reauthenticate(c, u, currentPassword) {
 		return
 	}
 	// Validate the proof against locked credentials before any address lookup.
@@ -1096,6 +1095,65 @@ func splitPersonName(name string) (string, string) {
 	return fields[0], strings.Join(fields[1:], " ")
 }
 
+func (a *App) parseHouseholdPersonInput(c *gin.Context, body householdPersonInput) (models.HouseholdPerson, bool) {
+	first, last := "", ""
+	if body.FirstName != nil {
+		first = strings.TrimSpace(*body.FirstName)
+	}
+	if body.LastName != nil {
+		last = strings.TrimSpace(*body.LastName)
+	}
+	if first == "" && body.Name != nil {
+		first, last = splitPersonName(*body.Name)
+	}
+	if first == "" {
+		jsonError(c, http.StatusBadRequest, "first name is required")
+		return models.HouseholdPerson{}, false
+	}
+	if len(first) > 100 || len(last) > 100 {
+		jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
+		return models.HouseholdPerson{}, false
+	}
+	kind := ""
+	if body.Kind != nil {
+		kind = strings.TrimSpace(*body.Kind)
+	}
+	if !validHouseholdKind(kind) {
+		jsonError(c, http.StatusBadRequest, "kind must be child, teen, or adult")
+		return models.HouseholdPerson{}, false
+	}
+	var birth *time.Time
+	if body.BirthDate != nil && strings.TrimSpace(*body.BirthDate) != "" {
+		parsed, err := accounts.ParseBirthDate(strings.TrimSpace(*body.BirthDate))
+		if err != nil {
+			jsonError(c, http.StatusBadRequest, "birth date must be a real date (YYYY-MM-DD)")
+			return models.HouseholdPerson{}, false
+		}
+		birth = parsed
+	}
+	if birth != nil && (accounts.AgeOn(*birth, a.householdClock(time.Now().UTC())) < 0 || (kind == models.HouseholdAdult && accounts.AgeOn(*birth, a.householdClock(time.Now().UTC())) < 18)) {
+		registrationError(c, householdRegistrationError{code: "household_age_mismatch"})
+		return models.HouseholdPerson{}, false
+	}
+	careNotes := ""
+	if body.CareNotes != nil {
+		careNotes = strings.TrimSpace(*body.CareNotes)
+	}
+	if utf8.RuneCountInString(careNotes) > 5000 {
+		jsonError(c, http.StatusBadRequest, "care notes are too long")
+		return models.HouseholdPerson{}, false
+	}
+	photoConsent := false
+	if body.PhotoConsent != nil {
+		photoConsent = *body.PhotoConsent
+	}
+	person := models.HouseholdPerson{
+		FirstName: first, LastName: last, Kind: kind,
+		BirthDate: birth, CareNotes: careNotes, PhotoConsent: photoConsent,
+	}
+	return person, true
+}
+
 // apiAddHouseholdPerson adds someone to the user's household (created on
 // first use). A child or teen also gets a pending guardian link and the
 // admins a waiting task (DEC-32); an adult needs no approval.
@@ -1110,61 +1168,11 @@ func (a *App) apiAddHouseholdPerson(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	first, last := "", ""
-	if body.FirstName != nil {
-		first = strings.TrimSpace(*body.FirstName)
-	}
-	if body.LastName != nil {
-		last = strings.TrimSpace(*body.LastName)
-	}
-	if first == "" && body.Name != nil {
-		first, last = splitPersonName(*body.Name)
-	}
-	if first == "" {
-		jsonError(c, http.StatusBadRequest, "first name is required")
+	person, ok := a.parseHouseholdPersonInput(c, body)
+	if !ok {
 		return
 	}
-	if len(first) > 100 || len(last) > 100 {
-		jsonError(c, http.StatusBadRequest, "name must be at most 100 characters")
-		return
-	}
-	kind := ""
-	if body.Kind != nil {
-		kind = strings.TrimSpace(*body.Kind)
-	}
-	if !validHouseholdKind(kind) {
-		jsonError(c, http.StatusBadRequest, "kind must be child, teen, or adult")
-		return
-	}
-	var birth *time.Time
-	if body.BirthDate != nil && strings.TrimSpace(*body.BirthDate) != "" {
-		parsed, err := accounts.ParseBirthDate(strings.TrimSpace(*body.BirthDate))
-		if err != nil {
-			jsonError(c, http.StatusBadRequest, "birth date must be a real date (YYYY-MM-DD)")
-			return
-		}
-		birth = parsed
-	}
-	if birth != nil && (accounts.AgeOn(*birth, a.householdClock(time.Now().UTC())) < 0 || (kind == models.HouseholdAdult && accounts.AgeOn(*birth, a.householdClock(time.Now().UTC())) < 18)) {
-		registrationError(c, householdRegistrationError{code: "household_age_mismatch"})
-		return
-	}
-	careNotes := ""
-	if body.CareNotes != nil {
-		careNotes = strings.TrimSpace(*body.CareNotes)
-	}
-	if utf8.RuneCountInString(careNotes) > 5000 {
-		jsonError(c, http.StatusBadRequest, "care notes are too long")
-		return
-	}
-	photoConsent := false
-	if body.PhotoConsent != nil {
-		photoConsent = *body.PhotoConsent
-	}
-	person := models.HouseholdPerson{
-		HouseholdID: household.ID, FirstName: first, LastName: last, Kind: kind,
-		BirthDate: birth, CareNotes: careNotes, PhotoConsent: photoConsent, CreatedBy: me.ID,
-	}
+	person.HouseholdID, person.CreatedBy = household.ID, me.ID
 	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockHousehold(tx, household.ID); err != nil {

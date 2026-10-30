@@ -56,6 +56,9 @@ const (
 	// MemberAdded records an actual manager-initiated ordinary member addition.
 	MemberAdded = "membership.added"
 
+	// UserCreated: an admin created an account. Target is the new user.
+	UserCreated = "user.created"
+
 	// UserDeleted: an admin deleted an account. Target is the user. Any
 	// sole-leader handoff is recorded as RoleChanged rows with reason
 	// "account_deleted" (DEC-36).
@@ -211,14 +214,15 @@ const (
 	// oldScope and newScope.
 	CalendarTokenScopeChanged = "calendar_token.scope_changed"
 
-	// HouseholdCreated: an account got a household on first use (M1.9,
-	// 5.3). Target is the household.
+	// HouseholdCreated: an account got a household on first use or by
+	// admin delegation (M1.9, 5.3). Target is the household; delegated
+	// creation records holderUserId separately from the admin actor.
 	HouseholdCreated = "household.created"
 
-	// HouseholdPersonAdded: an adult account in the household added a
-	// household person (M1.9). Target is the household; meta has
-	// personId, kind, and guardianLinkId when a child or teen started a
-	// pending link (DEC-32).
+	// HouseholdPersonAdded: a household adult or delegating admin added a
+	// household person (M1.9). Target is the household; meta has personId,
+	// kind, and guardianLinkId for a pending minor link (DEC-32). Delegation
+	// also records holderUserId and the explicitly selected guardianUserId.
 	HouseholdPersonAdded = "household.person_added"
 
 	// HouseholdPersonRemoved: a household person was removed (M1.9).

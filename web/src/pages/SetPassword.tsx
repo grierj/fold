@@ -53,7 +53,7 @@ export function SetPassword() {
         <div className="bg-surface rounded-lg border border-border p-6">
           <p className="text-sm">This link is missing its token.</p>
           <p className="mt-4">
-            <Link to="/login" className="text-primary font-semibold text-sm">Back to log in</Link>
+            <Link to="/login" className="inline-flex min-h-11 items-center text-primary font-semibold text-sm">Back to log in</Link>
           </p>
         </div>
       </div>

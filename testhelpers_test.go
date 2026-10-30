@@ -477,15 +477,29 @@ func openGroup(t *testing.T, app *App, name string) (*apiClient, string) {
 
 func listOccurrences(t *testing.T, c *apiClient, gid, from, to string) []occurrenceJSON {
 	t.Helper()
-	w := c.do("GET", "/api/v1/groups/"+gid+"/events?from="+from+"&to="+to, nil, false)
-	if w.Code != http.StatusOK {
-		t.Fatalf("list events: %d %s", w.Code, w.Body.String())
+	path := "/api/v1/groups/" + gid + "/events?from=" + from + "&to=" + to
+	out := []occurrenceJSON{}
+	cursor := ""
+	for {
+		url := path
+		if cursor != "" {
+			url += "&cursor=" + cursor
+		}
+		w := c.do("GET", url, nil, false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("list events: %d %s", w.Code, w.Body.String())
+		}
+		var body groupEventsJSON
+		decodeJSON(t, w, &body)
+		out = append(out, body.Events...)
+		if !body.HasMore {
+			return out
+		}
+		if body.NextCursor == "" || body.NextCursor == cursor {
+			t.Fatal("list events did not advance its cursor")
+		}
+		cursor = body.NextCursor
 	}
-	var body struct {
-		Events []occurrenceJSON `json:"events"`
-	}
-	decodeJSON(t, w, &body)
-	return body.Events
 }
 
 func occurrenceOn(t *testing.T, list []occurrenceJSON, date string) occurrenceJSON {
@@ -805,4 +819,24 @@ func (c *apiClient) doMultipart(method, path, field, filename string, data []byt
 		c.jar[ck.Name] = ck
 	}
 	return rec
+}
+
+func countSiteNameReads(t *testing.T, db *gorm.DB) *int {
+	t.Helper()
+	n := new(int)
+	name := fmt.Sprintf("test:site_name_reads:%d", queryCounterSeq.Add(1))
+	if err := db.Callback().Query().After("gorm:query").Register(name, func(tx *gorm.DB) {
+		if tx.Statement.Table == "settings" {
+			for _, v := range tx.Statement.Vars {
+				if v == "site_name" {
+					*n++
+					break
+				}
+			}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Callback().Query().Remove(name) })
+	return n
 }

@@ -131,6 +131,8 @@ func TestCanManageGroup(t *testing.T) {
 		{"member can't manage", adult, member, false},
 		{"outsider can't manage", adult, none, false},
 		{"guest can't manage", guest, none, false},
+		{"signed-out stale leader can't manage", nil, leader, false},
+		{"removed leader can't manage", adult, Rel{Removed: true}, false},
 	}
 	for _, c := range cases {
 		if got := CanManageGroup(c.p, c.r); got != c.want {
@@ -978,5 +980,134 @@ func TestEffectiveVisibility(t *testing.T) {
 				t.Fatalf("override: %s", got)
 			}
 		}
+	}
+}
+
+func TestIsAdmin(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		person *Person
+		want   bool
+	}{
+		{"admin", admin, true},
+		{"member", adult, false},
+		{"teen", teen, false},
+		{"signed out", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsAdmin(tc.person); got != tc.want {
+				t.Fatalf("IsAdmin = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCanSetGroupStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		person *Person
+		rel    Rel
+		status string
+		want   bool
+	}{
+		{"admin approves", admin, none, GroupActive, true},
+		{"admin rejects", admin, none, GroupArchived, true},
+		{"admin makes pending", admin, none, GroupPending, true},
+		{"leader archives", adult, leader, GroupArchived, true},
+		{"leader cannot reactivate", adult, leader, GroupActive, false},
+		{"leader cannot make pending", adult, leader, GroupPending, false},
+		{"former leader cannot archive", adult, member, GroupArchived, false},
+		{"removed leader cannot archive", adult, Rel{Removed: true}, GroupArchived, false},
+		{"outsider cannot archive", adult, none, GroupArchived, false},
+		{"signed out cannot archive", nil, leader, GroupArchived, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := CanSetGroupStatus(tc.person, tc.rel, tc.status); got != tc.want {
+				t.Fatalf("CanSetGroupStatus = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCanManageGuestRegistration(t *testing.T) {
+	for _, tc := range []struct {
+		name                         string
+		guest, active, member, exact bool
+		visibility                   string
+		want                         bool
+	}{
+		{"public guest", true, false, false, false, Public, true},
+		{"private guest", true, false, false, false, Private, false},
+		{"guest never uses membership", true, false, true, false, InviteOnly, false},
+		{"guest never uses exact access", true, false, false, true, InviteOnly, false},
+		{"promoted private", false, true, false, false, Private, true},
+		{"promoted loses membership", false, true, false, false, InviteOnly, false},
+		{"promoted member", false, true, true, false, InviteOnly, true},
+		{"promoted exact access", false, true, false, true, InviteOnly, true},
+		{"inactive account", false, false, true, true, Public, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Person{ID: 1}
+			if tc.guest {
+				p = nil
+			}
+			got := CanManageGuestRegistration(p, tc.guest, tc.active, EventView{Visibility: tc.visibility}, Group{Status: GroupActive}, Rel{Member: tc.member}, tc.exact)
+			if got != tc.want {
+				t.Fatalf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCanDelegateHousehold(t *testing.T) {
+	manager := &Person{ID: 1, Admin: true}
+	holder := &Person{ID: 2}
+	for _, tt := range []struct {
+		name          string
+		actor, holder *Person
+		eligible      bool
+		want          bool
+	}{
+		{"admin for adult", manager, holder, true, true},
+		{"signed out", nil, holder, true, false},
+		{"member", &Person{ID: 3}, holder, true, false},
+		{"teen admin", &Person{ID: 3, Admin: true, Teen: true}, holder, true, false},
+		{"no holder", manager, nil, true, false},
+		{"teen holder", manager, &Person{ID: 2, Teen: true}, true, false},
+		{"ineligible holder", manager, holder, false, false},
+		{"acting admin is not holder", manager, manager, true, false},
+		{"another admin may be holder", manager, &Person{ID: 2, Admin: true}, true, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanDelegateHousehold(tt.actor, tt.holder, tt.eligible); got != tt.want {
+				t.Fatalf("got %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanChooseHouseholdGuardian(t *testing.T) {
+	manager := &Person{ID: 1, Admin: true}
+	guardian := &Person{ID: 2}
+	for _, tt := range []struct {
+		name     string
+		guardian *Person
+		rel      HouseholdRel
+		eligible bool
+		want     bool
+	}{
+		{"household adult", guardian, HouseholdRel{Account: true, Adult: true}, true, true},
+		{"not in household", guardian, HouseholdRel{}, true, false},
+		{"teen relation", guardian, HouseholdRel{Account: true}, true, false},
+		{"teen account", &Person{ID: 2, Teen: true}, HouseholdRel{Account: true, Adult: true}, true, false},
+		{"ineligible account", guardian, HouseholdRel{Account: true, Adult: true}, false, false},
+		{"no explicit guardian", nil, HouseholdRel{}, false, false},
+		{"acting admin is not guardian", manager, HouseholdRel{Account: true, Adult: true}, true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CanChooseHouseholdGuardian(manager, tt.guardian, tt.rel, tt.eligible); got != tt.want {
+				t.Fatalf("got %t, want %t", got, tt.want)
+			}
+		})
 	}
 }

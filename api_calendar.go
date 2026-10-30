@@ -155,6 +155,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 	}
 
 	truncated := false
+	siteName := ""
 	for i := range occs {
 		occ := &occs[i]
 		ev := byID[occ.EventID]
@@ -200,7 +201,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 			groupLoc = shown.Location
 		}
 		full := occurrenceToJSON(ev, occ, groupLoc)
-		remoteAvailable := full.RemoteAvailable && (full.RemoteCapacity == nil || *full.RemoteCapacity > 0)
+		remoteAvailable := events.RemoteOffered(full.RemoteAvailable, full.RemoteCapacity)
 		if c.Query("remote") == "1" && !remoteAvailable {
 			continue
 		}
@@ -230,7 +231,10 @@ func (a *App) apiCalendar(c *gin.Context) {
 		} else if ev.GroupID != nil {
 			// An opened event of a group this viewer can't see names
 			// nobody: it is hosted by the church (DEC-17).
-			row.HostedBy = a.siteName()
+			if siteName == "" {
+				siteName = a.siteName()
+			}
+			row.HostedBy = siteName
 		}
 		if status != "" {
 			s := status

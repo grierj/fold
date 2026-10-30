@@ -18,6 +18,7 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	"invalid upcoming date page; reload the group":                                                "group_upcoming_page",
 	"invalid contact history filters":                                                             "contact_history_filters",
 	"adding this person needs approval; send an ask to add for this date":                         "date_add_approval_required",
 	"too many date additions; wait a minute before trying again":                                  "date_add_throttled",
@@ -46,6 +47,10 @@ var errorCodes = map[string]string{
 	"this account is waiting for an admin; wait for their decision":                                                                                  "household_conversion_approval",
 	"cancel the current invitation before choosing a different email":                                                                                "household_conversion_open",
 	"a responsible account is unavailable; ask your church office to check it":                                                                       "household_conversion_holder",
+	"choose another active adult account to hold this household":                                                                                     "household_holder",
+	"this account already has a household; use its existing household":                                                                               "household_exists",
+	"create this account's household before adding people":                                                                                           "household_required",
+	"choose an active adult account in this household as guardian, not the acting admin":                                                             "household_guardian",
 	"this person has their own account; use their account instead":                                                                                   "household_person_converted",
 	"waiting for an admin to confirm; ask your church office to check the household link":                                                            "household_link_pending",
 	"this household link is not confirmed; ask your church office to check it":                                                                       "household_link_unconfirmed",

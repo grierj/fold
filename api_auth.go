@@ -178,8 +178,38 @@ WHERE key = ? AND failures >= ?`, window, key, failureLimit(key)).Error
 	return nil
 }
 
-// setPassword stores a new bcrypt hash, activates an invited account, and
-// ends existing sessions.
+// reauthenticate shares one per-user budget across authenticated password
+// proofs and the IP budget with sign-in. Reserve before bcrypt so parallel
+// attempts cannot bypass the limits. Only a correct proof refunds its attempt;
+// it must not clear failures from other requests.
+func (a *App) reauthenticate(c *gin.Context, u *models.User, password string) bool {
+	keys := []string{fmt.Sprintf("user:%d", u.ID), "ip:" + rateLimitIP(c.ClientIP())}
+	ctx := c.Request.Context()
+	allowed, err := a.reserveLoginAttempt(ctx, keys)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not verify password")
+		return false
+	}
+	if !allowed {
+		jsonError(c, http.StatusTooManyRequests, "too many sign-in attempts; try again in 15 minutes")
+		return false
+	}
+	if !u.CheckPassword(password) {
+		if err := a.lockLoginKeysAtLimit(ctx, keys); err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not verify password")
+			return false
+		}
+		jsonError(c, http.StatusBadRequest, "current password is incorrect")
+		return false
+	}
+	if err := a.DB.WithContext(ctx).Exec(`UPDATE login_throttles
+SET failures = GREATEST(failures - 1, 0) WHERE key IN ?`, keys).Error; err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not verify password")
+		return false
+	}
+	return true
+}
+
 // apiChangePassword lets the current user replace their password.
 // This browser stays logged in; other sessions for the account do not.
 func (a *App) apiChangePassword(c *gin.Context) {
@@ -197,8 +227,7 @@ func (a *App) apiChangePassword(c *gin.Context) {
 			"password must be at least 10 characters")
 		return
 	}
-	if !u.CheckPassword(body.Current) {
-		jsonError(c, http.StatusBadRequest, "current password is incorrect")
+	if !a.reauthenticate(c, u, body.Current) {
 		return
 	}
 	var prepared models.User
@@ -337,8 +366,9 @@ func (a *App) targetAllow(ctx context.Context, key string) (bool, error) {
 
 // apiRequestPasswordReset starts a password reset. It always answers 200
 // with the uniform message. A known address gets a single-use link valid
-// for 24 hours; an unknown one costs a dummy bcrypt comparison so the
-// timing doesn't reveal whether the account exists (10.1).
+// for 24 hours. Inside the IP/address budget, both known and unknown
+// addresses pay a dummy bcrypt comparison; exhausted budgets return before
+// account lookup or bcrypt, independent of account existence (10.1).
 func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	var body struct {
 		Email string `json:"email"`
@@ -354,7 +384,11 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	if err == nil {
 		addrOK, err = a.targetAllow(ctx, "pwreset:addr:"+email)
 	}
-	throttled := err != nil || !ipOK || !addrOK
+	if err != nil || !ipOK || !addrOK {
+		log.Printf("password reset rate limited: ip=%s err=%v", c.ClientIP(), err)
+		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
+		return
+	}
 
 	var user models.User
 	// Only real accounts get a reset: guests (M1.4) have no password to
@@ -366,7 +400,7 @@ func (a *App) apiRequestPasswordReset(c *gin.Context) {
 	// the email: the send runs in the background, so response time doesn't
 	// reveal whether the account exists (#93).
 	(&models.User{}).CheckPassword("not a real password")
-	if !found || throttled {
+	if !found {
 		c.JSON(http.StatusOK, gin.H{"message": resetRequestMessage})
 		return
 	}

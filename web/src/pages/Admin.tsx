@@ -6,7 +6,7 @@ import { ContactDetails } from "../components/ContactDetails";
 import { GroupDepartureDialog } from "../components/GroupDepartureDialog";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
-import { Chip } from "../components/ui/Chip";
+import { Tabs } from "../components/ui/Tabs";
 import { roleLabel, accountStatusLabel, groupStatusLabel } from "../lib/status";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
@@ -1289,23 +1289,18 @@ export function AdminPage() {
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-6">Admin</h1>
-      <nav aria-label="Admin sections" className="flex flex-wrap gap-2 border-b border-border pb-4 mb-6">
-        {tabs.map((t) => (
-          <Chip
-            key={t.id}
-            selected={tab === t.id}
-            aria-label={t.badge ? `${t.label}, ${t.badge} waiting` : t.label}
-            onClick={() => setSearchParams(t.id === "approvals" ? {} : { tab: t.id })}
-          >
-            {t.label}
-            {t.badge ? (
-              <span className="ml-1.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-xs">
-                {t.badge}
-              </span>
-            ) : null}
-          </Chip>
-        ))}
-      </nav>
+      <Tabs label="Admin sections" variant="chips" value={tab}
+        onChange={(value) => setSearchParams(value === "approvals" ? {} : { tab: value })}
+        options={tabs.map((t) => ({
+          id: t.id,
+          accessibleName: t.badge ? `${t.label}, ${t.badge} waiting` : t.label,
+          label: <>{t.label}{t.badge ? (
+            <span aria-hidden="true" className="ml-1.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-xs">
+              {" "}{t.badge}
+            </span>
+          ) : null}</>,
+        }))}>
+
       {tab === "settings" && <section aria-labelledby="admin-settings-heading">
         <h2 id="admin-settings-heading" className="text-xl font-bold mb-4">Church settings</h2>
         <ChurchTimezone />
@@ -1318,6 +1313,7 @@ export function AdminPage() {
         usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}
       {tab === "invite" && <InviteTab />}
+      </Tabs>
     </div>
   );
 }

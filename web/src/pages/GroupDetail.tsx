@@ -1,3 +1,4 @@
+import { Tabs } from "../components/ui/Tabs";
 import { Form } from "../components/ui/Form";
 import { DateEditor } from "../components/DateEditor";
 import { AddRequestForm } from "../components/AddRequestForm";
@@ -113,7 +114,7 @@ function EventRow({
         <Attendance instance={instance} />
         {moreDates > 0 && (
           <Link to={`/events/${instance.eventId}`} className="inline-flex min-h-11 items-center text-sm font-medium text-primary">
-            {moreDates} more {moreDates === 1 ? "date" : "dates"} in the next 90 days
+            {moreDates} more {moreDates === 1 ? "date" : "dates"} loaded
           </Link>
         )}
         {loggedIn && (
@@ -334,6 +335,13 @@ export function CreateGroupForm({ onSaved, onCancel }: {
 
 export function GroupDetail() {
   const { id } = useParams<{ id: string }>();
+  const { user, loading } = useAuth();
+  // A new group or viewer must never inherit dates, cursors or pending loads.
+  return <GroupDetailContent key={`${id}:${loading}:${user?.id}:${user?.role}:${user?.status}:${user?.accountType}`} />;
+}
+
+function GroupDetailContent() {
+  const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user, loading: authLoading, isAdmin } = useAuth();
   const { people, error: householdError, retry: retryHousehold } = useHousehold(user);
@@ -363,19 +371,26 @@ export function GroupDetail() {
   const seriesFeedbackRevision = useRef(0);
   const coverRef = useRef<HTMLInputElement>(null);
   const loadRevision = useRef(0);
+  const detailRef = useRef<GroupDetailResponse | null>(null);
+  detailRef.current = detail;
+  const [loadingMore, setLoadingMore] = useState(false);
   const rsvpMutationGate = useRsvpMutationGate();
 
   // Quiet refreshes keep ordinary RSVP drafts mounted. Authority-changing
   // refreshes invalidate protected data immediately, and only the newest
   // request may commit detail, error, not-found, loading or navigation state.
-  const load = useCallback(async ({ quiet = false, failClosed = false, onLoaded, onFailure }: {
+  const load = useCallback(async ({ quiet = false, failClosed = false, append = false, onLoaded, onFailure }: {
     quiet?: boolean;
+    append?: boolean;
     failClosed?: boolean;
     onLoaded?: () => void;
     onFailure?: (error: unknown) => void;
   } = {}) => {
     if (!id) return;
+    const previous = detailRef.current;
+    if (append && (!previous?.hasMore || !previous.nextCursor)) return;
     const revision = ++loadRevision.current;
+    setLoadingMore(append);
     if (failClosed) {
       setDetail(null);
       setLoading(true);
@@ -385,9 +400,23 @@ export function GroupDetail() {
     setError(null);
     setNotFound(false);
     try {
-      const next = await Groups.get(id);
+      let next = append
+        ? await Groups.get(id, { cursor: previous!.nextCursor })
+        : await Groups.get(id);
       if (loadRevision.current !== revision) return;
-      setDetail(next);
+      const dates = new Map((append ? previous!.upcomingEvents : []).map((date) => [date.id, date]));
+      for (const date of next.upcomingEvents) dates.set(date.id, date);
+      // Refresh every loaded page, not just the first 25 dates, after an RSVP
+      // or edit. Commit atomically so stale authority cannot reappear.
+      const target = append ? 0 : previous?.upcomingEvents.length ?? 0;
+      while (next.hasMore && next.nextCursor && dates.size < target) {
+        next = await Groups.get(id, { cursor: next.nextCursor });
+        if (loadRevision.current !== revision) return;
+        for (const date of next.upcomingEvents) dates.set(date.id, date);
+      }
+      // Continuation metadata belongs to the last fetched page, while the
+      // visible rows and counts describe all loaded dates, not a series total.
+      setDetail({ ...next, upcomingEvents: [...dates.values()].sort((a, b) => Date.parse(a.startsAt) - Date.parse(b.startsAt) || a.id - b.id) });
       onLoaded?.();
     } catch (e) {
       if (loadRevision.current !== revision) return;
@@ -395,12 +424,16 @@ export function GroupDetail() {
       else if (e instanceof ApiError && e.status === 404) setNotFound(true);
       else setError(errorText(e, "We couldn't load this group."));
     } finally {
-      if (loadRevision.current === revision) setLoading(false);
+      if (loadRevision.current === revision) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   }, [id]);
 
   useEffect(() => {
-    load();
+    void load();
+    return () => { ++loadRevision.current; };
   }, [load]);
 
   if (loading || authLoading) {
@@ -432,10 +465,7 @@ export function GroupDetail() {
 
   const { group, members, upcomingEvents, canManage, isMember } = detail;
   const events: EventOccurrence[] = upcomingEvents ?? [];
-  // A series lists only its next date, plus "N more dates in the next 90
-  // days" linking to the event page. The count is what GET /groups/:id
-  // loaded: dates up to 90 days out (api_groups.go). A longer series has
-  // more, and an open-ended one has no total, so the words name the window.
+  // Count only loaded, visible dates: a capped page is not a series total.
   const nextDates: EventOccurrence[] = [];
   const datesPerEvent = new Map<number, number>();
   for (const m of events) {
@@ -685,7 +715,8 @@ export function GroupDetail() {
           className="w-full h-full object-cover"
           style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
         />
-        <div className="absolute inset-0 bg-linear-to-t from-black/60 to-transparent" />
+        {/* A uniform 75% inverse scrim keeps even white covers legible behind every line. */}
+        <div className="absolute inset-0 bg-inverse/75" />
         <div className="absolute bottom-0 left-0 right-0">
           <div className="max-w-6xl mx-auto px-4 pb-5 flex items-end gap-4 flex-wrap">
             <div className="grow min-w-0">
@@ -708,8 +739,8 @@ export function GroupDetail() {
                   )}
                 </div>
               )}
-              <h1 className="text-3xl sm:text-4xl font-bold text-white">{group.name}</h1>
-              <div className="text-white/80 text-sm mt-1">
+              <h1 className="text-3xl sm:text-4xl font-bold text-inverse-foreground">{group.name}</h1>
+              <div className="text-inverse-foreground text-sm mt-1">
                 {canManage && group.memberLimit
                   ? `${group.memberCount} of ${group.memberLimit} members`
                   : `${group.memberCount} ${group.memberCount === 1 ? "member" : "members"}`}
@@ -720,12 +751,9 @@ export function GroupDetail() {
             <div className="flex flex-wrap gap-2">
               {canManage && (
                 <>
-                  <Link
-                    to={`/groups/${group.id}/events/new`}
-                    className="btn-primary bg-surface! text-primary! hover:bg-sunken!"
-                  >
+                  <ButtonLink to={`/groups/${group.id}/events/new`} variant="primary-inverse">
                     Schedule event
-                  </Link>
+                  </ButtonLink>
                   {/* One primary action (Schedule event); the rest live in More (DEC-63). */}
                   <Menu
                     label="More group actions"
@@ -796,25 +824,11 @@ export function GroupDetail() {
           />
         ) : (
           <>
-            {/* Tabs */}
-            <div className="border-b border-border mb-6">
-              <nav aria-label="Group sections" className="flex gap-6">
-                {(["events", "about", "members"] as Tab[]).map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => setTab(t)}
-                    className={
-                      tab === t
-                        ? "min-h-11 pb-3 border-b-2 border-primary text-primary font-semibold"
-                        : "min-h-11 pb-3 text-text-muted hover:text-text font-medium"
-                    }
-                  >
-                    {t === "events" ? "Upcoming events" : t === "about" ? "About" : "Members"}
-                  </button>
-                ))}
-              </nav>
-            </div>
-
+            <Tabs label="Group sections" value={tab} onChange={setTab} options={[
+              { id: "events", label: "Upcoming events" },
+              { id: "about", label: "About" },
+              { id: "members", label: "Members" },
+            ]}>
             {tab === "events" && (
               <div className="space-y-3">
                 <h2 className="sr-only">Upcoming events</h2>
@@ -844,6 +858,20 @@ export function GroupDetail() {
                     }
                   />
                 )}
+                {detail.hasMore && (
+                  <Button variant="secondary" disabled={loadingMore} onClick={() => void load({ quiet: true, append: true })}>
+                    {loadingMore ? "Loading dates…" : "Load more dates"}
+                  </Button>
+                )}
+                {detail.truncated && (
+                  <div className="flex flex-wrap items-center gap-x-2">
+                    <span className="text-sm text-text-muted">{events.length} dates loaded.</span>
+                    <ButtonLink variant="link" to={`/calendar?group=${group.id}`}>
+                      See all dates in the calendar
+                    </ButtonLink>
+                  </div>
+                )}
+                {error && <ErrorNotice message={error} onRetry={() => void load({ quiet: true })} />}
                 {householdError && <ErrorNotice message={householdError} onRetry={retryHousehold} />}
           {nextDates.map((m) => (
                   <EventRow
@@ -1051,6 +1079,7 @@ export function GroupDetail() {
                 )}
               </div>
             )}
+            </Tabs>
           </>
         )}
       </div>

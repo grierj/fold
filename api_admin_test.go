@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"fold/internal/audit"
 	"fold/models"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 func TestGuardianLinkListReadBudgetAndValues(t *testing.T) {
@@ -1025,5 +1028,94 @@ func TestAdminMemberAddStillChangesExplicitRoleAndKeepsLastLeader(t *testing.T) 
 	}
 	if contactCount(t, app, &models.AuditLog{}, "action = ?", audit.RoleChanged) != 1 || contactCount(t, app, &models.AuditLog{}, "action = ?", audit.MemberAdded) != 0 {
 		t.Fatal("explicit role change audits changed")
+	}
+}
+
+func TestAdminCreateUserRechecksAuthorityAtInsertion(t *testing.T) {
+	for _, mutation := range []string{"session", "role", "disabled", "deleted"} {
+		t.Run(mutation, func(t *testing.T) {
+			app := testApp(t)
+			actor := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+			client := loginAPI(t, app, "admin", "password1234")
+			gate := holdContactGate(t, app)
+			response := queueContact(func() *httptest.ResponseRecorder {
+				return client.do("POST", "/api/v1/admin/users", map[string]string{
+					"ageBand": "adult", "name": "New account", "email": "new@example.com", "password": "password1234",
+				}, true)
+			})
+			waitContactWaiters(t, app, 1)
+			var err error
+			switch mutation {
+			case "session":
+				err = gate.Model(actor).Update("session_version", actor.SessionVersion+1).Error
+			case "role":
+				err = gate.Model(actor).Update("role", models.RoleMember).Error
+			case "disabled":
+				err = gate.Model(actor).Update("status", models.UserDisabled).Error
+			case "deleted":
+				err = gate.Delete(actor).Error
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := gate.Commit().Error; err != nil {
+				t.Fatal(err)
+			}
+			if w := awaitContactResponse(t, response); w.Code != http.StatusUnauthorized {
+				t.Fatalf("revoked create: %d %s", w.Code, w.Body.String())
+			}
+			if contactCount(t, app, &models.User{}, "email = ?", "new@example.com") != 0 ||
+				contactCount(t, app, &models.AuditLog{}, "action = ?", audit.UserCreated) != 0 ||
+				contactCount(t, app, &models.Notification{}, "1=1") != 0 ||
+				contactCount(t, app, &models.MailOutbox{}, "1=1") != 0 {
+				t.Fatal("revoked creation left side effects")
+			}
+		})
+	}
+}
+
+func TestAdminCreateUserAuditAndRollback(t *testing.T) {
+	app := testApp(t)
+	actor := newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
+	client := loginAPI(t, app, "admin", "password1234")
+	body := map[string]string{"ageBand": "adult", "name": "Invited", "email": "invited@example.com"}
+	if w := client.do("POST", "/api/v1/admin/users", body, false); w.Code != http.StatusForbidden {
+		t.Fatalf("missing CSRF: %d", w.Code)
+	}
+	if w := client.do("POST", "/api/v1/admin/users", body, true); w.Code != http.StatusCreated {
+		t.Fatalf("create invited: %d %s", w.Code, w.Body.String())
+	}
+	var invited models.User
+	if err := app.DB.Where("email = ?", body["email"]).First(&invited).Error; err != nil {
+		t.Fatal(err)
+	}
+	if invited.Status != models.UserInvited || invited.PasswordHash != nil {
+		t.Fatal("passwordless account not invited")
+	}
+	var entry models.AuditLog
+	if err := app.DB.Where("action = ?", audit.UserCreated).First(&entry).Error; err != nil {
+		t.Fatal(err)
+	}
+	if entry.ActorID == nil || *entry.ActorID != actor.ID || entry.TargetID != invited.ID || entry.TargetType != "user" || strings.Contains(entry.MetaJSON, "password") {
+		t.Fatalf("unexpected creation audit: %+v", entry)
+	}
+	const callback = "admin-create:fail-audit"
+	if err := app.DB.Callback().Create().Before("gorm:create").Register(callback, func(db *gorm.DB) {
+		if db.Statement.Table == "audit_logs" {
+			db.AddError(errors.New("injected creation audit failure"))
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.DB.Callback().Create().Remove(callback) })
+	body["email"] = "rollback@example.com"
+	if w := client.do("POST", "/api/v1/admin/users", body, true); w.Code != http.StatusInternalServerError {
+		t.Fatalf("audit failure: %d %s", w.Code, w.Body.String())
+	}
+	if contactCount(t, app, &models.User{}, "email = ?", body["email"]) != 0 ||
+		contactCount(t, app, &models.AuditLog{}, "action = ?", audit.UserCreated) != 1 ||
+		contactCount(t, app, &models.Notification{}, "1=1") != 0 ||
+		contactCount(t, app, &models.MailOutbox{}, "1=1") != 0 {
+		t.Fatal("creation rollback or no-notification contract failed")
 	}
 }

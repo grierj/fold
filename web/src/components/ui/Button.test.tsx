@@ -10,6 +10,14 @@ describe("Button", () => {
     expect(b).toHaveClass("btn-danger-outline");
     expect(b).toHaveAttribute("type", "button");
   });
+  it("offers an inverse primary action without page-level overrides", () => {
+    render(<Button variant="primary-inverse">Schedule event</Button>);
+    expect(screen.getByRole("button", { name: "Schedule event" })).toHaveClass("btn-primary-inverse");
+  });
+  it("keeps compact table actions at least 44px high", () => {
+    render(<Button variant="secondary" size="sm">Edit</Button>);
+    expect(screen.getByRole("button", { name: "Edit" })).toHaveClass("min-h-11", "text-sm");
+  });
   it("renders a neutral empty state", () => {
     render(<EmptyState title="No events yet" body="When a leader schedules one, it shows here." />);
     expect(screen.getByText("No events yet")).not.toHaveClass("text-danger");

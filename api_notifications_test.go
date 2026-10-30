@@ -754,3 +754,158 @@ func TestHouseholdEventNoticesDeduplicateByHolder(t *testing.T) {
 		t.Fatalf("cancellation notices %+v", notices)
 	}
 }
+
+func TestNotificationFeedReadBudgetAndResolverNames(t *testing.T) {
+	app := testApp(t)
+	me := newTestUser(t, app, "reader", "pw", models.RoleMember)
+	resolver := newTestUser(t, app, "resolver", "pw", models.RoleAdmin)
+	if err := app.DB.Model(resolver).Update("display_name", "Pat").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Delete(resolver).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := loginAPI(t, app, "reader", "pw")
+	now := time.Now().UTC()
+	var baseline int64
+	for i := 1; i <= 30; i++ {
+		n := models.Notification{UserID: me.ID, Kind: "group.pending", Category: "admin", Title: "Handled", Link: "/admin",
+			ResolvedAt: &now, ResolvedByID: &resolver.ID, Resolution: "approved"}
+		if err := app.DB.Create(&n).Error; err != nil {
+			t.Fatal(err)
+		}
+		if i != 3 && i != 30 {
+			continue
+		}
+		counter := countDBReads(t, app.DB)
+		w := client.do("GET", "/api/v1/notifications?filter=all&limit=40", nil, false)
+		reads := counter.Reads()
+		counter.Stop()
+		if w.Code != http.StatusOK {
+			t.Fatalf("feed: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Notifications []notificationJSON `json:"notifications"`
+		}
+		decodeJSON(t, w, &body)
+		if len(body.Notifications) != i {
+			t.Fatalf("got %d notifications, want %d", len(body.Notifications), i)
+		}
+		for _, n := range body.Notifications {
+			if n.Resolution == nil || n.Resolution.By != "Pat" || n.Resolution.ByMe {
+				t.Fatalf("historical resolver: %+v", n)
+			}
+		}
+		if i == 3 {
+			baseline = reads
+		}
+		if reads != baseline || reads > 6 {
+			t.Fatalf("%d notifications: %d reads, baseline=%d, cap=6", i, reads, baseline)
+		}
+		t.Logf("%d notifications: %d reads", i, reads)
+	}
+	missing := uint(999999)
+	names := publicNamesIn(app.DB, []uint{missing, me.ID})
+	for _, tt := range []struct {
+		id   *uint
+		by   string
+		byMe bool
+	}{
+		{nil, "Fold", false}, {&missing, "Someone", false}, {&me.ID, me.PublicName(), true},
+	} {
+		n := models.Notification{ResolvedAt: &now, ResolvedByID: tt.id}
+		got := toNotificationJSON(&n, me.ID, names)
+		if got.Resolution.By != tt.by || got.Resolution.ByMe != tt.byMe {
+			t.Fatalf("resolution: %+v, want %+v", got.Resolution, tt)
+		}
+	}
+}
+
+func TestPublicNamesInBatches(t *testing.T) {
+	app := testApp(t)
+	active := newTestUser(t, app, "active name", "pw", models.RoleMember)
+	deleted := newTestUser(t, app, "historical name", "pw", models.RoleMember)
+	if err := app.DB.Model(deleted).Update("display_name", "Historical display").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := app.DB.Delete(deleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, size := range []int{0, 1, publicNamesBatchSize - 1, publicNamesBatchSize, publicNamesBatchSize + 1, 2*publicNamesBatchSize + 1, 65536} {
+		t.Run(fmt.Sprint(size), func(t *testing.T) {
+			ids := make([]uint, size)
+			for i := range ids {
+				ids[i] = uint(1000000 + i) // Missing people do not require seeded rows.
+			}
+			if size > 0 {
+				ids[0] = active.ID
+			}
+			if size > 1 {
+				ids[size-1] = deleted.ID
+			}
+			// Repeated references must not consume more binds or queries.
+			input := append(append([]uint{}, ids...), ids...)
+			counter := countDBReads(t, app.DB)
+			names := publicNamesIn(app.DB, input)
+			reads := counter.Reads()
+			counter.Stop()
+			if want := int64((size + publicNamesBatchSize - 1) / publicNamesBatchSize); reads != want {
+				t.Fatalf("%d unique IDs: %d reads, want %d", size, reads, want)
+			}
+			if len(names) != size {
+				t.Fatalf("%d names, want %d", len(names), size)
+			}
+			for _, id := range ids {
+				want := "Someone"
+				if id == active.ID {
+					want = active.PublicName()
+				} else if id == deleted.ID {
+					want = "Historical display"
+				}
+				if got := names.name(id); got != want {
+					t.Fatalf("id %d: name %q, want %q", id, got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestPublicNamesInBatchFailureUsesOnlyFallbacks(t *testing.T) {
+	app := testApp(t)
+	person := newTestUser(t, app, "historical actor", "pw", models.RoleMember)
+	ids := make([]uint, 2*publicNamesBatchSize+1)
+	for i := range ids {
+		ids[i] = uint(1000000 + i)
+	}
+	ids[0] = person.ID
+	for _, failedBatch := range []int{1, 2, 3} {
+		t.Run(fmt.Sprint(failedBatch), func(t *testing.T) {
+			reads := 0
+			const callback = "test:fail_public_names_batch"
+			if err := app.DB.Callback().Query().Before("gorm:query").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table == "users" {
+					reads++
+					if reads == failedBatch {
+						_ = tx.AddError(errors.New("names unavailable"))
+					}
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = app.DB.Callback().Query().Remove(callback) })
+			names := publicNamesIn(app.DB, ids)
+			_ = app.DB.Callback().Query().Remove(callback)
+			if reads != failedBatch {
+				t.Fatalf("continued after failed batch: %d reads, want %d", reads, failedBatch)
+			}
+			for _, id := range ids {
+				if got := names.name(id); got != "Someone" {
+					t.Fatalf("batch failure published partial historical name for %d: %q", id, got)
+				}
+			}
+			if got := publicNamesIn(app.DB, ids).name(person.ID); got != person.PublicName() {
+				t.Fatalf("fresh lookup did not recover: %q", got)
+			}
+		})
+	}
+}

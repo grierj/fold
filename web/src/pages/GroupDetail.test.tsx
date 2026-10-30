@@ -11,7 +11,7 @@ const actor = vi.hoisted(() => ({ user: { id: 2, accountType: "adult", hideConta
 vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, isAdmin: false }) }));
 vi.mock("../api", async (actual) => ({ ...(await actual<typeof import("../api")>()), People: { search: vi.fn() }, Groups: { get: vi.fn(), addMember: vi.fn(), join: vi.fn(), departurePreview: vi.fn(), confirmDeparture: vi.fn(), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() }, Events: { register: vi.fn(), registerSeries: vi.fn(), undoSeriesRegistration: vi.fn() }, Households: { mine: vi.fn() } }));
 const family: Household = { id: 1, name: "Family", address: "", createdBy: 2, accounts: [], people: [{ id: 3, householdId: 1, canConvert: false, firstName: "Mary", lastName: "", name: "Mary", kind: "adult", photoConsent: false, linkStatus: "none", registrationEligibility: "eligible", createdBy: 2 }] };
-const page: GroupDetailResponse = { group: { id: 1, name: "Family group", description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Hall", leaderName: "Leader", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null }, members: [], upcomingEvents: [occurrence({})], canManage: false, isMember: true };
+const page: GroupDetailResponse = { group: { id: 1, name: "Family group", description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "Hall", leaderName: "Leader", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null }, members: [], upcomingEvents: [occurrence({})], truncated: false, hasMore: false, nextCursor: "", canManage: false, isMember: true };
 function open() { render(<MemoryRouter initialEntries={["/groups/1"]}><Routes><Route path="/groups/:id" element={<GroupDetail />} /></Routes></MemoryRouter>); }
 function GroupRouteWithSwitcher() {
   const navigate = useNavigate();
@@ -183,7 +183,7 @@ it("shows supplied roster contact without reconstructing hidden members' details
     { ...member, id: 5, name: "Teen member", accountType: "teen" },
   ] });
   open();
-  await userEvent.click(await screen.findByRole("button", { name: "Members" }));
+  await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
   expect(screen.getByRole("link", { name: "visible@example.com" })).toBeInTheDocument();
   expect(screen.getByText("Phone: 208-555-0100")).toBeInTheDocument();
   expect(screen.getAllByRole("link", { name: /@/ })).toHaveLength(1);
@@ -201,7 +201,7 @@ it.each(["group_full", "teen_add_approval_required", "people_selection_unavailab
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "opaque", displayName: "Pat", teen: false, sharedGroups: [], otherGroups: [] }] });
   vi.mocked(Groups.addMember).mockRejectedValueOnce(new ApiError(409, "private", { code })).mockResolvedValueOnce({});
   vi.spyOn(window, "confirm").mockReturnValue(true);
-  open(); await userEvent.click(await screen.findByRole("button", { name: "Members" }));
+  open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
   await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
   expect(screen.getByLabelText("Add a member by email")).toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Add member" }));
@@ -214,7 +214,7 @@ it("offers an explicit Ask to add for a selected teen instead of direct add", as
   actor.user = { id: 2, status: "active", accountType: "adult" } as User;
   vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
   vi.mocked(People.search).mockResolvedValue({ state: "results", people: [{ selectionId: "teen", displayName: "Teen Pat", teen: true, sharedGroups: [], otherGroups: [] }] });
-  open(); await userEvent.click(await screen.findByRole("button", { name: "Members" }));
+  open(); await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
   await userEvent.type(screen.getByRole("combobox"), "Pat"); await userEvent.click(await screen.findByRole("option"));
   expect(screen.getByRole("status")).toHaveTextContent("Adding a teen needs their approval");
   expect(screen.getByRole("button", { name: "Ask to add" })).toBeEnabled();
@@ -292,7 +292,7 @@ it("routes leader removal through the same chooser and preserves its optional no
   vi.mocked(Groups.memberDeparturePreview).mockResolvedValue({ departure: { action: "remove", groupId: 1, groupName: "Family group", subjectId: 3, subjectName: "Pat Person", affectedCount: 0, goingCount: 0, maybeCount: 0, waitlistedCount: 0, keepableCount: 0, defaultKeepCount: 0, dates: [], snapshot: "remove" } });
   vi.mocked(Groups.confirmMemberDeparture).mockResolvedValue({ departure: { action: "remove", groupId: 1, subjectId: 3, keptCount: 0, endedCount: 0 } });
   open();
-  await userEvent.click(await screen.findByRole("button", { name: "Members" }));
+  await userEvent.click(await screen.findByRole("tab", { name: "Members" }));
   await userEvent.click(screen.getByRole("button", { name: "More for Pat Person" }));
   await userEvent.click(screen.getByRole("menuitem", { name: "Remove from group" }));
   const dialog = await screen.findByRole("dialog", { name: "Remove Pat Person?" });
@@ -307,4 +307,131 @@ it("keeps the date visibility note in the content column rather than another hor
   const note = await screen.findByText("Visibility changed for this date");
   expect(note.parentElement).toHaveClass("grow", "min-w-0");
   expect(note.parentElement).not.toHaveClass("flex");
+});
+
+it("links to the full group calendar when upcoming dates are truncated", async () => {
+  const upcomingEvents = Array.from({ length: 25 }, (_, i) => occurrence({ id: i + 1, eventId: i + 1 }));
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, upcomingEvents, truncated: true });
+  open();
+  expect(await screen.findByText("25 dates loaded.")).toBeVisible();
+  expect(screen.getByRole("link", { name: "See all dates in the calendar" })).toHaveAttribute("href", "/calendar?group=1");
+});
+
+it("does not show a truncation notice for a complete upcoming list", async () => {
+  open();
+  await screen.findByRole("heading", { name: "Family group" });
+  expect(screen.queryByRole("link", { name: "See all dates in the calendar" })).not.toBeInTheDocument();
+});
+
+it("merges continuation pages without duplicate dates and counts only loaded series dates", async () => {
+  const first = { ...page, upcomingEvents: [occurrence({ recurrenceRule: "FREQ=WEEKLY" })], truncated: true, hasMore: true, nextCursor: "page-two" };
+  const second = { ...page, upcomingEvents: [occurrence({ recurrenceRule: "FREQ=WEEKLY" }), occurrence({ id: 2, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY" })] };
+  vi.mocked(Groups.get).mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "Load more dates" }));
+  expect(Groups.get).toHaveBeenLastCalledWith("1", { cursor: "page-two" });
+  expect(await screen.findByRole("link", { name: "1 more date loaded" })).toHaveAttribute("href", "/events/7");
+  expect(screen.queryByText(/next 90 days/)).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Load more dates" })).not.toBeInTheDocument();
+  expect(screen.getAllByRole("form", { name: "Household answers" })).toHaveLength(1);
+});
+
+it("keeps loaded pages on continuation failure and retries without losing the cursor", async () => {
+  const first = { ...page, truncated: true, hasMore: true, nextCursor: "retry-page" };
+  vi.mocked(Groups.get).mockResolvedValueOnce(first).mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(page);
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "Load more dates" }));
+  expect(await screen.findByRole("alert")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "Family group" })).toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Load more dates" }));
+  expect(Groups.get).toHaveBeenLastCalledWith("1", { cursor: "retry-page" });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("refreshes every loaded page after an RSVP", async () => {
+  const first = { ...page, hasMore: true, truncated: true, nextCursor: "next" };
+  const second = { ...page, upcomingEvents: [occurrence({ id: 2, eventId: 8 })] };
+  vi.mocked(Groups.get).mockResolvedValueOnce(first).mockResolvedValueOnce(second).mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+  vi.mocked(Events.register).mockResolvedValue({ registration: null, people: [] });
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "Load more dates" }));
+  const forms = await screen.findAllByRole("form", { name: "Household answers" });
+  expect(forms).toHaveLength(2);
+  await userEvent.click(within(forms[0]).getByRole("checkbox", { name: "Mary" }));
+  await userEvent.click(within(forms[0]).getByRole("button", { name: "Save answers" }));
+  await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(4));
+  expect(Groups.get).toHaveBeenNthCalledWith(3, "1");
+  expect(Groups.get).toHaveBeenNthCalledWith(4, "1", { cursor: "next" });
+  expect(screen.getAllByRole("form", { name: "Household answers" })).toHaveLength(2);
+});
+
+it("resets continuation on group change and ignores an old pending page", async () => {
+  const pending = deferred<GroupDetailResponse>();
+  const nextGroup = { ...page, group: { ...page.group, id: 2, name: "Next group" }, upcomingEvents: [] };
+  vi.mocked(Groups.get).mockResolvedValueOnce({ ...page, hasMore: true, truncated: true, nextCursor: "old" }).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(nextGroup);
+  openWithSwitcher();
+  await userEvent.click(await screen.findByRole("button", { name: "Load more dates" }));
+  expect(screen.getByRole("button", { name: "Loading dates…" })).toBeDisabled();
+  await userEvent.click(screen.getByRole("button", { name: "Open next group" }));
+  expect(await screen.findByRole("heading", { name: "Next group" })).toBeInTheDocument();
+  expect(Groups.get).toHaveBeenLastCalledWith("2");
+  await act(async () => pending.resolve(page));
+  expect(screen.getByRole("heading", { name: "Next group" })).toBeInTheDocument();
+  expect(screen.queryByRole("form", { name: "Household answers" })).not.toBeInTheDocument();
+});
+
+it("clears dates and cursor immediately when the viewer changes", async () => {
+  const pending = deferred<GroupDetailResponse>();
+  const publicPage = deferred<GroupDetailResponse>();
+  vi.mocked(Groups.get).mockResolvedValueOnce({ ...page, hasMore: true, truncated: true, nextCursor: "member-only" }).mockReturnValueOnce(pending.promise).mockReturnValueOnce(publicPage.promise);
+  const view = () => <MemoryRouter initialEntries={["/groups/1"]}><Routes><Route path="/groups/:id" element={<GroupDetail />} /></Routes></MemoryRouter>;
+  const rendered = render(view());
+  await userEvent.click(await screen.findByRole("button", { name: "Load more dates" }));
+  actor.user = null;
+  rendered.rerender(view());
+  await waitFor(() => expect(Groups.get).toHaveBeenCalledTimes(3));
+  expect(Groups.get).toHaveBeenLastCalledWith("1");
+  expect(screen.queryByRole("heading", { name: "Family group" })).not.toBeInTheDocument();
+  await act(async () => pending.resolve(page));
+  expect(screen.queryByRole("heading", { name: "Family group" })).not.toBeInTheDocument();
+  await act(async () => publicPage.resolve({ ...page, isMember: false, upcomingEvents: [] }));
+  expect(await screen.findByRole("heading", { name: "Family group" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Load more dates" })).not.toBeInTheDocument();
+});
+
+it("keeps loading a series beyond 100 dates using the latest page metadata", async () => {
+  const dates = Array.from({ length: 126 }, (_, i) => occurrence({ id: i + 1, recurrenceRule: "FREQ=DAILY" }));
+  vi.mocked(Groups.get)
+    .mockResolvedValueOnce({ ...page, upcomingEvents: dates.slice(0, 25), truncated: true, hasMore: true, nextCursor: "after-25" })
+    .mockResolvedValueOnce({ ...page, upcomingEvents: dates.slice(24, 100), truncated: true, hasMore: true, nextCursor: "after-100" })
+    .mockResolvedValueOnce({ ...page, upcomingEvents: dates.slice(100) });
+  open();
+  await userEvent.click(await screen.findByRole("button", { name: "Load more dates" }));
+  expect(await screen.findByText("100 dates loaded.")).toBeVisible();
+  expect(screen.getByRole("link", { name: "99 more dates loaded" })).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "Load more dates" }));
+  expect(Groups.get).toHaveBeenLastCalledWith("1", { cursor: "after-100" });
+  expect(await screen.findByRole("link", { name: "125 more dates loaded" })).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Load more dates" })).not.toBeInTheDocument();
+  expect(screen.queryByText("100 dates loaded.")).not.toBeInTheDocument();
+  expect(screen.getAllByRole("form", { name: "Household answers" })).toHaveLength(1);
+});
+
+it("switches group sections by arrow keys and labels the active panel", async () => {
+  open();
+  const events = await screen.findByRole("tab", { name: "Upcoming events" });
+  events.focus();
+  await userEvent.keyboard("{ArrowRight}");
+  expect(screen.getByRole("tab", { name: "About" })).toHaveFocus();
+  expect(screen.getByRole("tab", { name: "About" })).toHaveAttribute("aria-selected", "true");
+  expect(screen.getByRole("tabpanel", { name: "About" })).toHaveTextContent("About this group");
+});
+
+it("uses a uniform cover scrim, foreground roles and an inverse primary action", async () => {
+  vi.mocked(Groups.get).mockResolvedValue({ ...page, canManage: true });
+  open();
+  expect(await screen.findByRole("heading", { name: "Family group" })).toHaveClass("text-inverse-foreground");
+  expect(screen.getByText(/Organized by Leader/)).toHaveClass("text-inverse-foreground");
+  expect(document.querySelector(".bg-inverse\\/75")).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Schedule event" })).toHaveClass("btn-primary-inverse");
 });

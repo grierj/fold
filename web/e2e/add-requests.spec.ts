@@ -30,7 +30,12 @@ test("group teen ask uses opaque selection, both approvals and neutral hidden pr
   await admin("POST", `/admin/users/${teen.id}/teen-consents`, { scope: "account", status: "granted", evidenceText: "Parent signed the account consent form" });
   const { group } = await admin("POST", "/groups", { name: "Private ask group", visibility: "invite_only", tags: [] });
   await signIn(page, adminName); await page.goto(`/groups/${group.id}`);
-  await page.getByRole("button", { name: /^members$/i }).click();
+  const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
+    .getByRole("tab", { name: "Members", exact: true });
+  await membersTab.click();
+  await expect(membersTab).toHaveAttribute("aria-selected", "true");
+  const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
+  await expect(membersPanel).toBeVisible();
   const picker = page.getByRole("combobox", { name: "Find a person by name" });
   await picker.fill("Ask Teen"); await expect(page.getByRole("option", { name: /Ask Teen/ })).toBeVisible();
   await picker.press("ArrowDown"); await picker.press("Enter");

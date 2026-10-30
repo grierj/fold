@@ -14,6 +14,7 @@ const MAX_CHIPS = 3;
 // Keyboard: one day is in the Tab order (a roving tabindex); arrows move by
 // day and week, Home/End to the week's edges, PageUp/PageDown by month, and
 // Enter picks the day. Moving off the grid turns the month (onNavigate).
+// Desktop event links and "+N more" also stay in the ordinary Tab order.
 export function MonthView({
   weeks,
   month,
@@ -138,12 +139,12 @@ export function MonthView({
                       <ul className="mt-1 space-y-1">
                         {occs.slice(0, MAX_CHIPS).map((o) => (
                           <li key={`${o.eventId}-${o.date}`}>
-                            <EventChip occ={o} pointerOnly />
+                            <EventChip occ={o} />
                           </li>
                         ))}
                       </ul>
                       {occs.length > MAX_CHIPS && (
-                        <Button variant="link" layout="px-1" tabIndex={-1} onClick={() => onSelect(d)}>
+                        <Button variant="link" layout="px-1" onClick={() => onSelect(d)}>
                           +{occs.length - MAX_CHIPS} more
                         </Button>
                       )}

@@ -53,7 +53,7 @@ export function ResetPassword() {
         <div className="bg-surface rounded-lg border border-border p-6">
           <p className="text-sm">This link is missing its token.</p>
           <p className="mt-4">
-            <Link to="/forgot-password" className="text-primary font-semibold text-sm">
+            <Link to="/forgot-password" className="inline-flex min-h-11 items-center text-primary font-semibold text-sm">
               Request a new reset link
             </Link>
           </p>

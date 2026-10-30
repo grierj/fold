@@ -9,8 +9,9 @@ describe("Chip (ENFORCEMENT C4)", () => {
     expect(screen.getByRole("button", { name: "youth" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("button", { name: "youth" })).toHaveClass("chip");
   });
-  it("keeps compact desktop tags at least 44px on phones", () => {
+  it("keeps compact tags at least 44px at every width", () => {
     render(<Chip selected={false} size="sm">x</Chip>);
-    expect(screen.getByRole("button")).toHaveClass("min-h-11", "min-w-11", "sm:min-h-6", "sm:min-w-6");
+    expect(screen.getByRole("button")).toHaveClass("min-h-11", "min-w-11");
+    expect(screen.getByRole("button").className).not.toMatch(/sm:min-[hw]-6/);
   });
 });

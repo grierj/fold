@@ -202,9 +202,34 @@ func TestRemoteSeatLimitValidation(t *testing.T) {
 	if occ.RemoteCapacityOverride == nil || *occ.RemoteCapacityOverride != 0 {
 		t.Fatalf("zero per-date override was not stored: %+v", occ.RemoteCapacityOverride)
 	}
+	apiDo(t, admin, "PUT", datePath, map[string]any{"title": "Same remote limit"}, http.StatusOK)
+	occ = models.EventOccurrence{}
+	app.DB.Where("event_id = ? AND original_date = ?", eventID, date).First(&occ)
+	if occ.RemoteCapacityOverride == nil || *occ.RemoteCapacityOverride != 0 {
+		t.Fatal("omitted remoteCapacityOverride changed the stored limit")
+	}
 	apiDo(t, admin, "PUT", datePath, map[string]any{"remoteCapacityOverride": nil}, http.StatusOK)
+	occ = models.EventOccurrence{}
+	app.DB.Where("event_id = ? AND original_date = ?", eventID, date).First(&occ)
+	if occ.RemoteCapacityOverride != nil {
+		t.Fatal("explicit null did not clear remoteCapacityOverride")
+	}
 	apiDo(t, admin, "PUT", path, map[string]any{"remoteCapacity": 1}, http.StatusOK)
+	apiDo(t, admin, "PUT", path, map[string]any{"title": "Same series remote limit"}, http.StatusOK)
+	ev = models.Event{}
+	app.DB.First(&ev, eventID)
+	if ev.RemoteCapacity == nil || *ev.RemoteCapacity != 1 {
+		t.Fatal("omitted remoteCapacity changed the stored limit")
+	}
 	apiDo(t, admin, "PUT", path, map[string]any{"remoteCapacity": nil}, http.StatusOK)
+	ev = models.Event{}
+	app.DB.First(&ev, eventID)
+	if ev.RemoteCapacity != nil {
+		t.Fatal("explicit null did not clear remoteCapacity")
+	}
+	if raw := unfoldFeed(feedBody(t, newAPIClient(t, app), "/cal/public.ics")); !strings.Contains(raw, "Remote attendance available") {
+		t.Fatalf("cleared remote capacity did not advertise unlimited remote attendance: %s", raw)
+	}
 	apiDo(t, admin, "PUT", path, map[string]any{"remoteAvailable": false}, http.StatusOK)
 }
 
@@ -1217,5 +1242,143 @@ func TestHouseholdAttendeesArePrivateToHouseholdAndManagers(t *testing.T) {
 	_, raw = getEvent(t, lc, eventID, http.StatusOK)
 	if !strings.Contains(raw, "Private allergy note") || !strings.Contains(raw, "careNotesVisibleUntil") {
 		t.Fatalf("missing windowed care %s", raw)
+	}
+}
+
+func TestOpenEventsSiteNameReadBudget(t *testing.T) {
+	app := testApp(t)
+	creator := newTestUser(t, app, "creator", "pw", models.RoleAdmin)
+	if err := app.DB.Create(&models.Setting{Key: "site_name", Value: "Our Church"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	client := newAPIClient(t, app)
+	client.do("GET", "/api/v1/events", nil, false) // Warm the setup-complete cache.
+	settings := countSiteNameReads(t, app.DB)
+	start := time.Now().UTC().Add(48 * time.Hour).Truncate(time.Minute)
+	var baseline int64
+	for i := 1; i <= 30; i++ {
+		ev := models.Event{Title: "Church-wide", Visibility: models.VisibilityPublic, StartsLocal: start.Format("2006-01-02T15:04"), TZID: "UTC", DurationMinutes: 60, CreatedBy: creator.ID}
+		if err := app.DB.Create(&ev).Error; err != nil {
+			t.Fatal(err)
+		}
+		o := models.EventOccurrence{EventID: ev.ID, OriginalDate: start.Format("2006-01-02"), StartsAt: start, EndsAt: start.Add(time.Hour), Status: models.OccurrenceScheduled}
+		if err := app.DB.Create(&o).Error; err != nil {
+			t.Fatal(err)
+		}
+		if i != 3 && i != 30 {
+			continue
+		}
+		*settings = 0
+		counter := countDBReads(t, app.DB)
+		w := client.do("GET", "/api/v1/events?from="+start.Format("2006-01-02")+"&to="+start.Format("2006-01-02"), nil, false)
+		reads := counter.Reads()
+		counter.Stop()
+		if w.Code != http.StatusOK {
+			t.Fatalf("events: %d %s", w.Code, w.Body.String())
+		}
+		var body struct {
+			Events []occurrenceJSON `json:"events"`
+		}
+		decodeJSON(t, w, &body)
+		if len(body.Events) != i {
+			t.Fatalf("got %d events, want %d", len(body.Events), i)
+		}
+		for _, row := range body.Events {
+			if row.HostedBy != "Our Church" || row.GroupID != nil || row.GroupName != "" {
+				t.Fatalf("church-wide host: %+v", row)
+			}
+		}
+		if i == 3 {
+			baseline = reads
+		}
+		if reads != baseline || *settings != 1 {
+			t.Fatalf("%d dates: %d reads (baseline=%d), site_name=%d", i, reads, baseline, *settings)
+		}
+		t.Logf("%d dates: %d reads, site_name=%d", i, reads, *settings)
+	}
+}
+
+func TestGroupEventsContinuationBeyond100Dates(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "pw", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Daily group", models.GroupActive)
+	client := newAPIClient(t, app)
+	start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	ev, first := seedEvent(t, app, g, leader.ID, start)
+	visible := []uint{}
+	for i := 0; i < 160; i++ {
+		o := first
+		if i > 0 {
+			date := start.AddDate(0, 0, i)
+			o = models.EventOccurrence{EventID: ev.ID, OriginalDate: date.Format("2006-01-02"), StartsAt: date, EndsAt: date.Add(time.Hour), Status: models.OccurrenceScheduled}
+			if err := app.DB.Create(&o).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if i%7 == 0 || i == 159 {
+			if err := app.DB.Model(&o).Update("visibility_override", models.VisibilityInviteOnly).Error; err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			visible = append(visible, o.ID)
+		}
+	}
+	path := "/api/v1/groups/" + itoa(g.ID) + "/events"
+	window := "?from=" + start.Format("2006-01-02") + "&to=" + start.AddDate(0, 0, 159).Format("2006-01-02")
+	read := func(query string) groupEventsJSON {
+		t.Helper()
+		w := client.do("GET", path+window+query, nil, false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("events: %d %s", w.Code, w.Body.String())
+		}
+		var page groupEventsJSON
+		decodeJSON(t, w, &page)
+		return page
+	}
+	firstPage := read("")
+	if len(firstPage.Events) != 25 || !firstPage.HasMore || !firstPage.Truncated || firstPage.NextCursor == "" {
+		t.Fatalf("first page: %d dates, hasMore=%v truncated=%v cursor=%q", len(firstPage.Events), firstPage.HasMore, firstPage.Truncated, firstPage.NextCursor)
+	}
+	second := read("&limit=100&cursor=" + firstPage.NextCursor)
+	if len(second.Events) != 100 || !second.HasMore || !second.Truncated || second.NextCursor == "" {
+		t.Fatalf("second page: %d dates, hasMore=%v truncated=%v cursor=%q", len(second.Events), second.HasMore, second.Truncated, second.NextCursor)
+	}
+	last := read("&cursor=" + second.NextCursor)
+	if len(last.Events) != len(visible)-125 || last.HasMore || last.Truncated || last.NextCursor != "" {
+		t.Fatalf("last page: %d dates, hasMore=%v truncated=%v cursor=%q", len(last.Events), last.HasMore, last.Truncated, last.NextCursor)
+	}
+	all := append(append(firstPage.Events, second.Events...), last.Events...)
+	for i, row := range all {
+		if row.ID != visible[i] {
+			t.Fatalf("date %d: got %d want %d", i, row.ID, visible[i])
+		}
+	}
+	// The non-paged shared listing must not silently drop the same series tail.
+	full := app.occurrencesForEvents([]uint{ev.ID}, start.Format("2006-01-02"), start.AddDate(0, 0, 159).Format("2006-01-02"), nil, nil)
+	if len(full) != len(visible) {
+		t.Fatalf("shared list: got %d dates, want %d", len(full), len(visible))
+	}
+	// Current visibility, not the old cursor, controls the remaining dates.
+	if err := app.DB.Model(&models.EventOccurrence{}).Where("id IN ?", visible[125:]).Update("visibility_override", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	hidden := read("&cursor=" + second.NextCursor)
+	if len(hidden.Events) != 0 || hidden.HasMore || hidden.Truncated || hidden.NextCursor != "" {
+		t.Fatal("hidden tail leaked into continuation metadata")
+	}
+	one := read("&limit=1")
+	if len(one.Events) != 1 || one.Events[0].ID != visible[0] || !one.HasMore {
+		t.Fatal("limit=1 did not apply after visibility")
+	}
+	other := newTestGroup(t, app, leader, "Other group", models.GroupActive)
+	w := client.do("GET", "/api/v1/groups/"+itoa(other.ID)+"/events"+window+"&cursor="+firstPage.NextCursor, nil, false)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("cross-group cursor: %d %s", w.Code, w.Body.String())
+	}
+	for _, query := range []string{"&limit=0", "&limit=-1", "&limit=101", "&limit=abc", "&cursor=invalid", "&cursor=e30"} {
+		w := client.do("GET", path+window+query, nil, false)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"code":"group_upcoming_page"`) {
+			t.Fatalf("%s: %d %s", query, w.Code, w.Body.String())
+		}
 	}
 }

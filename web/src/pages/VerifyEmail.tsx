@@ -46,7 +46,7 @@ export function VerifyEmail() {
             <p className="text-sm">This link has expired or was already used. Start the email change again from your profile.</p>
             <p className="mt-4 text-sm text-text-muted">
               Change your email again from your{" "}
-              <Link to="/profile" className="text-primary font-semibold">
+              <Link to="/profile" className="inline-flex min-h-11 items-center text-primary font-semibold">
                 profile
               </Link>{" "}
               to get a fresh link.

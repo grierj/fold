@@ -33,6 +33,12 @@ describe("MonthView", () => {
     expect(onSelect).toHaveBeenCalledWith("2026-10-21");
     expect(screen.getAllByRole("button", { name: /^Monday, October 19, today, 0 events$/ })[0]).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("Nothing on this day.")).toBeInTheDocument();
+    const more = screen.getByRole("button", { name: "+1 more" });
+    expect(more).not.toHaveAttribute("tabindex", "-1");
+    more.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenLastCalledWith("2026-10-21");
+    for (const link of screen.getAllByRole("link")) expect(link).not.toHaveAttribute("tabindex", "-1");
     const dots = phone.querySelectorAll("[aria-hidden=true] span");
     expect(dots).toHaveLength(3);
     expect(dots[0]).toHaveClass("bg-primary");

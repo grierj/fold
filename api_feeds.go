@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -45,10 +46,6 @@ func (a *App) feedHost() string {
 	return "fold"
 }
 
-func (a *App) feedEventURL(id uint) string {
-	return a.emailBaseURL() + "/events/" + strconv.FormatUint(uint64(id), 10)
-}
-
 func feedNotFound(c *gin.Context) {
 	c.String(http.StatusNotFound, "not found")
 }
@@ -65,8 +62,34 @@ func serveFeed(c *gin.Context, body []byte) {
 	c.Data(http.StatusOK, "text/calendar; charset=utf-8", body)
 }
 
+func feedUnavailable(c *gin.Context, err error) {
+	log.Printf("calendar feed unavailable: %v", err)
+	c.Header("Cache-Control", "no-store")
+	c.String(http.StatusInternalServerError, "calendar unavailable")
+}
+
+func (a *App) feedSiteName() (string, error) {
+	var s models.Setting
+	if err := a.DB.Where("key = ?", "site_name").First(&s).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", err
+	}
+	if s.Value == "" {
+		return "Fold", nil
+	}
+	return s.Value, nil
+}
+
 func (a *App) feedPublic(c *gin.Context) {
-	feed := a.buildFeed(nil, feedOptions{name: a.siteName()}, time.Now().UTC())
+	name, err := a.feedSiteName()
+	if err != nil {
+		feedUnavailable(c, err)
+		return
+	}
+	feed, err := a.buildFeed(nil, feedOptions{name: name}, time.Now().UTC())
+	if err != nil {
+		feedUnavailable(c, err)
+		return
+	}
 	serveFeed(c, events.RenderFeed(feed))
 }
 
@@ -77,15 +100,22 @@ func (a *App) feedGroup(c *gin.Context) {
 		return
 	}
 	var g models.Group
-	if err := a.DB.First(&g, id).Error; err != nil ||
-		g.Status != models.GroupActive || g.Visibility != models.VisibilityPublic {
+	if err := a.DB.First(&g, id).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		feedUnavailable(c, err)
+		return
+	}
+	if g.ID == 0 || g.Status != models.GroupActive || g.Visibility != models.VisibilityPublic {
 		feedNotFound(c)
 		return
 	}
-	feed := a.buildFeed(nil, feedOptions{
+	feed, err := a.buildFeed(nil, feedOptions{
 		name:        g.Name, // group-ok: this feed only serves active public groups
 		onlyGroupID: &g.ID,
 	}, time.Now().UTC())
+	if err != nil {
+		feedUnavailable(c, err)
+		return
+	}
 	serveFeed(c, events.RenderFeed(feed))
 }
 
@@ -98,21 +128,38 @@ func (a *App) feedPersonal(c *gin.Context) {
 	raw := strings.TrimSuffix(param, ".ics")
 	var tok models.CalendarToken
 	if err := a.DB.Where("token_hash = ?", hashToken(raw)).First(&tok).Error; err != nil {
-		feedNotFound(c)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			feedNotFound(c)
+		} else {
+			feedUnavailable(c, err)
+		}
 		return
 	}
 	// A disabled or deleted owner's link stops working, with the same
 	// plain 404 as a token that never existed.
 	var owner models.User
-	if err := a.DB.First(&owner, tok.UserID).Error; err != nil || owner.Status != models.UserActive {
+	if err := a.DB.First(&owner, tok.UserID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		feedUnavailable(c, err)
+		return
+	}
+	if owner.ID == 0 || owner.Status != models.UserActive {
 		feedNotFound(c)
 		return
 	}
-	feed := a.buildFeed(&owner, feedOptions{
-		name:     a.siteName(),
+	name, err := a.feedSiteName()
+	if err != nil {
+		feedUnavailable(c, err)
+		return
+	}
+	feed, err := a.buildFeed(&owner, feedOptions{
+		name:     name,
 		personal: true,
 		scope:    tok.Scope,
 	}, time.Now().UTC())
+	if err != nil {
+		feedUnavailable(c, err)
+		return
+	}
 	serveFeed(c, events.RenderFeed(feed))
 }
 
@@ -123,239 +170,98 @@ type feedOptions struct {
 	scope       string
 }
 
-// buildFeed loads the events one feed carries. Every event passes
-// policy.CanSeeEvent for the viewer (nil is a signed-out visitor) here,
-// never on a caller's word, the occurrencesForEvents rule. Group names
-// never reach the renderer; a group's location is the fallback only
-// when the viewer may see the group.
-func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) events.Feed {
+// buildFeed projects authorized scheduled dates inside the export window.
+// Parent candidates never grant series access; group fallback locations and
+// parent details are separately checked before reaching the renderer.
+func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) (events.Feed, error) {
 	windowStart, windowEnd := feedWindow(now)
 	feed := events.Feed{
-		Name:        opts.name,
-		Host:        a.feedHost(),
-		WindowStart: windowStart,
-		WindowEnd:   windowEnd,
-		Events:      []events.FeedEvent{},
-		Singles:     []events.FeedSingle{},
+		Name: opts.name, Host: a.feedHost(),
+		WindowStart: windowStart, WindowEnd: windowEnd,
+		Singles: []events.FeedSingle{},
 	}
 
-	// Only events with a date in the window can add anything (#75).
-	q := a.DB.Where("id IN (SELECT event_id FROM event_occurrences WHERE starts_at >= ? AND starts_at < ?)",
-		windowStart, windowEnd)
+	// Candidate parents load facts only. Every exported occurrence still
+	// needs its own effective-date authorization below.
+	q := a.DB.Model(&models.Event{}).Where("id IN (SELECT event_id FROM event_occurrences WHERE starts_at >= ? AND starts_at < ?)", windowStart, windowEnd)
 	if opts.onlyGroupID != nil {
 		q = q.Where("group_id = ?", *opts.onlyGroupID)
 	}
 	vs, err := a.dateCandidates(viewer, q)
 	if err != nil {
-		return feed
+		return events.Feed{}, err
 	}
-	byID, groups, rels, hosted, visibleIDs := vs.ByID, vs.Groups, vs.Rels, vs.Hosted, vs.IDs
-	// Exact-date access is loaded independently of ordinary visibility. Public
-	// and group feeds never consult these records.
 	scoped := map[uint]*occurrenceRead{}
 	if opts.personal && viewer != nil && opts.onlyGroupID == nil {
 		scoped, err = a.scopedOccurrenceReads(viewer, a.DB.Where("starts_at >= ? AND starts_at < ?", windowStart, windowEnd), now)
 		if err != nil {
-			return feed
+			return events.Feed{}, err
 		}
 	}
-	if len(visibleIDs) == 0 {
-		return feed
+	if len(vs.IDs) == 0 {
+		return feed, nil
 	}
 
 	var occs []models.EventOccurrence
-	a.DB.Where("event_id IN ? AND starts_at >= ? AND starts_at < ?",
-		visibleIDs, windowStart, windowEnd).
-		Order("starts_at").Find(&occs)
+	// Keep the candidate restriction in SQL rather than expanding an
+	// unbounded event-ID list into PostgreSQL bind parameters.
+	if err := a.DB.Where("event_id IN (?) AND starts_at >= ? AND starts_at < ?", q.Select("id"), windowStart, windowEnd).
+		Order("starts_at").Find(&occs).Error; err != nil {
+		return events.Feed{}, err
+	}
 	if opts.personal && viewer != nil {
 		return a.buildPersonalFeedSingles(feed, viewer, opts.scope, now, occs, scoped, vs)
 	}
-	byEvent := map[uint][]*models.EventOccurrence{}
 	for i := range occs {
-		if !vs.canSeeDate(viewer, byID[occs[i].EventID], &occs[i]) {
+		occ := &occs[i]
+		ev := vs.ByID[occ.EventID]
+		if occ.Status != models.OccurrenceScheduled || !vs.canSeeDate(viewer, ev, occ) {
 			continue
 		}
-		byEvent[occs[i].EventID] = append(byEvent[occs[i].EventID], &occs[i])
-	}
-
-	// Option A needs the viewer's own going and waitlisted dates on
-	// events that don't arrive as a whole series. A personal feed also
-	// needs them to reveal a registered_only video link (M1.8): going
-	// only, per occurrence.
-	myStatus := map[uint]string{}
-	if opts.personal && viewer != nil && len(occs) > 0 {
-		occIDs := make([]uint, len(occs))
-		for i := range occs {
-			occIDs[i] = occs[i].ID
-		}
-		var rows []models.Registration
-		a.DB.Where("user_id = ? AND occurrence_id IN ? AND status IN ?", viewer.ID, occIDs,
-			[]string{models.RegGoing, models.RegWaitlisted}).Find(&rows)
-		for _, r := range rows {
-			myStatus[r.OccurrenceID] = r.Status
-		}
-	}
-	// Every response the owner gave, for the DEC-70 feed video rule.
-	anyStatus := map[uint]string{}
-	householdVideo := map[uint]bool{}
-	if opts.personal && viewer != nil && len(occs) > 0 {
-		occIDs := make([]uint, len(occs))
-		for i := range occs {
-			occIDs[i] = occs[i].ID
-		}
-		var rows []models.Registration
-		a.DB.Select("occurrence_id", "status").Where("user_id = ? AND occurrence_id IN ?", viewer.ID, occIDs).Find(&rows)
-		for _, r := range rows {
-			anyStatus[r.OccurrenceID] = r.Status
-		}
-	}
-
-	if opts.personal && viewer != nil {
-		occIDs := []uint{}
-		for _, o := range occs {
-			occIDs = append(occIDs, o.ID)
-		}
-		householdVideo = householdGoingMap(a.DB, occIDs, viewer, true)
-		var rows []models.Registration
-		if len(occIDs) > 0 {
-			a.DB.Joins(listedRegistrations()).Where("registrations.registered_by = ? AND registrations.occurrence_id IN ? AND registrations.status IN ?", viewer.ID, occIDs, []string{models.RegGoing, models.RegWaitlisted}).Order("registrations.id").Find(&rows)
-		}
-		for _, r := range rows {
-			if _, exists := myStatus[r.OccurrenceID]; !exists || r.Status == models.RegGoing {
-				myStatus[r.OccurrenceID] = r.Status
-			}
-		}
-	}
-
-	// Whether recurrence may be emitted is loaded once across the whole
-	// candidate set, including stored overrides outside the export window.
-	// A failed lookup must never fall back to an unsafe RRULE.
-	var customizedIDs []uint
-	if err := a.DB.Model(&models.EventOccurrence{}).Where("event_id IN ? AND visibility_override IS NOT NULL", visibleIDs).Distinct().Pluck("event_id", &customizedIDs).Error; err != nil {
-		return feed
-	}
-	customized := map[uint]bool{}
-	for _, id := range customizedIDs {
-		customized[id] = true
-	}
-	for _, id := range visibleIDs {
-		ev := byID[id]
-		list := byEvent[id]
-		if ev == nil || len(list) == 0 {
-			continue
-		}
-		grp, rel := groupAndRel(ev, groups, rels)
+		grp, rel := groupAndRel(ev, vs.Groups, vs.Rels)
 		groupLoc := ""
 		if shown := a.groupShownTo(viewer, grp, rel); shown != nil {
 			groupLoc = shown.Location
 		}
-		viewerAdmin := viewer != nil && asPerson(viewer).Admin
-		// The video link reaches a feed only as policy allows (M1.8,
-		// DEC-70): the public and group feeds (no viewer) carry an
-		// "always" link only. A personal feed carries a registered_only
-		// link for a date its owner is going to or said maybe to, a date
-		// a group member or host hasn't answered, and events they lead,
-		// host or admin. Waitlisted and declined dates never get it.
-		videoFor := func(statuses ...string) string {
-			link := videoLinkOf(ev)
-			if link == "" || !opts.personal || viewer == nil {
-				if link != "" && policy.CanSeeVideoLink(videoRevealOf(ev), false, false) {
-					return link
-				}
-				return ""
-			}
-			for _, st := range statuses {
-				if policy.CanSeeVideoLinkInFeed(videoRevealOf(ev), st,
-					rel.Member || hosted[ev.ID], rel.Leader || hosted[ev.ID] || viewerAdmin) {
-					return link
-				}
-			}
-			return ""
+		eff := occurrenceToJSON(ev, occ, groupLoc)
+		videoURL := ""
+		if policy.CanSeeVideoLink(videoRevealOf(ev), false, false) {
+			videoURL = videoLinkOf(ev)
 		}
-		full := !opts.personal || opts.scope == models.CalendarFeedAll || rel.Member || hosted[ev.ID]
-		singles := customized[ev.ID]
-		if !full || singles {
-			for _, occ := range list {
-				status, mine := myStatus[occ.ID]
-				if (!full && !mine) || occ.Status == models.OccurrenceCancelled {
-					continue
-				}
-				eff := occurrenceToJSON(ev, occ, groupLoc)
-				s := "CONFIRMED"
-				if status == models.RegWaitlisted {
-					s = "TENTATIVE"
-				}
-				feed.Singles = append(feed.Singles, events.FeedSingle{
-					EventID: ev.ID, OriginalDate: occ.OriginalDate,
-					Title: eff.Title, Description: ev.Description, Location: eff.Location,
-					VideoURL: videoFor(feedHouseholdVideoStatus(anyStatus[occ.ID], householdVideo[occ.ID])), RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: ev.ChildcareAvailable, ChildcareAges: ev.ChildcareAges,
-					TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
-					URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate), UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: s,
-				})
-			}
-			continue
-		}
-		seriesLoc := ev.Location
-		if seriesLoc == "" {
-			seriesLoc = groupLoc
-		}
-		until := ""
-		if ev.RRuleUntil != nil {
-			until = *ev.RRuleUntil
-		}
-		// One series entry covers every date and the link is the same on
-		// all of them, so any in-window date the owner may see it for
-		// reveals it on the whole entry (accepted for now; see API.md).
-		seriesStatuses := make([]string, 0, len(list))
-		for _, occ := range list {
-			if occ.Status != models.OccurrenceCancelled {
-				seriesStatuses = append(seriesStatuses, feedHouseholdVideoStatus(anyStatus[occ.ID], householdVideo[occ.ID]))
-			}
-		}
-		fe := events.FeedEvent{
-			ID: ev.ID, Title: ev.Title, Description: ev.Description, Location: seriesLoc,
-			VideoURL: videoFor(seriesStatuses...), RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: ev.ChildcareAvailable, ChildcareAges: ev.ChildcareAges,
-			TZID: ev.TZID, StartsLocal: ev.StartsLocal, DurationMinutes: ev.DurationMinutes,
-			RRule: ev.RRule, RRuleUntil: until,
-			URL: a.feedEventURL(ev.ID), UpdatedAt: ev.UpdatedAt,
-		}
-		for _, occ := range list {
-			if occ.Status == models.OccurrenceCancelled {
-				fe.CancelledDates = append(fe.CancelledDates, occ.OriginalDate)
-				continue
-			}
-			eff := occurrenceToJSON(ev, occ, groupLoc)
-			fo := events.FeedOccurrence{
-				OriginalDate: occ.OriginalDate, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
-				Title: eff.Title, Location: eff.Location, UpdatedAt: occ.UpdatedAt,
-			}
-			fe.Occurrences = append(fe.Occurrences, fo)
-			if occ.Customized() {
-				fe.Overrides = append(fe.Overrides, fo)
-			}
-		}
-		feed.Events = append(feed.Events, fe)
+		details := projectFeedSeriesDetails(ev, vs.canSeeSeries(viewer, ev), videoURL)
+		feed.Singles = append(feed.Singles, events.FeedSingle{
+			EventID: ev.ID, OriginalDate: occ.OriginalDate,
+			Title: eff.Title, Description: details.description, Location: eff.Location,
+			VideoURL: details.videoURL, RemoteAvailable: events.RemoteOffered(eff.RemoteAvailable, eff.RemoteCapacity),
+			ChildcareAvailable: details.childcareAvailable, ChildcareAges: details.childcareAges,
+			TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
+			URL:       a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),
+			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: "CONFIRMED",
+		})
 	}
-	return feed
+	return feed, nil
 }
 
 // buildPersonalFeedSingles expands personal feeds date by date. That makes
 // every hidden, declined, out-of-window, or differently answered recurrence
 // explicit, so an RRULE can never reintroduce it in a calendar client.
-func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, rawScope string, now time.Time, occs []models.EventOccurrence, scoped map[uint]*occurrenceRead, vs visibleSet) events.Feed {
+func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, rawScope string, now time.Time, occs []models.EventOccurrence, scoped map[uint]*occurrenceRead, vs visibleSet) (events.Feed, error) {
 	ids := make([]uint, len(occs))
 	for i := range occs {
 		ids[i] = occs[i].ID
 	}
 	facts, err := a.loadCalendarScopeBatch(viewer, ids)
 	if err != nil {
-		return feed
+		return events.Feed{}, err
 	}
 	scope := policy.CalendarScopeMine
 	if rawScope == models.CalendarFeedAll {
 		scope = policy.CalendarScopeAll
 	}
-	householdGoing := householdGoingMap(a.DB, ids, viewer, false)
+	householdGoing, err := householdGoingMap(a.DB, ids, viewer, false)
+	if err != nil {
+		return events.Feed{}, err
+	}
 	viewerAdmin := asPerson(viewer).Admin
 	for i := range occs {
 		occ := &occs[i]
@@ -411,24 +317,34 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 				videoURL = link
 			}
 		}
-		description := ""
-		childcareAvailable := false
-		childcareAges := ""
-		if seriesVisible {
-			description = ev.Description
-			childcareAvailable = ev.ChildcareAvailable
-			childcareAges = ev.ChildcareAges
-		}
+		details := projectFeedSeriesDetails(ev, seriesVisible, videoURL)
 		feed.Singles = append(feed.Singles, events.FeedSingle{
 			EventID: ev.ID, OriginalDate: occ.OriginalDate, Title: eff.Title,
-			Description: description, Location: eff.Location, TZID: ev.TZID,
-			StartsAt: eff.StartsAt, EndsAt: eff.EndsAt, VideoURL: videoURL,
-			RemoteAvailable: ev.RemoteAvailable, ChildcareAvailable: childcareAvailable,
-			ChildcareAges: childcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),
+			Description: details.description, Location: eff.Location, TZID: ev.TZID,
+			StartsAt: eff.StartsAt, EndsAt: eff.EndsAt, VideoURL: details.videoURL,
+			RemoteAvailable: events.RemoteOffered(eff.RemoteAvailable, eff.RemoteCapacity), ChildcareAvailable: details.childcareAvailable,
+			ChildcareAges: details.childcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),
 			UpdatedAt: laterTime(ev.UpdatedAt, occ.UpdatedAt), Status: status,
 		})
 	}
-	return feed
+	return feed, nil
+}
+
+type feedSeriesDetails struct {
+	description        string
+	videoURL           string
+	childcareAvailable bool
+	childcareAges      string
+}
+
+// projectFeedSeriesDetails is shared by public, group and personal date feeds.
+// An opened date authorizes its date fields, never its hidden parent details.
+func projectFeedSeriesDetails(ev *models.Event, seriesVisible bool, videoURL string) feedSeriesDetails {
+	if !seriesVisible {
+		return feedSeriesDetails{}
+	}
+	return feedSeriesDetails{description: ev.Description, videoURL: videoURL,
+		childcareAvailable: ev.ChildcareAvailable, childcareAges: ev.ChildcareAges}
 }
 
 // ---------------------------------------------------------------------------
@@ -600,11 +516,4 @@ func (a *App) revokeCalendarToken(c *gin.Context, actorID, userID uint) (bool, e
 		})
 	})
 	return had, err
-}
-
-func feedHouseholdVideoStatus(own string, household bool) string {
-	if household {
-		return models.RegGoing
-	}
-	return own
 }

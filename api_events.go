@@ -19,12 +19,10 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// How far a list request may look, and how many dates of one series it
-// returns. Stored occurrences go out 18 months; this only caps the response.
+// How far a list request may look. Stored occurrences go out 18 months.
 const (
-	maxEventWindow       = 366 * 24 * time.Hour
-	maxOccurrencesListed = 100
-	settingTimezone      = "timezone"
+	maxEventWindow  = 366 * 24 * time.Hour
+	settingTimezone = "timezone"
 )
 
 func (a *App) churchTimezone() string {
@@ -68,30 +66,30 @@ func (a *App) apiSetTimezone(c *gin.Context) {
 // Occurrence JSON
 // ---------------------------------------------------------------------------
 
-func (a *App) buildOccurrences(groupIDs []uint, from, to string, startAfter *time.Time, me *models.User) []occurrenceJSON {
-	if len(groupIDs) == 0 {
-		return []occurrenceJSON{}
-	}
-	var ids []uint
-	if err := a.DB.Model(&models.Event{}).Where("group_id IN ?", groupIDs).Pluck("id", &ids).Error; err != nil || len(ids) == 0 {
-		return []occurrenceJSON{}
-	}
-	return a.occurrencesForEvents(ids, from, to, startAfter, me)
-}
-
 // occurrencesForEvents lists scheduled dates of these events and attaches
 // attendee names only where policy allows. A caller who cannot see an
 // event's group gets "Hosted by <church>" and no group id or name.
 func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User) []occurrenceJSON {
+	out, _ := a.occurrencesForEventsPage(eventIDs, from, to, startAfter, me, 0)
+	return out
+}
+
+// occurrencesForEventsPage applies a response cap after date visibility but
+// before attendee enrichment. A zero limit keeps the full list behavior.
+func (a *App) occurrencesForEventsPage(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User, limit int) ([]occurrenceJSON, bool) {
+	return a.occurrencesForEventsAfter(eventIDs, from, to, startAfter, me, limit, nil)
+}
+
+func (a *App) occurrencesForEventsAfter(eventIDs []uint, from, to string, startAfter *time.Time, me *models.User, limit int, cursor *groupUpcomingCursor) ([]occurrenceJSON, bool) {
 	out := []occurrenceJSON{}
 	if len(eventIDs) == 0 {
-		return out
+		return out, false
 	}
 	// The one place event dates are listed: drop every event this viewer
 	// can't see, so no caller has to remember to (hardening review).
 	vs, err := a.dateCandidates(me, a.DB.Where("id IN ?", eventIDs))
 	if err != nil || len(vs.IDs) == 0 {
-		return out
+		return out, false
 	}
 	evs, byID, groups, rels, hosted := vs.Events, vs.ByID, vs.Groups, vs.Rels, vs.Hosted
 	eventIDs = vs.IDs
@@ -102,22 +100,25 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		q = q.Where("starts_at >= ?", *startAfter)
 	}
 	var occs []models.EventOccurrence
-	q.Order("starts_at").Find(&occs)
+	q.Order("starts_at, id").Find(&occs)
 
-	perEvent := map[uint]int{}
+	truncated := false
 	kept := make([]models.EventOccurrence, 0, len(occs))
 	for _, o := range occs {
 		if !vs.canSeeDate(me, byID[o.EventID], &o) {
 			continue
 		}
-		if perEvent[o.EventID] >= maxOccurrencesListed {
+		if cursor != nil && (o.StartsAt.Before(cursor.StartsAt) || (o.StartsAt.Equal(cursor.StartsAt) && o.ID <= cursor.ID)) {
 			continue
 		}
-		perEvent[o.EventID]++
+		if limit > 0 && len(kept) >= limit {
+			truncated = true
+			break
+		}
 		kept = append(kept, o)
 	}
 	if len(kept) == 0 {
-		return out
+		return out, false
 	}
 
 	ids := make([]uint, len(kept))
@@ -210,10 +211,11 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 	householdVideo := map[uint]bool{}
 	if me != nil {
 		if _, inHousehold := facts.accounts[me.ID]; inHousehold {
-			householdVideo = householdGoingMap(a.DB, ids, me, true)
+			householdVideo, _ = householdGoingMap(a.DB, ids, me, true)
 		}
 	}
 
+	siteName := ""
 	for i := range kept {
 		o := &kept[i]
 		ev := byID[o.EventID]
@@ -289,7 +291,10 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 				inst.Attendees = kept
 			}
 		}
-		a.presentGroup(&inst, ev, g, me, rel)
+		if siteName == "" && (ev.GroupID == nil || a.groupShownTo(me, g, rel) == nil) {
+			siteName = a.siteName()
+		}
+		a.presentGroup(&inst, ev, g, me, rel, siteName)
 		if !vs.canSeeSeries(me, ev) {
 			inst.hideSeries = true
 			inst.DateURL = occurrenceDatePath(ev.ID, o.OriginalDate)
@@ -303,8 +308,8 @@ func (a *App) occurrencesForEvents(eventIDs []uint, from, to string, startAfter 
 		}
 		out = append(out, inst)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].StartsAt.Before(out[j].StartsAt) })
-	return out
+	sort.SliceStable(out, func(i, j int) bool { return out[i].StartsAt.Before(out[j].StartsAt) })
+	return out, truncated
 }
 
 // occurrenceToJSON resolves a date's overrides without exposing viewer-specific fields.
@@ -479,12 +484,12 @@ type eventBody struct {
 	GuestsAllowed   *json.RawMessage `json:"guestsAllowed"`
 	// Remote attendance (M1.8 slice 2). RemoteCapacity is raw JSON like
 	// Capacity: null clears to unlimited; a set limit must be positive.
-	RemoteAvailable    *bool            `json:"remoteAvailable"`
-	RemoteCapacity     *json.RawMessage `json:"remoteCapacity"`
-	ChildcareAvailable *bool            `json:"childcareAvailable"`
-	ChildcareNotes     *string          `json:"childcareNotes"`
-	ChildcareCapacity  json.RawMessage  `json:"childcareCapacity"`
-	ChildcareAges      *string          `json:"childcareAges"`
+	RemoteAvailable    *bool           `json:"remoteAvailable"`
+	RemoteCapacity     json.RawMessage `json:"remoteCapacity"`
+	ChildcareAvailable *bool           `json:"childcareAvailable"`
+	ChildcareNotes     *string         `json:"childcareNotes"`
+	ChildcareCapacity  json.RawMessage `json:"childcareCapacity"`
+	ChildcareAges      *string         `json:"childcareAges"`
 	// Video link (5.8, M1.8); see parseVideoEdits in api_video.go.
 	VideoProvider *string `json:"videoProvider"`
 	VideoURL      *string `json:"videoUrl"`
@@ -631,6 +636,13 @@ func parseDateWindow(c *gin.Context) (from, to string, ok bool) {
 	return from, to, true
 }
 
+type groupEventsJSON struct {
+	Events     []occurrenceJSON `json:"events"`
+	Truncated  bool             `json:"truncated"`
+	HasMore    bool             `json:"hasMore"`
+	NextCursor string           `json:"nextCursor"`
+}
+
 func (a *App) apiListEvents(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	var g models.Group
@@ -642,7 +654,17 @@ func (a *App) apiListEvents(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"events": a.buildOccurrences([]uint{g.ID}, from, to, nil, apiUser(c))})
+	limit, cursor, ok := parseGroupUpcomingPage(c, g.ID)
+	if !ok {
+		return
+	}
+	var eventIDs []uint
+	a.DB.Model(&models.Event{}).Where("group_id = ?", g.ID).Pluck("id", &eventIDs)
+	listed, hasMore := a.occurrencesForEventsAfter(eventIDs, from, to, nil, apiUser(c), limit, cursor)
+	c.JSON(http.StatusOK, groupEventsJSON{
+		Events: listed, Truncated: hasMore, HasMore: hasMore,
+		NextCursor: nextGroupUpcomingCursor(g.ID, listed, hasMore),
+	})
 }
 
 func (a *App) apiCreateEvent(c *gin.Context) {
@@ -1056,10 +1078,10 @@ func (a *App) apiUpdateOccurrence(c *gin.Context) {
 		CapacityOverride *json.RawMessage `json:"capacityOverride"`
 		// RemoteCapacityOverride mirrors CapacityOverride for the
 		// remote pool (M1.8 slice 2); null uses the event's cap.
-		RemoteCapacityOverride *json.RawMessage `json:"remoteCapacityOverride"`
-		Visibility             json.RawMessage  `json:"visibility"`
-		Reason                 string           `json:"reason"`
-		Confirm                bool             `json:"confirm"`
+		RemoteCapacityOverride json.RawMessage `json:"remoteCapacityOverride"`
+		Visibility             json.RawMessage `json:"visibility"`
+		Reason                 string          `json:"reason"`
+		Confirm                bool            `json:"confirm"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid body")

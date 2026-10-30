@@ -55,143 +55,86 @@ func prop(t *testing.T, ev *ics.VEvent, p ics.ComponentProperty) string {
 	return got.Value
 }
 
-func TestICSWeeklySeriesWithExdateAndOverride(t *testing.T) {
+// Stored dates are the entire wire contract. The cancelled November 17 date
+// is absent; the moved November 24 date retains its original-date UID.
+func TestICSStoredDatesWithDSTAndReschedule(t *testing.T) {
 	boise, err := time.LoadLocation("America/Boise")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cal := checkGolden(t, "weekly.ics", Feed{
-		Name:        "Fold",
-		Host:        "church.example.org",
-		WindowStart: utc(2026, 10, 1, 0, 0),
-		WindowEnd:   utc(2027, 10, 1, 0, 0),
-		Events: []FeedEvent{{
-			ID: 7, Title: "Tuesday study", Description: "Bring a Bible.",
-			Location: "Room 2", TZID: "America/Boise", StartsLocal: "2026-11-03T19:00",
-			DurationMinutes: 60, RRule: "FREQ=WEEKLY;BYDAY=TU",
-			URL:            "https://church.example.org/events/7",
-			UpdatedAt:      utc(2026, 10, 20, 12, 0),
-			CancelledDates: []string{"2026-11-17"},
-			Overrides: []FeedOccurrence{{
-				OriginalDate: "2026-11-24", Title: "Pizza night", Location: "Hall",
-				StartsAt:  time.Date(2026, 11, 24, 18, 30, 0, 0, boise),
-				EndsAt:    time.Date(2026, 11, 24, 19, 30, 0, 0, boise),
-				UpdatedAt: utc(2026, 10, 21, 9, 0),
-			}},
-		}},
-	})
+	date := func(original string, day, hour int, title, location string) FeedSingle {
+		originalDay, err := time.Parse("2006-01-02", original)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := time.Date(2026, originalDay.Month(), day, hour, 0, 0, 0, boise)
+		return FeedSingle{EventID: 7, OriginalDate: original, Title: title, Description: "Bring a Bible.",
+			Location: location, TZID: "America/Boise", StartsAt: start, EndsAt: start.Add(time.Hour),
+			URL: "https://church.example.org/events/7/dates/" + original, UpdatedAt: utc(2026, 10, 20, 12, 0)}
+	}
+	cal := checkGolden(t, "weekly.ics", Feed{Name: "Fold", Host: "church.example.org",
+		WindowStart: utc(2026, 10, 1, 0, 0), WindowEnd: utc(2027, 10, 1, 0, 0),
+		Singles: []FeedSingle{
+			date("2026-10-27", 27, 19, "Tuesday study", "Room 2"),
+			date("2026-11-03", 3, 19, "Tuesday study", "Room 2"),
+			date("2026-11-24", 25, 18, "Pizza night", ""),
+		}})
 	evs := cal.Events()
-	if len(evs) != 2 {
-		t.Fatalf("parsed %d events, want the series and its override", len(evs))
+	if len(evs) != 3 {
+		t.Fatalf("got %d dates, want 3", len(evs))
 	}
-	series, over := evs[0], evs[1]
-	if got := prop(t, series, ics.ComponentPropertyUniqueId); got != "event-7@church.example.org" {
-		t.Fatalf("series UID = %q", got)
+	for _, ev := range evs {
+		for _, p := range []ics.ComponentProperty{ics.ComponentPropertyRrule, ics.ComponentPropertyExdate, ics.ComponentPropertyRecurrenceId} {
+			if ev.GetProperty(p) != nil {
+				t.Fatalf("stored date has %s", p)
+			}
+		}
 	}
-	if got := prop(t, series, ics.ComponentPropertyRrule); got != "FREQ=WEEKLY;BYDAY=TU" {
-		t.Fatalf("RRULE = %q", got)
+	if got := prop(t, evs[2], ics.ComponentPropertyUniqueId); got != "event-7-20261124@church.example.org" {
+		t.Fatal(got)
 	}
-	if got := prop(t, series, ics.ComponentPropertyExdate); got != "20261117T190000" {
-		t.Fatalf("EXDATE = %q", got)
+	if got := prop(t, evs[2], ics.ComponentPropertyDtStart); got != "20261125T180000" {
+		t.Fatal(got)
 	}
-	if got := prop(t, series, ics.ComponentPropertyDtStart); got != "20261103T190000" {
-		t.Fatalf("DTSTART = %q", got)
-	}
-	if got := prop(t, over, ics.ComponentPropertyUniqueId); got != "event-7@church.example.org" {
-		t.Fatalf("override UID = %q, want the series UID", got)
-	}
-	if got := prop(t, over, ics.ComponentPropertyRecurrenceId); got != "20261124T190000" {
-		t.Fatalf("RECURRENCE-ID = %q", got)
-	}
-	if got := prop(t, over, ics.ComponentPropertyDtStart); got != "20261124T183000" {
-		t.Fatalf("override DTSTART = %q", got)
-	}
-	if got := prop(t, over, ics.ComponentPropertySummary); got != "Pizza night" {
-		t.Fatalf("override SUMMARY = %q", got)
-	}
-	desc := prop(t, series, ics.ComponentPropertyDescription)
-	if !strings.Contains(desc, "Bring a Bible.") || !strings.Contains(desc, "https://church.example.org/events/7") {
-		t.Fatalf("DESCRIPTION = %q, want the text and the event URL", desc)
+	if evs[2].GetProperty(ics.ComponentPropertyLocation) != nil {
+		t.Fatal("empty date location was replaced")
 	}
 	if len(cal.Timezones()) != 1 {
-		t.Fatalf("parsed %d VTIMEZONEs, want 1", len(cal.Timezones()))
+		t.Fatal("missing Boise timezone")
+	}
+	out := string(RenderFeed(Feed{WindowStart: utc(2026, 10, 1, 0, 0), WindowEnd: utc(2027, 10, 1, 0, 0), Singles: []FeedSingle{date("2026-11-03", 3, 19, "Study", "")}}))
+	if !strings.Contains(out, "TZOFFSETFROM:-0600") || !strings.Contains(out, "TZOFFSETTO:-0700") {
+		t.Fatal("missing daylight/standard offsets", out)
 	}
 }
 
-func TestICSOneTimeAndCancelledOneTimeOmitted(t *testing.T) {
-	cal := checkGolden(t, "one-time.ics", Feed{
-		Name:        "Fold",
-		Host:        "church.example.org",
-		WindowStart: utc(2026, 11, 1, 0, 0),
-		WindowEnd:   utc(2027, 11, 1, 0, 0),
-		Events: []FeedEvent{
-			{
-				ID: 3, Title: "Church picnic", Location: "The park", TZID: "UTC",
-				StartsLocal: "2026-12-05T12:00", DurationMinutes: 120,
-				UpdatedAt: utc(2026, 11, 1, 8, 0),
-			},
-			{
-				ID: 4, Title: "Cancelled picnic", TZID: "UTC",
-				StartsLocal: "2026-12-06T12:00", DurationMinutes: 60,
-				UpdatedAt:      utc(2026, 11, 1, 8, 0),
-				CancelledDates: []string{"2026-12-06"},
-			},
-		},
-	})
-	evs := cal.Events()
-	if len(evs) != 1 {
-		t.Fatalf("parsed %d events, want only the picnic that is still on", len(evs))
+func TestICSOneTime(t *testing.T) {
+	cal := checkGolden(t, "one-time.ics", Feed{Name: "Fold", Host: "church.example.org",
+		WindowStart: utc(2026, 11, 1, 0, 0), WindowEnd: utc(2027, 11, 1, 0, 0),
+		Singles: []FeedSingle{{EventID: 3, OriginalDate: "2026-12-05", Title: "Church picnic", Location: "The park", TZID: "UTC",
+			StartsAt: utc(2026, 12, 5, 12, 0), EndsAt: utc(2026, 12, 5, 14, 0), UpdatedAt: utc(2026, 11, 1, 8, 0)}}})
+	if len(cal.Events()) != 1 {
+		t.Fatal("expected one date")
 	}
-	if got := prop(t, evs[0], ics.ComponentPropertySummary); got != "Church picnic" {
-		t.Fatalf("SUMMARY = %q", got)
-	}
-	if evs[0].GetProperty(ics.ComponentPropertyRrule) != nil {
-		t.Fatal("a one-time event carries an RRULE")
+	if got := prop(t, cal.Events()[0], ics.ComponentPropertyUniqueId); got != "event-3-20261205@church.example.org" {
+		t.Fatal(got)
 	}
 }
 
 func TestICSEscaping(t *testing.T) {
-	cal := checkGolden(t, "escaping.ics", Feed{
-		Name:        "Fold, main",
-		Host:        "church.example.org",
-		WindowStart: utc(2026, 11, 1, 0, 0),
-		WindowEnd:   utc(2027, 11, 1, 0, 0),
-		Events: []FeedEvent{{
-			ID: 9, Title: "Dinner, study; prayer\\worship",
-			Description: "First line\nSecond, line; with \\ backslash",
-			Location:    "Smith home, 12 Oak St; ring twice", TZID: "UTC",
-			StartsLocal: "2026-12-01T18:00", DurationMinutes: 90,
-			UpdatedAt: utc(2026, 11, 2, 8, 0),
-		}},
-	})
+	cal := checkGolden(t, "escaping.ics", Feed{Name: "Fold, main", Host: "church.example.org",
+		WindowStart: utc(2026, 11, 1, 0, 0), WindowEnd: utc(2027, 11, 1, 0, 0),
+		Singles: []FeedSingle{{EventID: 9, OriginalDate: "2026-12-01", Title: "Dinner, study; prayer\\worship",
+			Description: "First line\nSecond, line; with \\ backslash", Location: "Smith home, 12 Oak St; ring twice", TZID: "UTC",
+			StartsAt: utc(2026, 12, 1, 18, 0), EndsAt: utc(2026, 12, 1, 19, 30), UpdatedAt: utc(2026, 11, 2, 8, 0)}}})
 	ev := cal.Events()[0]
 	if got := ics.FromText(prop(t, ev, ics.ComponentPropertySummary)); got != "Dinner, study; prayer\\worship" {
-		t.Fatalf("unescaped SUMMARY = %q", got)
+		t.Fatal(got)
 	}
 	if got := ics.FromText(prop(t, ev, ics.ComponentPropertyLocation)); got != "Smith home, 12 Oak St; ring twice" {
-		t.Fatalf("unescaped LOCATION = %q", got)
+		t.Fatal(got)
 	}
 }
-
-func TestICSUntilConversion(t *testing.T) {
-	cal := checkGolden(t, "until.ics", Feed{
-		Name:        "Fold",
-		Host:        "church.example.org",
-		WindowStart: utc(2026, 10, 1, 0, 0),
-		WindowEnd:   utc(2027, 10, 1, 0, 0),
-		Events: []FeedEvent{{
-			ID: 5, Title: "Advent study", TZID: "America/Boise", StartsLocal: "2026-12-01T19:00",
-			DurationMinutes: 60, RRule: "FREQ=WEEKLY;BYDAY=TU", RRuleUntil: "2026-12-29",
-			UpdatedAt: utc(2026, 10, 20, 12, 0),
-		}},
-	})
-	got := prop(t, cal.Events()[0], ics.ComponentPropertyRrule)
-	want := "FREQ=WEEKLY;BYDAY=TU;UNTIL=20261230T065959Z"
-	if got != want {
-		t.Fatalf("RRULE = %q, want %q (end of 2026-12-29 in Boise, in UTC)", got, want)
-	}
-}
-
 func TestICSStandaloneSingles(t *testing.T) {
 	cal := checkGolden(t, "singles.ics", Feed{
 		Name:        "Fold",
@@ -273,129 +216,50 @@ func TestICSPersonalExpandedSeriesUsesStableDateUIDs(t *testing.T) {
 	}
 }
 
-func TestICSUnsafeRuleFallsBackToSingleDates(t *testing.T) {
-	cal := checkGolden(t, "fallback.ics", Feed{
-		Name:        "Fold",
-		Host:        "church.example.org",
-		WindowStart: utc(2026, 11, 1, 0, 0),
-		WindowEnd:   utc(2027, 11, 1, 0, 0),
-		Events: []FeedEvent{{
-			ID: 13, Title: "Odd series", TZID: "UTC", StartsLocal: "2026-12-01T19:00",
-			DurationMinutes: 60, RRule: "FREQ=FORTNIGHTLY", UpdatedAt: utc(2026, 11, 1, 8, 0),
-			Occurrences: []FeedOccurrence{
-				{OriginalDate: "2026-12-01", StartsAt: utc(2026, 12, 1, 19, 0),
-					EndsAt: utc(2026, 12, 1, 20, 0), UpdatedAt: utc(2026, 11, 1, 8, 0)},
-				{OriginalDate: "2026-12-15", StartsAt: utc(2026, 12, 15, 19, 0),
-					EndsAt: utc(2026, 12, 15, 20, 0), UpdatedAt: utc(2026, 11, 1, 8, 0)},
-			},
-		}},
-	})
-	evs := cal.Events()
-	if len(evs) != 2 {
-		t.Fatalf("parsed %d events, want the 2 stored dates", len(evs))
-	}
-	for _, ev := range evs {
-		if ev.GetProperty(ics.ComponentPropertyRrule) != nil {
-			t.Fatal("the unsafe rule reached the feed")
-		}
-	}
-}
-
 func TestICSRenderIsDeterministic(t *testing.T) {
-	f := Feed{
-		Name: "Fold", Host: "church.example.org",
-		WindowStart: utc(2026, 10, 1, 0, 0), WindowEnd: utc(2027, 10, 1, 0, 0),
-		Events: []FeedEvent{
-			{ID: 2, Title: "Later id", TZID: "UTC", StartsLocal: "2026-12-01T19:00",
-				DurationMinutes: 60, UpdatedAt: utc(2026, 11, 1, 8, 0)},
-			{ID: 1, Title: "Earlier id", TZID: "UTC", StartsLocal: "2026-12-01T19:00",
-				DurationMinutes: 60, UpdatedAt: utc(2026, 11, 1, 8, 0)},
-		},
+	f := Feed{Name: "Fold", Host: "church.example.org", WindowStart: utc(2026, 10, 1, 0, 0), WindowEnd: utc(2027, 10, 1, 0, 0),
+		Singles: []FeedSingle{
+			{EventID: 2, OriginalDate: "2026-12-01", Title: strings.Repeat("é", 60), TZID: "UTC", StartsAt: utc(2026, 12, 1, 19, 0)},
+			{EventID: 1, OriginalDate: "2026-12-01", Title: "Earlier id", TZID: "UTC", StartsAt: utc(2026, 12, 1, 19, 0)},
+		}}
+	a := RenderFeed(f)
+	f.Singles[0], f.Singles[1] = f.Singles[1], f.Singles[0]
+	if !bytes.Equal(a, RenderFeed(f)) {
+		t.Fatal("input order changed rendered bytes")
 	}
-	a, b := RenderFeed(f), RenderFeed(f)
-	if !bytes.Equal(a, b) {
-		t.Fatal("two renders of the same feed differ (the ETag would never match)")
-	}
-	if strings.Index(string(a), "event-1@") > strings.Index(string(a), "event-2@") {
-		t.Fatal("events are not sorted by id")
-	}
-	if strings.Contains(string(a), "\n") && !strings.Contains(string(a), "\r\n") {
-		t.Fatal("lines do not end with CRLF")
+	if strings.Index(string(a), "event-1-") > strings.Index(string(a), "event-2-") {
+		t.Fatal("dates are not sorted")
 	}
 	for _, line := range strings.Split(string(a), "\r\n") {
 		if len(line) > 75 {
 			t.Fatalf("line over 75 octets: %q", line)
 		}
 	}
+	if _, err := ics.ParseCalendar(bytes.NewReader(a)); err != nil {
+		t.Fatal(err)
+	}
 }
 
-// A video link the handler cleared for the viewer rides in the
-// DESCRIPTION (M1.8); with none set, nothing renders.
-func TestICSVideoLinkInDescription(t *testing.T) {
+func TestICSDateParticipationDetails(t *testing.T) {
 	link := "https://meet.example.org/choir-abc123def4"
-	base := Feed{
-		Name: "Fold", Host: "church.example.org",
-		WindowStart: utc(2026, 11, 1, 0, 0), WindowEnd: utc(2027, 11, 1, 0, 0),
-		Events: []FeedEvent{{
-			ID: 21, Title: "Choir practice", TZID: "UTC", StartsLocal: "2026-12-01T19:00",
-			DurationMinutes: 60, UpdatedAt: utc(2026, 11, 1, 8, 0), VideoURL: link,
-		}},
-		Singles: []FeedSingle{{
-			EventID: 22, OriginalDate: "2026-12-02", Title: "One rehearsal", TZID: "UTC",
-			StartsAt: utc(2026, 12, 2, 19, 0), EndsAt: utc(2026, 12, 2, 20, 0),
-			UpdatedAt: utc(2026, 11, 1, 8, 0), VideoURL: link, Status: "CONFIRMED",
-		}},
-	}
-	if got := strings.Count(string(RenderFeed(base)), "Join by video:"); got != 2 {
-		t.Fatalf("series and single should each carry the link, got %d mentions", got)
-	}
-	base.Events[0].VideoURL = ""
-	base.Singles[0].VideoURL = ""
-	if out := string(RenderFeed(base)); strings.Contains(out, "Join by video") || strings.Contains(out, link) {
-		t.Fatal("an unset video link reached the feed")
-	}
-}
-
-// An event that offers remote attendance says so in the DESCRIPTION
-// (8.2, M1.8 slice 2), on series entries and standalone dates alike.
-func TestICSRemoteAvailableInDescription(t *testing.T) {
-	base := Feed{
-		Name: "Fold", Host: "church.example.org",
-		WindowStart: utc(2026, 11, 1, 0, 0), WindowEnd: utc(2027, 11, 1, 0, 0),
-		Events: []FeedEvent{{
-			ID: 23, Title: "Choir practice", TZID: "UTC", StartsLocal: "2026-12-01T19:00",
-			DurationMinutes: 60, UpdatedAt: utc(2026, 11, 1, 8, 0), RemoteAvailable: true,
-		}},
-		Singles: []FeedSingle{{
-			EventID: 24, OriginalDate: "2026-12-02", Title: "One rehearsal", TZID: "UTC",
-			StartsAt: utc(2026, 12, 2, 19, 0), EndsAt: utc(2026, 12, 2, 20, 0),
-			UpdatedAt: utc(2026, 11, 1, 8, 0), RemoteAvailable: true, Status: "CONFIRMED",
-		}},
-	}
-	if got := strings.Count(string(RenderFeed(base)), "Remote attendance available"); got != 2 {
-		t.Fatalf("series and single should each mention remote, got %d mentions", got)
-	}
-	base.Events[0].RemoteAvailable = false
-	base.Singles[0].RemoteAvailable = false
-	if out := string(RenderFeed(base)); strings.Contains(out, "Remote attendance available") {
-		t.Fatal("a non-remote event claimed remote attendance")
-	}
-}
-
-func TestICSChildcareDescription(t *testing.T) {
-	f := Feed{Host: "church.example.org", Events: []FeedEvent{{
-		ID: 1, Title: "Family Night", TZID: "UTC", StartsLocal: "2026-12-01T19:00", DurationMinutes: 60,
-		ChildcareAvailable: true, ChildcareAges: "Ages 2–5", RRule: "FREQ=WEEKLY;COUNT=2",
-		Overrides: []FeedOccurrence{{OriginalDate: "2026-12-08", StartsAt: utc(2026, 12, 8, 20, 0), EndsAt: utc(2026, 12, 8, 21, 0), Title: "New time"}},
-	}}, Singles: []FeedSingle{{EventID: 2, OriginalDate: "2026-12-02", Title: "One date", TZID: "UTC",
-		StartsAt: utc(2026, 12, 2, 19, 0), EndsAt: utc(2026, 12, 2, 20, 0), ChildcareAvailable: true,
-	}}}
+	f := Feed{Host: "church.example.org", Singles: []FeedSingle{
+		{EventID: 1, OriginalDate: "2026-12-01", Title: "Family Night", TZID: "UTC", StartsAt: utc(2026, 12, 1, 19, 0),
+			RemoteAvailable: true, ChildcareAvailable: true, ChildcareAges: "Ages 2–5", VideoURL: link},
+		{EventID: 1, OriginalDate: "2026-12-08", Title: "In person only", TZID: "UTC", StartsAt: utc(2026, 12, 8, 19, 0)},
+	}}
 	out := strings.ReplaceAll(string(RenderFeed(f)), "\r\n ", "")
-	if strings.Count(out, "Childcare available") != 3 || strings.Count(out, "Childcare available (Ages 2–5)") != 2 {
-		t.Fatalf("childcare missing from series, override or single:\n%s", out)
+	for _, text := range []string{"Remote attendance available", "Childcare available (Ages 2–5)", "Join by video: " + link} {
+		if strings.Count(out, text) != 1 {
+			t.Fatalf("per-date detail %q: %s", text, out)
+		}
 	}
-	f.Events[0].ChildcareAvailable, f.Singles[0].ChildcareAvailable = false, false
-	if strings.Contains(string(RenderFeed(f)), "Childcare available") {
-		t.Fatal("childcare-off event advertised childcare")
+	f.Singles[0].RemoteAvailable = false
+	f.Singles[0].ChildcareAvailable = false
+	f.Singles[0].VideoURL = ""
+	out = string(RenderFeed(f))
+	for _, text := range []string{"Remote attendance", "Childcare", "Join by video", link} {
+		if strings.Contains(out, text) {
+			t.Fatalf("unset %q reached feed", text)
+		}
 	}
 }

@@ -81,20 +81,29 @@ from POST; POST also remakes the link, which revokes the old one.
 church-wide dates in the next 30 days, events they host, their own answered or
 exact-access dates, and dates registered for household people) or `"all"`
 (every authorized date, with unanswered public and church-wide discovery dates
-limited to the next 30 days). Personal feeds expand dates so exclusions cannot
-be reintroduced by an RRULE. Every expanded row is a standalone VEVENT whose
-immutable identity is `UID:event-<eventId>-<originalDate>@<host>`; it has no
+limited to the next 30 days). All feeds export stored dates so exclusions cannot
+be reintroduced by an RRULE. Every row is a standalone VEVENT whose
+immutable identity is `UID:event-<eventId>-<originalDate as YYYYMMDD>@<host>`; it has no
 `RECURRENCE-ID`. A series time edit therefore changes `DTSTART` without changing
 the row's identity or its stored occurrence/registration. Date-only authority
 (for example, one public override of a hidden series) uses that same UID and
 exact-date URL, but emits no parent-series recurrence identity, description,
-hidden-group fallback, or video metadata. Going is `STATUS:CONFIRMED`; Maybe,
-Waitlisted and Not answered are `STATUS:TENTATIVE`; Can't go is omitted. Public
-and group feeds keep their series UID/RRULE/EXDATE/RECURRENCE-ID behavior.
+hidden-group fallback, childcare details, or parent video metadata. Effective remote
+availability is date participation information: it is included when enabled and
+the date's effective remote capacity is unlimited or positive, even if the parent
+series is hidden. Zero capacity omits the marker, not the date or an independently
+authorized video link; a full positive-capacity pool still advertises remote attendance.
+Going is `STATUS:CONFIRMED`; Maybe, Waitlisted and Not answered are
+`STATUS:TENTATIVE`; Can't go is omitted. These are the viewer's own answers:
+household registrations supply scope, not an RSVP for the viewer. A household-only
+Going date is therefore `TENTATIVE`, and the viewer's Can't go omits it from both
+personal scopes even when a household person is Going; their registration is unchanged.
+Video eligibility is checked separately and does not change this status.
+Public and group dates are `CONFIRMED`.
 
-This date-specific personal UID is an intentional pre-release wire correction
-from the earlier detached `(series UID, RECURRENCE-ID)` form. Anyone who imported
-a development feed from an earlier build may see the old rows removed and the
+Date-specific UIDs across all feeds are an intentional pre-release wire correction
+from earlier series masters and detached `(series UID, RECURRENCE-ID)` rows.
+Anyone who imported a development feed from an earlier build may see the old rows removed and the
 corrected rows added once; removing and re-adding that development subscription
 is the safest cleanup if a client retains stale rows. Representative external
 calendar clients still need manual interoperability checks. Revoking a link that is already off still
@@ -191,6 +200,9 @@ DELETE /api/v1/me/household/people/:id      → 200 {}
 POST   /api/v1/me/household/people/:id/convert → 201 {conversion}  {email}
 POST   /api/v1/me/household/people/:id/convert/resend → 200 {conversion}
 DELETE /api/v1/me/household/people/:id/convert → 200 {}
+GET    /api/v1/admin/users/:id/household            → 200 {household|null} (admin; read-only)
+POST   /api/v1/admin/users/:id/household            → 201 {household} {name?, address?} (admin; conflicts if already linked)
+POST   /api/v1/admin/users/:id/household/people     → 201 {person} {firstName, lastName?, kind, birthDate?, careNotes?, photoConsent?, guardianUserId?} (admin)
 GET    /api/v1/admin/guardian-links?status=pending  → 200 {guardianLinks, nominations}   (admin)
 POST   /api/v1/admin/guardian-links/:id/confirm     → 200 {guardianLink}    {checkNote} (admin; note required; not your own link while another active admin exists, DEC-79)
 POST   /api/v1/admin/guardian-links/:id/reject      → 200 {guardianLink}    {note?} (admin)
@@ -208,6 +220,20 @@ the account's last name. Any adult account in the household manages it; teen
 accounts get `null` from GET and 403 from the writes. Adding a `child` or
 `teen` person opens a pending guardian link that only an admin can confirm,
 with a note on how it was checked (DEC-32); an `adult` needs no approval.
+
+Admin household delegation uses an existing active adult account with a password
+as the holder (`:id`), never the acting admin. GET does not create anything;
+POST creates the household, its adult account link, and the attributed audit
+row in one transaction. An existing household link answers `409 household_exists`;
+adding people before creating a household answers `409 household_required`.
+Adding a child or teen requires an explicit `guardianUserId` naming an eligible
+active adult account in the same household (the holder or another adult), never
+the acting admin. The guardian link starts pending, with the ordinary admin
+confirmation task. Missing or ineligible guardians answer `409 household_guardian`;
+ineligible holders answer `409 household_holder`. Person/link/task/audit writes
+are atomic. `createdBy` and the audit actor identify the admin, not the holder
+or guardian. There is no household directory, search, delegated edit/delete,
+or admin household UI in this slice.
 
 Guardian claims return the same message for unknown addresses, adults,
 duplicates, and throttled submissions. The IP cap is 10/hour; the target
@@ -325,7 +351,7 @@ S3-replacement seam.
 GET  /api/v1/groups?search=&tag=          → {groups: [groupSummary]}
 GET  /api/v1/me/groups                    → {groups: [groupSummary]}  (auth; groups I belong to, any status)
 POST /api/v1/groups                       → 201 {group}   (auth, not teens; pending, or active when an admin creates it)
-GET  /api/v1/groups/:id                   → {group, members, upcomingEvents, canManage, isMember}
+GET  /api/v1/groups/:id?cursor=&limit=    → {group, members, upcomingEvents, truncated, hasMore, nextCursor, canManage, isMember}
 PUT  /api/v1/groups/:id                   → 200 {group}   (group leader or admin)
 POST   /api/v1/groups/:id/cover           → 200 {imageUrl} (group leader or admin; multipart, field "cover")
 DELETE /api/v1/groups/:id/cover           → 200 {}         (group leader or admin)
@@ -356,7 +382,33 @@ for no limit (DEC-39); `memberCount` counts active members of listed accounts. `
 displayed primary contact only (one of the leaders); they grant nothing.
 
 `group` (detail response): `{group: groupSummary, members: [...],
-upcomingEvents: [occurrence], canManage: bool, isMember: bool}`.
+upcomingEvents: [occurrence], truncated: bool, hasMore: bool,
+nextCursor: string, canManage: bool, isMember: bool}`.
+
+Upcoming dates use a bounded, forward-only continuation, not next-date
+search. Each request covers scheduled dates starting at or after now, with
+an original date through the UTC date 90 days ahead. `limit` defaults to
+25 and accepts integers from 1 through 100. Dates are ordered by start time,
+then occurrence ID; visibility is checked before the page limit and
+continuation metadata. There is no per-series cap: every visible date in the
+window can be reached by paging. Hidden dates never consume a slot or imply
+another page. Attendee enrichment runs only for the returned page.
+`hasMore` and `truncated` are equivalent: another visible date remains in
+this window. When true, `nextCursor` is an opaque last-seen occurrence key;
+pass it unchanged as `cursor` to request the next page. Otherwise it is `""`.
+A cursor belongs to one group, grants no access, and each page checks current
+visibility again. Invalid cursors or out-of-range limits return 400
+(`group_upcoming_page`). The time window is evaluated anew on each request;
+this is not a frozen snapshot when dates or permissions change.
+
+The SPA merges continuation pages by occurrence ID and resets loaded dates
+and cursors when the group or viewer changes. Per-series “more dates loaded”
+counts describe only those loaded, visible dates, not all dates in the
+90-day window or the full series. The calendar link remains available when
+the list is truncated. `/groups/:id/events` uses the same paging rules over
+its requested `from`/`to` window (see Events below); the calendar has its own
+truncation flag. Group detail does not accept `from`/`to` window controls.
+
 `members` is filled only for the group's members and admins (people see each
 other only inside groups they share); otherwise it is `[]`. `canManage` is
 true for the group's leaders and admins. Roster member: `{id, name, avatarUrl, accountType?, role,
@@ -375,6 +427,14 @@ everyone and blocks joins until the count drops (DEC-39).
 `visibility` is `public` (the default), `private`, or `invite_only`;
 anything else is rejected with 400. On update, omit it to leave it
 unchanged.
+
+Group updates patch only supplied fields onto the current locked row; omitted
+fields retain concurrent changes. `status` may also be supplied: leaders may
+archive, but only admins may approve or reactivate. An unrelated pending-group
+edit does not decide approval. The transaction rechecks the actor's session and
+current group authority: revoked credentials return 401, a now-hidden/deleted
+group returns 404, and a visible group the actor can no longer manage returns
+403. Approval tasks, tightening, audits and notices commit or roll back together.
 
 Changing a group's visibility (DEC-48). Making it more open never changes
 its events. Making it more private, in the same transaction:
@@ -639,8 +699,8 @@ GET  /api/v1/events
      can see but whose group they cannot; from yesterday through 90 days)
 POST /api/v1/events                         → 201 {event}   (admin; church-wide)
 GET  /api/v1/events/:id                     → 200 {event, occurrences, canManage, canSetVisibility}
-GET  /api/v1/groups/:id/events?from=2026-10-06&to=2027-01-06
-  → {events: [occurrence]}   (default: next 90 days, max 366-day window, max 100 per event)
+GET  /api/v1/groups/:id/events?from=2026-10-06&to=2027-01-06&cursor=&limit=
+  → {events: [occurrence], truncated, hasMore, nextCursor}   (default: next 90 days, max 366-day window; 25 dates per page)
 POST /api/v1/groups/:id/events              → 201 {event}   (group leader or admin)
      body adds optional {visibility, visibilityReason} (DEC-51): defaults to the
      group's value; wider than the group is saved leader-opened with an
@@ -667,6 +727,16 @@ GET  /api/v1/calendar?from=&to=&tz=&mine=1&group=&deleted=1&remote=1&childcare=1
      childcare=1 keeps only events with childcareAvailable)
 POST /api/v1/events/video/jitsi             → 200 {url}   (leader, host, or admin)
 ```
+
+`GET /groups/:id/events` pages all visible scheduled dates within its original-date
+window, with no per-series cap. Like group detail, `limit` defaults to 25
+and accepts 1..100; `truncated` and `hasMore` both mean another visible date
+remains, and `nextCursor` is an opaque, group-bound continuation (otherwise
+`""`). Pass the cursor unchanged and repeat the same `from`/`to` on each
+page to traverse a requested window; omitted bounds are recomputed on each
+request. Visibility is checked before the limit and metadata, and attendee
+enrichment only runs for returned dates. Invalid cursors or limits return
+400 (`group_upcoming_page`). This is not a frozen snapshot.
 
 `event`: `{id, groupId?, groupName?, groupVisibility?, hostedBy?, title,
 description, startsLocal, durationMinutes, tzid, startsAt, endsAt, location,
@@ -755,11 +825,17 @@ attendance pool and childcare promotes. Earlier picks in the same pass
 consume childcare spots. A party needing no childcare can still promote
 when childcare is full. Hand-promoting a specific person returns 409
 `childcare_full` if their childcare request does not fit.
-Promotion runs again when a going registration lowers its childcare count,
-cancels, declines, moves to maybe, is removed, or its account is disabled.
-Raising `childcareCapacity`, clearing its limit, or turning childcare off
-also retries promotion for future scheduled dates. Each promotion still
-requires attendance seats and follows the existing two-hour cutoff.
+Promotion runs again when a going registration lowers its guest or childcare
+count, switches attendance mode (freeing a seat in its previous pool), cancels,
+declines, moves to maybe, is removed, or its account is disabled. This includes
+manager re-adds that reduce a count or switch modes. Editing a registration
+that remains waitlisted also retries promotion using its updated request (for
+example, after lowering its guest or childcare count). Increasing effective
+attendance capacity (in-person or remote, including by clearing a limit or
+changing a per-date override), raising `childcareCapacity`, clearing its limit,
+or turning childcare off also retries promotion for future scheduled dates.
+Each promotion still requires attendance seats and follows the existing
+two-hour cutoff.
 On account re-enable, a going registration that would overfill childcare
 is dropped through the same DEC-47 audit and ask-a-leader notice as a full
 attendance pool, including when attendance seats are unlimited.
@@ -784,7 +860,7 @@ are a member of the event's group or a host. Waitlisted, declined,
 cancelled and removed dates, outsiders who haven't answered, and
 signed-out viewers never get it (`policy.CanSeeVideoLinkInFeed`).
 
-A recurring series in a personal feed is expanded to one standalone VEVENT per
+A recurring series in any feed is expanded to one standalone VEVENT per
 included date. Video eligibility is therefore evaluated per date. A viewer who
 has only date-level authority to an opened hidden series receives no video link,
 even if that event's general reveal mode is `always`; series-authorized viewers
@@ -812,8 +888,8 @@ visibility overrides.
 
 Occurrences are returned in chronological order. `from`/`to` are inclusive
 `YYYY-MM-DD` and at most 366 days apart. Cancelled dates are left out of
-the list. The group detail's `upcomingEvents` are the scheduled dates from
-now through 90 days.
+the list. The group detail's `upcomingEvents` instead use the bounded
+90-day continuation described under Groups (25 dates per page by default).
 
 ### Registration
 
@@ -843,7 +919,7 @@ POST /api/v1/events/:id/registrations/promote → 200 {} | 403 | 404 | 409  (lea
   body: {date: "YYYY-MM-DD", registrationId}
 POST /api/v1/events/:id/registrations/add     → 200 {} | 403 | 404 | 409  (leader/host)
   body: {date: "YYYY-MM-DD", selectionId | userId | email | (personId + registeredBy),
-         guestCount?, childcareRequested?, overCapacity?}
+         guestCount?, attendanceMode?, childcareRequested?, overCapacity?}
 ```
 
 `registration`: `{userId, eventId, occurrenceId, date, status, guestCount,
@@ -994,6 +1070,7 @@ GET  /api/v1/admin/users/:id/sole-leader-groups → {groups: [{id, name, status,
 POST /api/v1/admin/users                    → 201 {user}                (admin)
      body: {email, name, password? (≥10 chars), role, displayName?, phone?}
      — without a password the account is `invited` and can't sign in; 409 if the email is taken (any case)
+     — rechecks the acting admin's session and authority at insertion; 401 if revoked while the request was in flight; creation and its audit commit together, with no notification or email
 PUT  /api/v1/admin/users/:id               → 200 {user}                (admin; profile fields, email, role, status)
      body: any of {name, displayName, email, phone, role, status: "active"|"disabled", successors}
 POST /api/v1/admin/users/:id/password      → 200 {}                    (admin; also activates an invited account)
@@ -1104,9 +1181,16 @@ Feeds cover 30 days back to 12 months ahead, carry `ETag` and
 `Cache-Control: private, max-age=900` (304 on `If-None-Match`), and
 never carry attendee data. Contents follow the viewer's permissions at
 fetch time; a disabled or deleted owner's token answers the same plain
-404 as an unknown one. Personal-feed standalone identity and date-only privacy
-are described with the calendar-feed token contract above. Public and group
-feeds retain recurring-series wire output.
+404 as an unknown one. All feeds are finite snapshots of authorized scheduled
+occurrences selected by their actual start in the half-open export window.
+They contain no VEVENT `RRULE`, `EXDATE`, `RDATE`, or `RECURRENCE-ID`: clients
+never reconstruct dates beyond the loaded authorization facts. Cancellation
+omits a date on the next refresh; a reschedule keeps its original-date UID and
+updates its effective clock, including moves into or out of the window.
+Standalone identity and date-only privacy are described with the calendar-feed
+token contract above. Timezone coverage follows the window and emitted clocks,
+not the age of the series anchor. Calendar clients choose when to refresh and
+may retain old cached data; no immediate remote deletion is promised.
 
 ## Conventions
 

@@ -120,7 +120,7 @@ for (const [id, role, p, ready] of pages) {
     await page.screenshot({ path: path.join(dir, shot), fullPage: true, animations: "disabled", caret: "hide" });
     const m = await page.evaluate(measure);
     const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
-    const axe = violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => `${v.id} (${v.nodes.length})`);
+    const axe = violations.filter((v) => v.impact === "moderate" || v.impact === "serious" || v.impact === "critical").map((v) => `${v.id} (${v.nodes.length})`);
     const fails = [m.overflow > 0 && `horizontal overflow ${m.overflow}px`, m.cutOff.length && `cut off ${m.cutOff.map((c) => `${c.el} "${c.name}"`).join("; ")}`, m.clipped.length && `clipped select ${m.clipped.map((c) => `#${c.id} "${c.label}" ${c.text}>${c.room}px`).join("; ")}`,
       m.under24.length && `targets under 24px: ${m.under24.map((t) => `${t.el} "${t.name}" ${t.w}x${t.h}`).join("; ")}`, axe.length && `axe ${axe.join(", ")}`].filter(Boolean);
     hard += fails.length;

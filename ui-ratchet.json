@@ -13,14 +13,13 @@
   },
   "importantOverrides": {
     "web/src/components/Notifications.tsx": 2,
-    "web/src/pages/GroupDetail.tsx": 3,
     "web/src/pages/Profile.tsx": 1
   },
   "rawControls": {
     "web/src/components/Layout.tsx": 1,
     "web/src/components/Notifications.tsx": 8,
     "web/src/pages/EventDetail.tsx": 2,
-    "web/src/pages/GroupDetail.tsx": 3,
+    "web/src/pages/GroupDetail.tsx": 1,
     "web/src/pages/Home.tsx": 6,
     "web/src/pages/NewChurchEvent.tsx": 1,
     "web/src/pages/NewEvent.tsx": 1,

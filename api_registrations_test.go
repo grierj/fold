@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"fold/internal/audit"
 	"gorm.io/gorm"
@@ -36,12 +37,7 @@ func TestParseRemoteCapacity(t *testing.T) {
 		{name: "negative date", raw: "-2", allowZero: true, wantError: "remote seat limit for this date must be a whole number from 0 to 100000, or empty"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			var raw *json.RawMessage
-			if tt.raw != "" {
-				value := json.RawMessage(tt.raw)
-				raw = &value
-			}
-			got, set, msg := parseRemoteCapacity(raw, tt.allowZero)
+			got, set, msg := parseRemoteCapacity(json.RawMessage(tt.raw), tt.allowZero)
 			if !intPtrEqual(got, tt.want) || set != tt.wantSet || msg != tt.wantError {
 				t.Fatalf("got (%v, %t, %q), want (%v, %t, %q)", got, set, msg, tt.want, tt.wantSet, tt.wantError)
 			}
@@ -1980,6 +1976,230 @@ func TestHouseholdPromotionDoesNotUseHoldersInvitation(t *testing.T) {
 			apiDo(t, anonClient(t, f.app, "10.3.8.2"), "POST", "/api/v1/guest-registrations/manage/"+raw+"/cancel", nil, 200)
 			if savedOccurrenceAccess(t, f).Status != "active" || regStatus(t, f.app, f.recipient.ID, f.dates[1].ID) != models.RegGoing {
 				t.Fatal("household cancel affected own invitation")
+			}
+		})
+	}
+}
+
+func TestManagerReaddWithFewerGuestsPromotesWaitlist(t *testing.T) {
+	for _, insideCutoff := range []bool{false, true} {
+		t.Run(fmt.Sprintf("insideCutoff=%t", insideCutoff), func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "ManagerGuestReduction")
+			id, date := seedCappedEvent(t, app, admin, gid, intPtr(4), true)
+			party := newTestUser(t, app, "party", "password1234", models.RoleMember)
+			waiter := newTestUser(t, app, "waiter", "password1234", models.RoleMember)
+			path := "/api/v1/events/" + itoa(id) + "/registrations"
+			apiDo(t, admin, "POST", path+"/add", map[string]any{"date": date, "userId": party.ID, "guestCount": 3}, http.StatusOK)
+			wc := loginAPI(t, app, "waiter", "password1234")
+			code, body := registerAs(wc, id, date, "going", nil)
+			if code != http.StatusOK {
+				t.Fatalf("waitlist: %d %s", code, body)
+			}
+			var occurrence models.EventOccurrence
+			if err := app.DB.First(&occurrence, "event_id = ?", id).Error; err != nil {
+				t.Fatal(err)
+			}
+			if got := regStatus(t, app, waiter.ID, occurrence.ID); got != models.RegWaitlisted {
+				t.Fatalf("before reduction: %s", got)
+			}
+			if insideCutoff {
+				if err := app.DB.Model(&occurrence).Update("starts_at", time.Now().UTC().Add(time.Hour)).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			apiDo(t, admin, "POST", path+"/add", map[string]any{"date": date, "userId": party.ID, "guestCount": 0}, http.StatusOK)
+			want := models.RegGoing
+			if insideCutoff {
+				want = models.RegWaitlisted
+			}
+			if got := regStatus(t, app, waiter.ID, occurrence.ID); got != want {
+				t.Fatalf("after reduction: %s, want %s", got, want)
+			}
+			var registration models.Registration
+			if err := app.DB.First(&registration, "occurrence_id = ? AND user_id = ?", occurrence.ID, party.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if registration.Status != models.RegGoing || registration.GuestCount != 0 {
+				t.Fatalf("re-added party: %+v", registration)
+			}
+		})
+	}
+}
+
+func TestManagerHouseholdModeSwitchPromotesWaitlist(t *testing.T) {
+	for _, insideCutoff := range []bool{false, true} {
+		t.Run(fmt.Sprintf("insideCutoff=%t", insideCutoff), func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "ManagerHouseholdModeSwitch")
+			id, date := seedCappedEvent(t, app, admin, gid, intPtr(1), true)
+			apiDo(t, admin, "PUT", "/api/v1/events/"+itoa(id), map[string]any{"remoteAvailable": true, "remoteCapacity": 1}, http.StatusOK)
+			holder, hc, spouse, _ := householdFamily(t, app, admin, "modeholder")
+			result := batchAnswer(t, hc, id, date, map[string]any{"people": []map[string]any{{"personId": spouse.ID, "status": "going", "attendanceMode": models.AttendanceInPerson}}}, http.StatusOK)
+			registrationID := result.People[0].RegistrationID
+			var occurrence models.EventOccurrence
+			if err := app.DB.First(&occurrence, "event_id = ?", id).Error; err != nil {
+				t.Fatal(err)
+			}
+			occurrenceID := occurrence.ID
+			waiter := newTestUser(t, app, "modewaiter", "password1234", models.RoleMember)
+			wc := loginAPI(t, app, "modewaiter", "password1234")
+			if code, body := registerModeAs(wc, id, date, "going", models.AttendanceInPerson); code != http.StatusOK {
+				t.Fatalf("waitlist: %d %s", code, body)
+			}
+			if got := regStatus(t, app, waiter.ID, occurrenceID); got != models.RegWaitlisted {
+				t.Fatalf("before mode switch: %s", got)
+			}
+			if insideCutoff {
+				if err := app.DB.Model(&models.EventOccurrence{}).Where("id = ?", occurrenceID).Update("starts_at", time.Now().UTC().Add(time.Hour)).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			apiDo(t, admin, "POST", "/api/v1/events/"+itoa(id)+"/registrations/add", map[string]any{
+				"date": date, "personId": spouse.ID, "registeredBy": holder.ID, "attendanceMode": models.AttendanceRemote,
+			}, http.StatusOK)
+			var registration models.Registration
+			if err := app.DB.First(&registration, registrationID).Error; err != nil {
+				t.Fatal(err)
+			}
+			if registration.Status != models.RegGoing || registration.AttendanceMode != models.AttendanceRemote || registrationHolder(registration) != holder.ID {
+				t.Fatalf("switched household registration: %+v", registration)
+			}
+			var promoted models.Registration
+			if err := app.DB.First(&promoted, "occurrence_id = ? AND user_id = ?", occurrenceID, waiter.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			want := models.RegGoing
+			if insideCutoff {
+				want = models.RegWaitlisted
+			}
+			if promoted.Status != want || (promoted.PromotedAt != nil) != !insideCutoff || promoted.AttendanceMode != models.AttendanceInPerson {
+				t.Fatalf("waiter after mode switch: %+v, want %s", promoted, want)
+			}
+		})
+	}
+}
+
+func TestRemoteCapacityNullPromotesWaitlist(t *testing.T) {
+	for _, scope := range []string{"event", "date"} {
+		t.Run(scope, func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "Remote reset")
+			capacity := intPtr(1)
+			if scope == "date" {
+				capacity = nil
+			}
+			eventID, date := seedRemoteEvent(t, app, admin, gid, nil, capacity, true)
+			path, field := fmt.Sprintf("/api/v1/events/%d", eventID), "remoteCapacity"
+			if scope == "date" {
+				path += "/occurrences/" + date
+				field = "remoteCapacityOverride"
+				apiDo(t, admin, "PUT", path, map[string]any{field: 1}, http.StatusOK)
+			}
+			var g models.Group
+			if err := app.DB.First(&g, gid).Error; err != nil {
+				t.Fatal(err)
+			}
+			_, first := mkUser(t, app, &g, "first remote")
+			secondUser, second := mkUser(t, app, &g, "waiting remote")
+			for _, client := range []*apiClient{first, second} {
+				if code, body := registerModeAs(client, eventID, date, models.RegGoing, models.AttendanceRemote); code != http.StatusOK {
+					t.Fatalf("register: %d %s", code, body)
+				}
+			}
+			var occ models.EventOccurrence
+			if err := app.DB.Where("event_id = ? AND original_date = ?", eventID, date).First(&occ).Error; err != nil {
+				t.Fatal(err)
+			}
+			if got := regStatus(t, app, secondUser.ID, occ.ID); got != models.RegWaitlisted {
+				t.Fatalf("before reset: %s", got)
+			}
+			// Failure after promotion starts must roll back both the capacity
+			// reset and its RSVP/audit writes under the existing lock order.
+			var before models.Registration
+			if err := app.DB.Where("user_id = ? AND occurrence_id = ?", secondUser.ID, occ.ID).First(&before).Error; err != nil {
+				t.Fatal(err)
+			}
+			var auditBefore int64
+			app.DB.Model(&models.AuditLog{}).Count(&auditBefore)
+			failed := false
+			const callback = "test:fail_promotion_notice"
+			if err := app.DB.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table == "notifications" {
+					failed = true
+					_ = tx.AddError(errors.New("promotion notice unavailable"))
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = app.DB.Callback().Create().Remove(callback) })
+			apiDo(t, admin, "PUT", path, map[string]any{field: nil}, http.StatusInternalServerError)
+			_ = app.DB.Callback().Create().Remove(callback)
+			var after models.Registration
+			if err := app.DB.First(&after, before.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			var auditAfter int64
+			app.DB.Model(&models.AuditLog{}).Count(&auditAfter)
+			var ev models.Event
+			app.DB.First(&ev, eventID)
+			app.DB.First(&occ, occ.ID)
+			if !failed || after.Status != before.Status || after.PromotedAt != nil || !intPtrEqual(capacityForMode(&ev, &occ, models.AttendanceRemote), intPtr(1)) || auditAfter != auditBefore {
+				t.Fatalf("failed promotion did not roll back: injected=%v registration=%+v event=%+v occurrence=%+v audits=%d->%d", failed, after, ev, occ, auditBefore, auditAfter)
+			}
+			apiDo(t, admin, "PUT", path, map[string]any{field: nil}, http.StatusOK)
+			if got := regStatus(t, app, secondUser.ID, occ.ID); got != models.RegGoing {
+				t.Fatalf("unlimited remote reset did not promote: %s", got)
+			}
+		})
+	}
+}
+
+func TestRemoteCapacityNullDoesNotPromoteDisabledPool(t *testing.T) {
+	for _, scope := range []string{"event", "date"} {
+		t.Run(scope, func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "Disabled remote reset")
+			capacity := intPtr(1)
+			if scope == "date" {
+				capacity = nil
+			}
+			eventID, date := seedRemoteEvent(t, app, admin, gid, nil, capacity, true)
+			eventPath := fmt.Sprintf("/api/v1/events/%d", eventID)
+			path, field := eventPath, "remoteCapacity"
+			if scope == "date" {
+				path += "/occurrences/" + date
+				field = "remoteCapacityOverride"
+				apiDo(t, admin, "PUT", path, map[string]any{field: 1}, http.StatusOK)
+			}
+			var g models.Group
+			if err := app.DB.First(&g, gid).Error; err != nil {
+				t.Fatal(err)
+			}
+			_, first := mkUser(t, app, &g, "first remote")
+			waitingUser, waiting := mkUser(t, app, &g, "waiting remote")
+			for _, client := range []*apiClient{first, waiting} {
+				if code, body := registerModeAs(client, eventID, date, models.RegGoing, models.AttendanceRemote); code != http.StatusOK {
+					t.Fatalf("register: %d %s", code, body)
+				}
+			}
+			body := map[string]any{field: nil}
+			if scope == "event" {
+				body["remoteAvailable"] = false
+			} else {
+				apiDo(t, admin, "PUT", eventPath, map[string]any{"remoteAvailable": false}, http.StatusOK)
+			}
+			apiDo(t, admin, "PUT", path, body, http.StatusOK)
+			var occ models.EventOccurrence
+			if err := app.DB.Where("event_id = ? AND original_date = ?", eventID, date).First(&occ).Error; err != nil {
+				t.Fatal(err)
+			}
+			var reg models.Registration
+			if err := app.DB.Where("user_id = ? AND occurrence_id = ?", waitingUser.ID, occ.ID).First(&reg).Error; err != nil {
+				t.Fatal(err)
+			}
+			if reg.Status != models.RegWaitlisted || reg.PromotedAt != nil {
+				t.Fatalf("disabled remote pool promoted waiter: %+v", reg)
 			}
 		})
 	}

@@ -69,7 +69,7 @@ func TestOpenedDateDiscoveryAndFeedPrivacy(t *testing.T) {
 	if len(listed) != 1 || listed[0].GroupID != nil || listed[0].RecurrenceRule != "" || listed[0].Location != "" || listed[0].AttendeesVisible {
 		t.Fatalf("list: %+v", listed)
 	}
-	feed := events.RenderFeed(app.buildFeed(nil, feedOptions{name: "Church"}, time.Now().UTC()))
+	feed := events.RenderFeed(mustBuildFeed(t, app, nil, feedOptions{name: "Church"}, time.Now().UTC()))
 	if strings.Contains(string(feed), "RRULE") || strings.Count(string(feed), "BEGIN:VEVENT") != 1 || !strings.Contains(string(feed), "/dates/"+dates[0].OriginalDate) || strings.Contains(string(feed), "SECRET") {
 		t.Fatalf("feed: %s", feed)
 	}
@@ -295,7 +295,7 @@ func TestDateVisibilityFeedsUseStandaloneEntriesAndInvalidateETags(t *testing.T)
 		t.Fatalf("partial recurrence feed: %s", body)
 	}
 	for _, opts := range []feedOptions{{name: "Public"}, {name: "Group", onlyGroupID: ev.GroupID}} {
-		feed := events.RenderFeed(app.buildFeed(nil, opts, time.Now().UTC()))
+		feed := events.RenderFeed(mustBuildFeed(t, app, nil, opts, time.Now().UTC()))
 		if strings.Contains(string(feed), "RRULE") || strings.Count(string(feed), "BEGIN:VEVENT") != 3 {
 			t.Fatalf("feed leaks hidden date: %s", feed)
 		}
@@ -440,7 +440,11 @@ func TestVisibilityCancellationRevokesPromotedAccountManageToken(t *testing.T) {
 	}
 	var reg models.Registration
 	app.DB.Where("user_id = ? AND occurrence_id = ?", user.ID, dates[0].ID).First(&reg)
-	if reg.Status != models.RegCancelled || reg.ManageTokenHash != "" {
-		t.Fatalf("history or revocation: %+v", reg)
+	if reg.Status != models.RegCancelled || reg.ManageTokenHash != hashToken(raw) {
+		t.Fatalf("history or retained credential: %+v", reg)
 	}
+	// The hash survives tightening; only current authorization denies it.
+	apiDo(t, admin, "PUT", path, map[string]any{"visibility": "public"}, 200)
+	apiDo(t, anon, "GET", manage, nil, 200)
+	apiDo(t, anon, "POST", manage+"/cancel", nil, 200)
 }

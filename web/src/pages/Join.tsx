@@ -29,7 +29,7 @@ export function Join() {
         Ask for an account below. An admin reviews every request, and we email you the
         decision — approved requests get a link to set a password. Already have an
         account?{" "}
-        <Link to="/login" className="text-primary font-semibold">Log in</Link>.
+        <Link to="/login" className="inline-flex min-h-11 items-center text-primary font-semibold">Log in</Link>.
       </p>
       {loaded && mode === "off" ? (
         <div className="bg-surface rounded-lg border border-border p-6 text-sm text-text-muted">
