@@ -1212,6 +1212,9 @@ func TestFeedDateProjectionReadBudget(t *testing.T) {
 
 func TestFeedReadFailuresNeverPublishSnapshots(t *testing.T) {
 	app := testApp(t)
+	if err := app.DB.Create(&models.Setting{Key: "site_name", Value: "Feed Church"}).Error; err != nil {
+		t.Fatal(err)
+	}
 	admin, gid := openGroup(t, app, "Feed read failures")
 	createVideoEvent(t, admin, gid, map[string]any{"remoteAvailable": true, "videoProvider": "link", "videoUrl": videoLink, "videoReveal": "registered_only"})
 	var group models.Group
@@ -1232,6 +1235,12 @@ func TestFeedReadFailuresNeverPublishSnapshots(t *testing.T) {
 				read  int
 			}
 			failures := []failedRead{{"events", 1}, {"groups", 1}, {"event_occurrences", 1}}
+			if path == "/cal/public.ics" || path == personal {
+				if !strings.Contains(before.Body.String(), "X-WR-CALNAME:Feed Church\r\n") {
+					t.Fatalf("missing configured calendar name: %s", before.Body.String())
+				}
+				failures = append(failures, failedRead{"settings", 1})
+			}
 			if path == personal {
 				failures = append(failures, failedRead{"calendar_tokens", 1}, failedRead{"users", 1},
 					failedRead{"memberships", 1}, failedRead{"event_hosts", 1}, failedRead{"occurrence_accesses", 1},
@@ -1254,6 +1263,11 @@ func TestFeedReadFailuresNeverPublishSnapshots(t *testing.T) {
 						t.Fatal(err)
 					}
 					t.Cleanup(func() { _ = app.DB.Callback().Query().Remove(callback) })
+					if path == personal && failure.table == "settings" {
+						if w := fetchFeed(t, anon, "/cal/u/no-such-token.ics"); w.Code != http.StatusNotFound || reads != 0 {
+							t.Fatalf("invalid token read settings: status=%d reads=%d", w.Code, reads)
+						}
+					}
 					for _, etag := range []string{"", before.Header().Get("ETag"), "*"} {
 						reads = 0
 						w := fetchFeedIf(t, anon, path, etag)
@@ -1269,6 +1283,32 @@ func TestFeedReadFailuresNeverPublishSnapshots(t *testing.T) {
 						t.Fatalf("same snapshot did not recover after failed read: %d %s", recovered.Code, recovered.Body.String())
 					}
 				})
+			}
+		})
+	}
+}
+
+func TestFeedSiteNameFallback(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "feed name member", "password1234", models.RoleMember)
+	member := loginAPI(t, app, "feed name member", "password1234")
+	personal := createFeedLink(t, member, models.CalendarFeedMine)
+	anon := newAPIClient(t, app)
+	for _, setting := range []string{"missing", "empty"} {
+		t.Run(setting, func(t *testing.T) {
+			if setting == "empty" {
+				if err := app.DB.Create(&models.Setting{Key: "site_name", Value: ""}).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, path := range []string{"/cal/public.ics", personal} {
+				w := fetchFeed(t, anon, path)
+				if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "X-WR-CALNAME:Fold\r\n") || w.Header().Get("ETag") == "" {
+					t.Fatalf("%s fallback: status=%d headers=%v body=%s", path, w.Code, w.Header(), w.Body.String())
+				}
+				if cached := fetchFeedIf(t, anon, path, w.Header().Get("ETag")); cached.Code != http.StatusNotModified {
+					t.Fatalf("%s fallback did not cache: %d", path, cached.Code)
+				}
 			}
 		})
 	}
