@@ -294,7 +294,7 @@ The field lists show the important columns, not every column. Every table has `i
 
 **Groups**
 
-- `Group`: `visibility` (`public|private|invite_only`; replaces `Visibility` + `InviteOnly`), `status` (`pending|active|archived`), `leader_id` (displayed primary contact only; never used for permissions, C12), `category` (from a short admin-defined list, for example "Small group", "Ministry", "Class", "Youth"). `member_limit` (nullable positive int; null, the default, means unlimited; set by the group's leaders or an admin; DEC-39, 5.4). Joining: any member who can see a public or private group may join it at once; invite-only groups are joined only by invitation. There is no join-request step; leaders remove members who shouldn't be there (DEC-30). There is no teen restriction on groups (DEC-20).
+- `Group`: `visibility` (`public|private|invite_only`; replaces `Visibility` + `InviteOnly`), `status` (`pending|active|archived`), `leader_id` (displayed primary contact only; never used for permissions, C12), `tags` (free text, comma-separated; the Home chips filter by them, and room suggestions use them as the event's type, DEC-100). `member_limit` (nullable positive int; null, the default, means unlimited; set by the group's leaders or an admin; DEC-39, 5.4). Joining: any member who can see a public or private group may join it at once; invite-only groups are joined only by invitation. There is no join-request step; leaders remove members who shouldn't be there (DEC-30). There is no teen restriction on groups (DEC-20).
 - `Membership`: `role` = `leader|member`; several leaders allowed; this is the only source of leadership. `status` = `active|left|removed`. `left` records a voluntary departure: the row and first-ever join date remain, and the person may rejoin under the ordinary visibility and capacity rules (DEC-86). Reactivation advances the membership tenure. `removed` means a leader or admin removed the person (DEC-35): they can't rejoin on their own until a leader or admin adds them back, and the removal is in the `AuditLog`. A disabled account keeps its `active` memberships, hidden and uncounted, with any leadership handed off (DEC-38). When an account is re-enabled and a group is at its `member_limit`, that membership is dropped and the person is told to ask a leader (DEC-47); there is no `pending_return` status. A teen account can never have `role=leader` (DEC-18).
 
 **Events**
@@ -888,7 +888,7 @@ Fold sits between leaders and the people they reach, so nobody's personal addres
 
 ### 8.1 In-app views
 
-- Timeline (`/calendar`): an agenda list grouped by day showing every occurrence the viewer may see. Filters: group, category, "my events", visibility, childcare, remote. Scrolls forward; a "past" toggle shows history.
+- Timeline (`/calendar`): an agenda list grouped by day showing every occurrence the viewer may see. Filters: group, tag, "my events", visibility, childcare, remote. Scrolls forward; a "past" toggle shows history.
 - Week and month grid views (a small calendar component; no heavy dependency needed).
 - By room (`/calendar/rooms`, when rooms are on): one column per room, rows for time, one day or one week at a time. Bookings the viewer cannot see show as grey "Reserved" blocks with no title.
 
@@ -900,7 +900,7 @@ Fold sits between leaders and the people they reach, so nobody's personal addres
 | Public group feed | `/cal/groups/<id>.ics` | none; public groups only | That group's public events |
 | Personal feed | `/cal/u/<token>.ics` | secret token in the URL | Option A, "My events" (`mine`, default): the viewer's own scope (DEC-72/73) — occurrences the user is `going`, `maybe` or `waitlisted` for, all events of groups they belong to, church-wide dates, events they host (DEC-7), and events their household people are registered for (DEC-8). Option B, "Everything I can see" (`all`): every date the user may see. Both scopes follow DEC-71/77 from M1.14: Going is `CONFIRMED`, Maybe, Not answered and Waitlisted are `TENTATIVE`, Can't go dates are omitted, an unanswered public date of another group appears only in `all` and only within the 30-day window, and an unanswered church-wide date appears only within the window. Video links included when the user may see them. |
 | One date (DEC-93) | `/api/v1/events/<id>/dates/<date>/calendar.ics` | the date page's own access (signed out for public dates) | A one-time download of that date, with exactly what the date page shows; Going is `CONFIRMED`, Maybe and Waitlisted `TENTATIVE`. Not a subscription. |
-| Room feed | `/cal/rooms/<roomId>/<token>.ics` | admin-issued token | All bookings for the room. Invite-only bookings are titled "Reserved". |
+| Room feed | `/cal/rooms/<roomId>/<token>.ics` | admin-issued token | Confirmed bookings for the room. Invite-only and hidden-date bookings are titled "Reserved". |
 
 Personal-feed status follows the **viewer’s own answer** (DEC-71). Household
 registrations supply scope, not the viewer’s RSVP: a household-only Going date is
@@ -1541,7 +1541,7 @@ Phase 0 is done (v0.2) and merged before Phase 1. It delivered the Postgres-only
 **M0.3b Leaders remove members, sole-leader handoff, security headers, dependency scanning**
 - Removal (DEC-35): `DELETE /api/v1/groups/:id/members/:userId` (optional `{note}`) and the admin twin `DELETE /admin/groups/:id/members/:userId`. `CanRemoveMember` and `CanChangeRole` decide: admins remove anyone, leaders only from groups they lead, nobody removes the last leader, and a leader can't remove or demote an admin. Leaving is `POST /groups/:id/leave` with the same rules. Removal sets `status=removed` and keeps the row. The person can't rejoin alone (403 "A leader removed you from this group"), and a leader or admin can add them back. It writes `membership.removed` (the note stays in the audit row, never shown to the person) and gives admins the `leadership` notice when a leader goes.
 - Sole-leader handoff (DEC-36): `GET /api/v1/admin/users/:id/sole-leader-groups` lists groups where the account is the only active leader, with candidate successors (the group's other active adult members and every admin). `DELETE /api/v1/admin/users/:id`, and disabling, take `{successors: {"<groupId>": <userId>}}` and refuse with 400 and the list when one is missing. One transaction makes the successors leaders, then deletes or disables. Audit rows are `membership.role_changed` per group (reason `account_deleted` or `account_disabled`) and `user.deleted` or `user.disabled`. `leaderCount` counts only active accounts.
-- Disabled accounts (DEC-38): memberships and registrations are kept but hidden and never counted. Enabling restores them as plain member (`membership.restored`, `user.enabled`). In a full group the person is left out, `membership.not_restored` is written, and they get a notice to ask a leader (DEC-47); memberships allow only `active` or `removed`. The members JSON has an `admin` flag, and Remove is hidden for admins unless the viewer is an admin.
+- Disabled accounts (DEC-38): memberships and registrations are kept but hidden and never counted. Enabling restores them as plain member (`membership.restored`, `user.enabled`). In a full group the person is left out, `membership.not_restored` is written, and they get a notice to ask a leader (DEC-47); memberships are `active`, `removed` or `left` (DEC-86). The members JSON has an `admin` flag, and Remove is hidden for admins unless the viewer is an admin.
 - Member limit (DEC-39, 5.4): nullable `groups.member_limit` (`CHECK > 0`) and `policy.GroupHasRoom`. Join, the leader's add and the admin add share one path that locks the group row. A full group answers self-join 409 "This group is full"; leader and admin adds get 409 with `full: true` unless the body has `overLimit: true`, which writes `membership.added_over_limit`. Lowering the limit below the count keeps everyone. Only active memberships of listed accounts count.
 - Security headers (DEC-37, 10.1, 10.6): the app sets CSP (`default-src 'self'`, no `unsafe-inline`; `img-src 'self' data: blob: https:`, where `blob:` is for upload previews and `https:` for cover images by URL), HSTS when `COOKIE_SECURE` is on, `nosniff`, `Referrer-Policy: same-origin`, `X-Frame-Options: SAMEORIGIN` and a `Permissions-Policy` that turns off camera, microphone and geolocation. `/setup` works under the same CSP. The image compressor runs on the main thread because its web worker loads code from a CDN.
 - Dependency scanning: Dependabot updates Go, npm, GitHub Actions and Docker base images weekly. CI runs a pinned `govulncheck ./...` and `npm audit --omit=dev --audit-level=high`.
@@ -1656,9 +1656,10 @@ Rooms are optional (9.1) and touch the database, API and UI together, so every m
 
 Design defaults for this phase (decided here so slices don't reopen them; change them in review if wrong):
 
-- **Where rooms show.** With rooms on, an event or date with a confirmed booking shows the room as its place ("Fellowship Hall · Main building"), unless the leader typed a location, which wins. Without a booking, the free-text location shows as today.
+- **Where rooms show.** With rooms on, an event or date with a confirmed booking shows the room as its place ("Fellowship Hall · Main building"); a typed location then shows as a detail after it ("… · north door"), and the room name is the ICS `LOCATION` (8.2). Without a booking, the free-text location shows as today.
 - **Room feed tokens** are their own table (`room_feed_tokens(room_id, token_hash, created_by, created_at, revoked_at)`), not a new kind on the per-user `calendar_tokens` (which is one row per user).
-- **A `requested` booking holds nothing.** Only `confirmed` bookings are in the exclusion constraint. `rejected` is set only when an admin declines a requested booking.
+- **A `requested` booking holds nothing.** Only `confirmed` bookings are in the exclusion constraint. `rejected` is set only when an admin declines a requested booking. When a leader picks another room for that date, the new booking replaces the requested one.
+- **Restricted rooms** (the nursery, say) appear in the by-room view and room feed lists for admins only; everyone else never sees them listed.
 - **Phones.** The by-room view shows one room at a time as a day list with a room picker; the column grid starts at `sm` (DEC-67's pattern for Week).
 - **Event type for suggestions (9.3 Rule 3)** is the group's tags (DEC-100): no event category field.
 
@@ -1672,16 +1673,17 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - **M2.1b One booking on one date**
   - Database: `room_bookings` with `padded_range`, the `CHECK` that it matches the times and padding, and the exclusion constraint on confirmed bookings (5.3, 9.2).
   - API: book, change and release the room of one occurrence; `room_busy` (409) names the conflict window but never the other event; admins may double-book with a reason (`room_booking.overlap` audit row); restricted rooms are admin-only; a capacity warning (not a block) when the event's capacity or going count is above the room's. Cancelling a date releases its booking.
-  - UI: a Room field in "Edit this date" and the shared `SeriesEditor` (under More options, DEC-95), with busy rooms marked; the date card and event page show the room as the place.
+  - UI: a Room field beside Location (not under More options, DEC-95) in "Edit this date" and the shared `SeriesEditor`, with busy rooms marked; the date card and event page show the room as the place.
   - Acceptance: two concurrent bookings of overlapping padded ranges, exactly one wins (database and API); padding edges (touching ranges don't conflict); leaders can't book restricted rooms; the double-book reason is audited.
 - **M2.1c Series bookings and moving dates**
+  - Database: nullable `events.default_room_id` referencing `rooms` (5.3).
   - API and internals: "Book for the whole series" books every generated date and stores `events.default_room_id`; the daily extender books new dates as it generates them. A series edit, a per-date reschedule, or a DEC-91 restore moves bookings in the same transaction; a move into a conflict makes the booking `requested`, the edit still saves, and the leader or hosts get one `room.lost` notice listing the dates ("Room lost on 2 dates: pick another room"). The extender does the same for new dates that conflict.
   - UI: the event create forms get the Room field (with "whole series" for a series); the event page lists dates that lost their room with a "Pick a room" action.
   - Acceptance: a series of 10 books 10 dates; editing the series time moves every booking; a moved date that now conflicts is `requested` and named in one notice; the extender books new dates and handles conflicts the same way.
 - **M2.1d Requested bookings and matching old locations**
-  - API: admins list requested bookings, confirm one (with a double-book reason if it still conflicts) or reject it (the leader is told); leaders re-pick. The 9.1 "match locations" helper lists distinct free-text locations with counts and lets an admin map one to a room, which books matching future dates where free and reports the rest.
+  - API: admins list requested bookings, confirm one (with a double-book reason if it still conflicts) or reject it (the leader is told); leaders re-pick. The 9.1 "match locations" helper lists distinct free-text locations with counts and lets an admin map one to a room, which books matching future dates where free and reports the rest. Running it again books nothing twice.
   - UI: a "Needs a room" list on the admin Rooms tab and the match-locations helper.
-  - Acceptance: confirming a still-conflicting request needs a reason; rejecting notifies; the helper never overwrites a leader's typed location.
+  - Acceptance: confirming a still-conflicting request needs a reason; rejecting notifies; re-picking replaces the requested booking; the helper never overwrites a leader's typed location and is idempotent.
 - Tests across M2.1: conflict table tests (padding edges, moved and restored dates, extender), policy tables for `CanManageRooms` and `CanBookRoom`, migration drift, and a Playwright path for book, conflict and double-book.
 
 **M2.2 By-room view and room feed**
@@ -1691,9 +1693,11 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - UI: `/calendar/rooms` (a Rooms view beside Agenda, Week and Month when rooms are on): columns per room with time rows from `sm` up, one room at a time on phones; "Reserved" blocks are grey with the word.
   - Acceptance: members, leaders and admins each see exactly the details section 6 allows; JSON for a hidden booking has no identifying keys (a key-list test); teens and guests get 404.
 - **M2.2b Room ICS feed**
+  - Database: `room_feed_tokens` (5.3).
   - API: admins issue and revoke a token per room (`room_feed_tokens`); `/cal/rooms/<roomId>/<token>.ics` exports confirmed bookings, titling invite-only and hidden bookings "Reserved"; the token never reaches the access log (existing redaction).
   - UI: a "Calendar feed" action on each room in the admin Rooms tab (copy link, revoke).
-  - Acceptance: a revoked token answers 404; masking matches the by-room view.
+  - Acceptance: a revoked token answers 404; the feed shows what an admin would see, except that invite-only and hidden-date bookings are titled "Reserved" with no group or description (8.2).
+- Tests across M2.2: the key-list masking tests, and a Playwright smoke test of the by-room view.
 
 **M2.3 Room suggestions**
 

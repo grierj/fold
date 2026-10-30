@@ -184,7 +184,7 @@ alone starts no CI; open the PR to get the checks.
 Grier's rule (Oct 20, 2026; generalized Oct 30, 2026). An agent may merge a fold PR, as a normal merge commit, when all of these hold:
 
 1. Every CI check is green (`test`, `web`, `provision`; branch protection requires them).
-2. All four primary concerns were reviewed by a different model from the one that implemented the change (for example, Sonnet or Fable reviewing Opus's work):
+2. All four primary concerns were reviewed by a separate agent from the one that implemented the change, preferably running a different model (for example, Sonnet reviewing Opus's work):
    - UI, UX and design;
    - database and performance: simplicity and efficiency, to keep out complexity that would only get cut later;
    - security;
