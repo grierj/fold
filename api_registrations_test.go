@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"fold/internal/audit"
 	"gorm.io/gorm"
@@ -2113,9 +2114,92 @@ func TestRemoteCapacityNullPromotesWaitlist(t *testing.T) {
 			if got := regStatus(t, app, secondUser.ID, occ.ID); got != models.RegWaitlisted {
 				t.Fatalf("before reset: %s", got)
 			}
+			// Failure after promotion starts must roll back both the capacity
+			// reset and its RSVP/audit writes under the existing lock order.
+			var before models.Registration
+			if err := app.DB.Where("user_id = ? AND occurrence_id = ?", secondUser.ID, occ.ID).First(&before).Error; err != nil {
+				t.Fatal(err)
+			}
+			var auditBefore int64
+			app.DB.Model(&models.AuditLog{}).Count(&auditBefore)
+			failed := false
+			const callback = "test:fail_promotion_notice"
+			if err := app.DB.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
+				if tx.Statement.Table == "notifications" {
+					failed = true
+					_ = tx.AddError(errors.New("promotion notice unavailable"))
+				}
+			}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = app.DB.Callback().Create().Remove(callback) })
+			apiDo(t, admin, "PUT", path, map[string]any{field: nil}, http.StatusInternalServerError)
+			_ = app.DB.Callback().Create().Remove(callback)
+			var after models.Registration
+			if err := app.DB.First(&after, before.ID).Error; err != nil {
+				t.Fatal(err)
+			}
+			var auditAfter int64
+			app.DB.Model(&models.AuditLog{}).Count(&auditAfter)
+			var ev models.Event
+			app.DB.First(&ev, eventID)
+			app.DB.First(&occ, occ.ID)
+			if !failed || after.Status != before.Status || after.PromotedAt != nil || !intPtrEqual(capacityForMode(&ev, &occ, models.AttendanceRemote), intPtr(1)) || auditAfter != auditBefore {
+				t.Fatalf("failed promotion did not roll back: injected=%v registration=%+v event=%+v occurrence=%+v audits=%d->%d", failed, after, ev, occ, auditBefore, auditAfter)
+			}
 			apiDo(t, admin, "PUT", path, map[string]any{field: nil}, http.StatusOK)
 			if got := regStatus(t, app, secondUser.ID, occ.ID); got != models.RegGoing {
 				t.Fatalf("unlimited remote reset did not promote: %s", got)
+			}
+		})
+	}
+}
+
+func TestRemoteCapacityNullDoesNotPromoteDisabledPool(t *testing.T) {
+	for _, scope := range []string{"event", "date"} {
+		t.Run(scope, func(t *testing.T) {
+			app := testApp(t)
+			admin, gid := openGroup(t, app, "Disabled remote reset")
+			capacity := intPtr(1)
+			if scope == "date" {
+				capacity = nil
+			}
+			eventID, date := seedRemoteEvent(t, app, admin, gid, nil, capacity, true)
+			eventPath := fmt.Sprintf("/api/v1/events/%d", eventID)
+			path, field := eventPath, "remoteCapacity"
+			if scope == "date" {
+				path += "/occurrences/" + date
+				field = "remoteCapacityOverride"
+				apiDo(t, admin, "PUT", path, map[string]any{field: 1}, http.StatusOK)
+			}
+			var g models.Group
+			if err := app.DB.First(&g, gid).Error; err != nil {
+				t.Fatal(err)
+			}
+			_, first := mkUser(t, app, &g, "first remote")
+			waitingUser, waiting := mkUser(t, app, &g, "waiting remote")
+			for _, client := range []*apiClient{first, waiting} {
+				if code, body := registerModeAs(client, eventID, date, models.RegGoing, models.AttendanceRemote); code != http.StatusOK {
+					t.Fatalf("register: %d %s", code, body)
+				}
+			}
+			body := map[string]any{field: nil}
+			if scope == "event" {
+				body["remoteAvailable"] = false
+			} else {
+				apiDo(t, admin, "PUT", eventPath, map[string]any{"remoteAvailable": false}, http.StatusOK)
+			}
+			apiDo(t, admin, "PUT", path, body, http.StatusOK)
+			var occ models.EventOccurrence
+			if err := app.DB.Where("event_id = ? AND original_date = ?", eventID, date).First(&occ).Error; err != nil {
+				t.Fatal(err)
+			}
+			var reg models.Registration
+			if err := app.DB.Where("user_id = ? AND occurrence_id = ?", waitingUser.ID, occ.ID).First(&reg).Error; err != nil {
+				t.Fatal(err)
+			}
+			if reg.Status != models.RegWaitlisted || reg.PromotedAt != nil {
+				t.Fatalf("disabled remote pool promoted waiter: %+v", reg)
 			}
 		})
 	}
