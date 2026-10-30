@@ -261,17 +261,3 @@ export function RoomField({ eventId, date, idPrefix, onChanged }: {
     </div>
   );
 }
-
-// The one-line pointer a series editor shows where the Room control would be:
-// a recurring series can't be booked as a whole, only a date at a time. It
-// asks the same question RoomField does and shows nothing while rooms are off.
-export function RoomSeriesHint() {
-  const [enabled, setEnabled] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    Site.get().then((site) => { if (alive) setEnabled(site.roomsEnabled === true); }, () => {});
-    return () => { alive = false; };
-  }, []);
-  if (!enabled) return null;
-  return <p className="text-sm text-text-muted">To book a room, use Edit this date on a date's card.</p>;
-}

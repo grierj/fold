@@ -58,6 +58,53 @@ func lockRoom(tx *gorm.DB, roomID uint) (*models.Room, error) {
 	return &r, nil
 }
 
+// bookResult is what placeBooking wrote.
+type bookResult int
+
+const (
+	bookedFree      bookResult = iota // confirmed: the room was free
+	bookedOverlap                     // confirmed over a conflict, with an admin's reason
+	bookedRequested                   // the room was busy: requested, holding nothing
+	notBooked                         // the room was busy and nothing was written
+)
+
+// placeBooking books room for a date that has no booking. The caller holds
+// the date's lock, then the room's. A busy room is double-booked when an
+// admin's reason is given (the caller checks it is an admin's); otherwise,
+// with keepRequested, the booking is kept as requested, holding nothing.
+func placeBooking(tx *gorm.DB, occ *models.EventOccurrence, room *models.Room, setup, teardown int, by *uint, reason string, keepRequested bool) (bookResult, error) {
+	insert := func(status string, overlap bool, why string) error {
+		return tx.Exec(`INSERT INTO room_bookings (occurrence_id, room_id, starts_at, ends_at, setup_minutes, teardown_minutes,
+			padded_range, status, allow_overlap, overlap_reason, created_by) VALUES (?, ?, ?, ?, ?, ?, `+paddedRangeSQL+`, ?, ?, ?, ?)`,
+			occ.ID, room.ID, occ.StartsAt, occ.EndsAt, setup, teardown,
+			occ.StartsAt, setup, occ.EndsAt, teardown,
+			status, overlap, why, by).Error
+	}
+	held, err := heldByOverlap(tx, room.ID, occ.ID, occ.StartsAt, occ.EndsAt, setup, teardown)
+	if err != nil {
+		return 0, err
+	}
+	if !held {
+		savepoint := fmt.Sprintf("book%d", occ.ID)
+		tx.SavePoint(savepoint)
+		err := insert(models.BookingConfirmed, false, "")
+		if err == nil {
+			return bookedFree, nil
+		}
+		if !isOverlap(err) {
+			return 0, err
+		}
+		tx.RollbackTo(savepoint)
+	}
+	switch {
+	case reason != "":
+		return bookedOverlap, insert(models.BookingConfirmed, true, reason)
+	case keepRequested:
+		return bookedRequested, insert(models.BookingRequested, false, "")
+	}
+	return notBooked, nil
+}
+
 // isOverlap reports the exclusion constraint refusing a booking.
 func isOverlap(err error) bool {
 	var pgErr *pgconn.PgError
@@ -302,41 +349,19 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		if body.TeardownMinutes != nil {
 			teardown = *body.TeardownMinutes
 		}
-		insert := func(overlap bool, why string) error {
-			return tx.Exec(`INSERT INTO room_bookings (occurrence_id, room_id, starts_at, ends_at, setup_minutes, teardown_minutes,
-				padded_range, status, allow_overlap, overlap_reason, created_by) VALUES (?, ?, ?, ?, ?, ?, `+paddedRangeSQL+`, ?, ?, ?, ?)`,
-				occ.ID, room.ID, occ.StartsAt, occ.EndsAt, setup, teardown,
-				occ.StartsAt, setup, occ.EndsAt, teardown,
-				models.BookingConfirmed, overlap, why, user.ID).Error
+		if !policy.CanDoubleBookRoom(me) {
+			reason = ""
 		}
-		held, err := heldByOverlap(tx, room.ID, occ.ID, occ.StartsAt, occ.EndsAt, setup, teardown)
+		result, err := placeBooking(tx, occ, &room, setup, teardown, &user.ID, reason, false)
 		if err != nil {
 			return err
 		}
-		tx.SavePoint("book")
-		overlap := false
-		err = errBusy
-		if !held {
-			err = insert(false, "")
-		}
-		if err != nil {
-			if err != errBusy && !isOverlap(err) {
-				return err
-			}
-			if err != errBusy {
-				tx.RollbackTo("book")
-			}
-			if reason == "" || !policy.CanDoubleBookRoom(me) {
-				return errBusy
-			}
-			if err := insert(true, reason); err != nil {
-				return err
-			}
-			overlap = true
+		if result == notBooked {
+			return errBusy
 		}
 		action := audit.RoomBookingBooked
 		meta := map[string]any{"roomId": room.ID, "eventId": ev.ID, "date": occ.OriginalDate, "setupMinutes": setup, "teardownMinutes": teardown}
-		if overlap {
+		if result == bookedOverlap {
 			action = audit.RoomBookingOverlap
 			meta["reason"] = reason
 		}
@@ -384,9 +409,9 @@ func releaseRoomBookings(tx *gorm.DB, occurrenceIDs []uint) error {
 
 // moveRoomBookings moves the bookings of dates whose times changed, in the
 // same transaction (5.3, 9.2). A confirmed booking that now conflicts stays
-// as requested, holding nothing, and the event's leaders or hosts get one
-// notice for all its lost dates. Notification ids to email are returned.
-func moveRoomBookings(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint) ([]uint, error) {
+// as requested, holding nothing; the dates that lost their room are
+// returned for settleDateRooms to announce.
+func moveRoomBookings(tx *gorm.DB, occurrenceIDs []uint) ([]string, error) {
 	if len(occurrenceIDs) == 0 {
 		return nil, nil
 	}
@@ -440,10 +465,7 @@ func moveRoomBookings(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint) ([]ui
 			lost = append(lost, occ.OriginalDate)
 		}
 	}
-	if len(lost) == 0 {
-		return nil, nil
-	}
-	return notifyRoomLost(tx, ev, lost)
+	return lost, nil
 }
 
 var errLostRoom = errors.New("room held at the new time")
@@ -471,12 +493,38 @@ func notifyRoomLost(tx *gorm.DB, ev *models.Event, dates []string) ([]uint, erro
 	})
 }
 
+// placeLine is a date's place (PLAN 14.5 "Where rooms show"), as
+// web/src/lib/place.ts writes it: the room and its building lead, and a
+// typed location follows as a detail.
+func placeLine(room *occurrenceRoomJSON, location string) string {
+	if room == nil {
+		return location
+	}
+	line := room.Name
+	if room.Building != "" {
+		line += " · " + room.Building
+	}
+	if typed := strings.TrimSpace(location); typed != "" {
+		line += " · " + typed
+	}
+	return line
+}
+
+// roomsChunk keeps one rooms lookup under the Postgres parameter limit.
+const roomsChunk = 10000
+
 // occurrenceRooms maps dates to their confirmed booking's room, for showing
-// the room as the place (9.2). Empty while rooms are off. One read: the
-// rooms switch is checked inside the same query, so a list of dates pays
-// exactly one read for rooms whether they are on or off.
+// the room as the place (9.2). Empty while rooms are off. One read (per
+// 10,000 dates): the rooms switch is checked inside the same query, so a
+// list of dates pays exactly one read for rooms whether they are on or off.
 func (a *App) occurrenceRooms(db *gorm.DB, occurrenceIDs []uint) map[uint]*occurrenceRoomJSON {
 	out := map[uint]*occurrenceRoomJSON{}
+	for len(occurrenceIDs) > roomsChunk {
+		for k, v := range a.occurrenceRooms(db, occurrenceIDs[:roomsChunk]) {
+			out[k] = v
+		}
+		occurrenceIDs = occurrenceIDs[roomsChunk:]
+	}
 	if len(occurrenceIDs) == 0 {
 		return out
 	}

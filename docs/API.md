@@ -1164,7 +1164,23 @@ PUT /api/v1/events/:id/dates/:date/room {roomId: number | null, overlapReason?, 
 
 A booking copies the room's setup and teardown minutes (DEC-101); only an admin may send `setupMinutes`/`teardownMinutes` (0 to 240) to override them for this booking. `roomId: null` releases the date's room; booking another room replaces it. Confirmed bookings of one room never overlap once padded: the database refuses it, so of two concurrent bookings exactly one wins and the other gets 409 `room_busy`. An admin may book over a conflict by sending `overlapReason` (at most 500 characters); that booking is `doubleBooked`, audited as `room_booking.overlap` with the reason, and still counts as busy for everyone else. Booking and releasing are audited (`room_booking.booked`, `room_booking.released`).
 
-Cancelling a date releases its room. Moving a date (a per-date reschedule or a series edit) moves its booking in the same transaction; if the room is taken at the new time, by a confirmed booking or an admin's double-booking, the booking becomes `requested`, holds nothing, and the event's leaders or hosts get one `room.lost` notice for that edit, the person who moved it included. A date a series edit cancelled lost its room then, so a DEC-91 restore brings it back without one. A booking only an admin could make (a restricted room or a double-booking) can only be changed or released by an admin (403). Re-booking the same room keeps an admin's padding override. Bookings are written against the date as it is under its row lock, so a date cancelled or moved meanwhile answers 404 or books the new time. Event and date JSON carry `room?: {id, name, building}` for a confirmed booking, which the page shows as the place (typed location after it).
+Cancelling a date releases its room. Moving a date (a per-date reschedule or a series edit) moves its booking in the same transaction; if the room is taken at the new time, by a confirmed booking or an admin's double-booking, the booking becomes `requested`, holds nothing, and the event's leaders or hosts get one `room.lost` notice for that edit, the person who moved it included. A date a series edit cancelled lost its room then; a DEC-91 restore books it in the series room if there is one, and otherwise it comes back without one. A booking only an admin could make (a restricted room or a double-booking) can only be changed or released by an admin (403). Re-booking the same room keeps an admin's padding override. Bookings are written against the date as it is under its row lock, so a date cancelled or moved meanwhile answers 404 or books the new time. Event and date JSON carry `room?: {id, name, building}` for a confirmed booking, which the page shows as the place (typed location after it), and so do calendar files and feeds: the room and its building lead the ICS `LOCATION`, then any typed location.
+
+### Series rooms (M2.1c)
+
+```
+GET  /api/v1/events/:id/rooms → 200 {rooms: [seriesRoom], dates, defaultRoom: {id, name, building} | null, needsRoom: [{date, roomName}]}
+PUT  /api/v1/events/:id/room {roomId: number | null, overlapReason?}
+     → 200 {defaultRoom, booked, lost: [date], kept} | 403 room_restricted | 404
+POST /api/v1/rooms/check {groupId?, startsLocal, durationMinutes, tzid?, recurrenceRule?, rruleUntil?, capacity?}
+     → 200 {rooms: [seriesRoom], dates}
+```
+
+`seriesRoom` is `{id, name, building, capacity, features, restricted, busyDates, tooSmall}`: `busyDates` counts how many of the event's scheduled future dates (`dates`) another confirmed booking holds the room on, never saying whose; the event's own bookings don't count. `tooSmall` compares the event's seat cap only.
+
+`PUT …/room` books the room for the whole series (DEC-103): it is stored as `events.default_room_id` and booked on every scheduled future date. Dates the room is busy on keep a `requested` booking that holds nothing and are returned in `lost` and listed in `needsRoom`; an admin's `overlapReason` double-books them instead. A date booked in another room on its own keeps it (`kept`), and so does a booking only an admin could make unless an admin is booking; bookings in the old series room, and requested ones, are replaced. `roomId: null` stops the series room and releases its bookings. Audited as `room_booking.series`. Dates added later, by the daily extender or a series edit, or restored by one, are booked in the series room; a busy one is `requested` and the leaders or hosts get one `room.lost` notice. A deactivated series room books nothing new.
+
+The create routes (`POST /groups/:id/events`, `POST /events`) accept `roomId` and book it for every date in the creating transaction, the same way; a room the creator can't book refuses the whole create (403 `room_restricted`, 404). `POST /rooms/check` gives the create form its busy counts: with `groupId` the caller must run that group; without it, the caller must be an admin (church-wide events).
 
 ### Notifications
 

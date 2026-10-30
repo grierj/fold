@@ -2,7 +2,7 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, Events, Households } from "../api";
+import { ApiError, DateRooms, Events, Households, SeriesRooms, Site } from "../api";
 import type { EventDetailResponse } from "../types";
 import { occurrence } from "../test/occurrence";
 import { EventDetail } from "./EventDetail";
@@ -683,5 +683,67 @@ describe("EventDetail shows a booked room as the place (M2.1b)", () => {
     renderPage();
     expect(await screen.findByText("Hall")).toBeInTheDocument();
     expect(screen.queryByText(/Fellowship Hall/)).not.toBeInTheDocument();
+  });
+});
+
+describe("EventDetail dates that need a room", () => {
+  const series = {
+    ...page,
+    event: { ...page.event, recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" },
+    occurrences: [
+      occurrence({ recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" }),
+      occurrence({ id: 2, date: "2026-12-08", startsLocal: "2026-12-08T19:00", recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" }),
+    ],
+  };
+  const needs = (...rows: { date: string; roomName: string }[]) =>
+    vi.spyOn(SeriesRooms, "list").mockResolvedValue({ rooms: [], dates: 2, defaultRoom: null, needsRoom: rows });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.restoreAllMocks();
+    vi.mocked(Households.mine).mockResolvedValue({ household: null });
+    vi.mocked(Events.get).mockResolvedValue(series);
+    vi.spyOn(Site, "get").mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
+    vi.spyOn(DateRooms, "list").mockResolvedValue({ rooms: [], booking: null });
+  });
+
+  it("lists them for a manager and opens that date's editor from Pick a room", async () => {
+    needs({ date: "2026-12-08", roomName: "Fellowship Hall" });
+    renderPage();
+    expect(await screen.findByRole("heading", { name: /Dates that need a room/ })).toBeInTheDocument();
+    expect(SeriesRooms.list).toHaveBeenCalledWith(7);
+    expect(screen.getByText("Fellowship Hall isn't free then.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /^Pick a room for / }));
+    // The second date's own editor, with its own Room control.
+    await waitFor(() => expect(DateRooms.list).toHaveBeenCalledWith(7, "2026-12-08"));
+    expect(DateRooms.list).not.toHaveBeenCalledWith(7, "2026-12-01");
+    const room = await screen.findByRole("combobox", { name: /^Room/ });
+    expect(room).toBeInTheDocument();
+  });
+
+  it("shows nothing when no date needs a room", async () => {
+    needs();
+    renderPage();
+    await waitFor(() => expect(SeriesRooms.list).toHaveBeenCalled());
+    await screen.findAllByRole("article");
+    expect(screen.queryByRole("heading", { name: /Dates that need a room/ })).not.toBeInTheDocument();
+  });
+
+  it("is not shown to people who can't manage the event, and asks for nothing", async () => {
+    needs({ date: "2026-12-08", roomName: "Fellowship Hall" });
+    vi.mocked(Events.get).mockResolvedValue({ ...series, canManage: false });
+    renderPage();
+    await screen.findAllByRole("article");
+    expect(screen.queryByRole("heading", { name: /Dates that need a room/ })).not.toBeInTheDocument();
+    expect(SeriesRooms.list).not.toHaveBeenCalled();
+  });
+
+  it("asks nothing and shows nothing while rooms are off", async () => {
+    needs({ date: "2026-12-08", roomName: "Fellowship Hall" });
+    vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+    renderPage();
+    await screen.findAllByRole("article");
+    expect(screen.queryByRole("heading", { name: /Dates that need a room/ })).not.toBeInTheDocument();
+    expect(SeriesRooms.list).not.toHaveBeenCalled();
   });
 });

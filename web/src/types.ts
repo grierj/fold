@@ -890,3 +890,31 @@ export interface RoomBooking {
   doubleBooked: boolean;
   tooSmall: boolean;
 }
+
+// A room as the whole-series picker sees it (M2.1c): busyDates counts the
+// dates another booking holds it on, never saying whose.
+export interface SeriesRoom {
+  id: number;
+  name: string;
+  building: string;
+  capacity: number | null;
+  features: string;
+  restricted: boolean;
+  busyDates: number;
+  tooSmall: boolean;
+}
+
+// A date whose booking holds nothing: it lost its room when it moved, or
+// the room was busy when the series was booked (DEC-103).
+export interface NeedsRoom {
+  date: string;
+  roomName: string;
+}
+
+// What booking a whole series did (M2.1c).
+export interface SeriesBooking {
+  defaultRoom: OccurrenceRoom | null;
+  booked: number;
+  lost: string[];
+  kept: number;
+}

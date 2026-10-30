@@ -308,11 +308,13 @@ type Event struct {
 	RRule           string  `gorm:"column:rrule;not null"`
 	RRuleUntil      *string `gorm:"column:rrule_until"` // YYYY-MM-DD, inclusive
 	Location        string  `gorm:"not null"`           // empty = the group's location
-	CreatedBy       uint    `gorm:"not null"`
-	Creator         User    `gorm:"foreignKey:CreatedBy"`
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	DeletedAt       gorm.DeletedAt `gorm:"index"`
+	// DefaultRoomID is the series room (M2.1c): new dates are booked in it.
+	DefaultRoomID *uint
+	CreatedBy     uint `gorm:"not null"`
+	Creator       User `gorm:"foreignKey:CreatedBy"`
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	DeletedAt     gorm.DeletedAt `gorm:"index"`
 }
 
 // EventHost is an adult assigned to a church-wide event (DEC-7). Hosts get

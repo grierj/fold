@@ -4,10 +4,11 @@ import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { SeriesEditor } from "./SeriesEditor";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
-import { DateRooms, Events, Site } from "../api";
+import { DateRooms, Events, SeriesRooms, Site } from "../api";
 
 vi.mock("../api", () => ({
   DateRooms: { list: vi.fn() },
+  SeriesRooms: { list: vi.fn() },
   ApiError: class extends Error {},
   Events: { update: vi.fn(), generateJitsi: vi.fn().mockResolvedValue({ url: "https://meet.jit.si/fold-abc123def4" }) },
   Site: { get: vi.fn().mockResolvedValue({ timezone: "UTC" }) },
@@ -220,25 +221,33 @@ describe("SeriesEditor form layout (DEC-95)", () => {
       expect(room.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it("is hidden for a series, whatever the date", async () => {
+    it("has no one-date Room for a series, whatever the date", async () => {
       roomsOn();
+      vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 3, defaultRoom: null, needsRoom: [] });
       vi.mocked(DateRooms.list).mockClear();
       render(<SeriesEditor series={{ ...single, recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" }} roomDate="2026-12-01" idPrefix="room-series" onSaved={() => {}} />);
       await screen.findByRole("button", { name: "Save series" });
-      expect(screen.queryByRole("combobox", { name: /^Room/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: /^Room \(optional\)/ })).not.toBeInTheDocument();
       expect(DateRooms.list).not.toHaveBeenCalled();
     });
 
-    it("points a series at Edit this date, only while rooms are on", async () => {
+    it("gives a series Room for every date beside Location, only while rooms are on", async () => {
       roomsOn();
+      vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: [] });
       const series = { ...single, recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" };
       const { unmount } = render(<SeriesEditor series={series} idPrefix="room-hint" onSaved={() => {}} />);
-      expect(await screen.findByText("To book a room, use Edit this date on a date's card.")).toBeInTheDocument();
+      const room = await screen.findByRole("combobox", { name: /^Room for every date/ });
+      expect(SeriesRooms.list).toHaveBeenCalledWith(7);
+      const more = screen.getByRole("button", { name: "More options" });
+      expect(screen.getByRole("textbox", { name: /^Location/ }).compareDocumentPosition(room) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(room.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       unmount();
       vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+      vi.mocked(SeriesRooms.list).mockClear();
       render(<SeriesEditor series={series} idPrefix="room-hint-off" onSaved={() => {}} />);
       await screen.findByRole("button", { name: "Save series" });
-      expect(screen.queryByText(/To book a room/)).not.toBeInTheDocument();
+      expect(screen.queryByRole("combobox", { name: /^Room/ })).not.toBeInTheDocument();
+      expect(SeriesRooms.list).not.toHaveBeenCalled();
     });
 
     it("is hidden when rooms are off", async () => {

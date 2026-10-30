@@ -209,8 +209,16 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) (e
 		Order("starts_at").Find(&occs).Error; err != nil {
 		return events.Feed{}, err
 	}
+	// A booked room is the date's place in calendars too (8.2, M2.1c).
+	occIDs := make([]uint, 0, len(occs))
+	for _, o := range occs {
+		if o.Status == models.OccurrenceScheduled {
+			occIDs = append(occIDs, o.ID)
+		}
+	}
+	rooms := a.occurrenceRooms(a.DB, occIDs)
 	if opts.personal && viewer != nil {
-		return a.buildPersonalFeedSingles(feed, viewer, opts.scope, now, occs, scoped, vs)
+		return a.buildPersonalFeedSingles(feed, viewer, opts.scope, now, occs, scoped, vs, rooms)
 	}
 	for i := range occs {
 		occ := &occs[i]
@@ -231,7 +239,7 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) (e
 		details := projectFeedSeriesDetails(ev, vs.canSeeSeries(viewer, ev), videoURL)
 		feed.Singles = append(feed.Singles, events.FeedSingle{
 			EventID: ev.ID, OriginalDate: occ.OriginalDate,
-			Title: eff.Title, Description: details.description, Location: eff.Location,
+			Title: eff.Title, Description: details.description, Location: placeLine(rooms[occ.ID], eff.Location),
 			VideoURL: details.videoURL, RemoteAvailable: events.RemoteOffered(eff.RemoteAvailable, eff.RemoteCapacity),
 			ChildcareAvailable: details.childcareAvailable, ChildcareAges: details.childcareAges,
 			TZID: ev.TZID, StartsAt: eff.StartsAt, EndsAt: eff.EndsAt,
@@ -245,7 +253,7 @@ func (a *App) buildFeed(viewer *models.User, opts feedOptions, now time.Time) (e
 // buildPersonalFeedSingles expands personal feeds date by date. That makes
 // every hidden, declined, out-of-window, or differently answered recurrence
 // explicit, so an RRULE can never reintroduce it in a calendar client.
-func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, rawScope string, now time.Time, occs []models.EventOccurrence, scoped map[uint]*occurrenceRead, vs visibleSet) (events.Feed, error) {
+func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, rawScope string, now time.Time, occs []models.EventOccurrence, scoped map[uint]*occurrenceRead, vs visibleSet, rooms map[uint]*occurrenceRoomJSON) (events.Feed, error) {
 	// Only scheduled dates the viewer may see are looked up; the loop below
 	// skips every other date before it reads these facts.
 	ids := visibleOccurrenceIDs(vs, viewer, occs, scoped)
@@ -292,7 +300,7 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 			date := presentOccurrenceDate(&read.Event, occ, "", false, false, false, read.Registration, read, now)
 			feed.Singles = append(feed.Singles, events.FeedSingle{
 				EventID: date.EventID, OriginalDate: date.Date, Title: date.Title,
-				Location: date.Location, TZID: date.TZID, StartsAt: date.StartsAt, EndsAt: date.EndsAt,
+				Location: placeLine(rooms[occ.ID], date.Location), TZID: date.TZID, StartsAt: date.StartsAt, EndsAt: date.EndsAt,
 				VideoURL: date.VideoURL, RemoteAvailable: date.RemoteAvailable,
 				URL: a.emailBaseURL() + date.DateURL, UpdatedAt: occ.UpdatedAt, Status: status,
 			})
@@ -319,7 +327,7 @@ func (a *App) buildPersonalFeedSingles(feed events.Feed, viewer *models.User, ra
 		details := projectFeedSeriesDetails(ev, seriesVisible, videoURL)
 		feed.Singles = append(feed.Singles, events.FeedSingle{
 			EventID: ev.ID, OriginalDate: occ.OriginalDate, Title: eff.Title,
-			Description: details.description, Location: eff.Location, TZID: ev.TZID,
+			Description: details.description, Location: placeLine(rooms[occ.ID], eff.Location), TZID: ev.TZID,
 			StartsAt: eff.StartsAt, EndsAt: eff.EndsAt, VideoURL: details.videoURL,
 			RemoteAvailable: events.RemoteOffered(eff.RemoteAvailable, eff.RemoteCapacity), ChildcareAvailable: details.childcareAvailable,
 			ChildcareAges: details.childcareAges, URL: a.emailBaseURL() + occurrenceDatePath(ev.ID, occ.OriginalDate),

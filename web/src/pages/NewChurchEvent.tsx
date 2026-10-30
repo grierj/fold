@@ -4,6 +4,7 @@ import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
 import { WhenFields } from "../components/WhenFields";
 import { EventOptions } from "../components/EventOptions";
+import { CreateRoomField, scheduleFields, scheduleReady } from "../components/CreateRoomField";
 import { emptySeats, focusSeatLimit, isSeatsError, seatsBody, seatsProblem, type SeatsValue } from "../components/SeatsField";
 import { FormActions } from "../components/ui/FormActions";
 import { useState } from "react";
@@ -36,6 +37,8 @@ export function NewChurchEvent() {
   const [childcare, setChildcare] = useState<ChildcareValue>(emptyChildcare);
   const [remote, setRemote] = useState<RemoteValue>(emptyRemote);
   const [seats, setSeats] = useState<SeatsValue>(emptySeats);
+  // The room for every date; the event page lists any dates it is busy on.
+  const [roomId, setRoomId] = useState<number | null>(null);
   // Closed on create; a problem inside it opens it (DEC-95).
   const [moreOpen, setMoreOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -46,7 +49,7 @@ export function NewChurchEvent() {
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
   const dirty = useDirty(
-    { title, description, date, startTime, durationMin, recurring, days, tzid, location, visibility, hostEmail, video, childcare, remote, seats },
+    { title, description, date, startTime, durationMin, recurring, days, tzid, location, visibility, hostEmail, video, childcare, remote, seats, roomId },
     !loading && tzid !== "",
   );
   const { guard, markSaved } = useUnsavedChanges(dirty);
@@ -107,19 +110,17 @@ export function NewChurchEvent() {
       const { event } = await Events.createChurch({
         title: title.trim(),
         description: description.trim(),
-        startsLocal: `${date}T${startTime}`,
-        durationMinutes: durationMin,
-        tzid: tzid.trim(),
+        ...scheduleFields(when, tzid, seats),
         location: location.trim(),
         visibility,
         hosts: hostEmail.trim() ? [hostEmail.trim()] : [],
-        recurrenceRule: recurring ? `FREQ=WEEKLY;BYDAY=${days.join(",")}` : "",
         videoProvider: video.provider,
         videoUrl: video.provider === "none" ? "" : video.url.trim(),
         videoReveal: video.reveal,
         ...seatsBody(seats),
         ...remoteBody(remote),
         ...childcareBody(childcare),
+        ...(roomId !== null ? { roomId } : {}),
       });
       markSaved();
       navigate(`/events/${event.id}`);
@@ -197,6 +198,12 @@ export function NewChurchEvent() {
         <Field id="church-event-location" label="Location" optional>
           <Input value={location} onChange={(e) => setLocation(e.target.value)} />
         </Field>
+        <CreateRoomField
+          id="church-event-room"
+          schedule={scheduleReady(when, tzid, seats) ? scheduleFields(when, tzid, seats) : null}
+          roomId={roomId}
+          onChange={setRoomId}
+        />
         <Field id="church-event-host" label="Another host's email" optional hint="They must already have an account.">
           <Input type="email" value={hostEmail} onChange={(e) => setHostEmail(e.target.value)} />
         </Field>

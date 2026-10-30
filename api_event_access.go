@@ -370,8 +370,14 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 			Meta: map[string]any{"churchWide": true, "visibility": ev.Visibility, "hostIds": hostIDs}, IP: c.ClientIP()}); err != nil {
 			return err
 		}
-		return events.Ensure(tx, &ev, time.Now().UTC())
+		if err := events.Ensure(tx, &ev, time.Now().UTC()); err != nil {
+			return err
+		}
+		return a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
 	})
+	if createRoomFailed(c, err) {
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not create event")
 		return

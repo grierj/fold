@@ -91,6 +91,9 @@ var tsContracts = []struct {
 	{occurrenceRoomJSON{}, "OccurrenceRoom"},
 	{roomPickerJSON{}, "RoomPickerItem"},
 	{roomBookingJSON{}, "RoomBooking"},
+	{seriesRoomJSON{}, "SeriesRoom"},
+	{needsRoomJSON{}, "NeedsRoom"},
+	{seriesBookingJSON{}, "SeriesBooking"},
 	{resolutionJSON{}, "NotificationResolution"},
 	{occurrenceJSON{}, "EventOccurrence"}, // Includes the public childcareFull flag; totals stay optional.
 	{calendarOccurrenceJSON{}, "CalendarOccurrence"},
