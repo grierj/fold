@@ -49,6 +49,8 @@ export interface GroupSummary {
   deletionRequested: boolean;
   // Cap on active members (DEC-39); null means no limit.
   memberLimit: number | null;
+  // The viewer's own role, on the directory and My groups lists only (DEC-94).
+  myRole?: "leader" | "member";
 }
 
 // Who can see a group (C3). invite_only groups are hidden from everyone but

@@ -15,6 +15,12 @@ const STATUS: Record<Exclude<CalendarState, null>, string> = {
   not_answered: "Not answered",
 };
 
+// Where a calendar row leads: its exact-date page when the server scopes it to
+// one date (invitation or kept date), else the event page.
+export function occurrenceLink(occ: CalendarOccurrence): string {
+  return occ.dateUrl || `/events/${occ.eventId}`;
+}
+
 export function calendarState(occ: CalendarOccurrence): CalendarState {
   if (occ.myStatus) return occ.myStatus;
   return occ.ownScope ? "not_answered" : null;
@@ -29,7 +35,7 @@ function ghosted(state: CalendarState) {
   return state === "maybe" || state === "waitlisted" || state === "not_answered";
 }
 
-function StatusBadge({ state, solid = false }: { state: CalendarState; solid?: boolean }) {
+export function StatusBadge({ state, solid = false }: { state: CalendarState; solid?: boolean }) {
   if (!state) return null;
   const label = STATUS[state];
   const cls = solid
@@ -59,7 +65,7 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
       : "border-border bg-surface text-text";
   return (
     <Link
-      to={occ.dateUrl || `/events/${occ.eventId}`}
+      to={occurrenceLink(occ)}
       className={`block min-h-11 rounded-lg border p-4 hover:border-border-strong ${stateClass}`}
     >
       <span className="flex flex-wrap items-center gap-2">
@@ -113,7 +119,7 @@ export function EventChip({ occ, stacked }: { occ: CalendarOccurrence; stacked?:
         : "border-transparent bg-primary-subtle text-primary-on-subtle";
   return (
     <Link
-      to={occ.dateUrl || `/events/${occ.eventId}`}
+      to={occurrenceLink(occ)}
       title={name}
       className={`block min-h-11 ${stacked ? "" : "text-xs"} rounded-sm border px-2 py-1.5 hover:underline ${stateClass}`}
     >

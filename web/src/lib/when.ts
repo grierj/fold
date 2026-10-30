@@ -261,3 +261,10 @@ export function formatTimeRange(start: string, end: string, zone = browserTimeZo
   const shared = tail(from) !== "" && tail(from) === tail(to);
   return `${shared ? from.slice(0, from.length - tail(from).length) : from}–${to}`;
 }
+
+// The home page's greeting by the viewer's local clock (DEC-94): morning
+// before noon, afternoon before 5 PM, evening after.
+export function greeting(now = new Date()): string {
+  const hour = now.getHours();
+  return hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
+}
