@@ -578,6 +578,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/me/email/verify", a.apiVerifyEmailChange)
 	v1.POST("/me/email/cancel", a.apiCancelEmailChange)
 	// Calendar feed link (M1.7): the raw token comes back only from POST.
+	v1.GET("/me/notification-settings", a.apiAuth(), a.apiGetNotificationSettings)
+	v1.PUT("/me/notification-settings", a.apiAuth(), a.apiUpdateNotificationSettings)
 	v1.GET("/me/calendar-feed", a.apiAuth(), a.apiGetMyCalendarFeed)
 	v1.POST("/me/calendar-feed", a.apiAuth(), a.apiCreateMyCalendarFeed)
 	v1.PUT("/me/calendar-feed", a.apiAuth(), a.apiUpdateMyCalendarFeed)

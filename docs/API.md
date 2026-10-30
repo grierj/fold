@@ -1153,7 +1153,18 @@ POST   /api/v1/notifications/:id/read → 200 {notification}
 DELETE /api/v1/notifications/:id/read → 200 {notification}
 POST   /api/v1/notifications/:id/archive → 200 {notification}
 DELETE /api/v1/notifications/:id/archive → 200 {notification}
+GET    /api/v1/me/notification-settings → 200 {settings: {optionalEmailOff}}
+PUT    /api/v1/me/notification-settings {optionalEmailOff: boolean} → 200 {settings}
 ```
+
+"Turn off all optional email" (DEC-97) appends one `consents` row (channel
+`email`, scope `category:<name>`, source `web_form`) per optional category whose
+state changes; repeating a value writes nothing. Optional email is every
+notification email except required kinds: safety kinds (minors, consent, contact
+access) and tasks waiting on the recipient. A suppressed send is recorded in
+`notification_deliveries` as `suppressed` with the reason "optional email turned
+off". In-app notifications are unaffected. Transactional mail (password reset,
+invitations, verification) is not notification email and always sends.
 
 A notification is `{id, kind, subjectId?, category, title, body, link, actions,
 batchCount, createdAt, updatedAt, read, archived, waiting, resolution?}`. IDs are

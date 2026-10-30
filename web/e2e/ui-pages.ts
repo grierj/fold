@@ -33,6 +33,7 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
     { id: "profile", who: "household-parent", path: "/profile", ready: heading("Your profile") },
     { id: "profile-details", who: "household-parent", path: "/profile/details", ready: heading("Profile details") },
     { id: "profile-privacy", who: "household-parent", path: "/profile/privacy", ready: heading("Privacy") },
+    { id: "profile-notifications", who: "household-parent", path: "/profile/notifications", ready: heading("Notifications") },
     { id: "profile-security-email", who: "household-parent", path: "/profile/security", ready: heading("Email and password") },
     { id: "profile-security-password", who: "household-parent", path: "/profile/security?tab=password", ready: heading("Email and password") },
     { id: "profile-calendar", who: "household-parent", path: "/profile/calendar", ready: heading("Calendar feed") },

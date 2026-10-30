@@ -130,6 +130,7 @@ import type {
   HouseholdConversion,
   Member,
   Notification,
+  NotificationSettings as NotificationSettingsData,
   NotificationFeed,
   NotificationFilter,
   OpenedDecision,
@@ -533,6 +534,13 @@ export const Profile = {
     api<Record<string, never>>("/me/password", { method: "POST", body: { current, password } }),
   uploadAvatar: (file: File) => apiUpload<{ avatarUrl: string }>("/me/avatar", "avatar", file),
   deleteAvatar: () => api<Record<string, never>>("/me/avatar", { method: "DELETE" }),
+};
+
+// The optional-email switch (DEC-97).
+export const NotificationSettings = {
+  get: () => api<{ settings: NotificationSettingsData }>("/me/notification-settings"),
+  update: (optionalEmailOff: boolean) =>
+    api<{ settings: NotificationSettingsData }>("/me/notification-settings", { method: "PUT", body: { optionalEmailOff } }),
 };
 
 // The personal calendar feed link (M1.7): only create returns the URL,
