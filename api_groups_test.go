@@ -1799,7 +1799,7 @@ func TestGroupListsRunByNextMeetingWithViewerRole(t *testing.T) {
 	member := newTestUser(t, app, "member", "password1234", models.RoleMember)
 	admin := loginAPI(t, app, "admin", "password1234")
 	gids := map[string]uint{}
-	for _, name := range []string{"Alpha none", "Bravo later", "Charlie soon", "Delta none"} {
+	for _, name := range []string{"Alpha none", "Bravo later", "Charlie soon", "Delta none", "Echo left", "Foxtrot removed"} {
 		gids[name] = createFeedGroup(t, admin, name, models.VisibilityPublic, "")
 	}
 	createFeedEvent(t, admin, gids["Bravo later"], "Later", feedStart(9), "")
@@ -1809,6 +1809,15 @@ func TestGroupListsRunByNextMeetingWithViewerRole(t *testing.T) {
 	app.DB.First(&delta, gids["Delta none"])
 	addMember(t, app, member, &bravo, models.MembershipMember)
 	addMember(t, app, member, &delta, models.MembershipLeader)
+	// A left or removed membership is not belonging (DEC-35, DEC-86).
+	for name, status := range map[string]string{"Echo left": models.MembershipLeft, "Foxtrot removed": "removed"} {
+		var g models.Group
+		app.DB.First(&g, gids[name])
+		addMember(t, app, member, &g, models.MembershipMember)
+		if err := app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", member.ID, g.ID).Update("status", status).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	client := loginAPI(t, app, "member", "password1234")
 	list := func(path string) []groupSummaryJSON {
@@ -1826,10 +1835,10 @@ func TestGroupListsRunByNextMeetingWithViewerRole(t *testing.T) {
 		return
 	}
 	names, roles := order(list("/api/v1/groups"))
-	if want := []string{"Charlie soon", "Bravo later", "Alpha none", "Delta none"}; !reflect.DeepEqual(names, want) {
+	if want := []string{"Charlie soon", "Bravo later", "Alpha none", "Delta none", "Echo left", "Foxtrot removed"}; !reflect.DeepEqual(names, want) {
 		t.Fatalf("directory order %v, want %v", names, want)
 	}
-	if want := []string{"", "member", "", "leader"}; !reflect.DeepEqual(roles, want) {
+	if want := []string{"", "member", "", "leader", "", ""}; !reflect.DeepEqual(roles, want) {
 		t.Fatalf("directory roles %v, want %v", roles, want)
 	}
 	names, roles = order(list("/api/v1/me/groups"))
@@ -1841,7 +1850,7 @@ func TestGroupListsRunByNextMeetingWithViewerRole(t *testing.T) {
 	}
 	w := newAPIClient(t, app).do("GET", "/api/v1/groups", nil, false)
 	decodeJSON(t, w, &signedOut)
-	if strings.Contains(w.Body.String(), `"myRole"`) || len(signedOut.Groups) != 4 {
+	if strings.Contains(w.Body.String(), `"myRole"`) || len(signedOut.Groups) != 6 {
 		t.Fatalf("signed out: %s", w.Body.String())
 	}
 }

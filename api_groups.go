@@ -57,28 +57,40 @@ func (a *App) apiListGroups(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"groups": a.viewerGroupList(apiUser(c), groups)})
+	c.JSON(http.StatusOK, gin.H{"groups": a.viewerGroupList(groups, a.viewerRoles(apiUser(c), groups))})
+}
+
+// viewerRoles maps each listed group the viewer actively belongs to onto
+// their role there; nil for a signed-out viewer.
+func (a *App) viewerRoles(me *models.User, groups []models.Group) map[uint]string {
+	if me == nil || len(groups) == 0 {
+		return nil
+	}
+	ids := make([]uint, len(groups))
+	for i := range groups {
+		ids[i] = groups[i].ID
+	}
+	var rows []models.Membership
+	if err := a.DB.Select("group_id", "role").Where("user_id = ? AND status = ? AND group_id IN ?", me.ID, "active", ids).Find(&rows).Error; err != nil {
+		// The list still works; it just loses its "You're in" labels.
+		log.Printf("group list roles for user %d: %v", me.ID, err)
+		return nil
+	}
+	roles := make(map[uint]string, len(rows))
+	for _, m := range rows {
+		roles[m.GroupID] = m.Role
+	}
+	return roles
 }
 
 // viewerGroupList is a group list as its viewer browses it (DEC-94): each
-// summary carries the viewer's own role, and the list runs by next meeting,
-// soonest first, then by name, with groups that have no upcoming date last.
-func (a *App) viewerGroupList(me *models.User, groups []models.Group) []groupSummaryJSON {
+// summary carries the viewer's own role from roles, and the list runs by
+// next meeting, soonest first, then by name, with groups that have no
+// upcoming date last.
+func (a *App) viewerGroupList(groups []models.Group, roles map[uint]string) []groupSummaryJSON {
 	out := a.groupSummaries(groups)
-	if me != nil && len(out) > 0 {
-		ids := make([]uint, len(out))
-		for i := range out {
-			ids[i] = out[i].ID
-		}
-		var rows []models.Membership
-		a.DB.Select("group_id", "role").Where("user_id = ? AND status = ? AND group_id IN ?", me.ID, "active", ids).Find(&rows)
-		roles := make(map[uint]string, len(rows))
-		for _, m := range rows {
-			roles[m.GroupID] = m.Role
-		}
-		for i := range out {
-			out[i].MyRole = roles[out[i].ID]
-		}
+	for i := range out {
+		out[i].MyRole = roles[out[i].ID]
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		x, y := out[i].NextEventAt, out[j].NextEventAt

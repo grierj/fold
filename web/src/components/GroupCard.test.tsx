@@ -93,6 +93,18 @@ describe("GroupCard", () => {
     expect(screen.queryByText(/You lead|You're in/)).not.toBeInTheDocument();
   });
 
+  it("puts the role on its own line below members and place, with the check hidden from readers", () => {
+    renderCard({ group: { ...group, myRole: "leader" } });
+    const memberLine = screen.getByText("4 members · Room 201");
+    expect(memberLine).not.toHaveTextContent("You lead");
+    const role = screen.getByText("You lead");
+    expect(role).not.toBe(memberLine);
+    expect(role.parentElement).toBe(memberLine.parentElement);
+    expect(memberLine.compareDocumentPosition(role) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(role.querySelector('[aria-hidden="true"]')).toHaveTextContent("✓");
+    expect(screen.getByRole("link")).toHaveAccessibleName(/You lead/);
+  });
+
   it("showRole off keeps only You lead", () => {
     const { unmount } = renderCard({ group: { ...group, myRole: "member" }, showRole: false });
     expect(screen.queryByText("You're in")).not.toBeInTheDocument();

@@ -259,9 +259,8 @@ export function Home() {
             </p>
             {!authLoading && site && (
               <div className="mt-6 flex max-w-xl flex-col gap-3 sm:flex-row">
-                {site.selfSignup === "off" ? (
-                  <ButtonLink variant="primary" to="/login" layout="w-full sm:w-auto">Log in</ButtonLink>
-                ) : (
+                {/* With self-signup off the header already offers Log in; don't repeat it. */}
+                {site.selfSignup !== "off" && (
                   <ButtonLink variant="primary" to="/join" layout="w-full sm:w-auto">Request an account</ButtonLink>
                 )}
                 <ButtonLink variant="secondary" to="/calendar" layout="w-full sm:w-auto">Browse public events</ButtonLink>

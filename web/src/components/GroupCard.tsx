@@ -84,14 +84,12 @@ export function GroupCard({
             </span>
           )}
         </div>
-        <div className="flex items-baseline gap-x-2 text-sm text-text-muted">
-          <span className="min-w-0 truncate">{memberLine}</span>
-          {role && (
-            <span className="shrink-0 font-medium text-text">
-              <span aria-hidden="true">✓</span> {role}
-            </span>
-          )}
-        </div>
+        <div className="truncate text-sm text-text-muted">{memberLine}</div>
+        {role && (
+          <div className="text-sm font-medium text-text-muted">
+            <span aria-hidden="true">✓</span> {role}
+          </div>
+        )}
         {tags && <div className="truncate text-sm text-text-muted">{tags}</div>}
       </div>
     </Link>

@@ -8,7 +8,7 @@ import { ContactDetails } from "../components/ContactDetails";
 import { Badge } from "../components/ui/Badge";
 import { useHousehold } from "../lib/useHousehold";
 import { SeriesEditor } from "../components/SeriesEditor";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ApiError, Events, GroupCover, Groups, Invitations } from "../api";
 import type { DepartureConfirmation, PersonSearchResult, EventOccurrence, GroupDetailResponse, OpenedDecision, HouseholdPerson, Visibility, VisibilityImpact } from "../types";
@@ -335,6 +335,37 @@ export function CreateGroupForm({ onSaved, onCancel }: {
       onSaved={onSaved}
       onCancel={onCancel}
     />
+  );
+}
+
+// The description above the tabs, clamped to three lines. "Read more" shows
+// only when the text really overflows, and is re-checked when the width
+// changes (rotating a phone, resizing the window).
+function ClampedDescription({ text, onReadMore }: { text: string; onReadMore: () => void }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [overflows, setOverflows] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const check = () => setOverflows(el.scrollHeight > el.clientHeight);
+    check();
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(check);
+      observer.observe(el);
+      return () => observer.disconnect();
+    }
+    window.addEventListener("resize", check);
+    return () => window.removeEventListener("resize", check);
+  }, [text]);
+  return (
+    <div className="mb-6 max-w-3xl">
+      <p ref={ref} className="text-text-muted whitespace-pre-wrap wrap-anywhere line-clamp-3">{text}</p>
+      {overflows && (
+        <Button variant="link" onClick={onReadMore}>
+          Read more
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -843,13 +874,8 @@ function GroupDetailContent() {
           />
         ) : (
           <>
-            {group.description.trim() && (
-              <div className="mb-6 max-w-3xl">
-                <p className="text-text-muted whitespace-pre-wrap wrap-anywhere line-clamp-3">{group.description}</p>
-                <Button variant="link" onClick={showAbout}>
-                  Read more
-                </Button>
-              </div>
+            {group.description.trim() && tab !== "about" && (
+              <ClampedDescription text={group.description} onReadMore={showAbout} />
             )}
             <div ref={sectionsRef}>
             <Tabs label="Group sections" value={tab} onChange={setTab} options={[

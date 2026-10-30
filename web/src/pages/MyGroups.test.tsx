@@ -44,7 +44,10 @@ it("sends a person in no groups to the directory or the start form, with groups 
   expect(await screen.findByText("You're not in any groups yet")).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Browse groups" })).toHaveAttribute("href", "/#groups");
   expect(screen.getByText(/^or/)).toBeInTheDocument();
-  expect(screen.getByRole("link", { name: "start a group" })).toHaveAttribute("href", "/groups/new");
+  const start = screen.getByRole("link", { name: "start a group" });
+  expect(start).toHaveAttribute("href", "/groups/new");
+  expect(start).toHaveClass("text-link");
+  expect(start).not.toHaveClass("btn-link");
   expect(screen.queryByRole("link", { name: "Start a group" })).not.toBeInTheDocument();
 
   expect(await screen.findByRole("heading", { name: "Groups meeting soon" })).toBeInTheDocument();
@@ -65,4 +68,17 @@ it("hides the meeting-soon section when nothing qualifies or the directory fails
   await waitFor(() => expect(Groups.list).toHaveBeenCalledTimes(2));
   await waitFor(() => expect(screen.queryByRole("heading", { name: "Groups meeting soon" })).not.toBeInTheDocument());
   expect(screen.getByText("You're not in any groups yet")).toBeInTheDocument();
+});
+
+it("shows nothing for meeting soon while the directory loads, then the section once a group qualifies", async () => {
+  vi.mocked(Groups.mine).mockResolvedValue({ groups: [] });
+  let resolve!: (v: { groups: GroupSummary[] }) => void;
+  vi.mocked(Groups.list).mockReturnValue(new Promise((r) => { resolve = r; }));
+  open();
+  expect(await screen.findByText("You're not in any groups yet")).toBeInTheDocument();
+  await waitFor(() => expect(Groups.list).toHaveBeenCalled());
+  expect(screen.queryByRole("heading", { name: "Groups meeting soon" })).not.toBeInTheDocument();
+  expect(screen.queryByText("Loading groups meeting soon…")).not.toBeInTheDocument();
+  resolve({ groups: [group(12)] });
+  expect(await screen.findByRole("heading", { name: "Groups meeting soon" })).toBeInTheDocument();
 });

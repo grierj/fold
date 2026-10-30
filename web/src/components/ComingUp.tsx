@@ -4,7 +4,7 @@ import { Calendar } from "../api";
 import type { CalendarOccurrence } from "../types";
 import { DateBadge } from "./DateBadge";
 import { ErrorNotice } from "./ErrorNotice";
-import { calendarStateLabel, occurrenceLink } from "./calendar/EventRow";
+import { StatusBadge, calendarState, occurrenceLink } from "./calendar/EventRow";
 import { EmptyState } from "./ui/EmptyState";
 import { Skeleton } from "./ui/Skeleton";
 import { addDays } from "../lib/calendar";
@@ -61,7 +61,7 @@ export function ComingUp() {
       ) : rows === null ? (
         <Skeleton kind="lines" count={3} label="Loading your dates…" />
       ) : rows.length === 0 ? (
-        <EmptyState title="Nothing on your calendar yet" body="Join a group below and its dates show up here." />
+        <EmptyState title="Nothing coming up in the next two months" body="Dates from your groups, and events you answer, show up here." />
       ) : (
         <ul className="space-y-3">
           {rows.map((o) => (
@@ -76,7 +76,7 @@ export function ComingUp() {
 }
 
 function ComingUpRow({ occ }: { occ: CalendarOccurrence }) {
-  const label = calendarStateLabel(occ);
+  const state = calendarState(occ);
   const where = [occ.churchWide ? "Church-wide" : occ.groupName || (occ.hostedBy ? `Hosted by ${occ.hostedBy}` : ""), occ.location]
     .filter(Boolean)
     .join(" · ");
@@ -92,9 +92,9 @@ function ComingUpRow({ occ }: { occ: CalendarOccurrence }) {
         <span className="block font-semibold text-text">{occ.title || occ.groupName}</span>
         <span className="block text-sm text-text-muted">{formatNextMeeting(occ.startsAt).text}</span>
         {where && <span className="block truncate text-sm text-text-muted">{where}</span>}
-        {label && (
-          <span className="mt-1 inline-flex rounded-sm border border-primary bg-surface px-2 py-0.5 text-xs font-semibold text-text">
-            {label}
+        {state && (
+          <span className="mt-1 block">
+            <StatusBadge state={state} />
           </span>
         )}
       </span>

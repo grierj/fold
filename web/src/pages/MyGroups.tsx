@@ -32,18 +32,16 @@ function MeetingSoon() {
       alive = false;
     };
   }, []);
-  if (groups && groups.length === 0) return null;
+  // Nothing is shown until we know something qualifies, so the heading never
+  // flashes in and vanishes.
+  if (!groups || groups.length === 0) return null;
   return (
     <section aria-labelledby="meeting-soon" className="mt-10">
       <h2 id="meeting-soon" className="text-xl font-bold mb-4">
         Groups meeting soon
       </h2>
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-        {groups ? (
-          groups.map((g) => <GroupCard key={g.id} group={g} headingLevel={3} />)
-        ) : (
-          <Skeleton kind="cards" count={SOON_LIMIT} label="Loading groups meeting soon…" />
-        )}
+        {groups.map((g) => <GroupCard key={g.id} group={g} headingLevel={3} />)}
       </div>
     </section>
   );
@@ -121,9 +119,9 @@ export function MyGroups() {
                 </ButtonLink>
                 <p className="text-sm text-text-muted">
                   or{" "}
-                  <ButtonLink to="/groups/new" variant="link">
+                  <Link to="/groups/new" className="text-link">
                     start a group
-                  </ButtonLink>
+                  </Link>
                 </p>
               </div>
             }

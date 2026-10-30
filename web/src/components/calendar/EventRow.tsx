@@ -35,7 +35,7 @@ function ghosted(state: CalendarState) {
   return state === "maybe" || state === "waitlisted" || state === "not_answered";
 }
 
-function StatusBadge({ state, solid = false }: { state: CalendarState; solid?: boolean }) {
+export function StatusBadge({ state, solid = false }: { state: CalendarState; solid?: boolean }) {
   if (!state) return null;
   const label = STATUS[state];
   const cls = solid

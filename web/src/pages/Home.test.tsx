@@ -177,12 +177,19 @@ describe("Home signed out (DEC-94)", () => {
     expect(screen.queryByText(/Welcome to/)).not.toBeInTheDocument();
   });
 
-  it("swaps to Log in when self-signup is off", async () => {
+  it("drops Request an account when self-signup is off", async () => {
     site.mockResolvedValue({ name: "Grace Church", timezone: "UTC", selfSignup: "off" });
     renderHome();
-    expect(await screen.findByRole("link", { name: "Log in" })).toHaveAttribute("href", "/login");
+    expect(await screen.findByRole("link", { name: "Browse public events" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Request an account" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Browse public events" })).toBeInTheDocument();
+  });
+
+  it("shows no Log in button in the hero when self-signup is off (the header has it)", async () => {
+    site.mockResolvedValue({ name: "Grace Church", timezone: "UTC", selfSignup: "off" });
+    renderHome();
+    expect(await screen.findByRole("link", { name: "Browse public events" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Log in" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Request an account" })).not.toBeInTheDocument();
   });
 
   it("offers no buttons until auth resolves", async () => {
@@ -279,6 +286,10 @@ describe("Home signed in (DEC-94)", () => {
     expect(rows).toHaveLength(4);
     expect(rows[0]).toHaveTextContent("Event 1");
     expect(rows[0]).toHaveTextContent("Going");
+    // The same badge the calendar rows use: an icon for Going, the label as its name.
+    const badge = within(rows[0]).getByLabelText("Going");
+    expect(badge).toHaveClass("inline-flex", "rounded-sm");
+    expect(badge.querySelector("svg")).not.toBeNull();
     expect(within(rows[0]).getByRole("link")).toHaveAttribute("href", "/events/1/dates/2030-01-11");
     expect(rows[1]).toHaveTextContent("Maybe");
     expect(rows[1]).toHaveTextContent("Youth Choir · Room 4");
@@ -308,8 +319,8 @@ describe("Home signed in (DEC-94)", () => {
 
   it("has a short empty state", async () => {
     renderHome();
-    expect(await screen.findByText("Nothing on your calendar yet")).toBeInTheDocument();
-    expect(screen.getByText("Join a group below and its dates show up here.")).toBeInTheDocument();
+    expect(await screen.findByText("Nothing coming up in the next two months")).toBeInTheDocument();
+    expect(screen.getByText("Dates from your groups, and events you answer, show up here.")).toBeInTheDocument();
     await ready();
   });
 
