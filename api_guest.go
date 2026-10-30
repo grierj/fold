@@ -598,6 +598,13 @@ func (a *App) authorizeRegistrationLink(tx *gorm.DB, reg *models.Registration, o
 }
 
 func (a *App) apiGetGuestRegistration(c *gin.Context) {
+	// Reject dead credentials without queuing a public request on the global
+	// contact gate. This is only a preflight; current authority and the token
+	// are checked again under the gate before any registration is displayed.
+	if _, _, _, _, err := liveTokenManage(a.DB, c.Param("token")); err != nil {
+		jsonError(c, http.StatusNotFound, "registration not found")
+		return
+	}
 	var display guestRegistrationJSON
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := lockContacts(tx); err != nil {

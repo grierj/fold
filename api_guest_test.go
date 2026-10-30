@@ -1055,6 +1055,56 @@ func TestGuestManagePromotedMemberCurrentAccess(t *testing.T) {
 	apiDo(t, f.anon, "POST", path+"/cancel", nil, http.StatusOK)
 }
 
+func TestGuestManageInvalidTokenDoesNotWaitForContactGate(t *testing.T) {
+	for _, expired := range []bool{false, true} {
+		t.Run(fmt.Sprintf("expired=%t", expired), func(t *testing.T) {
+			f := newPromotedContactCancellationFixture(t)
+			token := "not-a-real-token"
+			if expired {
+				token = f.token
+				if err := f.app.DB.Model(&f.occ).Update("ends_at", time.Now().UTC().Add(-time.Hour)).Error; err != nil {
+					t.Fatal(err)
+				}
+			}
+			gate := holdContactGate(t, f.app)
+			defer gate.Rollback()
+			response := queueContact(func() *httptest.ResponseRecorder {
+				return f.anon.do("GET", "/api/v1/guest-registrations/manage/"+token, nil, false)
+			})
+			// The gate stays held until after the response: rejection must not
+			// depend on a contact mutation finishing.
+			select {
+			case w := <-response:
+				if w.Code != http.StatusNotFound {
+					t.Fatalf("invalid token: %d %s", w.Code, w.Body.String())
+				}
+			case <-time.After(5 * time.Second):
+				gate.Rollback()
+				awaitContactResponse(t, response)
+				t.Fatal("invalid token waited for the contact gate")
+			}
+		})
+	}
+}
+
+func TestGuestManageGETRechecksTokenUnderGate(t *testing.T) {
+	f := newPromotedContactCancellationFixture(t)
+	gate := holdContactGate(t, f.app)
+	response := queueContact(func() *httptest.ResponseRecorder {
+		return f.anon.do("GET", "/api/v1/guest-registrations/manage/"+f.token, nil, false)
+	})
+	waitContactWaiters(t, f.app, 1) // preflight passed, but the gated lookup has not run
+	if err := gate.Model(&models.Registration{}).Where("user_id = ? AND occurrence_id = ?", f.subject.ID, f.occ.ID).Update("manage_token_hash", hashToken("rotated-test-token")).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.Commit().Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := awaitContactResponse(t, response); w.Code != http.StatusNotFound {
+		t.Fatalf("rotated token authorized by stale preflight: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestGuestManageRechecksAuthorizationUnderGate(t *testing.T) {
 	for _, method := range []string{"GET", "POST"} {
 		t.Run(method, func(t *testing.T) {
