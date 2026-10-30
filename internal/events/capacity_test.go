@@ -248,3 +248,27 @@ func TestPickPromotionsNamedAndUnnamedChildcare(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoteOffered(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		capacity, override *int
+		want               bool
+	}{
+		{"unlimited", nil, nil, true},
+		{"positive", intp(5), nil, true},
+		{"zero", intp(0), nil, false},
+		{"zero override", nil, intp(0), false},
+		{"positive override", intp(0), intp(2), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			capacity := EffectiveRemoteCapacity(tc.capacity, tc.override)
+			if got := RemoteOffered(true, capacity); got != tc.want {
+				t.Fatalf("enabled: %t, want %t", got, tc.want)
+			}
+			if RemoteOffered(false, capacity) {
+				t.Fatal("capacity enabled a disabled remote mode")
+			}
+		})
+	}
+}

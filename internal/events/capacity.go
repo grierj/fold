@@ -29,6 +29,12 @@ func EffectiveRemoteCapacity(eventRemoteCapacity *int, override *int) *int {
 	return EffectiveCapacity(eventRemoteCapacity, override)
 }
 
+// RemoteOffered reports whether a date offers remote attendance, not whether
+// seats remain. Pass the effective per-date capacity; nil means unlimited.
+func RemoteOffered(enabled bool, capacity *int) bool {
+	return enabled && (capacity == nil || *capacity > 0)
+}
+
 // Fits reports whether a party of seats fits in a pool: an unlimited
 // pool (nil capacity) always fits, otherwise used+seats must stay at or
 // under the cap.

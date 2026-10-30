@@ -5,8 +5,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/teambition/rrule-go"
 )
 
 // ICS feed rendering (M1.7, 8.2). Pure: the handler loads facts and
@@ -15,50 +13,8 @@ import (
 // and nothing reads the clock, so the same Feed always renders the same
 // bytes (that is what makes the ETag stable).
 
-// FeedOccurrence is one date of an event with its effective (per-date
-// override applied) title, location and clock.
-type FeedOccurrence struct {
-	OriginalDate string // YYYY-MM-DD, the series date in the event's zone
-	StartsAt     time.Time
-	EndsAt       time.Time
-	Title        string
-	Location     string
-	UpdatedAt    time.Time
-}
-
-// FeedEvent is one series or one-time event for the feed. Occurrences
-// holds the in-window scheduled dates; a series normally renders as one
-// RRULE entry and uses it only when its stored rule cannot be emitted
-// safely. Overrides holds the in-window customized, non-cancelled dates
-// and CancelledDates the in-window cancelled series dates.
-type FeedEvent struct {
-	ID          uint
-	Title       string
-	Description string
-	// VideoURL is the event's video link, already cleared for this feed's
-	// viewer by the handler (5.8, M1.8); "" renders nothing.
-	VideoURL string
-	// RemoteAvailable adds "Remote attendance available" to the
-	// description (8.2, M1.8 slice 2).
-	ChildcareAvailable bool
-	ChildcareAges      string
-	RemoteAvailable    bool
-	Location           string
-	TZID               string
-	StartsLocal        string // YYYY-MM-DDTHH:MM, the series wall clock
-	DurationMinutes    int
-	RRule              string
-	RRuleUntil         string // YYYY-MM-DD inclusive, or ""
-	URL                string
-	UpdatedAt          time.Time
-	CancelledDates     []string
-	Overrides          []FeedOccurrence
-	Occurrences        []FeedOccurrence
-}
-
-// FeedSingle is one standalone date with no series entry in this feed.
-// Its UID carries the immutable original date so expanded personal rows keep
-// their identity when a series clock changes (see singleUID).
+// FeedSingle is one authorized date with all effective fields already projected.
+// Its UID carries the immutable original date, so reschedules keep its identity.
 type FeedSingle struct {
 	EventID      uint
 	OriginalDate string
@@ -86,7 +42,6 @@ type Feed struct {
 	Host        string // UID host; "fold" when empty
 	WindowStart time.Time
 	WindowEnd   time.Time
-	Events      []FeedEvent
 	Singles     []FeedSingle
 }
 
@@ -102,8 +57,6 @@ func RenderFeed(f Feed) []byte {
 	if host == "" {
 		host = "fold"
 	}
-	evs := append([]FeedEvent(nil), f.Events...)
-	sort.Slice(evs, func(i, j int) bool { return evs[i].ID < evs[j].ID })
 	singles := append([]FeedSingle(nil), f.Singles...)
 	sort.Slice(singles, func(i, j int) bool {
 		if singles[i].EventID != singles[j].EventID {
@@ -120,21 +73,6 @@ func RenderFeed(f Feed) []byte {
 			refs = append(refs, t.UTC())
 		}
 	}
-	for i := range evs {
-		bs, zone, start, ok := renderEvent(&evs[i], host)
-		if !ok {
-			continue
-		}
-		zones[evs[i].TZID] = zone
-		blocks = append(blocks, bs...)
-		addRef(start)
-		for _, o := range evs[i].Overrides {
-			addRef(o.StartsAt)
-		}
-		for _, o := range evs[i].Occurrences {
-			addRef(o.StartsAt)
-		}
-	}
 	for i := range singles {
 		b, zone, ok := renderSingle(&singles[i], host)
 		if !ok {
@@ -143,6 +81,7 @@ func RenderFeed(f Feed) []byte {
 		zones[singles[i].TZID] = zone
 		blocks = append(blocks, b)
 		addRef(singles[i].StartsAt)
+		addRef(singles[i].EndsAt)
 	}
 
 	lines := []string{
@@ -171,105 +110,9 @@ func RenderFeed(f Feed) []byte {
 	return []byte(out.String())
 }
 
-func seriesUID(id uint, host string) string {
-	return fmt.Sprintf("event-%d@%s", id, host)
-}
-
-// A standalone date has no series entry in the feed to share a UID with,
-// so the date is part of its UID. That is the one deliberate exception
-// to the event-<id>@<host> form.
+// A date UID uses its immutable original date, even after a reschedule.
 func singleUID(id uint, originalDate, host string) string {
 	return fmt.Sprintf("event-%d-%s@%s", id, strings.ReplaceAll(originalDate, "-", ""), host)
-}
-
-func renderEvent(ev *FeedEvent, host string) ([][]string, *time.Location, time.Time, bool) {
-	loc, err := LoadZone(ev.TZID)
-	if err != nil {
-		return nil, nil, time.Time{}, false
-	}
-	start, _, err := ParseWall(ev.StartsLocal, ev.TZID)
-	if err != nil {
-		return nil, nil, time.Time{}, false
-	}
-	if ev.RRule == "" {
-		b, ok := renderOneTime(ev, loc, start, host)
-		if !ok {
-			return nil, nil, time.Time{}, false
-		}
-		return [][]string{b}, loc, start, true
-	}
-	rule, safe := safeRRule(ev.RRule, loc, start)
-	if !safe {
-		occs := sortedOccurrences(ev.Occurrences)
-		if len(occs) == 0 {
-			return nil, nil, time.Time{}, false
-		}
-		out := make([][]string, 0, len(occs))
-		for i := range occs {
-			out = append(out, singleBlock(singleUID(ev.ID, occs[i].OriginalDate, host), ev, &occs[i], loc, ""))
-		}
-		return out, loc, start, true
-	}
-	if until := untilUTC(ev.RRuleUntil, loc); until != "" &&
-		!strings.Contains(strings.ToUpper(rule), "UNTIL=") &&
-		!strings.Contains(strings.ToUpper(rule), "COUNT=") {
-		rule += ";UNTIL=" + until
-	}
-	dur := time.Duration(ev.DurationMinutes) * time.Minute
-	lines := []string{
-		"BEGIN:VEVENT",
-		"UID:" + seriesUID(ev.ID, host),
-		"DTSTAMP:" + dtstamp(ev.UpdatedAt, start),
-		"DTSTART;TZID=" + ev.TZID + ":" + start.Format(icsWall),
-		"DTEND;TZID=" + ev.TZID + ":" + start.Add(dur).Format(icsWall),
-		"RRULE:" + rule,
-	}
-	if dates := sortedDates(ev.CancelledDates); len(dates) > 0 {
-		walls := make([]string, len(dates))
-		for i, d := range dates {
-			walls[i] = originalWall(d, start)
-		}
-		lines = append(lines, "EXDATE;TZID="+ev.TZID+":"+strings.Join(walls, ","))
-	}
-	lines = append(lines, textLines(ev.Title, ev.Description, ev.URL, ev.Location, ev.VideoURL, ev.RemoteAvailable, ev.ChildcareAvailable, ev.ChildcareAges)...)
-	lines = append(lines, "END:VEVENT")
-
-	out := [][]string{lines}
-	for _, o := range sortedOccurrences(ev.Overrides) {
-		b := []string{
-			"BEGIN:VEVENT",
-			"UID:" + seriesUID(ev.ID, host),
-			"DTSTAMP:" + dtstamp(o.UpdatedAt, o.StartsAt),
-			"RECURRENCE-ID;TZID=" + ev.TZID + ":" + originalWall(o.OriginalDate, start),
-			"DTSTART;TZID=" + ev.TZID + ":" + o.StartsAt.In(loc).Format(icsWall),
-			"DTEND;TZID=" + ev.TZID + ":" + endsAt(&o, ev.DurationMinutes).In(loc).Format(icsWall),
-		}
-		b = append(b, textLines(orSeries(o.Title, ev.Title), ev.Description, ev.URL,
-			orSeries(o.Location, ev.Location), ev.VideoURL, ev.RemoteAvailable, ev.ChildcareAvailable, ev.ChildcareAges)...)
-		b = append(b, "END:VEVENT")
-		out = append(out, b)
-	}
-	return out, loc, start, true
-}
-
-func renderOneTime(ev *FeedEvent, loc *time.Location, start time.Time, host string) ([]string, bool) {
-	if len(ev.Occurrences) == 0 {
-		if len(ev.CancelledDates) > 0 {
-			return nil, false
-		}
-		dur := time.Duration(ev.DurationMinutes) * time.Minute
-		b := []string{
-			"BEGIN:VEVENT",
-			"UID:" + seriesUID(ev.ID, host),
-			"DTSTAMP:" + dtstamp(ev.UpdatedAt, start),
-			"DTSTART;TZID=" + ev.TZID + ":" + start.Format(icsWall),
-			"DTEND;TZID=" + ev.TZID + ":" + start.Add(dur).Format(icsWall),
-		}
-		b = append(b, textLines(ev.Title, ev.Description, ev.URL, ev.Location, ev.VideoURL, ev.RemoteAvailable, ev.ChildcareAvailable, ev.ChildcareAges)...)
-		return append(b, "END:VEVENT"), true
-	}
-	o := sortedOccurrences(ev.Occurrences)[0]
-	return singleBlock(seriesUID(ev.ID, host), ev, &o, loc, ""), true
 }
 
 func renderSingle(s *FeedSingle, host string) ([]string, *time.Location, bool) {
@@ -299,22 +142,6 @@ func renderSingle(s *FeedSingle, host string) ([]string, *time.Location, bool) {
 	}
 	b = append(b, textLines(s.Title, s.Description, s.URL, s.Location, s.VideoURL, s.RemoteAvailable, s.ChildcareAvailable, s.ChildcareAges)...)
 	return append(b, "END:VEVENT"), loc, true
-}
-
-func singleBlock(uid string, ev *FeedEvent, o *FeedOccurrence, loc *time.Location, status string) []string {
-	b := []string{
-		"BEGIN:VEVENT",
-		"UID:" + uid,
-		"DTSTAMP:" + dtstamp(o.UpdatedAt, o.StartsAt),
-		"DTSTART;TZID=" + ev.TZID + ":" + o.StartsAt.In(loc).Format(icsWall),
-		"DTEND;TZID=" + ev.TZID + ":" + endsAt(o, ev.DurationMinutes).In(loc).Format(icsWall),
-	}
-	if status != "" {
-		b = append(b, "STATUS:"+status)
-	}
-	b = append(b, textLines(orSeries(o.Title, ev.Title), ev.Description, ev.URL,
-		orSeries(o.Location, ev.Location), ev.VideoURL, ev.RemoteAvailable, ev.ChildcareAvailable, ev.ChildcareAges)...)
-	return append(b, "END:VEVENT")
 }
 
 func textLines(title, description, url, location, videoURL string, remoteAvailable, childcareAvailable bool, childcareAges string) []string {
@@ -356,20 +183,6 @@ func textLines(title, description, url, location, videoURL string, remoteAvailab
 	return lines
 }
 
-func orSeries(own, series string) string {
-	if own != "" {
-		return own
-	}
-	return series
-}
-
-func endsAt(o *FeedOccurrence, durationMinutes int) time.Time {
-	if !o.EndsAt.IsZero() {
-		return o.EndsAt
-	}
-	return o.StartsAt.Add(time.Duration(durationMinutes) * time.Minute)
-}
-
 func dtstamp(updated, fallback time.Time) string {
 	t := updated
 	if t.IsZero() {
@@ -378,79 +191,8 @@ func dtstamp(updated, fallback time.Time) string {
 	return t.UTC().Format(icsWall) + "Z"
 }
 
-// originalWall is the wall clock a series date would have started at
-// without a per-date override: the original date at the series' time of
-// day (start is the series start in the event's zone).
-func originalWall(date string, start time.Time) string {
-	d, err := time.Parse("2006-01-02", date)
-	if err != nil {
-		return strings.ReplaceAll(date, "-", "") + start.Format("T150405")
-	}
-	t := time.Date(d.Year(), d.Month(), d.Day(),
-		start.Hour(), start.Minute(), start.Second(), 0, time.UTC)
-	return t.Format(icsWall)
-}
-
-// untilUTC converts an inclusive local end date to the UTC instant of
-// the end of that day, the only form RFC 5545 allows for UNTIL when
-// DTSTART carries a TZID.
-func untilUTC(date string, loc *time.Location) string {
-	if strings.TrimSpace(date) == "" {
-		return ""
-	}
-	d, err := time.Parse("2006-01-02", date)
-	if err != nil {
-		return ""
-	}
-	end := time.Date(d.Year(), d.Month(), d.Day(), 23, 59, 59, 0, loc)
-	return end.UTC().Format(icsWall) + "Z"
-}
-
-func safeRRule(rule string, loc *time.Location, start time.Time) (string, bool) {
-	r := strings.TrimSpace(rule)
-	if len(r) >= len("RRULE:") && strings.EqualFold(r[:len("RRULE:")], "RRULE:") {
-		r = strings.TrimSpace(r[len("RRULE:"):])
-	}
-	if r == "" || strings.Contains(strings.ToUpper(r), "DTSTART") {
-		return "", false
-	}
-	for _, c := range r {
-		switch {
-		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-		case c == ';' || c == '=' || c == ',' || c == '+' || c == '-':
-		default:
-			return "", false
-		}
-	}
-	ics := fmt.Sprintf("DTSTART;TZID=%s:%s\nRRULE:%s", loc.String(), start.Format(icsWall), r)
-	if _, err := rrule.StrToRRule(ics); err != nil {
-		return "", false
-	}
-	return r, true
-}
-
-func sortedOccurrences(in []FeedOccurrence) []FeedOccurrence {
-	out := append([]FeedOccurrence(nil), in...)
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].OriginalDate != out[j].OriginalDate {
-			return out[i].OriginalDate < out[j].OriginalDate
-		}
-		return out[i].StartsAt.Before(out[j].StartsAt)
-	})
-	return out
-}
-
-func sortedDates(in []string) []string {
-	out := append([]string(nil), in...)
-	sort.Strings(out)
-	return out
-}
-
 // timezoneBlocks builds one VTIMEZONE per zone, in zone-name order,
-// from the actual offset transitions in Go's tzdata. Coverage runs from
-// the earliest referenced instant to two years past the feed window, so
-// a client expanding an RRULE past the window still gets the right
-// offsets until its next refresh.
+// covering the export window and emitted date clocks with a small margin.
 func timezoneBlocks(zones map[string]*time.Location, f Feed, refs []time.Time) [][]string {
 	if len(zones) == 0 {
 		return nil
@@ -472,7 +214,7 @@ func timezoneBlocks(zones map[string]*time.Location, f Feed, refs []time.Time) [
 		to = from.AddDate(1, 0, 0)
 	}
 	from = from.AddDate(0, 0, -2)
-	to = to.AddDate(2, 0, 0)
+	to = to.AddDate(0, 0, 2)
 
 	names := make([]string, 0, len(zones))
 	for name := range zones {

@@ -201,7 +201,7 @@ func (a *App) apiCalendar(c *gin.Context) {
 			groupLoc = shown.Location
 		}
 		full := occurrenceToJSON(ev, occ, groupLoc)
-		remoteAvailable := full.RemoteAvailable && (full.RemoteCapacity == nil || *full.RemoteCapacity > 0)
+		remoteAvailable := events.RemoteOffered(full.RemoteAvailable, full.RemoteCapacity)
 		if c.Query("remote") == "1" && !remoteAvailable {
 			continue
 		}

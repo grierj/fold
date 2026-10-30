@@ -81,20 +81,24 @@ from POST; POST also remakes the link, which revokes the old one.
 church-wide dates in the next 30 days, events they host, their own answered or
 exact-access dates, and dates registered for household people) or `"all"`
 (every authorized date, with unanswered public and church-wide discovery dates
-limited to the next 30 days). Personal feeds expand dates so exclusions cannot
-be reintroduced by an RRULE. Every expanded row is a standalone VEVENT whose
-immutable identity is `UID:event-<eventId>-<originalDate>@<host>`; it has no
+limited to the next 30 days). All feeds export stored dates so exclusions cannot
+be reintroduced by an RRULE. Every row is a standalone VEVENT whose
+immutable identity is `UID:event-<eventId>-<originalDate as YYYYMMDD>@<host>`; it has no
 `RECURRENCE-ID`. A series time edit therefore changes `DTSTART` without changing
 the row's identity or its stored occurrence/registration. Date-only authority
 (for example, one public override of a hidden series) uses that same UID and
 exact-date URL, but emits no parent-series recurrence identity, description,
-hidden-group fallback, or video metadata. Going is `STATUS:CONFIRMED`; Maybe,
-Waitlisted and Not answered are `STATUS:TENTATIVE`; Can't go is omitted. Public
-and group feeds keep their series UID/RRULE/EXDATE/RECURRENCE-ID behavior.
+hidden-group fallback, childcare details, or parent video metadata. Effective remote
+availability is date participation information: it is included when enabled and
+the date's effective remote capacity is unlimited or positive, even if the parent
+series is hidden. Zero capacity omits the marker, not the date or an independently
+authorized video link; a full positive-capacity pool still advertises remote attendance.
+Going is `STATUS:CONFIRMED`; Maybe, Waitlisted and Not answered are
+`STATUS:TENTATIVE`; Can't go is omitted. Public and group dates are `CONFIRMED`.
 
-This date-specific personal UID is an intentional pre-release wire correction
-from the earlier detached `(series UID, RECURRENCE-ID)` form. Anyone who imported
-a development feed from an earlier build may see the old rows removed and the
+Date-specific UIDs across all feeds are an intentional pre-release wire correction
+from earlier series masters and detached `(series UID, RECURRENCE-ID)` rows.
+Anyone who imported a development feed from an earlier build may see the old rows removed and the
 corrected rows added once; removing and re-adding that development subscription
 is the safest cleanup if a client retains stale rows. Representative external
 calendar clients still need manual interoperability checks. Revoking a link that is already off still
@@ -851,7 +855,7 @@ are a member of the event's group or a host. Waitlisted, declined,
 cancelled and removed dates, outsiders who haven't answered, and
 signed-out viewers never get it (`policy.CanSeeVideoLinkInFeed`).
 
-A recurring series in a personal feed is expanded to one standalone VEVENT per
+A recurring series in any feed is expanded to one standalone VEVENT per
 included date. Video eligibility is therefore evaluated per date. A viewer who
 has only date-level authority to an opened hidden series receives no video link,
 even if that event's general reveal mode is `always`; series-authorized viewers
@@ -1172,9 +1176,16 @@ Feeds cover 30 days back to 12 months ahead, carry `ETag` and
 `Cache-Control: private, max-age=900` (304 on `If-None-Match`), and
 never carry attendee data. Contents follow the viewer's permissions at
 fetch time; a disabled or deleted owner's token answers the same plain
-404 as an unknown one. Personal-feed standalone identity and date-only privacy
-are described with the calendar-feed token contract above. Public and group
-feeds retain recurring-series wire output.
+404 as an unknown one. All feeds are finite snapshots of authorized scheduled
+occurrences selected by their actual start in the half-open export window.
+They contain no VEVENT `RRULE`, `EXDATE`, `RDATE`, or `RECURRENCE-ID`: clients
+never reconstruct dates beyond the loaded authorization facts. Cancellation
+omits a date on the next refresh; a reschedule keeps its original-date UID and
+updates its effective clock, including moves into or out of the window.
+Standalone identity and date-only privacy are described with the calendar-feed
+token contract above. Timezone coverage follows the window and emitted clocks,
+not the age of the series anchor. Calendar clients choose when to refresh and
+may retain old cached data; no immediate remote deletion is promised.
 
 ## Conventions
 

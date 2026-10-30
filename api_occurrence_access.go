@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"fold/internal/events"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -265,7 +266,7 @@ func presentOccurrenceDate(ev *models.Event, occ *models.EventOccurrence, groupL
 	out := dateOccurrenceJSON{ID: occ.ID, EventID: ev.ID, Date: occ.OriginalDate, DateURL: occurrenceDatePath(ev.ID, occ.OriginalDate),
 		Title: full.Title, Location: full.Location, StartsAt: full.StartsAt, EndsAt: full.EndsAt,
 		StartsLocal: full.StartsLocal, EndsLocal: full.EndsLocal, TZID: full.TZID, DurationMinutes: full.DurationMinutes,
-		RemoteAvailable: full.RemoteAvailable && (full.RemoteCapacity == nil || *full.RemoteCapacity > 0), GuestsAllowed: full.GuestsAllowed,
+		RemoteAvailable: events.RemoteOffered(full.RemoteAvailable, full.RemoteCapacity), GuestsAllowed: full.GuestsAllowed,
 		VideoProvider: videoProviderOf(ev), CanSeeVideo: canVideo,
 		CanSeeAttendees: policy.CanSeeOccurrenceAttendees(ordinary, attendees),
 		CanDecline:      invited != nil && policy.CanEndOccurrenceAccess(actor, false, access),

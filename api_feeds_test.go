@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"fold/internal/events"
 	"fold/models"
+
+	ics "github.com/arran4/golang-ical"
 )
 
 // feedStart is an evening a fixed number of days out, always inside the
@@ -346,7 +349,8 @@ func TestPersonalFeedOpenedHiddenSeriesDateStaysStandaloneAndPrivate(t *testing.
 	if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{
 		"title": "Hidden parent series", "description": hiddenDescription,
 		"video_provider": models.VideoProviderLink, "video_url": hiddenVideo,
-		"video_reveal": models.VideoRevealAlways,
+		"video_reveal": models.VideoRevealAlways, "remote_available": true,
+		"childcare_available": true, "childcare_ages": "Hidden nursery ages",
 	}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -364,7 +368,11 @@ func TestPersonalFeedOpenedHiddenSeriesDateStaysStandaloneAndPrivate(t *testing.
 		if strings.Count(raw, "BEGIN:VEVENT") != 1 || !strings.Contains(raw, dateUID) || !strings.Contains(raw, "SUMMARY:Opened community date") || !strings.Contains(raw, "LOCATION:Opened date place") || !strings.Contains(raw, occurrenceDatePath(ev.ID, dates[0].OriginalDate)) {
 			t.Fatalf("scope=%s did not export the one opened date as a standalone event: %s", scope, raw)
 		}
+		if !strings.Contains(raw, "Remote attendance available") {
+			t.Fatalf("scope=%s suppressed authorized date participation information: %s", scope, raw)
+		}
 		for _, forbidden := range []string{
+			"Childcare available", "Hidden nursery ages",
 			fmt.Sprintf("UID:event-%d@", ev.ID), "RRULE:", "EXDATE", "RECURRENCE-ID",
 			"Hidden fellowship", "SECRET GROUP PLACE", "Hidden parent series", hiddenDescription, hiddenVideo,
 			strings.ReplaceAll(dates[1].OriginalDate, "-", ""), strings.ReplaceAll(dates[2].OriginalDate, "-", ""),
@@ -459,8 +467,8 @@ func TestPersonalFeedDateUIDSurvivesSeriesTimeEdit(t *testing.T) {
 		t.Fatalf("registration did not stay on the preserved occurrence: %+v err=%v", reg, err)
 	}
 	public := unfoldFeed(feedBody(t, newAPIClient(t, app), "/cal/public.ics"))
-	if !strings.Contains(public, fmt.Sprintf("UID:event-%d@", series.ID)) || !strings.Contains(public, "RRULE:") || strings.Contains(public, uidPrefix) {
-		t.Fatalf("public series feed contract changed: %s", public)
+	if publicBlock := feedEventWithUIDPrefix(public, uidPrefix); publicBlock == "" || !strings.Contains(publicBlock, "DTSTART;TZID=UTC:"+strings.ReplaceAll(target.OriginalDate, "-", "")+"T200000") || strings.Contains(public, "RRULE:") {
+		t.Fatalf("public date did not keep the same identity and edited clock: %s", public)
 	}
 }
 
@@ -659,15 +667,40 @@ func TestFeedRecurringAcceptance(t *testing.T) {
 		map[string]any{"title": "Special Rehearsal", "startsLocal": moved + "T21:00"}, http.StatusOK)
 
 	anon := newAPIClient(t, app)
-	body := feedBody(t, anon, "/cal/public.ics")
-	if got := strings.Count(body, "RRULE:"); got != 1 {
-		t.Fatalf("feed has %d RRULE entries, want one series:\n%s", got, body)
+	for _, path := range []string{"/cal/public.ics", fmt.Sprintf("/cal/groups/%d.ics", open)} {
+		body := unfoldFeed(feedBody(t, anon, path))
+		parsed, err := ics.ParseCalendar(strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(parsed.Events()) != 4 || strings.Contains(body, strings.ReplaceAll(cancelled, "-", "")+"T190000") {
+			t.Fatalf("%s did not omit exactly the cancelled date: %s", path, body)
+		}
+		for _, event := range parsed.Events() {
+			for _, p := range []ics.ComponentProperty{ics.ComponentPropertyRrule, ics.ComponentPropertyExdate, ics.ComponentPropertyRecurrenceId} {
+				if event.GetProperty(p) != nil {
+					t.Fatalf("%s retained recurrence property %s", path, p)
+				}
+			}
+		}
+		uid := fmt.Sprintf("event-%d-%s@", series.ID, strings.ReplaceAll(moved, "-", ""))
+		block := feedEventWithUIDPrefix(body, uid)
+		if !strings.Contains(block, "SUMMARY:Special Rehearsal") || !strings.Contains(block, "DTSTART;TZID=UTC:"+strings.ReplaceAll(moved, "-", "")+"T210000") {
+			t.Fatalf("%s missing moved date with stable identity: %s", path, body)
+		}
 	}
-	if !strings.Contains(body, "EXDATE") || !strings.Contains(body, strings.ReplaceAll(cancelled, "-", "")+"T190000") {
-		t.Fatalf("feed is missing the EXDATE for the cancelled date:\n%s", body)
+	// The next subscription snapshot removes cancelled first, last and all
+	// remaining dates rather than reconstructing any from a series master.
+	for i := 0; i < 5; i++ {
+		if i == 1 {
+			continue
+		}
+		apiDo(t, admin, "POST", fmt.Sprintf("/api/v1/events/%d/cancel", series.ID), map[string]any{"date": feedDate(start.AddDate(0, 0, 7*i))}, http.StatusOK)
 	}
-	if !strings.Contains(body, "RECURRENCE-ID") || !strings.Contains(body, "Special Rehearsal") {
-		t.Fatalf("feed is missing the moved date's RECURRENCE-ID entry:\n%s", body)
+	for _, path := range []string{"/cal/public.ics", fmt.Sprintf("/cal/groups/%d.ics", open)} {
+		if body := feedBody(t, anon, path); strings.Contains(body, "BEGIN:VEVENT") {
+			t.Fatalf("%s reconstructed cancelled dates: %s", path, body)
+		}
 	}
 }
 
@@ -783,8 +816,8 @@ func TestFeedMentionsRemoteAttendance(t *testing.T) {
 // owner when they said maybe, or when they are in the event's group and
 // haven't answered. Declined, waitlisted, and outsiders who haven't
 // answered still get nothing. A member going to one date of a series
-// gets that date with the link in a "mine" feed (and the whole series
-// entry carries it in an "all" feed, accepted for now).
+// gets that date with the link in either scope; unanswered sibling dates
+// in "all" must not inherit that date's video eligibility.
 func TestFeedVideoLinkMaybeNoResponseAndSeriesDate(t *testing.T) {
 	app := testApp(t)
 	newTestUser(t, app, "admin", "password1234", models.RoleAdmin)
@@ -848,8 +881,9 @@ func TestFeedVideoLinkMaybeNoResponseAndSeriesDate(t *testing.T) {
 	if strings.Count(body, "BEGIN:VEVENT") != 1 || !strings.Contains(body, "Join by video: "+link) {
 		t.Fatalf("one-date feed should carry one date with the link:\n%s", body)
 	}
-	if !has(oneDate, models.CalendarFeedAll) {
-		t.Fatal("the series entry should carry the link for someone going to one date")
+	all := unfoldFeed(feedBody(t, oneDate, createFeedLink(t, oneDate, models.CalendarFeedAll)))
+	if strings.Count(all, "BEGIN:VEVENT") != 3 || strings.Count(all, "Join by video: "+link) != 1 {
+		t.Fatalf("one qualifying date must not widen sibling video eligibility: %s", all)
 	}
 }
 
@@ -933,7 +967,7 @@ func TestPublicAndGroupFeedsOpenedDateHidesSeriesDetails(t *testing.T) {
 			if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{
 				"visibility": visibility, "description": description,
 				"video_provider": models.VideoProviderLink, "video_url": video, "video_reveal": models.VideoRevealAlways,
-				"childcare_available": true, "childcare_ages": ages,
+				"childcare_available": true, "childcare_ages": ages, "remote_available": true,
 			}).Error; err != nil {
 				t.Fatal(err)
 			}
@@ -942,7 +976,7 @@ func TestPublicAndGroupFeedsOpenedDateHidesSeriesDetails(t *testing.T) {
 			}, http.StatusOK)
 			for _, path := range []string{"/cal/public.ics", fmt.Sprintf("/cal/groups/%d.ics", *ev.GroupID)} {
 				raw := unfoldFeed(feedBody(t, anon, path))
-				for _, want := range []string{"BEGIN:VEVENT", "SUMMARY:Opened community date", "LOCATION:Opened date place", occurrenceDatePath(ev.ID, dates[0].OriginalDate), dates[0].StartsAt.UTC().Format("20060102T150405")} {
+				for _, want := range []string{"BEGIN:VEVENT", "SUMMARY:Opened community date", "LOCATION:Opened date place", "Remote attendance available", occurrenceDatePath(ev.ID, dates[0].OriginalDate), dates[0].StartsAt.UTC().Format("20060102T150405")} {
 					if !strings.Contains(raw, want) {
 						t.Fatalf("%s missing %q: %s", path, want, raw)
 					}
@@ -970,5 +1004,202 @@ func TestPublicAndGroupFeedsOpenedDateHidesSeriesDetails(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestOpenedDateFeedsUseEffectiveRemoteAvailability(t *testing.T) {
+	app, admin, anon, ev, dates := dateVisibilityFixture(t, models.VisibilityPublic)
+	viewer := newTestUser(t, app, "remote date viewer", "password1234", models.RoleMember)
+	client := loginAPI(t, app, viewer.Name, "password1234")
+	personalPath := createFeedLink(t, client, models.CalendarFeedAll)
+	if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Update("visibility", models.VisibilityInviteOnly).Error; err != nil {
+		t.Fatal(err)
+	}
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"visibility": "public"}, http.StatusOK)
+	for _, tc := range []struct {
+		name     string
+		enabled  bool
+		capacity *int
+		override *int
+		want     bool
+	}{
+		{"unlimited", true, nil, nil, true},
+		{"positive capacity", true, intPtr(5), nil, true},
+		{"zero capacity", true, intPtr(0), nil, false},
+		{"positive override opens zero capacity", true, intPtr(0), intPtr(2), true},
+		{"zero override closes unlimited capacity", true, nil, intPtr(0), false},
+		{"positive override", true, intPtr(5), intPtr(2), true},
+		{"cleared override returns to unlimited", true, nil, nil, true},
+		{"disabled with positive override", false, intPtr(5), intPtr(2), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := app.DB.Model(&models.Event{}).Where("id = ?", ev.ID).Updates(map[string]any{"remote_available": tc.enabled, "remote_capacity": tc.capacity}).Error; err != nil {
+				t.Fatal(err)
+			}
+			apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate), map[string]any{"remoteCapacityOverride": tc.override}, http.StatusOK)
+			var body struct {
+				Occurrence dateOccurrenceJSON `json:"occurrence"`
+			}
+			dateResponse := anon.do("GET", dateReadPath(ev.ID, dates[0].OriginalDate), nil, false)
+			if dateResponse.Code != http.StatusOK {
+				t.Fatalf("date API: %d %s", dateResponse.Code, dateResponse.Body.String())
+			}
+			decodeJSON(t, dateResponse, &body)
+			if body.Occurrence.RemoteAvailable != tc.want {
+				t.Fatalf("date API remoteAvailable = %t, want %t", body.Occurrence.RemoteAvailable, tc.want)
+			}
+			for _, path := range []string{"/cal/public.ics", fmt.Sprintf("/cal/groups/%d.ics", *ev.GroupID), personalPath} {
+				raw := unfoldFeed(feedBody(t, anon, path))
+				if strings.Count(raw, "BEGIN:VEVENT") != 1 || strings.Contains(raw, "RRULE:") {
+					t.Fatalf("%s exported more than the opened date: %s", path, raw)
+				}
+				if got := strings.Contains(raw, "Remote attendance available"); got != tc.want {
+					t.Errorf("%s remote marker = %t, want %t: %s", path, got, tc.want, raw)
+				}
+			}
+		})
+	}
+}
+
+func TestRecurringFeedsUseDateRemoteCapacityAndRefresh(t *testing.T) {
+	app := testApp(t)
+	admin, gid := openGroup(t, app, "Remote feed dates")
+	start := feedStart(7)
+	var group models.Group
+	if err := app.DB.First(&group, gid).Error; err != nil {
+		t.Fatal(err)
+	}
+	ev := createFeedEvent(t, admin, group.ID, "Hybrid dates", start, weeklyRule(start)+";COUNT=3")
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID), map[string]any{
+		"remoteAvailable": true, "remoteCapacity": 1, "videoProvider": "link", "videoUrl": "https://meet.example.org/date-feed", "videoReveal": "always",
+	}, http.StatusOK)
+	_, member := mkUser(t, app, &group, "remote feed member")
+	personal := createFeedLink(t, member, models.CalendarFeedMine)
+	var dates []models.EventOccurrence
+	if err := app.DB.Where("event_id = ?", ev.ID).Order("original_date").Find(&dates).Error; err != nil || len(dates) != 3 {
+		t.Fatalf("dates: %v count=%d", err, len(dates))
+	}
+	datePath := fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[0].OriginalDate)
+	apiDo(t, admin, "PUT", datePath, map[string]any{"remoteCapacityOverride": 0, "location": ""}, http.StatusOK)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d/occurrences/%s", ev.ID, dates[1].OriginalDate), map[string]any{"remoteCapacityOverride": 2}, http.StatusOK)
+	// Fill the inherited positive pool: offered means configured, not free seats.
+	if code, body := registerModeAs(member, ev.ID, dates[2].OriginalDate, models.RegGoing, models.AttendanceRemote); code != http.StatusOK {
+		t.Fatalf("remote RSVP: %d %s", code, body)
+	}
+	anon := newAPIClient(t, app)
+	paths := []string{"/cal/public.ics", fmt.Sprintf("/cal/groups/%d.ics", group.ID), personal}
+	assertDates := func(wantZero bool) {
+		t.Helper()
+		for _, path := range paths {
+			body := unfoldFeed(feedBody(t, anon, path))
+			cal, err := ics.ParseCalendar(strings.NewReader(body))
+			if err != nil || len(cal.Events()) != 3 {
+				t.Fatalf("%s dates: %v %s", path, err, body)
+			}
+			for i, date := range dates {
+				uid := fmt.Sprintf("event-%d-%s@", ev.ID, strings.ReplaceAll(date.OriginalDate, "-", ""))
+				block := feedEventWithUIDPrefix(body, uid)
+				if block == "" || strings.Contains(block, "RRULE:") {
+					t.Fatalf("%s missing standalone date %s", path, uid)
+				}
+				if got, want := strings.Contains(block, "Remote attendance available"), i != 0 || !wantZero; got != want {
+					t.Fatalf("%s date %d remote=%t want=%t: %s", path, i, got, want, block)
+				}
+				if !strings.Contains(block, "Join by video:") {
+					t.Fatalf("%s zero capacity incorrectly hid authorized video: %s", path, block)
+				}
+				if i == 0 && strings.Contains(block, "LOCATION:") {
+					t.Fatalf("%s restored an explicitly empty location: %s", path, block)
+				}
+			}
+		}
+	}
+	assertDates(true)
+	apiDo(t, member, "PUT", "/api/v1/me/calendar-feed", map[string]any{"scope": models.CalendarFeedAll}, http.StatusOK)
+	assertDates(true)
+	before := fetchFeed(t, anon, paths[0])
+	if w := fetchFeedIf(t, anon, paths[0], before.Header().Get("ETag")); w.Code != http.StatusNotModified {
+		t.Fatalf("unchanged feed: %d", w.Code)
+	}
+	apiDo(t, admin, "PUT", datePath, map[string]any{"remoteCapacityOverride": nil}, http.StatusOK)
+	if w := fetchFeedIf(t, anon, paths[0], before.Header().Get("ETag")); w.Code != http.StatusOK || w.Header().Get("ETag") == before.Header().Get("ETag") {
+		t.Fatalf("capacity reset did not refresh feed: %d", w.Code)
+	}
+	assertDates(false)
+	apiDo(t, admin, "PUT", fmt.Sprintf("/api/v1/events/%d", ev.ID), map[string]any{"remoteCapacity": nil}, http.StatusOK)
+	assertDates(false)
+}
+
+func TestFeedDateWindowIgnoresSeriesAnchor(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "feed window admin", "pw", models.RoleAdmin)
+	group := models.Group{Name: "Window group", Status: models.GroupActive, Visibility: models.VisibilityPublic, LeaderID: admin.ID}
+	if err := app.DB.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	from, until := feedWindow(now)
+	ev, first := seedEvent(t, app, &group, admin.ID, from.Add(-time.Second))
+	if err := app.DB.Model(&ev).Updates(map[string]any{"starts_local": "1980-01-01T19:00", "rrule": "FREQ=WEEKLY;BYDAY=FR"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i, start := range []time.Time{from, until.Add(-time.Second), until, now, now.Add(time.Hour), now.Add(2 * time.Hour)} {
+		occ := models.EventOccurrence{EventID: ev.ID, OriginalDate: fmt.Sprintf("1980-01-%02d", i+2), StartsAt: start, EndsAt: start.Add(90 * time.Minute), DurationOverride: intPtr(90), Status: models.OccurrenceScheduled}
+		if i == 3 {
+			occ.Status = models.OccurrenceCancelled
+		}
+		if i == 4 {
+			visibility := models.VisibilityInviteOnly
+			occ.VisibilityOverride = &visibility
+		}
+		if err := app.DB.Create(&occ).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, opts := range []feedOptions{{}, {onlyGroupID: &group.ID}} {
+		feed := app.buildFeed(nil, opts, now)
+		if len(feed.Singles) != 3 {
+			t.Fatalf("window exported %d dates, want from, until-1s and moved-in date", len(feed.Singles))
+		}
+		for _, date := range feed.Singles {
+			if date.OriginalDate == first.OriginalDate || date.StartsAt.Before(from) || !date.StartsAt.Before(until) || date.EndsAt.Sub(date.StartsAt) != 90*time.Minute {
+				t.Fatalf("wrong effective date: %+v", date)
+			}
+		}
+		raw := string(events.RenderFeed(feed))
+		if strings.Contains(raw, "RRULE:") || strings.Contains(raw, "DTSTART;TZID=UTC:1980") || strings.Count(raw, "BEGIN:STANDARD") != 1 {
+			t.Fatalf("series anchor leaked into snapshot: %s", raw)
+		}
+	}
+}
+
+func TestFeedDateProjectionReadBudget(t *testing.T) {
+	app := testApp(t)
+	admin := newTestUser(t, app, "feed budget admin", "pw", models.RoleAdmin)
+	group := models.Group{Name: "Feed budget", Status: models.GroupActive, Visibility: models.VisibilityPublic, LeaderID: admin.ID}
+	if err := app.DB.Create(&group).Error; err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	var baseline int64
+	for i := 1; i <= 100; i++ {
+		seedEvent(t, app, &group, admin.ID, now.Add(time.Duration(i)*time.Hour))
+		if i != 1 && i != 100 {
+			continue
+		}
+		counter := countDBReads(t, app.DB)
+		feed := app.buildFeed(nil, feedOptions{}, now)
+		reads := counter.Reads()
+		counter.Stop()
+		if len(feed.Singles) != i {
+			t.Fatalf("%d events exported %d dates", i, len(feed.Singles))
+		}
+		if i == 1 {
+			baseline = reads
+		}
+		if reads != baseline || reads > 4 {
+			t.Fatalf("%d events: %d reads, baseline=%d cap=4", i, reads, baseline)
+		}
+		t.Logf("%d events: %d reads", i, reads)
 	}
 }
