@@ -270,17 +270,19 @@ alone starts no CI; open the PR to get the checks.
 
 ### Merging pull requests
 
-Grier's rule (Oct 20, 2026). Wright may merge a fold PR, as a normal merge commit, when all of these hold:
+Grier's rule (Oct 20, 2026; generalized Oct 30, 2026). An agent may merge a fold PR, as a normal merge commit, when all of these hold:
 
 1. Every CI check is green (`test`, `web`, `provision`; branch protection requires them).
-2. Independent review approved it. Every fold PR needs review (Grier, Oct 20, 2026; orchestrate substitution approved Oct 25, 2026):
-   - UI, UX or design work: Illuminator, or the orchestrate plugin's UI review.
-   - Database or performance work: Whittler, or the orchestrate plugin's simplicity/database and efficiency reviews, to keep out complexity that would only get cut later.
-   - Security, and backend or API work: Warden, or the orchestrate plugin's security and correctness reviews.
-   - The orchestrate plugin's adversarial and domain-specific reviews serve as substitutes for the named reviewer bots; no separate named-bot approval or per-PR substitution permission is required. Use the reviews relevant to the change, retain their findings and approval evidence, and resolve blocking findings before merging. A completed plugin run alone is not review approval.
-3. No Grier decision on it is still open.
+2. All four primary concerns were reviewed by a different model from the one that implemented the change (for example, Sonnet or Fable reviewing Opus's work):
+   - UI, UX and design;
+   - database and performance: simplicity and efficiency, to keep out complexity that would only get cut later;
+   - security;
+   - correctness, including the backend and API.
 
-PRs that change security or visibility policy, repo settings, or production and deploy wait for Grier, unless he already decided that change. After a merge, merge master into the other open branches (never rebase) and report the merge SHA.
+   One reviewer may cover several concerns. A concern the change doesn't touch still gets an explicit "not affected" from the reviewer. Keep the findings with the PR (its description or a comment), and resolve blocking findings before merging.
+3. No product concern needs a human. No Grier decision on the PR is still open, and it makes no new product decision. Changes to security or visibility policy, repo settings, or production and deploy are product concerns unless Grier already decided that change.
+
+After a merge, merge master into the other open branches (never rebase) and report the merge SHA.
 
 ## Deployment
 
