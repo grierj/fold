@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { apiAs, email, fromMore, PASSWORD, signIn } from "./helpers";
+import { apiAs, email, fromMore, PASSWORD, signInTo, soon } from "./helpers";
 // @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
@@ -44,8 +44,7 @@ test("hidden adult requests preserve failures, disclose only on explicit reveal,
   await admin("POST", `/admin/groups/${group.id}/members`, { userId: ids.adult, role: "member" });
   const adult = await apiAs(request, "contact-adult");
   await adult("PUT", "/me", { hideContactFromLeaders: true });
-  await signIn(page, "contact-requester");
-  await page.goto(`/groups/${group.id}`);
+  await signInTo(page, "contact-requester", `/groups/${group.id}`);
   const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
     .getByRole("tab", { name: "Members", exact: true });
   await membersTab.click();
@@ -57,7 +56,7 @@ test("hidden adult requests preserve failures, disclose only on explicit reveal,
   expect(hidden).not.toHaveProperty("email"); expect(hidden).not.toHaveProperty("phone");
   await save("adult-roster-omissions", roster);
   await page.getByRole("button", { name: "Request direct contact" }).click();
-  await page.getByLabel("Email and phone", { exact: true }).check();
+  await (await soon(page.getByLabel("Email and phone", { exact: true }))).check();
   await page.getByLabel(/Reason/).fill("Please coordinate transport with me.");
   // A controlled server failure proves the real form retains valid values.
   await page.route("**/api/v1/contact-requests", (route) => route.request().method() === "POST" ? route.fulfill({ status: 409, contentType: "application/json", body: JSON.stringify({ code: "request_open_limit", error: "not for display" }) }) : route.continue());
@@ -70,15 +69,15 @@ test("hidden adult requests preserve failures, disclose only on explicit reveal,
   await page.getByRole("button", { name: "Send request" }).click();
   await page.getByRole("link", { name: "View request", exact: true }).click();
   const path = new URL(page.url()).pathname;
-  await expect(page.getByRole("button", { name: "Withdraw request" })).toBeVisible();
+  await expect(await soon(page.getByRole("button", { name: "Withdraw request" }))).toBeVisible();
   await capture(page, "adult-requester-pending");
-  await signIn(page, "contact-adult"); await page.goto(path);
+  await signInTo(page, "contact-adult", path);
   await expect(page.getByRole("button", { name: "Approve sharing" })).toBeVisible();
   await capture(page, "adult-subject-review");
   await page.getByRole("button", { name: "Approve sharing" }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("button", { name: "Revoke access" })).toBeVisible();
-  await signIn(page, "contact-requester"); await page.goto(path);
+  await signInTo(page, "contact-requester", path);
   await expect(page.getByRole("button", { name: "Reveal contact details" })).toBeVisible();
   const detail = await (await page.request.get(`/api/v1${path}`)).json();
   const grants = await (await page.request.get("/api/v1/contact-grants")).json();
@@ -95,11 +94,11 @@ test("hidden adult requests preserve failures, disclose only on explicit reveal,
   await expect(page.getByRole("region", { name: "Revealed contact details" })).toHaveCount(0);
   await capture(page, "adult-requester-closed");
   await page.goto("/profile/requests");
-  await page.getByRole("link", { name: "Contact requests and access" }).click();
-  await expect(page.getByRole("region", { name: "Request history" })).toBeVisible();
+  await (await soon(page.getByRole("link", { name: "Contact requests and access" }))).click();
+  await expect(await soon(page.getByRole("region", { name: "Request history" }))).toBeVisible();
   await capture(page, "adult-requester-history");
   await page.goto(path);
-  await page.reload(); await expect(page.getByRole("button", { name: "Reveal contact details" })).toBeVisible();
+  await page.reload(); await expect(await soon(page.getByRole("button", { name: "Reveal contact details" }))).toBeVisible();
   await expect(page.getByRole("region", { name: "Revealed contact details" })).toHaveCount(0);
   await page.getByRole("button", { name: "Reveal contact details" }).click();
   await expect(page.getByRole("region", { name: "Revealed contact details" })).toBeVisible();
@@ -130,35 +129,35 @@ test("teen decisions work in both orders; guardian sees only active grants and c
   const teenApi = await apiAs(request, "contact-teen");
   await teenApi("PUT", `/events/${visibleEvent.id}/registrations`, { date: startsLocal.slice(0, 10), status: "going" });
   for (const first of ["admin", "subject"] as const) {
-    await signIn(page, "contact-teen-leader"); await page.goto(`/events/${visibleEvent.id}`);
+    await signInTo(page, "contact-teen-leader", `/events/${visibleEvent.id}`);
     await fromMore(page, "Manage sign-ups", /More for/);
     const roster = await (await page.request.get(`/api/v1/events/${visibleEvent.id}`)).json();
     const attendee = roster.occurrences[0].attendees.find((a: { userId: number }) => a.userId === teen.id);
     expect(attendee).not.toHaveProperty("email"); expect(attendee).not.toHaveProperty("phone");
     await save(`teen-${first}-roster-omissions`, roster);
-    await page.getByRole("button", { name: "Request direct contact" }).click();
-    await page.getByLabel("Email and phone", { exact: true }).check();
+    await (await soon(page.getByRole("button", { name: "Request direct contact" }))).click();
+    await (await soon(page.getByLabel("Email and phone", { exact: true }))).check();
     await page.getByLabel(/Reason/).fill("Private teen request reason");
     if (first === "admin") await capture(page, "teen-event-compose");
     await page.getByRole("button", { name: "Send request" }).click();
     await page.getByRole("link", { name: "View request", exact: true }).click();
     const path = new URL(page.url()).pathname;
     const contact = { id: Number(path.split("/").pop()) };
-    await signIn(page, "contact-guardian"); await page.goto(path);
+    await signInTo(page, "contact-guardian", path);
     await expect(page.getByText("Contact access is not available", { exact: true })).toBeVisible();
     await expect(page.getByText("Private teen request reason")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Approve sharing" })).toHaveCount(0);
-    await signIn(page, first === "admin" ? adminName : "contact-teen"); await page.goto(path);
+    await signInTo(page, first === "admin" ? adminName : "contact-teen", path);
     await capture(page, `teen-${first}-first-review`);
     const firstSection = page.getByRole("region", { name: first === "admin" ? "Admin's decision" : "Teen's decision", exact: true });
     await firstSection.getByRole("button", { name: "Approve sharing" }).click();
     await expect(page.getByRole("heading", { name: first === "admin" ? "Admin's decision: Approved" : "Teen's decision: Approved", exact: true })).toBeVisible();
     await capture(page, `teen-${first}-first-approved`);
-    await signIn(page, first === "admin" ? "contact-teen" : adminName); await page.goto(path);
+    await signInTo(page, first === "admin" ? "contact-teen" : adminName, path);
     await capture(page, `teen-${first}-second-review`);
     await page.getByRole("button", { name: "Approve sharing" }).click();
     await expect(page.getByRole("button", { name: "Revoke access" })).toBeVisible();
-    await signIn(page, "contact-guardian"); await page.goto(path);
+    await signInTo(page, "contact-guardian", path);
     await expect(page.getByRole("button", { name: "Revoke access" })).toBeVisible();
     expect((await page.request.get(`/api/v1/contact-requests/${contact.id}`)).status()).toBe(404);
     const active = await (await page.request.get("/api/v1/contact-grants")).json();
@@ -171,10 +170,10 @@ test("teen decisions work in both orders; guardian sees only active grants and c
     await capture(page, `guardian-${first}-active-grant`);
     if (first === "admin") {
       await page.goto("/profile/requests");
-      await page.getByRole("link", { name: "Contact requests and access" }).click();
+      await (await soon(page.getByRole("link", { name: "Contact requests and access" }))).click();
       const grants = page.getByRole("region", { name: "Contact grants" });
       const teenGrant = grants.getByRole("region", { name: "Contact grant for Contact Teen" });
-      await expect(teenGrant.getByRole("button", { name: "Revoke access" })).toBeVisible();
+      await expect(await soon(teenGrant.getByRole("button", { name: "Revoke access" }))).toBeVisible();
       await capture(page, "guardian-profile-active-grant");
       page.once("dialog", (dialog) => dialog.accept());
       await teenGrant.getByRole("button", { name: "Revoke access" }).click();
@@ -184,15 +183,15 @@ test("teen decisions work in both orders; guardian sees only active grants and c
       page.once("dialog", (dialog) => dialog.accept());
       await page.getByRole("button", { name: "Revoke access" }).click();
     }
-    await expect(page.getByText("Contact access is not available", { exact: true })).toBeVisible();
+    await expect(await soon(page.getByText("Contact access is not available", { exact: true }))).toBeVisible();
     await save(`guardian-${first}-ended-omissions`, await (await page.request.get("/api/v1/contact-grants")).json());
   }
   const adminFinal = await apiAs(request, adminName);
   const { request: denied } = await adminFinal("POST", "/contact-requests", { subjectUserId: teen.id, contextType: "event", contextId: visibleEvent.id, fields: "phone" });
-  await signIn(page, "contact-teen"); await page.goto(`/contact-requests/${denied.id}`);
+  await signInTo(page, "contact-teen", `/contact-requests/${denied.id}`);
   await page.getByRole("button", { name: "Deny request" }).click();
   await expect(page.getByRole("heading", { name: "Teen's decision: Denied", exact: true })).toBeVisible();
-  await signIn(page, adminName); await page.goto(`/contact-requests/${denied.id}`);
+  await signInTo(page, adminName, `/contact-requests/${denied.id}`);
   await expect(page.getByRole("button", { name: "Approve sharing" })).toHaveCount(0);
   await capture(page, "teen-denied-terminal");
 });

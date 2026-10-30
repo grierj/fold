@@ -3,11 +3,15 @@ import { defineConfig, devices } from "@playwright/test";
 // Browser tests (make e2e): Chromium only, against the real fold binary and
 // a fresh Postgres database (e2e/server.sh). The "seed" project runs the
 // setup wizard and creates the people and groups the specs use; the specs
-// run one at a time because they share that data.
+// run one at a time because they share that data. e2e/run.sh splits them
+// across parallel processes (--shard), each with its own server, database
+// and seed, so a shard is exactly this run on a slice of the specs.
 const port = process.env.E2E_PORT ?? "18090";
 
 export default defineConfig({
   testDir: "e2e",
+  // One folder per shard, so parallel shards never clear each other's traces.
+  outputDir: process.env.E2E_OUTPUT_DIR ?? "test-results",
   fullyParallel: false,
   workers: 1,
   retries: 0,

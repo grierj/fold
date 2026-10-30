@@ -163,7 +163,7 @@ cmd_doctor() {
   live_url="$(tr '\0' '\n' <"/proc/$PID/environ" | sed -n 's/^DATABASE_URL=//p')"
   [[ "$live_url" == "$DATABASE_URL" ]] || die "process DATABASE_URL does not match state"
   [[ "$live_url" == *"/${DB_NAME}?"* ]] || die "process is not using $DB_NAME"
-  [[ "$DB_NAME" != "fold" && "$DB_NAME" != *"_e2e" ]] || die "refusing shared database $DB_NAME"
+  [[ "$DB_NAME" != "fold" && "$DB_NAME" != *"_e2e" && "$DB_NAME" != *"_e2e_"* ]] || die "refusing shared database $DB_NAME"
   local code body
   body="$(mktemp)"
   code="$(curl -sS -o "$body" -w '%{http_code}' "http://127.0.0.1:${PORT}/healthz")"

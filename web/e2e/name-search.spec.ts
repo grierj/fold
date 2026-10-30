@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
-import { apiAs, email, fromMore, PASSWORD, signIn } from "./helpers";
+import { apiAs, email, fromMore, nextFrames, PASSWORD, signIn, signInTo, soon } from "./helpers";
 import { measure } from "./ui-measure.mjs";
 
 test("name picker keeps safe identities, teen guidance and existing adult add controls", async ({ page, request }) => {
@@ -43,7 +43,7 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
     for (const width of [390, 768, 1280]) {
       await p.setViewportSize({ width, height: 900 });
       await p.evaluate(() => window.scrollTo(0, 0));
-      await p.waitForTimeout(100);
+      await nextFrames(p);
       const layout = await p.evaluate(measure);
       expect(layout.overflow, name).toBe(0);
       expect(layout.clipped, name).toEqual([]);
@@ -68,6 +68,7 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
   await expect(membersPanel).toBeVisible();
   const picker = page.getByRole("combobox", { name: "Find a person by name" });
+  const options = page.getByRole("listbox", { name: "People" }).getByRole("option");
   const searchReply = page.waitForResponse((r) => r.url().includes("/people/search?") && r.request().method() === "GET");
   await picker.fill(patName);
   const search = await (await searchReply).json();
@@ -89,14 +90,14 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   expect(memberBody).toEqual({ selectionId: expect.any(String), overLimit: false });
   await expect(page.getByText(patName, { exact: true })).toBeVisible();
   await capture("group-adult-added");
-  await picker.fill(teenName); await page.getByRole("listbox", { name: "People" }).getByRole("option").click();
+  await picker.fill(teenName); await (await soon(page.getByRole("listbox", { name: "People" }).getByRole("option"))).click();
   await expect(page.getByRole("status")).toContainText("Adding a teen needs their approval and an admin's approval.");
   await expect(page.getByRole("button", { name: "Add member", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Ask to add", exact: true })).toBeEnabled();
   await capture("group-teen-guidance");
 
   await page.goto(`/events/${event.id}`); await fromMore(page, "Manage sign-ups");
-  await picker.fill(patName); await expect(page.getByRole("listbox", { name: "People" }).getByRole("option")).toHaveCount(2);
+  await (await soon(picker)).fill(patName); await soon(options.first()); await expect(options).toHaveCount(2);
   await expect(page.getByRole("listbox", { name: "People" }).getByRole("option").first()).not.toContainText("2085550149");
   await capture("event-picker");
   await page.getByRole("listbox", { name: "People" }).getByRole("option").first().click();
@@ -106,10 +107,10 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   await expect(page.getByRole("region", { name: "Manage sign-ups" })).toContainText(patName);
   await capture("event-adult-added");
 
-  await signIn(page, "grier"); await page.goto("/admin?tab=groups");
+  await signInTo(page, "grier", "/admin?tab=groups");
   const card = page.getByRole("link", { name: destination.name, exact: true }).locator("../../..");
   await card.getByRole("button", { name: "Manage members" }).click();
-  await picker.fill(teenName); await expect(page.getByRole("listbox", { name: "People" }).getByRole("option")).toHaveCount(1);
+  await (await soon(picker)).fill(teenName); await soon(options.first()); await expect(options).toHaveCount(1);
   await expect(page.getByRole("listbox", { name: "People" }).getByRole("option")).toContainText("Teen");
   expect(await page.getByRole("listbox", { name: "People" }).getByRole("option").locator("img").count()).toBe(0);
   await capture("admin-picker-teen");
@@ -117,7 +118,7 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
   await expect(card.getByRole("button", { name: "Add", exact: true })).toHaveCount(0);
   await expect(card.getByRole("button", { name: "Ask to add", exact: true })).toBeEnabled();
   await capture("admin-teen-guidance");
-  await picker.fill(patName); await page.getByRole("listbox", { name: "People" }).getByRole("option").last().click();
+  await picker.fill(patName); await (await soon(page.getByRole("listbox", { name: "People" }).getByRole("option").last())).click();
   const adminPost = page.waitForRequest((r) => r.url().endsWith(`/admin/groups/${destination.id}/members`) && r.method() === "POST");
   await card.getByRole("button", { name: "Add", exact: true }).click();
   expect((await adminPost).postDataJSON()).toEqual({ selectionId: expect.any(String), role: "member", overLimit: false });

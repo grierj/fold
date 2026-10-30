@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
+import { expect, type APIRequestContext, type Locator, type Page, type Request } from "@playwright/test";
 import { apiAs } from "./helpers";
 
 // The pages the UI checks cover (a11y.spec.ts, layout.spec.ts). Each has the
@@ -57,8 +57,70 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
 }
 
 export async function open(page: Page, ui: UIPage) {
-  await page.goto(ui.path);
-  await expect(ui.ready(page)).toBeVisible();
-  await page.waitForLoadState("networkidle");
+  const quiet = trackRequests(page);
+  try {
+    await page.goto(ui.path);
+    await expect(ui.ready(page)).toBeVisible();
+    await quiet();
+  } finally {
+    quiet.stop();
+  }
   await ui.prepare?.(page);
+}
+
+// The page's data and images have arrived once no request has been in
+// flight for 150ms. Playwright's "networkidle" means the same with a fixed
+// 500ms of quiet, which cost the page checks about a minute per run.
+// Playwright sometimes reports neither the end nor the failure of a request
+// the previous page had in flight when it navigated away, so a request still
+// open after 2s (this server answers in milliseconds) no longer counts.
+function trackRequests(page: Page) {
+  const inFlight = new Map<Request, number>();
+  let lastChange = Date.now();
+  const start = (r: Request) => { inFlight.set(r, Date.now()); lastChange = Date.now(); };
+  const end = (r: Request) => { inFlight.delete(r); lastChange = Date.now(); };
+  page.on("request", start);
+  page.on("requestfinished", end);
+  page.on("requestfailed", end);
+  const open = () => [...inFlight.values()].some((at) => Date.now() - at < 2_000);
+  const quiet = async () => {
+    await expect.poll(() => !open() && Date.now() - lastChange >= 150, { intervals: [25] }).toBe(true);
+  };
+  quiet.stop = () => {
+    page.off("request", start);
+    page.off("requestfinished", end);
+    page.off("requestfailed", end);
+  };
+  return quiet;
+}
+
+// The page checks (a11y.spec.ts, layout.spec.ts) run in this many parts so
+// e2e/run.sh can spread them across shards.
+export const UI_PARTS = 4;
+
+// One contiguous slice of the list, so each person's pages stay together and
+// sign-ins stay few. The parts together cover every page exactly once.
+export function uiPart<T>(list: T[], part: number): T[] {
+  return list.slice(Math.floor((part * list.length) / UI_PARTS), Math.floor(((part + 1) * list.length) / UI_PARTS));
+}
+
+// e2e/run.sh hands each shard its share of the page checks in E2E_PARTS, as
+// "<spec>:<part>" words ("a11y:0 layout:3 a11y:rest"; rest is the spec's
+// tests outside the parts). Unset, as in a plain `npx playwright test`,
+// every part runs.
+export function partSelected(spec: string, part: number | "rest"): boolean {
+  const parts = process.env.E2E_PARTS;
+  return parts === undefined || parts.split(/\s+/).includes(`${spec}:${part}`);
+}
+
+// Opens path and waits until its data and images have arrived (see
+// trackRequests), for specs that check every page they open.
+export async function gotoSettled(page: Page, path: string) {
+  const quiet = trackRequests(page);
+  try {
+    await page.goto(path);
+    await quiet();
+  } finally {
+    quiet.stop();
+  }
 }

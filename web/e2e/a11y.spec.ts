@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { signIn, signOut } from "./helpers";
-import { open, uiPages, type UIPage } from "./ui-pages";
+import { open, partSelected, UI_PARTS, uiPages, uiPart, type UIPage } from "./ui-pages";
 
 // axe on the main pages at phone and desktop widths (UI makeover PR 3).
 // Moderate, serious and critical issues fail; minor issues are reported.
@@ -25,41 +25,46 @@ async function scan(page: Page, name: string) {
   }
 }
 
-test("main pages have no moderate, serious or critical axe issues", async ({ page, request }) => {
-  test.setTimeout(240_000);
-  // The shared page list (ui-pages.ts, also used by layout.spec.ts) plus the
-  // pages only this check covers.
-  const pages = await uiPages(request);
-  const group = pages.find((ui) => ui.id === "group-leader")!;
-  const extra: UIPage[] = [
-    { ...group, id: "group about", prepare: async (p) => { await p.getByRole("tab", { name: "About" }).click(); } },
-    { ...group, id: "group members", prepare: async (p) => { await p.getByRole("tab", { name: "Members" }).click(); } },
-    { ...group, id: "group white cover", prepare: async (p) => {
-      // The brightest possible upload: the scrim, not a lucky photo, must carry contrast.
-      await p.locator("main img").first().evaluate((img) => {
-        img.setAttribute("src", `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="white"/></svg>')}`);
-      });
-    } },
-    { id: "admin settings", who: "grier", path: "/admin?tab=settings", ready: (p) => p.getByRole("heading", { name: "Church settings" }) },
-    { id: "forgot-password", who: null, path: "/forgot-password", ready: (p) => p.getByRole("heading", { name: "Reset your password" }) },
-    { id: "notifications", who: "grier", path: "/notifications", ready: (p) => p.getByRole("heading", { name: "Alerts" }) },
-    { id: "admin groups", who: "grier", path: "/admin?tab=groups", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
-    { id: "admin invite", who: "grier", path: "/admin?tab=invite", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
-  ];
-  let who: string | null = null;
-  for (const ui of [...pages, ...extra]) {
-    if (ui.who !== who) {
-      await page.context().clearCookies();
-      if (ui.who) await signIn(page, ui.who);
-      who = ui.who;
+// The page list is scanned in contiguous parts (keeping each person's pages
+// together) so e2e/run.sh can spread them across shards.
+test.describe.configure({ mode: "parallel" });
+for (let part = 0; part < UI_PARTS; part++) {
+  if (partSelected("a11y", part)) test(`main pages have no moderate, serious or critical axe issues (part ${part + 1} of ${UI_PARTS})`, async ({ page, request }) => {
+    test.setTimeout(240_000);
+    // The shared page list (ui-pages.ts, also used by layout.spec.ts) plus the
+    // pages only this check covers.
+    const pages = await uiPages(request);
+    const group = pages.find((ui) => ui.id === "group-leader")!;
+    const extra: UIPage[] = [
+      { ...group, id: "group about", prepare: async (p) => { await p.getByRole("tab", { name: "About" }).click(); } },
+      { ...group, id: "group members", prepare: async (p) => { await p.getByRole("tab", { name: "Members" }).click(); } },
+      { ...group, id: "group white cover", prepare: async (p) => {
+        // The brightest possible upload: the scrim, not a lucky photo, must carry contrast.
+        await p.locator("main img").first().evaluate((img) => {
+          img.setAttribute("src", `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><rect width="640" height="360" fill="white"/></svg>')}`);
+        });
+      } },
+      { id: "admin settings", who: "grier", path: "/admin?tab=settings", ready: (p) => p.getByRole("heading", { name: "Church settings" }) },
+      { id: "forgot-password", who: null, path: "/forgot-password", ready: (p) => p.getByRole("heading", { name: "Reset your password" }) },
+      { id: "notifications", who: "grier", path: "/notifications", ready: (p) => p.getByRole("heading", { name: "Alerts" }) },
+      { id: "admin groups", who: "grier", path: "/admin?tab=groups", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
+      { id: "admin invite", who: "grier", path: "/admin?tab=invite", ready: (p) => p.getByRole("heading", { name: "Admin" }) },
+    ];
+    let who: string | null = null;
+    for (const ui of uiPart([...pages, ...extra], part)) {
+      if (ui.who !== who) {
+        await page.context().clearCookies();
+        if (ui.who) await signIn(page, ui.who);
+        who = ui.who;
+      }
+      await open(page, ui);
+      await scan(page, ui.id);
     }
-    await open(page, ui);
-    await scan(page, ui.id);
-  }
-  await signOut(page);
-});
+    if (who) await signOut(page);
+  });
+}
 
-test("the time zone picker has no moderate, serious or critical axe issues when open and filtered", async ({ page }) => {
+if (partSelected("a11y", "rest")) test("the time zone picker has no moderate, serious or critical axe issues when open and filtered", async ({ page }) => {
   await signIn(page, "grier");
   await page.goto("/events/new");
   const box = page.getByRole("combobox", { name: "Time zone" });

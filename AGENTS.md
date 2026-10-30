@@ -58,9 +58,12 @@ inherited events and asks about leader-opened ones (`api_group_visibility.go`).
 The wall clock (`starts_local` + IANA `tzid`) is the source of truth;
 occurrences store UTC and are generated 18 months ahead (extended daily
 under an advisory lock). See `models/models.go`. Groups are ongoing
-entities; an event is a series (RRULE) or a single date. A series edit
+entities; an event is a series (RRULE) or a single date. Rules repeat at
+most once a day, under a date cap (`events.Expand`, DEC-89). A series edit
 moves future occurrences that have no per-date override and keeps their
-registrations.
+registrations. `cancel_source` records who cancelled a date: a series edit
+that dropped it (`series`; a later edit that includes it again schedules it
+again and tells its registrants, DEC-91) or a person (`manual`).
 
 `User` carries profile fields: `Name` (full name), `DisplayName` (shown in
 the UI), `Email` (the login: `citext`, unique, DEC-23), `PasswordHash` (nil
@@ -104,23 +107,41 @@ Postgres (`login_throttles`, see `api_auth.go`).
   `status=left`, permits ordinary self-rejoining, and preserves tenure history
   (DEC-86); neither state counts as active.
   Adding anyone to a group goes through `changeRole`, which locks the
-  group row and checks `policy.GroupHasRoom` (member limit, DEC-39).
+  group row and checks `policy.GroupHasRoom` (member limit, DEC-39) and
+  `policy.CanAddToGroup`: leading a pending or archived group grants no
+  power to add people or to invite anyone into Fold (DEC-88; invitations use
+  `policy.LeadsApprovedGroup` and `CanInviteIntoGroup`).
 - Migrations: every schema change is a **new** goose file in `migrations/`
   (`NNNNN_name.sql`); never edit an old one. The model change goes in the
   same PR and `models.All()`.
 - Tests: `make test` (`go test ./...` against `DATABASE_URL`, with the root
   package split across parallel processes by `scripts/go-test.sh`; starts the
   dev database if unset). Tests hash passwords at bcrypt's cheapest cost; a
-  test that measures timing calls `realPasswordCost(t)` first. Handler tests use `httptest` and the package's
-  Postgres database from `internal/testdb` (see `testhelpers_test.go` for the
-  cookie-jar + CSRF-dance pattern — reuse it).
+  test that measures timing calls `realPasswordCost(t)` first. Handler tests
+  use `httptest` and the package's Postgres database from `internal/testdb`
+  (see `testhelpers_test.go` for the cookie-jar + CSRF-dance pattern — reuse
+  it). `testdb.Shared` empties it before each test by deleting rows with
+  triggers off, which needs a superuser (the dev and CI databases are); other
+  roles fall back to the slower TRUNCATE. Test sessions run with
+  `synchronous_commit=off`.
 - Frontend: `cd web && npm test` runs Vitest component tests
   (`src/**/*.test.tsx`, jsdom + Testing Library). `make e2e` runs Playwright
-  (Chromium only) in `web/e2e` against the real binary on a fresh
-  `<db>_e2e` Postgres database; `seed.setup.ts` creates the data the specs
-  share, so specs run one at a time. Assert on roles and visible text, and
-  accept `confirm()` dialogs with `page.on("dialog")`. `signIn` starts from
-  a signed-out browser, so switch users by calling it again. First run:
+  (Chromium only) in `web/e2e` against the real binary. `web/e2e/run.sh`
+  splits the specs across parallel shards (`E2E_SHARDS`, default the CPU
+  count up to 6); each shard is an ordinary run with its own server, fresh
+  `<db>_e2e_<n>` database and seed, and runs its specs one at a time, since
+  `seed.setup.ts` creates data they share. Never rely on another spec having
+  run first. `e2e/shards.mjs` balances shards by `e2e/durations.json`
+  (refresh it with `E2E_RECORD_DURATIONS=1 make e2e` after adding a slow
+  spec); the a11y and layout page checks run in parts (`UI_PARTS`,
+  `partSelected` in `ui-pages.ts`). Run `UPDATE_UI_BASELINE=1` with
+  `E2E_SHARDS=1`. A plain `npx playwright test` still runs everything in
+  one process. Prefer `gotoSettled` (`ui-pages.ts`) to
+  `waitForLoadState("networkidle")`, which always waits 500ms. Failed-test
+  traces land in `web/test-results/shard-<n>/`. Assert on roles and
+  visible text, and accept `confirm()` dialogs with `page.on("dialog")`.
+  `signIn` starts from a signed-out browser, so switch users by calling it
+  again. First run:
   `cd web && npx playwright install chromium`.
 - Permissions: every check is a pure function in `internal/policy` (section 6
   of the plan) with table tests. Handlers load facts and call it; never
@@ -136,7 +157,9 @@ Postgres (`login_throttles`, see `api_auth.go`).
   (group cards, date badges, join buttons); tweak later.
 - Commit messages: short imperative summary; PRs describe behavior change.
 - Setup/form UX: state every input requirement next to the field (e.g.
-  password minimums). On a failed submission, re-render with the valid
+  password minimums). Every path that sets a password checks it with
+  `checkNewPassword` (`password_rules.go`): at least 10 characters and at
+  most 72 bytes, bcrypt's limit (DEC-90). On a failed submission, re-render with the valid
   fields preserved — never echo back secrets (passwords) or payment data.
 - Client-side image prep: `web/src/lib/image.ts` resizes uploads in the
   browser (`browser-image-compression`) before POST — keeps big-phone-photo
@@ -214,7 +237,7 @@ Grier's rule (Oct 22, 2026).
 make dev      # dev Postgres (deploy/docker-compose.dev.yml) + Go server + Vite
 make test     # go test ./... against DATABASE_URL, root package sharded (starts the dev DB if unset)
 make lint     # shell, Go (vet/gofmt/staticcheck), and web lint
-make e2e      # Playwright (Chromium) on a fresh Postgres database
+make e2e      # Playwright (Chromium), parallel shards on fresh Postgres databases
 cd web && npm test        # Vitest component tests
 cd web && npm run build   # outputs to web/dist (embedded)
 ```

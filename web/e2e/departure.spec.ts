@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { mkdirSync } from "node:fs";
 import { expect, test } from "@playwright/test";
-import { apiAs, email, fromMore, PASSWORD, signIn } from "./helpers";
+import { apiAs, email, fromMore, PASSWORD, signInTo, soon } from "./helpers";
 
 const proof = process.env.SCREENS_DIR;
 const local = (days: number, minutes = 0) => new Date(Date.now() + days * 86400_000 + minutes * 60_000).toISOString().slice(0, 16);
@@ -40,8 +40,7 @@ test("a delayed pre-leave group response cannot restore leader controls or roste
   await asAdmin("POST", `/groups/${group.id}/events`, { title: "Departure refresh date", startsLocal, durationMinutes: 60, tzid: "UTC", visibility: "public", capacity: null, waitlistEnabled: true });
 
   await page.setViewportSize({ width: 390, height: 900 });
-  await signIn(page, departingLogin);
-  await page.goto(`/groups/${group.id}`);
+  await signInTo(page, departingLogin, `/groups/${group.id}`);
   await expect(page.getByRole("heading", { name: `Departure refresh ${suffix}` })).toBeVisible();
 
   let releaseOld!: () => void;
@@ -136,8 +135,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   await asAdmin("POST", `/admin/guardian-links/${child.guardianLinkId}/confirm`, { checkNote: "Browser departure proof" });
   await (await apiAs(request, memberLogin))("PUT", `/events/${proxyEvent.id}/registrations`, { date: proxyAt.slice(0, 10), status: "declined", attendanceMode: "in_person", people: [{ personId: child.id, status: "going", attendanceMode: "in_person", childcareRequested: false }] });
 
-  await signIn(page, memberLogin);
-  await page.goto(`/groups/${selfGroup.id}`);
+  await signInTo(page, memberLogin, `/groups/${selfGroup.id}`);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Leave group", exact: true }).click();
   await expect(page.getByRole("dialog", { name: new RegExp(`Leave Departure private ${suffix}`) })).toBeVisible();
@@ -186,17 +184,16 @@ test("departure chooser handles self, leader and admin paths, kept private acces
 
   const keptDate = underwayAt.slice(0, 10);
   await page.goto(`/events/${underway.id}/dates/${keptDate}`);
-  await expect(page.getByRole("heading", { name: "Kept underway private date", level: 1 })).toBeVisible();
+  await expect(await soon(page.getByRole("heading", { name: "Kept underway private date", level: 1 }))).toBeVisible();
   await expect(page.getByRole("button", { name: "Going", exact: true })).toHaveAttribute("aria-pressed", "true");
   await page.goto(`/events/${underway.id}`);
   await expect(page.getByRole("heading", { name: "Event not found" })).toBeVisible();
   await page.goto(`/groups/${selfGroup.id}`);
   await expect(page.getByRole("heading", { name: "Group not found" })).toBeVisible();
   await page.goto(`/events/${privateEvent.id}/dates/${privateAt.slice(0, 10)}`);
-  await expect(page.getByText("This date is not available")).toBeVisible();
+  await expect(await soon(page.getByText("This date is not available"))).toBeVisible();
 
-  await signIn(page, leaderLogin);
-  await page.goto(`/events/${proxyEvent.id}`);
+  await signInTo(page, leaderLogin, `/events/${proxyEvent.id}`);
   await page.getByRole("button", { name: "Show who's coming" }).click();
   await expect(page.getByText("Proxy Child")).toBeVisible();
   await page.goto(`/groups/${selfGroup.id}`);
@@ -224,8 +221,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   // Admin removal reaches the same chooser from the admin roster.
   const adminGroup = await makeGroup(`Admin removal ${suffix}`, "public");
   await asAdmin("POST", `/admin/groups/${adminGroup.id}/members`, { userId: adminRemoved.id, role: "member" });
-  await signIn(page, "grier");
-  await page.goto("/admin?tab=groups");
+  await signInTo(page, "grier", "/admin?tab=groups");
   const adminCard = page.getByRole("link", { name: `Admin removal ${suffix}` }).locator("../../..");
   const manageMembers = adminCard.getByRole("button", { name: "Manage members" });
   await expect(manageMembers).toBeVisible({ timeout: 10_000 });
@@ -274,8 +270,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   // Zero-date departure is still explicit and cancel writes nothing.
   const zeroGroup = await makeGroup(`Zero departure ${suffix}`, "public");
   await asAdmin("POST", `/admin/groups/${zeroGroup.id}/members`, { userId: zero.id, role: "member" });
-  await signIn(page, zeroLogin);
-  await page.goto(`/groups/${zeroGroup.id}`);
+  await signInTo(page, zeroLogin, `/groups/${zeroGroup.id}`);
   await page.getByRole("button", { name: "Leave group", exact: true }).click();
   await expect(page.getByText("Your past attendance stays.")).toBeVisible();
   await expect(page.getByText(/0 upcoming dates?/i)).toHaveCount(0);
@@ -297,8 +292,7 @@ test("departure chooser handles self, leader and admin paths, kept private acces
   const staleAt = local(9);
   const staleEvent = await createEvent(staleGroup.id, "New stale public date", staleAt, "public");
   const staleApi = await apiAs(request, staleLogin);
-  await signIn(page, staleLogin);
-  await page.goto(`/groups/${staleGroup.id}`);
+  await signInTo(page, staleLogin, `/groups/${staleGroup.id}`);
   await page.getByRole("button", { name: "Leave group", exact: true }).click();
   await expect(page.getByText("Your past attendance stays.")).toBeVisible();
   await staleApi("PUT", `/events/${staleEvent.id}/registrations`, { date: staleAt.slice(0, 10), status: "going", attendanceMode: "in_person", people: [] });

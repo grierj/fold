@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { apiAs, email, fromMore, PASSWORD, signIn } from "./helpers";
+import { apiAs, email, fromMore, PASSWORD, signInTo, soon } from "./helpers";
 // @ts-expect-error plain JS module shared with verify-ui
 import { measure } from "./ui-measure.mjs";
 
@@ -29,7 +29,7 @@ test("group teen ask uses opaque selection, both approvals and neutral hidden pr
   const { user: teen } = await admin("POST", "/admin/users", { name: "Ask Teen", email: email("ask-teen"), password: PASSWORD, ageBand: "teen", birthDate: `${new Date().getUTCFullYear() - 15}-01-01` });
   await admin("POST", `/admin/users/${teen.id}/teen-consents`, { scope: "account", status: "granted", evidenceText: "Parent signed the account consent form" });
   const { group } = await admin("POST", "/groups", { name: "Private ask group", visibility: "invite_only", tags: [] });
-  await signIn(page, adminName); await page.goto(`/groups/${group.id}`);
+  await signInTo(page, adminName, `/groups/${group.id}`);
   const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
     .getByRole("tab", { name: "Members", exact: true });
   await membersTab.click();
@@ -37,7 +37,7 @@ test("group teen ask uses opaque selection, both approvals and neutral hidden pr
   const membersPanel = page.getByRole("tabpanel", { name: "Members", exact: true });
   await expect(membersPanel).toBeVisible();
   const picker = page.getByRole("combobox", { name: "Find a person by name" });
-  await picker.fill("Ask Teen"); await expect(page.getByRole("option", { name: /Ask Teen/ })).toBeVisible();
+  await picker.fill("Ask Teen"); await expect(await soon(page.getByRole("option", { name: /Ask Teen/ }))).toBeVisible();
   await picker.press("ArrowDown"); await picker.press("Enter");
   await page.getByRole("button", { name: "Ask to add", exact: true }).click();
   await page.getByRole("textbox", { name: /Reason/ }).fill("Join us next week");
@@ -46,15 +46,15 @@ test("group teen ask uses opaque selection, both approvals and neutral hidden pr
   await expect(page.getByText(/They have not been added yet/)).toBeVisible();
   await page.getByRole("link", { name: "View ask", exact: true }).click();
   const path = new URL(page.url()).pathname;
-  await expect(page.getByRole("heading", { name: "Admin's decision: Waiting", exact: true })).toBeVisible();
+  await expect(await soon(page.getByRole("heading", { name: "Admin's decision: Waiting", exact: true }))).toBeVisible();
   await page.getByRole("button", { name: "Approve adding" }).focus(); await page.keyboard.press("Enter");
   await expect(page.getByRole("heading", { name: "Admin's decision: Approved", exact: true })).toBeVisible();
   await expect(page.getByText("Not added yet", { exact: true })).toBeVisible();
   await capture(page, "admin-approved-teen-pending");
-  await signIn(page, "ask-teen"); await page.goto("/notifications");
+  await signInTo(page, "ask-teen", "/notifications");
   await page.getByRole("link", { name: /Review an ask to add/ }).click();
   await expect(page).toHaveURL(new RegExp(path + "$"));
-  await expect(page.getByText("A group membership", { exact: true })).toBeVisible();
+  await expect(await soon(page.getByText("A group membership", { exact: true }))).toBeVisible();
   await expect(page.getByText("Private ask group", { exact: true })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "View group" })).toHaveCount(0);
   const detail = await (await page.request.get(`/api/v1${path}`)).json();
@@ -68,8 +68,8 @@ test("group teen ask uses opaque selection, both approvals and neutral hidden pr
   const grants = await (await page.request.get("/api/v1/contact-grants")).json(); expect(grants.grants).toEqual([]);
   await capture(page, "teen-added");
   await page.goto("/profile/requests");
-  await page.getByRole("link", { name: "Add request history" }).click();
-  await expect(page.getByRole("link", { name: /Review ask #/ })).toBeVisible();
+  await (await soon(page.getByRole("link", { name: "Add request history" }))).click();
+  await expect(await soon(page.getByRole("link", { name: /Review ask #/ }))).toBeVisible();
   await capture(page, "add-history");
 });
 
@@ -80,10 +80,10 @@ test("hidden date adult add offers an explicit ask and a title/time-only review 
   const { group } = await admin("POST", "/groups", { name: "Hidden date organizer", visibility: "invite_only", tags: [] });
   const date = new Date(Date.now() + 7 * 86400_000).toISOString().slice(0, 10);
   const { event } = await admin("POST", `/groups/${group.id}/events`, { title: "Requested date title", startsLocal: `${date}T18:00`, durationMinutes: 60, tzid: "UTC", recurrenceRule: "FREQ=WEEKLY;COUNT=3" });
-  await signIn(page, adminName); await page.goto(`/events/${event.id}`);
+  await signInTo(page, adminName, `/events/${event.id}`);
   await fromMore(page, "Manage sign-ups", /More for/);
   const picker = page.getByRole("combobox", { name: "Find a person by name" });
-  await picker.fill(adult.name); await page.getByRole("option", { name: adult.name, exact: true }).click();
+  await (await soon(picker)).fill(adult.name); await (await soon(page.getByRole("option", { name: adult.name, exact: true }))).click();
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("They need to approve this date");
   await expect(page.getByRole("button", { name: "Send ask to add" })).toHaveCount(0);
@@ -92,7 +92,7 @@ test("hidden date adult add offers an explicit ask and a title/time-only review 
   await page.getByRole("button", { name: "Send ask to add" }).click();
   await page.getByRole("link", { name: "View ask", exact: true }).click();
   const path = new URL(page.url()).pathname;
-  await signIn(page, "ask-date-adult"); await page.goto(path);
+  await signInTo(page, "ask-date-adult", path);
   await expect(page.getByRole("button", { name: "Approve adding" })).toBeVisible();
   await expect(page.getByText("Requested date title", { exact: true })).toBeVisible();
   const detail = await (await page.request.get(`/api/v1${path}`)).json();

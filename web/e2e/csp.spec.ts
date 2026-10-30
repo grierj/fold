@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { signIn, watchCSP } from "./helpers";
+import { gotoSettled } from "./ui-pages";
 
 // The strict CSP (DEC-37) must not block anything the SPA does.
 test("no CSP violations across the main pages, and the check itself works", async ({ page }) => {
@@ -7,8 +8,7 @@ test("no CSP violations across the main pages, and the check itself works", asyn
   await page.goto("/setup"); // done already: redirects, still under the CSP
   await signIn(page, "grier");
   for (const path of ["/", "/groups/new", "/profile", "/admin", "/admin?tab=users", "/calendar", "/calendar?view=week", "/calendar?view=month", "/groups/1"]) {
-    await page.goto(path);
-    await page.waitForLoadState("networkidle");
+    await gotoSettled(page, path);
   }
   const membersTab = page.getByRole("tablist", { name: "Group sections", exact: true })
     .getByRole("tab", { name: "Members", exact: true });

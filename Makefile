@@ -27,16 +27,17 @@ test:
 		scripts/go-test.sh; \
 	fi
 
-# Playwright (Chromium) against the real binary on a fresh <db>_e2e Postgres
-# database (web/e2e/server.sh). Starts the dev database when DATABASE_URL is
-# unset. First time: cd web && npx playwright install chromium.
+# Playwright (Chromium) against the real binary, split across parallel shards
+# (web/e2e/run.sh), each on its own fresh <db>_e2e_<n> Postgres database
+# (web/e2e/server.sh). Starts the dev database when DATABASE_URL is unset.
+# First time: cd web && npx playwright install chromium.
 e2e:
 	cd web && npm run build
 	@if [ -z "$$DATABASE_URL" ]; then \
 		$(DEV_COMPOSE) up -d --wait db && \
-		cd web && DATABASE_URL="$(DEV_DATABASE_URL)" npx playwright test; \
+		DATABASE_URL="$(DEV_DATABASE_URL)" web/e2e/run.sh; \
 	else \
-		cd web && npx playwright test; \
+		web/e2e/run.sh; \
 	fi
 
 # make lint runs everything; CI runs lint-go and lint-sh in the test job and
@@ -61,10 +62,10 @@ deadcode:
 lint-web:
 	cd web && npx knip
 
-# Shell scripts under deploy/digitalocean and scripts. -x follows source= directives.
+# Shell scripts under deploy/digitalocean, scripts and web/e2e. -x follows source= directives.
 lint-sh:
 	@command -v shellcheck >/dev/null 2>&1 || { echo "shellcheck is required (apt-get install shellcheck)"; exit 1; }
-	shellcheck -x deploy/digitalocean/*.sh scripts/*.sh
+	shellcheck -x deploy/digitalocean/*.sh scripts/*.sh web/e2e/*.sh
 
 # provision.sh --dry-run inside a fresh Ubuntu container. Needs Docker.
 provision-dry-run:
