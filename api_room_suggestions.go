@@ -44,6 +44,8 @@ type suggestFor struct {
 	visibility string
 	capacity   *int
 	windows    []rooms.Window
+	// tags are the group's, when the caller already loaded it; else read.
+	tags *string
 }
 
 // roomSuggestions runs the engine for a picker. A failed read leaves the
@@ -55,7 +57,9 @@ func (a *App) roomSuggestions(s suggestFor, offered map[uint]bool) roomSuggestio
 		EventID: s.eventID, GroupID: s.groupID, Visibility: s.visibility, Capacity: s.capacity,
 		IncludeRestricted: policy.CanBookRoom(s.person, true, true), Windows: s.windows, Now: time.Now().UTC(),
 	}
-	if s.groupID != nil {
+	if s.tags != nil {
+		subject.Tags = strings.Split(*s.tags, ",")
+	} else if s.groupID != nil {
 		var g models.Group
 		if err := a.DB.Select("tags").First(&g, *s.groupID).Error; err == nil {
 			subject.Tags = strings.Split(g.Tags, ",")
@@ -97,7 +101,9 @@ func offeredRooms(list []seriesRoomJSON) map[uint]bool {
 }
 
 // createVisibility is V_E on a create form: the visibility picked there,
-// else what the event would get (the group's, or public church-wide).
+// else what the event would get (the group's, or public church-wide). An
+// empty or unknown value falls back the same way; the create itself refuses
+// a bad one, so this only ever guesses what the form will send.
 func createVisibility(picked *string, g *models.Group) string {
 	if picked != nil && policy.ValidVisibility(strings.TrimSpace(*picked)) {
 		return strings.TrimSpace(*picked)
@@ -106,4 +112,12 @@ func createVisibility(picked *string, g *models.Group) string {
 		return g.Visibility
 	}
 	return models.VisibilityPublic
+}
+
+// groupTags is a loaded group's tags, or nil to read them by id.
+func groupTags(g *models.Group) *string {
+	if g == nil {
+		return nil
+	}
+	return &g.Tags
 }

@@ -145,12 +145,34 @@ export async function soon<L extends Locator>(locator: L, timeout = 5_000): Prom
   return locator;
 }
 
-// Picks a room by the start of its option's words. A room a group has used
-// also says why it is suggested ("… — Used by this group 2 times", M2.3), and
-// other specs on the same server may have booked it, so an exact label would
-// depend on what ran first.
+// Picks the one enabled room option whose room is `name`. An option reads
+// "Fellowship Hall · Main (80 seats)", then notes after " — " (busy, size, and
+// why it is suggested, M2.3) that depend on what other specs on the same server
+// booked first, so only the part before the first " — " is compared: exactly,
+// with or without its " (N seats)". "Hall" never matches "Hall B". No match, or
+// more than one, fails with the options it saw.
 export async function pickRoom(select: Locator, name: string) {
-  const option = select.locator("option").filter({ hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) }).first();
-  await expect(option).toBeAttached();
-  await select.selectOption((await option.getAttribute("value"))!);
+  // The rooms may still be loading, so it waits until exactly one matches.
+  let seen: string[] = [];
+  let values: string[] = [];
+  await expect
+    .poll(async () => {
+      const options = await select.locator("option").evaluateAll((els) =>
+        els.map((el) => ({ value: (el as HTMLOptionElement).value, text: el.textContent ?? "", disabled: (el as HTMLOptionElement).disabled })),
+      );
+      seen = options.map((o) => o.text);
+      values = options
+        .filter((o) => {
+          if (o.disabled) return false;
+          const room = o.text.split(" — ")[0];
+          return room === name || room.replace(/ \(\d+ seats?\)$/, "") === name;
+        })
+        .map((o) => o.value);
+      return values.length;
+    }, { message: `one enabled option for room "${name}"` })
+    .toBe(1)
+    .catch((e: Error) => {
+      throw new Error(`${e.message}\noptions seen: ${JSON.stringify(seen)}`);
+    });
+  await select.selectOption(values[0]);
 }

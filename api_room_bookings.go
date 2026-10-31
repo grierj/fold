@@ -276,8 +276,13 @@ func (a *App) apiDateRooms(c *gin.Context) {
 	for _, r := range out {
 		offered[r.ID] = true
 	}
+	// Rule 4's capacity tiebreak uses the same seats as the too-small note.
+	var seats *int
+	if want > 0 {
+		seats = &want
+	}
 	suggestions := a.roomSuggestions(suggestFor{person: me, eventID: ev.ID, groupID: ev.GroupID,
-		visibility: policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride), capacity: effectiveCapacity(ev, occ),
+		visibility: policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride), capacity: seats,
 		windows: windowsOf([]models.EventOccurrence{*occ})}, offered)
 	c.JSON(http.StatusOK, gin.H{"rooms": out, "booking": booking, "suggestions": suggestions})
 }

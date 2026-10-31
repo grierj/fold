@@ -12,11 +12,12 @@ import { RoomOptions } from "./RoomOptions";
 const NONE = "none";
 const REASON_MAX = 500;
 
-// A room as the picker words it: "Fellowship Hall · Main (80 seats)", then why
-// it was suggested, if it was, then what a leader should know before choosing it.
+// A room as the picker words it: "Fellowship Hall · Main (80 seats)", then what
+// a leader should know before choosing it, then why it was suggested, if it was
+// (last, so a phone that clips the option still shows the busy note).
 function optionLabel(room: RoomPickerItem, reason?: string): string {
   const seats = room.capacity === null ? "" : ` (${room.capacity} ${room.capacity === 1 ? "seat" : "seats"})`;
-  return `${roomName(room)}${seats}${reason ? ` — ${reason}` : ""}${room.busy ? " — in use at this time" : ""}${room.tooSmall ? " — may be too small" : ""}`;
+  return `${roomName(room)}${seats}${room.busy ? " — in use at this time" : ""}${room.tooSmall ? " — may be too small" : ""}${reason ? ` — ${reason}` : ""}`;
 }
 
 // The Room control of "Edit this date" and the single-date "Edit event"

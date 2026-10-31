@@ -612,7 +612,7 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 	// A new event has no dates of its own yet; Rule 1 uses the visibility
 	// picked on the form (DEC-110).
 	suggestions := a.roomSuggestions(suggestFor{person: asPerson(me), groupID: body.GroupID,
-		visibility: createVisibility(body.Visibility, group), capacity: ed.cap, windows: upcoming}, offeredRooms(list))
+		visibility: createVisibility(body.Visibility, group), capacity: ed.cap, windows: upcoming, tags: groupTags(group)}, offeredRooms(list))
 	c.JSON(http.StatusOK, gin.H{"rooms": list, "dates": len(windows), "suggestions": suggestions})
 }
 

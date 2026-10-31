@@ -18,13 +18,14 @@ function dateCount(n: number): string {
 }
 
 // A room as the whole-series picker words it, like RoomField's option: seats,
-// then why it was suggested (if it was), how many of the dates something else
-// holds it on, and a size warning. `dates` is how many dates the booking would cover.
+// then how many of the dates something else holds it on, a size warning, and
+// last why it was suggested (if it was), so a phone that clips the option still
+// shows the busy note. `dates` is how many dates the booking would cover.
 export function seriesRoomLabel(room: SeriesRoom, dates: number, reason?: string): string {
   const seats = room.capacity === null ? "" : ` (${room.capacity} ${room.capacity === 1 ? "seat" : "seats"})`;
   let busy = "";
   if (room.busyDates > 0) busy = dates <= 1 ? " — in use at this time" : ` — in use on ${room.busyDates} of ${dates} dates`;
-  return `${roomName(room)}${seats}${reason ? ` — ${reason}` : ""}${busy}${room.tooSmall ? " — may be too small" : ""}`;
+  return `${roomName(room)}${seats}${busy}${room.tooSmall ? " — may be too small" : ""}${reason ? ` — ${reason}` : ""}`;
 }
 
 // What picking a room will do to dates it is busy on, said before it is booked.

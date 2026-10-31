@@ -201,15 +201,16 @@ describe("CreateRoomField suggestions", () => {
   it("lists suggested rooms first with why, then every other room once", async () => {
     vi.mocked(SeriesRooms.check).mockResolvedValue({
       rooms: [hall, chapel, closet], dates: 10,
-      suggestions: { rooms: [{ roomId: 1, uses: 3, reason: "Used by similar groups 3 times", busyDates: 0 }], otherKinds: false, dates: 8 },
+      suggestions: { rooms: [{ roomId: 1, uses: 3, reason: "Used by similar groups 3 times", busyDates: 0 }, { roomId: 2, uses: 1, reason: "Used once", busyDates: 2 }], otherKinds: false, dates: 8 },
     });
     render(<Harness schedule={weekly} groupId={5} visibility="public" />);
     const box = await select();
     await waitFor(() => expect(box.querySelectorAll("optgroup")).toHaveLength(2));
     const groups = Array.from(box.querySelectorAll("optgroup")).map((g) => [g.label, Array.from(g.querySelectorAll("option")).map((o) => o.textContent)]);
     expect(groups).toEqual([
-      ["Suggested", ["Fellowship Hall · Main (80 seats) — Used by similar groups 3 times"]],
-      ["Other rooms", ["Chapel — in use on 2 of 10 dates", "Closet · Annex (1 seat) — may be too small"]],
+      // Busy and size notes come before the reason, as in the other two pickers.
+      ["Suggested", ["Fellowship Hall · Main (80 seats) — Used by similar groups 3 times", "Chapel — in use on 2 of 10 dates — Used once"]],
+      ["Other rooms", ["Closet · Annex (1 seat) — may be too small"]],
     ]);
     await userEvent.selectOptions(box, "1");
     expect(box).toHaveValue("1");

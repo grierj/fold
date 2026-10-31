@@ -284,7 +284,7 @@ it("lists suggested rooms first with why, then every other room once", async () 
   const box = await select();
   expect((box as HTMLSelectElement).options[0].textContent).toBe("No room");
   expect(groupsOf(box)).toEqual([
-    { label: "Suggested", options: ["Closet · Annex (1 seat) — Used by this group 6 times — may be too small", "Chapel — Used once — in use at this time"] },
+    { label: "Suggested", options: ["Closet · Annex (1 seat) — may be too small — Used by this group 6 times", "Chapel — in use at this time — Used once"] },
     { label: "Other rooms", options: ["Fellowship Hall · Main (80 seats)"] },
   ]);
   // A busy suggestion is still only an admin's to book.

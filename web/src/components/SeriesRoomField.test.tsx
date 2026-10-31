@@ -273,7 +273,7 @@ it("lists suggested rooms first with why and busy dates, then the rest", async (
   const box = await select();
   const groups = Array.from(box.querySelectorAll("optgroup")).map((g) => [g.label, Array.from(g.querySelectorAll("option")).map((o) => o.textContent)]);
   expect(groups).toEqual([
-    ["Suggested", ["Chapel — Used by this event 4 times — in use on 2 of 10 dates"]],
+    ["Suggested", ["Chapel — in use on 2 of 10 dates — Used by this event 4 times"]],
     ["Other rooms", ["Fellowship Hall · Main (80 seats)", "Closet · Annex (1 seat) — may be too small"]],
   ]);
   expect((box as HTMLSelectElement).options[0].textContent).toBe("No series room");

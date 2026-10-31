@@ -134,3 +134,47 @@ func TestCreateFormSuggestionsUseTheChosenVisibility(t *testing.T) {
 		t.Fatalf("a church-wide event must not either: %+v", s)
 	}
 }
+
+// The one-date picker uses the date's own visibility (M1.13): a public
+// series' date made invite-only gets its group's invite-only usages, the
+// series picker (the event's own value) doesn't. Restricted rooms never
+// reach a leader, and every bookable room stays in the list.
+func TestDatePickerSuggestionsUseTheDatesVisibility(t *testing.T) {
+	f := newBookingFixture(t)
+	// The group's other event used the hall on a date made invite-only.
+	other := createFeedEvent(t, f.leader, f.group, "Quiet night", f.startOn.AddDate(0, 0, 2), "")
+	day := feedDate(f.startOn.AddDate(0, 0, 2))
+	if w := f.leader.do("PUT", "/api/v1/events/"+itoa(other.ID)+"/dates/"+day+"/room", map[string]any{"roomId": f.hall.ID}, true); w.Code != http.StatusOK {
+		t.Fatalf("book: %d %s", w.Code, w.Body.String())
+	}
+	f.app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", other.ID).Update("visibility_override", models.VisibilityInviteOnly)
+	// An admin's nursery booking for another of the group's events: a
+	// restricted room is suggested to admins only.
+	kids := createFeedEvent(t, f.leader, f.group, "Kids night", f.startOn.AddDate(0, 0, 3), "")
+	if w := f.admin.do("PUT", "/api/v1/events/"+itoa(kids.ID)+"/dates/"+feedDate(f.startOn.AddDate(0, 0, 3))+"/room", map[string]any{"roomId": f.nursery.ID}, true); w.Code != http.StatusOK {
+		t.Fatalf("admin books the nursery: %d %s", w.Code, w.Body.String())
+	}
+
+	pick := func(c *apiClient, path string) pickerWithSuggestions {
+		w := c.do("GET", path, nil, false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
+		}
+		return pickerSuggestions(t, w.Body.String())
+	}
+	datePath := f.path(f.eventA, "/rooms")
+	if p := pick(f.leader, datePath); len(p.Suggestions.Rooms) != 0 || len(p.Rooms) != 1 || p.Rooms[0].ID != f.hall.ID {
+		t.Fatalf("a public date gets no invite-only usages, and still lists the hall: %+v", p)
+	}
+	f.app.DB.Model(&models.EventOccurrence{}).Where("event_id = ?", f.eventA.ID).Update("visibility_override", models.VisibilityInviteOnly)
+	p := pick(f.leader, datePath)
+	if len(p.Suggestions.Rooms) != 1 || p.Suggestions.Rooms[0].RoomID == f.nursery.ID {
+		t.Fatalf("an invite-only date gets its group's usages, never the restricted nursery for a leader: %+v", p)
+	}
+	if p := pick(f.leader, "/api/v1/events/"+itoa(f.eventA.ID)+"/rooms"); len(p.Suggestions.Rooms) != 0 {
+		t.Fatalf("the series is public, so its picker doesn't count them: %+v", p)
+	}
+	if p := pick(f.admin, datePath); len(p.Rooms) != 2 {
+		t.Fatalf("an admin's list still has every room: %+v", p)
+	}
+}

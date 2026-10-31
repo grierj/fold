@@ -93,7 +93,7 @@ test("a series room busy on one date lists it, and Pick a room books another roo
   await expect(page.getByRole("heading", { name: "Busy first date", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: "Edit series" }).click();
   const room = page.getByRole("combobox", { name: /^Room for every date/ });
-  const hallOption = room.locator("option", { hasText: /^Fellowship Hall · Main \(80 seats\)( — Used .+)? — in use on 1 of \d+ dates$/ });
+  const hallOption = room.locator("option", { hasText: /^Fellowship Hall · Main \(80 seats\) — in use on 1 of \d+ dates( — Used .+)?$/ });
   await room.selectOption((await hallOption.getAttribute("value"))!);
   await expect(page.getByRole("status").filter({ hasText: "will be listed under" })).toBeVisible();
   await page.getByRole("button", { name: "Book for every date" }).click();
