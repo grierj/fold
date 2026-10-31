@@ -371,7 +371,7 @@ export function MessageComposerPage() {
 
   const oneEvent = isOneEvent(audience);
   const scheduled = message?.status === "scheduled";
-  const title = editing ? (message ? "Edit message" : "New message") : message?.subject || "Untitled message";
+  const title = editing ? (message ? "Edit message" : "New message") : message?.displaySubject || message?.subject || "Untitled message";
 
   if (!editing && message) {
     const reminder = message.category === "reminder";

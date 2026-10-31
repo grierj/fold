@@ -24,7 +24,7 @@ export function message(over: Partial<Message> = {}): Message {
   return {
     id: 5, channel: "email", status: "draft", subject: "Bring a friend", bodyHtml: "<p>Hi {{first_name}}</p>",
     audience: { type: "group", groupId: 7, roles: ["member", "leader"] }, scheduledAt: null, sentAt: null,
-    authorName: "Lee Leader", editable: true, updatedAt: "2026-10-31T15:00:00Z", error: "", failedCount: 0, category: "announcement", ...over,
+    authorName: "Lee Leader", editable: true, updatedAt: "2026-10-31T15:00:00Z", error: "", failedCount: 0, category: "announcement", displaySubject: "", ...over,
   };
 }
 
@@ -60,7 +60,7 @@ export function adminRecipients(over: Partial<MessageRecipients> = {}): MessageR
 // never editable, its subject and body holding merge fields as written.
 export function reminderMessage(over: Partial<Message> = {}): Message {
   return message({
-    id: 9, status: "sent", subject: "Reminder: {{event_title}}, {{event_time}}", bodyHtml: "<p>Hi {{first_name}},</p>",
+    id: 9, status: "sent", subject: "Reminder: {{event_title}} on {{event_time}}", displaySubject: "Reminder: Book night on Thu, Nov 5 · 7:00 PM MST", bodyHtml: "<p>Hi {{first_name}},</p>",
     audience: { type: "occurrence", occurrenceId: 31, statuses: ["going"] }, sentAt: "2026-11-05T02:00:00Z",
     authorName: "", editable: false, category: "reminder",
     reminder: { kind: "going", occurrenceId: 31, eventId: 3, eventTitle: "Book night", date: "2026-11-05", startsAt: "2026-11-06T02:00:00Z" },

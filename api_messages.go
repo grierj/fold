@@ -47,6 +47,11 @@ type messageJSON struct {
 	// Reminder names a reminder's date; absent for an announcement, and for
 	// a reminder whose date is gone.
 	Reminder *messageReminderJSON `json:"reminder,omitempty"`
+	// DisplaySubject is a reminder's subject with its event fields filled
+	// as its emails said them ("Reminder: Book night on Tue, Nov 3 · 7:00
+	// PM MST"), for its page's heading; "" for an announcement, whose
+	// subject is shown as written.
+	DisplaySubject string `json:"displaySubject"`
 }
 
 // messageReminderJSON is the date an automatic reminder is for: "Automatic
@@ -59,6 +64,19 @@ type messageReminderJSON struct {
 	EventTitle   string    `json:"eventTitle"`
 	Date         string    `json:"date"`
 	StartsAt     time.Time `json:"startsAt"`
+	// TZID is the event's zone, which its emails' {{event_time}} reads in.
+	TZID string `json:"-" gorm:"column:tzid"`
+}
+
+// reminderSubject fills a reminder's event fields as message.send does
+// (the date's title, its time on the event's clock); any other field
+// stays as written.
+func reminderSubject(subject string, d messageReminderJSON) string {
+	loc, err := time.LoadLocation(d.TZID)
+	if err != nil {
+		loc = time.UTC
+	}
+	return strings.NewReplacer("{{"+content.FieldEventTitle+"}}", d.EventTitle, "{{"+content.FieldEventTime+"}}", formatWhen(d.StartsAt, loc)).Replace(subject)
 }
 
 // reminderKind is going or waitlist, from a reminder's key
@@ -123,7 +141,7 @@ func (a *App) loadMessageFacts(msgs []models.Message) (messageFacts, error) {
 		// what the reminder was for.
 		var rows []messageReminderJSON
 		if err := a.DB.Raw(`SELECT o.id AS occurrence_id, o.event_id, COALESCE(o.title_override, e.title) AS event_title,
-			o.original_date AS date, o.starts_at FROM event_occurrences o JOIN events e ON e.id = o.event_id WHERE o.id IN ?`,
+			o.original_date AS date, o.starts_at, e.tzid FROM event_occurrences o JOIN events e ON e.id = o.event_id WHERE o.id IN ?`,
 			dedupeIDs(occs)).Scan(&rows).Error; err != nil {
 			return out, err
 		}
@@ -174,6 +192,7 @@ func toMessageJSON(m *models.Message, me *models.User, facts messageFacts) messa
 		if d, ok := facts.dates[*m.OccurrenceID]; ok {
 			d.Kind = reminderKind(m)
 			out.Reminder = &d
+			out.DisplaySubject = reminderSubject(m.Subject, d)
 		}
 	}
 	return out

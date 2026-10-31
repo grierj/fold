@@ -1103,6 +1103,9 @@ export interface Message {
   // editable; reminder names its date (absent once the date is gone).
   category: "announcement" | "reminder";
   reminder?: MessageReminder;
+  // A reminder's subject with its event fields filled as its emails said
+  // them, for its page's heading; "" for an announcement.
+  displaySubject: string;
 }
 
 // The date an automatic reminder is for. kind is the going reminder or

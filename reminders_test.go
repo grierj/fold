@@ -231,6 +231,10 @@ func TestReminderMessageReadableByEventManagers(t *testing.T) {
 		m.Reminder.EventID != f.groupEvent.ID || m.Reminder.Date != f.groupOcc.OriginalDate || m.FailedCount != 1 {
 		t.Fatalf("leader: %d %s", w.Code, w.Body.String())
 	}
+	// The heading reads as the emails did; the subject itself stays as written.
+	if want := "Reminder: Book night on " + formatWhen(f.groupOcc.StartsAt, time.UTC); m.DisplaySubject != want || m.Subject != "Reminder: {{event_title}} on {{event_time}}" {
+		t.Fatalf("subject %q, display %q, want %q", m.Subject, m.DisplaySubject, want)
+	}
 	h, body := f.history(t, f.leader, id)
 	if strings.Contains(body, "@") || h.Counts.Sent != 1 || h.Counts.Failed != 1 || !h.CanRetry {
 		t.Fatalf("leader history: %s", body)
@@ -408,7 +412,7 @@ func TestMessageListRemindersForAdminsOnly(t *testing.T) {
 		m.Reminder.Date != f.groupOcc.OriginalDate || !m.Reminder.StartsAt.Equal(f.groupOcc.StartsAt) {
 		t.Fatalf("admin list: %+v", m)
 	}
-	if m := admin[own]; m.Category != models.MessageCategoryAnnouncement || m.Reminder != nil {
+	if m := admin[own]; m.Category != models.MessageCategoryAnnouncement || m.Reminder != nil || m.DisplaySubject != "" {
 		t.Fatalf("announcement: %+v", m)
 	}
 	leader := list(f.leader)

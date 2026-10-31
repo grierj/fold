@@ -323,9 +323,11 @@ describe("MessageComposerPage", () => {
 
   it("shows an automatic reminder read only, with its date in place of an author (M3.6b)", async () => {
     const r = reminderMessage().reminder!;
-    vi.mocked(Messages.get).mockResolvedValue({ message: reminderMessage({ reminder: { ...r, startsAt: "2030-11-06T02:00:00Z" } }) });
+    vi.mocked(Messages.get).mockResolvedValue({ message: reminderMessage({ reminder: { ...r, startsAt: "2030-11-06T02:00:00Z" }, displaySubject: "Reminder: Book night on Tue, Nov 5 · 7:00 PM MST" }) });
     open("/messages/9");
-    expect(await screen.findByRole("heading", { level: 1, name: "Reminder: {{event_title}}, {{event_time}}" })).toBeInTheDocument();
+    // The heading has the event filled in, as the emails did; the body stays as written.
+    expect(await screen.findByRole("heading", { level: 1, name: "Reminder: Book night on Tue, Nov 5 · 7:00 PM MST" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 1, name: /\{\{/ })).toBeNull();
     const line = screen.getByText(/^Automatic reminder/);
     expect(line).toHaveTextContent("Automatic reminder for Book night, Tue, Nov 5 at 7:00 PM");
     expect(within(line).getByRole("link")).toHaveAttribute("href", "/events/3/dates/2026-11-05");
