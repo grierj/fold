@@ -33,7 +33,7 @@ Reconciled against merged history through [PR #163](https://github.com/grierj/fo
 | M3.1 Jobs table and worker (slices M3.1a–b) | done: M3.1a merged (#201), M3.1b (#202) | Claude | `jobs/m3.1b-system` |
 | M3.2 Email providers, Postmark, webhooks (slices M3.2a–c) | done: M3.2a merged (#203), M3.2b (#204), M3.2c (#205) | Claude | `email/m3.2c-admin` |
 | M3.3 Consent and unsubscribe (slices M3.3a–b) | done: M3.3a merged (#206), M3.3b (#207) | Claude | `consent/m3.3b-settings` |
-| M3.4 Composer (slices M3.4a–c) | built: M3.4a merged (#208); M3.4b HTML email, merge fields, preview and test sends; M3.4c the composer page (Messages, TipTap, live counts, preview, test, scheduling) | Claude | `messages/m3.4c-composer` |
+| M3.4 Composer (slices M3.4a–c) | done: M3.4a merged (#208), M3.4b (#209), M3.4c (#211) | Claude | `messages/m3.4c-composer` |
 | Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | done (merged, #43) | Wright | `simplicity` |
 
 ## Other merged work (not milestones)

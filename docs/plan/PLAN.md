@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-120.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-126.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-120; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-126; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-120) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-126) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -260,7 +260,7 @@ The field lists show the important columns, not every column. Every table has `i
 
 **Site and settings**
 
-- `Setting(key, value)`: exists. Keys include `church_name`, `timezone` (IANA, required), `church_address` (for email footers and legal pages), `rooms_enabled` (bool), `room_bookings_need_approval` (bool, default false, DEC-102), `self_signup` (`off|request`, default `request`; there is no "open" mode, DEC-4), `sms_send_window_start` (default `08:00`), `sms_send_window_end` (default `20:00`; both read in each recipient's local time, DEC-9, DEC-25), `sms_registration_path` (`ein_10dlc|ein_toll_free|sole_prop_10dlc|sole_prop_toll_free`, DEC-3), `guardian_copies` (bool, default false; email copies only, DEC-19, DEC-29), `jitsi_domain`.
+- `Setting(key, value)`: exists. Keys include `church_name`, `timezone` (IANA, required), `church_address` (for email footers and legal pages), `rooms_enabled` (bool), `room_bookings_need_approval` (bool, default false, DEC-102), `self_signup` (`off|request`, default `request`; there is no "open" mode, DEC-4), `sms_send_window_start` (default `08:00`), `sms_send_window_end` (default `20:00`; both read in each recipient's local time, DEC-9, DEC-25), `sms_registration_path` (`ein_10dlc|ein_toll_free|sole_prop_10dlc|sole_prop_toll_free`, DEC-3), `guardian_copies` (bool, default false; email copies only, DEC-19, DEC-29), `jitsi_domain`, `push_enabled` (bool, default true, DEC-124), `vapid_public_key`, `vapid_private_key_enc` (made on first boot, DEC-125).
 - `SetupState(step, status pending|done|skipped, data_json, updated_at)`: one row per wizard step. The first-run gate and the SPA wizard read this table, not a cached "any user exists" flag (M4.2).
 - `ProviderConfig(kind, provider, settings_json, secrets_enc, status, verified_at, last_error)` (from M4.1). `kind` is `email|sms|storage|video|dns|backup_offsite`. One active row per kind; email may have a second row marked `fallback`.
 
@@ -331,10 +331,11 @@ The field lists show the important columns, not every column. Every table has `i
 
 **Messaging and consent**
 
-- `Message(channel email|sms|both, author_id, status draft|pending_approval|scheduled|sending|sent|cancelled|failed, category announcement|reminder|transactional, subject, body_html, body_text, sms_body, audience_json, scheduled_at, sent_at, approved_by, request_id?, send_window_override, override_reason, segments_estimate, recipient_count)`.
-- `MessageRecipient(message_id, user_id, channel, address, status queued|suppressed|deferred|sent|delivered|bounced|complained|failed, reason, copy_of_user_id?, provider_message_id, error, sent_at)`. Unique `(message_id, user_id, channel, copy_of_user_id)`. `copy_of_user_id` marks a guardian copy (DEC-19).
+- `Message(channel email|sms|both, author_id, status draft|pending_approval|scheduled|sending|sent|cancelled|failed, category announcement|reminder|transactional, subject, body_html, body_text, sms_body, audience_json, scheduled_at, sent_at, approved_by, request_id?, send_window_override, override_reason, segments_estimate, recipient_count, push_alert)`. `push_alert` (bool, default true) is a short companion alert to people with push on (DEC-123).
+- `MessageRecipient(message_id, user_id, channel email|sms|push, address, status queued|suppressed|deferred|sent|delivered|bounced|complained|failed, reason, copy_of_user_id?, provider_message_id, error, sent_at)`. Unique `(message_id, user_id, channel, copy_of_user_id)`. `copy_of_user_id` marks a guardian copy (DEC-19).
 - `MessageRequest(group_id, requester_id, sms_body, proposed_at, status pending|approved|rejected|expired|withdrawn, decided_by, decided_at, decision_note, message_id?)`.
-- `Consent(user_id, channel, scope all|group:<id>|category:<name>, status opted_in|opted_out, source web_form|sms_keyword|sms_reply|admin_import|unsubscribe_link|admin, evidence_text, ip, user_agent, at)`. Append-only. For teens, SMS also needs a `TeenConsent` row with scope `sms` (DEC-8). The latest row per `(user, channel, scope)` wins.
+- `Consent(user_id, channel email|sms|push, scope all|group:<id>|category:<name>, status opted_in|opted_out, source web_form|sms_keyword|sms_reply|admin_import|unsubscribe_link|admin, evidence_text, ip, user_agent, at)`. Append-only. For teens, SMS also needs a `TeenConsent` row with scope `sms` (DEC-8). The latest row per `(user, channel, scope)` wins. Turning on the first push device writes `(push, all, opted_in)`; per-category push switches use `category:<name>` like email (DEC-122). Teens need no `TeenConsent` for push.
+- `PushSubscription(user_id, endpoint unique, p256dh, auth, expires_at?, label, user_agent_hash, last_used_at, failed_at?, last_error)` (M3.13a): one row per browser installation. The endpoint is a capability and is never logged or returned. Rows cascade-delete with the user and are deleted on logout from that browser, on 404/410 from the push service, on key rotation, and 30 days after a failure.
 - `Suppression(channel, address, reason hard_bounce|complaint|stop|manual, provider, at)`. Checked at send time, separately from users.
 - `InboundMessage(channel, from, to, body, provider_id, received_at, matched_user_id, keyword, opt_out_match?, conversation_id?, forwarded_to)`. `opt_out_match` records the keyword or phrase that triggered an automatic opt-out (7.4).
 
@@ -354,7 +355,7 @@ The field lists show the important columns, not every column. Every table has `i
 
   Rows cascade-delete with the user.
 - No `notification_settings` table in v1 (DEC-44). Email is "Right away" only, and the per-category Email and Text switches and "Turn off all optional email" are all `Consent` rows (`scope category:<name>`), so they need no table of their own (6.13 #10). Locked (required) categories can't be written. A per-user `email_mode` table arrives with digests (M6.16).
-- `notification_deliveries(notification_id, user_id, channel email|sms, status queued|suppressed|deferred|sent|delivered|bounced|failed, reason, scheduled_for, provider_message_id, sent_at)` (from M1.2). Unique `(notification_id, channel)`. Statuses match `MessageRecipient`. Digests (M6.16) add a nullable `notification_id` and a `digest_id`.
+- `notification_deliveries(notification_id, user_id, channel email|sms|push, status queued|suppressed|deferred|sent|delivered|bounced|failed, reason, scheduled_for, provider_message_id, sent_at)` (from M1.2). Unique `(notification_id, channel)`. One push delivery row per notification whatever the device count; per-device results live on `push_subscriptions`. Statuses match `MessageRecipient`. Digests (M6.16) add a nullable `notification_id` and a `digest_id`.
 
 **Calendar**
 
@@ -388,7 +389,7 @@ The field lists show the important columns, not every column. Every table has `i
 
 - Periodic work runs as jobs (M3.1a): each daily task is queued once per church day under the key `<kind>:<church date>`, at startup and at church-local midnight, so birthdays still turn over at church midnight (DEC-83) and several app processes run each task once.
 - From M3.1, a `jobs` table and worker live in the same binary. The worker starts with `serve`. `FOLD_WORKERS=0` turns it off, for debugging only.
-- Job kinds: `occurrences.extend`, `message.send`, `message.deliver_batch`, `reminder.schedule`, `waitlist.notify`, `webhook.process`, `provider.poll_status` (for example SMS registration or email domain verification), `cleanup.login_throttles`, `jobs.cleanup` (finished jobs are kept 30 days), `accounts.expire_requests`, `contact.sweep` (expires contact requests and ends grants daily; role changes also end grants at once, 5.11), `accounts.age_rollover` (teens turn into adults at 18; household children who turn 13 are flagged to their guardians), `notification.deliver` (5.12; `notification.digest` later, M6.16), and `notifications.cleanup` (daily: auto-archives event items whose occurrence has ended, and applies retention, 5.12).
+- Job kinds: `occurrences.extend`, `message.send`, `message.deliver_batch`, `reminder.schedule`, `waitlist.notify`, `webhook.process`, `provider.poll_status` (for example SMS registration or email domain verification), `cleanup.login_throttles`, `jobs.cleanup` (finished jobs are kept 30 days), `accounts.expire_requests`, `contact.sweep` (expires contact requests and ends grants daily; role changes also end grants at once, 5.11), `accounts.age_rollover` (teens turn into adults at 18; household children who turn 13 are flagged to their guardians), `notification.deliver` (5.12; `notification.digest` later, M6.16), `push.deliver` (one per notification or message recipient with push on; fans out to the person's devices; 404/410 deletes the device, DEC-125), and `notifications.cleanup` (daily: auto-archives event items whose occurrence has ended, applies retention, 5.12, and prunes failed or expired push devices).
 - The worker claims jobs with `FOR UPDATE SKIP LOCKED` and polls every 1 to 2 seconds (`FOLD_JOB_POLL=1s`). There is no `LISTEN/NOTIFY`.
 - Retries use exponential backoff with jitter (30 seconds doubling, at most an hour, ±20%) and a `max_attempts` per kind, then `dead`. A job whose process stopped mid-run is taken back after a 15-minute lease. The admin "System" page lists dead jobs with Retry and Dismiss; admins get no notice for them until message sending (M3.5) brings failures an admin can fix (DEC-111).
 - `unique_key` makes scheduling idempotent (for example `reminder:occ:123:24h`).
@@ -449,6 +450,8 @@ Adapters to build, in order (one real adapter per kind first, the second when ne
 - DNS: `manual` (shows records to copy), `cloudflare`.
 - Video: `link` (paste any URL), `jitsi` (makes a random room URL on a configurable Jitsi domain, default `meet.jit.si`). `zoom` later (Server-to-Server OAuth app; creates meetings).
 - Storage: `local`, `s3` (one S3-compatible adapter covers B2, R2, Wasabi, DigitalOcean Spaces, Vultr, MinIO). "S3-compatible" is only the protocol; none of these is Amazon.
+
+Web push is not an adapter: there is no vendor. `internal/push` speaks RFC 8030/8291/8292 to the browsers' own push services with the standard library (DEC-125).
 
 The email adapters (devoutbox, SMTP, Postmark) live in `internal/mail` and register with `internal/providers` (M3.2a); callers send through `mail.Sender` and never see which one runs. `FOLD_EMAIL_PROVIDER` picks one, else dev uses devoutbox, then Postmark when it has a token, then SMTP.
 
@@ -556,7 +559,7 @@ Contact privacy, requests and audited reveals are implemented in M1.11. The gene
 
 Fold builds its notifications itself: no vendor and no new service (DEC-42). Knock (knock.app) is the **UX reference only**: separate unread, read, and archived states, "Mark all as read", archive with ×, batching, at most two inline buttons, and a category × channel preferences grid. Knock and Novu were researched and rejected as add-ons. Knock is closed SaaS that would need an account per church, would duplicate Fold's consent and send-window rules, and would add `connect-src` origins. Novu needs MongoDB, Redis and four services. The consolidated UX reference is [`research/notifications.md`](research/notifications.md). DEC-44/45 settle badge, delivery, preferences and retention; DEC-60–DEC-66 replace the original visual styling. This section owns product rules; docs/API.md owns the shipped HTTP contract.
 
-**Shape.** Notifications are stored, not derived, with one row per recipient (fan-out on write). The same code path that writes the `AuditLog` row calls `notify.Send(tx, notify.Msg{...})` inside its transaction. `internal/notify` holds a **kind registry in Go**, not in the database: `Kind{Key, Category, Required, BatchWindow, AllowEmail, AllowSMS, Actions, Render, RenderEmailSafe}`. Title, body, and link are rendered when the row is written, so later edits don't rewrite history. Tables are listed in 5.3: `notifications` and `notification_deliveries`. A third table, the digest settings `notification_settings`, waits for digests (M6.16, DEC-44).
+**Shape.** Notifications are stored, not derived, with one row per recipient (fan-out on write). The same code path that writes the `AuditLog` row calls `notify.Send(tx, notify.Msg{...})` inside its transaction. `internal/notify` holds a **kind registry in Go**, not in the database: `Kind{Key, Category, Required, BatchWindow, AllowEmail, AllowSMS, AllowPush, Actions, Render, RenderEmailSafe}`. Title, body, and link are rendered when the row is written, so later edits don't rewrite history. Tables are listed in 5.3: `notifications` and `notification_deliveries`. A third table, the digest settings `notification_settings`, waits for digests (M6.16, DEC-44).
 
 **States and the badge.** In-app is always on.
 - **Badge count (DEC-44):** the badge shows one plain count, with no needs-action dot: unread items plus unresolved items waiting on you, with no double counting, capped at "9+". Opening the panel doesn't clear it. Opening an item, or "Mark all as read", clears ordinary items.
@@ -597,12 +600,14 @@ job runner (5.5, SKIP LOCKED):
                          → SMS send window (the shared messaging function, DEC-9, DEC-25)
                          → EmailSender / SMSSender (5.6)
                          → `notification_deliveries` row; guardian copies follow DEC-19 and DEC-29
+   push.deliver:         skip if read, archived or resolved → push_enabled → Consent(push) + teen rules
+                         → quiet hours (DEC-126) → lock-screen rendering → each device; 404/410 removes the device
 ```
 
 - **Email before M3.1.** The `jobs` table arrives in M3.1. In M1.2, notification email goes through the minimal sender (`internal/mail`) right after the transaction commits, with no delay. The 15-minute "if not seen" escalation starts once `notification.deliver` exists (M3.1 or later). Required and security kinds always send at once.
 - **Sensitive email (6.13 #9).** Kinds that touch minors, consent, or contact access render through `RenderEmailSafe`. It names nobody and only links in: "You have a contact request in Fold. Sign in to review it."
 - **Email timing (DEC-44).** Email is "Right away" only in v1. Once-a-day digests move to a later version (M6.16).
-- **Quiet hours (DEC-44).** In-app notices are silent and arrive at any time. SMS follows the 8 AM–8 PM send window. Email ignores quiet hours, as in 7.5.
+- **Quiet hours (DEC-44).** In-app notices are silent and arrive at any time. SMS follows the 8 AM–8 PM send window. Email ignores quiet hours, as in 7.5. Optional push follows the SMS window; required kinds and changes to events within 24 hours go at once (DEC-126).
 
 **Which events go in the bell.**
 - **In the bell:**
@@ -614,7 +619,7 @@ job runner (5.5, SKIP LOCKED):
   - message requests (7.6) and conversation replies (7.8)
   - for events you're going to or waitlisted for: cancellations, time or place changes, and "you're in" off the waitlist
 - **Event items expire (6.13 #3):** they have `expires_at` set to the occurrence end. A daily job sets `archived_at` when that passes; they aren't deleted, so they stay under Archived until retention removes them.
-- **Not in the bell (DEC-44):** event **reminders** go by email and SMS only (7.7), and today's derived "upcoming events" items are dropped.
+- **Not in the bell (DEC-44):** event **reminders** go by email, push and SMS only (7.7), and today's derived "upcoming events" items are dropped.
 
 **Minors and privacy** (10.1):
 - People without a login get no rows. The account holder gets them instead ("for Sam (your household)").
@@ -626,13 +631,14 @@ job runner (5.5, SKIP LOCKED):
 **CSP.** Notifications add no origin. Everything is same-origin (`connect-src 'self'`). Icons are inline SVG, avatars are served by Fold, and times use `Intl`. Rows render as plain text (no `dangerouslySetInnerHTML`). `link` must be an internal path starting with `/` and is validated on write.
 
 **Settings payload** (M3.12; the "Turn off all optional email" switch alone arrives earlier, DEC-97):
-- per-category Email and Text switches, plus "Turn off all optional email", all mapped to `Consent` rows (6.13 #10, DEC-44); no email-timing choice in v1 and no per-group settings (DEC-44)
+- per-category Email, Text and Push switches, plus "Turn off all optional email", all mapped to `Consent` rows (6.13 #10, DEC-44); no email-timing choice in v1 and no per-group settings (DEC-44)
+- the devices with push on, by label, with "Turn off on this device" and "Turn off push alerts" (M3.13, DEC-122)
 - the effective time zone (`User.timezone`, falling back to the church zone) for the quiet-hours line (6.13 #11)
 - read-only `guardian_copies` for a teen's own page (6.13 #12)
 
 **Mobile** (6.13 #13): below 640 px the bell opens `/notifications` as a full page, not a popover. The page has filter chips, `?filter=` in the URL, and back returns you to where you were.
 
-A seam, not a vendor: `notify.Send` is the single entry point. A push channel (web push or ntfy) can be added behind it if a church asks (DEC-43). No Knock or Novu adapter is planned.
+A seam, not a vendor: `notify.Send` is the single entry point. Web push is that channel (M3.13, DEC-121): the browsers' push services, no vendor, no account, no cost. ntfy is not planned. No Knock or Novu adapter is planned.
 
 ---
 
@@ -762,7 +768,8 @@ Job message.send (at run_at):
       recipient, add an email copy row for each confirmed guardian
    6. SMS send window (default 8 AM to 8 PM in each recipient's local time, DEC-9, DEC-25):
       outside it -> deferred per recipient to the next allowed time
-   7. Enqueue message.deliver_batch jobs (email in batches of 50; SMS one per call)
+   7. Enqueue message.deliver_batch jobs (email in batches of 50; SMS one per call) and, when `push_alert` is on,
+      one push.deliver per recipient with a device (DEC-123)
 Job message.deliver_batch:
    - rate limiter per provider (token bucket from adapter Capabilities + settings)
    - send From the church address with a relay Reply-To (7.8), store provider_message_id, mark sent
@@ -799,6 +806,7 @@ Guests are reached only through occurrence, series, or events audiences, because
 - Email: TipTap (MIT license, React) rich text with bold, italic, links, headings, lists, images (uploaded through `Store` as public assets), and a button block. The server sanitizes the HTML with `bluemonday` and renders it into a simple, mobile-safe template with the church name, an unsubscribe link, and the church's postal address. A plain-text part is generated automatically.
 - SMS: plain text with a live character and segment counter. It detects GSM-7 vs UCS-2 (one emoji switches to UCS-2: 70 characters per segment instead of 160). It shows an estimated cost from the provider's per-segment rate (an admin setting, pre-filled from section 12). The church name prefix ("First Baptist: ") and the "Reply STOP to opt out" footer are added automatically and counted.
 - The audience picker shows only what the author may target, with live counts after consent filtering ("142 members; 9 will be skipped: 6 opted out, 3 have no phone").
+- Push alert too (default on): people who turned push on also get a short alert (subject, 120 characters, Open to read). The summary says "N also get a push alert". An announcement never goes push-only (DEC-123).
 - Preview, and "Send a test to me".
 - Schedule: send now, or pick a date and time (church time zone). Scheduled messages can be edited or cancelled until sending starts.
 - Merge fields: `{{first_name}}`, `{{event_title}}`, `{{event_time}}`, `{{event_link}}`, `{{manage_link}}`.
@@ -835,6 +843,10 @@ Minors (DEC-8, DEC-19):
 - An imported phone number for a teen is never treated as opted in.
 - Guardian copies are off unless an admin turns on `guardian_copies` (7.1 step 5, 5.10).
 
+Push:
+
+- Push is off until a person turns it on for a device in Fold (the browser's own permission prompt, after a tap). That writes `Consent(push, all, opted_in)`. Per-category switches and "Turn off push alerts" append rows like email. Devices are removed on logout, on 404/410, and on key rotation. Teens need an active account, not a separate consent; guests never subscribe (DEC-122).
+
 ### 7.5 SMS send window, rate limits, bounces
 
 - SMS send window (DEC-9, DEC-25; SMS only, email is not limited):
@@ -850,6 +862,7 @@ Minors (DEC-8, DEC-19):
   - Per author: leaders may send at most 3 SMS blasts and 5 emails per group per day (defaults, configurable). Admins have no limit but are audited.
   - Per recipient: at most 1 non-transactional SMS per person per hour across all groups (default). Extra messages are deferred.
 - Bounces and complaints: a hard bounce adds the address to `Suppression` and flags the email as invalid on the user's profile, with a banner asking them to update it. A spam complaint opts the user out of all non-transactional email. Soft bounces are retried by the provider; after 3 soft bounces in 30 days, the address is suppressed for 7 days.
+- Push: optional pushes follow the same recipient-local window as SMS; required kinds and changes to events starting within 24 hours are exempt; at most 20 optional pushes per person per hour (DEC-126).
 - SMS failures: carrier "unreachable" or "landline" errors mark the phone number invalid. Carrier filtering errors alert the admins, because they usually mean a registration or content problem.
 
 ### 7.6 Member-requested group SMS (F9)
@@ -862,11 +875,11 @@ Minors (DEC-8, DEC-19):
 
 ### 7.7 Reminders
 
-- Automatic reminders per occurrence for `going` registrants: email 24 hours before (on by default) and SMS 2 hours before (off by default; opted-in people only). Leaders can change these per event.
+- Automatic reminders per occurrence for `going` registrants: email 24 hours before (on by default), **push 2 hours before (on by default, people with push on)**, and SMS 2 hours before (off by default; opted-in people only). Leaders can change these per event.
 - Waitlisted people get "you're in" notices, or "still full and starting soon".
 - SMS reminders follow the send window. If the reminder time falls outside the recipient's window, it moves to the last allowed time before it, if that is no more than 18 hours earlier (for example 7:59 PM the night before a 9:00 AM event). Otherwise it is skipped, and the email reminder still goes.
 - Reminders are `category=reminder` messages, so they appear in history and respect consent.
-- Reminders go by email and SMS only. They never create bell notifications. The bell carries event *changes* (cancellations, time or place changes, "you're in"), not reminders (5.12, DEC-44).
+- Reminders go by email, push and SMS only. They never create bell notifications. The bell carries event *changes* (cancellations, time or place changes, "you're in"), not reminders (5.12, DEC-44).
 
 ### 7.8 One-to-one messages and reply relay (DEC-31)
 
@@ -1031,6 +1044,7 @@ Implementation note for agents: keep the counting-usage test in one function, `r
     - A user can read and change only their own rows.
     - An inline action is accepted only for allow-listed kinds; the server enforces this, not the UI.
     - Rows are deleted with the user, and `AuditLog` keeps the record.
+  - Web push (M3.13, DEC-125): outbound only to allow-listed push-service hosts over https, resolved-IP checks against private ranges, no redirects, 3 KB payloads; endpoints and keys never logged or returned; lock-screen text follows the safe rendering for sensitive kinds; the service worker has no fetch handler; logout removes the browser's device.
 - Provider secrets are encrypted at rest (C8) and never sent back to the browser after saving. The UI shows "set, last checked on ...".
 - `AuditLog` (created in M0.2) covers admin actions, sends, approvals, consent changes, role and secret changes, and every contact-access attempt (5.3, 5.11).
 - Export: admins can export people, groups, and events as CSV. Users can download their own data as JSON.
@@ -1051,6 +1065,7 @@ Implementation note for agents: keep the counting-usage test in one function, `r
   - by a confirmed guardian, or
   - by an admin, with evidence text.
   - Consent is append-only and can be revoked. Revoking `account` consent disables the account but keeps its history.
+- Teens with an active account may turn on push for their own device; it carries no contact detail and no cost, so no guardian consent is needed (DEC-122). Guardian copies stay email-only (DEC-29).
 - Teens without their own email can instead be household people (`kind=teen`) whom a guardian registers for events.
 - Every guardian or household link to a teen or child needs an admin to confirm it (DEC-32), even when the guardian creates the household person or turns a household teen into an account. Nothing is auto-confirmed, so a stranger can't add a real teen's email to their household and become that teen's guardian (final review, finding 2).
 - Teens may register for any event they can see (DEC-20). The safeguard is visibility plus leader control, not a youth-only flag or an approval gate: Teen and Child badges appear on attendee lists, rosters, and recipient lists, and leaders and hosts remove registrations that shouldn't be there (DEC-30). Other members see teens and children only as a count.
@@ -1114,6 +1129,7 @@ DEC-30's "trust the church body" covers workflow only: no approval gates on sign
 - [x] An opened invite-only event never reveals the group's members or leaders (M1.1b)
 - [x] Leader grants audited, with an in-app notice to admins (M0.2)
 - [x] Notifications carry names and in-app links only. Sensitive kinds use link-only email. The client keeps them in memory only. Inline actions are allow-listed on the server (5.12; M1.1c, M1.2)
+- [ ] `fold push check` reaches each push host; the allow-list is the only egress push makes (M3.13)
 - [ ] Later, not v1: durable, tamper-evident audit log for the most important events (DEC-33, 10.7, M6.14). The regular `AuditLog` covers them until then.
 - [ ] Backups: nightly, retained, restore-tested in CI, offsite encrypted with `age`; backup check before migrations (M5.2, M5.3)
 - [x] Dependency automation: Dependabot for Go modules, npm, GitHub Actions and base images; `govulncheck` and `npm audit` in CI (M0.3b, DEC-37)
@@ -1217,6 +1233,8 @@ fold providers test [email|sms|storage]       # sends a test / checks credential
 fold user create-admin --email ... --name ...
 fold storage migrate --to s3|local
 fold secrets rotate --new-key <key>           # re-encrypts provider secrets (M4.1)
+fold push keys [show|rotate]                  # web push keys (M3.13)
+fold push check                               # reaches each push host (M3.13)
 fold version
 ```
 
@@ -1460,7 +1478,7 @@ Fold runs on one VPS with Docker Compose. That is the only recommended deploymen
 | OIDC sign-in (Google/Microsoft) | **Later** | Nice; adds a dependency, so optional. |
 | Admin TOTP | **Core** (M4.9, v0.5) | Fold is on the public internet (final review, finding 7). |
 | Durable, tamper-evident audit log | **Later** (M6.14) | Legal and safeguarding record (DEC-33, 10.7). |
-| PWA with web push | **Later** | Push without app stores. |
+| PWA with web push | **Core** (M3.13) | Free alternative to SMS for churches that can't pay for texting; iOS needs Add to Home Screen (16.4+), so the directions page matters as much as the code. |
 | Multi-campus (one church, several sites) | **Later** | Single-tenant still; rooms per campus. |
 | Spanish or any other translation; an i18n framework | **Out of scope** | No plans for a non-English version. Plain English strings in the code are fine (DEC-13). |
 | Embedded video calls inside Fold | **Out of scope** for now | Link-out and generated Jitsi links only. Revisit in a later revision if requested (DEC-16). |
@@ -1506,7 +1524,7 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 |---|---|---|
 | v0.2 Foundations | Postgres-only clean baseline, CLI, trusted proxies, CSRF route groups, visibility enum and policy, email login, member removal and sole-leader handoff, security headers and dependency scanning, frontend test tooling | M0.1–M0.4 (M0.3 is M0.3a + M0.3b) |
 | v0.3 Events and people | Events and occurrences (time zones, series edits, church-wide hosts, visibility), email basics, account requests, guests, waitlist and pruning, calendar, ICS, video and flags, households and teen accounts, contact privacy, frontend toolchain upgrades (Vite 8, React 19, Tailwind 4, Node 24), per-date visibility, series RSVP and RSVP-aware calendar | M1.1a–M1.14 |
-| v0.4 Email | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay | M3.1–M3.6, M3.11 |
+| v0.4 Email and push | Jobs, Postmark and webhooks, consent, composer, pipeline (with guardian copies), email reminders, one-to-one messages and reply relay, web push | M3.1–M3.6, M3.11, M3.13 |
 | v0.5 MVP | Encrypted settings, SPA setup wizard, legal pages, email provisioning, people import, admin two-factor sign-in, images, backups, upgrades, deploy docs: the first version a church can run | M4.1–M4.5, M4.9, M5.1–M5.4 |
 | v0.6 Rooms | Rooms, by-room view and feed, suggestions | M2.1–M2.3 |
 | v0.7 SMS | Telnyx, keywords and revocation, send window and caps, SMS reminders, member requests, notification preferences and SMS, SMS provisioning | M3.7–M3.9, M3.12, M4.6 |
@@ -1854,7 +1872,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - Scope: the rest of 5.12's delivery:
   - Move notification email onto the `notification.deliver` job, with the 15-minute "skip if seen or read" escalation for non-urgent kinds.
   - SMS delivery for kinds marked `AllowSMS`, through Consent, Suppression, teen rules, and the shared send-window function.
-  - The `/settings/notifications` page (research 6.8), growing the early Me > Notifications switch (DEC-97): rows by category with Email and Text columns, locked required cells, "Turn off all optional email" (writes `Consent` opt-outs for every optional category and leaves required mail on), the quiet-hours line with the effective time zone, and the teen `guardian_copies` line.
+  - The `/settings/notifications` page (research 6.8), growing the early Me > Notifications switch (DEC-97): rows by category with Email, Text and Push columns (Push arrives first, in M3.13c), locked required cells, "Turn off all optional email" (writes `Consent` opt-outs for every optional category and leaves required mail on), the quiet-hours line with the effective time zone, and the teen `guardian_copies` line.
   - The email unsubscribe link opens the same page.
   - Per DEC-44: email is "Right away" only, with no email-timing choice and no digests (both later, M6.16). There are no per-group settings in v1. Email ignores quiet hours.
 - Acceptance:
@@ -1865,6 +1883,27 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - [ ] A notification email sent at 11 PM recipient-local goes at once (no quiet hours for email); its SMS waits for the send window
   - [ ] The settings payload has the effective time zone and, for teens, read-only `guardian_copies`
 - Tests: job tests with a fake clock; consent mapping tests; Playwright for the settings page.
+
+**M3.13 Web push** (built after M3.6 and before M3.7; DEC-121 to DEC-126)
+- Depends on: M3.1, M3.3 (slices a–c); M3.5 and M3.6 (slice d)
+- Scope: 5.12's push channel (DEC-43), the browsers' own push services with no vendor: VAPID keys made on first boot, `push_subscriptions` per device, RFC 8030/8291/8292 in `internal/push` with the standard library, the `push.deliver` job, a service worker and manifest served by the binary, the Push column on the notification settings page, the device directions page, the composer's companion alert and the 2-hour push reminder. The device directions copy and the design notes are in [`research/web-push.md`](research/web-push.md). Four slices (14.1):
+  - **M3.13a Keys, subscriptions and the push client**: migration 00056 (`push_subscriptions`; `push` in `consents.channel`, `notification_deliveries.channel` and `message_recipients.channel`; `messages.push_alert`); `vapid_public_key` and `vapid_private_key_enc` settings written under the migrations lock, encrypted with a `SESSION_SECRET`-derived key; `fold push keys show|rotate`, `fold push check`; `internal/push` (aes128gcm, ES256 VAPID, the host allow-list, a 3,000-byte plaintext cap, no redirects, resolved-IP checks); `push.deliver` with per-device results, 404/410 deleting the device.
+  - **M3.13b Subscribe API and notification delivery**: `GET /push/config`, `PUT|DELETE /push/subscriptions`, `POST /push/test`; `Kind.AllowPush`; `push.deliver` queued after commit for `AllowPush` kinds; lock-screen rendering (safe variant for safety, consent and contact kinds; title plus 120 characters otherwise; never `Data`, `ManageURL` or `VideoURL`); TTL and Urgency per kind; `/me/notification-settings` gains `push`; logout deletes this browser's device.
+  - **M3.13c Service worker, manifest, settings card and directions**: `/sw.js` (push, notificationclick, pushsubscriptionchange; no fetch handler), `/manifest.webmanifest` with the church name, icons, `worker-src`/`manifest-src` in the CSP; the "Alerts on this device" card on Me → Notifications with the eight states (unavailable, install first, ready, on, on elsewhere, blocked, signed-out app, church off), Push switches, Send a test alert, Turn off on this device; `/alerts/setup` with the iPhone/iPad, Android, computer and Mac Safari steps and their undo steps; `push_enabled` admin switch; badge count on the icon.
+  - **M3.13d Announcements and reminders**: "Push alert too" in the composer (default on), "N also get a push alert" in the summary, push rows in `message_recipients` and history; the 2-hour push reminder per occurrence with its per-event switch; quiet hours (DEC-126).
+- Acceptance:
+  - [ ] The RFC 8291 Appendix A vector encrypts byte for byte; a fake push service decrypts every payload Fold sends and sees `TTL`, `Urgency`, `aes128gcm` and a VAPID token that verifies against the public key
+  - [ ] An endpoint whose host is not on the allow-list, or that resolves to a private, loopback or link-local address, is refused at subscribe time and again at send time, with no connection made
+  - [ ] 404 and 410 delete the device and record `suppressed` "device gone"; 429 and 5xx retry with the jobs backoff and never send twice to a device that already accepted
+  - [ ] Nothing in logs, job errors, audit rows or API responses contains an endpoint URL, `p256dh`, `auth` or a token (`TestPushLogsKeepSecretsOut`)
+  - [ ] Every kind's push rendering passes the teen and hidden-adult fixtures: safety, consent and contact kinds say only "Open Fold to review an update"; no push carries an email, phone, birth date, care note, teen badge, manage link or video link
+  - [ ] A `category:<cat>` push opt-out skips optional kinds of that category and never a required one; turning the first device on writes `(push, all, opted_in)`; "Turn off push alerts" writes the opt-out and deletes every device; a guest or `pending_consent` teen gets 403
+  - [ ] An announcement with the alert on sends each recipient with a device one email and one push, even across a restart; push-only is refused (400); the push body is the subject plus 120 characters of plain text
+  - [ ] A reminder push creates no `notifications` row (DEC-44); a cancelled occurrence cancels its pending reminder push
+  - [ ] With `push_enabled` off, no job sends, the card and `/alerts/setup` say so, and subscribe answers 403
+  - [ ] Playwright with a stubbed `PushManager`: the card moves ready → on, posts the right body, offers the test alert, and turns off; the blocked state shows the undo steps; `/alerts/setup` and the card pass a11y and layout at 390 and 1280 px
+  - [ ] Proven on a real iPhone (iOS ≥ 16.4, Home Screen app), an Android Chrome and a desktop Safari before M3.13c merges, with the iOS version recorded in the PR
+- Tests: vector and fake-service tests in `internal/push`; allow-list and DNS-rebinding tests; registry privacy tests; job idempotency with a fake clock; handler tests; Playwright for the card and directions.
 
 ### 14.7 Phase 4: Setup and providers
 
@@ -2157,12 +2196,18 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-112 | **What a bounce or complaint stops** (Grier, Oct 30, 2026; M3.2 planning). A hard bounce (the address doesn't exist) stops all email to that address until an admin clears it. A spam complaint stops optional and broadcast mail, while account mail (password resets, sign-in and invitation links, required notices) still goes, so nobody is locked out. Soft bounces are only recorded. | 5.3, 7.4, M3.2 |
 | DEC-113 | **Admins see and clear suppressions in M3.2** (Grier, Oct 30, 2026; M3.2 planning). Admin → Users marks a person "Email bouncing" or "Marked our email as spam", with a Clear action (audited) for when they fix a typo or ask for mail again. There is no separate page. | M3.2c |
 | DEC-114 | **One-click unsubscribe turns off that kind of email** (Grier, Oct 31, 2026; M3.3 planning). The inbox's Unsubscribe button (RFC 8058) stops only the category the email came from ("group updates"), as the button promises; the email settings page offers "Turn off all optional email" too. | 7.4, M3.3 |
-| DEC-115 | **Email settings have a switch per kind** (Grier, Oct 31, 2026; M3.3 planning). Group updates, event updates, message alerts (now "Messages from leaders", DEC-119) and admin notices each get a switch, plus "Turn off all optional email"; account and safety email are listed as always on. The same component serves the signed-out settings page and Me → Notifications; M3.12 adds Text columns to it. | 5.12, M3.3, M3.12 |
+| DEC-115 | **Email settings have a switch per kind** (Grier, Oct 31, 2026; M3.3 planning). Group updates, event updates, message alerts (now "Messages from leaders", DEC-119) and admin notices each get a switch, plus "Turn off all optional email"; account and safety email are listed as always on. The same component serves the signed-out settings page and Me → Notifications; M3.13 adds the Push column, M3.12 the Text column. | 5.12, M3.3, M3.12 |
 | DEC-116 | **The church's mailing address is an admin setting now** (Grier, Oct 31, 2026; M3.3 planning). Admin → Settings gets "Church mailing address" (`church_address`), shown in the footer of optional email (PLAN 10.5, CAN-SPAM); unset, admins see a reminder and mail still sends. The setup wizard (M4.2) asks for it later. | 5.3, 10.5, M3.3, M4.2 |
 | DEC-117 | **The composer's SMS tab waits for texting** (Grier, Oct 31, 2026; M3.4 planning). The SMS counter, the automatic prefix and footer, and the donation-ask warning are built and tested in M3.4, but the SMS tab stays hidden until an SMS provider is configured (M3.7), so nobody sees a tab that can't send. The per-segment cost estimate arrives with M3.7's settings. | 7.3, M3.4, M3.7 |
 | DEC-118 | **Images in email come after M3.5** (Grier, Oct 31, 2026; M3.4 planning). The composer ships with bold, italic, links, headings, lists and a button block; image upload (public assets through `Store`, type and size checks, email-safe rendering) follows once sending works. | 7.3, M3.4 |
 | DEC-119 | **Announcements follow the "Messages from leaders" switch** (Grier, Oct 31, 2026; M3.4 review). The email settings kind DEC-115 called "message alerts" (`category:messages`) is labelled **Messages from leaders** ("Announcements from your group leaders, event hosts and church admins"), and it alone decides whether someone gets an announcement; "Turn off all optional email" and an announcement's one-click link turn it off too. Footers read "You're getting messages from leaders at <church>". | 7.3, 7.4, M3.3, M3.4 |
 | DEC-120 | **The SMS donation warning matches patterns until texting arrives** (Grier, Oct 31, 2026; M3.4 review). With no giving-page setting, the DEC-3 warning fires on giving words, links whose address has a giving word as a word, and links to known giving services (Tithe.ly, Pushpay, Givelify and similar). A "Giving page link" admin setting, so the church's own URL always warns, is built with the SMS tab in M3.7. | 7.3, DEC-3, M3.4, M3.7 |
+| DEC-121 | **Web push is Fold's free alternative to SMS, built before SMS** (Grier, Oct 31, 2026; M3.13 planning). Push is a third delivery channel behind `notify.Send` and the message pipeline, using the browsers' own push services: no vendor, no account, no container, no cost. It ships with the email release (v0.4), built after M3.6 and before M3.7, and precedes every SMS milestone. Research: `docs/plan/research/web-push.md`. | 5.12, 7.1, 13.2, 14.2, M3.13 |
+| DEC-122 | **Push consent is a device plus the person's switches** (Grier, Oct 31, 2026; M3.13 planning). Turning on the first device in Fold is the opt-in (`Consent(push, all, opted_in)`); per-category Push switches reuse `category:<name>` and sit in their own Push column beside Email (Text joins in M3.12), not following the email switch; required kinds always push to a device that has push on. Teens with an active account need no separate consent (no `TeenConsent` scope); guests never subscribe; logout removes the browser's device. | 5.3, 5.12, 7.4, 10.3, M3.12, M3.13 |
+| DEC-123 | **An announcement is never push-only** (Grier, Oct 31, 2026; M3.13 planning). Email stays the record; "Push alert too" (default on) adds a short companion alert to people with push on, not a channel like SMS and not a per-person "push instead of email". Reminders get a push 2 hours before. | 7.1, 7.3, 7.7, M3.13d |
+| DEC-124 | **A lock screen is public** (Grier, Oct 31, 2026; M3.13 planning). Safety, consent and contact kinds push only "Open Fold to review an update"; other kinds push the bell title and at most 120 characters; never a contact detail, teen badge, signed link or hidden group's name. Churches may turn push off with an admin switch (`push_enabled`, default on); off hides the card and directions and stops every push job. The Home Screen app carries the church's name (`site_name`) with the Fold icon; a per-church icon can come later. | 5.12, 10.1, M3.13 |
+| DEC-125 | **Keys and transport are self-contained** (Grier, Oct 31, 2026; M3.13 planning). VAPID keys are made on first boot and stored in `settings`, the private half encrypted with a `SESSION_SECRET`-derived key; `fold push keys rotate` is the incident tool. `internal/push` implements RFC 8030/8291/8292 with the standard library, sends only to allow-listed push hosts over https with resolved-IP checks and no redirects, and deletes a device on 404/410. | 5.5, 5.6, 10.1, 10.6, 11.4, M3.13a |
+| DEC-126 | **Push quiet hours follow the SMS window** (Grier, Oct 31, 2026; M3.13 planning). Optional kinds wait for the same recipient-local window as SMS (default 8 AM–8 PM); required kinds and changes to events starting within 24 hours go at once; at most 20 optional pushes per person per hour. | 5.12, 7.5, M3.13d |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 
@@ -2315,6 +2360,19 @@ databases:
 - ChurchTrac pricing and features: https://www.churchtrac.com/pricing
 - Meetup Help Center (events, waitlist, guests, hybrid, check-in): https://help.meetup.com
 - RFC 8058 (one-click unsubscribe): https://www.rfc-editor.org/rfc/rfc8058
+- Web push (M3.13; details and marks in `research/web-push.md`):
+  - WebKit, Web Push for Web Apps on iOS and iPadOS (iOS 16.4, Home Screen requirement, `display: standalone|fullscreen`, user gesture, third-party browsers' Add to Home Screen, badging): https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/
+  - WebKit, Meet Declarative Web Push (`web_push: 8030`, no service worker needed, iOS 18.4 and macOS 15.5, backward compatible): https://webkit.org/blog/16535/meet-declarative-web-push/
+  - RFC 8030, Generic Event Delivery Using HTTP Push (TTL, Urgency, Topic, 404 for an expired subscription): https://www.rfc-editor.org/rfc/rfc8030.html
+  - RFC 8291, Message Encryption for Web Push (aes128gcm; Appendix A test vector): https://www.rfc-editor.org/rfc/rfc8291.html
+  - RFC 8292, VAPID: https://www.rfc-editor.org/rfc/rfc8292.html
+  - webpush-go `go.mod` (the library option not chosen): https://raw.githubusercontent.com/SherClockHolmes/webpush-go/master/go.mod
+  - Go 1.24 release notes draft (`crypto/hkdf`): https://go.googlesource.com/website/+/2a8b895514c4e52860e9c0b1ef8626db3ea36bf5/_content/doc/go1.24.md
+  - webpush-java wiki, Endpoints (FCM and Mozilla hosts): https://github.com/web-push-libs/webpush-java/wiki/Endpoints
+  - OneSignal, Mobile Web Push for iOS/iPadOS (vendor): https://documentation.onesignal.com/docs/web-push-for-ios
+  - PushAlert, Chrome on iOS 113 web push (vendor): https://pushalert.co/blog/?p=2506
+  - iOS 17.4 EU Home Screen web app removal and reversal (press): https://www.macrumors.com/2024/02/15/ios-17-4-web-apps-removed-apple/ and https://www.engadget.com/apple-backtracks-on-plans-to-get-rid-of-web-apps-on-iphones-in-the-eu-195232177.html
+  - Push-service host lists for Apple, Windows and Samsung (secondary): https://kiwix.lema.org/stackoverflow.com_en_all_2023-11/questions/52252877/which-host-ports-should-be-open-for-web-push and https://github.com/hackutd/harp/pull/153 (unmerged)
 
 ### 17.2 Not verified (re-check before relying on them)
 
@@ -2333,6 +2391,7 @@ databases:
 - Whether Telnyx's Charity use case excludes religious organizations as Twilio's does
 - Postmark inbound processing pricing (inbound is documented, but its price was not checked; pricing not verified)
 - Whether Resend and Mailgun inbound routing can carry the reply relay (7.8) when their adapters are built
+- Web push (M3.13): iOS answers 404 or 410 for a revoked Home Screen web app subscription; FCM answers 410; third-party iOS browsers' Home Screen apps receive push; `navigator.standalone` outside Safari; exact Settings paths on each OS; Firefox for Android and Samsung Internet receiving push (the directions don't promise it); the Apple, Microsoft and Samsung push hostnames
 - The Render items below matter only if M5.5 is ever started:
 - Exactly which header and proxy addresses Render uses for client IPs, so the `render` preset for `FOLD_TRUSTED_PROXIES` must be checked against Render's docs in M5.5
 - Whether Render Postgres storage pricing includes the first GB (the estimate in 12.5 assumes it does not)
