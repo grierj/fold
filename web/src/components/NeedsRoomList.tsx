@@ -98,7 +98,7 @@ export function NeedsRoomList({ eventId, revision, hasDate, onPick }: {
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <div className="font-semibold">{day}</div>
-                    <div className="text-sm text-warning-on-subtle wrap-anywhere">{n.roomName} isn't free then.</div>
+                    <div className="text-sm text-warning-on-subtle wrap-anywhere">{n.status === "rejected" ? `An admin didn't approve ${n.roomName} for this date.` : `${n.roomName} isn't free then.`}</div>
                   </div>
                   <Button
                     variant="secondary"

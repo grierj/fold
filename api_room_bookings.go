@@ -66,14 +66,27 @@ const (
 	bookedFree      bookResult = iota // confirmed: the room was free
 	bookedOverlap                     // confirmed over a conflict, with an admin's reason
 	bookedRequested                   // the room was busy: requested, holding nothing
+	bookedPending                     // the room was free: requested, waiting on an admin's approval
 	notBooked                         // the room was busy and nothing was written
 )
 
+// placement says how placeBooking books.
+type placement struct {
+	by *uint
+	// reason double-books a busy room; the caller checks it is an admin's.
+	reason string
+	// keepRequested keeps a busy date as requested (holding nothing)
+	// instead of writing nothing.
+	keepRequested bool
+	// requestID, when set, makes a free date wait on that approval request
+	// (M2.1d) instead of confirming.
+	requestID *uint
+}
+
 // placeBooking books room for a date that has no booking. The caller holds
-// the date's lock, then the room's. A busy room is double-booked when an
-// admin's reason is given (the caller checks it is an admin's); otherwise,
-// with keepRequested, the booking is kept as requested, holding nothing.
-func placeBooking(tx *gorm.DB, occ *models.EventOccurrence, room *models.Room, setup, teardown int, by *uint, reason string, keepRequested bool) (bookResult, error) {
+// the date's lock, then the room's.
+func placeBooking(tx *gorm.DB, occ *models.EventOccurrence, room *models.Room, setup, teardown int, p placement) (bookResult, error) {
+	by, reason, keepRequested := p.by, p.reason, p.keepRequested
 	insert := func(status string, overlap bool, why string) error {
 		return tx.Exec(`INSERT INTO room_bookings (occurrence_id, room_id, starts_at, ends_at, setup_minutes, teardown_minutes,
 			padded_range, status, allow_overlap, overlap_reason, created_by) VALUES (?, ?, ?, ?, ?, ?, `+paddedRangeSQL+`, ?, ?, ?, ?)`,
@@ -91,6 +104,12 @@ func placeBooking(tx *gorm.DB, occ *models.EventOccurrence, room *models.Room, s
 		})
 		if err != nil {
 			return 0, err
+		}
+		if free && p.requestID != nil {
+			// The insert proved the room free; the booking then waits for an
+			// admin, holding nothing until it is confirmed.
+			return bookedPending, tx.Exec(`UPDATE room_bookings SET status = ?, request_id = ?, updated_at = now() WHERE occurrence_id = ?`,
+				models.BookingRequested, *p.requestID, occ.ID).Error
 		}
 		if free {
 			return bookedFree, nil
@@ -157,6 +176,9 @@ type roomBookingJSON struct {
 	TeardownMinutes int    `json:"teardownMinutes"`
 	DoubleBooked    bool   `json:"doubleBooked"`
 	TooSmall        bool   `json:"tooSmall"`
+	// Pending: requested, waiting on an admin's approval (M2.1d). A
+	// requested booking that isn't pending lost its room.
+	Pending bool `json:"pending"`
 }
 
 // occurrenceRoomJSON is the room a date's people see as its place.
@@ -267,9 +289,15 @@ func (a *App) dateBooking(db *gorm.DB, occurrenceID uint, want int) (*roomBookin
 	if err := db.First(&r, b.RoomID).Error; err != nil {
 		return nil, err
 	}
+	pending := false
+	if b.RequestID != nil && b.Status == models.BookingRequested {
+		if err := db.Raw("SELECT EXISTS (SELECT 1 FROM room_requests WHERE id = ? AND status = ?)", *b.RequestID, models.RoomRequestPending).Scan(&pending).Error; err != nil {
+			return nil, err
+		}
+	}
 	return &roomBookingJSON{RoomID: r.ID, RoomName: r.Name, Building: r.Building, Status: b.Status,
 		SetupMinutes: b.SetupMinutes, TeardownMinutes: b.TeardownMinutes, DoubleBooked: b.AllowOverlap,
-		TooSmall: tooSmall(r.Capacity, want)}, nil
+		TooSmall: tooSmall(r.Capacity, want), Pending: pending}, nil
 }
 
 // apiSetDateRoom books, changes or releases a date's room. roomId null
@@ -310,7 +338,13 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 	}
 	errRoomGone, errRestricted, errBusy := errors.New("room gone"), errors.New("restricted"), errors.New("busy")
 	errDateGone, errAdminBooking := errors.New("date gone"), errors.New("admin booking")
+	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		// The event first, as every series and approval path takes it, so a
+		// date's booking and an admin deciding its request can't deadlock.
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&models.Event{}, ev.ID).Error; err != nil {
+			return err
+		}
 		// Book against the date as it is under the lock: a reschedule or a
 		// cancel that committed since it was read must win.
 		locked, err := lockOccurrence(tx, occ.ID)
@@ -336,6 +370,10 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 				}
 			}
 			if err := tx.Delete(&old).Error; err != nil {
+				return err
+			}
+			// The old booking may have been a request's last date.
+			if err := closeEmptyRoomRequests(tx); err != nil {
 				return err
 			}
 		}
@@ -372,15 +410,35 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		if !policy.CanDoubleBookRoom(me) {
 			reason = ""
 		}
-		result, err := placeBooking(tx, occ, &room, setup, teardown, &user.ID, reason, false)
+		// With approval on, a leader's or host's booking is a request of one
+		// date for an admin (DEC-102, DEC-106).
+		var req *models.RoomRequest
+		var requestID *uint
+		if policy.BookingNeedsApproval(me, roomApprovalOn(tx)) {
+			if req, err = openRoomRequest(tx, ev.ID, room.ID, &user.ID, false); err != nil {
+				return err
+			}
+			requestID = &req.ID
+		}
+		result, err := placeBooking(tx, occ, &room, setup, teardown, placement{by: &user.ID, reason: reason, requestID: requestID})
 		if err != nil {
 			return err
 		}
 		if result == notBooked {
 			return errBusy
 		}
+		if result == bookedPending {
+			ids, err := notifyRoomRequested(tx, req, ev, &room, 1, &user.ID)
+			emailed = append(emailed, ids...)
+			if err != nil {
+				return err
+			}
+		}
 		action := audit.RoomBookingBooked
 		meta := map[string]any{"roomId": room.ID, "eventId": ev.ID, "date": occ.OriginalDate, "setupMinutes": setup, "teardownMinutes": teardown}
+		if req != nil {
+			meta["requestId"] = req.ID
+		}
 		if result == bookedOverlap {
 			action = audit.RoomBookingOverlap
 			meta["reason"] = reason
@@ -410,6 +468,7 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
 		return
 	}
+	a.deliverNotificationEmails(emailed)
 	booking, err := a.dateBooking(a.DB, occ.ID, seatsWanted(a.DB, ev, occ))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the room")
@@ -424,7 +483,10 @@ func releaseRoomBookings(tx *gorm.DB, occurrenceIDs []uint) error {
 	if len(occurrenceIDs) == 0 {
 		return nil
 	}
-	return tx.Where("occurrence_id IN ?", occurrenceIDs).Delete(&models.RoomBooking{}).Error
+	if err := tx.Where("occurrence_id IN ?", occurrenceIDs).Delete(&models.RoomBooking{}).Error; err != nil {
+		return err
+	}
+	return closeEmptyRoomRequests(tx)
 }
 
 // moveRoomBookings moves the bookings of dates whose times changed, in the

@@ -17,7 +17,7 @@ vi.mock("../api", async (importActual) => ({
 const hall: RoomPickerItem = { id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", restricted: false, busy: false, tooSmall: false };
 const chapel: RoomPickerItem = { id: 2, name: "Chapel", building: "", capacity: null, features: "", restricted: false, busy: true, tooSmall: false };
 const closet: RoomPickerItem = { id: 3, name: "Closet", building: "Annex", capacity: 1, features: "", restricted: false, busy: false, tooSmall: true };
-const booked = (over: Partial<RoomBooking> = {}): RoomBooking => ({ roomId: 1, roomName: "Fellowship Hall", building: "Main", status: "confirmed", setupMinutes: 30, teardownMinutes: 0, doubleBooked: false, tooSmall: false, ...over });
+const booked = (over: Partial<RoomBooking> = {}): RoomBooking => ({ roomId: 1, roomName: "Fellowship Hall", building: "Main", status: "confirmed", setupMinutes: 30, teardownMinutes: 0, doubleBooked: false, tooSmall: false, pending: false, ...over });
 const busy = () => new ApiError(409, "busy", { code: "room_busy" });
 
 beforeEach(() => {
@@ -47,7 +47,7 @@ it("loads the rooms for the date and words each option", async () => {
   ]);
   expect(box).toHaveValue("none");
   expect(screen.getByText("A room that's in use can only be booked by an admin. Ask an admin if you need it.")).toBeInTheDocument();
-  expect(screen.getByText(/Closing this form won't undo it\./)).toBeInTheDocument();
+  expect(screen.getByText(/If bookings need an admin's approval, it waits for one\./)).toBeInTheDocument();
 });
 
 it("shows a loading line, not a blocked editor, until the rooms arrive", async () => {
@@ -238,4 +238,31 @@ it("puts the cursor in the Room select once the rooms load, only when asked", as
 it("leaves focus alone without focusOnLoad", async () => {
   show();
   expect(await select()).not.toHaveFocus();
+});
+
+it("says an admin didn't approve a date, keeps No room chosen, and asks for another room", async () => {
+  vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [hall], booking: booked({ status: "rejected" }) });
+  show();
+  const box = await select();
+  expect(box).toHaveValue("none");
+  expect(screen.getByRole("status")).toHaveTextContent("An admin didn't approve Fellowship Hall for this date. Pick another room.");
+});
+
+it("says in words that a booking waits for an admin, and shows its room", async () => {
+  vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [hall], booking: booked({ status: "requested", pending: true }) });
+  show();
+  const box = await select();
+  expect(box).toHaveValue("1");
+  expect(screen.getByRole("status")).toHaveTextContent("Waiting for an admin to approve Fellowship Hall.");
+  // Not the "lost its room" warning.
+  expect(screen.queryByText(/was taken at the new time/)).not.toBeInTheDocument();
+});
+
+it("shows the waiting line, not Booked, after choosing a room that needs approval", async () => {
+  vi.mocked(DateRooms.set).mockResolvedValue({ booking: booked({ status: "requested", pending: true }) });
+  show();
+  await userEvent.selectOptions(await select(), "1");
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Waiting for an admin to approve Fellowship Hall."));
+  expect(screen.getByRole("status")).not.toHaveTextContent("Booked Fellowship Hall.");
+  expect(await select()).toHaveValue("1");
 });

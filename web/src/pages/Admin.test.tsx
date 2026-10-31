@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Admin, AdminAccountRequests, AdminGroups, AdminRooms, AdminUsers, Groups, Invitations, People, Site, ApiError } from "../api";
+import { Admin, AdminAccountRequests, AdminGroups, AdminRooms, AdminUsers, Groups, Invitations, People, RoomRequests, Site, ApiError } from "../api";
 import { ERROR_COPY } from "../lib/errors";
 import { ContactHistory } from "../contact-history-api";
 import type { AccountRequest, GroupSummary, Room, User } from "../types";
@@ -22,7 +22,8 @@ vi.mock("../api", async (actual) => ({
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }) },
   AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
   AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },
-  AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn() },
+  AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn() },
+  RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() },
   Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false }) },
 }));
 
@@ -43,8 +44,10 @@ const group = (id: number, name: string, extra: Partial<GroupSummary> = {}): Gro
 
 beforeEach(() => {
   vi.mocked(Site.get).mockReset().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false });
-  vi.mocked(AdminRooms.list).mockReset().mockResolvedValue({ rooms: [] });
+  vi.mocked(AdminRooms.list).mockReset().mockResolvedValue({ rooms: [], needApproval: false });
   vi.mocked(AdminRooms.setEnabled).mockReset();
+  vi.mocked(AdminRooms.setApproval).mockReset();
+  vi.mocked(RoomRequests.list).mockReset().mockResolvedValue({ requests: [] });
   vi.mocked(Admin.pending).mockReset().mockResolvedValue({ groups: [] });
   vi.mocked(Admin.approve).mockReset();
   vi.mocked(Admin.reject).mockReset();
@@ -678,7 +681,7 @@ it("shows no Rooms tab while rooms are off", async () => {
 
 it("shows the Rooms tab after Groups, with its count, while rooms are on", async () => {
   withRooms(true);
-  vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall] });
+  vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall], needApproval: false });
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   const tab = await screen.findByRole("tab", { name: "Rooms, 1" });
   const tabs = screen.getAllByRole("tab").map((t) => t.textContent?.replace(/\d+$/, "").trim());
@@ -695,7 +698,7 @@ it("falls back to Approvals for a bookmarked Rooms tab when rooms are off", asyn
 
 it("opens a bookmarked Rooms tab once /site says rooms are on", async () => {
   withRooms(true);
-  vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall] });
+  vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall], needApproval: false });
   render(<MemoryRouter initialEntries={["/admin?tab=rooms"]}><AdminPage /></MemoryRouter>);
   expect(await screen.findByText("Fellowship Hall")).toBeInTheDocument();
   expect(screen.getByRole("tab", { name: /^Rooms/ })).toHaveAttribute("aria-selected", "true");
@@ -712,7 +715,7 @@ it("asks /site once and hands the answer to the rooms switch", async () => {
 
 it("says so, with a retry, when /site fails on a bookmarked Rooms tab", async () => {
   vi.mocked(Site.get).mockRejectedValueOnce(new ApiError(500, "private server text"));
-  vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall] });
+  vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall], needApproval: false });
   render(<MemoryRouter initialEntries={["/admin?tab=rooms"]}><AdminPage /></MemoryRouter>);
   expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't load the rooms.");
   expect(screen.queryByText("private server text")).not.toBeInTheDocument();
@@ -764,4 +767,69 @@ it("disables the rooms switch while it saves and puts it back with an error when
   expect(screen.queryByText("Saved")).not.toBeInTheDocument();
   expect(screen.queryByText("private server text")).not.toBeInTheDocument();
   expect(screen.queryByRole("tab", { name: /^Rooms/ })).not.toBeInTheDocument();
+});
+
+describe("room booking approval (M2.1d)", () => {
+  const approval = () => screen.findByRole("checkbox", { name: /Room bookings need an admin's approval/ });
+  const waiting = {
+    id: 5, eventId: 9, eventTitle: "Weekly Bible study", groupName: "Room 201 class", roomId: 1, roomName: "Fellowship Hall", building: "Main",
+    series: true, requestedBy: "Lee Park", dates: 40, busyDates: 0, firstDate: "2026-11-10", firstStartsAt: "2026-11-10T19:00:00Z", createdAt: "2026-10-30T15:00:00Z",
+  };
+
+  it("offers the switch only while rooms are on, with its hint", async () => {
+    render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+    await screen.findByRole("checkbox", { name: /Use rooms/ });
+    expect(screen.queryByRole("checkbox", { name: /need an admin's approval/ })).not.toBeInTheDocument();
+  });
+
+  it("reads the switch from the rooms list and saves it the moment it changes", async () => {
+    withRooms(true);
+    vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall], needApproval: false });
+    vi.mocked(AdminRooms.setApproval).mockResolvedValue({ needApproval: true });
+    render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+    const box = await approval();
+    await waitFor(() => expect(box).toBeEnabled());
+    expect(box).not.toBeChecked();
+    expect(screen.getByText("When this is on, leaders' and hosts' bookings wait for an admin. Admins' own bookings are confirmed at once. Turning it off leaves open requests here for you to decide.")).toBeInTheDocument();
+    await userEvent.click(box);
+    expect(AdminRooms.setApproval).toHaveBeenCalledWith(true);
+    expect(box).toBeChecked();
+    await waitFor(() => expect(screen.getAllByText("Saved").length).toBeGreaterThan(0));
+    expect(box).toBeEnabled();
+  });
+
+  it("starts on when approval is on, and puts the switch back with an error when saving fails", async () => {
+    withRooms(true);
+    vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall], needApproval: true });
+    vi.mocked(AdminRooms.setApproval).mockRejectedValue(new ApiError(500, "private server text"));
+    render(<MemoryRouter initialEntries={["/admin?tab=settings"]}><AdminPage /></MemoryRouter>);
+    const box = await approval();
+    await waitFor(() => expect(box).toBeChecked());
+    await userEvent.click(box);
+    expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't save that setting.");
+    expect(box).toBeChecked();
+    expect(screen.queryByText("private server text")).not.toBeInTheDocument();
+  });
+
+  it("puts the open requests above the rooms and counts them on the Rooms tab", async () => {
+    withRooms(true);
+    vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall], needApproval: true });
+    vi.mocked(RoomRequests.list).mockResolvedValue({ requests: [waiting] });
+    render(<MemoryRouter initialEntries={["/admin?tab=rooms"]}><AdminPage /></MemoryRouter>);
+    const heading = await screen.findByRole("heading", { name: "Needs a room" });
+    expect(screen.getByText("Weekly Bible study")).toBeInTheDocument();
+    expect(heading.compareDocumentPosition(await screen.findByText("kitchen", { exact: false }))).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(screen.getByRole("tab", { name: /^Rooms, 1 waiting/ })).toBeInTheDocument();
+    // Like Approvals, the chip shows the waiting count and not the room count too, so its words match its name.
+    expect(screen.getByRole("tab", { name: /^Rooms, 1 waiting/ })).toHaveTextContent(/^Rooms 1$/);
+  });
+
+  it("shows no Needs a room list while approval is off and nothing is waiting", async () => {
+    withRooms(true);
+    vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall], needApproval: false });
+    render(<MemoryRouter initialEntries={["/admin?tab=rooms"]}><AdminPage /></MemoryRouter>);
+    await screen.findByText("Fellowship Hall");
+    await waitFor(() => expect(RoomRequests.list).toHaveBeenCalled());
+    expect(screen.queryByRole("heading", { name: "Needs a room" })).not.toBeInTheDocument();
+  });
 });

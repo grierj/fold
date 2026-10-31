@@ -52,6 +52,8 @@ const (
 	RegistrationNotRestored = "registration.not_restored"
 	WaitlistCutoff          = "waitlist.cutoff"
 	RoomLost                = "room.lost"
+	RoomRequested           = "room.requested"
+	RoomRequestDecided      = "room.request_decided"
 	HouseholdLinkPending    = "household.link_pending"
 	HouseholdConverted      = "household.converted"
 	TeenConsentChanged      = "teen_consent.changed"
@@ -483,6 +485,24 @@ func init() {
 	})
 	// A date moved and its room is booked at the new time (9.2): the
 	// booking stays requested until someone picks another room.
+	register(Kind{
+		// An admin task while room bookings need approval (M2.1d, DEC-102):
+		// one per booking action (DEC-106). Change is the room and the date
+		// count in words; resolved when an admin decides or the dates go.
+		Key: RoomRequested, Category: CatAdmin, Waiting: true, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return or(v.Actor, "Someone") + " asked for a room for " + or(v.Event, "an event"),
+				or(v.Change, "A room") + ". Needs an admin's approval."
+		},
+	})
+	register(Kind{
+		// The people running the event hear an admin's decision. Change is
+		// "approved" or "not approved"; Note is the outcome in words.
+		Key: RoomRequestDecided, Category: CatEvents, AllowEmail: true,
+		Render: func(v Vars) (string, string) {
+			return "Room " + or(v.Change, "decided") + ": " + or(v.Event, "an event"), or(v.Note, "See the event page.")
+		},
+	})
 	register(Kind{
 		Key: RoomLost, Category: CatEvents, AllowEmail: true,
 		Render: func(v Vars) (string, string) {

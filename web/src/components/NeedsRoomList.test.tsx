@@ -15,12 +15,12 @@ vi.mock("../api", async (importActual) => ({
 vi.mock("../auth", () => ({ useAuth: () => ({ isAdmin: false }) }));
 
 const hall: RoomPickerItem = { id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, features: "", restricted: false, busy: false, tooSmall: false };
-const needs = [{ date: "2026-12-08", roomName: "Fellowship Hall" }, { date: "2026-12-15", roomName: "Chapel" }];
+const needs: NeedsRoom[] = [{ date: "2026-12-08", roomName: "Fellowship Hall", status: "requested" }, { date: "2026-12-15", roomName: "Chapel", status: "requested" }];
 
 beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: needs });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: needs, pending: 0 });
 });
 
 function show(props: Partial<Parameters<typeof NeedsRoomList>[0]> = {}) {
@@ -68,10 +68,10 @@ it("opens the one-date Room control under a date the page doesn't list, and not 
 
 it("asks again after the inline control books, and says the date has a room now", async () => {
   vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [hall], booking: null });
-  vi.mocked(DateRooms.set).mockResolvedValue({ booking: { roomId: 1, roomName: "Fellowship Hall", building: "Main", status: "confirmed", setupMinutes: 0, teardownMinutes: 0, doubleBooked: false, tooSmall: false } });
+  vi.mocked(DateRooms.set).mockResolvedValue({ booking: { roomId: 1, roomName: "Fellowship Hall", building: "Main", status: "confirmed", setupMinutes: 0, teardownMinutes: 0, doubleBooked: false, tooSmall: false, pending: false } });
   show({ hasDate: () => false });
   await userEvent.click(await screen.findByRole("button", { name: "Pick a room for Tuesday, December 15" }));
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: [needs[0]] });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: [needs[0]], pending: 0 });
   await userEvent.selectOptions(await screen.findByRole("combobox", { name: /^Room/ }), "1");
   await waitFor(() => expect(screen.queryByText("Chapel isn't free then.")).not.toBeInTheDocument());
   expect(SeriesRooms.list).toHaveBeenCalledTimes(2);
@@ -79,8 +79,8 @@ it("asks again after the inline control books, and says the date has a room now"
 });
 
 it("shows the first 10 dates with the count in the heading, and the rest on request", async () => {
-  const many: NeedsRoom[] = Array.from({ length: 14 }, (_, i) => ({ date: `2027-01-${`${i + 1}`.padStart(2, "0")}`, roomName: "Chapel" }));
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 30, defaultRoom: null, needsRoom: many });
+  const many: NeedsRoom[] = Array.from({ length: 14 }, (_, i) => ({ date: `2027-01-${`${i + 1}`.padStart(2, "0")}`, roomName: "Chapel", status: "requested" }));
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 30, defaultRoom: null, needsRoom: many, pending: 0 });
   show();
   expect(await screen.findByRole("heading", { name: /Dates that need a room \(14\)/ })).toBeInTheDocument();
   expect(screen.getAllByRole("button", { name: /^Pick a room/ })).toHaveLength(10);
@@ -98,7 +98,7 @@ it("reads the site settings once, however often the page asks again", async () =
 });
 
 it("shows nothing when every date has its room", async () => {
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: [] });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: [], pending: 0 });
   const { container } = show();
   await waitFor(() => expect(SeriesRooms.list).toHaveBeenCalled());
   expect(container).toBeEmptyDOMElement();
@@ -115,7 +115,7 @@ it("shows nothing, and asks for no rooms, while rooms are off", async () => {
 it("asks again when a room changed, and drops a date that now has one", async () => {
   const { rerender } = show();
   await screen.findByText("Chapel isn't free then.");
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: [needs[0]] });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: [needs[0]], pending: 0 });
   rerender(<MemoryRouter><NeedsRoomList eventId={7} revision={1} hasDate={() => true} onPick={() => {}} /></MemoryRouter>);
   await waitFor(() => expect(screen.queryByText("Chapel isn't free then.")).not.toBeInTheDocument());
   expect(screen.getByText("Fellowship Hall isn't free then.")).toBeInTheDocument();
@@ -126,4 +126,15 @@ it("offers a retry when the list fails to load", async () => {
   show();
   await userEvent.click(await screen.findByRole("button", { name: "Try again" }));
   expect(await screen.findByText("Chapel isn't free then.")).toBeInTheDocument();
+});
+
+it("words a date an admin didn't approve differently from one that lost its room", async () => {
+  vi.mocked(SeriesRooms.list).mockResolvedValue({
+    rooms: [], dates: 10, defaultRoom: null, pending: 0,
+    needsRoom: [{ date: "2026-12-08", roomName: "Fellowship Hall", status: "rejected" }, { date: "2026-12-15", roomName: "Chapel", status: "requested" }],
+  });
+  show();
+  expect(await screen.findByRole("heading", { name: /^⚠ Dates that need a room|^Dates that need a room/ })).toBeInTheDocument();
+  expect(screen.getByText("An admin didn't approve Fellowship Hall for this date.")).toBeInTheDocument();
+  expect(screen.getByText("Chapel isn't free then.")).toBeInTheDocument();
 });

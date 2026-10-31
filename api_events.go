@@ -816,7 +816,9 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		if err := events.Ensure(tx, &ev, time.Now().UTC()); err != nil {
 			return err
 		}
-		return a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
+		ids, err := a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
+		emailed = append(emailed, ids...)
+		return err
 	})
 	if createRoomFailed(c, err) {
 		return
@@ -1156,7 +1158,11 @@ func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 	if err := tx.Where("event_id IN ?", eventIDs).Delete(&models.EventHost{}).Error; err != nil {
 		return err
 	}
-	return tx.Where("id IN ?", eventIDs).Delete(&models.Event{}).Error
+	if err := tx.Where("id IN ?", eventIDs).Delete(&models.Event{}).Error; err != nil {
+		return err
+	}
+	// The dates' bookings went with them; withdraw requests left waiting.
+	return closeEmptyRoomRequests(tx)
 }
 
 func (a *App) apiCancelOccurrence(c *gin.Context) {

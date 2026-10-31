@@ -223,7 +223,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
 
     it("has no one-date Room for a series, whatever the date", async () => {
       roomsOn();
-      vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 3, defaultRoom: null, needsRoom: [] });
+      vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 3, defaultRoom: null, needsRoom: [], pending: 0 });
       vi.mocked(DateRooms.list).mockClear();
       render(<SeriesEditor series={{ ...single, recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" }} roomDate="2026-12-01" idPrefix="room-series" onSaved={() => {}} />);
       await screen.findByRole("button", { name: "Save series" });
@@ -233,7 +233,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
 
     it("gives a series Room for every date beside Location, only while rooms are on", async () => {
       roomsOn();
-      vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: [] });
+      vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: [], pending: 0 });
       const series = { ...single, recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" };
       const { unmount } = render(<SeriesEditor series={series} idPrefix="room-hint" onSaved={() => {}} />);
       const room = await screen.findByRole("combobox", { name: /^Room for every date/ });

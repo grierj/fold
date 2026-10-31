@@ -310,11 +310,14 @@ type Event struct {
 	Location        string  `gorm:"not null"`           // empty = the group's location
 	// DefaultRoomID is the series room (M2.1c): new dates are booked in it.
 	DefaultRoomID *uint
-	CreatedBy     uint `gorm:"not null"`
-	Creator       User `gorm:"foreignKey:CreatedBy"`
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	DeletedAt     gorm.DeletedAt `gorm:"index"`
+	// DefaultRoomPending: the series room still awaits an admin's approval
+	// (M2.1d), so its new dates go to a request instead of confirming.
+	DefaultRoomPending bool `gorm:"not null;default:false"`
+	CreatedBy          uint `gorm:"not null"`
+	Creator            User `gorm:"foreignKey:CreatedBy"`
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
 // EventHost is an adult assigned to a church-wide event (DEC-7). Hosts get
@@ -817,9 +820,37 @@ type RoomBooking struct {
 	AllowOverlap    bool      `gorm:"not null;default:false"`
 	OverlapReason   string    `gorm:"not null;default:''"`
 	CreatedBy       *uint
-	CreatedAt       time.Time `gorm:"not null;default:now()"`
-	UpdatedAt       time.Time `gorm:"not null;default:now()"`
+	// RequestID: the approval request this requested booking waits on
+	// (M2.1d). A requested booking without a pending request lost its room.
+	RequestID *uint
+	CreatedAt time.Time `gorm:"not null;default:now()"`
+	UpdatedAt time.Time `gorm:"not null;default:now()"`
 }
+
+// RoomRequest is a leader's or host's booking waiting for an admin while
+// room_bookings_need_approval is on (M2.1d, DEC-102, DEC-106): one per
+// booking action, covering one date or a whole series.
+type RoomRequest struct {
+	ID           uint `gorm:"primaryKey"`
+	EventID      uint `gorm:"not null"`
+	RoomID       uint `gorm:"not null"`
+	Series       bool `gorm:"not null;default:false"`
+	RequestedBy  *uint
+	Status       string `gorm:"not null;default:pending"`
+	DecidedBy    *uint
+	DecidedAt    *time.Time
+	RejectReason string    `gorm:"not null;default:''"`
+	CreatedAt    time.Time `gorm:"not null;default:now()"`
+	UpdatedAt    time.Time `gorm:"not null;default:now()"`
+}
+
+// Room request statuses.
+const (
+	RoomRequestPending   = "pending"
+	RoomRequestConfirmed = "confirmed"
+	RoomRequestRejected  = "rejected"
+	RoomRequestWithdrawn = "withdrawn"
+)
 
 // Room booking statuses (9.2). Only confirmed bookings hold a room.
 const (
@@ -960,7 +991,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
-		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{},
+		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{},
 	}
 }
 

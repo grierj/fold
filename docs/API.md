@@ -1182,6 +1182,19 @@ POST /api/v1/rooms/check {groupId?, startsLocal, durationMinutes, tzid?, recurre
 
 The create routes (`POST /groups/:id/events`, `POST /events`) accept `roomId` and book it for every date in the creating transaction, the same way; a room the creator can't book refuses the whole create (403 `room_restricted`, 404). `POST /rooms/check` gives the create form its busy counts: with `groupId` the caller must run that group; without it, the caller must be an admin (church-wide events).
 
+### Room booking approval (M2.1d)
+
+```
+PUT  /api/v1/admin/settings/room-approval {enabled} → 200 {needApproval}
+GET  /api/v1/admin/room-requests → 200 {requests: [roomRequest]}
+POST /api/v1/admin/room-requests/:id/confirm {overlapReason?} → 200 {confirmed, overlapped, lost: [date]} | 404 | 409
+POST /api/v1/admin/room-requests/:id/reject {reason?} → 200 {} | 404 | 409
+```
+
+Admins only, and 404 while rooms are off. `GET /admin/rooms` also returns `needApproval`. With "Room bookings need an admin's approval" on (DEC-102), a leader's or host's booking (one date, a whole series, or a room picked on a create form) opens one request (DEC-106): its free dates become `requested` bookings that hold nothing and point at it, and every admin gets a `room.requested` task. A date the room is busy on is still refused (one date, 409) or lost (a series, DEC-103), not requested. An admin's own bookings always confirm at once. Booking JSON says `pending: true` for a date waiting on approval; the series result counts `pending` dates, and `GET /events/:id/rooms` counts them as `pending` and leaves them out of `needsRoom` (DEC-105).
+
+`roomRequest` is `{id, eventId, eventTitle, groupName, roomId, roomName, building, series, requestedBy, dates, busyDates, firstDate, firstStartsAt, createdAt}`; `busyDates` counts its dates another confirmed booking now holds the room on. Confirming makes the free dates confirmed; a busy date is double-booked with `overlapReason`, or without one goes back to the leaders as a date that lost its room (`lost`). Rejecting makes its dates `rejected` (listed in `needsRoom` with `status: "rejected"`), and a series request stops being the series room. Either way the request's task closes, the leaders or hosts get a `room.request_decided` notice, and the decision is audited (`room_request.confirmed`, `room_request.rejected`). A request already decided answers 409 with who handled it. Re-picking, releasing or cancelling every date of a request withdraws it and closes its task. A series room a leader or host picked stays unapproved (`events.default_room_pending`) until an admin confirms a request for it: while approval is on, the daily extender and series edits put its new dates on the waiting series request, or open a new one if that was withdrawn, and never confirm them directly. Rejecting a series request stops that series room. Deleting an event withdraws its requests. Changing a date's or a series' room under approval releases the old booking at once (a date has one booking); the new room holds nothing until it is approved.
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

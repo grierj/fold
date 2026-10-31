@@ -249,6 +249,14 @@ const (
 	// Target type is event; meta has roomId, previousRoomId, the counts
 	// booked, kept and released, the lost dates, and any overlap reason.
 	RoomBookingSeries = "room_booking.series"
+	// RoomRequestConfirmed / RoomRequestRejected: an admin decided a room
+	// request (M2.1d). Target type is room_request; meta has eventId, roomId,
+	// the confirmed and still-busy counts, and any reason.
+	RoomRequestConfirmed = "room_request.confirmed"
+	RoomRequestRejected  = "room_request.rejected"
+	// RoomApprovalChanged: an admin turned "Room bookings need an admin's
+	// approval" on or off (DEC-102).
+	RoomApprovalChanged = "setting.room_approval_changed"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

@@ -40,3 +40,25 @@ func TestRoomBookingPolicy(t *testing.T) {
 		t.Error("only admins double-book or change a booking's padding")
 	}
 }
+
+func TestRoomApprovalPolicy(t *testing.T) {
+	leader, admin := &Person{ID: 1}, &Person{ID: 2, Admin: true}
+	for _, tc := range []struct {
+		name       string
+		p          *Person
+		approvalOn bool
+		want       bool
+	}{
+		{"leader, approval off", leader, false, false},
+		{"leader, approval on", leader, true, true},
+		{"admin, approval on", admin, true, false},
+		{"admin, approval off", admin, false, false},
+	} {
+		if got := BookingNeedsApproval(tc.p, tc.approvalOn); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if CanDecideRoomRequest(leader) || CanDecideRoomRequest(nil) || !CanDecideRoomRequest(admin) {
+		t.Error("only admins decide room requests")
+	}
+}
