@@ -1,5 +1,5 @@
 import type { DateReminders, Message, MessageReminder, ReminderKind } from "../types";
-import { browserTimeZone, formatShortWeekdayDay, formatWhen, formatWhenIn, lowerLead } from "./when";
+import { browserTimeZone, formatShortWeekdayDay, formatWhenIn, lowerLead } from "./when";
 
 // The words for automatic event reminders (M3.6b, DEC-133 D): the lines
 // on the date page its managers see, and how a reminder reads in Messages.
@@ -16,10 +16,11 @@ export interface ReminderLine {
 }
 
 // reminderLines says, one line each: every reminder written for the date
-// ("Reminder emailed to 12 people · yesterday at 7:00 PM", "Waitlist note
-// emailed to 3 people · …"), then when the next one goes ("Reminder goes
-// out Tue, Nov 3 at 7:00 PM"), or that reminders are off. Times read on
-// the church's clock, as other message times do.
+// ("Reminder emailed to 12 people · yesterday at 7:00 PM · 1 didn't get it
+// · 2 skipped", "Waitlist note emailed to 3 people · …"), then when the
+// next one goes ("Reminder goes out Tue, Nov 3 at 7:00 PM") unless one
+// already sent covers it, or that reminders are off. Times read on the
+// church's clock, as other message times do.
 export function reminderLines(r: DateReminders, zone: string, now = new Date(), viewer = browserTimeZone()): ReminderLine[] {
   const out: ReminderLine[] = [];
   for (const m of r.messages) {
@@ -30,6 +31,7 @@ export function reminderLines(r: DateReminders, zone: string, now = new Date(), 
         const parts = [m.reached > 0 ? `${noun} emailed to ${people(m.reached)}` : `${noun} reached no one`];
         if (m.sentAt) parts.push(lowerLead(formatWhenIn(m.sentAt, zone, now, viewer, true)));
         if (m.failed > 0) parts.push(`${m.failed} didn't get it`);
+        if (m.skipped > 0) parts.push(`${m.skipped} skipped`);
         text = parts.join(" · ");
         break;
       }
@@ -41,7 +43,7 @@ export function reminderLines(r: DateReminders, zone: string, now = new Date(), 
   }
   if (r.minutes === 0) {
     out.push({ key: "off", text: "Reminders are off for this event" });
-  } else if (r.dueAt && new Date(r.dueAt).getTime() > now.getTime()) {
+  } else if (r.dueAt && !r.covered && new Date(r.dueAt).getTime() > now.getTime()) {
     out.push({ key: "due", text: `Reminder goes out ${lowerLead(formatWhenIn(r.dueAt, zone, now, viewer))}` });
   } else if (out.length === 0) {
     out.push({ key: "none", text: "No reminder went out for this date" });
@@ -54,17 +56,18 @@ export const reminderName = (r: Pick<MessageReminder, "kind"> | undefined) =>
   r?.kind === "waitlist" ? "Automatic waitlist note" : "Automatic reminder";
 
 // reminderRowTitle is a reminder's line in Messages: "Automatic reminder ·
-// Book night, Tue, Nov 3". The date reads on the viewer's clock (DEC-57).
-export function reminderRowTitle(m: Pick<Message, "reminder">, zone = browserTimeZone(), now = new Date()): string {
+// Book night, Tue, Nov 3". The date reads in the event's zone, as its
+// emails and its heading (displaySubject) do.
+export function reminderRowTitle(m: Pick<Message, "reminder">, now = new Date()): string {
   const r = m.reminder;
   if (!r) return reminderName(r);
-  return `${reminderName(r)} · ${r.eventTitle}, ${formatShortWeekdayDay(r.startsAt, zone, now)}`;
+  return `${reminderName(r)} · ${r.eventTitle}, ${formatShortWeekdayDay(r.startsAt, r.tzid, now)}`;
 }
 
 // reminderDateText is the date it's for, in a sentence: "Book night, Tue,
-// Nov 3 at 7:00 PM".
-export function reminderDateText(r: MessageReminder, zone = browserTimeZone(), now = new Date()): string {
-  return `${r.eventTitle}, ${lowerLead(formatWhen(r.startsAt, zone, now, true))}`;
+// Nov 3 at 7:00 PM", in the event's zone, named when the viewer's differs.
+export function reminderDateText(r: MessageReminder, now = new Date(), viewer = browserTimeZone()): string {
+  return `${r.eventTitle}, ${lowerLead(formatWhenIn(r.startsAt, r.tzid, now, viewer, true))}`;
 }
 
 // Who a reminder goes to, for its To line.

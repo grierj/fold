@@ -64,8 +64,9 @@ type messageReminderJSON struct {
 	EventTitle   string    `json:"eventTitle"`
 	Date         string    `json:"date"`
 	StartsAt     time.Time `json:"startsAt"`
-	// TZID is the event's zone, which its emails' {{event_time}} reads in.
-	TZID string `json:"-" gorm:"column:tzid"`
+	// TZID is the event's zone, which its emails' {{event_time}} reads in,
+	// and its date is shown in.
+	TZID string `json:"tzid" gorm:"column:tzid"`
 }
 
 // reminderSubject fills a reminder's event fields as message.send does
@@ -90,7 +91,7 @@ func reminderKind(m *models.Message) string {
 
 const (
 	errMessageReminder      = "automatic reminders can't be changed here; change the event's reminder time instead"
-	errReminderRetryRefused = "this date has started or was cancelled, so its reminder can't be sent again"
+	errReminderRetryRefused = "this date has started or was cancelled, or its event's reminders are off, so its reminder can't be sent again"
 )
 
 // Composer limits, matching the CHECKs in migration 00054.
@@ -618,10 +619,21 @@ func (a *App) apiGetMessage(c *gin.Context) {
 }
 
 // apiListMessages lists the viewer's messages (an admin's list has
-// everyone's), newest first.
+// everyone's), newest first, at most 200. ?category=announcement or
+// reminder lists only that kind, with its own 200, so an admin's
+// automatic reminders can't crowd announcements out (M3.6b); without it,
+// both kinds share the 200.
 func (a *App) apiListMessages(c *gin.Context) {
 	me := apiUser(c)
 	q := a.DB.Order("updated_at DESC, id DESC").Limit(200)
+	switch cat := c.Query("category"); cat {
+	case "":
+	case models.MessageCategoryAnnouncement, models.MessageCategoryReminder:
+		q = q.Where("category = ?", cat)
+	default:
+		jsonError(c, http.StatusBadRequest, "invalid request")
+		return
+	}
 	if !policy.IsAdmin(asPerson(me)) {
 		q = q.Where("author_id = ?", me.ID)
 	}

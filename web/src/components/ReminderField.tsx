@@ -16,9 +16,9 @@ export const DEFAULT_REMINDER_MINUTES = 1440;
 
 // reminderSummary is the closed More options' words for it.
 export function reminderSummary(minutes: number): string {
-  if (minutes === 0) return "No reminder email";
+  if (minutes === 0) return "No reminder";
   const choice = REMINDER_CHOICES.find((c) => c.minutes === minutes);
-  return choice ? `Reminder email ${choice.label}` : "Reminder email";
+  return choice ? `Reminder ${choice.label}` : "Reminder";
 }
 
 export function ReminderField({ idPrefix, value, onChange }: { idPrefix: string; value: number; onChange: (minutes: number) => void }) {

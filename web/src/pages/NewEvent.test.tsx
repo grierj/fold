@@ -69,7 +69,7 @@ describe("NewEvent", () => {
     await ready();
     const toggle = screen.getByRole("button", { name: "More options" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByText("Visible to: Public · No seat limit · No video · No childcare · Reminder email 1 day before")).toBeInTheDocument();
+    expect(screen.getByText("Visible to: Public · No seat limit · No video · No childcare · Reminder 1 day before")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Who can see this event" })).not.toBeInTheDocument();
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");

@@ -1117,6 +1117,8 @@ export interface MessageReminder {
   eventTitle: string;
   date: string;
   startsAt: string;
+  // The event's zone: its emails' times and the date shown read in it.
+  tzid: string;
 }
 
 export type ReminderKind = "going" | "waitlist";
@@ -1127,6 +1129,8 @@ export type ReminderKind = "going" | "waitlist";
 export interface DateReminders {
   minutes: number;
   dueAt: string | null;
+  // A reminder already sent covers the one due, so it won't go.
+  covered: boolean;
   messages: DateReminder[];
 }
 
@@ -1138,7 +1142,9 @@ export interface DateReminder {
   status: MessageStatus;
   sentAt: string | null;
   reached: number;
+  // failed: bounced, marked as spam or failed; skipped: never sent (M3.5b's counts).
   failed: number;
+  skipped: number;
 }
 
 // The people a sent message was for, by status (M3.5b). skipped never went

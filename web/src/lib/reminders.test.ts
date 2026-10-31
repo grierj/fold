@@ -6,14 +6,14 @@ import { reminderAudience, reminderDateText, reminderLines, reminderName, remind
 const now = new Date("2026-11-04T18:00:00Z");
 const zone = "America/Boise";
 const sent = (over: Partial<DateReminder> = {}): DateReminder => ({
-  messageId: 41, kind: "going", status: "sent", sentAt: "2026-11-04T02:00:00Z", reached: 12, failed: 0, ...over,
+  messageId: 41, kind: "going", status: "sent", sentAt: "2026-11-04T02:00:00Z", reached: 12, failed: 0, skipped: 0, ...over,
 });
 const lines = (r: Partial<DateReminders>, viewer = zone) =>
-  reminderLines({ minutes: 1440, dueAt: null, messages: [], ...r }, zone, now, viewer).map((l) => l.text);
+  reminderLines({ minutes: 1440, dueAt: null, covered: false, messages: [], ...r }, zone, now, viewer).map((l) => l.text);
 
 describe("reminderLines", () => {
   it("says who each sent reminder reached and when, on the church's clock, linking to it", () => {
-    const out = reminderLines({ minutes: 1440, dueAt: "2026-11-04T02:00:00Z", messages: [sent(), sent({ messageId: 42, kind: "waitlist", reached: 3 })] }, zone, now, zone);
+    const out = reminderLines({ minutes: 1440, dueAt: "2026-11-04T02:00:00Z", covered: true, messages: [sent(), sent({ messageId: 42, kind: "waitlist", reached: 3 })] }, zone, now, zone);
     expect(out.map((l) => l.text)).toEqual([
       "Reminder emailed to 12 people · yesterday at 7:00 PM",
       "Waitlist note emailed to 3 people · yesterday at 7:00 PM",
@@ -24,10 +24,18 @@ describe("reminderLines", () => {
     expect(lines({ messages: [sent()] }, "America/Los_Angeles")).toEqual(["Reminder emailed to 12 people · yesterday at 7:00 PM MST"]);
   });
 
+  it("says why a sent reminder reached no one", () => {
+    expect(lines({ messages: [sent({ reached: 0, failed: 1, skipped: 2 })] })).toEqual(["Reminder reached no one · yesterday at 7:00 PM · 1 didn't get it · 2 skipped"]);
+  });
+
   it("says when the next one goes before it does", () => {
     expect(lines({ dueAt: "2026-11-11T02:00:00Z" })).toEqual(["Reminder goes out Tue, Nov 10 at 7:00 PM"]);
     expect(lines({ dueAt: "2026-11-05T02:00:00Z" })).toEqual(["Reminder goes out today at 7:00 PM"]);
     expect(lines({ dueAt: "2026-11-06T02:00:00Z" })).toEqual(["Reminder goes out tomorrow at 7:00 PM"]);
+  });
+
+  it("doesn't say one goes out when a reminder already sent covers it", () => {
+    expect(lines({ dueAt: "2026-11-05T02:00:00Z", covered: true, messages: [sent()] })).toEqual(["Reminder emailed to 12 people · yesterday at 7:00 PM"]);
   });
 
   it("says reminders are off, with any that went before", () => {
@@ -43,14 +51,20 @@ describe("reminderLines", () => {
 });
 
 describe("a reminder in Messages", () => {
-  const r = { kind: "going" as const, occurrenceId: 31, eventId: 3, eventTitle: "Book night", date: "2026-11-03", startsAt: "2026-11-04T02:00:00Z" };
-  it("is named by its date, not its subject", () => {
-    expect(reminderRowTitle({ reminder: r }, zone, now)).toBe("Automatic reminder · Book night, Tue, Nov 3");
-    expect(reminderRowTitle({ reminder: { ...r, kind: "waitlist" } }, zone, now)).toBe("Automatic waitlist note · Book night, Tue, Nov 3");
-    expect(reminderRowTitle({ reminder: undefined }, zone, now)).toBe("Automatic reminder");
+  const r = { kind: "going" as const, occurrenceId: 31, eventId: 3, eventTitle: "Book night", date: "2026-11-03", startsAt: "2026-11-04T02:00:00Z", tzid: zone };
+  it("is named by its date in the event's zone, not by its subject", () => {
+    expect(reminderRowTitle({ reminder: r }, now)).toBe("Automatic reminder · Book night, Tue, Nov 3");
+    expect(reminderRowTitle({ reminder: { ...r, kind: "waitlist" } }, now)).toBe("Automatic waitlist note · Book night, Tue, Nov 3");
+    // 7 PM Tuesday in Boise is Wednesday in London: the event's own day shows.
+    expect(reminderRowTitle({ reminder: { ...r, tzid: "Europe/London" } }, now)).toBe("Automatic reminder · Book night, Wed, Nov 4");
+    expect(reminderRowTitle({ reminder: undefined }, now)).toBe("Automatic reminder");
     expect(reminderName(r)).toBe("Automatic reminder");
-    expect(reminderDateText({ ...r, startsAt: "2026-11-11T02:00:00Z" }, zone, now)).toBe("Book night, Tue, Nov 10 at 7:00 PM");
-    expect(reminderDateText(r, zone, now)).toBe("Book night, yesterday at 7:00 PM");
+  });
+
+  it("says the date it's for in a sentence, naming the event's zone when the viewer's differs", () => {
+    expect(reminderDateText({ ...r, startsAt: "2026-11-11T02:00:00Z" }, now, zone)).toBe("Book night, Tue, Nov 10 at 7:00 PM");
+    expect(reminderDateText(r, now, zone)).toBe("Book night, yesterday at 7:00 PM");
+    expect(reminderDateText(r, now, "America/Los_Angeles")).toBe("Book night, yesterday at 7:00 PM MST");
     expect(reminderAudience(r)).toBe("Everyone going");
     expect(reminderAudience({ kind: "waitlist" })).toBe("Everyone on the waitlist");
   });

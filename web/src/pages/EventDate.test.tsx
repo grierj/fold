@@ -285,10 +285,10 @@ it("doesn't offer it for an event the viewer can't write to, or ask when they ca
 it("shows its event's managers the date's reminder lines, each sent one linking to its history (M3.6b)", async () => {
   vi.spyOn(Site, "get").mockResolvedValue({ name: "Grace", timezone: "America/Boise", selfSignup: "off", roomsEnabled: false });
   vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canDecline: false, canBlock: false, reminders: {
-    minutes: 1440, dueAt: "2026-01-30T19:00:00Z",
+    minutes: 1440, dueAt: "2026-01-30T19:00:00Z", covered: true,
     messages: [
-      { messageId: 61, kind: "going", status: "sent", sentAt: "2026-01-30T19:00:00Z", reached: 12, failed: 0 },
-      { messageId: 62, kind: "waitlist", status: "sent", sentAt: "2026-01-30T19:00:00Z", reached: 3, failed: 0 },
+      { messageId: 61, kind: "going", status: "sent", sentAt: "2026-01-30T19:00:00Z", reached: 12, failed: 0, skipped: 0 },
+      { messageId: 62, kind: "waitlist", status: "sent", sentAt: "2026-01-30T19:00:00Z", reached: 3, failed: 0, skipped: 0 },
     ],
   } }) });
   mount();
@@ -299,11 +299,11 @@ it("shows its event's managers the date's reminder lines, each sent one linking 
 
 it("says before it goes when the reminder will, and when reminders are off, without a link", async () => {
   vi.spyOn(Site, "get").mockResolvedValue({ name: "Grace", timezone: "America/Boise", selfSignup: "off", roomsEnabled: false });
-  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ startsAt: "2030-12-03T02:00:00Z", reminders: { minutes: 2880, dueAt: "2030-12-01T02:00:00Z", messages: [] } }) });
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ startsAt: "2030-12-03T02:00:00Z", reminders: { minutes: 2880, dueAt: "2030-12-01T02:00:00Z", covered: false, messages: [] } }) });
   mount();
   expect(await screen.findByText("Reminder goes out Sat, Nov 30 at 7:00 PM")).toBeInTheDocument();
   cleanup();
-  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ reminders: { minutes: 0, dueAt: null, messages: [] } }) });
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ reminders: { minutes: 0, dueAt: null, covered: false, messages: [] } }) });
   mount();
   expect(await screen.findByText("Reminders are off for this event")).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: /Reminder/ })).not.toBeInTheDocument();

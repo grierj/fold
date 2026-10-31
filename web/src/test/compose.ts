@@ -63,7 +63,7 @@ export function reminderMessage(over: Partial<Message> = {}): Message {
     id: 9, status: "sent", subject: "Reminder: {{event_title}} on {{event_time}}", displaySubject: "Reminder: Book night on Thu, Nov 5 · 7:00 PM MST", bodyHtml: "<p>Hi {{first_name}},</p>",
     audience: { type: "occurrence", occurrenceId: 31, statuses: ["going"] }, sentAt: "2026-11-05T02:00:00Z",
     authorName: "", editable: false, category: "reminder",
-    reminder: { kind: "going", occurrenceId: 31, eventId: 3, eventTitle: "Book night", date: "2026-11-05", startsAt: "2026-11-06T02:00:00Z" },
+    reminder: { kind: "going", occurrenceId: 31, eventId: 3, eventTitle: "Book night", date: "2026-11-05", startsAt: "2026-11-06T02:00:00Z", tzid: "America/Boise" },
     ...over,
   });
 }

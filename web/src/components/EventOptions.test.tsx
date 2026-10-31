@@ -25,8 +25,8 @@ describe("optionsSummary", () => {
       }),
     ).toBe("Visible to: Invite only · 20 seats with waitlist · Video link · Remote seats · Childcare");
     expect(optionsSummary({ ...base, seats: { ...emptySeats, capacity: "1" } })).toBe("1 seat · No video · No childcare");
-    expect(optionsSummary({ ...base, reminder: 1440 })).toBe("No seat limit · No video · No childcare · Reminder email 1 day before");
-    expect(optionsSummary({ ...base, reminder: 0 })).toBe("No seat limit · No video · No childcare · No reminder email");
+    expect(optionsSummary({ ...base, reminder: 1440 })).toBe("No seat limit · No video · No childcare · Reminder 1 day before");
+    expect(optionsSummary({ ...base, reminder: 0 })).toBe("No seat limit · No video · No childcare · No reminder");
   });
 });
 
@@ -61,10 +61,10 @@ describe("EventOptions", () => {
     render(<Harness />);
     const toggle = screen.getByRole("button", { name: "More options" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(toggle).toHaveAccessibleDescription("No seat limit · No video · No childcare · Reminder email 1 day before");
+    expect(toggle).toHaveAccessibleDescription("No seat limit · No video · No childcare · Reminder 1 day before");
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByText("No seat limit · No video · No childcare · Reminder email 1 day before")).not.toBeInTheDocument();
+    expect(screen.queryByText("No seat limit · No video · No childcare · Reminder 1 day before")).not.toBeInTheDocument();
     const region = document.getElementById(toggle.getAttribute("aria-controls")!)!;
     expect(region).toBeVisible();
     const titles = Array.from(region.querySelectorAll("h3")).map((h) => h.textContent);
@@ -80,7 +80,7 @@ describe("EventOptions", () => {
     await userEvent.type(screen.getByLabelText(/^Seat limit/), "8");
     await userEvent.click(screen.getByLabelText(/^Childcare available/));
     await userEvent.click(screen.getByRole("button", { name: "More options" }));
-    expect(screen.getByText("8 seats · No video · Childcare · Reminder email 1 day before")).toBeInTheDocument();
+    expect(screen.getByText("8 seats · No video · Childcare · Reminder 1 day before")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "More options" }));
     expect(screen.getByLabelText(/^Seat limit/)).toHaveValue(8);
   });
@@ -95,6 +95,6 @@ describe("ReminderField in More options", () => {
     expect(Array.from((select as HTMLSelectElement).options).map((o) => o.text)).toEqual(["Off", "2 hours before", "1 day before", "2 days before", "1 week before"]);
     await userEvent.selectOptions(select, "Off");
     await userEvent.click(screen.getByRole("button", { name: "More options" }));
-    expect(screen.getByText("No seat limit · No video · No childcare · No reminder email")).toBeInTheDocument();
+    expect(screen.getByText("No seat limit · No video · No childcare · No reminder")).toBeInTheDocument();
   });
 });

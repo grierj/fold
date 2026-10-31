@@ -298,6 +298,12 @@ func TestReminderRetryForManagers(t *testing.T) {
 		t.Fatal("Try again offered for a date that has started")
 	}
 	f.app.DB.Model(&models.EventOccurrence{}).Where("id = ?", f.groupOcc.ID).Update("starts_at", f.groupOcc.StartsAt)
+	// Nor does an event whose reminders were turned off since.
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("reminder_email_minutes", 0)
+	if w := retry(f.leader); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "reminder_retry_refused") {
+		t.Fatalf("off: %d %s", w.Code, w.Body.String())
+	}
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("reminder_email_minutes", 1440)
 	if w := retry(f.leader); w.Code != http.StatusOK {
 		t.Fatalf("leader: %d %s", w.Code, w.Body.String())
 	}
@@ -359,7 +365,7 @@ func TestDateRemindersForManagersOnly(t *testing.T) {
 	// Before it goes: when it will.
 	d, _ := read(f.leader)
 	due := f.groupOcc.StartsAt.Add(-24 * time.Hour)
-	if d.Reminders == nil || d.Reminders.Minutes != 1440 || d.Reminders.DueAt == nil || !d.Reminders.DueAt.Equal(due) || len(d.Reminders.Messages) != 0 {
+	if d.Reminders == nil || d.Reminders.Minutes != 1440 || d.Reminders.DueAt == nil || !d.Reminders.DueAt.Equal(due) || d.Reminders.Covered || len(d.Reminders.Messages) != 0 {
 		t.Fatalf("upcoming: %+v", d.Reminders)
 	}
 	failedReminder(t, f)
@@ -372,6 +378,24 @@ func TestDateRemindersForManagersOnly(t *testing.T) {
 	if going.Kind != reminderGoing || going.Status != models.MessageSent || going.Reached != 1 || going.Failed != 1 || going.SentAt == nil ||
 		wait.Kind != reminderWaitlist || wait.Reached != 1 || wait.Failed != 0 {
 		t.Fatalf("messages: %+v", r.Messages)
+	}
+	// The one sent covers this date: the page won't say it still goes.
+	if !r.Covered {
+		t.Fatal("a sent reminder doesn't cover its own date")
+	}
+	// Counted as the history counts them: a bounce or a spam report didn't
+	// get it, and a skip is counted apart.
+	f.app.DB.Model(&models.MessageRecipient{}).Where("message_id = ? AND user_id = ?", going.MessageID, f.teen.ID).Update("status", models.RecipientComplained)
+	f.app.DB.Model(&models.MessageRecipient{}).Where("message_id = ? AND status = ?", wait.MessageID, models.RecipientSent).
+		Updates(map[string]any{"status": models.RecipientSuppressed, "reason": skipEventsOff})
+	d, _ = read(f.leader)
+	if g, w := d.Reminders.Messages[0], d.Reminders.Messages[1]; g.Reached != 0 || g.Failed != 2 || w.Reached != 0 || w.Skipped != 1 {
+		t.Fatalf("counts: %+v", d.Reminders.Messages)
+	}
+	// A reminder time shortened to 2 hours sends that one too, so it isn't covered.
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("reminder_email_minutes", 120)
+	if d, _ := read(f.leader); d.Reminders.Covered {
+		t.Fatalf("2 hours: %+v", d.Reminders)
 	}
 	if d, _ := read(f.admin); d.Reminders == nil {
 		t.Fatal("an admin manages every event")
@@ -396,28 +420,42 @@ func TestMessageListRemindersForAdminsOnly(t *testing.T) {
 	f := newComposeFixture(t)
 	id, _ := failedReminder(t, f)
 	own := f.scheduleNow(t, f.leader, "Mine", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
-	list := func(c *apiClient) map[uint]messageJSON {
+	list := func(c *apiClient, query string) map[uint]messageJSON {
 		var out struct {
 			Messages []messageJSON `json:"messages"`
 		}
-		decodeJSON(t, c.do("GET", "/api/v1/messages", nil, false), &out)
+		decodeJSON(t, c.do("GET", "/api/v1/messages"+query, nil, false), &out)
 		byID := map[uint]messageJSON{}
 		for _, m := range out.Messages {
 			byID[m.ID] = m
 		}
 		return byID
 	}
-	admin := list(f.admin)
+	admin := list(f.admin, "")
 	if m, ok := admin[id]; !ok || m.Category != models.MessageCategoryReminder || m.Reminder == nil || m.Reminder.EventTitle != "Book night" ||
-		m.Reminder.Date != f.groupOcc.OriginalDate || !m.Reminder.StartsAt.Equal(f.groupOcc.StartsAt) {
+		m.Reminder.Date != f.groupOcc.OriginalDate || !m.Reminder.StartsAt.Equal(f.groupOcc.StartsAt) || m.Reminder.TZID != "UTC" {
 		t.Fatalf("admin list: %+v", m)
 	}
 	if m := admin[own]; m.Category != models.MessageCategoryAnnouncement || m.Reminder != nil || m.DisplaySubject != "" {
 		t.Fatalf("announcement: %+v", m)
 	}
-	leader := list(f.leader)
+	// Each kind on its own, each with its own 200, so reminders can't
+	// crowd announcements out.
+	if a := list(f.admin, "?category=announcement"); len(a) != 1 || a[own].ID != own {
+		t.Fatalf("announcements: %+v", a)
+	}
+	if r := list(f.admin, "?category=reminder"); len(r) != 1 || r[id].ID != id {
+		t.Fatalf("reminders: %+v", r)
+	}
+	if w := f.admin.do("GET", "/api/v1/messages?category=everything", nil, false); w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown category: %d", w.Code)
+	}
+	leader := list(f.leader, "")
 	if _, ok := leader[id]; ok || len(leader) != 1 {
 		t.Fatalf("leader list: %+v", leader)
+	}
+	if r := list(f.leader, "?category=reminder"); len(r) != 0 {
+		t.Fatalf("a leader's reminders: %+v", r)
 	}
 }
 
@@ -530,5 +568,24 @@ func TestReminderShortenedTimeSendsAgain(t *testing.T) {
 	reminderFor(t, f.app, f.groupOcc, 120)
 	if got := len(reminderMails(t, f.app, f.teen.Email)); got != 2 {
 		t.Fatalf("reminders after shortening: %d", got)
+	}
+}
+
+// Try again skips anyone no longer going (cancelled since, say), as the
+// first send would have, with that reason.
+func TestReminderRetrySkipsWhoIsNoLongerGoing(t *testing.T) {
+	f := newComposeFixture(t)
+	id, outsider := failedReminder(t, f)
+	f.app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND user_id = ?", f.groupOcc.ID, outsider.ID).Update("status", models.RegCancelled)
+	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("leader: %d %s", w.Code, w.Body.String())
+	}
+	runMessageJobs(t, f.app)
+	var r models.MessageRecipient
+	f.app.DB.Where("message_id = ? AND user_id = ?", id, outsider.ID).First(&r)
+	var m models.Message
+	f.app.DB.First(&m, id)
+	if r.Status != models.RecipientSuppressed || r.Reason != skipNoLongerGoing || m.Status != models.MessageSent || len(reminderMails(t, f.app, outsider.Email)) != 0 {
+		t.Fatalf("row %+v, message %s", r, m.Status)
 	}
 }

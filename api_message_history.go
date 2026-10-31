@@ -263,9 +263,9 @@ func (a *App) authorMayResend(m *models.Message) (bool, error) {
 
 // reminderMayResend: an automatic reminder has no author, so a "Try again"
 // needs only what reminder.send needs: its date still scheduled and not
-// yet started (who pressed it was checked by loadMessage: an admin or a
-// manager of the event). Each person is checked again for whether they may
-// still see the date (dropUnseenReminderRows).
+// yet started, and its event's reminders still on (who pressed it was
+// checked by loadMessage: an admin or a manager of the event). Each person
+// is checked again by recheckReminderRows.
 func (a *App) reminderMayResend(m *models.Message) (bool, error) {
 	if m.OccurrenceID == nil {
 		return false, nil
@@ -276,18 +276,29 @@ func (a *App) reminderMayResend(m *models.Message) (bool, error) {
 	} else if err != nil {
 		return false, err
 	}
-	var n int64
-	if err := a.DB.Model(&models.Event{}).Where("id = ?", occ.EventID).Count(&n).Error; err != nil {
+	var ev models.Event
+	if err := a.DB.Select("id, reminder_email_minutes").First(&ev, occ.EventID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	} else if err != nil {
 		return false, err
 	}
-	return n > 0 && occ.Status == models.OccurrenceScheduled && occ.StartsAt.After(time.Now()), nil
+	return ev.ReminderEmailMinutes > 0 && occ.Status == models.OccurrenceScheduled && occ.StartsAt.After(time.Now()), nil
 }
 
-// dropUnseenReminderRows checks a reminder's failed rows again before a Try
-// again, as message.send does (M1.13): someone who can no longer see the
-// date (a guardian copy follows its teen) is skipped, not sent to. It
-// answers the row ids still to send.
-func (a *App) dropUnseenReminderRows(tx *gorm.DB, m *models.Message, ids []uint, now time.Time) ([]uint, error) {
+// Why a reminder's failed row isn't sent again: its person's answer
+// changed since (they cancelled, declined, or moved off or onto the
+// waitlist).
+const (
+	skipNoLongerGoing    = "no longer going"
+	skipNoLongerWaitlist = "no longer on the waitlist"
+)
+
+// recheckReminderRows checks a reminder's failed rows again before a Try
+// again, as message.send does: someone no longer going (or no longer on
+// the waitlist, for the waitlist note), or who can no longer see the date
+// (M1.13), is skipped with that reason, not sent to. A guardian copy
+// follows its teen. It answers the row ids still to send.
+func (a *App) recheckReminderRows(tx *gorm.DB, m *models.Message, ids []uint, now time.Time) ([]uint, error) {
 	if len(ids) == 0 || m.OccurrenceID == nil {
 		return ids, nil
 	}
@@ -301,6 +312,20 @@ func (a *App) dropUnseenReminderRows(tx *gorm.DB, m *models.Message, ids []uint,
 		}
 		return r.UserID
 	}
+	// Who the reminder's audience reaches now (the date's registrants with
+	// its status, a household person's through its account holder).
+	var au audienceJSON
+	_ = json.Unmarshal([]byte(m.Audience), &au)
+	current := map[uint]bool{}
+	if au.normalize() == nil {
+		still, err := a.audienceUserIDs(tx, au, now)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range still {
+			current[id] = true
+		}
+	}
 	people := make([]uint, 0, len(rows))
 	for _, r := range rows {
 		people = append(people, subject(r))
@@ -309,17 +334,25 @@ func (a *App) dropUnseenReminderRows(tx *gorm.DB, m *models.Message, ids []uint,
 	if err != nil {
 		return nil, err
 	}
-	keep, drop := []uint{}, []uint{}
+	answer := skipNoLongerGoing
+	if reminderKind(m) == reminderWaitlist {
+		answer = skipNoLongerWaitlist
+	}
+	keep := []uint{}
+	drop := map[string][]uint{}
 	for _, r := range rows {
-		if can[subject(r)] {
+		switch {
+		case !current[subject(r)]:
+			drop[answer] = append(drop[answer], r.ID)
+		case !can[subject(r)]:
+			drop[skipCantSeeDate] = append(drop[skipCantSeeDate], r.ID)
+		default:
 			keep = append(keep, r.ID)
-		} else {
-			drop = append(drop, r.ID)
 		}
 	}
-	if len(drop) > 0 {
-		if err := tx.Model(&models.MessageRecipient{}).Where("id IN ? AND status = ?", drop, models.RecipientFailed).
-			Updates(map[string]any{"status": models.RecipientSuppressed, "reason": skipCantSeeDate, "error": "", "updated_at": now}).Error; err != nil {
+	for why, list := range drop {
+		if err := tx.Model(&models.MessageRecipient{}).Where("id IN ? AND status = ?", list, models.RecipientFailed).
+			Updates(map[string]any{"status": models.RecipientSuppressed, "reason": why, "error": "", "updated_at": now}).Error; err != nil {
 			return nil, err
 		}
 	}
@@ -427,7 +460,7 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 			}
 			if m.Category == models.MessageCategoryReminder {
 				var err error
-				if ids, err = a.dropUnseenReminderRows(tx, m, ids, now); err != nil {
+				if ids, err = a.recheckReminderRows(tx, m, ids, now); err != nil {
 					return err
 				}
 			}

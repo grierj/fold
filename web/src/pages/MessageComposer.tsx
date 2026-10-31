@@ -379,7 +379,7 @@ export function MessageComposerPage() {
     const datePath = message.reminder ? `/events/${message.reminder.eventId}/dates/${message.reminder.date}` : null;
     return page(<>
       {reminder && !isAdmin && message.reminder && datePath
-        ? <ButtonLink variant="link" to={datePath}><span aria-hidden="true">‹ {message.reminder.eventTitle}</span><span className="sr-only">Back to the event date</span></ButtonLink>
+        ? <ButtonLink variant="link" to={datePath}>‹ Back to {message.reminder.eventTitle}</ButtonLink>
         : back}
       <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold focus:outline-none">{title}</h1>
       <SendProblem message={message} history={history} busy={busy === "retry"} error={retryError} onRetry={() => void retry()} />

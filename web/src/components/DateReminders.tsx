@@ -19,7 +19,7 @@ export function DateReminderLines({ reminders }: { reminders: DateReminders }) {
         {lines.map((l) => (
           <li key={l.key}>
             {l.messageId ? (
-              <Link to={`/messages/${l.messageId}`} className="inline-flex min-h-11 items-center font-medium text-primary">
+              <Link to={`/messages/${l.messageId}`} className="inline-flex min-h-11 items-center font-medium text-primary underline">
                 {l.text}
               </Link>
             ) : (

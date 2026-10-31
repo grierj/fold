@@ -337,7 +337,7 @@ describe("MessageComposerPage", () => {
     expect(screen.queryByRole("button", { name: "Cancel message" })).toBeNull();
     expect(await screen.findByText("{{first_name}}", { exact: false })).toBeInTheDocument();
     // A leader came from the date page; it isn't on their Messages list.
-    expect(screen.getByRole("link", { name: "Back to the event date" })).toHaveAttribute("href", "/events/3/dates/2026-11-05");
+    expect(screen.getByRole("link", { name: "‹ Back to Book night" })).toHaveAttribute("href", "/events/3/dates/2026-11-05");
   });
 
   it("takes an admin back to Messages from a reminder", async () => {
