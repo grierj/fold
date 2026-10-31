@@ -29,8 +29,8 @@ type EmailPage struct {
 	// Body is HTML with merge fields filled in; it is sanitized again here,
 	// so nothing but the composer's formatting can reach an inbox.
 	Body string
-	// Footer says why the reader gets this: "You're getting message notices
-	// from First Church."
+	// Footer says why the reader gets this: "You're getting messages from leaders
+	// at First Church."
 	Footer      string
 	SettingsURL string
 	Address     []string
