@@ -76,7 +76,7 @@ func (a *App) dailyKinds() []jobs.Kind {
 // waits for running jobs to finish after ctx ends.
 func (a *App) startJobs(ctx context.Context) func() {
 	kinds := a.dailyKinds()
-	runner := jobs.NewRunner(a.DB, kinds...)
+	runner := jobs.NewRunner(a.DB, append(kinds, a.eventKinds()...)...)
 	runner.Poll = a.Config.JobPoll
 	if a.Config.Workers <= 0 {
 		log.Println("WARNING: FOLD_WORKERS=0; background jobs will not run in this process")

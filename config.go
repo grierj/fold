@@ -44,6 +44,10 @@ type Config struct {
 	SMTPAllowInsecure bool
 	// EmailFrom is the From address on transactional email.
 	EmailFrom string
+	// PostmarkWebhookSecret is the password in the URL Postmark posts its
+	// webhooks to (FOLD_POSTMARK_WEBHOOK_SECRET, M3.2b). Empty turns the
+	// endpoint off (404).
+	PostmarkWebhookSecret string
 	// Workers is how many background job workers this process runs
 	// (FOLD_WORKERS, default 2; 0 turns them off, for debugging only).
 	Workers int
@@ -157,19 +161,20 @@ func LoadConfig() (Config, error) {
 	}
 
 	return Config{
-		Env:               env,
-		Port:              getEnv("PORT", "8080"),
-		SessionSecret:     []byte(secret),
-		DatabaseURL:       dbURL,
-		CookieSecure:      getEnvBool("COOKIE_SECURE", !isDev),
-		SiteURL:           os.Getenv("SITE_URL"),
-		UploadDir:         getEnv("UPLOAD_DIR", "./data/uploads"),
-		TrustedProxies:    proxies,
-		SMTPURL:           os.Getenv("FOLD_SMTP_URL"),
-		SMTPAllowInsecure: getEnvBool("FOLD_SMTP_ALLOW_INSECURE", false),
-		EmailFrom:         getEnv("FOLD_EMAIL_FROM", "Fold <noreply@localhost>"),
-		Workers:           workers,
-		JobPoll:           poll,
+		Env:                   env,
+		Port:                  getEnv("PORT", "8080"),
+		SessionSecret:         []byte(secret),
+		DatabaseURL:           dbURL,
+		CookieSecure:          getEnvBool("COOKIE_SECURE", !isDev),
+		SiteURL:               os.Getenv("SITE_URL"),
+		UploadDir:             getEnv("UPLOAD_DIR", "./data/uploads"),
+		TrustedProxies:        proxies,
+		SMTPURL:               os.Getenv("FOLD_SMTP_URL"),
+		SMTPAllowInsecure:     getEnvBool("FOLD_SMTP_ALLOW_INSECURE", false),
+		EmailFrom:             getEnv("FOLD_EMAIL_FROM", "Fold <noreply@localhost>"),
+		PostmarkWebhookSecret: os.Getenv("FOLD_POSTMARK_WEBHOOK_SECRET"),
+		Workers:               workers,
+		JobPoll:               poll,
 	}, nil
 }
 

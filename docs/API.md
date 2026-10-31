@@ -1318,6 +1318,14 @@ may retain old cached data; no immediate remote deletion is promised.
 
 The room feed lists the room's confirmed bookings (never ones waiting for approval, DEC-109) whose date starts in the window, at the event's own time without setup and teardown, in the church's time zone. It is titled with the room and its building. A date whose own visibility is invite-only (`policy.EffectiveVisibility`: the date's override, else the event's), or whose group was deleted, is `SUMMARY:Reserved` with only the room as its place: no description, link or event identity. Every other date has its title, its place (the room, then any typed location), its date link and, unless its series is invite-only, its description. Video links, remote and childcare details are never in a room feed. Each entry's `UID` is `room-<roomId>-booking-<bookingId>@<host>`, so it names no event. A wrong, turned-off or other room's token, rooms being off, and a deactivated room all answer the same plain 404. A deactivated room keeps its link, which works again if the room is turned back on. The access log keeps the room id and never the token.
 
+### Email delivery reports (outside `/api/v1`, M3.2b)
+
+```
+POST /hooks/postmark/email → 200 | 400 | 401 | 404 | 413
+```
+
+Postmark posts one JSON record per request (Delivery, Bounce, SpamComplaint; others are ignored with 200). Postmark doesn't sign webhooks: the request must carry HTTP Basic credentials `postmark:<FOLD_POSTMARK_WEBHOOK_SECRET>` from the webhook URL, compared in constant time; anything else is 401 and changes nothing. With no secret set the route is 404. The route is outside CSRF (it is in `csrfExemptRoutes`). A malformed body is 400; over 1 MB, 413. A verified report is queued as a `webhook.process` job keyed by Postmark's `X-PM-Webhook-Trace-Id` (else its record type, id, message id and time), so a redelivered request is handled once, and answered 200 at once; a failure to queue is 500, and Postmark retries. The job matches the report to `notification_deliveries.provider_message_id`: a delivery moves `sent` to `delivered`; a bounce or complaint moves it to `bounced` with `hard bounce`, `soft bounce` or `marked as spam`. A hard bounce (or an address Postmark deactivated) adds a `hard_bounce` suppression and a spam complaint a `complaint` one; a soft bounce is only recorded (DEC-112). Every send checks suppressions first: a hard bounce or a manual one stops all mail to the address, a complaint stops optional notifications and broadcasts, and the delivery is recorded `suppressed` with the reason.
+
 ## Conventions
 
 - `POST` create → `201`; `PUT` update → `200`; `DELETE` → `200 {}`.

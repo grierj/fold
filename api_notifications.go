@@ -890,7 +890,8 @@ func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notificati
 		text += "\n\n" + n.EmailBody
 	}
 	text += "\n\n" + a.emailLink(n.Link)
-	msg := mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text}
+	// A spam complaint stops optional mail, not required notices (DEC-112).
+	msg := mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text, Optional: !k.Required}
 	// The provider's id for the message lets its delivery and bounce reports
 	// find this row (M3.2).
 	var providerID string
@@ -899,6 +900,10 @@ func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notificati
 		providerID, err = tracked.SendEmail(ctx, msg)
 	} else {
 		err = a.Mailer.Send(ctx, msg)
+	}
+	if mail.IsSuppressed(err) {
+		a.recordDelivery(n.ID, u.ID, models.DeliverySuppressed, strings.TrimPrefix(err.Error(), "mail: "), "")
+		return
 	}
 	if err != nil {
 		log.Printf("notification email for notification %d: %v", n.ID, err)

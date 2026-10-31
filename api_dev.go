@@ -20,7 +20,7 @@ func (a *App) devOutbox(c *gin.Context) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	outbox, ok := a.Mailer.(*mail.DevOutbox)
+	outbox, ok := mail.Unwrap(a.Mailer).(*mail.DevOutbox)
 	if !ok {
 		c.String(http.StatusInternalServerError, "the devoutbox sender is not configured")
 		return

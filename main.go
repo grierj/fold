@@ -168,11 +168,12 @@ func chooseMailer(cfg Config, db *gorm.DB, get func(string) string) (mail.Sender
 		return nil, err
 	}
 	log.Printf("email: sending through %s", sender.Capabilities().Name)
-	mailer, ok := sender.(mail.Sender)
+	adapter, ok := sender.(mail.Adapter)
 	if !ok {
 		return nil, fmt.Errorf("the %s adapter can't send mail", name)
 	}
-	return mailer, nil
+	// Nothing reaches a suppressed address, whichever adapter runs (DEC-112).
+	return mail.WithSuppressions(db, adapter), nil
 }
 
 // runHealthcheck is the distroless-friendly probe used by Docker. The image
@@ -225,11 +226,13 @@ func (a *App) setupRouter() *gin.Engine {
 	r.GET("/help/members", serveMemberHelp)
 
 	// Routes outside the CSRF and setup middleware (C17). They authenticate
-	// with provider signatures (hooks) or signed tokens (RFC 8058 one-click
-	// unsubscribe) instead. Their handlers arrive with messaging (M3);
-	// until then they answer 404. TestCSRFExemptRoutesAreExact (csrf_test.go)
+	// with provider credentials (hooks) or signed tokens (RFC 8058 one-click
+	// unsubscribe) instead. The unsubscribe handler arrives with M3.3;
+	// until then it answers 404. TestCSRFExemptRoutesAreExact (csrf_test.go)
 	// keeps its csrfExemptRoutes list equal to these routes.
-	r.Any("/hooks/*path", notFound)
+	// Postmark's delivery reports (M3.2b): HTTP Basic credentials from the
+	// webhook URL, 404 while FOLD_POSTMARK_WEBHOOK_SECRET is unset.
+	r.POST("/hooks/postmark/email", a.postmarkEmailHook)
 	r.POST("/u/unsubscribe/:token", notFound)
 
 	// First-run setup wizard takes precedence over everything else.

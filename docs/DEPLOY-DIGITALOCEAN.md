@@ -231,7 +231,7 @@ FOLD_EMAIL_FROM=Fold <noreply@groups.example.org>
 ```
 
 Instead of SMTP, Fold can use Postmark's API directly, which keeps announcement
-mail on its own message stream and, from M3.2b, lets Fold hear about bounces.
+mail on its own message stream and lets Fold hear about bounces.
 Put the same server token in `.env` instead of the SMTP URL:
 
 ```bash
@@ -244,6 +244,18 @@ FOLD_EMAIL_FROM=Fold <noreply@groups.example.org>
 
 With a token set, Fold sends through the API. `FOLD_EMAIL_PROVIDER=smtp` (or
 `postmark`) picks one explicitly when both are set.
+
+To hear about bounces and spam complaints, add a webhook in Postmark (Servers →
+your server → Webhooks) for **Delivery**, **Bounce** and **Spam Complaint**,
+with Basic authentication in the URL, and put the same password in `.env`:
+
+```bash
+# Webhook URL in Postmark: https://postmark:LONG_RANDOM_SECRET@groups.example.org/hooks/postmark/email
+FOLD_POSTMARK_WEBHOOK_SECRET=LONG_RANDOM_SECRET
+```
+
+A hard bounce then stops all mail to that address; a spam complaint stops
+optional mail, while account mail (password resets, sign-in links) still goes.
 
 Run `sudo docker compose --project-directory /opt/fold up -d` to recreate the
 app with the changed mail configuration.
