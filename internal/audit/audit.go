@@ -261,6 +261,11 @@ const (
 	// (M2.1e). Target type is room; meta has the location and the counts
 	// booked, busy and series rooms set.
 	RoomLocationMatched = "room.location_matched"
+	// RoomFeedCreated: an admin made a room's calendar-feed link, or a new
+	// one, which revokes the old link (M2.2b). Target is the room.
+	RoomFeedCreated = "room_feed.created"
+	// RoomFeedRevoked: an admin turned a room's calendar-feed link off.
+	RoomFeedRevoked = "room_feed.revoked"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

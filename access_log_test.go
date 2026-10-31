@@ -15,6 +15,11 @@ func TestRedactLogPath(t *testing.T) {
 		"/cal/u/abcDEF_123-x.ics":                          "/cal/u/REDACTED.ics",
 		"/cal/public.ics":                                  "/cal/public.ics",
 		"/cal/groups/4.ics":                                "/cal/groups/4.ics",
+		"/cal/rooms/12/r00mT0ken.ics":                      "/cal/rooms/12/REDACTED.ics",
+		"/cal/rooms/12":                                    "/cal/rooms/12/REDACTED.ics",
+		"/cal/rooms/t0kenOnly.ics":                         "/cal/rooms/REDACTED.ics",
+		"/cal/rooms/t0kenOnly/":                            "/cal/rooms/REDACTED.ics",
+		"/cal/rooms/":                                      "/cal/rooms/REDACTED.ics",
 		"/guest/manage/s3cret":                             "/guest/manage/REDACTED",
 		"/api/v1/guest-registrations/manage/s3cret/cancel": "/api/v1/guest-registrations/manage/REDACTED/cancel",
 		"/api/v1/invitations/inv1tetoken":                  "/api/v1/invitations/REDACTED",
@@ -38,16 +43,16 @@ func TestAccessLogKeepsSecretsOut(t *testing.T) {
 	r := gin.New()
 	r.Use(accessLog())
 	r.GET("/*any", func(c *gin.Context) { c.Status(http.StatusNotFound) })
-	for _, u := range []string{"/cal/u/feedsecret123.ics", "/reset-password?token=resetsecret456", "/api/v1/invitations/invitesecret789"} {
+	for _, u := range []string{"/cal/u/feedsecret123.ics", "/cal/rooms/7/roomsecret321.ics", "/reset-password?token=resetsecret456", "/api/v1/invitations/invitesecret789"} {
 		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, u, nil))
 	}
 	out := buf.String()
-	for _, secret := range []string{"feedsecret123", "resetsecret456", "invitesecret789"} {
+	for _, secret := range []string{"feedsecret123", "roomsecret321", "resetsecret456", "invitesecret789"} {
 		if strings.Contains(out, secret) {
 			t.Errorf("access log leaked %q:\n%s", secret, out)
 		}
 	}
-	if !strings.Contains(out, "/cal/u/REDACTED.ics") || !strings.Contains(out, "/reset-password") ||
+	if !strings.Contains(out, "/cal/u/REDACTED.ics") || !strings.Contains(out, "/cal/rooms/7/REDACTED.ics") || !strings.Contains(out, "/reset-password") ||
 		!strings.Contains(out, "/api/v1/invitations/REDACTED") {
 		t.Errorf("access log lost the route:\n%s", out)
 	}

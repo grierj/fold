@@ -844,6 +844,17 @@ type RoomRequest struct {
 	UpdatedAt    time.Time `gorm:"not null;default:now()"`
 }
 
+// RoomFeedToken is a room's secret ICS link (M2.2b, 8.2). Only the hash is
+// stored; a room has at most one working link (RevokedAt nil).
+type RoomFeedToken struct {
+	ID        uint   `gorm:"primaryKey"`
+	RoomID    uint   `gorm:"not null"`
+	TokenHash string `gorm:"not null;uniqueIndex"`
+	CreatedBy *uint
+	CreatedAt time.Time `gorm:"not null;default:now()"`
+	RevokedAt *time.Time
+}
+
 // Room request statuses.
 const (
 	RoomRequestPending   = "pending"
@@ -991,7 +1002,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
-		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{},
+		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{},
 	}
 }
 

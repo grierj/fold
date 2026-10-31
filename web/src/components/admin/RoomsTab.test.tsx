@@ -9,7 +9,7 @@ import { RoomsTab, sortRooms } from "./RoomsTab";
 
 vi.mock("../../api", async (actual) => ({
   ...(await actual<typeof import("../../api")>()),
-  AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn() },
+  AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), getFeed: vi.fn(), makeFeed: vi.fn(), revokeFeed: vi.fn() },
 }));
 
 const room = (id: number, name: string, extra: Partial<Room> = {}): Room => ({
@@ -265,5 +265,21 @@ describe("deactivating and reactivating", () => {
     await userEvent.click(screen.getByRole("button", { name: "Deactivate Fellowship Hall" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't deactivate that room.");
     expect(screen.queryByText("Inactive")).not.toBeInTheDocument();
+  });
+});
+
+describe("room calendar feed (M2.2b)", () => {
+  it("active rooms get a Calendar feed panel; Done gives focus back", async () => {
+    vi.mocked(AdminRooms.getFeed).mockResolvedValue({ feed: { hasToken: false, createdAt: null } });
+    render(<Harness initial={[hall, room(3, "Old Annex", { active: false })]} />);
+    expect(screen.queryByRole("button", { name: "Calendar feed for Old Annex" })).toBeNull();
+    const opener = screen.getByRole("button", { name: "Calendar feed for Fellowship Hall" });
+    await userEvent.click(opener);
+    const panel = screen.getByRole("region", { name: "Calendar feed for Fellowship Hall" });
+    expect(await within(panel).findByRole("button", { name: "Create calendar link" })).toBeInTheDocument();
+    expect(AdminRooms.getFeed).toHaveBeenCalledWith(1);
+    await userEvent.click(within(panel).getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("region", { name: "Calendar feed for Fellowship Hall" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Calendar feed for Fellowship Hall" })).toHaveFocus();
   });
 });

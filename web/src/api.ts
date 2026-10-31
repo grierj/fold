@@ -132,6 +132,7 @@ import type {
   Member,
   Notification,
   Room,
+  RoomFeed,
   RoomBooking,
   RoomPickerItem,
   SeriesRoom,
@@ -733,6 +734,11 @@ export const AdminRooms = {
   locations: () => api<{ locations: TypedLocation[] }>("/admin/rooms/locations"),
   matchLocation: (location: string, roomId: number) =>
     api<{ booked: number; busy: MatchBusy[]; busyTotal: number; series: number }>("/admin/rooms/locations/match", { method: "POST", body: { location, roomId } }),
+  // A room's calendar-feed link (M2.2b): makeFeed returns the link once and
+  // turns any old one off.
+  getFeed: (id: number) => api<{ feed: RoomFeed }>(`/admin/rooms/${id}/feed`),
+  makeFeed: (id: number) => api<{ feed: RoomFeed }>(`/admin/rooms/${id}/feed`, { method: "POST" }),
+  revokeFeed: (id: number) => api<{ feed: RoomFeed }>(`/admin/rooms/${id}/feed`, { method: "DELETE" }),
 };
 
 // Open room requests (M2.1d, DEC-106): one per booking action, a date or a whole

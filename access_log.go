@@ -8,12 +8,14 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Secrets travel in some URLs: calendar feed tokens (/cal/u/<token>.ics),
+// Secrets travel in some URLs: calendar feed tokens (/cal/u/<token>.ics and
+// /cal/rooms/<roomId>/<token>.ics),
 // guest manage links, invitation links (/api/v1/invitations/<token>), and the ?token= of email links the SPA serves. The
 // access log keeps the route but never the secret, and drops every query
 // string, so a log file or a log shipper can't replay a link.
 var secretPathPrefixes = []string{
 	"/cal/u/",
+	"/cal/rooms/",
 	"/guest/manage/",
 	"/api/v1/guest-registrations/manage/",
 	"/api/v1/invitations/",
@@ -25,6 +27,15 @@ func redactLogPath(path string) string {
 			continue
 		}
 		rest := path[len(p):]
+		// A room feed keeps its room id; the token after it is the secret.
+		// Anything but digits in the id's place may be a token itself.
+		if p == "/cal/rooms/" {
+			roomID, _, _ := strings.Cut(rest, "/")
+			if roomID == "" || strings.Trim(roomID, "0123456789") != "" {
+				return p + "REDACTED.ics"
+			}
+			return p + roomID + "/REDACTED.ics"
+		}
 		if path == "/api/v1/invitations/accept" {
 			return path // a fixed route; its token travels in the body
 		}

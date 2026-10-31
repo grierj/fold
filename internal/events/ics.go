@@ -16,6 +16,8 @@ import (
 // FeedSingle is one authorized date with all effective fields already projected.
 // Its UID carries the immutable original date, so reschedules keep its identity.
 type FeedSingle struct {
+	// UID replaces the event-and-date UID when set (room feeds, M2.2b).
+	UID          string
 	EventID      uint
 	OriginalDate string
 	Title        string
@@ -62,7 +64,12 @@ func RenderFeed(f Feed) []byte {
 		if singles[i].EventID != singles[j].EventID {
 			return singles[i].EventID < singles[j].EventID
 		}
-		return singles[i].OriginalDate < singles[j].OriginalDate
+		if singles[i].OriginalDate != singles[j].OriginalDate {
+			return singles[i].OriginalDate < singles[j].OriginalDate
+		}
+		// Room-feed entries carry no event: their own UID orders them, so
+		// unchanged data keeps the same bytes and ETag.
+		return singles[i].UID < singles[j].UID
 	})
 
 	var blocks [][]string
@@ -115,6 +122,13 @@ func singleUID(id uint, originalDate, host string) string {
 	return fmt.Sprintf("event-%d-%s@%s", id, strings.ReplaceAll(originalDate, "-", ""), host)
 }
 
+func uidOf(s *FeedSingle, date, host string) string {
+	if s.UID != "" {
+		return s.UID
+	}
+	return singleUID(s.EventID, date, host)
+}
+
 func renderSingle(s *FeedSingle, host string) ([]string, *time.Location, bool) {
 	loc, err := LoadZone(s.TZID)
 	if err != nil || s.StartsAt.IsZero() {
@@ -130,7 +144,7 @@ func renderSingle(s *FeedSingle, host string) ([]string, *time.Location, bool) {
 	}
 	b := []string{
 		"BEGIN:VEVENT",
-		"UID:" + singleUID(s.EventID, date, host),
+		"UID:" + uidOf(s, date, host),
 		"DTSTAMP:" + dtstamp(s.UpdatedAt, s.StartsAt),
 	}
 	b = append(b,

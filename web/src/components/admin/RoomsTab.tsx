@@ -8,6 +8,7 @@ import { Checkbox, Field, FormError, focusFirstInvalid, Input, Textarea } from "
 import { Form } from "../ui/Form";
 import { FormActions } from "../ui/FormActions";
 import { ErrorNotice } from "../ErrorNotice";
+import { RoomFeedPanel } from "./RoomFeedPanel";
 import { Skeleton } from "../ui/Skeleton";
 import { errorCode, errorText } from "../../lib/errors";
 import { useUnsavedChanges } from "../../lib/unsavedChanges";
@@ -169,6 +170,21 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
   const rootEl = useRef<HTMLDivElement>(null);
   // Which opener button gets focus back after Cancel: "new" or a room id.
   const [returnTo, setReturnTo] = useState<"new" | number | null>(null);
+  // The room whose calendar-feed panel is open (M2.2b), and whose
+  // "Calendar feed" button gets focus back when it closes.
+  const [feedOpen, setFeedOpen] = useState<number | null>(null);
+  const [feedReturn, setFeedReturn] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (feedReturn === null || feedOpen !== null) return;
+    rootEl.current?.querySelector<HTMLElement>(`[data-feed-opener="${feedReturn}"]`)?.focus();
+    setFeedReturn(null);
+  }, [feedReturn, feedOpen]);
+
+  function closeFeed() {
+    setFeedReturn(feedOpen);
+    setFeedOpen(null);
+  }
 
   useEffect(() => {
     if (returnTo === null || open !== null) return;
@@ -223,7 +239,7 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
         <RoomFormPanel onSaved={(r) => saved(r, "added")} onCancel={cancel} />
       ) : rooms.length > 0 && (
         // While another room's form is open, switching would drop its edits, so the openers wait.
-        <div><Button variant="secondary" data-opener="new" disabled={open !== null} onClick={startAdding}>Add room</Button></div>
+        <div><Button variant="secondary" data-opener="new" disabled={open !== null || feedOpen !== null} onClick={startAdding}>Add room</Button></div>
       )}
       {sortRooms(rooms).map((r) => open === r.id ? (
         <RoomFormPanel key={r.id} room={r} onSaved={(saved_) => saved(saved_, "saved")} onCancel={cancel} />
@@ -238,11 +254,16 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
               </div>
               {details(r) && <p className="text-sm text-text-muted mt-0.5">{details(r)}</p>}
             </div>
-            <Button variant="secondary" data-opener={r.id} aria-label={`Edit ${r.name}`} disabled={open !== null}
+            <Button variant="secondary" data-opener={r.id} aria-label={`Edit ${r.name}`} disabled={open !== null || feedOpen !== null}
               onClick={() => { setStatus(""); setOpen(r.id); }}>Edit</Button>
+            {r.active && (
+              <Button variant="secondary" data-feed-opener={r.id} aria-label={`Calendar feed for ${r.name}`}
+                disabled={feedOpen !== null || open !== null} onClick={() => { setStatus(""); setFeedOpen(r.id); }}>Calendar feed</Button>
+            )}
             <Button variant="secondary" aria-label={`${r.active ? "Deactivate" : "Reactivate"} ${r.name}`} disabled={busyId === r.id}
               onClick={() => void setActive(r, !r.active)}>{r.active ? "Deactivate" : "Reactivate"}</Button>
           </div>
+          {feedOpen === r.id && r.active && <div className="mt-4"><RoomFeedPanel room={r} onClose={closeFeed} /></div>}
         </div>
       ))}
       {rooms.length === 0 && open !== "new" && (

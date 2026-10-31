@@ -1652,7 +1652,7 @@ Phase 1 is done (v0.3), merged through PR #184. It delivered events with time zo
 
 ### 14.5 Phase 2: Rooms
 
-Rooms are optional (9.1) and touch the database, API and UI together, so every milestone ships as thin slices in this order (14.1): the database change, then the API and internals, then the UI. A slice may land hidden behind `rooms_enabled` until its UI exists. M2.1 (slices a to e) and M2.2a (the by-room view) are built. In the release table rooms are v0.6, after email (v0.4) and the MVP (v0.5); they may run in parallel with Phase 3 because they share only events and occurrences.
+Rooms are optional (9.1) and touch the database, API and UI together, so every milestone ships as thin slices in this order (14.1): the database change, then the API and internals, then the UI. A slice may land hidden behind `rooms_enabled` until its UI exists. M2.1 (slices a to e) and M2.2 (the by-room view and the room feed) are built; M2.3 (suggestions) is next. In the release table rooms are v0.6, after email (v0.4) and the MVP (v0.5); they may run in parallel with Phase 3 because they share only events and occurrences.
 
 Design defaults for this phase (decided here so slices don't reopen them; change them in review if wrong):
 
@@ -1701,8 +1701,8 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - Acceptance: members, leaders and admins each see exactly the details section 6 allows; JSON for a hidden booking has no identifying keys (a key-list test); teens get 404 and signed-out visitors 401.
 - **M2.2b Room ICS feed**
   - Database: `room_feed_tokens` (5.3).
-  - API: admins issue and revoke a token per room (`room_feed_tokens`); `/cal/rooms/<roomId>/<token>.ics` exports confirmed bookings, titling invite-only and hidden bookings "Reserved"; the token never reaches the access log (existing redaction).
-  - UI: a "Calendar feed" action on each room in the admin Rooms tab (copy link, revoke).
+  - API: admins make, replace or turn off one link per room (`room_feed_tokens`; like the personal feed, the link shows once, only its hash is stored, and a new link turns the old one off); `/cal/rooms/<roomId>/<token>.ics` exports confirmed bookings (never waiting ones, DEC-109), titling a date "Reserved" when its own visibility is invite-only or its group was deleted; the access log keeps the room id and never the token.
+  - UI: a "Calendar feed" action on each active room in the admin Rooms tab (create, copy once, make a new link, turn off), behaving like the personal calendar feed card.
   - Acceptance: a revoked token answers 404; the feed shows what an admin would see, except that invite-only and hidden-date bookings are titled "Reserved" with no group or description (8.2).
 - Tests across M2.2: the key-list masking tests, and a Playwright smoke test of the by-room view.
 

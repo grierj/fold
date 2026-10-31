@@ -859,6 +859,14 @@ export interface Room {
   defaultTeardownMinutes: number;
 }
 
+// A room's calendar-feed link (M2.2b). url is only in the response that
+// made the link; afterwards an admin sees only that a link is on.
+export interface RoomFeed {
+  hasToken: boolean;
+  createdAt: string | null;
+  url?: string;
+}
+
 // The by-room view (M2.2a, 8.1): every active room the viewer may see
 // listed (restricted rooms for admins only), with its bookings over one day
 // or one week in the church's zone. from and to are the first and last day.
