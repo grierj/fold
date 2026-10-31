@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -713,6 +714,23 @@ func zoneOrChurch(tx *gorm.DB, tz string) *time.Location {
 }
 
 // churchZone is the church's zone from its setting, else UTC.
+// churchZoneErr is churchZone, reporting a failed read instead of guessing
+// UTC. An unset or unknown zone is UTC, as there.
+func churchZoneErr(tx *gorm.DB) (*time.Location, error) {
+	var s models.Setting
+	err := tx.Where("key = ?", settingTimezone).First(&s).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return time.UTC, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if loc, err := events.LoadZone(s.Value); err == nil {
+		return loc, nil
+	}
+	return time.UTC, nil
+}
+
 func churchZone(tx *gorm.DB) *time.Location {
 	var s models.Setting
 	if tx.Where("key = ?", settingTimezone).First(&s).Error == nil {

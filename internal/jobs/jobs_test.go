@@ -113,8 +113,8 @@ func TestFailingJobRetriesThenDies(t *testing.T) {
 	}
 }
 
-// A panic and an unknown kind are failures, never a crashed worker; an
-// unknown kind is dead at once, since retrying can't help.
+// A panic is a failure, never a crashed worker. A kind this build doesn't
+// know waits (an upgrade rolled back), and is dead only after a week.
 func TestPanicsAndUnknownKinds(t *testing.T) {
 	db := testdb.Shared(t)
 	r := runner(db, Kind{Name: "boom", MaxAttempts: 2, Run: func(context.Context, json.RawMessage) error { panic("oops") }})
@@ -128,8 +128,15 @@ func TestPanicsAndUnknownKinds(t *testing.T) {
 	if boom.Status != models.JobFailed || boom.LastError != "panic: oops" {
 		t.Fatalf("boom: %+v", boom)
 	}
-	if nobody.Status != models.JobDead || nobody.Attempts != 1 {
-		t.Fatalf("unknown kind: %+v", nobody)
+	if nobody.Status != models.JobQueued || nobody.Attempts != 0 || time.Until(nobody.RunAt) < 50*time.Minute {
+		t.Fatalf("an unknown kind waits for a build that knows it, without using an attempt: %+v", nobody)
+	}
+	// After a week it is dead.
+	db.Model(&nobody).Updates(map[string]any{"created_at": time.Now().AddDate(0, 0, -8), "run_at": time.Now()})
+	r.RunOnce(context.Background(), "w")
+	db.First(&nobody, nobody.ID)
+	if nobody.Status != models.JobDead {
+		t.Fatalf("an unknown kind after a week: %+v", nobody)
 	}
 }
 
@@ -167,13 +174,14 @@ func TestExpiredLeases(t *testing.T) {
 	}
 }
 
-// Two workers (two app processes) and 200 jobs: every job runs exactly
+// Six workers (app processes) contend for 200 jobs: every job runs exactly
 // once (FOR UPDATE SKIP LOCKED).
 func TestTwoWorkersNeverRunAJobTwice(t *testing.T) {
 	db := testdb.Shared(t)
 	var mu sync.Mutex
 	seen := map[int]int{}
 	kind := Kind{Name: "count", Run: func(_ context.Context, p json.RawMessage) error {
+		time.Sleep(2 * time.Millisecond) // long enough for workers to contend
 		var body struct{ N int }
 		_ = json.Unmarshal(p, &body)
 		mu.Lock()
@@ -187,7 +195,7 @@ func TestTwoWorkersNeverRunAJobTwice(t *testing.T) {
 		}
 	}
 	var wg sync.WaitGroup
-	for _, name := range []string{"process-1", "process-2"} {
+	for _, name := range []string{"process-1", "process-2", "process-3", "process-4", "process-5", "process-6"} {
 		r := runner(db, kind)
 		r.ID = name
 		wg.Add(1)
@@ -219,8 +227,8 @@ func TestTwoWorkersNeverRunAJobTwice(t *testing.T) {
 		N        int
 	}
 	db.Raw("SELECT locked_by, count(*) AS n FROM jobs WHERE status = 'done' GROUP BY locked_by").Scan(&by)
-	if len(by) != 2 {
-		t.Logf("one process took every job: %+v", by) // allowed, but unusual
+	if len(by) != 6 {
+		t.Fatalf("want every process to have claimed jobs: %+v", by)
 	}
 }
 
@@ -229,6 +237,7 @@ func TestNewJobStartsWithinTwoSeconds(t *testing.T) {
 	db := testdb.Shared(t)
 	started := make(chan time.Time, 1)
 	r := runner(db, Kind{Name: "ping", Run: func(context.Context, json.RawMessage) error { started <- time.Now(); return nil }})
+	r.Poll = DefaultPoll // the real setting: the bound is what a deployment gets
 	ctx, cancel := context.WithCancel(context.Background())
 	wait := r.Start(ctx, 1)
 	defer func() { cancel(); wait() }()
@@ -256,5 +265,28 @@ func TestPruneDone(t *testing.T) {
 	db.Model(&models.Job{}).Count(&left)
 	if err != nil || n != 2 || left != 2 {
 		t.Fatalf("pruned %d (%v), %d left", n, err, left)
+	}
+}
+
+func TestCleanError(t *testing.T) {
+	for in, want := range map[string]string{
+		"550 <lee@example.org>: rejected\nmore detail": "550 <[email]>: rejected",
+		"bad\x00byte":        "badbyte",
+		"connection refused": "connection refused",
+	} {
+		if got := CleanError(errors.New(in)); got != want {
+			t.Errorf("%q: %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestTypedNilPayloadIsAnEmptyObject(t *testing.T) {
+	db := testdb.Shared(t)
+	var none map[string]string
+	Enqueue(db, "x", none, time.Now(), "", 0)
+	var j models.Job
+	db.First(&j)
+	if j.Payload != "{}" {
+		t.Fatalf("payload %q", j.Payload)
 	}
 }

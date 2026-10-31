@@ -82,32 +82,44 @@ func (a *App) startJobs(ctx context.Context) func() {
 		log.Println("WARNING: FOLD_WORKERS=0; background jobs will not run in this process")
 	}
 	wait := runner.Start(ctx, a.Config.Workers)
+	// Dates are extended at every start, as before jobs: a new build may
+	// change how far ahead they go. It is safe to run twice.
+	if _, err := jobs.Enqueue(a.DB, "occurrences.extend", nil, time.Now(), "", jobs.DefaultMaxAttempts); err != nil {
+		log.Printf("jobs: queue date extension: %v", err)
+	}
 	go func() {
 		for {
 			now := time.Now()
-			if err := a.queueDaily(kinds, now); err != nil {
+			// The church's zone decides the day. If it can't be read, nothing
+			// is queued under a guessed day; try again shortly.
+			next := 30 * time.Second
+			if zone, err := churchZoneErr(a.DB); err != nil {
+				log.Printf("jobs: read the church time zone: %v", err)
+			} else if err := a.queueDaily(kinds, now, zone); err != nil {
 				log.Printf("jobs: queue daily tasks: %v", err)
+			} else {
+				// At church midnight, or within the hour if the zone changes.
+				next = min(time.Until(nextAgeRollover(now, zone)), time.Hour) + time.Second
 			}
-			// At church midnight, or within the hour if the zone changes or
-			// queueing failed.
-			next := min(time.Until(nextAgeRollover(now, churchZone(a.DB))), time.Hour)
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(next + time.Second):
+			case <-time.After(next):
 			}
 		}
 	}()
 	return wait
 }
 
-// queueDaily queues each daily task for the church's current date.
-func (a *App) queueDaily(kinds []jobs.Kind, now time.Time) error {
-	day := now.In(churchZone(a.DB)).Format("2006-01-02")
+// queueDaily queues each daily task for the church's date in zone. A kind
+// that fails to queue doesn't stop the others; the first error is returned.
+func (a *App) queueDaily(kinds []jobs.Kind, now time.Time, zone *time.Location) error {
+	day := now.In(zone).Format("2006-01-02")
+	var first error
 	for _, k := range kinds {
-		if _, err := jobs.Enqueue(a.DB, k.Name, nil, now, k.Name+":"+day, k.MaxAttempts); err != nil {
-			return err
+		if _, err := jobs.Enqueue(a.DB, k.Name, nil, now, k.Name+":"+day, k.MaxAttempts); err != nil && first == nil {
+			first = err
 		}
 	}
-	return nil
+	return first
 }

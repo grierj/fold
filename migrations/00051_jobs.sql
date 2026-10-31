@@ -21,9 +21,9 @@ CREATE TABLE jobs (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX idx_jobs_unique_key ON jobs (unique_key);
--- What a worker looks for: due work, and running work whose lease ran out.
+-- What a worker looks for. Running work whose lease ran out is found by a
+-- scan: the table holds a few hundred rows at most.
 CREATE INDEX idx_jobs_due ON jobs (run_at, id) WHERE status IN ('queued', 'failed');
-CREATE INDEX idx_jobs_running ON jobs (locked_at) WHERE status = 'running';
 -- The System page's list, and the cleanup of finished jobs.
 CREATE INDEX idx_jobs_status ON jobs (status, updated_at);
 

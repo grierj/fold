@@ -18,10 +18,14 @@ func TestDailyTasksQueueOncePerChurchDay(t *testing.T) {
 		t.Fatal(err)
 	}
 	kinds := app.dailyKinds()
+	denver, err := churchZoneErr(app.DB)
+	if err != nil || denver.String() != "America/Denver" {
+		t.Fatalf("zone %v %v", denver, err)
+	}
 	// 11:30 PM in Denver on Oct 30 is already Oct 31 in UTC.
 	late := time.Date(2026, 10, 31, 5, 30, 0, 0, time.UTC)
 	for i := 0; i < 3; i++ {
-		if err := app.queueDaily(kinds, late); err != nil {
+		if err := app.queueDaily(kinds, late, denver); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -30,7 +34,7 @@ func TestDailyTasksQueueOncePerChurchDay(t *testing.T) {
 	if len(keys) != len(kinds) || keys[0] != "accounts.age_rollover:2026-10-30" {
 		t.Fatalf("queued %v", keys)
 	}
-	if err := app.queueDaily(kinds, late.Add(time.Hour)); err != nil { // after Denver midnight
+	if err := app.queueDaily(kinds, late.Add(time.Hour), denver); err != nil { // after Denver midnight
 		t.Fatal(err)
 	}
 	var n int64

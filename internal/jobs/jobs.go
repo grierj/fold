@@ -15,6 +15,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -26,7 +27,9 @@ import (
 )
 
 // Kind is one sort of job: its handler and how many attempts it gets.
-// A handler does its own transactions; returning an error retries it.
+// A handler does its own transactions; returning an error retries it. It must
+// be safe to run twice (a retry, or a lease taken back from a worker that
+// was slow rather than gone) and should finish well within the lease.
 type Kind struct {
 	Name        string
 	MaxAttempts int
@@ -52,6 +55,9 @@ func Enqueue(db *gorm.DB, kind string, payload any, runAt time.Time, uniqueKey s
 		if body, err = json.Marshal(payload); err != nil {
 			return false, err
 		}
+		if string(body) == "null" { // a typed nil
+			body = []byte("{}")
+		}
 	}
 	if maxAttempts <= 0 {
 		maxAttempts = DefaultMaxAttempts
@@ -65,8 +71,9 @@ func Enqueue(db *gorm.DB, kind string, payload any, runAt time.Time, uniqueKey s
 }
 
 // Backoff is how long a job waits after its attempt-th failure (1-based):
-// 30 seconds doubling each time, at most an hour, with up to 20% jitter
-// either way so retries from one outage spread out. rnd returns [0, 1).
+// 30 seconds doubling each time up to an hour, then up to 20% jitter either
+// way so retries from one outage spread out (so at most 72 minutes). rnd
+// returns [0, 1).
 func Backoff(attempt int, rnd func() float64) time.Duration {
 	if attempt < 1 {
 		attempt = 1
@@ -138,7 +145,16 @@ type claimed struct {
 	Payload     string
 	Attempts    int
 	MaxAttempts int
+	CreatedAt   time.Time
 }
+
+// unknownKindWait: a job of a kind this build doesn't know (an older
+// build running after an upgrade was rolled back) waits for a build that
+// knows it, without using an attempt, and is dead only after a week.
+const (
+	unknownKindWait  = time.Hour
+	unknownKindGrace = 7 * 24 * time.Hour
+)
 
 // RunOnce claims the next due job, if any, and runs it as worker. It
 // reports whether it found one. An error is about the table, not the job:
@@ -151,23 +167,24 @@ func (r *Runner) RunOnce(ctx context.Context, worker string) (bool, error) {
 		WHERE id = (SELECT id FROM jobs
 			WHERE (status IN (?, ?) AND run_at <= now()) OR (status = ? AND locked_at < now() - make_interval(secs => ?))
 			ORDER BY run_at, id FOR UPDATE SKIP LOCKED LIMIT 1)
-		RETURNING id, kind, payload, attempts, max_attempts`,
+		RETURNING id, kind, payload, attempts, max_attempts, created_at`,
 		models.JobRunning, worker, models.JobQueued, models.JobFailed, models.JobRunning, r.Lease.Seconds()).Scan(&job).Error
 	if err != nil || job.ID == 0 {
 		return false, err
 	}
 	kind, known := r.Kinds[job.Kind]
-	var runErr error
 	switch {
 	case job.Attempts > job.MaxAttempts:
 		// Its last attempt never finished: the process stopped mid-job.
-		runErr = errors.New("the worker stopped while running it")
+		return true, r.finish(job, worker, errors.New("the worker stopped while running it"), true)
+	case !known && time.Since(job.CreatedAt) > unknownKindGrace:
+		return true, r.finish(job, worker, fmt.Errorf("no handler for job kind %q", job.Kind), true)
 	case !known:
-		runErr = fmt.Errorf("no handler for job kind %q", job.Kind)
-	default:
-		runErr = safeRun(ctx, kind, json.RawMessage(job.Payload))
+		return true, r.DB.Model(&models.Job{}).Where("id = ? AND status = ? AND locked_by = ?", job.ID, models.JobRunning, worker).
+			Updates(map[string]any{"status": models.JobQueued, "attempts": gorm.Expr("attempts - 1"), "locked_at": nil,
+				"last_error": "this version of Fold doesn't run this kind of task", "run_at": time.Now().Add(unknownKindWait), "updated_at": time.Now()}).Error
 	}
-	return true, r.finish(job, worker, runErr, !known)
+	return true, r.finish(job, worker, safeRun(ctx, kind, json.RawMessage(job.Payload)), false)
 }
 
 // safeRun turns a handler's panic into an error, so one bad job never
@@ -184,23 +201,44 @@ func safeRun(ctx context.Context, k Kind, payload json.RawMessage) (err error) {
 // finish records the outcome, but only while this worker still holds the
 // job: if its lease ran out and another worker took it, that one decides.
 func (r *Runner) finish(job claimed, worker string, runErr error, final bool) error {
-	held := r.DB.Model(&models.Job{}).Where("id = ? AND status = ? AND locked_by = ?", job.ID, models.JobRunning, worker)
-	if runErr == nil {
-		return held.Updates(map[string]any{"status": models.JobDone, "locked_at": nil, "last_error": "", "updated_at": time.Now()}).Error
+	var updates map[string]any
+	msg := ""
+	switch {
+	case runErr == nil:
+		updates = map[string]any{"status": models.JobDone, "locked_at": nil, "last_error": "", "updated_at": time.Now()}
+	case final || job.Attempts >= job.MaxAttempts:
+		msg = CleanError(runErr)
+		log.Printf("jobs: %s #%d is dead after %d attempts: %s", job.Kind, job.ID, job.Attempts, msg)
+		updates = map[string]any{"status": models.JobDead, "locked_at": nil, "last_error": msg, "updated_at": time.Now()}
+	default:
+		msg = CleanError(runErr)
+		wait := Backoff(job.Attempts, r.Rnd)
+		log.Printf("jobs: %s #%d failed (attempt %d of %d), retrying in %s: %s", job.Kind, job.ID, job.Attempts, job.MaxAttempts, wait.Round(time.Second), msg)
+		updates = map[string]any{"status": models.JobFailed, "locked_at": nil, "last_error": msg,
+			"run_at": time.Now().Add(wait), "updated_at": time.Now()}
 	}
-	msg := runErr.Error()
+	res := r.DB.Model(&models.Job{}).Where("id = ? AND status = ? AND locked_by = ?", job.ID, models.JobRunning, worker).Updates(updates)
+	if res.Error == nil && res.RowsAffected == 0 {
+		// Its lease ran out while it ran and another worker took it; that
+		// worker's outcome stands.
+		log.Printf("jobs: %s #%d ran past its lease; another worker took it over", job.Kind, job.ID)
+	}
+	return res.Error
+}
+
+var emailLike = regexp.MustCompile(`[^\s<>"'(),;:]+@[^\s<>"'(),;:]+`)
+
+// CleanError is the error text a job keeps and the System page shows: its
+// first line, without email addresses (an SMTP refusal echoes the
+// recipient) or NUL bytes, as valid UTF-8, at most 2000 bytes.
+func CleanError(err error) string {
+	msg, _, _ := strings.Cut(err.Error(), "\n")
+	msg = emailLike.ReplaceAllString(msg, "[email]")
+	msg = strings.ReplaceAll(msg, "\x00", "")
 	if len(msg) > maxErrorLen {
 		msg = msg[:maxErrorLen]
 	}
-	msg = strings.ToValidUTF8(msg, "?")
-	if final || job.Attempts >= job.MaxAttempts {
-		log.Printf("jobs: %s #%d is dead after %d attempts: %s", job.Kind, job.ID, job.Attempts, msg)
-		return held.Updates(map[string]any{"status": models.JobDead, "locked_at": nil, "last_error": msg, "updated_at": time.Now()}).Error
-	}
-	wait := Backoff(job.Attempts, r.Rnd)
-	log.Printf("jobs: %s #%d failed (attempt %d of %d), retrying in %s: %s", job.Kind, job.ID, job.Attempts, job.MaxAttempts, wait.Round(time.Second), msg)
-	return held.Updates(map[string]any{"status": models.JobFailed, "locked_at": nil, "last_error": msg,
-		"run_at": time.Now().Add(wait), "updated_at": time.Now()}).Error
+	return strings.ToValidUTF8(msg, "?")
 }
 
 // PruneDone deletes finished and dismissed jobs last touched before
