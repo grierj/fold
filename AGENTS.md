@@ -192,7 +192,7 @@ Grier's rule (Oct 20, 2026; generalized Oct 30, 2026). An agent may merge a fold
    - correctness, including the backend and API.
 
    One reviewer may cover several concerns. A concern the change doesn't touch still gets an explicit "not affected" from the reviewer. Keep the findings with the PR (its description or a comment), and resolve blocking findings before merging.
-3. No product concern needs a human. No Grier decision on the PR is still open, and it makes no new product decision. Changes to security or visibility policy, repo settings, or production and deploy are product concerns unless Grier already decided that change.
+3. No product concern needs a human. No Grier decision on the PR is still open, and it makes no new product decision. Changes to security or visibility policy, repo settings, or production and deploy are product concerns unless Grier already decided that change. A check that only a person can run on real devices or live services (phones, mail providers, TLS on a real domain, SMS) doesn't block a merge: build it best effort, test what an agent can, and add the check to `docs/FIRST-CHURCH-CHECKS.md` in the same PR (DEC-128).
 
 After a merge, merge master into the other open branches (never rebase) and report the merge SHA.
 
@@ -280,3 +280,4 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Work reaches master only through a pull request with the `test`, `web` and `provision` checks green; branch pushes use an exact refspec (`HEAD:refs/heads/<branch>`) | GitHub branch protection on `master`: PR required, those checks required, admins included, no force-push or deletion |
 | The entry JS chunk stays under its gzip budget; libraries few pages need are loaded with `import()` | `web/scripts/bundle-size.mjs` (`npm run bundle-size`, in CI after the build) |
 | Secrets in URLs (calendar and room feed tokens, guest manage links, unsubscribe and email settings links, `?token=` email links) never reach the access log | `accessLog` and `redactLogPath` (`access_log.go`); `TestAccessLogKeepsSecretsOut` |
+| Checks an agent can't run are listed for the first church | Review only (no test): the PR adds its checks to `docs/FIRST-CHURCH-CHECKS.md` and lists them in its description |
