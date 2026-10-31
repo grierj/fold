@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-109.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-110.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-109; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-110; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-109) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-110) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -1709,11 +1709,11 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 **M2.3 Room suggestions**
 
 - **M2.3a Suggestion engine (internal)**
-  - `rooms.CountingUsagePredicate(E)` and the query from it, using M1.13 effective per-date visibility (never the group's or event's stored value alone). All five rules of 9.3, with the event's type taken from its group's tags (DEC-100).
+  - `rooms.CountingUsagePredicate(E)` and the query from it (`internal/rooms`), using M1.13 effective per-date visibility (never the group's or event's stored value alone). All five rules of 9.3, with the event's type taken from its group's tags (DEC-100). Built; migration 00050 adds a GiST index on confirmed bookings' `(room_id, padded_range)` for the busy check, since the exclusion constraint's index leaves out double-bookings.
   - Tests: all 13 cases in the 9.3 table, plus explicitly opened and tightened dates and a church-wide event (no tags, so no type filter); a benchmark with 50 rooms and 20,000 bookings under 100 ms on Postgres.
 - **M2.3b Suggestions in the picker**
-  - API: `GET /api/v1/rooms/suggestions?event=&date=` returns up to 5 rooms with counts and a reason ("Used by this group 6 times"); the JSON never carries other events' titles, groups or dates (a key-list test).
-  - UI: the Room field shows "Suggested" first, each with its reason and Busy marks ("Busy on 2 of 8 dates"), then the full list.
+  - API: each room picker's own response (one date, the series, and the create forms' `POST /rooms/check`, which also takes the chosen visibility) carries up to 5 `suggestions` with counts and a reason ("Used by this group 6 times"), and says when they are "Used by other kinds of events" (DEC-110). The JSON never carries other events' titles, groups or dates (a key-list test).
+  - UI: all three Room fields (Edit this date, Edit series, the create forms) show "Suggested" first, each with its reason and Busy marks ("Busy on 2 of 8 dates"), then the other rooms.
   - Acceptance: suggestions are a shortcut, never a gate: every bookable room stays pickable by hand.
 
 ### 14.6 Phase 3: Messaging
@@ -2139,6 +2139,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-107 | **Rooms have no color** (Grier, Oct 30, 2026; M2.2 planning). The by-room view tells rooms apart by column and name, so the planned `rooms.color` field is dropped: no migration, no swatch picker, nothing more to check for contrast. | 5.3, M2.2 |
 | DEC-108 | **The by-room Week is a rooms × days grid** (Grier, Oct 30, 2026; M2.2 planning). From `sm` up, Week shows one row per room and one column per day, and each cell lists that day's bookings as short time blocks ("7–8:30 PM Bible study"). Day keeps one column per room with time rows; phones show one room at a time as a day list. | 8.1, M2.2a |
 | DEC-109 | **Admins see bookings waiting for approval in the by-room view** (Grier, Oct 30, 2026; M2.2 planning). With approval on (DEC-102), the by-room view also shows an admin the requested bookings on a pending request, dashed and labelled "Waiting for approval", so they can judge clashes. Everyone else, and the room feed, see confirmed bookings only. A booking that lost its room (DEC-103) isn't shown to anyone. | 8.1, 9.2, M2.2 |
+| DEC-110 | **Room suggestions come with each picker's room list, on all three pickers** (Grier, Oct 30, 2026; M2.3 planning). There is no separate suggestions endpoint: the one-date picker, the series picker and the create forms' room check each return their `suggestions` with the room list, so busy marks are worked out once and the pickers can't drift. The create forms suggest too, using the visibility chosen on the form (9.3 Rule 1) and the group's tags; a new event has no same-series usages. | 9.3, M2.3 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 
