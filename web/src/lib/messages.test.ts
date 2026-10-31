@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composeOptions, recipients, summary } from "../test/compose";
-import { audienceLabel, confirmLine, emptyChoice, fromAudience, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
+import { audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
 
 describe("audiences", () => {
   it("turns the picker's choice into the API's audience and back", () => {
@@ -96,6 +96,13 @@ describe("history", () => {
     expect(retryQuestion(0)).toBe("Try sending this message again?");
     expect(historyTeenLine(0)).toBe("");
     expect(historyTeenLine(2)).toBe("2 of the people it was for are teens.");
+  });
+
+  it("counts guardian copies without naming anyone (DEC-132)", () => {
+    expect(guardianLine({ guardianCopies: 0, guardianCopiesMissed: 0 })).toBe("");
+    expect(guardianLine({ guardianCopies: 2, guardianCopiesMissed: 0 })).toBe("2 guardian copies sent");
+    expect(guardianLine({ guardianCopies: 3, guardianCopiesMissed: 1 })).toBe("2 guardian copies sent · 1 didn't go out");
+    expect(guardianLine({ guardianCopies: 1, guardianCopiesMissed: 1 })).toBe("1 guardian copy didn't go out");
   });
 
   it("names a failed and a partly sent message", () => {

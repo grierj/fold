@@ -45,21 +45,26 @@ func (f composeFixture) sendWithOneFailure(t *testing.T) uint {
 
 // The history follows the preview's privacy rule: counts by reason for
 // everyone, each person's status in words for the author, each person's
-// reason only for an admin, guardian copies marked, never an address.
+// reason only for an admin, never an address. Guardian copies are a count
+// for a leader and names only for an admin (DEC-132); a provider's own
+// error reaches only an admin (DEC-52).
 func TestMessageHistoryPrivacy(t *testing.T) {
 	f := newComposeFixture(t)
 	parent := newTestUser(t, f.app, "parent", "password1234", models.RoleMember)
+	f.app.DB.Model(parent).Update("display_name", "Gail Guardian")
+	parent.DisplayName = "Gail Guardian"
 	f.app.DB.Create(&models.GuardianLink{GuardianUserID: parent.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed})
 	f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"})
 	id := f.sendWithOneFailure(t)
+	const raw = "550" // the refusing server's own words: "mail: rcpt: 550 no"
 
 	lead, body := f.history(t, f.leader, id)
-	if strings.Contains(body, "@") {
-		t.Fatalf("an address in the leader's history: %s", body)
+	if strings.Contains(body, "@") || strings.Contains(body, parent.PublicName()) || strings.Contains(body, raw) {
+		t.Fatalf("an address, a guardian's name or a provider error in the leader's history: %s", body)
 	}
 	c := lead.Counts
-	if c.Sent != 2 || c.Failed != 1 || c.Skipped != 2 || c.Queued != 0 || c.Teens != 1 ||
-		lead.SkippedBy[skipOptedOut] != 1 || lead.SkippedBy[skipNotWorking] != 1 || len(lead.Recipients) != 5 || lead.More {
+	if c.Sent != 1 || c.Failed != 1 || c.Skipped != 2 || c.Queued != 0 || c.Teens != 1 || c.GuardianCopies != 1 || c.GuardianCopiesMissed != 0 ||
+		lead.SkippedBy[skipOptedOut] != 1 || lead.SkippedBy[skipNotWorking] != 1 || len(lead.Recipients) != 4 || lead.More || !lead.CanRetry {
 		t.Fatalf("leader counts: %+v", lead)
 	}
 	if r := historyRow(lead, f.teen.PublicName()); r.Status != historySent || !r.Teen || r.Reason != "" {
@@ -70,12 +75,10 @@ func TestMessageHistoryPrivacy(t *testing.T) {
 			t.Fatalf("a leader sees %s's reason: %+v", u.Name, r)
 		}
 	}
-	copied := false
 	for _, r := range lead.Recipients {
-		copied = copied || (r.Name == parent.PublicName() && r.CopyOf == f.teen.PublicName() && !r.Teen)
-	}
-	if !copied || !lead.CanRetry {
-		t.Fatalf("copy mark or retry: %+v", lead)
+		if r.CopyOf != "" {
+			t.Fatalf("a leader sees a guardian copy: %+v", r)
+		}
 	}
 
 	adm, body := f.history(t, f.admin, id)
@@ -83,19 +86,48 @@ func TestMessageHistoryPrivacy(t *testing.T) {
 		t.Fatalf("an address in the admin's history: %s", body)
 	}
 	if historyRow(adm, f.opted.PublicName()).Reason != skipOptedOut || historyRow(adm, f.bouncing.PublicName()).Reason != skipNotWorking ||
-		!strings.HasPrefix(historyRow(adm, f.leaderUser.PublicName()).Reason, "couldn't send") {
+		!strings.Contains(historyRow(adm, f.leaderUser.PublicName()).Reason, raw) || len(adm.Recipients) != 5 {
 		t.Fatalf("admin reasons: %+v", adm.Recipients)
+	}
+	copied := false
+	for _, r := range adm.Recipients {
+		copied = copied || (r.Name == parent.PublicName() && r.CopyOf == f.teen.PublicName() && !r.Teen)
+	}
+	if !copied {
+		t.Fatalf("an admin sees no copy mark: %+v", adm.Recipients)
 	}
 	if w := f.member.do("GET", "/api/v1/messages/"+itoa(id)+"/recipients", nil, false); w.Code != http.StatusNotFound {
 		t.Fatalf("member: %d", w.Code)
 	}
-	// The list says "Partly sent" from one count per message.
+	// The list says "Partly sent" from one count per message, and a leader
+	// reads the provider's error in plain words; an admin reads it as is.
 	var list struct {
 		Messages []messageJSON `json:"messages"`
 	}
-	decodeJSON(t, f.leader.do("GET", "/api/v1/messages", nil, false), &list)
-	if len(list.Messages) != 1 || list.Messages[0].FailedCount != 1 || list.Messages[0].Status != models.MessageSent || list.Messages[0].Error == "" {
+	w := f.leader.do("GET", "/api/v1/messages", nil, false)
+	decodeJSON(t, w, &list)
+	if len(list.Messages) != 1 || list.Messages[0].FailedCount != 1 || list.Messages[0].Status != models.MessageSent ||
+		list.Messages[0].Error != whyProvider || strings.Contains(w.Body.String(), raw) {
 		t.Fatalf("list: %+v", list.Messages)
+	}
+	if b := f.leader.do("GET", "/api/v1/messages/"+itoa(id), nil, false).Body.String(); strings.Contains(b, raw) || !strings.Contains(b, "The email service didn") {
+		t.Fatalf("leader's message: %s", b)
+	}
+	if b := f.admin.do("GET", "/api/v1/messages/"+itoa(id), nil, false).Body.String(); !strings.Contains(b, raw) {
+		t.Fatalf("admin's message: %s", b)
+	}
+}
+
+// Our own plain texts reach everyone as they are; anything else is a
+// provider's words, which only an admin reads.
+func TestMessageErrorWords(t *testing.T) {
+	for _, own := range []string{"", whyAuthorGone, whyAuthorRefused, whyAudienceGone, whyNotPrepared, whyStopped, whyNoSender} {
+		if messageErrorFor(own, false) != own {
+			t.Errorf("%q changed for a leader", own)
+		}
+	}
+	if messageErrorFor("postmark: 503 service unavailable", false) != whyProvider || messageErrorFor("postmark: 503", true) != "postmark: 503" {
+		t.Error("provider text")
 	}
 }
 

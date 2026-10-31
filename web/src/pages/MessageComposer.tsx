@@ -4,7 +4,7 @@ import { useAuth } from "../auth";
 import { Messages, previewHTMLPath } from "../messages-api";
 import type { ComposeOptions, Message, MessagePreview } from "../types";
 import { ERROR_COPY, errorCode, errorText, type ErrorCode } from "../lib/errors";
-import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
+import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
 import { useChurchZoneLoad } from "../lib/useEventZone";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { browserTimeZone, wallClock, wallToInstant, zoneNote } from "../lib/when";
@@ -55,7 +55,7 @@ export function MessageComposerPage() {
   const { id } = useParams<{ id: string }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const site = useSiteName();
   // The schedule is in the church's zone: wait for it, so a saved time is
   // never read on the browser's clock first.
@@ -308,7 +308,7 @@ export function MessageComposerPage() {
   // Try again (DEC-131): only the people it failed for, after asking.
   async function retry() {
     if (!message || busy) return;
-    if (!window.confirm(retryQuestion(history?.counts.failed ?? message.failedCount))) return;
+    if (!window.confirm(retryQuestion(message.failedCount))) return;
     setBusy("retry");
     setRetryError("");
     try {
@@ -382,6 +382,7 @@ export function MessageComposerPage() {
           <p className="text-lg font-semibold">{statusLabel(message, zone)}</p>
           {history && <p className="text-sm">{historyLine(history, message.status)}</p>}
           {history && message.status !== "sending" && history.counts.teens > 0 && <p className="text-sm text-text-muted">{historyTeenLine(history.counts.teens)}</p>}
+          {history && message.status !== "sending" && guardianLine(history.counts) && <p className="text-sm text-text-muted">{guardianLine(history.counts)}</p>}
           {historyFailed && !history && (
             <p className="text-sm text-text-muted">
               We couldn't load who got it. <Button variant="link" onClick={retryLoad}>Load again</Button>
@@ -397,7 +398,7 @@ export function MessageComposerPage() {
             <dd>{message.authorName}</dd>
           </>}
         </dl>
-        {history && <WhoGotIt history={history} />}
+        {history && <WhoGotIt history={history} withCopies={isAdmin} />}
         <div className="border-t border-border pt-4">
           <Suspense fallback={<Skeleton kind="lines" label="Loading the message…" />}>
             <RichTextView html={message.bodyHtml} />

@@ -28,18 +28,30 @@ export function message(over: Partial<Message> = {}): Message {
   };
 }
 
-// A sent message's history (M3.5b): two reached, a teen among them, a
-// guardian's copy, one skipped.
+// A sent message's history (M3.5b) as a leader gets it: three reached, a
+// teen among them, one skipped, and a guardian's copy counted, not named
+// (DEC-132). adminRecipients is the same list as an admin gets it.
 export function recipients(over: Partial<MessageRecipients> = {}): MessageRecipients {
   return {
-    counts: { sent: 3, delivered: 0, bounced: 0, complained: 0, failed: 0, skipped: 1, queued: 0, teens: 1 },
+    counts: { sent: 2, delivered: 0, bounced: 0, complained: 0, failed: 0, skipped: 1, queued: 0, teens: 1, guardianCopies: 1, guardianCopiesMissed: 0 },
     skippedBy: { "turned off messages from leaders": 1 },
     recipients: [
       { name: "Ann Adult", teen: false, status: "sent" },
       { name: "Opal Opted", teen: false, status: "missed" },
-      { name: "Pat Parent", teen: false, status: "sent", copyOf: "Tia Teen" },
       { name: "Tia Teen", teen: true, status: "sent" },
     ],
     more: false, canRetry: false, ...over,
   };
+}
+
+export function adminRecipients(over: Partial<MessageRecipients> = {}): MessageRecipients {
+  return recipients({
+    recipients: [
+      { name: "Ann Adult", teen: false, status: "sent" },
+      { name: "Opal Opted", teen: false, status: "missed", reason: "turned off messages from leaders" },
+      { name: "Pat Parent", teen: false, status: "sent", copyOf: "Tia Teen" },
+      { name: "Tia Teen", teen: true, status: "sent" },
+    ],
+    ...over,
+  });
 }

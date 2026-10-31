@@ -21,18 +21,26 @@ import (
 // for everyone, each person's status in words for the author, each
 // person's own reason only for an admin, and never an address (DEC-31).
 
-// recipientCountsJSON counts a message's rows by status. Skipped is the
-// suppressed rows (by reason in skippedBy); Teens counts the teens it was
-// for, not skipped (DEC-20).
+// recipientCountsJSON counts the people a message was for, by status;
+// guardian copies are counted apart (DEC-132). Skipped is the suppressed
+// rows (by reason in skippedBy); Teens counts the teens it was for, not
+// skipped (DEC-20). GuardianCopies counts the copies, and
+// GuardianCopiesMissed the ones that didn't go out (skipped, bounced or
+// failed).
 type recipientCountsJSON struct {
-	Sent       int `json:"sent"`
-	Delivered  int `json:"delivered"`
-	Bounced    int `json:"bounced"`
-	Complained int `json:"complained"`
-	Failed     int `json:"failed"`
-	Skipped    int `json:"skipped"`
-	Queued     int `json:"queued"`
-	Teens      int `json:"teens"`
+	Sent                 int `json:"sent"`
+	Delivered            int `json:"delivered"`
+	Bounced              int `json:"bounced"`
+	Complained           int `json:"complained"`
+	Failed               int `json:"failed"`
+	Skipped              int `json:"skipped"`
+	Queued               int `json:"queued"`
+	Teens                int `json:"teens"`
+	GuardianCopies       int `json:"guardianCopies"`
+	GuardianCopiesMissed int `json:"guardianCopiesMissed"`
+	// Every row and every failed row, copies included: what "Try again"
+	// works from.
+	rows, failedRows int
 }
 
 // Each person's status as the history lists it. A leader or host can't tell
@@ -81,15 +89,28 @@ func (a *App) recipientCounts(id uint) (recipientCountsJSON, map[string]int, err
 		Status string
 		Reason string
 		Teen   bool
+		Copy   bool
 		N      int
 	}
-	err := a.DB.Raw(`SELECT r.status, CASE WHEN r.status = ? THEN r.reason ELSE '' END AS reason,
-		(u.account_type = ? AND r.copy_of_user_id IS NULL) AS teen, count(*) AS n
+	err := a.DB.Raw(`SELECT r.status, CASE WHEN r.status = ? AND r.copy_of_user_id IS NULL THEN r.reason ELSE '' END AS reason,
+		(u.account_type = ? AND r.copy_of_user_id IS NULL) AS teen, r.copy_of_user_id IS NOT NULL AS copy, count(*) AS n
 		FROM message_recipients r JOIN users u ON u.id = r.user_id
-		WHERE r.message_id = ? GROUP BY 1, 2, 3`, models.RecipientSuppressed, models.AccountTeen, id).Scan(&groups).Error
+		WHERE r.message_id = ? GROUP BY 1, 2, 3, 4`, models.RecipientSuppressed, models.AccountTeen, id).Scan(&groups).Error
 	var c recipientCountsJSON
 	by := map[string]int{}
 	for _, g := range groups {
+		c.rows += g.N
+		if g.Status == models.RecipientFailed {
+			c.failedRows += g.N
+		}
+		if g.Copy {
+			c.GuardianCopies += g.N
+			switch g.Status {
+			case models.RecipientSuppressed, models.RecipientBounced, models.RecipientFailed:
+				c.GuardianCopiesMissed += g.N
+			}
+			continue
+		}
 		switch g.Status {
 		case models.RecipientSent:
 			c.Sent += g.N
@@ -112,10 +133,6 @@ func (a *App) recipientCounts(id uint) (recipientCountsJSON, map[string]int, err
 		}
 	}
 	return c, by, err
-}
-
-func (c recipientCountsJSON) total() int {
-	return c.Sent + c.Delivered + c.Bounced + c.Complained + c.Failed + c.Skipped + c.Queued
 }
 
 // historyStatus is a row's status in the history's terms, and for an
@@ -154,9 +171,10 @@ func historyStatus(status, reason, errText string, admin bool) (string, string) 
 	return out, why
 }
 
-// historyRecipients lists the first rows by name in one query, with each
-// guardian copy's teen.
-func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, error) {
+// historyRecipients lists the first rows by name in one query, and says
+// whether there are more. Only an admin's list has guardian copies, each
+// with its teen; a leader or host never sees a guardian's name (DEC-132).
+func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, bool, error) {
 	var rows []struct {
 		Status          string
 		Reason          string
@@ -171,9 +189,13 @@ func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, er
 	err := a.DB.Raw(`SELECT r.status, r.reason, r.error, r.copy_of_user_id IS NOT NULL AS copy,
 		u.name, u.display_name, u.account_type, COALESCE(t.name, '') AS teen_name, COALESCE(t.display_name, '') AS teen_display_name
 		FROM message_recipients r JOIN users u ON u.id = r.user_id LEFT JOIN users t ON t.id = r.copy_of_user_id
-		WHERE r.message_id = ?
+		WHERE r.message_id = ? AND (? OR r.copy_of_user_id IS NULL)
 		ORDER BY lower(COALESCE(NULLIF(u.display_name, ''), NULLIF(u.name, ''), 'Member')), r.id
-		LIMIT ?`, id, maxHistoryRecipients).Scan(&rows).Error
+		LIMIT ?`, id, admin, maxHistoryRecipients+1).Scan(&rows).Error
+	more := len(rows) > maxHistoryRecipients
+	if more {
+		rows = rows[:maxHistoryRecipients]
+	}
 	out := make([]historyRecipientJSON, 0, len(rows))
 	for _, r := range rows {
 		u := models.User{Name: r.Name, DisplayName: r.DisplayName}
@@ -185,7 +207,7 @@ func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, er
 		}
 		out = append(out, h)
 	}
-	return out, err
+	return out, more, err
 }
 
 // retryable: m has people to try again (failed rows on a settled send), or
@@ -194,10 +216,10 @@ func retryable(m *models.Message, c recipientCountsJSON) bool {
 	switch {
 	case m.Status != models.MessageSent && m.Status != models.MessageFailed:
 		return false
-	case c.Failed > 0:
+	case c.failedRows > 0:
 		return true
 	}
-	return m.Status == models.MessageFailed && c.total() == 0 && m.Error == whyNotPrepared
+	return m.Status == models.MessageFailed && c.rows == 0 && m.Error == whyNotPrepared
 }
 
 // authorMayResend checks again, as message.send does, that m's author is
@@ -240,12 +262,12 @@ func (a *App) apiMessageRecipients(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load who got the message")
 		return
 	}
-	list, err := a.historyRecipients(m.ID, admin)
+	list, more, err := a.historyRecipients(m.ID, admin)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load who got the message")
 		return
 	}
-	out := messageRecipientsJSON{Counts: counts, SkippedBy: by, Recipients: list, More: counts.total() > len(list)}
+	out := messageRecipientsJSON{Counts: counts, SkippedBy: by, Recipients: list, More: more}
 	if retryable(m, counts) {
 		if out.CanRetry, err = a.authorMayResend(m); err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not load who got the message")
@@ -295,7 +317,7 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 			return nil
 		}
 		var ids []uint
-		if counts.Failed == 0 {
+		if counts.failedRows == 0 {
 			if err := claim(map[string]any{"status": models.MessageScheduled, "scheduled_at": now, "error": "", "updated_at": now}); err != nil {
 				return err
 			}

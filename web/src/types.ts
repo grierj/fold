@@ -1093,8 +1093,10 @@ export interface Message {
   failedCount: number;
 }
 
-// A sent message's rows by status (M3.5b). skipped never went out
-// (counted by reason in skippedBy); teens are the teens it was for.
+// The people a sent message was for, by status (M3.5b). skipped never went
+// out (counted by reason in skippedBy); teens are the teens it was for.
+// Guardian copies are counted apart (DEC-132): guardianCopiesMissed are the
+// copies that didn't go out.
 export interface MessageRecipientCounts {
   sent: number;
   delivered: number;
@@ -1104,6 +1106,8 @@ export interface MessageRecipientCounts {
   skipped: number;
   queued: number;
   teens: number;
+  guardianCopies: number;
+  guardianCopiesMissed: number;
 }
 
 // "missed" is a skip, bounce, complaint or failure: a leader or host sees
@@ -1111,7 +1115,7 @@ export interface MessageRecipientCounts {
 export type HistoryStatus = "sent" | "delivered" | "missed" | "waiting";
 
 // One person in a message's history: a name, a Teen badge, a guardian
-// copy's teen (copyOf), never an address (DEC-31).
+// copy's teen (copyOf, admins only: DEC-132), never an address (DEC-31).
 export interface MessageHistoryRecipient {
   name: string;
   teen: boolean;

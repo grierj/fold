@@ -117,7 +117,25 @@ func toMessageJSON(m *models.Message, me *models.User, facts messageFacts) messa
 	return messageJSON{ID: m.ID, Channel: m.Channel, Status: m.Status, Subject: m.Subject, BodyHTML: m.BodyHTML,
 		Audience: au, ScheduledAt: m.ScheduledAt, SentAt: m.SentAt, AuthorName: name,
 		Editable:  (m.Status == models.MessageDraft || m.Status == models.MessageScheduled) && policy.CanEditMessage(asPerson(me), isAuthor),
-		UpdatedAt: m.UpdatedAt, Error: m.Error, FailedCount: facts.failed[m.ID]}
+		UpdatedAt: m.UpdatedAt, Error: messageErrorFor(m.Error, policy.IsAdmin(asPerson(me))), FailedCount: facts.failed[m.ID]}
+}
+
+// whyProvider stands in for a provider's own error text, which a leader
+// or host can't act on (DEC-52); admins see the provider's words.
+const whyProvider = "The email service didn't take it. Try again in a little while, or ask an admin to look at the System page."
+
+// messageErrorFor is a stored error as the viewer reads it: the
+// pipeline's own plain texts as they are, anything else (a provider's
+// error) in plain words unless the viewer is an admin.
+func messageErrorFor(stored string, admin bool) string {
+	switch stored {
+	case "", whyAuthorGone, whyAuthorRefused, whyAudienceGone, whyNotPrepared, whyStopped, whyNoSender:
+		return stored
+	}
+	if admin {
+		return stored
+	}
+	return whyProvider
 }
 
 // respondMessage re-reads m and answers with it.

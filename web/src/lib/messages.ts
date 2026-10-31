@@ -1,4 +1,4 @@
-import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageRecipients } from "../types";
+import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageRecipientCounts, MessageRecipients } from "../types";
 import { formatShortDay, formatWhenIn } from "./when";
 
 // The composer's words and audience shapes (M3.4c, PLAN 7.2 and 7.3).
@@ -153,6 +153,18 @@ export function historyLine(h: Pick<MessageRecipients, "counts" | "skippedBy">, 
   if (c.failed) parts.push(`${c.failed} didn't get it`);
   if (c.skipped) parts.push(`${c.skipped} skipped (${reasonList(h.skippedBy)})`);
   return parts.length ? parts.join(" · ") : "No one was on the list.";
+}
+
+// guardianLine counts a settled message's guardian copies (DEC-19): "2
+// guardian copies sent · 1 didn't go out", or "" for none. A leader sees
+// only this count, never the guardians' names (DEC-132).
+export function guardianLine(c: Pick<MessageRecipientCounts, "guardianCopies" | "guardianCopiesMissed">): string {
+  const copies = (n: number) => `${n} guardian ${n === 1 ? "copy" : "copies"}`;
+  const sent = c.guardianCopies - c.guardianCopiesMissed;
+  const parts: string[] = [];
+  if (sent) parts.push(`${copies(sent)} sent`);
+  if (c.guardianCopiesMissed) parts.push(`${sent ? c.guardianCopiesMissed : copies(c.guardianCopiesMissed)} didn't go out`);
+  return parts.join(" · ");
 }
 
 // Each person's status in a message's history, in words.

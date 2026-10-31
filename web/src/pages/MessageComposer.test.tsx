@@ -7,14 +7,15 @@ import { Messages } from "../messages-api";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { ERROR_COPY } from "../lib/errors";
 import { polyfillEditorLayout } from "../test/editor";
-import { composeOptions, message, recipients, summary } from "../test/compose";
+import { adminRecipients, composeOptions, message, recipients, summary } from "../test/compose";
 import { wallClock, wallToInstant } from "../lib/when";
 import { MessageComposerPage } from "./MessageComposer";
 
 // Two days ahead on the church's clock, within the year the API allows.
 const soonDay = () => wallClock(new Date(Date.now() + 2 * 864e5).toISOString(), "America/Boise").day;
 
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader", displayName: "", email: "lee@example.com" }, loading: false, isAdmin: false, canCompose: true }) }));
+const viewer = vi.hoisted(() => ({ isAdmin: false }));
+vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader", displayName: "", email: "lee@example.com" }, loading: false, isAdmin: viewer.isAdmin, canCompose: true }) }));
 vi.mock("../api", async (importActual) => ({
   ...(await importActual<typeof import("../api")>()),
   Site: { get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) },
@@ -52,7 +53,7 @@ beforeEach(() => {
   vi.mocked(Messages.test).mockResolvedValue({ ok: true });
   vi.mocked(Messages.recipients).mockResolvedValue(recipients());
 });
-afterEach(() => vi.clearAllMocks());
+afterEach(() => { vi.clearAllMocks(); viewer.isAdmin = false; });
 
 const editorReady = () => screen.findByRole("textbox", { name: "Message" });
 
@@ -354,47 +355,53 @@ describe("a sent message's history", () => {
     message({ status: "sent", sentAt: "2026-10-30T16:30:00Z", editable: false, ...over });
   const counts = (over: Partial<ReturnType<typeof recipients>["counts"]>) => ({ ...recipients().counts, ...over });
 
-  it("words the counts and lists who got it with Teen badges and copy marks", async () => {
+  it("words the counts and lists who got it with Teen badges, guardian copies only as a count", async () => {
     const user = userEvent.setup();
     vi.mocked(Messages.get).mockResolvedValue({ message: sent() });
     vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ bounced: 1 }) }));
     open("/messages/5");
-    expect(await screen.findByText("Sent to 3 people · 1 bounced · 1 skipped (1 turned off messages from leaders)")).toBeInTheDocument();
+    expect(await screen.findByText("Sent to 2 people · 1 bounced · 1 skipped (1 turned off messages from leaders)")).toBeInTheDocument();
     expect(screen.getByText("1 of the people it was for is a teen.")).toBeInTheDocument();
+    expect(screen.getByText("1 guardian copy sent")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
     await user.click(screen.getByText("See who got it"));
     const rows = within(screen.getByRole("list")).getAllByRole("listitem");
     expect(rows.map((r) => r.textContent)).toEqual([
       "Ann Adult· Sent",
       "Opal Opted· Didn't get it",
-      "Pat ParentCopy for Tia Teen· Sent",
       "Tia TeenTeen· Sent",
     ]);
+    expect(screen.queryByText(/Copy for/)).toBeNull();
   });
 
-  it("shows an admin each person's reason and how many more there are", async () => {
+  it("shows an admin each guardian's copy, each person's reason and how many more there are", async () => {
+    viewer.isAdmin = true;
     const user = userEvent.setup();
     vi.mocked(Messages.get).mockResolvedValue({ message: sent() });
-    vi.mocked(Messages.recipients).mockResolvedValue(recipients({
-      counts: counts({ sent: 250 }), more: true,
-      recipients: [{ name: "Opal Opted", teen: false, status: "missed", reason: "turned off messages from leaders" }],
-    }));
+    vi.mocked(Messages.recipients).mockResolvedValue(adminRecipients({ counts: counts({ sent: 250 }), more: true }));
     open("/messages/5");
     await user.click(await screen.findByText("See who got it"));
-    expect(screen.getByText("· Didn't get it: turned off messages from leaders")).toBeInTheDocument();
-    expect(screen.getByText("And 250 more")).toBeInTheDocument();
+    const rows = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      "Ann Adult· Sent",
+      "Opal Opted· Didn't get it: turned off messages from leaders",
+      "Pat ParentCopy for Tia Teen· Sent",
+      "Tia TeenTeen· Sent",
+      // 250 sent, 1 skipped and 1 copy, less the 4 shown.
+      "And 248 more",
+    ]);
   });
 
   it("shows a failed send's error under the title, and Try again asks before resending", async () => {
     const user = userEvent.setup();
-    vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "failed", editable: false, error: "The email service didn't answer." }) });
+    vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "failed", editable: false, failedCount: 4, error: "The email service didn't take it. Try again in a little while, or ask an admin to look at the System page." }) });
     vi.mocked(Messages.recipients).mockResolvedValue(recipients({
       counts: counts({ sent: 0, failed: 4, skipped: 0, teens: 0 }), skippedBy: {}, canRetry: true,
       recipients: [{ name: "Ann Adult", teen: false, status: "missed" }],
     }));
     open("/messages/5");
     const banner = (await screen.findByText("This message didn't go out")).closest("[role=status]") as HTMLElement;
-    expect(banner).toHaveTextContent("The email service didn't answer.");
+    expect(banner).toHaveTextContent("The email service didn't take it.");
     expect(screen.getByText("Failed")).toBeInTheDocument();
     expect(await screen.findByText("4 didn't get it")).toBeInTheDocument();
     const again = await within(banner).findByRole("button", { name: "Try again" });
@@ -436,7 +443,7 @@ describe("a sent message's history", () => {
       vi.mocked(Messages.get).mockResolvedValue({ message: sent({ updatedAt: "2026-10-31T16:00:00Z" }) });
       vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ skipped: 0 }) }));
       await act(() => vi.advanceTimersByTimeAsync(5000));
-      expect(await screen.findByText("Sent to 3 people")).toBeInTheDocument();
+      expect(await screen.findByText("Sent to 2 people")).toBeInTheDocument();
       const gets = vi.mocked(Messages.get).mock.calls.length;
       await act(() => vi.advanceTimersByTimeAsync(20000));
       expect(Messages.get).toHaveBeenCalledTimes(gets);

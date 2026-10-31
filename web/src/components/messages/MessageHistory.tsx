@@ -89,7 +89,8 @@ export function SendProblem({ message, history, busy, error, onRetry }: {
   onRetry: () => void;
 }) {
   const failedAll = message.status === "failed";
-  const some = message.status === "sent" ? history?.counts.failed ?? message.failedCount : 0;
+  // Every failed send, guardian copies included: Try again resends them all.
+  const some = message.status === "sent" ? message.failedCount : 0;
   if (!failedAll && !some) return null;
   const canRetry = !!history?.canRetry;
   const title = failedAll ? "This message didn't go out" : `${people(some)} didn't get this`;
@@ -110,12 +111,15 @@ export function SendProblem({ message, history, busy, error, onRetry }: {
   );
 }
 
-// Everyone the message named, guardian copies included.
-const totalOf = (c: MessageRecipientCounts) => c.sent + c.delivered + c.bounced + c.complained + c.failed + c.skipped + c.queued;
+// Everyone the list could show: the people it was for, and for an admin
+// the guardian copies too (DEC-132).
+const totalOf = (c: MessageRecipientCounts, withCopies: boolean) =>
+  c.sent + c.delivered + c.bounced + c.complained + c.failed + c.skipped + c.queued + (withCopies ? c.guardianCopies : 0);
 
-// WhoGotIt is the "See who got it" list: the first 200 by name.
-export function WhoGotIt({ history }: { history: MessageRecipients }) {
-  const total = totalOf(history.counts);
+// WhoGotIt is the "See who got it" list: the first 200 by name. Only an
+// admin's has guardian copies (withCopies); a leader's counts them above.
+export function WhoGotIt({ history, withCopies }: { history: MessageRecipients; withCopies: boolean }) {
+  const total = totalOf(history.counts, withCopies);
   if (history.recipients.length === 0) return null;
   return (
     <details>
