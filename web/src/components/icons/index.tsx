@@ -167,3 +167,38 @@ export function UserPlusIcon(props: IconProps) {
     </Icon>
   );
 }
+
+export function MailIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <rect width="20" height="16" x="2" y="4" rx="2" />
+      <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" />
+    </Icon>
+  );
+}
+
+export function ListIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3 12h.01" />
+      <path d="M3 18h.01" />
+      <path d="M3 6h.01" />
+      <path d="M8 12h13" />
+      <path d="M8 18h13" />
+      <path d="M8 6h13" />
+    </Icon>
+  );
+}
+
+export function ListOrderedIcon(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M10 12h11" />
+      <path d="M10 18h11" />
+      <path d="M10 6h11" />
+      <path d="M4 10h2" />
+      <path d="M4 6h1v4" />
+      <path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1" />
+    </Icon>
+  );
+}

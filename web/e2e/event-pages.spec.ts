@@ -56,6 +56,8 @@ test("the leader group page at 390 shows one primary action and a keyboard-frien
   await expect(menu).toBeInViewport({ ratio: 1 });
   for (const item of await menu.getByRole("menuitem").all()) expect((await item.boundingBox())!.height).toBeGreaterThanOrEqual(44);
   await page.keyboard.press("ArrowDown");
+  await expect(menu.getByRole("menuitem", { name: "Email members" })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
   await expect(menu.getByRole("menuitem", { name: "Change cover photo" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();

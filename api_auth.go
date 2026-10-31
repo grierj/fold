@@ -12,6 +12,7 @@ import (
 
 	"fold/internal/audit"
 	foldmail "fold/internal/mail"
+	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -86,7 +87,7 @@ func (a *App) apiLogin(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, "your account is waiting for consent")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(user)})
+	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(user), "canCompose": a.canComposeOrLog(user)})
 }
 
 // normalizeEmail trims and lower-cases an address for lookups and throttle
@@ -299,7 +300,22 @@ func (a *App) apiLogout(c *gin.Context) {
 }
 
 func (a *App) apiMe(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(apiUser(c))})
+	me := apiUser(c)
+	c.JSON(http.StatusOK, gin.H{"user": a.toUserJSON(me), "canCompose": a.canComposeOrLog(me)})
+}
+
+// canComposeOrLog says whether the nav offers Messages (M3.4c). A failed
+// read only hides the link; the composer's own routes check again.
+func (a *App) canComposeOrLog(me *models.User) bool {
+	// Admins always can; skip the two reads on every page load.
+	if policy.IsAdmin(asPerson(me)) {
+		return true
+	}
+	ok, err := a.canCompose(me)
+	if err != nil {
+		log.Printf("can compose for user %d: %v", me.ID, err)
+	}
+	return ok
 }
 
 // apiMyGroups lists the groups the current user is an active member of.

@@ -142,6 +142,15 @@ var tsContracts = []struct {
 	{registeredByJSON{}, "RegisteredBy"},
 	{householdAttendeeJSON{}, "HouseholdAttendee"},
 	{calendarFeedJSON{}, "CalendarFeed"},
+	{messageJSON{}, "Message"},
+	{audienceJSON{}, "MessageAudience"},
+	{audienceSummaryJSON{}, "AudienceSummary"},
+	{audienceRecipientJSON{}, "AudienceRecipient"},
+	{composeOptionsJSON{}, "ComposeOptions"},
+	{composeGroupJSON{}, "ComposeGroup"},
+	{composeEventJSON{}, "ComposeEvent"},
+	{composeDateJSON{}, "ComposeDate"},
+	{renderedMessage{}, "MessagePreview"},
 }
 
 var tsFieldRe = regexp.MustCompile(`^\s+(\w+)\??:`)
@@ -387,8 +396,15 @@ func TestNoVideoEmbed(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if strings.Contains(strings.ToLower(string(b)), "<iframe") {
-			t.Errorf("%s embeds an <iframe>; video is a link out in a new tab (DEC-16)", p)
+		// The composer's email preview is the one iframe allowed: our own
+		// page, sandboxed with no scripts (M3.4c). It lives only in the
+		// composer and says why with "iframe-ok:" on the line before it.
+		allowed := filepath.ToSlash(p) == "web/src/pages/MessageComposer.tsx"
+		lines := strings.Split(string(b), "\n")
+		for i, line := range lines {
+			if strings.Contains(strings.ToLower(line), "<iframe") && (!allowed || i == 0 || !strings.Contains(lines[i-1], "iframe-ok:")) {
+				t.Errorf("%s:%d embeds an <iframe>; video is a link out in a new tab (DEC-16)", p, i+1)
+			}
 		}
 		return nil
 	})

@@ -1757,18 +1757,18 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - [x] Without signing in, the email settings page shows and changes the person's email kinds (M3.3b)
 - Tests: header tests; token tamper tests.
 
-**M3.4 Composer**
+**M3.4 Composer** (built, except the SMS donation warning, which waits for texting: DEC-117)
 - Depends on: M3.3, M0.4
 - Scope: 7.3. TipTap editor, bluemonday sanitizing, SMS counter, audience picker with live counts and teen counts, preview, test send, scheduling, merge fields. Three slices (14.1):
   - **M3.4a Messages, audiences and permissions** (built): migration 00054 `messages`, `policy.CanMessageAudience`, the PLAN 7.2 audiences with live counts (skipped reasons, teen count), sanitized drafts, scheduling and cancelling; email only until texting is set up (DEC-117).
   - **M3.4b Content** (built): HTML email (a mobile-safe template, a generated plain-text part) in every adapter, merge fields, preview and "Send a test to me", and the SMS segment counter and donation-ask warning (Go and TypeScript, one table of cases), built though the SMS tab stays hidden (DEC-117).
-  - **M3.4c The composer page**: TipTap (lazy-loaded), the audience picker with live counts, preview, test send and scheduling; images in email wait until after M3.5 (DEC-118).
+  - **M3.4c The composer page** (built): Messages (`/messages`, in the nav for people who can compose) and the composer (`/messages/new`, `/messages/:id`), opened from a group's Email members and an event's or date's Email people going; TipTap (lazy-loaded) with a button block and Insert field, the audience picker with live counts and Teen badges, preview, test send and scheduling in the church's zone; the SMS tab is built and hidden (`smsEnabled`, DEC-117); images in email wait until after M3.5 (DEC-118).
 - Acceptance:
   - [x] 160 GSM-7 characters = 1 segment; 161 = 2 segments; 70 UCS-2 code units = 1 segment and 71 = 2 segments (one emoji counts as 2 units) (counts include the auto prefix and footer) (`sms-cases.json`, run by Go and TypeScript)
   - [x] `<script>`, `on*` attributes, and `javascript:` links are stripped
   - [x] Leaders see only own groups and own events in the picker, and hosts see only events they host; the API refuses other targets
+  - [x] The recipient preview shows Teen badges and a teen count (DEC-20) (the API in M3.4a; the page in M3.4c)
   - [ ] An SMS mentioning giving or donations (the 7.3 word list, or a link to a giving page: a giving word in the address or a giving service) shows the donation-ask warning (DEC-3) (the check is built and tested in M3.4b; the warning shows in the SMS tab, hidden until texting is set up, DEC-117; the giving-page setting comes with it, DEC-120)
-  - [x] The recipient preview shows Teen badges and a teen count (DEC-20) (the API; the page in M3.4c)
 - Tests: segment table tests; sanitizer tests; policy tests; Playwright compose-and-schedule test.
 
 **M3.5 Send pipeline**

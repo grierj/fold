@@ -73,12 +73,7 @@ func newComposeFixture(t *testing.T) composeFixture {
 	return f
 }
 
-type composeOptions struct {
-	CanCompose         bool               `json:"canCompose"`
-	CanMessageEveryone bool               `json:"canMessageEveryone"`
-	Groups             []composeGroupJSON `json:"groups"`
-	Events             []composeEventJSON `json:"events"`
-}
+type composeOptions = composeOptionsJSON
 
 func (f composeFixture) options(t *testing.T, c *apiClient) composeOptions {
 	t.Helper()
@@ -113,6 +108,78 @@ func TestComposerOffersOnlyWhatTheAuthorMayMessage(t *testing.T) {
 	}
 	if len(f.options(t, f.leader).Events[0].Dates) != 1 {
 		t.Fatal("events list their upcoming dates")
+	}
+}
+
+// ?event=<id> answers only that event, by the same rules, for the date
+// page's "Email people going" (M3.4c).
+func TestComposeOptionsForOneEvent(t *testing.T) {
+	f := newComposeFixture(t)
+	one := func(c *apiClient, id uint) composeOptions {
+		t.Helper()
+		var o composeOptions
+		decodeJSON(t, c.do("GET", "/api/v1/messages/compose?event="+itoa(id), nil, false), &o)
+		return o
+	}
+	if o := one(f.leader, f.groupEvent.ID); len(o.Groups) != 0 || eventTitles(o) != "Book night" || len(o.Events[0].Dates) != 1 {
+		t.Fatalf("leader, own event: %+v", o)
+	}
+	for name, tc := range map[string]struct {
+		c  *apiClient
+		id uint
+	}{"leader, another's event": {f.leader, f.otherEv.ID}, "host, unhosted church event": {f.host, f.otherCW.ID}, "member": {f.member, f.groupEvent.ID}, "no such event": {f.admin, 99999}} {
+		if o := one(tc.c, tc.id); len(o.Events) != 0 || len(o.Groups) != 0 {
+			t.Errorf("%s: %+v", name, o)
+		}
+	}
+	if o := one(f.host, f.churchEvent.ID); eventTitles(o) != "Picnic" {
+		t.Fatalf("host, hosted event: %+v", o)
+	}
+	if o := one(f.admin, f.otherEv.ID); eventTitles(o) != "Rehearsal" {
+		t.Fatalf("admin: %+v", o)
+	}
+	if w := f.leader.do("GET", "/api/v1/messages/compose?event=nope", nil, false); w.Code != http.StatusBadRequest {
+		t.Fatalf("bad id: %d", w.Code)
+	}
+}
+
+// The SMS tab stays hidden until texting can be set up (DEC-117, M3.7).
+func TestComposeOptionsSayTextingIsOff(t *testing.T) {
+	f := newComposeFixture(t)
+	for _, c := range []*apiClient{f.admin, f.leader, f.member} {
+		var raw map[string]any
+		decodeJSON(t, c.do("GET", "/api/v1/messages/compose", nil, false), &raw)
+		if on, ok := raw["smsEnabled"].(bool); !ok || on {
+			t.Fatalf("smsEnabled: %v", raw["smsEnabled"])
+		}
+	}
+}
+
+// The session says whether to offer Messages in the nav (M3.4c): leaders,
+// hosts and admins, not plain members.
+func TestSessionSaysWhoCanCompose(t *testing.T) {
+	f := newComposeFixture(t)
+	for name, tc := range map[string]struct {
+		c    *apiClient
+		want bool
+	}{"admin": {f.admin, true}, "leader": {f.leader, true}, "host": {f.host, true}, "member": {f.member, false}} {
+		var me struct {
+			CanCompose bool `json:"canCompose"`
+		}
+		decodeJSON(t, tc.c.do("GET", "/api/v1/auth/me", nil, false), &me)
+		if me.CanCompose != tc.want {
+			t.Errorf("%s: canCompose %v, want %v", name, me.CanCompose, tc.want)
+		}
+	}
+	// Signing in answers it too, so the nav is right before the next read.
+	c := newAPIClient(t, f.app)
+	c.fetchCSRF()
+	var login struct {
+		CanCompose bool `json:"canCompose"`
+	}
+	decodeJSON(t, c.do("POST", "/api/v1/auth/login", map[string]string{"email": testEmail("leader"), "password": "password1234"}, true), &login)
+	if !login.CanCompose {
+		t.Fatal("login: a leader can compose")
 	}
 }
 

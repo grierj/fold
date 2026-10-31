@@ -226,3 +226,34 @@
   .segment[aria-pressed="true"] { @apply relative z-10 border-primary bg-primary text-primary-foreground hover:text-primary-foreground; }
   .segment[aria-pressed="true"]::before { content: "✓" / ""; }
 }
+
+/* The composer's email editor (M3.4c). TipTap's injected CSS is off (CSP,
+   DEC-37), so its base rules and the formatting live here, in tokens. */
+@layer components {
+  /* A formatting toggle: pressed is filled with a strong edge. */
+  .toolbar-button { @apply inline-flex items-center justify-center min-h-11 min-w-11 rounded-md border border-transparent px-2 text-sm font-semibold text-text hover:bg-sunken; }
+  .toolbar-button[aria-pressed="true"] { @apply border-primary-border bg-primary-subtle text-primary-on-subtle; }
+
+  .ProseMirror { position: relative; word-wrap: break-word; white-space: pre-wrap; white-space: break-spaces; font-variant-ligatures: none; font-feature-settings: "liga" 0; }
+  .ProseMirror [contenteditable="false"] { white-space: normal; }
+  .ProseMirror-gapcursor { display: none; pointer-events: none; position: absolute; margin: 0; }
+  .ProseMirror-gapcursor::after { content: ""; display: block; position: absolute; top: -2px; width: 20px; border-top: 1px solid var(--color-text); }
+  .ProseMirror-focused .ProseMirror-gapcursor { display: block; }
+  .ProseMirror-hideselection *::selection { background: transparent; }
+  .ProseMirror-hideselection * { caret-color: transparent; }
+
+  .rich-text { @apply text-base leading-relaxed text-text; }
+  .rich-text-editable { @apply min-h-48 px-4 py-3; }
+  .rich-text-editable:focus-visible { outline-offset: -2px; }
+  .rich-text > * + * { @apply mt-3; }
+  .rich-text h2 { @apply text-xl font-bold; }
+  .rich-text h3 { @apply text-lg font-semibold; }
+  .rich-text ul { @apply list-disc pl-6; }
+  .rich-text ol { @apply list-decimal pl-6; }
+  .rich-text li > p { @apply m-0; }
+  .rich-text blockquote { @apply border-l-4 border-border-strong pl-4 text-text-muted; }
+  .rich-text hr { @apply border-border; }
+  .rich-text a { @apply font-semibold text-primary underline; }
+  /* A button block, drawn as the email draws it. */
+  .rich-text a.fold-button { @apply inline-block rounded-md bg-primary px-5 py-2.5 text-primary-foreground no-underline; }
+}

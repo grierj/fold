@@ -88,3 +88,25 @@ it("uses a labelled phone pill so the church name keeps its space", async () => 
   expect(phone).toHaveClass("min-h-11", "whitespace-nowrap");
   expect(phone).toHaveTextContent("New group");
 });
+
+it("shows Messages in the top nav only to people who can compose (M3.4c)", async () => {
+  const user = { id: 2, name: "Lee", displayName: "", avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50 };
+  auth.mockReturnValue({ user, loading: false, logout: vi.fn(), isAdmin: false, canCompose: false });
+  const { unmount } = render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
+  await screen.findByText("Grace Community Church");
+  expect(screen.queryByRole("link", { name: "Messages" })).not.toBeInTheDocument();
+  unmount();
+  auth.mockReturnValue({ user, loading: false, logout: vi.fn(), isAdmin: false, canCompose: true });
+  const { unmount: unmount2 } = render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
+  await screen.findByText("Grace Community Church");
+  const link = within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Messages" });
+  expect(link).toHaveAttribute("href", "/messages");
+  // From lg up, beside the other links; below that it is on Me, so the
+  // church's name keeps its room.
+  expect(link.parentElement).toHaveClass("hidden", "lg:contents");
+  unmount2();
+  auth.mockReturnValue({ user, loading: false, logout: vi.fn(), isAdmin: true, canCompose: true });
+  render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
+  await screen.findByText("Grace Community Church");
+  expect(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Messages" }).parentElement).toHaveClass("hidden", "lg:contents");
+});

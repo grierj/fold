@@ -1,13 +1,14 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, RouterProvider, Routes, createMemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, DateRooms, Events, Households, SeriesRooms, Site } from "../api";
 import type { EventDetailResponse, NeedsRoom } from "../types";
 import { occurrence } from "../test/occurrence";
 import { EventDetail } from "./EventDetail";
 
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false }) }));
+const composer = vi.hoisted(() => ({ on: false }));
+vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false, canCompose: composer.on }) }));
 vi.mock("../api", async (importActual) => ({
   ...(await importActual<typeof import("../api")>()),
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
@@ -747,5 +748,36 @@ describe("EventDetail dates that need a room", () => {
     await screen.findAllByRole("article");
     expect(screen.queryByRole("heading", { name: /Dates that need a room/ })).not.toBeInTheDocument();
     expect(SeriesRooms.list).not.toHaveBeenCalled();
+  });
+});
+
+describe("Email people going (M3.4c)", () => {
+  beforeEach(() => { vi.mocked(Households.mine).mockResolvedValue({ household: null }); });
+
+  it("writes to the whole event from its menu, and to one date from that date's menu", async () => {
+    composer.on = true;
+    try {
+      vi.mocked(Events.get).mockResolvedValue({ ...page, event: { ...page.event, recurrenceRule: "FREQ=WEEKLY" }, occurrences: [occurrence({ id: 41, recurrenceRule: "FREQ=WEEKLY" }), occurrence({ id: 42, date: "2026-12-08", recurrenceRule: "FREQ=WEEKLY" })] });
+      const router = createMemoryRouter([{ path: "/events/:id", element: <EventDetail /> }, { path: "/messages/new", element: <p>Composer</p> }], { initialEntries: ["/events/7"] });
+      render(<RouterProvider router={router} />);
+      await userEvent.click(await screen.findByRole("button", { name: "More event actions" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Email people going" }));
+      expect(router.state.location.search).toBe("?event=7");
+      cleanup();
+      const again = createMemoryRouter([{ path: "/events/:id", element: <EventDetail /> }, { path: "/messages/new", element: <p>Composer</p> }], { initialEntries: ["/events/7"] });
+      render(<RouterProvider router={again} />);
+      await userEvent.click(await screen.findByRole("button", { name: "More for 2026-12-08" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Email people going" }));
+      expect(again.state.location.search).toBe("?occurrence=42");
+    } finally {
+      composer.on = false;
+    }
+  });
+
+  it("isn't offered to someone who can't compose", async () => {
+    vi.mocked(Events.get).mockResolvedValue(page);
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "More event actions" }));
+    expect(screen.queryByRole("menuitem", { name: "Email people going" })).not.toBeInTheDocument();
   });
 });
