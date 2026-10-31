@@ -18,6 +18,7 @@ const NewChurchEvent = lazy(() => import("./pages/NewChurchEvent").then((m) => (
 const ProfilePage = lazy(() => import("./pages/Profile").then((m) => ({ default: m.ProfilePage })));
 const NotificationsPage = lazy(() => import("./pages/Notifications").then((m) => ({ default: m.NotificationsPage })));
 const CalendarPage = lazy(() => import("./pages/Calendar").then((m) => ({ default: m.CalendarPage })));
+const RoomCalendarPage = lazy(() => import("./pages/RoomCalendar").then((m) => ({ default: m.RoomCalendarPage })));
 const ForgotPassword = lazy(() => import("./pages/ForgotPassword").then((m) => ({ default: m.ForgotPassword })));
 const ResetPassword = lazy(() => import("./pages/ResetPassword").then((m) => ({ default: m.ResetPassword })));
 const Invite = lazy(() => import("./pages/Invite").then((m) => ({ default: m.Invite })));
@@ -81,6 +82,7 @@ export default function App() {
         <Route path="/events/:id" element={<EventDetail />} />
         <Route path="/events/:id/dates/:date" element={<Suspense fallback={<Skeleton kind="page" label="Loading this date…" />}><EventDatePage /></Suspense>} />
         <Route path="/calendar" element={<CalendarPage />} />
+        <Route path="/calendar/rooms" element={<RoomCalendarPage />} />
         <Route path="/my-groups" element={<MyGroups />} />
         <Route path="/profile/:section?" element={<ProfilePage />} />
         <Route path="/add-requests" element={<Suspense fallback={<Skeleton kind="page" label="Loading add requests…" />}><AddRequestsPage /></Suspense>} />

@@ -684,6 +684,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// The calendar (M1.6): every occurrence the viewer may see over a
 	// date range, as slim rows with no attendee data.
 	v1.GET("/calendar", a.optionalUser(), a.apiCalendar)
+	// The by-room view (M2.2a): signed-in adults, 404 while rooms are off.
+	v1.GET("/calendar/rooms", a.roomsOn(), a.apiAuth(), a.apiRoomCalendar)
 	v1.POST("/events", a.apiAuth(), a.apiAdmin(), a.apiCreateChurchEvent)
 	// Video (M1.8): mint a Jitsi room URL (leaders, hosts, admins).
 	v1.POST("/events/video/jitsi", a.apiAuth(), a.apiGenerateJitsiLink)

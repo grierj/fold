@@ -1214,6 +1214,19 @@ DELETE /api/v1/admin/rooms/:id/feed → 200 {feed: {hasToken: false, createdAt: 
 
 Admins only, and 404 while rooms are off or for a room that doesn't exist; POST is also 404 for a deactivated room. A room has at most one working link. `POST` makes it, or a new one, which turns the old one off at once; the raw link is in that response only (32 random bytes, base64url; only the SHA-256 is stored, as for personal feeds). Turned-off links stay in `room_feed_tokens` as history. The feed itself is `GET /cal/rooms/<roomId>/<token>.ics` (ICS feeds below).
 
+### By-room view (M2.2a)
+
+```
+GET /api/v1/calendar/rooms?view=day|week&date=YYYY-MM-DD → 200 {timezone, from, to, rooms: [roomCalendarRoom], truncated}
+```
+
+Signed-in adults only (401 signed out); teens get 404, and so does everyone while rooms are off. The window is in the church's time zone (`timezone`): one day, or the Sunday-to-Saturday week holding `date` (`view` defaults to `day`, `date` to today). `from` and `to` are the first and last day, inclusive. `roomCalendarRoom` is `{id, name, building, capacity, restricted, bookings: [roomSlot]}`, active rooms ordered by building and name; restricted rooms are listed for admins only (DEC-104). A `roomSlot` is one booking overlapping the window, by its event's own time (padding not included), in start order:
+
+- a date the viewer can see: `{startsAt, endsAt, eventId, date, title, churchWide?, dateUrl?, groupId?, groupName?, hostedBy?}`. `dateUrl` is set when only that date is open to the viewer (the series isn't). The group appears only when the viewer may see it; an opened event of a hidden group says `hostedBy` the church. An exact-date invitation gives the title and `dateUrl`, never the group. Like the date page, an invitation stops showing a date once that date has ended, so a past invited date is Reserved.
+- any other date: exactly `{startsAt, endsAt, reserved: true}`, with nothing that says whose it is.
+
+Only confirmed bookings show. Admins also see bookings waiting for approval on a pending request, marked `waiting: true` (DEC-109); they hold nothing yet. A booking that lost its room isn't shown. At most 2000 bookings; past that, `truncated` is true.
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

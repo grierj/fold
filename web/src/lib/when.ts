@@ -275,3 +275,23 @@ export function zoneTimeName(tzid: string): string {
   if (!tzid) return "";
   return tzid === "UTC" || tzid === "Etc/UTC" ? "UTC" : zoneName(tzid);
 }
+
+// Minutes from midnight of `day` to the instant, on `zone`'s wall clock,
+// clamped to the day (0 to 1440): a booking that began the evening before
+// starts at 0, one that runs past midnight ends at 1440. The by-room view
+// places its blocks with it.
+export function minuteOfDay(iso: string, day: string, zone: string): number {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(new Date(iso));
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
+  const at = `${get("year")}-${get("month")}-${get("day")}`;
+  if (at < day) return 0;
+  if (at > day) return 1440;
+  return Number(get("hour")) * 60 + Number(get("minute"));
+}
+
+// "7 AM", "12 PM": an hour line's label in the by-room view.
+export function formatHour(hour: number): string {
+  return fmt(`2026-01-01T${String(hour % 24).padStart(2, "0")}:00:00Z`, "UTC", { hour: "numeric" });
+}
