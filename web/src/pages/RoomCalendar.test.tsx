@@ -121,6 +121,32 @@ describe("RoomCalendarPage", () => {
     await vi.waitFor(() => expect(rooms).toHaveBeenLastCalledWith({ view: "day", date: "2026-10-22" }));
   });
 
+  it("waits for the session instead of asking a signed-in person to log in", () => {
+    auth.mockReturnValue({ user: null, isAdmin: false, loading: true });
+    show();
+    expect(screen.queryByRole("link", { name: "Log in" })).not.toBeInTheDocument();
+    expect(screen.getByText("Loading the room calendar…")).toBeInTheDocument();
+  });
+
+  it("keeps the waiting label in view on a short Day block", async () => {
+    auth.mockReturnValue({ user: { id: 1, accountType: "adult" }, isAdmin: true });
+    const short = { ...hall.bookings[0], endsAt: "2026-10-22T01:30:00Z", waiting: true };
+    rooms.mockResolvedValue(day({ rooms: [{ ...hall, bookings: [short] }] }));
+    show();
+    const col = await screen.findByRole("region", { name: /Fellowship Hall/ });
+    expect(within(col).getByRole("link")).toHaveTextContent(/^7:00\sPM Waiting for approval · Bible study$/);
+  });
+
+  it("suggests a narrower range when bookings were left out", async () => {
+    rooms.mockResolvedValue(day({ truncated: true }));
+    const { unmount } = show();
+    expect(await screen.findByText(/Try another day\./)).toBeInTheDocument();
+    unmount();
+    rooms.mockResolvedValue(day({ from: "2026-10-18", to: "2026-10-24", truncated: true }));
+    show("/calendar/rooms?view=week&date=2026-10-21");
+    expect(await screen.findByText(/Try the Day view\./)).toBeInTheDocument();
+  });
+
   it("asks a signed-out visitor to log in", () => {
     auth.mockReturnValue({ user: null, isAdmin: false });
     show();

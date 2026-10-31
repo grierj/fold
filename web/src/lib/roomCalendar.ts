@@ -44,7 +44,9 @@ export function slotsByDay(slots: RoomSlot[], zone: string): Map<string, RoomSlo
   const out = new Map<string, RoomSlot[]>();
   for (const s of [...slots].sort(byStart)) {
     const d = dayOf(s.startsAt, zone);
-    out.set(d, [...(out.get(d) ?? []), s]);
+    const list = out.get(d);
+    if (list) list.push(s);
+    else out.set(d, [s]);
   }
   return out;
 }

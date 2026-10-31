@@ -272,3 +272,127 @@ func TestRoomCalendarReadsAreBatched(t *testing.T) {
 		t.Fatalf("reads grew with bookings: %d then %d", before, after)
 	}
 }
+
+// reservedKeysOK: a reserved slot has exactly its times.
+func reservedKeysOK(t *testing.T, s roomSlotJSON) {
+	t.Helper()
+	raw, _ := json.Marshal(s)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	keys := []string{}
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if strings.Join(keys, ",") != "endsAt,reserved,startsAt" {
+		t.Fatalf("a reserved booking carries %v", keys)
+	}
+}
+
+// Date visibility wins over the series both ways (M1.13): a public event's
+// date made invite-only is Reserved, and an invite-only series' date made
+// public shows that date (with its own link, hosted by the church) to a
+// member outside the group. A non-leader member of the invite-only group
+// sees its event, and a church-wide event says so.
+func TestRoomCalendarDateVisibilityAndRoles(t *testing.T) {
+	f := newRoomCalendarFixture(t)
+	day := "date=" + feedDate(f.startOn)
+	var occA, occSecret models.EventOccurrence
+	f.app.DB.Where("event_id = ?", f.eventA.ID).First(&occA)
+	f.app.DB.Where("event_id = ?", f.secret.ID).First(&occSecret)
+	f.app.DB.Model(&occA).Update("visibility_override", models.VisibilityInviteOnly)
+	f.app.DB.Model(&occSecret).Update("visibility_override", models.VisibilityPublic)
+	f.app.DB.Model(&models.Setting{}).Where("key = ?", "site_name").Delete(&models.Setting{})
+
+	cal, body := f.calendar(t, f.member, day)
+	hall := roomByName(cal, "Fellowship Hall")
+	a, opened := hall.Bookings[0], hall.Bookings[1]
+	if !a.Reserved {
+		t.Fatalf("a date made invite-only should be Reserved: %+v", a)
+	}
+	reservedKeysOK(t, a)
+	if opened.Reserved || opened.Title != "Quiet circle night" || opened.DateURL != occurrenceDatePath(f.secret.ID, occSecret.OriginalDate) ||
+		opened.GroupID != nil || opened.HostedBy == "" || strings.Contains(body, "Quiet circle\"") {
+		t.Fatalf("an opened date of a hidden series: %+v", opened)
+	}
+
+	// A plain member of the invite-only group sees its event (back to the
+	// series value) under its group's name.
+	f.app.DB.Model(&occSecret).Update("visibility_override", nil)
+	var quiet models.Group
+	f.app.DB.Where("name = ?", "Quiet circle").First(&quiet)
+	addMember(t, f.app, f.memberUser, &quiet, models.MembershipMember)
+	cal, _ = f.calendar(t, f.member, day)
+	if b := roomByName(cal, "Fellowship Hall").Bookings[1]; b.Reserved || b.GroupName != "Quiet circle" || b.DateURL != "" {
+		t.Fatalf("a group member's view: %+v", b)
+	}
+
+	// A church-wide event booked by an admin.
+	w := f.admin.do("POST", "/api/v1/events", map[string]any{"title": "Church picnic", "startsLocal": f.startOn.Add(-4 * time.Hour).Format("2006-01-02T15:04"),
+		"durationMinutes": 60, "tzid": "UTC", "visibility": "public"}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("church event: %d %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		Event eventJSON `json:"event"`
+	}
+	decodeJSON(t, w, &created)
+	if code, body := f.book(t, f.admin, created.Event, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
+		t.Fatalf("book picnic: %d %s", code, body)
+	}
+	cal, _ = f.calendar(t, f.member, day)
+	if b := roomByName(cal, "Fellowship Hall").Bookings[0]; b.Title != "Church picnic" || !b.ChurchWide || b.GroupID != nil {
+		t.Fatalf("church-wide booking: %+v", b)
+	}
+}
+
+// A booking across midnight shows on both days.
+func TestRoomCalendarBookingAcrossMidnight(t *testing.T) {
+	f := newRoomCalendarFixture(t)
+	late := time.Date(f.startOn.Year(), f.startOn.Month(), f.startOn.Day(), 23, 30, 0, 0, time.UTC)
+	ev := createFeedEvent(t, f.leader, f.group, "Late night prayer", late, "")
+	if code, body := f.book(t, f.leader, ev, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
+		t.Fatalf("book: %d %s", code, body)
+	}
+	for _, d := range []time.Time{f.startOn, f.startOn.AddDate(0, 0, 1)} {
+		cal, _ := f.calendar(t, f.member, "date="+feedDate(d))
+		found := false
+		for _, b := range roomByName(cal, "Fellowship Hall").Bookings {
+			found = found || b.Title == "Late night prayer"
+		}
+		if !found {
+			t.Fatalf("%s should show the booking across midnight", feedDate(d))
+		}
+	}
+}
+
+// The window is the church's calendar days, across a DST change: the week
+// of Wed Nov 4, 2026 in Chicago runs Sun Nov 1 00:00 CDT to Sun Nov 8
+// 00:00 CST, 169 hours.
+func TestRoomCalendarWindowInChurchTime(t *testing.T) {
+	zone, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Skip("no zoneinfo")
+	}
+	first, last, ok := roomCalendarWindow("week", "2026-11-04", zone, time.Now())
+	if !ok || first.Format(time.RFC3339) != "2026-11-01T00:00:00-05:00" || last.Format("2006-01-02") != "2026-11-07" {
+		t.Fatalf("week: %v %v %v", first, last, ok)
+	}
+	if end := last.AddDate(0, 0, 1); end.Format(time.RFC3339) != "2026-11-08T00:00:00-06:00" || end.Sub(first) != 169*time.Hour {
+		t.Fatalf("week end: %v", end)
+	}
+	first, last, _ = roomCalendarWindow("day", "2026-11-01", zone, time.Now())
+	if first != last || last.AddDate(0, 0, 1).Sub(first) != 25*time.Hour {
+		t.Fatalf("the DST day is 25 hours: %v", first)
+	}
+	// No date: today in church time, not UTC.
+	now := time.Date(2026, 11, 5, 3, 0, 0, 0, time.UTC) // Nov 4, 9 PM in Chicago
+	if first, _, _ := roomCalendarWindow("", "", zone, now); first.Format("2006-01-02") != "2026-11-04" {
+		t.Fatalf("today in church time: %v", first)
+	}
+	for _, bad := range [][2]string{{"month", ""}, {"day", "11/04/2026"}} {
+		if _, _, ok := roomCalendarWindow(bad[0], bad[1], zone, now); ok {
+			t.Fatalf("%v should be refused", bad)
+		}
+	}
+}
