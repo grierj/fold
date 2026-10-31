@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-111.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-113.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-111; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-113; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-111) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-113) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -450,7 +450,7 @@ Adapters to build, in order (one real adapter per kind first, the second when ne
 - Video: `link` (paste any URL), `jitsi` (makes a random room URL on a configurable Jitsi domain, default `meet.jit.si`). `zoom` later (Server-to-Server OAuth app; creates meetings).
 - Storage: `local`, `s3` (one S3-compatible adapter covers B2, R2, Wasabi, DigitalOcean Spaces, Vultr, MinIO). "S3-compatible" is only the protocol; none of these is Amazon.
 
-Before M3.2, M1.2 uses `internal/mail`: a tiny sender with just `devoutbox` and SMTP from env (`FOLD_SMTP_URL`). M3.2 moves both behind the registry without changing callers.
+The email adapters (devoutbox, SMTP, Postmark) live in `internal/mail` and register with `internal/providers` (M3.2a); callers send through `mail.Sender` and never see which one runs. `FOLD_EMAIL_PROVIDER` picks one, else dev uses devoutbox, then Postmark when it has a token, then SMTP.
 
 Rules for adapters:
 
@@ -1732,13 +1732,17 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 
 **M3.2 Provider registry, Postmark adapter, email webhooks**
 - Depends on: M3.1, M1.2
-- Scope: `internal/providers` interfaces (5.6) and registry; move `devoutbox` and SMTP behind it; Postmark adapter (DEC-21); the `/hooks/postmark/email` handler in the CSRF-exempt group, verified by Postmark's webhook authentication.
+- Scope: `internal/providers` interfaces (5.6) and registry; move `devoutbox` and SMTP behind it; Postmark adapter (DEC-21); the `/hooks/postmark/email` handler in the CSRF-exempt group, verified by Postmark's webhook authentication. Three slices (14.1):
+  - **M3.2a Registry and Postmark sending** (built): `internal/providers` (email types, `SendError`, the registry), the devoutbox, SMTP and Postmark adapters in `internal/mail` registered by name, `FOLD_EMAIL_PROVIDER` and the `FOLD_POSTMARK_*` settings; every send returns the provider's message id, and notification deliveries record it.
+  - **M3.2b Webhooks and suppressions**: the `suppressions` table, `/hooks/postmark/email` (HTTP Basic credentials Postmark sends, 401 otherwise), events queued as `webhook.process` jobs deduplicated by Postmark's id, deliveries and bounces updating `notification_deliveries`, and sending checking suppressions (DEC-112). `MessageRecipient` arrives with M3.5 and is updated the same way.
+  - **M3.2c Seeing and clearing suppressions**: Admin → Users marks a person whose email bounces or who marked Fold's mail as spam, with Clear, audited (DEC-113).
 - Acceptance:
-  - [ ] Swapping providers is a config change only (env for now; the wizard in M4.4)
-  - [ ] Postmark, SMTP, and devoutbox pass the shared contract suite against `httptest` fakes built from vendor docs
-  - [ ] A webhook with a bad signature returns 401 and changes nothing
-  - [ ] Bounces and complaints update `MessageRecipient` and `Suppression`
-  - [ ] Transactional and broadcast mail use separate Postmark message streams
+  - [x] Swapping providers is a config change only (env for now; the wizard in M4.4)
+  - [x] Postmark, SMTP, and devoutbox pass the shared contract suite against `httptest` fakes built from vendor docs
+  - [ ] A webhook with a bad signature returns 401 and changes nothing (M3.2b)
+  - [ ] Bounces and complaints update `notification_deliveries` and `Suppression` now, and `MessageRecipient` from M3.5 (M3.2b)
+  - [x] Transactional and broadcast mail use separate Postmark message streams
+  - [ ] An admin sees who is suppressed and why, and can clear it (M3.2c)
 - Tests: contract and webhook tests with recorded sample payloads.
 
 **M3.3 Consent and unsubscribe**
@@ -2144,6 +2148,8 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-109 | **Admins see bookings waiting for approval in the by-room view** (Grier, Oct 30, 2026; M2.2 planning). With approval on (DEC-102), the by-room view also shows an admin the requested bookings on a pending request, dashed and labelled "Waiting for approval", so they can judge clashes. Everyone else, and the room feed, see confirmed bookings only. A booking that lost its room (DEC-103) isn't shown to anyone. | 8.1, 9.2, M2.2 |
 | DEC-110 | **Room suggestions come with each picker's room list, on all three pickers** (Grier, Oct 30, 2026; M2.3 planning). There is no separate suggestions endpoint: the one-date picker, the series picker and the create forms' room check each return their `suggestions` with the room list, so busy marks are worked out once and the pickers can't drift. The create forms suggest too, using the visibility chosen on the form (9.3 Rule 1) and the group's tags; a new event has no same-series usages. | 9.3, M2.3 |
 | DEC-111 | **Dead jobs show on the System page; notices wait for M3.5** (Grier, Oct 30, 2026; M3.1 planning). M3.1's jobs are daily housekeeping an admin usually can't fix, and each runs again the next church day, so a notice would mostly be noise (DEC-52). Admin → System lists dead jobs in plain words, with when they failed and the error, and offers Retry and Dismiss. Admin notices for dead jobs arrive with M3.5, when failures (an email provider down, bad credentials) are things an admin can act on. | 5.5, M3.1, M3.5 |
+| DEC-112 | **What a bounce or complaint stops** (Grier, Oct 30, 2026; M3.2 planning). A hard bounce (the address doesn't exist) stops all email to that address until an admin clears it. A spam complaint stops optional and broadcast mail, while account mail (password resets, sign-in and invitation links, required notices) still goes, so nobody is locked out. Soft bounces are only recorded. | 5.3, 7.4, M3.2 |
+| DEC-113 | **Admins see and clear suppressions in M3.2** (Grier, Oct 30, 2026; M3.2 planning). Admin → Users marks a person "Email bouncing" or "Marked our email as spam", with a Clear action (audited) for when they fix a typo or ask for mail again. There is no separate page. | M3.2c |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 

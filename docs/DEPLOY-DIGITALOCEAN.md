@@ -218,7 +218,7 @@ dig +short TXT <selector>._domainkey.groups.example.org
 dig +short CNAME pm-bounces.groups.example.org
 ```
 
-The checked-in Compose app service passes `FOLD_SMTP_URL` and
+The checked-in Compose app service passes `FOLD_SMTP_URL`, the Postmark settings and
 `FOLD_EMAIL_FROM` from `.env` into the container. Recreate the app after changing
 these values and verify delivery before relying on invitations or resets.
 
@@ -229,6 +229,21 @@ Put the SMTP URL in `/opt/fold/.env` (Postmark's host is
 FOLD_SMTP_URL=smtp://SERVER_TOKEN:SERVER_TOKEN@smtp.postmarkapp.com:587
 FOLD_EMAIL_FROM=Fold <noreply@groups.example.org>
 ```
+
+Instead of SMTP, Fold can use Postmark's API directly, which keeps announcement
+mail on its own message stream and, from M3.2b, lets Fold hear about bounces.
+Put the same server token in `.env` instead of the SMTP URL:
+
+```bash
+FOLD_POSTMARK_SERVER_TOKEN=SERVER_TOKEN
+FOLD_EMAIL_FROM=Fold <noreply@groups.example.org>
+# Optional: the stream ids, if yours differ from Postmark's defaults.
+# FOLD_POSTMARK_TRANSACTIONAL_STREAM=outbound
+# FOLD_POSTMARK_BROADCAST_STREAM=broadcast
+```
+
+With a token set, Fold sends through the API. `FOLD_EMAIL_PROVIDER=smtp` (or
+`postmark`) picks one explicitly when both are set.
 
 Run `sudo docker compose --project-directory /opt/fold up -d` to recreate the
 app with the changed mail configuration.

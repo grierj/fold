@@ -26,7 +26,8 @@ func TestComposePassesTransactionalMailEnvironment(t *testing.T) {
 	if !strings.Contains(app, "\n      FOLD_SMTP_ALLOW_INSECURE: ${FOLD_SMTP_ALLOW_INSECURE:-false}\n") {
 		t.Error("app service must pass through the explicit SMTP plaintext opt-out")
 	}
-	for _, key := range []string{"FOLD_SMTP_URL", "FOLD_EMAIL_FROM"} {
+	for _, key := range []string{"FOLD_SMTP_URL", "FOLD_EMAIL_FROM", "FOLD_EMAIL_PROVIDER", "FOLD_POSTMARK_SERVER_TOKEN",
+		"FOLD_POSTMARK_TRANSACTIONAL_STREAM", "FOLD_POSTMARK_BROADCAST_STREAM"} {
 		if !strings.Contains(app, "\n      "+key+": ${"+key+":-}\n") {
 			t.Errorf("app service must pass through %s", key)
 		}

@@ -220,6 +220,13 @@ func TestPendingGroupEmailsAdmins(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("email delivery rows: %d, want 1", n)
 	}
+	// The provider's id for the message is kept for its delivery and bounce
+	// reports (M3.2): the devoutbox row here.
+	var d models.NotificationDelivery
+	app.DB.Where("channel = ? AND status = ?", models.DeliveryEmail, models.DeliverySent).First(&d)
+	if d.ProviderMessageID == nil || *d.ProviderMessageID != fmt.Sprintf("devoutbox-%d", m.ID) {
+		t.Fatalf("provider message id: %v, want devoutbox-%d", d.ProviderMessageID, m.ID)
+	}
 }
 
 // A member's new group gives every admin its own task, resolved when it is

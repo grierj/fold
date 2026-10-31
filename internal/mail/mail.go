@@ -1,9 +1,10 @@
 // Package mail is Fold's minimal transactional email sender (C6, 5.6).
 //
-// Before the provider registry arrives (M3.2) there are two senders:
+// Three adapters sit behind the provider registry (M3.2, internal/providers):
 // devoutbox, which stores mail in the database for dev and tests (shown at
-// /dev/outbox), and SMTP, configured from FOLD_SMTP_URL. M3.2 moves both
-// behind the registry without changing callers. Templates are plain text.
+// /dev/outbox); SMTP, the universal fallback; and Postmark, the default
+// (DEC-21). Callers send a Message through Sender and never see which one
+// runs. Templates are plain text.
 package mail
 
 import (
@@ -21,22 +22,36 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/providers"
 	"fold/models"
 
 	"gorm.io/gorm"
 )
 
-// Message is one transactional email.
-type Message struct {
-	To      string // one address
-	Subject string
-	Text    string // plain-text body
-}
+// Message is one plain-text email to one address; Stream is "" for
+// account mail.
+type Message = providers.EmailMessage
 
-// Sender sends one transactional email.
+// Sender sends one email. Every adapter also implements
+// providers.EmailSender, which reports the provider's message id.
 type Sender interface {
 	Send(ctx context.Context, m Message) error
 }
+
+// checkMessage refuses what no adapter may send: no recipient, or a
+// recipient with a newline, which could inject headers.
+func checkMessage(m Message) error {
+	if strings.TrimSpace(m.To) == "" {
+		return errors.New("mail: no recipient")
+	}
+	if !headerSafe(m.To) {
+		return errors.New("mail: recipient contains a newline")
+	}
+	return nil
+}
+
+// oneLine keeps a subject on one header line.
+func oneLine(s string) string { return strings.NewReplacer("\r", " ", "\n", " ").Replace(s) }
 
 // ---------------------------------------------------------------------------
 // devoutbox: the dev and test sender (5.6). Mail is stored in the database
@@ -56,16 +71,24 @@ func NewDevOutbox(db *gorm.DB, from string) *DevOutbox {
 
 // Send stores m in the mail_outboxes table.
 func (d *DevOutbox) Send(ctx context.Context, m Message) error {
-	if strings.TrimSpace(m.To) == "" {
-		return errors.New("mail: no recipient")
-	}
-	return d.DB.WithContext(ctx).Create(&models.MailOutbox{
-		ToAddress:   m.To,
-		FromAddress: d.From,
-		Subject:     m.Subject,
-		Body:        m.Text,
-	}).Error
+	_, err := d.SendEmail(ctx, m)
+	return err
 }
+
+// SendEmail stores m; its id is "devoutbox-<row id>".
+func (d *DevOutbox) SendEmail(ctx context.Context, m Message) (string, error) {
+	if err := checkMessage(m); err != nil {
+		return "", err
+	}
+	row := models.MailOutbox{ToAddress: m.To, FromAddress: d.From, Subject: oneLine(m.Subject), Body: m.Text}
+	if err := d.DB.WithContext(ctx).Create(&row).Error; err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("devoutbox-%d", row.ID), nil
+}
+
+// Capabilities: devoutbox keeps everything; it has no streams or webhooks.
+func (d *DevOutbox) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "devoutbox"} }
 
 // OutboxMessage is one stored email, newest first.
 type OutboxMessage struct {
@@ -188,31 +211,37 @@ func headerSafe(v string) bool {
 
 // Send delivers m through the SMTP server.
 func (s *SMTPSender) Send(ctx context.Context, m Message) error {
-	if strings.TrimSpace(m.To) == "" {
-		return errors.New("mail: no recipient")
-	}
-	if !headerSafe(m.To) {
-		return errors.New("mail: recipient contains a newline")
+	_, err := s.SendEmail(ctx, m)
+	return err
+}
+
+// Capabilities: plain SMTP has no streams and reports no bounces.
+func (s *SMTPSender) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "smtp"} }
+
+// SendEmail delivers m; its id is the Message-ID header it was sent with.
+func (s *SMTPSender) SendEmail(ctx context.Context, m Message) (string, error) {
+	if err := checkMessage(m); err != nil {
+		return "", err
 	}
 	from := s.from
 	if from == "" {
-		return errors.New("mail: no from address (set FOLD_EMAIL_FROM)")
+		return "", errors.New("mail: no from address (set FOLD_EMAIL_FROM)")
 	}
 	if !headerSafe(from) {
-		return errors.New("mail: from address contains a newline")
+		return "", errors.New("mail: from address contains a newline")
 	}
 	// Subjects come from templates that interpolate names; a newline in one
 	// must never become a header boundary.
 	// Non-ASCII subjects go out as RFC 2047 encoded words; ASCII is unchanged.
-	subject := mime.QEncoding.Encode("utf-8", strings.NewReplacer("\r", " ", "\n", " ").Replace(m.Subject))
+	subject := mime.QEncoding.Encode("utf-8", oneLine(m.Subject))
 	msgID, err := messageID(fromAddress(from))
 	if err != nil {
-		return fmt.Errorf("mail: message id: %w", err)
+		return "", fmt.Errorf("mail: message id: %w", err)
 	}
 	dialer := &net.Dialer{Timeout: 10 * time.Second}
 	conn, err := dialer.DialContext(ctx, "tcp", s.addr)
 	if err != nil {
-		return fmt.Errorf("mail: dial: %w", err)
+		return "", fmt.Errorf("mail: dial: %w", err)
 	}
 	// A stuck server must not block the calling handler forever.
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
@@ -221,53 +250,56 @@ func (s *SMTPSender) Send(ctx context.Context, m Message) error {
 		tconn := tls.Client(conn, s.tlsCfg())
 		if err := tconn.HandshakeContext(ctx); err != nil {
 			conn.Close()
-			return fmt.Errorf("mail: tls: %w", err)
+			return "", fmt.Errorf("mail: tls: %w", err)
 		}
 		conn = tconn
 	}
 	c, err := smtp.NewClient(conn, s.host)
 	if err != nil {
 		conn.Close()
-		return fmt.Errorf("mail: smtp: %w", err)
+		return "", fmt.Errorf("mail: smtp: %w", err)
 	}
 	defer c.Close()
 	if !s.implicit {
 		if ok, _ := c.Extension("STARTTLS"); ok {
 			if err := c.StartTLS(s.tlsCfg()); err != nil {
-				return fmt.Errorf("mail: starttls: %w", err)
+				return "", fmt.Errorf("mail: starttls: %w", err)
 			}
 		} else if !s.AllowInsecure && !strings.EqualFold(s.host, "localhost") && !net.ParseIP(s.host).IsLoopback() {
-			return errors.New("mail: server does not offer STARTTLS; use an encrypted SMTP relay or explicitly set FOLD_SMTP_ALLOW_INSECURE=true for a trusted relay")
+			return "", errors.New("mail: server does not offer STARTTLS; use an encrypted SMTP relay or explicitly set FOLD_SMTP_ALLOW_INSECURE=true for a trusted relay")
 		}
 	}
 	if s.username != "" {
 		auth := smtp.PlainAuth("", s.username, s.password, s.host)
 		if ok, _ := c.Extension("AUTH"); !ok {
-			return errors.New("mail: server does not offer AUTH")
+			return "", errors.New("mail: server does not offer AUTH")
 		}
 		if err := c.Auth(auth); err != nil {
-			return fmt.Errorf("mail: auth: %w", err)
+			return "", fmt.Errorf("mail: auth: %w", err)
 		}
 	}
 	if err := c.Mail(fromAddress(from)); err != nil {
-		return fmt.Errorf("mail: from: %w", err)
+		return "", fmt.Errorf("mail: from: %w", err)
 	}
 	if err := c.Rcpt(m.To); err != nil {
-		return fmt.Errorf("mail: rcpt: %w", err)
+		return "", fmt.Errorf("mail: rcpt: %w", err)
 	}
 	w, err := c.Data()
 	if err != nil {
-		return fmt.Errorf("mail: data: %w", err)
+		return "", fmt.Errorf("mail: data: %w", err)
 	}
 	if _, err := fmt.Fprintf(w, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n",
 		from, m.To, subject, time.Now().Format(time.RFC1123Z), msgID, m.Text); err != nil {
 		w.Close()
-		return fmt.Errorf("mail: write: %w", err)
+		return "", fmt.Errorf("mail: write: %w", err)
 	}
 	if err := w.Close(); err != nil {
-		return fmt.Errorf("mail: send: %w", err)
+		return "", fmt.Errorf("mail: send: %w", err)
 	}
-	return c.Quit()
+	if err := c.Quit(); err != nil {
+		return msgID, err
+	}
+	return msgID, nil
 }
 
 // messageID makes a unique Message-ID in the sender's domain.
@@ -303,6 +335,12 @@ func fromAddress(from string) string {
 type NoSender struct{}
 
 // Send always fails: there is no sender configured.
-func (NoSender) Send(context.Context, Message) error {
-	return errors.New("mail: no sender configured; set FOLD_SMTP_URL (see .env.example)")
-}
+func (NoSender) Send(context.Context, Message) error { return errNoSender }
+
+// SendEmail always fails.
+func (NoSender) SendEmail(context.Context, Message) (string, error) { return "", errNoSender }
+
+// Capabilities: none.
+func (NoSender) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "none"} }
+
+var errNoSender = errors.New("mail: no sender configured; set FOLD_EMAIL_PROVIDER, FOLD_POSTMARK_SERVER_TOKEN or FOLD_SMTP_URL (see .env.example)")

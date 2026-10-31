@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"fold/internal/mail"
+	"fold/internal/providers"
 	"fold/models"
 	"fold/storage"
 
@@ -131,23 +132,33 @@ func serve(stderr io.Writer) int {
 	return 0
 }
 
-// newMailer picks the transactional email sender (C6, 5.6, M1.2): the
-// devoutbox in dev, SMTP from FOLD_SMTP_URL otherwise. Without a sender,
-// sends fail loudly instead of silently dropping password resets.
+// newMailer picks the email adapter (5.6, M3.2) from the environment: see
+// mail.Choose. Without one, sends fail loudly instead of silently dropping
+// password resets. A provider that can't be built stops the server.
 func newMailer(cfg Config, db *gorm.DB) mail.Sender {
-	if cfg.IsDev() {
-		return mail.NewDevOutbox(db, cfg.EmailFrom)
-	}
-	if cfg.SMTPURL == "" {
-		log.Println("WARNING: FOLD_SMTP_URL is not set; transactional email (password resets, invitations) will fail")
-		return mail.NoSender{}
-	}
-	s, err := mail.NewSMTP(cfg.SMTPURL, cfg.EmailFrom)
+	s, err := chooseMailer(cfg, db, os.Getenv)
 	if err != nil {
-		log.Fatalf("FOLD_SMTP_URL: %v", err)
+		log.Fatalf("email: %v", err)
 	}
-	s.AllowInsecure = cfg.SMTPAllowInsecure
 	return s
+}
+
+func chooseMailer(cfg Config, db *gorm.DB, get func(string) string) (mail.Sender, error) {
+	name := mail.Choose(get, cfg.IsDev())
+	if name == "" {
+		log.Println("WARNING: no email provider is set (FOLD_POSTMARK_SERVER_TOKEN or FOLD_SMTP_URL); transactional email (password resets, invitations) will fail")
+		return mail.NoSender{}, nil
+	}
+	sender, err := providers.NewEmail(name, providers.Settings{Get: get, DB: db, From: cfg.EmailFrom})
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("email: sending through %s", sender.Capabilities().Name)
+	mailer, ok := sender.(mail.Sender)
+	if !ok {
+		return nil, fmt.Errorf("the %s adapter can't send mail", name)
+	}
+	return mailer, nil
 }
 
 // runHealthcheck is the distroless-friendly probe used by Docker. The image

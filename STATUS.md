@@ -30,7 +30,8 @@ Reconciled against merged history through [PR #163](https://github.com/grierj/fo
 | M2.1 Rooms and bookings (slices M2.1a–e) | done: M2.1a merged (#191), M2.1b (#192), M2.1c (#193), M2.1d (#194), M2.1e (#195) | Claude | `rooms/m2.1e-match` |
 | M2.2 By-room view and room feed (slices M2.2a–b) | done: M2.2a merged (#197), M2.2b (#198) | Claude | `rooms/m2.2b-feed` |
 | M2.3 Room suggestions (slices M2.3a–b) | done: M2.3a merged (#199), M2.3b (#200); Phase 2 (rooms) complete | Claude | `rooms/m2.3b-picker` |
-| M3.1 Jobs table and worker (slices M3.1a–b) | done: M3.1a merged (#201), M3.1b System page | Claude | `jobs/m3.1b-system` |
+| M3.1 Jobs table and worker (slices M3.1a–b) | done: M3.1a merged (#201), M3.1b (#202) | Claude | `jobs/m3.1b-system` |
+| M3.2 Email providers, Postmark, webhooks (slices M3.2a–c) | in progress: M3.2a registry and Postmark sending | Claude | `email/m3.2a-registry` |
 | Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | done (merged, #43) | Wright | `simplicity` |
 
 ## Other merged work (not milestones)
