@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
@@ -357,8 +358,10 @@ func (s *SMTPSender) SendEmail(ctx context.Context, m Message) (string, error) {
 	if err := w.Close(); err != nil {
 		return "", fmt.Errorf("mail: send: %w", err)
 	}
+	// The server accepted the message when DATA closed; a failed QUIT
+	// (a dropped connection, say) must not make a caller send it again.
 	if err := c.Quit(); err != nil {
-		return msgID, err
+		log.Printf("mail: smtp quit after a sent message: %v", err)
 	}
 	return msgID, nil
 }

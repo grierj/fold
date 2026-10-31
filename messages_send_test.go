@@ -409,3 +409,22 @@ func TestDailyLimitCopyMatches(t *testing.T) {
 		t.Fatal("the message_daily_limit copy doesn't match dailyMessagesPerGroup")
 	}
 }
+
+// A claim that misses because of an edit retries while the message is
+// still due, and lets go once it is moved later or no longer scheduled.
+func TestStillDue(t *testing.T) {
+	f := newComposeFixture(t)
+	past, later := time.Now().Add(-time.Minute), time.Now().Add(time.Hour)
+	due := models.Message{AuthorID: &f.leaderUser.ID, Status: models.MessageScheduled, Subject: "s", Audience: "{}", ScheduledAt: &past}
+	moved := models.Message{AuthorID: &f.leaderUser.ID, Status: models.MessageScheduled, Subject: "s", Audience: "{}", ScheduledAt: &later}
+	sent := models.Message{AuthorID: &f.leaderUser.ID, Status: models.MessageSent, Subject: "s", Audience: "{}", ScheduledAt: &past}
+	for _, m := range []*models.Message{&due, &moved, &sent} {
+		f.app.DB.Create(m)
+	}
+	if err := stillDue(f.app.DB, due.ID); !errors.Is(err, errChangedWhilePreparing) {
+		t.Fatalf("due: %v", err)
+	}
+	if stillDue(f.app.DB, moved.ID) != nil || stillDue(f.app.DB, sent.ID) != nil {
+		t.Fatal("a moved or sent message isn't retried")
+	}
+}
