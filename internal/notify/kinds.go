@@ -167,7 +167,7 @@ func CategoryEmailName(category string) string {
 	case CatEvents:
 		return "event updates"
 	case CatMessages:
-		// Announcements leaders, hosts and admins write (DEC-119).
+		// Announcements that leaders, hosts and admins write (DEC-119).
 		return "messages from leaders"
 	}
 	return "these emails"

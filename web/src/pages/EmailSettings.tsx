@@ -16,7 +16,7 @@ import { useAuth } from "../auth";
 const ONE_OF: Record<string, string> = {
   groups: "a group update",
   events: "an event update",
-  messages: "a message notice",
+  messages: "a message from a leader",
   admin: "an admin notice",
 };
 

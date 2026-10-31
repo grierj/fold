@@ -153,3 +153,18 @@ func TestOccurrenceAddedAndChangedAreNamesFreeNavigationOnly(t *testing.T) {
 		}
 	}
 }
+
+// Footers name the kind and the church; messages from leaders are "at"
+// the church, so the sentence doesn't say "from" twice (DEC-119).
+func TestYoureGetting(t *testing.T) {
+	for cat, want := range map[string]string{
+		CatGroups:   "You're getting group updates from First Church",
+		CatEvents:   "You're getting event updates from First Church",
+		CatAdmin:    "You're getting admin notices from First Church",
+		CatMessages: "You're getting messages from leaders at First Church",
+	} {
+		if got := YoureGetting(cat, "First Church"); got != want {
+			t.Errorf("%s: %q, want %q", cat, got, want)
+		}
+	}
+}
