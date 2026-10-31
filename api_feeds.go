@@ -30,6 +30,8 @@ func (a *App) registerCalendarFeeds(r *gin.Engine) {
 	r.GET("/cal/public.ics", a.feedPublic)
 	r.GET("/cal/groups/:id", a.feedGroup)
 	r.GET("/cal/u/:token", a.feedPersonal)
+	// Room feeds (M2.2b): an admin-issued link per room.
+	r.GET("/cal/rooms/:roomId/:token", a.feedRoom)
 }
 
 // feedWindow covers 30 days back to 12 months ahead, by occurrence start.

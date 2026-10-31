@@ -1204,6 +1204,16 @@ POST /api/v1/admin/rooms/locations/match {location, roomId} → 200 {booked, bus
 
 Admins only, and 404 while rooms are off (9.1). The list counts the scheduled upcoming dates with no booking by their place as pages show it (the date's own, else the event's, else the group's), most dates first, at most 200; spellings that differ only in case or outer spaces are one place, shown in its most common spelling. Matching books the room, as the admin, on every such date whose place matches; dates the room is taken on are left alone and listed in `busy` (at most 100; `busyTotal` counts them all). A series with upcoming dates whose own place (the event's, else the group's) matches and that has no series room gets this one (M2.1c), so its later dates are booked too (`series` counts them); a series whose room was rejected or stopped can get one again this way, since this is an admin's choice. Typed locations are never changed: the place line shows the room and leaves out a typed place that only repeats the room's name. Dates that already have a booking are skipped, so matching again books nothing twice; taken dates stay unbooked, so their place stays in the list for another try. Matching compares case-insensitively in the database, on both sides. Audited as `room.location_matched`.
 
+### Room feeds (M2.2b)
+
+```
+GET    /api/v1/admin/rooms/:id/feed → 200 {feed: {hasToken, createdAt}}
+POST   /api/v1/admin/rooms/:id/feed → 200 {feed: {hasToken: true, createdAt, url}}   (audited room_feed.created)
+DELETE /api/v1/admin/rooms/:id/feed → 200 {feed: {hasToken: false, createdAt: null}}  (audited room_feed.revoked)
+```
+
+Admins only, and 404 while rooms are off or for a room that doesn't exist; POST is also 404 for a deactivated room. A room has at most one working link. `POST` makes it, or a new one, which turns the old one off at once; the raw link is in that response only (32 random bytes, base64url; only the SHA-256 is stored, as for personal feeds). Turned-off links stay in `room_feed_tokens` as history. The feed itself is `GET /cal/rooms/<roomId>/<token>.ics` (ICS feeds below).
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.
@@ -1259,6 +1269,7 @@ hidden-group metadata may enter feed text; sensitive email is names-free.
 GET /cal/public.ics        → 200 text/calendar  (public)
 GET /cal/groups/<id>.ics   → 200 text/calendar | 404  (public; active public groups only)
 GET /cal/u/<token>.ics     → 200 text/calendar | 404  (the token is the credential)
+GET /cal/rooms/<roomId>/<token>.ics → 200 text/calendar | 404  (an admin-issued room link, M2.2b)
 ```
 
 Feeds cover 30 days back to 12 months ahead, carry `ETag` and
@@ -1275,6 +1286,8 @@ Standalone identity and date-only privacy are described with the calendar-feed
 token contract above. Timezone coverage follows the window and emitted clocks,
 not the age of the series anchor. Calendar clients choose when to refresh and
 may retain old cached data; no immediate remote deletion is promised.
+
+The room feed lists the room's confirmed bookings (never ones waiting for approval, DEC-109) whose date starts in the window, at the event's own time without setup and teardown, in the church's time zone. It is titled with the room and its building. A date whose own visibility is invite-only (`policy.EffectiveVisibility`: the date's override, else the event's), or whose group was deleted, is `SUMMARY:Reserved` with only the room as its place: no description, link or event identity. Every other date has its title, its place (the room, then any typed location), its date link and, unless its series is invite-only, its description. Video links, remote and childcare details are never in a room feed. Each entry's `UID` is `room-<roomId>-booking-<bookingId>@<host>`, so it names no event. A wrong, turned-off or other room's token, rooms being off, and a deactivated room all answer the same plain 404. The access log keeps the room id and never the token.
 
 ## Conventions
 

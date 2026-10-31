@@ -859,6 +859,14 @@ export interface Room {
   defaultTeardownMinutes: number;
 }
 
+// A room's calendar-feed link (M2.2b). url is only in the response that
+// made the link; afterwards an admin sees only that a link is on.
+export interface RoomFeed {
+  hasToken: boolean;
+  createdAt: string | null;
+  url?: string;
+}
+
 // The room a date is booked in, shown as its place (M2.1b, 9.2).
 export interface OccurrenceRoom {
   id: number;
