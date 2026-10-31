@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { composeOptions, summary } from "../test/compose";
-import { audienceLabel, confirmLine, emptyChoice, fromAudience, isOneEvent, prefillChoice, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
+import { composeOptions, recipients, summary } from "../test/compose";
+import { audienceLabel, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
 
 describe("audiences", () => {
   it("turns the picker's choice into the API's audience and back", () => {
@@ -68,5 +68,56 @@ describe("counts", () => {
     expect(statusLabel({ status: "sent", scheduledAt: null, sentAt: "2026-11-02T16:00:00Z" }, z, now)).toMatch(/^Sent Today at 9:00 AM( MST)?$/);
     expect(statusLabel({ status: "cancelled", scheduledAt: "2026-11-03T16:00:00Z", sentAt: null }, z, now)).toBe("Cancelled");
     expect(statusLabel({ status: "cancelled", scheduledAt: null, sentAt: null }, z, now)).toBe("Discarded");
+  });
+});
+
+describe("history", () => {
+  const sent = { status: "sent" as const, sentAt: "2026-11-02T16:00:00Z" }, failed = { status: "failed" as const, sentAt: null };
+  const sending = { status: "sending" as const, sentAt: null };
+  const counts = (over: Partial<ReturnType<typeof recipients>["counts"]>) => ({ ...recipients().counts, ...over });
+
+  it("words a sent message's counts", () => {
+    const h = recipients({
+      counts: counts({ sent: 120, delivered: 10, complained: 2, bounced: 3, skipped: 9 }),
+      skippedBy: { "turned off messages from leaders": 6, "no email address": 3 },
+    });
+    expect(historyLine(h, sent)).toBe("Sent to 132 people · 3 bounced · 9 skipped (6 turned off messages from leaders, 3 have no email address)");
+    expect(historyLine(recipients({ counts: counts({ sent: 1, skipped: 0 }) }), sent)).toBe("Sent to 1 person");
+    expect(historyLine(recipients({ counts: counts({ sent: 128, failed: 4, skipped: 0 }) }), sent)).toBe("Sent to 128 people · 4 didn't get it");
+    expect(historyLine(recipients({ counts: counts({ sent: 0, failed: 4, skipped: 0 }) }), failed)).toBe("4 didn't get it");
+    expect(historyLine(recipients({ counts: counts({ sent: 0, skipped: 0 }) }), sent)).toBe("No one was on the list.");
+  });
+
+  it("counts the way while it sends", () => {
+    expect(historyLine(recipients({ counts: counts({ sent: 38, failed: 2, queued: 92, skipped: 9 }) }), sending)).toBe("Sending… 40 of 132 so far");
+    expect(historyLine(recipients({ counts: counts({ sent: 128, queued: 4 }) }), { status: "sending", sentAt: "2026-11-02T16:00:00Z" })).toBe("Sending again… 128 of 132 so far");
+  });
+
+  it("asks before trying again", () => {
+    expect(retryQuestion(4)).toBe("Send again to the 4 people it didn't reach?");
+    expect(retryQuestion(1)).toBe("Send again to the 1 person it didn't reach?");
+    expect(retryQuestion(0)).toBe("Try sending this message again?");
+    expect(retryQuestion(1, 1)).toBe("Send again to the 1 person and 1 guardian copy it didn't reach?");
+    expect(retryQuestion(0, 2)).toBe("Send the 2 guardian copies that didn't go out again?");
+    // The banner says the same.
+    expect(failedLine(1, 1)).toBe("1 person didn't get this");
+    expect(failedLine(3, 0)).toBe("3 people didn't get this");
+    expect(failedLine(0, 1)).toBe("1 guardian copy didn't go out");
+    expect(historyTeenLine(0)).toBe("");
+    expect(historyTeenLine(2)).toBe("2 of the people it was for are teens.");
+  });
+
+  it("counts guardian copies without naming anyone (DEC-132)", () => {
+    expect(guardianLine({ guardianCopies: 0, guardianCopiesMissed: 0 })).toBe("");
+    expect(guardianLine({ guardianCopies: 2, guardianCopiesMissed: 0 })).toBe("2 guardian copies sent");
+    expect(guardianLine({ guardianCopies: 3, guardianCopiesMissed: 1 })).toBe("2 guardian copies sent · 1 didn't go out");
+    expect(guardianLine({ guardianCopies: 1, guardianCopiesMissed: 1 })).toBe("1 guardian copy didn't go out");
+  });
+
+  it("names a failed and a partly sent message", () => {
+    const z = "America/Boise", now = new Date("2026-11-02T18:00:00Z");
+    expect(statusLabel({ status: "failed", scheduledAt: null, sentAt: null }, z, now)).toBe("Failed");
+    expect(statusLabel({ status: "sent", scheduledAt: null, sentAt: "2026-11-02T16:00:00Z", failedCount: 3 }, z, now)).toMatch(/^Partly sent Today at 9:00 AM( MST)?$/);
+    expect(statusLabel({ status: "sent", scheduledAt: null, sentAt: null, failedCount: 0 }, z, now)).toBe("Sent");
   });
 });

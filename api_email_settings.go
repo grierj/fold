@@ -199,16 +199,7 @@ func (a *App) apiAdminSetChurchAddress(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, errChurchAddressLong)
 		return
 	}
-	me := apiUser(c)
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where(models.Setting{Key: settingChurchAddress}).Assign(models.Setting{Value: addr}).
-			FirstOrCreate(&models.Setting{}).Error; err != nil {
-			return err
-		}
-		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.ChurchAddressChanged, TargetType: "setting",
-			Meta: map[string]any{"set": addr != ""}, IP: c.ClientIP()})
-	})
-	if err != nil {
+	if err := a.saveSetting(c, settingChurchAddress, addr, audit.ChurchAddressChanged, map[string]any{"set": addr != ""}); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save the address")
 		return
 	}

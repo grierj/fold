@@ -1,4 +1,4 @@
-import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, Message, MessageAudience } from "../types";
+import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageRecipientCounts, MessageRecipients } from "../types";
 import { formatShortDay, formatWhenIn } from "./when";
 
 // The composer's words and audience shapes (M3.4c, PLAN 7.2 and 7.3).
@@ -125,11 +125,77 @@ export function summaryLine(s: AudienceSummary): string {
   if (s.people === 0) return "No one is on this list yet.";
   const skipped = s.people - s.eligible;
   if (skipped === 0) return `${people(s.people)}; everyone on the list will get it.`;
-  const reasons = Object.entries(s.skipped)
+  return `${people(s.people)}; ${skipped} won't get it: ${reasonList(s.skipped)}`;
+}
+
+// reasonList is "6 turned off messages from leaders, 3 have no email
+// address", the biggest first.
+function reasonList(by: Record<string, number>): string {
+  return Object.entries(by)
     .filter(([, n]) => n > 0)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .map(([reason, n]) => `${n} ${REASONS[reason]?.[n === 1 ? 0 : 1] ?? reason}`);
-  return `${people(s.people)}; ${skipped} won't get it: ${reasons.join(", ")}`;
+    .map(([reason, n]) => `${n} ${REASONS[reason]?.[n === 1 ? 0 : 1] ?? reason}`)
+    .join(", ");
+}
+
+// historyLine is a sent message's count (M3.5b): "Sent to 132 people · 3
+// bounced · 9 skipped (6 turned off messages from leaders, 3 have no email
+// address)", or while it goes out, "Sending… 40 of 132 so far" ("Sending
+// again…" for a Try again: it was sent before).
+export function historyLine(h: Pick<MessageRecipients, "counts" | "skippedBy">, m: Pick<Message, "status" | "sentAt">): string {
+  const c = h.counts;
+  const done = c.sent + c.delivered + c.bounced + c.complained + c.failed;
+  if (m.status === "sending") return `${m.sentAt ? "Sending again" : "Sending"}… ${done} of ${done + c.queued} so far`;
+  // Someone who marked it as spam got it.
+  const reached = c.sent + c.delivered + c.complained;
+  const parts: string[] = [];
+  if (reached) parts.push(`Sent to ${people(reached)}`);
+  if (c.bounced) parts.push(`${c.bounced} bounced`);
+  if (c.failed) parts.push(`${c.failed} didn't get it`);
+  if (c.skipped) parts.push(`${c.skipped} skipped (${reasonList(h.skippedBy)})`);
+  return parts.length ? parts.join(" · ") : "No one was on the list.";
+}
+
+const guardianCopies = (n: number) => `${n} guardian ${n === 1 ? "copy" : "copies"}`;
+
+// guardianLine counts a settled message's guardian copies (DEC-19): "2
+// guardian copies sent · 1 didn't go out", or "" for none. A leader sees
+// only this count, never the guardians' names (DEC-132).
+export function guardianLine(c: Pick<MessageRecipientCounts, "guardianCopies" | "guardianCopiesMissed">): string {
+  const sent = c.guardianCopies - c.guardianCopiesMissed;
+  const parts: string[] = [];
+  if (sent) parts.push(`${guardianCopies(sent)} sent`);
+  if (c.guardianCopiesMissed) parts.push(`${sent ? c.guardianCopiesMissed : guardianCopies(c.guardianCopiesMissed)} didn't go out`);
+  return parts.join(" · ");
+}
+
+// failedLine heads a partly sent message's banner: "1 person didn't get
+// this", or when only guardian copies failed, "1 guardian copy didn't go
+// out", matching the counts below it.
+export const failedLine = (failed: number, copies: number) =>
+  failed > 0 || copies === 0 ? `${people(failed)} didn't get this` : `${guardianCopies(copies)} didn't go out`;
+
+// Each person's status in a message's history, in words.
+export const HISTORY_WORDS: Record<HistoryStatus, string> = {
+  sent: "Sent",
+  delivered: "Delivered",
+  missed: "Didn't get it",
+  waiting: "Waiting",
+};
+
+// retryQuestion is the confirm before "Try again" (DEC-131), in the
+// banner's words: people, and guardian copies apart.
+export function retryQuestion(failed: number, copies = 0): string {
+  if (failed > 0 && copies > 0) return `Send again to the ${people(failed)} and ${guardianCopies(copies)} it didn't reach?`;
+  if (failed > 0) return `Send again to the ${people(failed)} it didn't reach?`;
+  if (copies > 0) return `Send the ${guardianCopies(copies)} that didn't go out again?`;
+  return "Try sending this message again?";
+}
+
+// historyTeenLine counts the teens a sent message was for (DEC-20), or "".
+export function historyTeenLine(teens: number): string {
+  if (teens === 0) return "";
+  return teens === 1 ? "1 of the people it was for is a teen." : `${teens} of the people it was for are teens.`;
 }
 
 // teenLine counts the teens who will get it (DEC-20), or "" for none.
@@ -151,15 +217,20 @@ export function confirmLine(eligible: number, at: string | null, zone: string): 
 // statusLabel names a message's state in words, never by color alone. A
 // scheduled time already reached is "Waiting to send" until the sender
 // (M3.5) picks it up; a draft that was never scheduled and then cancelled
-// was discarded.
-export function statusLabel(m: Pick<Message, "status" | "scheduledAt" | "sentAt">, zone: string, now = new Date()): string {
+// was discarded. A send that reached some people and failed for others is
+// "Partly sent".
+export function statusLabel(m: Pick<Message, "status" | "scheduledAt" | "sentAt"> & { failedCount?: number }, zone: string, now = new Date()): string {
   switch (m.status) {
     case "draft": return "Draft";
     case "scheduled":
       if (!m.scheduledAt || new Date(m.scheduledAt).getTime() <= now.getTime()) return "Waiting to send";
       return `Scheduled for ${formatWhenIn(m.scheduledAt, zone, now)}`;
     case "sending": return "Sending";
-    case "sent": return m.sentAt ? `Sent ${formatWhenIn(m.sentAt, zone, now)}` : "Sent";
+    case "sent": {
+      const word = m.failedCount ? "Partly sent" : "Sent";
+      return m.sentAt ? `${word} ${formatWhenIn(m.sentAt, zone, now)}` : word;
+    }
+    case "failed": return "Failed";
     case "cancelled": return m.scheduledAt ? "Cancelled" : "Discarded";
   }
 }

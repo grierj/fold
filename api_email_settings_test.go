@@ -118,4 +118,7 @@ func TestChurchAddressSetting(t *testing.T) {
 	if !strings.Contains(root.do("GET", "/api/v1/admin/settings/church-address", nil, false).Body.String(), "12 Main St") {
 		t.Fatal("read back")
 	}
+	if w := root.do("PUT", "/api/v1/admin/settings/church-address", map[string]any{"address": ""}, true); w.Code != http.StatusOK || app.churchAddress() != "" {
+		t.Fatalf("clear: %d %q", w.Code, app.churchAddress())
+	}
 }

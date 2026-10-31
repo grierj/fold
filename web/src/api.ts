@@ -515,6 +515,11 @@ export const Admin = {
   churchAddress: () => api<{ address: string }>("/admin/settings/church-address"),
   setChurchAddress: (address: string) =>
     api<{ address: string }>("/admin/settings/church-address", { method: "PUT", body: { address } }),
+  // Guardian copies of messages to teens (DEC-19) and where replies go (DEC-130).
+  guardianCopies: () => api<{ on: boolean }>("/admin/settings/guardian-copies"),
+  setGuardianCopies: (on: boolean) => api<{ on: boolean }>("/admin/settings/guardian-copies", { method: "PUT", body: { on } }),
+  replyTo: () => api<{ address: string }>("/admin/settings/reply-to"),
+  setReplyTo: (address: string) => api<{ address: string }>("/admin/settings/reply-to", { method: "PUT", body: { address } }),
 };
 
 // Multipart upload: the browser sets Content-Type with the boundary;

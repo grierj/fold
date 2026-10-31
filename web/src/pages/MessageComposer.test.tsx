@@ -7,14 +7,15 @@ import { Messages } from "../messages-api";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { ERROR_COPY } from "../lib/errors";
 import { polyfillEditorLayout } from "../test/editor";
-import { composeOptions, message, summary } from "../test/compose";
+import { adminRecipients, composeOptions, message, recipients, summary } from "../test/compose";
 import { wallClock, wallToInstant } from "../lib/when";
 import { MessageComposerPage } from "./MessageComposer";
 
 // Two days ahead on the church's clock, within the year the API allows.
 const soonDay = () => wallClock(new Date(Date.now() + 2 * 864e5).toISOString(), "America/Boise").day;
 
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader", displayName: "", email: "lee@example.com" }, loading: false, isAdmin: false, canCompose: true }) }));
+const viewer = vi.hoisted(() => ({ isAdmin: false }));
+vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader", displayName: "", email: "lee@example.com" }, loading: false, isAdmin: viewer.isAdmin, canCompose: true }) }));
 vi.mock("../api", async (importActual) => ({
   ...(await importActual<typeof import("../api")>()),
   Site: { get: vi.fn().mockResolvedValue({ name: "Grace", timezone: "America/Boise" }) },
@@ -23,7 +24,7 @@ vi.mock("../messages-api", () => ({
   previewHTMLPath: (id: number) => `/api/v1/messages/${id}/preview.html`,
   Messages: {
     options: vi.fn(), audiencePreview: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(),
-    schedule: vi.fn(), cancel: vi.fn(), preview: vi.fn(), test: vi.fn(),
+    schedule: vi.fn(), cancel: vi.fn(), preview: vi.fn(), test: vi.fn(), recipients: vi.fn(), retry: vi.fn(),
   },
 }));
 
@@ -50,8 +51,9 @@ beforeEach(() => {
   vi.mocked(Messages.create).mockImplementation(async (d) => ({ message: message({ id: 9, subject: d.subject, bodyHtml: d.bodyHtml, audience: d.audience }) }));
   vi.mocked(Messages.preview).mockResolvedValue({ preview: { subject: "Bring a friend", text: "Hi Lee\n\nYou're getting messages from leaders" } });
   vi.mocked(Messages.test).mockResolvedValue({ ok: true });
+  vi.mocked(Messages.recipients).mockResolvedValue(recipients());
 });
-afterEach(() => vi.clearAllMocks());
+afterEach(() => { vi.clearAllMocks(); viewer.isAdmin = false; });
 
 const editorReady = () => screen.findByRole("textbox", { name: "Message" });
 
@@ -313,7 +315,7 @@ describe("MessageComposerPage", () => {
   it("is read only once sent", async () => {
     vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sent", sentAt: "2026-10-30T16:30:00Z", editable: false }) });
     open("/messages/5");
-    expect(await screen.findByText(/^Sent /)).toBeInTheDocument();
+    expect(await screen.findByText(/^Sent (?!to )/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(await screen.findByText("{{first_name}}", { exact: false })).toBeInTheDocument();
@@ -343,5 +345,199 @@ describe("MessageComposerPage", () => {
     open("/messages/5");
     await editorReady();
     expect(screen.queryByRole("tab", { name: "Text" })).toBeNull();
+  });
+});
+
+// After it goes out (M3.5b): the counts in words, who got it, a failed
+// send's error with Try again, and polling while it sends.
+describe("a sent message's history", () => {
+  const sent = (over: Partial<Parameters<typeof message>[0]> = {}) =>
+    message({ status: "sent", sentAt: "2026-10-30T16:30:00Z", editable: false, ...over });
+  const counts = (over: Partial<ReturnType<typeof recipients>["counts"]>) => ({ ...recipients().counts, ...over });
+
+  it("words the counts and lists who got it with Teen badges, guardian copies only as a count", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.get).mockResolvedValue({ message: sent() });
+    vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ bounced: 1 }) }));
+    open("/messages/5");
+    expect(await screen.findByText("Sent to 2 people · 1 bounced · 1 skipped (1 turned off messages from leaders)")).toBeInTheDocument();
+    expect(screen.getByText("1 of the people it was for is a teen.")).toBeInTheDocument();
+    expect(screen.getByText("1 guardian copy sent")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    await user.click(screen.getByText("See who got it"));
+    const rows = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      "Ann Adult· Sent",
+      "Opal Opted· Didn't get it",
+      "Tia TeenTeen· Sent",
+    ]);
+    expect(screen.queryByText(/Copy for/)).toBeNull();
+  });
+
+  it("shows an admin each guardian's copy, each person's reason and how many more there are", async () => {
+    viewer.isAdmin = true;
+    const user = userEvent.setup();
+    vi.mocked(Messages.get).mockResolvedValue({ message: sent() });
+    vi.mocked(Messages.recipients).mockResolvedValue(adminRecipients({ counts: counts({ sent: 250 }), more: true }));
+    open("/messages/5");
+    await user.click(await screen.findByText("See who got it"));
+    const rows = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      "Ann Adult· Sent",
+      "Opal Opted· Didn't get it: turned off messages from leaders",
+      "Pat ParentCopy for Tia Teen· Sent",
+      "Tia TeenTeen· Sent",
+      // 250 sent, 1 skipped and 1 copy, less the 4 shown.
+      "And 248 more",
+    ]);
+  });
+
+  it("shows a failed send's error under the title, and Try again asks before resending", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "failed", editable: false, failedCount: 4, sentAt: "2026-10-31T15:30:00Z", error: "The email service didn't take it. Try again in a little while. If it keeps happening, ask an admin to open this message to see what went wrong." }) });
+    vi.mocked(Messages.recipients).mockResolvedValue(recipients({
+      counts: counts({ sent: 0, failed: 4, skipped: 0, teens: 0, guardianCopies: 0 }), skippedBy: {}, canRetry: true,
+      recipients: [{ name: "Ann Adult", teen: false, status: "missed" }],
+    }));
+    open("/messages/5");
+    // The problem is announced; Try again sits outside the announced part.
+    const alert = (await screen.findByText("This message didn't go out")).closest("[role=alert]") as HTMLElement;
+    expect(alert).toHaveTextContent("The email service didn't take it.");
+    expect(within(alert).queryByRole("button")).toBeNull();
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(await screen.findByText("4 didn't get it")).toBeInTheDocument();
+    const again = await screen.findByRole("button", { name: "Try again" });
+    expect(again).toHaveClass("btn-primary");
+    expect(document.querySelectorAll(".btn-primary")).toHaveLength(1);
+
+    const ask = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    await user.click(again);
+    expect(ask).toHaveBeenLastCalledWith("Send again to the 4 people it didn't reach?");
+    expect(Messages.retry).not.toHaveBeenCalled();
+    vi.mocked(Messages.retry).mockResolvedValue({ message: message({ status: "sending", editable: false, sentAt: "2026-10-31T15:30:00Z", updatedAt: "2026-10-31T16:00:00Z" }) });
+    vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ sent: 0, queued: 4, skipped: 0 }), skippedBy: {} }));
+    await user.click(again);
+    expect(Messages.retry).toHaveBeenCalledWith(5);
+    expect(await screen.findByText("Sending again… 0 of 4 so far")).toBeInTheDocument();
+    // Checking again: nothing is announced until it settles again.
+    expect(document.querySelector(".sr-only[role=status]")?.textContent).toBe("");
+    expect(screen.queryByText("This message didn't go out")).toBeNull();
+    ask.mockRestore();
+  });
+
+  it("counts a partly sent message's people and guardian copies apart, in the banner and the confirm", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.get).mockResolvedValue({ message: sent({ failedCount: 2, error: "The email service didn't take it." }) });
+    vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ failed: 1, guardianCopiesMissed: 1, guardianCopiesFailed: 1 }), canRetry: true }));
+    open("/messages/5");
+    // Some went out: a status, not an alert.
+    expect((await screen.findByText("1 person didn't get this")).closest("[role=status]")).not.toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("1 guardian copy didn't go out")).toBeInTheDocument();
+    expect(screen.getByText(/^Partly sent /)).toBeInTheDocument();
+    const ask = vi.spyOn(window, "confirm").mockReturnValue(false);
+    await user.click(await screen.findByRole("button", { name: "Try again" }));
+    expect(ask).toHaveBeenCalledWith("Send again to the 1 person and 1 guardian copy it didn't reach?");
+    ask.mockRestore();
+  });
+
+  it("checks every 5 seconds while sending, and says once that it settled", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false }) });
+      vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ sent: 1, queued: 2, skipped: 0 }) }));
+      open("/messages/5");
+      expect(await screen.findByText("Sending… 1 of 3 so far")).toBeInTheDocument();
+      const announced = () => document.querySelector(".sr-only[role=status]")?.textContent;
+      vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ sent: 2, queued: 1, skipped: 0 }) }));
+      await act(() => vi.advanceTimersByTimeAsync(5000));
+      expect(await screen.findByText("Sending… 2 of 3 so far")).toBeInTheDocument();
+      expect(announced()).toBe("");
+      vi.mocked(Messages.get).mockResolvedValue({ message: sent({ updatedAt: "2026-10-31T16:00:00Z" }) });
+      vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ skipped: 0 }) }));
+      await act(() => vi.advanceTimersByTimeAsync(5000));
+      await waitFor(() => expect(announced()).toBe("Sent to 2 people"));
+      expect(screen.getAllByText("Sent to 2 people")).toHaveLength(2);
+      const gets = vi.mocked(Messages.get).mock.calls.length;
+      await act(() => vi.advanceTimersByTimeAsync(20000));
+      expect(Messages.get).toHaveBeenCalledTimes(gets);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits while the tab is hidden and checks again when it comes back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+    try {
+      vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false }) });
+      open("/messages/5");
+      expect(await screen.findByText(/^Sending… /)).toBeInTheDocument();
+      const gets = vi.mocked(Messages.get).mock.calls.length;
+      await act(() => vi.advanceTimersByTimeAsync(30000));
+      expect(Messages.get).toHaveBeenCalledTimes(gets);
+      hidden.mockReturnValue(false);
+      await act(async () => { document.dispatchEvent(new Event("visibilitychange")); });
+      await waitFor(() => expect(Messages.get).toHaveBeenCalledTimes(gets + 1));
+    } finally {
+      hidden.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("starts checking when a scheduled message comes due with the page open", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      const at = new Date(Date.now() + 10 * 60_000).toISOString();
+      vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "scheduled", scheduledAt: at, editable: true }) });
+      open("/messages/5");
+      expect(await screen.findByText(/^Scheduled for /)).toBeInTheDocument();
+      const gets = vi.mocked(Messages.get).mock.calls.length;
+      await act(() => vi.advanceTimersByTimeAsync(8 * 60_000));
+      expect(Messages.get).toHaveBeenCalledTimes(gets);
+      vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false, scheduledAt: at, updatedAt: "2026-10-31T16:00:00Z" }) });
+      await act(() => vi.advanceTimersByTimeAsync(2 * 60_000));
+      // The page catches up once it is due, then checks 5 seconds later.
+      await act(() => vi.advanceTimersByTimeAsync(5000));
+      expect(await screen.findByText(/^Sending… /)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops after 30 minutes with nothing changing and offers to check again", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false }) });
+      open("/messages/5");
+      expect(await screen.findByText(/^Sending… /)).toBeInTheDocument();
+      await act(() => vi.advanceTimersByTimeAsync(31 * 60_000));
+      const refresh = await screen.findByRole("button", { name: "Refresh to check again" });
+      const gets = vi.mocked(Messages.get).mock.calls.length;
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(Messages.get).toHaveBeenCalledTimes(gets);
+      await user.click(refresh);
+      await act(() => vi.advanceTimersByTimeAsync(5000));
+      expect(Messages.get).toHaveBeenCalledTimes(gets + 1);
+      expect(screen.queryByRole("button", { name: "Refresh to check again" })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops checking when the page goes away", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false }) });
+      const router = open("/messages/5");
+      expect(await screen.findByText(/^Sending… /)).toBeInTheDocument();
+      await act(() => router.navigate("/messages"));
+      const gets = vi.mocked(Messages.get).mock.calls.length;
+      await act(() => vi.advanceTimersByTimeAsync(20000));
+      expect(Messages.get).toHaveBeenCalledTimes(gets);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

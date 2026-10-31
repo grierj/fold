@@ -151,6 +151,9 @@ var tsContracts = []struct {
 	{composeEventJSON{}, "ComposeEvent"},
 	{composeDateJSON{}, "ComposeDate"},
 	{renderedMessage{}, "MessagePreview"},
+	{messageRecipientsJSON{}, "MessageRecipients"},
+	{recipientCountsJSON{}, "MessageRecipientCounts"},
+	{historyRecipientJSON{}, "MessageHistoryRecipient"},
 }
 
 var tsFieldRe = regexp.MustCompile(`^\s+(\w+)\??:`)

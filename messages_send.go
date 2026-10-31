@@ -106,9 +106,32 @@ const (
 	whyAuthorGone    = "It wasn't sent because its author's account isn't active anymore."
 	whyAuthorRefused = "It wasn't sent because its author can no longer write to these people."
 	whyAudienceGone  = "It wasn't sent because that group or event isn't there anymore."
-	whyNotPrepared   = "We couldn't get this ready to send. Schedule it again to try once more."
+	whyNotPrepared   = "We couldn't get this ready to send. Try again to send it."
 	whyStopped       = "Sending stopped before these went out."
+	// whyNoSender fails a row at once when no email service is set up:
+	// retrying for an hour can't help until an admin sets one up.
+	whyNoSender = "No email service is set up yet, so it couldn't go out. Once an admin sets one up, try again."
+	// whyProvider stands in for a provider's own error text, which a
+	// leader or host can't act on (DEC-52); admins see the provider's words.
+	whyProvider = "The email service didn't take it. Try again in a little while. If it keeps happening, ask an admin to open this message to see what went wrong."
+	// whyNotPreparedM35a is how M3.5a worded whyNotPrepared; rows stored
+	// then still carry it.
+	whyNotPreparedM35a = "We couldn't get this ready to send. Schedule it again to try once more."
 )
+
+// ownMessageErrors are the failure texts Fold itself writes, which anyone
+// who may see the message reads as they are; any other stored error is a
+// provider's words. TestOwnMessageErrorsListEveryWhy keeps every why*
+// constant here, so a copy change can't drop one; an old wording stays
+// listed for the rows that carry it.
+var ownMessageErrors = map[string]bool{
+	whyAuthorGone: true, whyAuthorRefused: true, whyAudienceGone: true, whyNotPrepared: true, whyStopped: true,
+	whyNoSender: true, whyProvider: true, whyNotPreparedM35a: true,
+}
+
+// neverPrepared: err says the message failed before anyone was chosen
+// because it couldn't be got ready, in today's words or M3.5a's.
+func neverPrepared(err string) bool { return err == whyNotPrepared || err == whyNotPreparedM35a }
 
 // prepareMessage is message.send: steps 1–5 and 7 of PLAN 7.1. When its
 // last attempt fails, the message fails with a reason instead of staying
@@ -213,17 +236,24 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 		if len(queued) == 0 {
 			return a.settleMessage(tx, m.ID)
 		}
-		return enqueueBatches(tx, m.ID, queued)
+		return enqueueBatches(tx, m.ID, queued, "")
 	})
 }
 
-func enqueueBatches(tx *gorm.DB, messageID uint, ids []uint) error {
+// enqueueBatches queues message.deliver_batch jobs of 50 for ids. gen is
+// "" for the first send and a fresh value for each "Try again", so a
+// retry's keys never collide with the jobs already done.
+func enqueueBatches(tx *gorm.DB, messageID uint, ids []uint, gen string) error {
+	prefix := "message.batch:" + historyID(messageID) + ":"
+	if gen != "" {
+		prefix += gen + ":"
+	}
 	for len(ids) > 0 {
 		n := min(len(ids), messageBatchSize)
 		batch := ids[:n]
 		ids = ids[n:]
 		if _, err := jobs.Enqueue(tx, kindMessageBatch, messageBatchJob{MessageID: messageID, RecipientIDs: batch}, time.Now(),
-			"message.batch:"+historyID(messageID)+":"+historyID(batch[0])+":"+historyID(batch[len(batch)-1]), messageBatchAttempts); err != nil {
+			prefix+historyID(batch[0])+":"+historyID(batch[len(batch)-1]), messageBatchAttempts); err != nil {
 			return err
 		}
 	}
@@ -456,7 +486,14 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			case err == nil:
 				return markRecipient(tx, row.ID, models.RecipientSent, "", providerID, "")
 			case mail.IsSuppressed(err):
-				return markRecipient(tx, row.ID, models.RecipientSuppressed, strings.TrimPrefix(err.Error(), "mail: "), "", "")
+				// The same words the snapshot uses for these people.
+				why := skipNotWorking
+				if s := (*mail.ErrSuppressed)(nil); errors.As(err, &s) && s.Reason == models.SuppressComplaint {
+					why = skipComplained
+				}
+				return markRecipient(tx, row.ID, models.RecipientSuppressed, why, "", "")
+			case mail.NotConfigured(err):
+				return markRecipient(tx, row.ID, models.RecipientFailed, "", "", whyNoSender)
 			case mail.IsPermanent(err), last:
 				return markRecipient(tx, row.ID, models.RecipientFailed, "", "", jobs.CleanError(err))
 			default:

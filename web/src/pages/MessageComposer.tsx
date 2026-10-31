@@ -4,12 +4,13 @@ import { useAuth } from "../auth";
 import { Messages, previewHTMLPath } from "../messages-api";
 import type { ComposeOptions, Message, MessagePreview } from "../types";
 import { ERROR_COPY, errorCode, errorText, type ErrorCode } from "../lib/errors";
-import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, isOneEvent, prefillChoice, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
+import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
 import { useChurchZoneLoad } from "../lib/useEventZone";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { browserTimeZone, wallClock, wallToInstant, zoneNote } from "../lib/when";
 import { useSiteName } from "../lib/useSiteName";
 import { AudiencePicker } from "../components/messages/AudiencePicker";
+import { SendProblem, useMessageHistory, WhoGotIt } from "../components/messages/MessageHistory";
 import { SmsComposer } from "../components/messages/SmsComposer";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Button, ButtonLink } from "../components/ui/Button";
@@ -54,7 +55,7 @@ export function MessageComposerPage() {
   const { id } = useParams<{ id: string }>();
   const [params] = useSearchParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, isAdmin } = useAuth();
   const site = useSiteName();
   // The schedule is in the church's zone: wait for it, so a saved time is
   // never read on the browser's clock first.
@@ -88,11 +89,14 @@ export function MessageComposerPage() {
   const [saved, setSaved] = useState<{ subject: string; body: string | null; key: string } | null>(null);
 
   const [errors, setErrors] = useState<Errors>({});
-  const [busy, setBusy] = useState<Action | "schedule" | "cancel" | null>(null);
+  const [busy, setBusy] = useState<Action | "schedule" | "cancel" | "retry" | null>(null);
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState<(MessagePreview & { id: number; n: number }) | null>(null);
   // The question before sending, for exactly what was on screen (snap).
   const [confirm, setConfirm] = useState<{ eligible: number; at: string | null; snap: string } | null>(null);
+  // Once it goes out: who got it, checked every few seconds while sending.
+  const { history, failed: historyFailed, stale, announce, retryLoad } = useMessageHistory(editing ? null : message, setMessage);
+  const [retryError, setRetryError] = useState("");
 
   const audience = toAudience(choice);
   const key = audienceKey(audience);
@@ -301,6 +305,22 @@ export function MessageComposerPage() {
     }
   }
 
+  // Try again (DEC-131): only the people it failed for, after asking.
+  async function retry() {
+    if (!message || busy) return;
+    if (!window.confirm(retryQuestion(history?.counts.failed ?? message.failedCount, history?.counts.guardianCopiesFailed ?? 0))) return;
+    setBusy("retry");
+    setRetryError("");
+    try {
+      const { message: m } = await Messages.retry(message.id);
+      setMessage(m);
+    } catch (e) {
+      setRetryError(errorText(e, "We couldn't send it again. Try again in a few minutes."));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   // Discarding a draft cancels it for good; it stays on the list as Discarded.
   async function discardDraft() {
     if (!message || busy) return;
@@ -356,8 +376,26 @@ export function MessageComposerPage() {
     return page(<>
       {back}
       <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold focus:outline-none">{title}</h1>
+      <SendProblem message={message} history={history} busy={busy === "retry"} error={retryError} onRetry={() => void retry()} />
       <section aria-label="This message" className="space-y-4 rounded-lg border border-border bg-surface p-4 sm:p-6">
-        <p className="text-lg font-semibold">{statusLabel(message, zone)}</p>
+        <div className="space-y-1">
+          <p className="text-lg font-semibold">{statusLabel(message, zone)}</p>
+          {history && <p className="text-sm">{historyLine(history, message)}</p>}
+          {history && message.status !== "sending" && history.counts.teens > 0 && <p className="text-sm text-text-muted">{historyTeenLine(history.counts.teens)}</p>}
+          {history && message.status !== "sending" && guardianLine(history.counts) && <p className="text-sm text-text-muted">{guardianLine(history.counts)}</p>}
+          {historyFailed && !history && (
+            <p className="text-sm text-text-muted">
+              We couldn't load who got it. <Button variant="link" onClick={retryLoad}>Load again</Button>
+            </p>
+          )}
+          {stale && (
+            <p className="text-sm text-text-muted">
+              Nothing has changed for a while. <Button variant="link" onClick={retryLoad}>Refresh to check again</Button>
+            </p>
+          )}
+          {/* Said once when a send settles, not on every check. */}
+          <p role="status" className="sr-only">{announce}</p>
+        </div>
         {scheduled && message.editable && <p className="text-sm text-text-muted">You can change or cancel it until it starts sending.</p>}
         <dl className="grid gap-1 text-sm sm:grid-cols-[8rem_1fr]">
           <dt className="font-medium text-text-muted">To</dt>
@@ -367,6 +405,7 @@ export function MessageComposerPage() {
             <dd>{message.authorName}</dd>
           </>}
         </dl>
+        {history && <WhoGotIt history={history} withCopies={isAdmin} />}
         <div className="border-t border-border pt-4">
           <Suspense fallback={<Skeleton kind="lines" label="Loading the message…" />}>
             <RichTextView html={message.bodyHtml} />

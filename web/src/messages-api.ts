@@ -1,5 +1,5 @@
 import { api } from "./api";
-import type { AudienceSummary, ComposeOptions, Message, MessageAudience, MessagePreview } from "./types";
+import type { AudienceSummary, ComposeOptions, Message, MessageAudience, MessagePreview, MessageRecipients } from "./types";
 
 // The composer's API (M3.4, docs/API.md "Messages"). Email only for now.
 export interface MessageDraft {
@@ -24,6 +24,9 @@ export const Messages = {
   cancel: (id: number) => api<{ message: Message }>(`/messages/${id}/cancel`, { method: "POST" }),
   preview: (id: number) => api<{ preview: MessagePreview }>(`/messages/${id}/preview`),
   test: (id: number) => api<{ ok: boolean }>(`/messages/${id}/test`, { method: "POST" }),
+  // Who got it (M3.5b), and "Try again" for the people it failed for (DEC-131).
+  recipients: (id: number) => api<MessageRecipients>(`/messages/${id}/recipients`),
+  retry: (id: number) => api<{ message: Message }>(`/messages/${id}/retry`, { method: "POST" }),
 };
 
 // The HTML part as an iframe shows it (served with its own sandboxing CSP).
