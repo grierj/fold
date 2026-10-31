@@ -1,0 +1,17 @@
+{
+  "RecordType": "Bounce",
+  "MessageStream": "outbound",
+  "ID": 692560175,
+  "Type": "SoftBounce",
+  "TypeCode": 4096,
+  "Name": "Soft bounce/Undeliverable",
+  "MessageID": "11111111-6105-42a2-a16a-77a8eac79483",
+  "ServerID": 23,
+  "Email": "full-mailbox@example.com",
+  "From": "sender@example.com",
+  "BouncedAt": "2026-11-05T16:35:00.0000000Z",
+  "DumpAvailable": false,
+  "Inactive": false,
+  "CanActivate": true,
+  "Subject": "Test subject"
+}

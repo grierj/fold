@@ -82,9 +82,9 @@ func TestCSRFExemptRoutesAreExact(t *testing.T) {
 
 	// The acceptance check in plain words.
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("POST", "/hooks/test", nil))
+	r.ServeHTTP(w, httptest.NewRequest("POST", "/hooks/postmark/email", nil))
 	if w.Code == http.StatusForbidden {
-		t.Fatal("POST /hooks/test was rejected by CSRF")
+		t.Fatal("POST /hooks/postmark/email was rejected by CSRF")
 	}
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest("POST", "/api/v1/auth/logout", nil))
@@ -95,4 +95,4 @@ func TestCSRFExemptRoutesAreExact(t *testing.T) {
 
 // csrfExemptRoutes are the only state-changing routes registered outside
 // csrfMiddleware (setupRouter, main.go). TestCSRFExemptRoutesAreExact keeps it honest.
-var csrfExemptRoutes = []string{"/hooks/*path", "POST /u/unsubscribe/:token"}
+var csrfExemptRoutes = []string{"POST /hooks/postmark/email", "POST /u/unsubscribe/:token"}

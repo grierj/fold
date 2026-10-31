@@ -27,7 +27,7 @@ func TestComposePassesTransactionalMailEnvironment(t *testing.T) {
 		t.Error("app service must pass through the explicit SMTP plaintext opt-out")
 	}
 	for _, key := range []string{"FOLD_SMTP_URL", "FOLD_EMAIL_FROM", "FOLD_EMAIL_PROVIDER", "FOLD_POSTMARK_SERVER_TOKEN",
-		"FOLD_POSTMARK_TRANSACTIONAL_STREAM", "FOLD_POSTMARK_BROADCAST_STREAM"} {
+		"FOLD_POSTMARK_TRANSACTIONAL_STREAM", "FOLD_POSTMARK_BROADCAST_STREAM", "FOLD_POSTMARK_WEBHOOK_SECRET"} {
 		if !strings.Contains(app, "\n      "+key+": ${"+key+":-}\n") {
 			t.Errorf("app service must pass through %s", key)
 		}
@@ -127,5 +127,19 @@ func TestJobWorkerSettings(t *testing.T) {
 			t.Fatalf("%s=%s: %v", env, bad, err)
 		}
 		t.Setenv(env, "")
+	}
+}
+
+func TestWebhookSecretMustBeLong(t *testing.T) {
+	t.Setenv("APP_ENV", "prod")
+	t.Setenv("SESSION_SECRET", "test-session-secret-at-least-32-bytes")
+	t.Setenv("DATABASE_URL", "postgres://unused")
+	t.Setenv("FOLD_POSTMARK_WEBHOOK_SECRET", "secret123")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "at least 24") {
+		t.Fatalf("short secret: %v", err)
+	}
+	t.Setenv("FOLD_POSTMARK_WEBHOOK_SECRET", strings.Repeat("a1", 12))
+	if cfg, err := LoadConfig(); err != nil || cfg.PostmarkWebhookSecret == "" {
+		t.Fatalf("24 characters: %v", err)
 	}
 }

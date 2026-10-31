@@ -1002,7 +1002,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
-		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{},
+		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{}, &Suppression{},
 	}
 }
 
@@ -1071,4 +1071,26 @@ const (
 	JobFailed    = "failed"
 	JobDead      = "dead"
 	JobDismissed = "dismissed"
+)
+
+// Suppression is an address Fold stops mailing (M3.2b, DEC-112). Write it
+// through the email webhook processing or an admin; sending reads it.
+type Suppression struct {
+	ID        uint      `gorm:"primaryKey"`
+	Channel   string    `gorm:"not null;default:email"`
+	Address   string    `gorm:"not null"`
+	Reason    string    `gorm:"not null"`
+	Provider  string    `gorm:"not null;default:''"`
+	Detail    string    `gorm:"not null;default:''"`
+	CreatedAt time.Time `gorm:"not null;default:now()"`
+	ClearedAt *time.Time
+	ClearedBy *uint
+}
+
+// Suppression reasons (DEC-112): a hard bounce or manual suppression stops
+// all mail; a complaint stops optional and broadcast mail.
+const (
+	SuppressHardBounce = "hard_bounce"
+	SuppressComplaint  = "complaint"
+	SuppressManual     = "manual"
 )

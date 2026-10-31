@@ -44,6 +44,10 @@ type Config struct {
 	SMTPAllowInsecure bool
 	// EmailFrom is the From address on transactional email.
 	EmailFrom string
+	// PostmarkWebhookSecret is the password in the URL Postmark posts its
+	// webhooks to (FOLD_POSTMARK_WEBHOOK_SECRET, M3.2b). Empty turns the
+	// endpoint off (404).
+	PostmarkWebhookSecret string
 	// Workers is how many background job workers this process runs
 	// (FOLD_WORKERS, default 2; 0 turns them off, for debugging only).
 	Workers int
@@ -51,6 +55,9 @@ type Config struct {
 	// default 1s).
 	JobPoll time.Duration
 }
+
+// minWebhookSecretLen is the shortest FOLD_POSTMARK_WEBHOOK_SECRET accepted.
+const minWebhookSecretLen = 24
 
 // defaultTrustedProxies is the fixed subnet of the compose network
 // (docker-compose.yml). Only Caddy lives there in production.
@@ -147,6 +154,10 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	// The webhook secret is the only guard on a public endpoint (M3.2b).
+	if s := os.Getenv("FOLD_POSTMARK_WEBHOOK_SECRET"); s != "" && len(s) < minWebhookSecretLen {
+		return Config{}, fmt.Errorf("FOLD_POSTMARK_WEBHOOK_SECRET must be at least %d characters; make one with `openssl rand -hex 24`", minWebhookSecretLen)
+	}
 	workers, err := strconv.Atoi(getEnv("FOLD_WORKERS", "2"))
 	if err != nil || workers < 0 || workers > 64 {
 		return Config{}, fmt.Errorf("FOLD_WORKERS must be a whole number from 0 to 64")
@@ -157,19 +168,20 @@ func LoadConfig() (Config, error) {
 	}
 
 	return Config{
-		Env:               env,
-		Port:              getEnv("PORT", "8080"),
-		SessionSecret:     []byte(secret),
-		DatabaseURL:       dbURL,
-		CookieSecure:      getEnvBool("COOKIE_SECURE", !isDev),
-		SiteURL:           os.Getenv("SITE_URL"),
-		UploadDir:         getEnv("UPLOAD_DIR", "./data/uploads"),
-		TrustedProxies:    proxies,
-		SMTPURL:           os.Getenv("FOLD_SMTP_URL"),
-		SMTPAllowInsecure: getEnvBool("FOLD_SMTP_ALLOW_INSECURE", false),
-		EmailFrom:         getEnv("FOLD_EMAIL_FROM", "Fold <noreply@localhost>"),
-		Workers:           workers,
-		JobPoll:           poll,
+		Env:                   env,
+		Port:                  getEnv("PORT", "8080"),
+		SessionSecret:         []byte(secret),
+		DatabaseURL:           dbURL,
+		CookieSecure:          getEnvBool("COOKIE_SECURE", !isDev),
+		SiteURL:               os.Getenv("SITE_URL"),
+		UploadDir:             getEnv("UPLOAD_DIR", "./data/uploads"),
+		TrustedProxies:        proxies,
+		SMTPURL:               os.Getenv("FOLD_SMTP_URL"),
+		SMTPAllowInsecure:     getEnvBool("FOLD_SMTP_ALLOW_INSECURE", false),
+		EmailFrom:             getEnv("FOLD_EMAIL_FROM", "Fold <noreply@localhost>"),
+		PostmarkWebhookSecret: os.Getenv("FOLD_POSTMARK_WEBHOOK_SECRET"),
+		Workers:               workers,
+		JobPoll:               poll,
 	}, nil
 }
 

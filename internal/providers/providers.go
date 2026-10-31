@@ -34,6 +34,10 @@ type EmailMessage struct {
 	Text    string
 	// Stream is "" or StreamTransactional for account mail.
 	Stream Stream
+	// Optional: the person may turn this mail off (an optional notification;
+	// every broadcast is optional too). A spam complaint stops optional mail
+	// but not account mail (DEC-112).
+	Optional bool
 }
 
 // EmailCaps says what an email adapter can do.

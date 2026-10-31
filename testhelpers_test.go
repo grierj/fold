@@ -94,7 +94,7 @@ func testApp(t *testing.T) *App {
 		Store:   store,
 		Config:  Config{Env: "dev", Port: "8080", SessionSecret: []byte("test-session-secret-at-least-32-bytes")},
 		Uploads: uploads,
-		Mailer:  mail.NewDevOutbox(db, "Fold <noreply@example.com>"),
+		Mailer:  mail.WithSuppressions(db, mail.NewDevOutbox(db, "Fold <noreply@example.com>")),
 		// Inline, so a test can read the outbox right after a request.
 		background: func(f func()) { f() },
 	}
@@ -702,7 +702,7 @@ func findKind(ns []notificationJSON, kind string) *notificationJSON {
 
 func devOutbox(t *testing.T, app *App) *mail.DevOutbox {
 	t.Helper()
-	ob, ok := app.Mailer.(*mail.DevOutbox)
+	ob, ok := mail.Unwrap(app.Mailer).(*mail.DevOutbox)
 	if !ok {
 		t.Fatal("test app has no devoutbox mailer")
 	}
