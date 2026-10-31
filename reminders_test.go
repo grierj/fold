@@ -268,3 +268,34 @@ func TestReapLeavesRemindersAlone(t *testing.T) {
 		t.Fatalf("reaped a reminder: %+v", r)
 	}
 }
+
+// A guest sees what a signed-out visitor sees: once their date isn't
+// public, no reminder (C5: a guest is never loaded as an actor).
+func TestReminderGuestOnlyForPublicDates(t *testing.T) {
+	f := newComposeFixture(t)
+	guest := newTestUser(t, f.app, "guest", "password1234", models.RoleMember)
+	f.app.DB.Model(guest).Update("status", models.UserGuest)
+	f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &guest.ID, Status: models.RegGoing})
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("visibility", models.VisibilityPrivate)
+	reminderFor(t, f.app, f.groupOcc, 1440)
+	if len(reminderMails(t, f.app, guest.Email)) != 0 {
+		t.Fatal("a guest got a reminder for a private date")
+	}
+	var r models.MessageRecipient
+	f.app.DB.Where("user_id = ?", guest.ID).First(&r)
+	if r.Reason != skipCantSeeDate {
+		t.Fatalf("guest row: %+v", r)
+	}
+}
+
+// A changed reminder time sends the new reminder; the leader asked for it.
+func TestReminderShortenedTimeSendsAgain(t *testing.T) {
+	f := newComposeFixture(t)
+	f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &f.teen.ID, Status: models.RegGoing})
+	reminderFor(t, f.app, f.groupOcc, 1440)
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("reminder_email_minutes", 120)
+	reminderFor(t, f.app, f.groupOcc, 120)
+	if got := len(reminderMails(t, f.app, f.teen.Email)); got != 2 {
+		t.Fatalf("reminders after shortening: %d", got)
+	}
+}

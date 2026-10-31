@@ -272,12 +272,22 @@ func (a *App) reminderReaders(db *gorm.DB, occID uint, ids []uint, now time.Time
 	out := map[uint]bool{}
 	for i := range users {
 		u := &users[i]
-		vs, err := a.dateCandidates(u, db.Where("id = ?", occ.EventID))
+		// A guest is never loaded as an actor (AGENTS.md, C5): they see what
+		// a signed-out visitor sees, so only a public date, and hold no
+		// exact-date invitations.
+		viewer := u
+		if u.Status == models.UserGuest {
+			viewer = nil
+		}
+		vs, err := a.dateCandidates(viewer, db.Where("id = ?", occ.EventID))
 		if err != nil {
 			return nil, err
 		}
-		if ev := vs.ByID[occ.EventID]; ev != nil && vs.canSeeDate(u, ev, &occ) {
+		if ev := vs.ByID[occ.EventID]; ev != nil && vs.canSeeDate(viewer, ev, &occ) {
 			out[u.ID] = true
+			continue
+		}
+		if viewer == nil {
 			continue
 		}
 		scoped, err := a.scopedOccurrenceReads(u, db.Model(&models.EventOccurrence{}).Where("id = ?", occ.ID), now)
@@ -324,9 +334,10 @@ func createEvent(tx *gorm.DB, ev *models.Event) error {
 // reminderAlreadyCovers reports whether a reminder of this kind already
 // went for the date at a time still inside the new reminder's lead: its
 // own reminder time (from its key: kind:occ:start:minutes) is less than
-// p.Minutes before the new one. A date moved an hour later, or a 1-day
-// reminder shortened to 2 hours, sends no second email; a date moved a
-// week later does.
+// p.Minutes before the new one. A date moved an hour later sends no second
+// email; a date moved a week later does, and so does a changed reminder
+// time (a 1-day reminder shortened to 2 hours sends the 2-hour one too:
+// the leader asked for it).
 func reminderAlreadyCovers(db *gorm.DB, occID uint, kind string, p reminderJob) (bool, error) {
 	var keys []string
 	if err := db.Model(&models.Message{}).Where("occurrence_id = ? AND category = ? AND reminder_key LIKE ? AND status IN ?",
