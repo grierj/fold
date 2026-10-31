@@ -1748,7 +1748,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 **M3.3 Consent and unsubscribe**
 - Depends on: M3.2
 - Scope: 7.4 email side: `Consent`, `Suppression`, preferences page with signed tokens, RFC 8058 headers, the CSRF-exempt one-click `POST`. Two slices (14.1):
-  - **M3.3a Links, headers and one-click** (built): signed unsubscribe tokens (person and kind of email, from `SESSION_SECRET`); every optional email gets a footer (kind, email settings link, the church's address when set) and `List-Unsubscribe` / `List-Unsubscribe-Post` from every adapter; `POST /u/unsubscribe/:token` turns off that kind of email at once (DEC-114).
+  - **M3.3a Links, headers and one-click** (built): signed unsubscribe tokens (person and kind of email, from `SESSION_SECRET`); they never expire on purpose, so an old email's button still works, and changing `SESSION_SECRET` ends them along with every session; the one-click header goes out only when `SITE_URL` is https (or in dev); every optional email gets a footer (kind, email settings link, the church's address when set) and `List-Unsubscribe` / `List-Unsubscribe-Post` from every adapter; `POST /u/unsubscribe/:token` turns off that kind of email at once (DEC-114).
   - **M3.3b Email settings page**: `/email-settings/:token` without sign-in and Me → Notifications share one component with a switch per optional kind plus "Turn off all optional email" (DEC-115); the "Church mailing address" admin setting (DEC-116).
 - Acceptance:
   - [x] A one-click POST (no cookie, no CSRF token) to the unsubscribe URL opts out; a tampered token returns 404 and changes nothing

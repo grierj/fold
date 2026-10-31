@@ -47,7 +47,7 @@ func checkMessage(m Message) error {
 	if !headerSafe(m.To) {
 		return errors.New("mail: recipient contains a newline")
 	}
-	if m.ListUnsubscribe != "" && (!headerSafe(m.ListUnsubscribe) || !strings.HasPrefix(m.ListUnsubscribe, "https://") && !strings.HasPrefix(m.ListUnsubscribe, "http://")) {
+	if m.ListUnsubscribe != "" && !oneURL(m.ListUnsubscribe) {
 		return errors.New("mail: the unsubscribe link must be one http(s) URL")
 	}
 	// One address only: Postmark reads commas as a list of recipients.
@@ -360,3 +360,13 @@ var errNoSender = errors.New("mail: no sender configured; set FOLD_EMAIL_PROVIDE
 
 // Address is the bare address of a From value like "Fold <a@b.org>".
 func Address(from string) string { return fromAddress(from) }
+
+// oneURL: s is a single absolute http(s) URL with nothing that could end
+// the List-Unsubscribe header's <…> or add another header.
+func oneURL(s string) bool {
+	if strings.ContainsAny(s, "<>\"\r\n\t ") {
+		return false
+	}
+	u, err := url.Parse(s)
+	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != ""
+}
