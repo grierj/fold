@@ -5,14 +5,17 @@ import { apiAs, email, PASSWORD, signIn } from "./helpers";
 // signing in; a switch changed there is the same switch on Me > Notifications.
 // This spec is the page's coverage: it isn't in ui-pages.ts because a valid
 // token only exists server-side, in a sent email.
-test("an email's settings link works signed out and matches Me > Notifications", async ({ page, request }) => {
+test("an email's settings link works signed out and matches Me > Notifications", async ({ page, request, browser }) => {
   test.skip((await request.get("/dev/outbox")).status() !== 200, "Reads the email from the devoutbox (APP_ENV=dev)");
   const login = `email-settings-${Date.now() % 100000}`;
   const admin = await apiAs(request, "grier");
   await admin("POST", "/admin/users", { name: "Email Settings Member", email: email(login), password: PASSWORD, ageBand: "adult" });
-  const member = await apiAs(request, login);
+  // Its own context: one request context holds one session.
+  const memberContext = await browser.newContext({ baseURL: test.info().project.use.baseURL });
+  const member = await apiAs(memberContext.request, login);
   const { group } = (await member("POST", "/groups", { name: `Settings club ${login}`, description: "", tags: [], visibility: "public" })) as { group: { id: number } };
   await admin("POST", `/admin/groups/${group.id}/approve`, {});
+  await memberContext.close();
 
   // The approval is an optional email (group updates) with the settings link.
   let path = "";
