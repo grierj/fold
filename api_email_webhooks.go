@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -87,14 +88,23 @@ func (a *App) eventKinds() []jobs.Kind {
 		}}}
 }
 
+// errDeliveryNotYet: a report came in before the send that it is about
+// finished recording its delivery row; the job retries shortly.
+var errDeliveryNotYet = errors.New("the delivery this report is about isn't recorded yet")
+
+// reportGrace is how long a report for a message with no delivery row is
+// retried before it is taken to be about mail Fold didn't send.
+const reportGrace = 2 * time.Minute
+
 // applyEmailEvent records one report. It is safe to run twice: each update
 // only moves a delivery forward, and a suppression is added once.
 func (a *App) applyEmailEvent(ctx context.Context, e providers.Event) error {
 	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		deliveries := tx.Model(&models.NotificationDelivery{}).Where("channel = ? AND provider_message_id = ?", models.DeliveryEmail, e.MessageID)
+		var res *gorm.DB
 		switch e.Kind {
 		case providers.EventDelivered:
-			return deliveries.Where("status = ?", models.DeliverySent).Update("status", models.DeliveryDelivered).Error
+			res = deliveries.Where("status = ?", models.DeliverySent).Update("status", models.DeliveryDelivered)
 		case providers.EventBounced, providers.EventComplained:
 			reason := "soft bounce"
 			switch {
@@ -103,22 +113,46 @@ func (a *App) applyEmailEvent(ctx context.Context, e providers.Event) error {
 			case e.Permanent:
 				reason = "hard bounce"
 			}
-			if err := deliveries.Where("status IN ?", []string{models.DeliverySent, models.DeliveryDelivered}).
-				Updates(map[string]any{"status": models.DeliveryBounced, "reason": reason}).Error; err != nil {
+			res = deliveries.Where("status IN ?", []string{models.DeliverySent, models.DeliveryDelivered}).
+				Updates(map[string]any{"status": models.DeliveryBounced, "reason": reason})
+		default:
+			return nil
+		}
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 && recent(e.At) {
+			var n int64
+			if err := tx.Model(&models.NotificationDelivery{}).Where("channel = ? AND provider_message_id = ?", models.DeliveryEmail, e.MessageID).
+				Count(&n).Error; err != nil {
 				return err
 			}
-			// A soft bounce is only recorded (DEC-112).
-			if !e.Permanent {
-				return nil
+			if n == 0 {
+				return errDeliveryNotYet
 			}
-			why := models.SuppressHardBounce
-			if e.Kind == providers.EventComplained {
-				why = models.SuppressComplaint
-			}
-			return tx.Exec(`INSERT INTO suppressions (channel, address, reason, provider, detail) VALUES ('email', ?, ?, ?, ?)
-				ON CONFLICT (channel, address, reason) WHERE cleared_at IS NULL DO NOTHING`,
-				e.Address, why, e.Provider, e.Detail).Error
 		}
-		return nil
+		// A soft bounce or a delivery is only recorded (DEC-112).
+		if !e.Permanent || e.Kind == providers.EventDelivered {
+			return nil
+		}
+		// The report is authenticated and says the address can't take mail,
+		// so it is suppressed even when the message wasn't a notification
+		// (account mail keeps no delivery row).
+		why := models.SuppressHardBounce
+		if e.Kind == providers.EventComplained {
+			why = models.SuppressComplaint
+		}
+		return tx.Exec(`INSERT INTO suppressions (channel, address, reason, provider, detail) VALUES ('email', ?, ?, ?, ?)
+			ON CONFLICT (channel, address, reason) WHERE cleared_at IS NULL DO NOTHING`,
+			e.Address, why, e.Provider, e.Detail).Error
 	})
+}
+
+// recent: at is within reportGrace of now (either way, for clock skew).
+func recent(at time.Time) bool {
+	if at.IsZero() {
+		return false
+	}
+	d := time.Since(at)
+	return d > -reportGrace && d < reportGrace
 }

@@ -45,18 +45,22 @@ func TestParsePostmarkWebhook(t *testing.T) {
 	if evs, err := ParsePostmarkWebhook(http.Header{}, readSample(t, "postmark_open.json")); err != nil || len(evs) != 0 {
 		t.Fatalf("open: %v %v", evs, err)
 	}
-	for _, bad := range []string{"not json", `{"RecordType":"Bounce","MessageID":"x"}`} {
+	for _, bad := range []string{"not json", `{"RecordType":"Bounce","MessageID":"x"}`, `{"RecordType":"Bounce","MessageID":"x","Email":"no-at-sign"}`} {
 		if _, err := ParsePostmarkWebhook(http.Header{}, []byte(bad)); err == nil {
 			t.Errorf("%q should be refused", bad)
 		}
 	}
-	// A redelivered request has the same trace id, so the same key.
+	// A redelivered record has the same key whatever its trace id; two
+	// records never share one, even with the same trace id.
 	h := http.Header{}
 	h.Set("X-PM-Webhook-Trace-Id", "trace-1")
 	a, _ := ParsePostmarkWebhook(h, readSample(t, "postmark_bounce.json"))
 	b, _ := ParsePostmarkWebhook(h, readSample(t, "postmark_delivery.json"))
 	c, _ := ParsePostmarkWebhook(http.Header{}, readSample(t, "postmark_bounce.json"))
-	if a[0].Key != "postmark:trace-1" || b[0].Key != a[0].Key || c[0].Key == a[0].Key {
+	if a[0].Key != c[0].Key || b[0].Key == a[0].Key || len(a[0].Key) < 20 {
 		t.Fatalf("keys: %q %q %q", a[0].Key, b[0].Key, c[0].Key)
+	}
+	if got := limit("caf\u00e9", 4); got != "caf" {
+		t.Fatalf("limit split a character: %q", got)
 	}
 }

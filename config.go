@@ -56,6 +56,9 @@ type Config struct {
 	JobPoll time.Duration
 }
 
+// minWebhookSecretLen is the shortest FOLD_POSTMARK_WEBHOOK_SECRET accepted.
+const minWebhookSecretLen = 24
+
 // defaultTrustedProxies is the fixed subnet of the compose network
 // (docker-compose.yml). Only Caddy lives there in production.
 const defaultTrustedProxies = "172.30.0.0/24"
@@ -151,6 +154,10 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	// The webhook secret is the only guard on a public endpoint (M3.2b).
+	if s := os.Getenv("FOLD_POSTMARK_WEBHOOK_SECRET"); s != "" && len(s) < minWebhookSecretLen {
+		return Config{}, fmt.Errorf("FOLD_POSTMARK_WEBHOOK_SECRET must be at least %d characters; make one with `openssl rand -hex 24`", minWebhookSecretLen)
+	}
 	workers, err := strconv.Atoi(getEnv("FOLD_WORKERS", "2"))
 	if err != nil || workers < 0 || workers > 64 {
 		return Config{}, fmt.Errorf("FOLD_WORKERS must be a whole number from 0 to 64")

@@ -250,12 +250,18 @@ your server → Webhooks) for **Delivery**, **Bounce** and **Spam Complaint**,
 with Basic authentication in the URL, and put the same password in `.env`:
 
 ```bash
-# Webhook URL in Postmark: https://postmark:LONG_RANDOM_SECRET@groups.example.org/hooks/postmark/email
-FOLD_POSTMARK_WEBHOOK_SECRET=LONG_RANDOM_SECRET
+# Make the secret with `openssl rand -hex 24` (letters and digits only, so it
+# fits in a URL), then use this webhook URL in Postmark:
+# https://postmark:SECRET@groups.example.org/hooks/postmark/email
+FOLD_POSTMARK_WEBHOOK_SECRET=SECRET
 ```
 
 A hard bounce then stops all mail to that address; a spam complaint stops
-optional mail, while account mail (password resets, sign-in links) still goes.
+optional mail, while account mail (password resets, sign-in links) still goes
+from Fold. Postmark keeps its own list too: it refuses to send to an address
+that hard-bounced until you reactivate it in Postmark, and to one that marked
+mail as spam at all. For more protection, allow only Postmark's webhook IP
+addresses to reach `/hooks/postmark/email` at your firewall or proxy.
 
 Run `sudo docker compose --project-directory /opt/fold up -d` to recreate the
 app with the changed mail configuration.

@@ -3,13 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"fold/internal/jobs"
+	"fold/internal/providers"
 	"fold/models"
 )
 
@@ -174,4 +177,28 @@ func outboxTo(t *testing.T, app *App, to string) []models.MailOutbox {
 	var rows []models.MailOutbox
 	app.DB.Where("to_address = ?", to).Find(&rows)
 	return rows
+}
+
+// A report that beats its delivery row is retried for a couple of minutes,
+// then taken to be about mail Fold has no row for.
+func TestEmailReportBeforeItsDeliveryRow(t *testing.T) {
+	app := testApp(t)
+	e := providers.Event{Provider: "postmark", Kind: providers.EventBounced, Address: "x@example.com", MessageID: "not-yet",
+		Permanent: true, At: time.Now()}
+	if err := app.applyEmailEvent(context.Background(), e); !errors.Is(err, errDeliveryNotYet) {
+		t.Fatalf("a fresh report with no row: %v", err)
+	}
+	var n int64
+	app.DB.Model(&models.Suppression{}).Count(&n)
+	if n != 0 {
+		t.Fatal("a retried report must leave nothing behind")
+	}
+	e.At = time.Now().Add(-5 * time.Minute)
+	if err := app.applyEmailEvent(context.Background(), e); err != nil {
+		t.Fatalf("an old report: %v", err)
+	}
+	app.DB.Model(&models.Suppression{}).Count(&n)
+	if n != 1 {
+		t.Fatal("an old hard bounce still suppresses the address")
+	}
 }

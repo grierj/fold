@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fold/internal/providers"
 )
@@ -31,8 +32,7 @@ type postmarkRecord struct {
 // Postmark's Inactive flag says.
 var postmarkHardBounces = map[string]bool{"HardBounce": true, "BadEmailAddress": true}
 
-// ParseWebhook reads one Postmark webhook body. h carries the
-// X-PM-Webhook-Trace-Id, which identifies a redelivered request.
+// ParseWebhook reads one Postmark webhook body.
 func (p *Postmark) ParseWebhook(h http.Header, body []byte) ([]providers.Event, error) {
 	return ParsePostmarkWebhook(h, body)
 }
@@ -56,25 +56,26 @@ func ParsePostmarkWebhook(h http.Header, body []byte) ([]providers.Event, error)
 	default:
 		return nil, nil
 	}
-	if strings.TrimSpace(e.Address) == "" || e.MessageID == "" {
-		return nil, fmt.Errorf("mail: postmark %s webhook without an address or message id", r.RecordType)
-	}
 	e.Address = strings.ToLower(strings.TrimSpace(e.Address))
+	if len(e.Address) < 3 || len(e.Address) > 320 || !strings.Contains(e.Address, "@") || e.MessageID == "" {
+		return nil, fmt.Errorf("mail: postmark %s webhook without a usable address or message id", r.RecordType)
+	}
 	if t, err := time.Parse(time.RFC3339Nano, at); err == nil {
 		e.At = t.UTC()
 	}
-	// Postmark sends the same trace id when it redelivers a request.
-	e.Key = h.Get("X-PM-Webhook-Trace-Id")
-	if e.Key == "" {
-		e.Key = fmt.Sprintf("%s:%d:%s:%s", r.RecordType, r.ID, r.MessageID, at)
-	}
-	e.Key = "postmark:" + limit(e.Key, 300)
+	// The record's own identity, so a redelivered request is handled once and
+	// two different records never share a key (a trace id might).
+	e.Key = "postmark:" + limit(fmt.Sprintf("%s:%d:%s:%s", r.RecordType, r.ID, r.MessageID, at), 300)
 	return []providers.Event{e}, nil
 }
 
+// limit cuts s to at most n bytes without splitting a character.
 func limit(s string, n int) string {
-	if len(s) > n {
-		return s[:n]
+	if len(s) <= n {
+		return s
 	}
-	return s
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }

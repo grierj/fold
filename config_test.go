@@ -129,3 +129,17 @@ func TestJobWorkerSettings(t *testing.T) {
 		t.Setenv(env, "")
 	}
 }
+
+func TestWebhookSecretMustBeLong(t *testing.T) {
+	t.Setenv("APP_ENV", "prod")
+	t.Setenv("SESSION_SECRET", "test-session-secret-at-least-32-bytes")
+	t.Setenv("DATABASE_URL", "postgres://unused")
+	t.Setenv("FOLD_POSTMARK_WEBHOOK_SECRET", "secret123")
+	if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), "at least 24") {
+		t.Fatalf("short secret: %v", err)
+	}
+	t.Setenv("FOLD_POSTMARK_WEBHOOK_SECRET", strings.Repeat("a1", 12))
+	if cfg, err := LoadConfig(); err != nil || cfg.PostmarkWebhookSecret == "" {
+		t.Fatalf("24 characters: %v", err)
+	}
+}
