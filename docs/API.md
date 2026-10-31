@@ -1246,6 +1246,25 @@ POST /api/v1/admin/jobs/:id/dismiss → 200 {status: "dismissed"} | 404 | 409 (a
 
 Admins only (403 otherwise). The list holds background jobs that ran out of attempts (`dead`), latest failure first, at most 100 (`more` says there are more). `adminJob` is `{id, kind, label, runsDaily, attempts, lastError, failedAt}`: `label` says what the job does in plain words (its kind when the server doesn't know it), `runsDaily` means tomorrow's run tries again by itself, and `lastError` is the job's last error, one line, without email addresses. A job's payload is never shown. Retry queues the job again from its first attempt; Dismiss sets it aside, and it is deleted with finished jobs after 30 days. Retrying or dismissing a job that is no longer dead answers 409 `job_handled`. Admins get no notice for dead jobs yet (DEC-111).
 
+### Messages: the composer (M3.4a)
+
+```
+GET  /api/v1/messages/compose            → 200 {canCompose, canMessageEveryone, groups: [{id, name}], events: [{id, title, groupName?, churchWide, dates: [{occurrenceId, date, startsAt}]}]}
+POST /api/v1/messages/audience-preview   → 200 {summary} | 400 | 403 | 404   body: {audience}
+GET  /api/v1/messages                    → 200 {messages: [message]}           (yours; an admin's has everyone's)
+POST /api/v1/messages                    → 201 {message} | 400 | 403 | 404   body: {channel?, subject, bodyHtml, audience}
+GET  /api/v1/messages/:id                → 200 {message} | 404               (its author or an admin)
+PUT  /api/v1/messages/:id                → 200 {message} | 400 | 403 | 404 | 409
+POST /api/v1/messages/:id/schedule       → 200 {message, summary} | 400 | 409   body: {scheduledAt?} (absent: now)
+POST /api/v1/messages/:id/cancel         → 200 {message} | 409               (audited message.cancelled)
+```
+
+Leaders, hosts and admins write announcements (`policy.CanComposeMessages`): admins to anyone, a group's leaders to their own active group and its events' registrants, a church-wide event's hosts only to that event's registrants (`policy.CanMessageAudience`, checked on every save and again at send time in M3.5). `compose` lists only what the author may target; any other target is 403 `message_not_yours`, and so is one that no longer exists, except that an admin gets 404 `message_audience_gone` (so ids can't be probed). The stored audience keeps only the fields its type uses. `audience` is a PLAN 7.2 shape: `occurrence` (one date), `event_series` (an event's upcoming dates), `events` (up to 50 events' upcoming dates), each with registrant `statuses` (`going`, `maybe`, `waitlisted`; default Going and waitlisted); `group` with `roles` (default members and leaders); `all_members` and `users` (admins only). A household person's registration reaches the account holder who registered them (DEC-8).
+
+`summary` is `{people, eligible, teens, skipped: {reason: count}, recipients: [{name, teen, skipped?}] (first 100 by name), more}`: names and counts only, never addresses (DEC-31), with a teen count and Teen badges (DEC-20). People are skipped when they are guests (they get only transactional mail and reminders until they ask for updates, PLAN 7.4), not active, have no address, have email that isn't working or marked our email as spam (suppressions), or turned off message notices (the latest `category:messages` email consent, which "Turn off all optional email" and the one-click link also write, DEC-115). The counts by reason are for everyone; each person's own reason is shown only to an admin, and a leader or host sees "won't get this". Each read goes in chunks of ids.
+
+`message` is `{id, channel, status, subject, bodyHtml, audience, scheduledAt, sentAt, authorName, editable, updatedAt}`. Only email is accepted for now (`message_channel`): texting stays hidden until an SMS provider is set up (DEC-117). `bodyHtml` is sanitized with bluemonday before it is stored (paragraphs, bold, italic, underline, strike, two heading sizes, lists, quotes, rules, http/https/mailto links and `fold-button` links; scripts, styles, `on*` attributes and `javascript:` links are removed) and a plain-text part is made from it. Scheduling needs a subject, a body and at least one eligible person (`message_nobody`), and a time from now to a year ahead (`message_when`); it is audited `message.scheduled` and stores the eligible count. Drafts and scheduled messages can be edited or cancelled. Editing a scheduled message checks it could still go out (as scheduling does) and refreshes its count; that edit, and an admin editing someone else's message, are audited `message.edited`. The body is limited to 100,000 characters of sanitized HTML and 50,000 of plain text (`message_body`); once a message is sending or sent, changes are 409 `message_locked`. Sending arrives with M3.5.
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.
