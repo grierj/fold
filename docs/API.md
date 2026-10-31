@@ -1249,7 +1249,7 @@ Admins only (403 otherwise). The list holds background jobs that ran out of atte
 ### Messages: the composer (M3.4a)
 
 ```
-GET  /api/v1/messages/compose            → 200 {canCompose, canMessageEveryone, smsEnabled, groups: [{id, name}], events: [{id, title, groupName?, churchWide, dates: [{occurrenceId, date, startsAt}]}]}
+GET  /api/v1/messages/compose[?event=<id>] → 200 {canCompose, canMessageEveryone, smsEnabled, groups: [{id, name}], events: [{id, title, groupName?, churchWide, dates: [{occurrenceId, date, startsAt}]}]}
 POST /api/v1/messages/audience-preview   → 200 {summary} | 400 | 403 | 404   body: {audience}
 GET  /api/v1/messages                    → 200 {messages: [message]}           (yours; an admin's has everyone's)
 POST /api/v1/messages                    → 201 {message} | 400 | 403 | 404   body: {channel?, subject, bodyHtml, audience}
@@ -1259,7 +1259,7 @@ POST /api/v1/messages/:id/schedule       → 200 {message, summary} | 400 | 409 
 POST /api/v1/messages/:id/cancel         → 200 {message} | 409               (audited message.cancelled)
 ```
 
-`smsEnabled` shows the composer's text tab; it is always false until texting can be set up (M3.7, DEC-117). `GET /auth/me` and `POST /auth/login` also answer `canCompose`, so the nav offers Messages only to people who can write (M3.4c).
+`smsEnabled` shows the composer's text tab; it is always false until texting can be set up (M3.7, DEC-117). `?event=<id>` narrows the answer to that one event by the same rules (no groups; no events when the viewer may not write to it; a malformed id is 400), for the date page's "Email people going". `GET /auth/me` and `POST /auth/login` also answer `canCompose` (true for admins without reading anything), so the nav offers Messages only to people who can write (M3.4c).
 
 Leaders, hosts and admins write announcements (`policy.CanComposeMessages`): admins to anyone, a group's leaders to their own active group and its events' registrants, a church-wide event's hosts only to that event's registrants (`policy.CanMessageAudience`, checked on every save and again at send time in M3.5). `compose` lists only what the author may target; any other target is 403 `message_not_yours`, and so is one that no longer exists, except that an admin gets 404 `message_audience_gone` (so ids can't be probed). The stored audience keeps only the fields its type uses. `audience` is a PLAN 7.2 shape: `occurrence` (one date), `event_series` (an event's upcoming dates), `events` (up to 50 events' upcoming dates), each with registrant `statuses` (`going`, `maybe`, `waitlisted`; default Going and waitlisted); `group` with `roles` (default members and leaders); `all_members` and `users` (admins only). A household person's registration reaches the account holder who registered them (DEC-8).
 

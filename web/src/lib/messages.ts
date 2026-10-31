@@ -1,5 +1,5 @@
 import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, Message, MessageAudience } from "../types";
-import { formatShortDay, formatWhen } from "./when";
+import { formatShortDay, formatWhenIn } from "./when";
 
 // The composer's words and audience shapes (M3.4c, PLAN 7.2 and 7.3).
 
@@ -138,21 +138,29 @@ export function teenLine(s: AudienceSummary): string {
   return s.teens === 1 ? "1 of them is a teen." : `${s.teens} of them are teens.`;
 }
 
+// Times a message goes out read on the church's clock (the schedule is
+// picked in it), with its zone named when the viewer's clock differs.
+
 // confirmLine is the question before sending: "Send to 133 people now?"
-export function confirmLine(eligible: number, at: string | null): string {
+export function confirmLine(eligible: number, at: string | null, zone: string): string {
   if (!at) return `Send to ${people(eligible)} now?`;
-  const when = formatWhen(at);
+  const when = formatWhenIn(at, zone);
   return `Send to ${people(eligible)} ${/^(Today|Tomorrow) /.test(when) ? when[0].toLowerCase() + when.slice(1) : `on ${when}`}?`;
 }
 
-// statusLabel names a message's state in words, never by color alone.
-export function statusLabel(m: Pick<Message, "status" | "scheduledAt" | "sentAt">): string {
+// statusLabel names a message's state in words, never by color alone. A
+// scheduled time already reached is "Waiting to send" until the sender
+// (M3.5) picks it up; a draft that was never scheduled and then cancelled
+// was discarded.
+export function statusLabel(m: Pick<Message, "status" | "scheduledAt" | "sentAt">, zone: string, now = new Date()): string {
   switch (m.status) {
     case "draft": return "Draft";
-    case "scheduled": return m.scheduledAt ? `Scheduled for ${formatWhen(m.scheduledAt)}` : "Scheduled";
+    case "scheduled":
+      if (!m.scheduledAt || new Date(m.scheduledAt).getTime() <= now.getTime()) return "Waiting to send";
+      return `Scheduled for ${formatWhenIn(m.scheduledAt, zone, now)}`;
     case "sending": return "Sending";
-    case "sent": return m.sentAt ? `Sent ${formatWhen(m.sentAt)}` : "Sent";
-    case "cancelled": return "Cancelled";
+    case "sent": return m.sentAt ? `Sent ${formatWhenIn(m.sentAt, zone, now)}` : "Sent";
+    case "cancelled": return m.scheduledAt ? "Cancelled" : "Discarded";
   }
 }
 

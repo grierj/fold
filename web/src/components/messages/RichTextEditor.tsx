@@ -28,19 +28,21 @@ function allowedHref(href: string): boolean {
 }
 
 // One set of extensions for every editor, so re-renders never rebuild it.
-const extensions = [
-  StarterKit.configure({
-    code: false,
-    codeBlock: false,
-    heading: { levels: [2, 3] },
-    link: {
-      openOnClick: false,
-      autolink: true,
-      HTMLAttributes: { target: null, rel: null, class: null },
-      isAllowedUri: (url) => allowedHref(url),
-    },
-  }),
-];
+const kit = (isAllowedUri: (url: string) => boolean) => StarterKit.configure({
+  code: false,
+  codeBlock: false,
+  heading: { levels: [2, 3] },
+  link: {
+    openOnClick: false,
+    autolink: true,
+    HTMLAttributes: { target: null, rel: null, class: null },
+    isAllowedUri: (url) => isAllowedUri(url),
+  },
+});
+const extensions = [kit(allowedHref)];
+// The read-only view keeps only real addresses: a link to a merge field
+// ({{event_link}}) has no address until it is sent, so it reads as text.
+const viewExtensions = [kit((url) => allowedHref(url) && !LINK_FIELD_RE.test(url.trim()))];
 
 // normalizeHref turns what someone typed into an address the server keeps,
 // or "" when it can't be one.
@@ -87,8 +89,8 @@ function Toolbar({ editor, oneEvent, panel, onPanel }: { editor: Editor; oneEven
       <ToolbarButton label="Underline" pressed={on.underline} onClick={() => run((c) => c.toggleUnderline())}><span className="underline">U</span></ToolbarButton>
       <ToolbarButton label="Heading H2" pressed={on.h2} onClick={() => run((c) => c.toggleHeading({ level: 2 }))}>H2</ToolbarButton>
       <ToolbarButton label="Subheading H3" pressed={on.h3} onClick={() => run((c) => c.toggleHeading({ level: 3 }))}>H3</ToolbarButton>
-      <ToolbarButton label="Bulleted list" pressed={on.bullet} onClick={() => run((c) => c.toggleBulletList())}><ListIcon className="h-4 w-4" />&nbsp;List</ToolbarButton>
-      <ToolbarButton label="Numbered list" pressed={on.ordered} onClick={() => run((c) => c.toggleOrderedList())}><ListOrderedIcon className="h-4 w-4" />&nbsp;List</ToolbarButton>
+      <ToolbarButton label="Bulleted list" pressed={on.bullet} onClick={() => run((c) => c.toggleBulletList())}><ListIcon className="h-5 w-5" /></ToolbarButton>
+      <ToolbarButton label="Numbered list" pressed={on.ordered} onClick={() => run((c) => c.toggleOrderedList())}><ListOrderedIcon className="h-5 w-5" /></ToolbarButton>
       <ToolbarButton label="Quote" pressed={on.quote} onClick={() => run((c) => c.toggleBlockquote())}><span aria-hidden="true">“</span>&nbsp;Quote</ToolbarButton>
       <ToolbarButton label="Link" pressed={on.link} aria-expanded={panel === "link"} onClick={() => onPanel(panel === "link" ? null : "link")}>Link</ToolbarButton>
       <ToolbarButton label="Button" pressed={on.button} aria-expanded={panel === "button"} onClick={() => onPanel(panel === "button" ? null : "button")}>Button</ToolbarButton>
@@ -180,7 +182,8 @@ function LinkPanel({ editor, kind, oneEvent, onClose }: { editor: Editor; kind: 
 }
 
 // htmlOf is what the editor holds, or "" when it holds nothing.
-const htmlOf = (e: Editor) => (e.isEmpty ? "" : e.getHTML());
+// Empty paragraphs at the end (the editor keeps one to type into) are left out.
+const htmlOf = (e: Editor) => (e.isEmpty ? "" : e.getHTML().replace(/(<p><\/p>)+$/, ""));
 
 // RichTextEditor sits inside a <Field>, which labels it and carries its
 // hint and error. onChange gets the HTML ("" when empty); onReady gets the
@@ -230,11 +233,17 @@ export function RichTextEditor({ value, onChange, onReady, oneEvent }: {
 // same schema as the editor, so only the formatting it allows is drawn.
 export function RichTextView({ html }: { html: string }) {
   const editor = useEditor({
-    extensions,
+    extensions: viewExtensions,
     content: html,
     editable: false,
     injectCSS: false,
     editorProps: { attributes: { class: "rich-text", role: "region", "aria-label": "Message body" } },
   });
-  return editor ? <EditorContent editor={editor} /> : null;
+  if (!editor) return null;
+  return <>
+    {/(href="\{\{\s*(event_link|manage_link)\s*\}\}")/i.test(html) && (
+      <p className="mb-3 text-sm text-text-muted">Links to the event page and to each person's sign-up fill in when it's sent.</p>
+    )}
+    <EditorContent editor={editor} />
+  </>;
 }

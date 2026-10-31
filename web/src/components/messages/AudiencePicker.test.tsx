@@ -44,6 +44,7 @@ describe("AudiencePicker", () => {
     expect(screen.getByRole("button", { name: "Waitlisted" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Maybe" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByRole("combobox", { name: "Which dates" })).toHaveValue("all");
+    expect(screen.getByRole("combobox", { name: "Which dates" })).toHaveAccessibleDescription("An event of Book club.");
     fireEvent.change(screen.getByRole("combobox", { name: "Send to" }), { target: { value: "group:7" } });
     expect(screen.getByRole("button", { name: "Members" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("button", { name: "Leaders" })).toHaveAttribute("aria-pressed", "true");
@@ -64,6 +65,26 @@ describe("AudiencePicker", () => {
     await act(async () => { calls[0](summary({ people: 142, eligible: 133, skipped: { "turned off messages from leaders": 6, "no email address": 3 } })); });
     expect(screen.getByRole("status")).toHaveTextContent("2 people; everyone on the list will get it.");
     expect(screen.getByRole("status")).not.toHaveTextContent("142");
+  });
+
+  it("says it shows only the next 10 dates when there are that many", () => {
+    const many = Array.from({ length: 10 }, (_, i) => ({ occurrenceId: 100 + i, date: `2026-12-${10 + i}`, startsAt: `2026-12-${10 + i}T02:00:00Z` }));
+    const o = composeOptions();
+    render(<AudiencePicker id="aud" options={{ ...o, events: [{ ...o.events[0], dates: many }] }} choice={{ ...emptyChoice(), target: "event:3" }} onChange={() => {}} />);
+    expect(screen.getByRole("combobox", { name: "Which dates" })).toHaveAccessibleDescription("An event of Book club. Showing the next 10 dates.");
+  });
+
+  it("keeps the live region busy while counting and announces only the result", async () => {
+    const calls = pending();
+    render(<Harness start={{ ...emptyChoice(), target: "group:7" }} />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveAttribute("aria-busy", "true");
+    expect(status).not.toHaveTextContent("Counting");
+    expect(screen.getByText("Counting who gets it…")).toBeInTheDocument();
+    await wait();
+    await act(async () => { calls[0](summary()); });
+    expect(status).toHaveAttribute("aria-busy", "false");
+    expect(screen.queryByText("Counting who gets it…")).toBeNull();
   });
 
   it("waits for the pause before counting at all", async () => {

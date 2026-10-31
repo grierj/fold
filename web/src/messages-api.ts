@@ -9,7 +9,8 @@ export interface MessageDraft {
 }
 
 export const Messages = {
-  options: () => api<ComposeOptions>("/messages/compose"),
+  // eventId narrows it to that event: listed only when the viewer may write to it.
+  options: (eventId?: number) => api<ComposeOptions>(`/messages/compose${eventId ? `?event=${eventId}` : ""}`),
   audiencePreview: (audience: MessageAudience) =>
     api<{ summary: AudienceSummary }>("/messages/audience-preview", { method: "POST", body: { audience } }),
   list: () => api<{ messages: Message[] }>("/messages"),

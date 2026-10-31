@@ -396,8 +396,14 @@ func TestNoVideoEmbed(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if strings.Contains(strings.ToLower(string(b)), "<iframe") {
-			t.Errorf("%s embeds an <iframe>; video is a link out in a new tab (DEC-16)", p)
+		// The composer's email preview is the one iframe allowed: our own
+		// page, sandboxed with no scripts (M3.4c). Such an iframe says why
+		// with "iframe-ok:" on the line before it.
+		lines := strings.Split(string(b), "\n")
+		for i, line := range lines {
+			if strings.Contains(strings.ToLower(line), "<iframe") && (i == 0 || !strings.Contains(lines[i-1], "iframe-ok:")) {
+				t.Errorf("%s:%d embeds an <iframe>; video is a link out in a new tab (DEC-16)", p, i+1)
+			}
 		}
 		return nil
 	})

@@ -12,6 +12,7 @@ import (
 
 	"fold/internal/audit"
 	foldmail "fold/internal/mail"
+	"fold/internal/policy"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -306,6 +307,10 @@ func (a *App) apiMe(c *gin.Context) {
 // canComposeOrLog says whether the nav offers Messages (M3.4c). A failed
 // read only hides the link; the composer's own routes check again.
 func (a *App) canComposeOrLog(me *models.User) bool {
+	// Admins always can; skip the two reads on every page load.
+	if policy.IsAdmin(asPerson(me)) {
+		return true
+	}
 	ok, err := a.canCompose(me)
 	if err != nil {
 		log.Printf("can compose for user %d: %v", me.ID, err)

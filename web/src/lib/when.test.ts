@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, historyDayBounds, zoneNote, formatNextMeeting, minuteOfDay, formatHour, wallClock, wallToInstant } from "./when";
+import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, historyDayBounds, zoneNote, formatNextMeeting, minuteOfDay, formatHour, wallClock, wallToInstant, formatWhenIn } from "./when";
 
 // Saturday Oct 17 2026, 7:00 PM in Los Angeles (PDT, UTC-7) = 02:00 UTC Sunday.
 const laSat7pm = "2026-10-18T02:00:00Z";
@@ -195,5 +195,13 @@ describe("wallToInstant and wallClock", () => {
     expect(wallToInstant("2026-11-03", "9am", "UTC")).toBeNull();
     expect(wallToInstant("", "09:00", "UTC")).toBeNull();
     expect(wallToInstant("2026-11-03", "09:00", "Nowhere/Special")).toBeNull();
+  });
+});
+
+describe("formatWhenIn", () => {
+  const now = new Date("2026-11-02T18:00:00Z");
+  it("reads the church's clock and names its zone only when the viewer's differs", () => {
+    expect(formatWhenIn("2026-11-03T16:00:00Z", "America/Boise", now, "America/Denver")).toBe("Tomorrow at 9:00 AM");
+    expect(formatWhenIn("2026-11-03T16:00:00Z", "America/Boise", now, "America/New_York")).toBe("Tomorrow at 9:00 AM MST");
   });
 });

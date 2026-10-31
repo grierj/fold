@@ -52,14 +52,21 @@ describe("counts", () => {
   });
 
   it("asks before sending with the count", () => {
-    expect(confirmLine(133, null)).toBe("Send to 133 people now?");
-    expect(confirmLine(1, "2030-11-05T16:00:00Z")).toMatch(/^Send to 1 person on .+ at .+\?$/);
+    expect(confirmLine(133, null, "America/Boise")).toBe("Send to 133 people now?");
+    expect(confirmLine(1, "2026-11-05T16:00:00Z", "America/Boise")).toMatch(/^Send to 1 person on Thu, Nov 5 at 9:00 AM( MST)?\?$/);
+    expect(confirmLine(1, "2026-11-05T16:00:00Z", "Asia/Kolkata")).toBe("Send to 1 person on Thu, Nov 5 at 9:30 PM GMT+5:30?");
   });
 
   it("names every status in words", () => {
-    expect(statusLabel({ status: "draft", scheduledAt: null, sentAt: null })).toBe("Draft");
-    expect(statusLabel({ status: "scheduled", scheduledAt: "2030-11-05T16:00:00Z", sentAt: null })).toMatch(/^Scheduled for /);
-    expect(statusLabel({ status: "sending", scheduledAt: null, sentAt: null })).toBe("Sending");
-    expect(statusLabel({ status: "cancelled", scheduledAt: null, sentAt: null })).toBe("Cancelled");
+    const z = "America/Boise", now = new Date("2026-11-02T18:00:00Z");
+    expect(statusLabel({ status: "draft", scheduledAt: null, sentAt: null }, z, now)).toBe("Draft");
+    expect(statusLabel({ status: "scheduled", scheduledAt: "2026-11-03T16:00:00Z", sentAt: null }, z, now)).toMatch(/^Scheduled for Tomorrow at 9:00 AM( MST)?$/);
+    expect(statusLabel({ status: "scheduled", scheduledAt: "2026-11-03T16:00:00Z", sentAt: null }, "Asia/Kolkata", now)).toBe("Scheduled for Tomorrow at 9:30 PM GMT+5:30");
+    // Send now, or a time already reached: the sender hasn't picked it up yet.
+    expect(statusLabel({ status: "scheduled", scheduledAt: "2026-11-02T18:00:00Z", sentAt: null }, z, now)).toBe("Waiting to send");
+    expect(statusLabel({ status: "sending", scheduledAt: null, sentAt: null }, z, now)).toBe("Sending");
+    expect(statusLabel({ status: "sent", scheduledAt: null, sentAt: "2026-11-02T16:00:00Z" }, z, now)).toMatch(/^Sent Today at 9:00 AM( MST)?$/);
+    expect(statusLabel({ status: "cancelled", scheduledAt: "2026-11-03T16:00:00Z", sentAt: null }, z, now)).toBe("Cancelled");
+    expect(statusLabel({ status: "cancelled", scheduledAt: null, sentAt: null }, z, now)).toBe("Discarded");
   });
 });

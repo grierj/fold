@@ -5,7 +5,7 @@ import { Messages, previewHTMLPath } from "../messages-api";
 import type { ComposeOptions, Message, MessagePreview } from "../types";
 import { ERROR_COPY, errorCode, errorText, type ErrorCode } from "../lib/errors";
 import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, isOneEvent, prefillChoice, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
-import { useChurchZone } from "../lib/useEventZone";
+import { useChurchZoneLoad } from "../lib/useEventZone";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { browserTimeZone, wallClock, wallToInstant, zoneNote } from "../lib/when";
 import { useSiteName } from "../lib/useSiteName";
@@ -56,12 +56,16 @@ export function MessageComposerPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const site = useSiteName();
-  const zone = useChurchZone() ?? browserTimeZone();
+  // The schedule is in the church's zone: wait for it, so a saved time is
+  // never read on the browser's clock first.
+  const church = useChurchZoneLoad();
+  const zone = church.zone ?? browserTimeZone();
   const ids = { audience: useId(), subject: useId(), body: useId(), day: useId(), when: useId() };
   const form = useRef<HTMLFormElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   // The question replaces the button that asked it, so focus moves to it.
   const confirmButton = useRef<HTMLButtonElement>(null);
+  const previewSection = useRef<HTMLElement>(null);
 
   const [options, setOptions] = useState<ComposeOptions | null>(null);
   const [message, setMessage] = useState<Message | null>(null);
@@ -87,14 +91,27 @@ export function MessageComposerPage() {
   const [busy, setBusy] = useState<Action | "schedule" | "cancel" | null>(null);
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState<(MessagePreview & { id: number; n: number }) | null>(null);
-  const [confirm, setConfirm] = useState<{ eligible: number; at: string | null } | null>(null);
+  // The question before sending, for exactly what was on screen (snap).
+  const [confirm, setConfirm] = useState<{ eligible: number; at: string | null; snap: string } | null>(null);
 
   const audience = toAudience(choice);
   const key = audienceKey(audience);
   const dirty = editing && !!saved && (saved.subject !== subject.trim() || saved.key !== key || (saved.body !== null && saved.body !== body));
-  const { markSaved } = useUnsavedChanges(dirty);
-  const asking = !!confirm;
-  useEffect(() => { if (asking) confirmButton.current?.focus(); }, [asking]);
+  const { markSaved, resume } = useUnsavedChanges(dirty);
+  // Any change after "Send to N people?" withdraws the question: it would
+  // otherwise send something other than what it asked about.
+  const snap = JSON.stringify({ subject: subject.trim(), body, key, when, day, time });
+  const asking = confirm && confirm.snap === snap ? confirm : null;
+  useEffect(() => { setConfirm((c) => (c && c.snap !== snap ? null : c)); }, [snap]);
+  useEffect(() => {
+    if (!asking) return;
+    confirmButton.current?.focus({ preventScroll: true });
+    confirmButton.current?.scrollIntoView?.({ block: "center" });
+  }, [asking]);
+  const previewN = preview?.n ?? 0;
+  useEffect(() => {
+    if (previewN) previewSection.current?.scrollIntoView?.({ block: "start" });
+  }, [previewN]);
 
   useEffect(() => {
     let alive = true;
@@ -117,7 +134,7 @@ export function MessageComposerPage() {
 
   // Fill the form once the options (and the message, when there is one) are here.
   useEffect(() => {
-    if (ready || !options || (id && !message)) return;
+    if (ready || !options || !church.done || (id && !message)) return;
     if (message) startFrom(message, options, message.status === "draft" && message.editable);
     else {
       const c = prefillChoice(params, options);
@@ -126,7 +143,7 @@ export function MessageComposerPage() {
       setEditing(true);
     }
     setReady(true);
-  }, [ready, options, id, message, params]);
+  }, [ready, options, id, message, params, church.done]);
 
   function startFrom(m: Message, o: ComposeOptions, edit: boolean) {
     const c = fromAudience(m.audience, o);
@@ -174,12 +191,24 @@ export function MessageComposerPage() {
     return e;
   }
 
-  // place shows a server error under its field, or with the buttons.
+  // place shows a server error under its field, or with the buttons. A
+  // message that started sending meanwhile is read again and shown read only.
   function place(err: unknown, fallback: string, where: keyof Errors = "form") {
     const code = errorCode(err);
     const field = code ? FIELD_OF[code] : undefined;
-    show({ [field ?? where]: errorText(err, fallback) });
-    if (code === "message_locked") setReload((n) => n + 1);
+    const text = errorText(err, fallback);
+    if (code === "message_locked" && message && options) {
+      Messages.get(message.id)
+        .then(({ message: m }) => {
+          markSaved();
+          setMessage(m);
+          startFrom(m, options, false);
+          setErrors({ form: text });
+        })
+        .catch(() => show({ form: text }));
+      return;
+    }
+    show({ [field ?? where]: text });
   }
 
   // save stores the draft (creating it the first time) and answers it.
@@ -190,9 +219,11 @@ export function MessageComposerPage() {
     setMessage(m);
     setSaved({ subject: draft.subject, body, key });
     if (!message) {
-      // The new address is the same draft, now saved: no "Leave without saving?".
-      if (dirty) markSaved();
+      // The new address is the same draft, now saved: no "Leave without
+      // saving?" for this move, and the guard is back right after it.
+      markSaved();
       navigate(`/messages/${m.id}`, { replace: true });
+      resume();
     }
     return m;
   }
@@ -226,7 +257,7 @@ export function MessageComposerPage() {
       if (action === "send") {
         const { summary } = await Messages.audiencePreview(m.audience);
         if (summary.eligible === 0) show({ audience: ERROR_COPY.message_nobody });
-        else setConfirm({ eligible: summary.eligible, at: when === "later" ? wallToInstant(day, time, zone) : null });
+        else setConfirm({ eligible: summary.eligible, at: when === "later" ? wallToInstant(day, time, zone) : null, snap });
       }
     } catch (e) {
       const fallback = { draft: "", preview: "We couldn't show the preview.", test: "We couldn't send the test.", send: "We couldn't count who gets it." }[action];
@@ -237,10 +268,10 @@ export function MessageComposerPage() {
   }
 
   async function schedule() {
-    if (!message || !confirm || busy) return;
+    if (!message || !asking || busy) return;
     setBusy("schedule");
     try {
-      const { message: m } = await Messages.schedule(message.id, confirm.at ?? undefined);
+      const { message: m } = await Messages.schedule(message.id, asking.at ?? undefined);
       setMessage(m);
       setEditing(false);
       setConfirm(null);
@@ -270,9 +301,26 @@ export function MessageComposerPage() {
     }
   }
 
-  function stopEditing() {
+  // Discarding a draft cancels it for good; it stays on the list as Discarded.
+  async function discardDraft() {
+    if (!message || busy) return;
+    if (!window.confirm("Discard this draft? You can't undo this.")) return;
+    setBusy("cancel");
+    try {
+      await Messages.cancel(message.id);
+      markSaved();
+      navigate("/messages");
+    } catch (e) {
+      place(e, "We couldn't discard the draft.");
+      setBusy(null);
+    }
+  }
+
+  // Done editing a scheduled message: what Preview or the test saved stays;
+  // only unsaved changes are asked about.
+  function doneEditing() {
     if (!message || !options) return;
-    if (dirty && !window.confirm("Stop editing? Your changes will be lost.")) return;
+    if (dirty && !window.confirm("Stop editing? Your unsaved changes will be lost.")) return;
     startFrom(message, options, false);
   }
 
@@ -309,7 +357,7 @@ export function MessageComposerPage() {
       {back}
       <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold focus:outline-none">{title}</h1>
       <section aria-label="This message" className="space-y-4 rounded-lg border border-border bg-surface p-4 sm:p-6">
-        <p className="text-lg font-semibold">{statusLabel(message)}</p>
+        <p className="text-lg font-semibold">{statusLabel(message, zone)}</p>
         {scheduled && message.editable && <p className="text-sm text-text-muted">You can change or cancel it until it starts sending.</p>}
         <dl className="grid gap-1 text-sm sm:grid-cols-[8rem_1fr]">
           <dt className="font-medium text-text-muted">To</dt>
@@ -371,14 +419,16 @@ export function MessageComposerPage() {
           <Button variant="secondary" layout="w-full sm:w-auto" disabled={!!busy} onClick={() => void run("preview")}>{busy === "preview" ? "Saving…" : "Preview"}</Button>
           <Button variant="secondary" layout="w-full sm:w-auto" disabled={!!busy} onClick={() => void run("test")}>{busy === "test" ? "Sending…" : "Send a test to me"}</Button>
         </div>
+        {scheduled && <p className="text-sm text-text-muted">Your changes save when you preview or send a test. The message stays scheduled.</p>}
         {errors.test && <FormError>{errors.test}</FormError>}
       </section>
 
       {preview && message && preview.id === message.id && (
-        <section aria-labelledby={`${ids.body}-p`} className="space-y-3">
+        <section ref={previewSection} aria-labelledby={`${ids.body}-p`} className="scroll-mt-[calc(var(--fold-header-height,4rem)+1rem)] space-y-3">
           <h2 id={`${ids.body}-p`} className="text-xl font-semibold">Preview</h2>
           <p className="text-sm text-text-muted">{dirty ? "This is the last saved version. Preview again to see your changes." : "How it looks to you, with your own name in the fields."}</p>
           <p><span className="font-semibold">Subject: </span>{preview.subject || "(no subject yet)"}</p>
+          {/* iframe-ok: the email preview, our own page served sandboxed with no scripts (DEC-16 is about video). */}
           <iframe key={preview.n} src={previewHTMLPath(message.id)} sandbox="allow-popups allow-popups-to-escape-sandbox" title="Email preview"
             className="h-[32rem] w-full rounded-md border border-border bg-surface" />
           <details>
@@ -411,13 +461,13 @@ export function MessageComposerPage() {
 
       {errors.form && <FormError>{errors.form}</FormError>}
       <p role="status" className="text-sm text-text-muted empty:hidden">{note}</p>
-      {confirm ? (
+      {asking ? (
         <div role="group" aria-labelledby={`${ids.when}-c`} className="space-y-3 rounded-lg border border-primary-border bg-primary-subtle p-4">
-          <p id={`${ids.when}-c`} className="font-semibold text-primary-on-subtle">{confirmLine(confirm.eligible, confirm.at)}</p>
+          <p id={`${ids.when}-c`} className="font-semibold text-primary-on-subtle">{confirmLine(asking.eligible, asking.at, zone)}</p>
           <p className="text-sm text-primary-on-subtle">To {audience ? audienceLabel(audience, options) : "the people you chose"}. You can change or cancel it until it starts sending.</p>
           <FormActions>
             <Button ref={confirmButton} variant="primary" layout="w-full sm:w-auto" disabled={busy === "schedule"} onClick={() => void schedule()}>
-              {busy === "schedule" ? "Scheduling…" : confirm.at ? "Schedule" : "Send now"}
+              {busy === "schedule" ? "Scheduling…" : asking.at ? "Schedule" : "Send now"}
             </Button>
             <Button variant="secondary" layout="w-full sm:w-auto" onClick={() => setConfirm(null)}>Go back</Button>
           </FormActions>
@@ -426,8 +476,13 @@ export function MessageComposerPage() {
         <FormActions>
           <Button type="submit" variant="primary" layout="w-full sm:w-auto" disabled={!!busy}>{busy === "send" ? "Saving…" : when === "now" ? "Send now" : "Schedule"}</Button>
           {scheduled
-            ? <Button variant="secondary" layout="w-full sm:w-auto" onClick={stopEditing}>Stop editing</Button>
+            ? <Button variant="secondary" layout="w-full sm:w-auto" onClick={doneEditing}>Done editing</Button>
             : <Button variant="secondary" layout="w-full sm:w-auto" disabled={!!busy} onClick={() => void run("draft")}>{busy === "draft" ? "Saving…" : "Save draft"}</Button>}
+          {message?.status === "draft" && (
+            <Button variant="danger-outline" layout="w-full sm:w-auto" disabled={!!busy} onClick={() => void discardDraft()}>
+              {busy === "cancel" ? "Discarding…" : "Discard draft"}
+            </Button>
+          )}
         </FormActions>
       )}
     </Form>

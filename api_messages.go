@@ -200,10 +200,21 @@ const (
 // apiComposeOptions lists only what the author may message (M3.4
 // acceptance): admins every active group and event with upcoming dates,
 // leaders their own active groups' groups and events, hosts the church-wide
-// events they host.
+// events they host. ?event=<id> narrows it to that one event, for a page
+// that only asks whether the viewer may write to it (the date page): the
+// same rules, no groups, and no events when they may not.
 func (a *App) apiComposeOptions(c *gin.Context) {
 	me := apiUser(c)
 	p := asPerson(me)
+	var onlyEvent uint64
+	if raw := c.Query("event"); raw != "" {
+		n, err := strconv.ParseUint(raw, 10, 63)
+		if err != nil || n == 0 {
+			jsonError(c, http.StatusBadRequest, "invalid request")
+			return
+		}
+		onlyEvent = n
+	}
 	ok, err := a.canCompose(me)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the composer")
@@ -237,6 +248,9 @@ func (a *App) apiComposeOptions(c *gin.Context) {
 		eq = eq.Where("(group_id IN ?) OR (group_id IS NULL AND id IN (SELECT event_id FROM event_hosts WHERE user_id = ?))", append(gids, 0), me.ID)
 	} else {
 		eq = eq.Where("group_id IS NULL OR group_id IN ?", append(gids, 0))
+	}
+	if onlyEvent > 0 {
+		eq = eq.Where("id = ?", onlyEvent)
 	}
 	var evs []models.Event
 	if err := eq.Order("lower(title), id").Limit(maxComposeEvents).Find(&evs).Error; err != nil {
@@ -277,6 +291,9 @@ func (a *App) apiComposeOptions(c *gin.Context) {
 		ejson = append(ejson, e)
 	}
 	out.Groups, out.Events = gjson, ejson
+	if onlyEvent > 0 {
+		out.Groups = []composeGroupJSON{}
+	}
 	c.JSON(http.StatusOK, out)
 }
 

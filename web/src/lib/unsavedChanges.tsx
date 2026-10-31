@@ -6,7 +6,9 @@ import { UNSAFE_DataRouterContext, useBlocker } from "react-router-dom";
 // gets a confirm from the one app-wide <UnsavedChangesBlocker> (React Router
 // consults only one blocker, so forms register here instead of each adding
 // their own). Call `markSaved()` right before navigating away after a
-// successful save, so the edits the save just stored don't block it.
+// successful save, so the edits the save just stored don't block it; a page
+// that stays open after that navigation calls `resume()` right after it, so
+// later edits are guarded again.
 const openForms = new Set<() => boolean>();
 let leavingOnPurpose = false;
 
@@ -17,7 +19,7 @@ export function leaveWithoutAsking() {
   leavingOnPurpose = true;
 }
 
-export function useUnsavedChanges(dirty: boolean): { guard: ReactNode; markSaved: () => void } {
+export function useUnsavedChanges(dirty: boolean): { guard: ReactNode; markSaved: () => void; resume: () => void } {
   const dirtyRef = useRef(dirty);
   const saved = useRef(false);
   dirtyRef.current = dirty;
@@ -38,7 +40,7 @@ export function useUnsavedChanges(dirty: boolean): { guard: ReactNode; markSaved
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
   // `guard` is kept for callers that render it; the app-wide blocker does the work.
-  return { guard: null, markSaved: () => { saved.current = true; } };
+  return { guard: null, markSaved: () => { saved.current = true; }, resume: () => { saved.current = false; } };
 }
 
 // Rendered once inside the data router (App). useBlocker needs a data router;

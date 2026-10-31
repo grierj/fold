@@ -10,6 +10,8 @@ import { Field, Select } from "../ui/Field";
 
 // How long the picker waits after a change before counting again.
 export const COUNT_DELAY_MS = 300;
+// GET /messages/compose lists each event's next 10 dates (maxComposeDates).
+const LISTED_DATES = 10;
 
 // The composer's "Who gets it" (M3.4c, PLAN 7.3): only what GET
 // /messages/compose offers, Going/Waitlisted/Maybe chips for an event's
@@ -85,7 +87,10 @@ export function AudiencePicker({ options, choice, onChange, error, id }: {
       </Field>
 
       {event && (
-        <Field label="Which dates" hint={event.churchWide ? "A church-wide event." : event.groupName ? `An event of ${event.groupName}.` : undefined}>
+        <Field label="Which dates" hint={[
+          event.churchWide ? "A church-wide event." : event.groupName ? `An event of ${event.groupName}.` : "",
+          event.dates.length >= LISTED_DATES ? `Showing the next ${LISTED_DATES} dates.` : "",
+        ].filter(Boolean).join(" ") || undefined}>
           <Select value={choice.dates} onChange={(e) => onChange({ ...choice, dates: e.target.value })}>
             <option value="all">All upcoming dates</option>
             {!datesListed && <option value={choice.dates}>The date you chose earlier</option>}
@@ -104,8 +109,10 @@ export function AudiencePicker({ options, choice, onChange, error, id }: {
         </div>
       )}
 
-      <div role="status" aria-live="polite" className="text-sm">
-        {audience && !current && !failed && <p className="text-text-muted">Counting who gets it…</p>}
+      {/* The live region holds only the result; while counting it is busy,
+          so a screen reader hears the count, not "Counting". */}
+      {audience && !current && !failed && <p className="text-sm text-text-muted">Counting who gets it…</p>}
+      <div role="status" aria-live="polite" aria-busy={!!audience && !current && !failed} className="text-sm">
         {failed && <p className="text-text-muted">{failed}</p>}
         {current && <>
           <p className="font-medium text-text">{summaryLine(current)}</p>

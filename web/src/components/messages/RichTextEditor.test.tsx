@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { Field } from "../ui/Field";
@@ -40,9 +40,21 @@ describe("RichTextEditor", () => {
     await waitFor(() => expect(bold).toHaveAttribute("aria-pressed", "true"));
     expect(last()).toBe("<p><strong>Hello there</strong></p>");
     fireEvent.click(screen.getByRole("button", { name: "Heading H2" }));
-    expect(last()).toMatch(/^<h2><strong>Hello there<\/strong><\/h2>/);
+    // The empty paragraph the editor keeps after a heading is left out.
+    expect(last()).toBe("<h2><strong>Hello there</strong></h2>");
     fireEvent.click(screen.getByRole("button", { name: "Bulleted list" }));
     expect(last()).toContain("<ul><li>");
+  });
+
+  it("names every toolbar button with its visible text in the name (WCAG 2.5.3)", () => {
+    setup();
+    const toolbar = screen.getByRole("group", { name: "Formatting" });
+    for (const b of within(toolbar).getAllByRole("button")) {
+      const visible = [...b.childNodes].filter((n) => !(n instanceof Element && n.getAttribute("aria-hidden") === "true"))
+        .map((n) => n.textContent ?? "").join("").replace(/\s+/g, " ").trim().toLowerCase();
+      const name = (b.getAttribute("aria-label") ?? b.textContent ?? "").toLowerCase();
+      expect(name, b.outerHTML).toContain(visible);
+    }
   });
 
   it("inserts merge fields, offering event fields only for one event's people", async () => {
@@ -103,6 +115,14 @@ describe("normalizeHref", () => {
 });
 
 describe("RichTextView", () => {
+  it("shows merge-field links as text, with a note that they fill in when sent", () => {
+    const { container } = render(<RichTextView html={'<p><a href="{{event_link}}" class="fold-button">See it</a> and <a href="https://example.org">this</a></p>'} />);
+    expect(container).toHaveTextContent("See it and this");
+    expect(container.querySelector("a[href*=\"event_link\"]")).toBeNull();
+    expect(container.querySelector('a[href="https://example.org"]')).toHaveTextContent("this");
+    expect(screen.getByText(/fill in when it's sent/)).toBeInTheDocument();
+  });
+
   it("draws only the formatting the editor allows", () => {
     const { container } = render(<RichTextView html={'<p>Hi <strong>all</strong></p><img src="https://x.test/a.png"><script>alert(1)</script>'} />);
     expect(container.querySelector("strong")).toHaveTextContent("all");

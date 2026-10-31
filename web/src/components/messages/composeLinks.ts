@@ -15,7 +15,8 @@ export function composePath(to: { group: number } | { event: number } | { occurr
 
 // useCanEmailEvent: the viewer may write to this event's people, for a page
 // whose own data says nothing about managing it (the date page). It asks
-// only people who can compose at all, once per event.
+// only people who can compose at all, once per event, and only about that
+// event (GET /messages/compose?event=).
 export function useCanEmailEvent(eventId: number | undefined): boolean {
   const { canCompose } = useAuth();
   const [can, setCan] = useState(false);
@@ -23,7 +24,7 @@ export function useCanEmailEvent(eventId: number | undefined): boolean {
     setCan(false);
     if (!canCompose || !eventId) return;
     let alive = true;
-    Messages.options()
+    Messages.options(eventId)
       .then((o) => { if (alive) setCan(o.events.some((e) => e.id === eventId)); })
       .catch(() => {});
     return () => { alive = false; };

@@ -111,6 +111,38 @@ func TestComposerOffersOnlyWhatTheAuthorMayMessage(t *testing.T) {
 	}
 }
 
+// ?event=<id> answers only that event, by the same rules, for the date
+// page's "Email people going" (M3.4c).
+func TestComposeOptionsForOneEvent(t *testing.T) {
+	f := newComposeFixture(t)
+	one := func(c *apiClient, id uint) composeOptions {
+		t.Helper()
+		var o composeOptions
+		decodeJSON(t, c.do("GET", "/api/v1/messages/compose?event="+itoa(id), nil, false), &o)
+		return o
+	}
+	if o := one(f.leader, f.groupEvent.ID); len(o.Groups) != 0 || eventTitles(o) != "Book night" || len(o.Events[0].Dates) != 1 {
+		t.Fatalf("leader, own event: %+v", o)
+	}
+	for name, tc := range map[string]struct {
+		c  *apiClient
+		id uint
+	}{"leader, another's event": {f.leader, f.otherEv.ID}, "host, unhosted church event": {f.host, f.otherCW.ID}, "member": {f.member, f.groupEvent.ID}, "no such event": {f.admin, 99999}} {
+		if o := one(tc.c, tc.id); len(o.Events) != 0 || len(o.Groups) != 0 {
+			t.Errorf("%s: %+v", name, o)
+		}
+	}
+	if o := one(f.host, f.churchEvent.ID); eventTitles(o) != "Picnic" {
+		t.Fatalf("host, hosted event: %+v", o)
+	}
+	if o := one(f.admin, f.otherEv.ID); eventTitles(o) != "Rehearsal" {
+		t.Fatalf("admin: %+v", o)
+	}
+	if w := f.leader.do("GET", "/api/v1/messages/compose?event=nope", nil, false); w.Code != http.StatusBadRequest {
+		t.Fatalf("bad id: %d", w.Code)
+	}
+}
+
 // The SMS tab stays hidden until texting can be set up (DEC-117, M3.7).
 func TestComposeOptionsSayTextingIsOff(t *testing.T) {
 	f := newComposeFixture(t)

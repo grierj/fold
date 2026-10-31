@@ -332,3 +332,18 @@ export function wallToInstant(day: string, time: string, zone: string): string |
     return null;
   }
 }
+
+// formatWhenIn is formatWhen on `zone`'s clock (the church's, for when a
+// message goes out), with the zone's short name ("MST") when the viewer's
+// clock reads differently at that instant.
+export function formatWhenIn(iso: string, zone: string, now = new Date(), viewer = browserTimeZone()): string {
+  try {
+    const text = formatWhen(iso, zone, now);
+    if (wallKey(new Date(iso).getTime(), zone) === wallKey(new Date(iso).getTime(), viewer)) return text;
+    const name = new Intl.DateTimeFormat(undefined, { timeZone: zone, timeZoneName: "short" })
+      .formatToParts(new Date(iso)).find((p) => p.type === "timeZoneName")?.value;
+    return name ? `${text} ${name}` : text;
+  } catch {
+    return formatWhen(iso, viewer, now);
+  }
+}

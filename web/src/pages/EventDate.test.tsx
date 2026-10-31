@@ -268,6 +268,7 @@ it("offers Email people going for this date to someone who may write to the even
   vi.mocked(Messages.options).mockResolvedValue({ canCompose: true, canMessageEveryone: false, smsEnabled: false, groups: [], events: [{ id: 7, title: "One invited date", churchWide: true, dates: [] }] });
   mount();
   expect(await screen.findByRole("link", { name: "Email people going" })).toHaveAttribute("href", "/messages/new?occurrence=51");
+  expect(Messages.options).toHaveBeenCalledWith(7);
 });
 
 it("doesn't offer it for an event the viewer can't write to, or ask when they can't compose", async () => {
