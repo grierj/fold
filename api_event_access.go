@@ -373,7 +373,9 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 		if err := events.Ensure(tx, &ev, time.Now().UTC()); err != nil {
 			return err
 		}
-		return a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
+		// Church-wide events are created by admins, whose bookings never wait.
+		_, err := a.bookCreatedSeries(tx, &ev, body.RoomID, creator, c.ClientIP())
+		return err
 	})
 	if createRoomFailed(c, err) {
 		return

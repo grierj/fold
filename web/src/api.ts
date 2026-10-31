@@ -136,6 +136,7 @@ import type {
   SeriesRoom,
   NeedsRoom,
   SeriesBooking,
+  RoomRequest,
   OccurrenceRoom,
   NotificationSettings as NotificationSettingsData,
   NotificationFeed,
@@ -712,10 +713,23 @@ export interface RoomInput {
 }
 
 export const AdminRooms = {
-  list: () => api<{ rooms: Room[] }>("/admin/rooms"),
+  list: () => api<{ rooms: Room[]; needApproval: boolean }>("/admin/rooms"),
   create: (body: RoomInput) => api<{ room: Room }>("/admin/rooms", { method: "POST", body }),
   update: (id: number, body: RoomInput) => api<{ room: Room }>(`/admin/rooms/${id}`, { method: "PUT", body }),
   setEnabled: (enabled: boolean) => api<{ roomsEnabled: boolean }>("/admin/settings/rooms", { method: "PUT", body: { enabled } }),
+  // Whether leaders' and hosts' bookings wait for an admin (M2.1d, DEC-102).
+  setApproval: (enabled: boolean) => api<{ needApproval: boolean }>("/admin/settings/room-approval", { method: "PUT", body: { enabled } }),
+};
+
+// Open room requests (M2.1d, DEC-106): one per booking action, a date or a whole
+// series. Confirming makes the free dates confirmed; busy dates are
+// double-booked with overlapReason or go back to the leader (`lost`).
+export const RoomRequests = {
+  list: () => api<{ requests: RoomRequest[] }>("/admin/room-requests"),
+  confirm: (id: number, overlapReason?: string) =>
+    api<{ confirmed: number; overlapped: number; lost: string[] }>(`/admin/room-requests/${id}/confirm`, { method: "POST", body: overlapReason ? { overlapReason } : {} }),
+  reject: (id: number, reason?: string) =>
+    api<Record<string, never>>(`/admin/room-requests/${id}/reject`, { method: "POST", body: reason ? { reason } : {} }),
 };
 
 // Booking a room for one date (M2.1b). `:date` is the occurrence's original
@@ -741,7 +755,7 @@ export const DateRooms = {
 // an admin's overlapReason double-books busy dates instead.
 export const SeriesRooms = {
   list: (eventId: number) =>
-    api<{ rooms: SeriesRoom[]; dates: number; defaultRoom: OccurrenceRoom | null; needsRoom: NeedsRoom[] }>(
+    api<{ rooms: SeriesRoom[]; dates: number; defaultRoom: OccurrenceRoom | null; needsRoom: NeedsRoom[]; pending: number }>(
       `/events/${eventId}/rooms`,
     ),
   set: (eventId: number, body: { roomId: number | null; overlapReason?: string }) =>

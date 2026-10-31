@@ -250,7 +250,7 @@ export function relativeTime(iso: string, now = new Date()): string {
 }
 
 const OUTCOME: Record<string, string> = {
-  approved: "approved", rejected: "rejected", deleted: "deleted", kept: "kept", withdrawn: "withdrawn",
+  approved: "approved", confirmed: "confirmed", rejected: "rejected", deleted: "deleted", kept: "kept", withdrawn: "withdrawn",
 };
 
 // resolutionText: "You approved this" or "Done · approved by Pat".

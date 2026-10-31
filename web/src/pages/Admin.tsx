@@ -9,13 +9,14 @@ import { Badge } from "../components/ui/Badge";
 import { Tabs } from "../components/ui/Tabs";
 import { roleLabel, accountStatusLabel, groupStatusLabel } from "../lib/status";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminRooms, AdminUsers, ApiError, Groups, Invitations, Site } from "../api";
+import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminRooms, AdminUsers, ApiError, Groups, Invitations, RoomRequests, Site } from "../api";
 import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
 import { RoomsTab, sortRooms } from "../components/admin/RoomsTab";
+import { RoomRequestsList, roomRequestsShown } from "../components/admin/RoomRequestsList";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
-import type { AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, Room, User } from "../types";
+import type { AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, Room, RoomRequest, User } from "../types";
 import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
@@ -1389,6 +1390,47 @@ function RoomsSetting({ enabled, onChanged }: { enabled: boolean | null; onChang
   );
 }
 
+// Room bookings need an admin's approval (M2.1d, DEC-102). Like the Rooms
+// switch it saves when changed and goes back if saving fails (DEC-98). It
+// appears only while rooms are on; `enabled` is null until the rooms list answers.
+function RoomApprovalSetting({ enabled, onChanged }: { enabled: boolean | null; onChanged: (enabled: boolean) => void }) {
+  const [pending, setPending] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  async function change(next: boolean) {
+    setSaving(true);
+    setPending(next);
+    setError(null);
+    setOk(false);
+    try {
+      const r = await AdminRooms.setApproval(next);
+      onChanged(r.needApproval);
+      setOk(true);
+    } catch (err) {
+      setError(errorText(err, "We couldn't save that setting."));
+    } finally {
+      setPending(null);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="mb-6 max-w-xl space-y-2">
+      <Checkbox
+        label="Room bookings need an admin's approval"
+        description="When this is on, leaders' and hosts' bookings wait for an admin. Admins' own bookings are confirmed at once."
+        checked={pending ?? enabled === true}
+        disabled={saving || enabled === null}
+        onChange={(e) => void change(e.target.checked)}
+      />
+      <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
+      {error && <FormError>{error}</FormError>}
+    </div>
+  );
+}
+
 export function AdminPage() {
   const { user, loading: authLoading, isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -1416,6 +1458,10 @@ export function AdminPage() {
   const [rooms, setRooms] = useState<Room[] | null>(null);
   const [roomsError, setRoomsError] = useState<string | null>(null);
   const roomCount = rooms ? rooms.length : null;
+  // Whether bookings wait for an admin, and the open requests (M2.1d). Both load with the rooms.
+  const [needApproval, setNeedApproval] = useState<boolean | null>(null);
+  const [requests, setRequests] = useState<RoomRequest[] | null>(null);
+  const [requestsError, setRequestsError] = useState<string | null>(null);
 
   const loadUsers = useCallback(async () => {
     try {
@@ -1443,12 +1489,23 @@ export function AdminPage() {
   const loadRooms = useCallback(async () => {
     setRoomsError(null);
     try {
-      const { rooms } = await AdminRooms.list();
+      const { rooms, needApproval } = await AdminRooms.list();
       setRooms(rooms);
+      setNeedApproval(needApproval === true);
     } catch (e) {
       setRoomsError(errorText(e, "We couldn't load the rooms."));
     }
   }, []);
+  const loadRequests = useCallback(async () => {
+    setRequestsError(null);
+    try {
+      const { requests } = await RoomRequests.list();
+      setRequests(requests);
+    } catch (e) {
+      setRequestsError(errorText(e, "We couldn't load the bookings waiting for approval."));
+    }
+  }, []);
+  const requestRemoved = useCallback((id: number) => setRequests((prev) => prev && prev.filter((r) => r.id !== id)), []);
   const loadSite = useCallback(() => {
     setSiteError(null);
     Site.get().then((s) => setRoomsEnabled(!!s.roomsEnabled), (e) => setSiteError(errorText(e, "We couldn't load the rooms.")));
@@ -1465,8 +1522,11 @@ export function AdminPage() {
   }, [authLoading, user, isAdmin, loadUsers, loadGroups, loadSite]);
 
   useEffect(() => {
-    if (roomsEnabled) void loadRooms();
-  }, [roomsEnabled, loadRooms]);
+    if (roomsEnabled) {
+      void loadRooms();
+      void loadRequests();
+    }
+  }, [roomsEnabled, loadRooms, loadRequests]);
 
   if (!authLoading && (!user || !isAdmin)) {
     return (
@@ -1480,7 +1540,7 @@ export function AdminPage() {
   const tabs: { id: AdminTab; label: string; badge?: number; count?: number | null }[] = [
     { id: "approvals", label: "Approvals", badge: pendingCount },
     { id: "groups", label: "Groups", count: groupCount },
-    ...(roomsShown ? [{ id: "rooms" as const, label: "Rooms", count: roomCount }] : []),
+    ...(roomsShown ? [{ id: "rooms" as const, label: "Rooms", count: roomCount, badge: requests?.length }] : []),
     { id: "users", label: "Users", count: userCount },
     { id: "invite", label: "Invite" },
     { id: "settings", label: "Settings" },
@@ -1506,12 +1566,20 @@ export function AdminPage() {
         <ChurchTimezone />
         <SelfSignupSetting />
         <RoomsSetting enabled={roomsEnabled} onChanged={setRoomsEnabled} />
+        {roomsEnabled === true && <RoomApprovalSetting enabled={needApproval} onChanged={setNeedApproval} />}
         <ButtonLink to="/events/new" variant="secondary">Schedule a church-wide event</ButtonLink>
       </section>}
       {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} onGroupDecided={loadGroups} />}
       {tab === "groups" && <GroupsTab users={users} groups={groups} error={groupsError} reload={loadGroups} onDeleted={groupDeleted} />}
-      {tab === "rooms" && <RoomsTab rooms={rooms} error={roomsEnabled === null ? siteError : roomsError}
-        reload={roomsEnabled === null ? loadSite : loadRooms} onSaved={roomSaved} />}
+      {tab === "rooms" && <div className="space-y-8">
+        {roomsEnabled === true && <RoomRequestsList requests={requests} needApproval={needApproval} error={requestsError}
+          reload={loadRequests} onRemoved={requestRemoved} />}
+        <div className="space-y-3">
+          {roomsEnabled === true && roomRequestsShown(requests, needApproval, requestsError) && <h2 className="text-xl font-bold">Rooms</h2>}
+          <RoomsTab rooms={rooms} error={roomsEnabled === null ? siteError : roomsError}
+            reload={roomsEnabled === null ? loadSite : loadRooms} onSaved={roomSaved} />
+        </div>
+      </div>}
       {tab === "users" && (
         usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}

@@ -46,6 +46,7 @@ function resultMessage(res: SeriesBooking, over = 0): string {
       ? `Booked for ${dateCount(res.booked)}, ${over} of them over another booking.`
       : `Booked for ${dateCount(res.booked)}.`);
   }
+  if (res.defaultRoom !== null && res.pending > 0) parts.push(`Sent to an admin for approval: ${dateCount(res.pending)}.`);
   const n = res.lost.length;
   if (n > 0) {
     parts.push(`${dateCount(n)} ${n === 1 ? "is" : "are"} busy; pick another room for ${n === 1 ? "it" : "them"} under “Dates that need a room” on the event page.`);
@@ -81,6 +82,8 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
   const [pick, setPick] = useState(NONE);
   // How many upcoming dates have a room that holds nothing (DEC-103).
   const [needsCount, setNeedsCount] = useState(0);
+  // Upcoming dates waiting on an admin's approval of the series room (M2.1d).
+  const [pendingCount, setPendingCount] = useState(0);
   const [rooms, setRooms] = useState<SeriesRoom[]>([]);
   const [dates, setDates] = useState(0);
   const [current, setCurrent] = useState<OccurrenceRoom | null>(null);
@@ -123,6 +126,7 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
       setCurrent(res.defaultRoom);
       setPick(res.defaultRoom ? String(res.defaultRoom.id) : NONE);
       setNeedsCount(res.needsRoom.length);
+      setPendingCount(res.pending);
     } catch (e) {
       if (alive.current) setLoadError(errorText(e, "We couldn't load the rooms."));
     } finally {
@@ -146,6 +150,7 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
       setCurrent(res.defaultRoom);
       setPick(res.defaultRoom ? String(res.defaultRoom.id) : NONE);
       setNeedsCount(res.defaultRoom ? res.lost.length : 0);
+      setPendingCount(res.defaultRoom ? res.pending : 0);
       setStatus(resultMessage(res, over));
       setReason("");
       setReasonError(null);
@@ -234,6 +239,9 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
               <p className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>{busyNote(chosen, dates)}</p>
             )}
             {status && <p className="text-sm text-text-muted">{status}</p>}
+            {!status && current && pendingCount > 0 && (
+              <p className="text-sm text-text-muted">Waiting for an admin to approve this room for {dateCount(pendingCount)}.</p>
+            )}
             {current && dates > 0 && needsCount >= dates && (
               <p className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>Not booked on any date yet: every date is busy.</p>
             )}

@@ -668,6 +668,11 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/events/:id/rooms", a.roomsOn(), a.apiAuth(), a.apiSeriesRooms)
 	v1.PUT("/events/:id/room", a.roomsOn(), a.apiAuth(), a.apiSetSeriesRoom)
 	v1.POST("/rooms/check", a.roomsOn(), a.apiAuth(), a.apiCheckRooms)
+	// Approval (M2.1d, DEC-102).
+	v1.PUT("/admin/settings/room-approval", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiSetRoomApproval)
+	v1.GET("/admin/room-requests", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminRoomRequests)
+	v1.POST("/admin/room-requests/:id/confirm", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiConfirmRoomRequest)
+	v1.POST("/admin/room-requests/:id/reject", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiRejectRoomRequest)
 	v1.GET("/events", a.optionalUser(), a.apiListOpenEvents)
 	// The calendar (M1.6): every occurrence the viewer may see over a
 	// date range, as slim rows with no attendee data.

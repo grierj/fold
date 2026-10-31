@@ -18,13 +18,13 @@ const room = (over: Partial<SeriesRoom>): SeriesRoom => ({ id: 1, name: "Fellows
 const hall = room({});
 const chapel = room({ id: 2, name: "Chapel", building: "", capacity: null, busyDates: 2 });
 const closet = room({ id: 3, name: "Closet", building: "Annex", capacity: 1, tooSmall: true });
-const booking = (over: Partial<SeriesBooking> = {}): SeriesBooking => ({ defaultRoom: { id: 1, name: "Fellowship Hall", building: "Main" }, booked: 10, lost: [], kept: 0, ...over });
+const booking = (over: Partial<SeriesBooking> = {}): SeriesBooking => ({ defaultRoom: { id: 1, name: "Fellowship Hall", building: "Main" }, booked: 10, lost: [], kept: 0, pending: 0, ...over });
 
 beforeEach(() => {
   vi.resetAllMocks();
   actor.isAdmin = false;
   vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall, chapel, closet], dates: 10, defaultRoom: null, needsRoom: [] });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall, chapel, closet], dates: 10, defaultRoom: null, needsRoom: [], pending: 0 });
 });
 
 function show(onChanged = vi.fn()) {
@@ -54,7 +54,7 @@ it("words each option like the one-date Room, with how many dates are busy", asy
 });
 
 it("shows the series room that is already set", async () => {
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall], dates: 10, defaultRoom: { id: 1, name: "Fellowship Hall", building: "Main" }, needsRoom: [] });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall], dates: 10, defaultRoom: { id: 1, name: "Fellowship Hall", building: "Main" }, needsRoom: [], pending: 0 });
   show();
   expect(await select()).toHaveValue("1");
 });
@@ -88,8 +88,8 @@ it("uses the singular for one date", async () => {
 });
 
 it("releases the series room and says what stays", async () => {
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall], dates: 10, defaultRoom: { id: 1, name: "Fellowship Hall", building: "Main" }, needsRoom: [] });
-  vi.mocked(SeriesRooms.set).mockResolvedValue({ defaultRoom: null, booked: 0, lost: [], kept: 2 });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall], dates: 10, defaultRoom: { id: 1, name: "Fellowship Hall", building: "Main" }, needsRoom: [], pending: 0 });
+  vi.mocked(SeriesRooms.set).mockResolvedValue({ defaultRoom: null, booked: 0, lost: [], kept: 2, pending: 0 });
   show();
   await pickAndBook("none", "Stop the series room");
   expect(SeriesRooms.set).toHaveBeenCalledWith(7, { roomId: null });
@@ -139,7 +139,7 @@ it("asks an admin for nothing when every date was free", async () => {
 });
 
 it("names a series room this person can't list", async () => {
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall], dates: 3, defaultRoom: { id: 9, name: "Nursery", building: "Annex" }, needsRoom: [] });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall], dates: 3, defaultRoom: { id: 9, name: "Nursery", building: "Annex" }, needsRoom: [], pending: 0 });
   show();
   const box = await select();
   expect(box).toHaveValue("9");
@@ -179,7 +179,7 @@ it("books nothing when the select changes, however many keys are pressed", async
 });
 
 it("names the button for what it does, and disables it when the choice is what is booked", async () => {
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall, closet], dates: 10, defaultRoom: { id: 1, name: "Fellowship Hall", building: "Main" }, needsRoom: [] });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall, closet], dates: 10, defaultRoom: { id: 1, name: "Fellowship Hall", building: "Main" }, needsRoom: [], pending: 0 });
   show();
   const box = await select();
   expect(screen.getByRole("button", { name: "Book for every date" })).toBeDisabled();
@@ -216,7 +216,8 @@ it("says before booking how many dates the chosen room is busy on, to anyone", a
 it("says when the series room holds no date", async () => {
   vi.mocked(SeriesRooms.list).mockResolvedValue({
     rooms: [chapel], dates: 2, defaultRoom: { id: 2, name: "Chapel", building: "" },
-    needsRoom: [{ date: "2026-12-08", roomName: "Chapel" }, { date: "2026-12-15", roomName: "Chapel" }],
+    needsRoom: [{ date: "2026-12-08", roomName: "Chapel", status: "requested" }, { date: "2026-12-15", roomName: "Chapel", status: "requested" }],
+    pending: 0,
   });
   show();
   await select();
@@ -224,7 +225,7 @@ it("says when the series room holds no date", async () => {
 });
 
 it("says so after a booking that every date refused", async () => {
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [room({ id: 2, name: "Chapel", building: "", busyDates: 2 })], dates: 2, defaultRoom: null, needsRoom: [] });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [room({ id: 2, name: "Chapel", building: "", busyDates: 2 })], dates: 2, defaultRoom: null, needsRoom: [], pending: 0 });
   vi.mocked(SeriesRooms.set).mockResolvedValue(booking({ defaultRoom: { id: 2, name: "Chapel", building: "" }, booked: 0, lost: ["2026-12-08", "2026-12-15"] }));
   show();
   await pickAndBook("2");
@@ -232,8 +233,33 @@ it("says so after a booking that every date refused", async () => {
 });
 
 it("says nothing about an empty room while some date has it", async () => {
-  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [chapel], dates: 3, defaultRoom: { id: 2, name: "Chapel", building: "" }, needsRoom: [{ date: "2026-12-08", roomName: "Chapel" }] });
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [chapel], dates: 3, defaultRoom: { id: 2, name: "Chapel", building: "" }, needsRoom: [{ date: "2026-12-08", roomName: "Chapel", status: "requested" }], pending: 0 });
   show();
   await select();
   expect(screen.getByRole("status")).toBeEmptyDOMElement();
+});
+
+it("says dates were sent to an admin, alongside the busy and kept lines", async () => {
+  vi.mocked(SeriesRooms.set).mockResolvedValue(booking({ booked: 0, pending: 8, lost: ["2026-12-08"], kept: 1 }));
+  show();
+  await pickAndBook("1");
+  expect(await screen.findByRole("status")).toHaveTextContent(
+    "Sent to an admin for approval: 8 dates. 1 date is busy; pick another room for it under “Dates that need a room” on the event page. 1 date keeps the room picked for it.",
+  );
+  expect(screen.getByRole("status")).not.toHaveTextContent("Booked for");
+});
+
+it("says dates are waiting for an admin when the field loads", async () => {
+  vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall], dates: 10, defaultRoom: { id: 1, name: "Fellowship Hall", building: "Main" }, needsRoom: [], pending: 8 });
+  show();
+  await select();
+  expect(screen.getByRole("status")).toHaveTextContent("Waiting for an admin to approve this room for 8 dates.");
+});
+
+it("does not repeat the waiting line right after a booking said it", async () => {
+  vi.mocked(SeriesRooms.set).mockResolvedValue(booking({ booked: 0, pending: 10 }));
+  show();
+  await pickAndBook("1");
+  expect(await screen.findByRole("status")).toHaveTextContent("Sent to an admin for approval: 10 dates.");
+  expect(screen.getByRole("status")).not.toHaveTextContent("Waiting for an admin");
 });

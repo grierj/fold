@@ -18,3 +18,11 @@ func CanDoubleBookRoom(p *Person) bool { return IsAdmin(p) }
 // CanAdjustBookingPadding: only an admin changes one booking's setup and
 // teardown time; everyone else gets the room's defaults (DEC-101).
 func CanAdjustBookingPadding(p *Person) bool { return IsAdmin(p) }
+
+// BookingNeedsApproval: with "Room bookings need an admin's approval" on, a
+// leader's or host's booking waits for an admin; an admin's own bookings
+// confirm at once (DEC-102).
+func BookingNeedsApproval(p *Person, approvalOn bool) bool { return approvalOn && !IsAdmin(p) }
+
+// CanDecideRoomRequest: only admins confirm or reject a room request.
+func CanDecideRoomRequest(p *Person) bool { return IsAdmin(p) }

@@ -148,7 +148,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
     }
     const room = rooms.find((r) => String(r.id) === value);
     if (!room) return;
-    void send({ roomId: room.id }, () => `Booked ${room.name}.`);
+    void send({ roomId: room.id }, (b) => (b?.pending ? "" : `Booked ${room.name}.`));
   }
 
   function bookAnyway() {
@@ -186,8 +186,9 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
 
   if (!enabled && !loadError) return null;
 
-  const requested = booking?.status === "requested";
-  const value = booking && booking.status === "confirmed" ? String(booking.roomId) : requested ? "" : NONE;
+  const waiting = booking?.pending === true;
+  const requested = booking?.status === "requested" && !waiting;
+  const value = booking && (booking.status === "confirmed" || waiting) ? String(booking.roomId) : requested ? "" : NONE;
   const anyBusy = rooms.some((r) => r.busy);
   const onPaddingEnter = (e: KeyboardEvent<HTMLInputElement>) => {
     // Enter here is "save the times", not "submit the editor around this field".
@@ -221,12 +222,13 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
           )}
           <div role="status" className="space-y-2 empty:hidden">
             {status && <p className="text-sm text-text-muted">{status}</p>}
+            {waiting && <p className="text-sm text-text-muted">Waiting for an admin to approve {booking?.roomName ?? "the room"}.</p>}
             {requested && (
               <p className="rounded-md border border-warning-border bg-warning-subtle p-3 text-sm text-warning-on-subtle">
                 <span aria-hidden="true">⚠ </span>{booking?.roomName} was taken at the new time, so this date has no room. Pick another room.
               </p>
             )}
-            {booking?.status === "confirmed" && booking.tooSmall && (
+            {(booking?.status === "confirmed" || waiting) && booking?.tooSmall && (
               <p className="text-sm text-warning-on-subtle">
                 <span aria-hidden="true">⚠ </span>This room seats fewer people than this date allows.
               </p>

@@ -889,6 +889,9 @@ export interface RoomBooking {
   teardownMinutes: number;
   doubleBooked: boolean;
   tooSmall: boolean;
+  // Requested and waiting on an admin's approval (M2.1d). A requested
+  // booking that isn't pending lost its room.
+  pending: boolean;
 }
 
 // A room as the whole-series picker sees it (M2.1c): busyDates counts the
@@ -909,6 +912,8 @@ export interface SeriesRoom {
 export interface NeedsRoom {
   date: string;
   roomName: string;
+  // requested: it lost its room; rejected: an admin didn't approve it (M2.1d).
+  status: "requested" | "rejected";
 }
 
 // What booking a whole series did (M2.1c).
@@ -917,4 +922,25 @@ export interface SeriesBooking {
   booked: number;
   lost: string[];
   kept: number;
+  // Dates waiting on an admin's approval (M2.1d).
+  pending: number;
+}
+
+// An open room request in the admin list (M2.1d, DEC-106): one booking
+// action, a date or a whole series. busyDates counts its dates another
+// booking now holds the room on; confirming those needs a reason.
+export interface RoomRequest {
+  id: number;
+  eventId: number;
+  eventTitle: string;
+  groupName: string;
+  roomId: number;
+  roomName: string;
+  building: string;
+  series: boolean;
+  requestedBy: string;
+  dates: number;
+  busyDates: number;
+  firstDate: string;
+  createdAt: string;
 }

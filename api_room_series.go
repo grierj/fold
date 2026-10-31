@@ -48,11 +48,14 @@ type seriesRoomJSON struct {
 	TooSmall bool `json:"tooSmall"`
 }
 
-// needsRoomJSON is a date whose booking holds nothing: it lost its room
-// when it moved, or the room was busy when the series was booked.
+// needsRoomJSON is a date whose booking holds nothing and is the leader's
+// to re-pick: it lost its room (status requested) when it moved or the room
+// was busy, or an admin didn't approve it (status rejected, M2.1d). Dates
+// waiting on an admin are not listed (DEC-105).
 type needsRoomJSON struct {
 	Date     string `json:"date"`
 	RoomName string `json:"roomName"`
+	Status   string `json:"status"`
 }
 
 // seriesBookingJSON says what booking a series did.
@@ -63,6 +66,8 @@ type seriesBookingJSON struct {
 	Lost []string `json:"lost"`
 	// Kept: dates that keep a room picked for them alone.
 	Kept int `json:"kept"`
+	// Pending: dates waiting on an admin's approval (M2.1d).
+	Pending int `json:"pending"`
 }
 
 // timeWindow is one date's unpadded time.
@@ -188,15 +193,28 @@ func (a *App) apiSeriesRooms(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list rooms")
 		return
 	}
-	needs := []needsRoomJSON{}
-	if err := a.DB.Raw(`SELECT o.original_date AS date, r.name AS room_name FROM room_bookings b
-		JOIN event_occurrences o ON o.id = b.occurrence_id JOIN rooms r ON r.id = b.room_id
-		WHERE o.event_id = ? AND o.status = ? AND o.starts_at > ? AND b.status = ?
-		ORDER BY o.starts_at`, ev.ID, models.OccurrenceScheduled, time.Now(), models.BookingRequested).Scan(&needs).Error; err != nil {
+	var held []struct {
+		Date, RoomName, Status string
+		Waiting                bool
+	}
+	if err := a.DB.Raw(`SELECT o.original_date AS date, r.name AS room_name, b.status,
+			EXISTS (SELECT 1 FROM room_requests q WHERE q.id = b.request_id AND q.status = ?) AS waiting
+		FROM room_bookings b JOIN event_occurrences o ON o.id = b.occurrence_id JOIN rooms r ON r.id = b.room_id
+		WHERE o.event_id = ? AND o.status = ? AND o.starts_at > ? AND b.status IN ?
+		ORDER BY o.starts_at`, models.RoomRequestPending, ev.ID, models.OccurrenceScheduled, time.Now(),
+		[]string{models.BookingRequested, models.BookingRejected}).Scan(&held).Error; err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list rooms")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"rooms": rooms, "dates": len(occs), "defaultRoom": a.seriesRoom(ev), "needsRoom": needs})
+	needs, pending := []needsRoomJSON{}, 0
+	for _, h := range held {
+		if h.Waiting {
+			pending++
+		} else {
+			needs = append(needs, needsRoomJSON{Date: h.Date, RoomName: h.RoomName, Status: h.Status})
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"rooms": rooms, "dates": len(occs), "defaultRoom": a.seriesRoom(ev), "needsRoom": needs, "pending": pending})
 }
 
 // seriesRoom is the event's series room, or nil.
@@ -234,6 +252,7 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 	}
 	user := apiUser(c)
 	var out seriesBookingJSON
+	var emailed []uint
 	errNotManager := errors.New("not a manager")
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		var locked models.Event
@@ -244,7 +263,9 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 			return errNotManager
 		}
 		var err error
-		out, err = bookWholeSeries(tx, &locked, body.RoomID, user, reason, c.ClientIP())
+		var ids []uint
+		out, ids, err = bookWholeSeries(tx, &locked, body.RoomID, user, reason, c.ClientIP())
+		emailed = ids
 		return err
 	})
 	switch {
@@ -257,6 +278,7 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not save the room")
 	default:
+		a.deliverNotificationEmails(emailed)
 		c.JSON(http.StatusOK, out)
 	}
 }
@@ -267,7 +289,11 @@ func (a *App) apiSetSeriesRoom(c *gin.Context) {
 // booking. Bookings in the old series room, and requested ones, are
 // replaced. A busy date keeps a requested booking (DEC-103) unless an
 // admin's reason double-books it.
-func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.User, reason, ip string) (seriesBookingJSON, error) {
+//
+// With approval on (DEC-102), a leader's or host's free dates wait on one
+// request for the whole series (DEC-106); busy ones are lost as above. The
+// notification ids to email (the admins' task) are returned.
+func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.User, reason, ip string) (seriesBookingJSON, []uint, error) {
 	out := seriesBookingJSON{Lost: []string{}}
 	me := asPerson(user)
 	if !policy.CanDoubleBookRoom(me) {
@@ -277,23 +303,32 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("event_id = ? AND status = ? AND starts_at > ?", ev.ID, models.OccurrenceScheduled, time.Now()).
 		Order("id").Find(&occs).Error; err != nil {
-		return out, err
+		return out, nil, err
 	}
 	// Dates first, then the room: the same lock order as one date's booking.
 	var room *models.Room
 	if roomID != nil {
 		r, err := lockRoom(tx, *roomID)
 		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && !r.Active) {
-			return out, errRoomGone
+			return out, nil, errRoomGone
 		}
 		if err != nil {
-			return out, err
+			return out, nil, err
 		}
 		if !policy.CanBookRoom(me, true, r.Restricted) {
-			return out, errRestricted
+			return out, nil, errRestricted
 		}
 		room = r
 		out.DefaultRoom = &occurrenceRoomJSON{ID: r.ID, Name: r.Name, Building: r.Building}
+	}
+	var req *models.RoomRequest
+	var requestID *uint
+	if room != nil && policy.BookingNeedsApproval(me, roomApprovalOn(tx)) {
+		var err error
+		if req, err = openRoomRequest(tx, ev.ID, room.ID, user.ID, true); err != nil {
+			return out, nil, err
+		}
+		requestID = &req.ID
 	}
 	ids := make([]uint, len(occs))
 	for i, o := range occs {
@@ -306,7 +341,7 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 	if len(ids) > 0 {
 		if err := tx.Raw(`SELECT b.*, r.restricted FROM room_bookings b JOIN rooms r ON r.id = b.room_id
 			WHERE b.occurrence_id IN ?`, ids).Scan(&current).Error; err != nil {
-			return out, err
+			return out, nil, err
 		}
 	}
 	byDate := make(map[uint]int, len(current))
@@ -333,33 +368,57 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 				continue
 			}
 			if err := tx.Delete(&models.RoomBooking{}, b.ID).Error; err != nil {
-				return out, err
+				return out, nil, err
 			}
 			released++
 		}
 		if room == nil {
 			continue
 		}
-		result, err := placeBooking(tx, occ, room, room.DefaultSetupMinutes, room.DefaultTeardownMinutes, &user.ID, reason, true)
+		result, err := placeBooking(tx, occ, room, room.DefaultSetupMinutes, room.DefaultTeardownMinutes,
+			placement{by: &user.ID, reason: reason, keepRequested: true, requestID: requestID})
 		if err != nil {
-			return out, err
+			return out, nil, err
 		}
-		if result == bookedRequested {
+		switch result {
+		case bookedRequested:
 			out.Lost = append(out.Lost, occ.OriginalDate)
-		} else {
+		case bookedPending:
+			out.Pending++
+		default:
 			out.Booked++
 		}
 	}
+	var emailed []uint
+	if req != nil && out.Pending == 0 {
+		if err := tx.Delete(req).Error; err != nil {
+			return out, nil, err
+		}
+		req = nil
+	}
+	if req != nil {
+		var err error
+		if emailed, err = notifyRoomRequested(tx, req, ev, room, out.Pending, user.ID); err != nil {
+			return out, nil, err
+		}
+	}
+	// Replaced bookings may have been other requests' last dates.
+	if err := closeEmptyRoomRequests(tx); err != nil {
+		return out, nil, err
+	}
 	if err := tx.Model(&models.Event{}).Where("id = ?", ev.ID).Update("default_room_id", roomID).Error; err != nil {
-		return out, err
+		return out, nil, err
 	}
 	ev.DefaultRoomID = roomID
 	meta := map[string]any{"eventId": ev.ID, "roomId": roomID, "previousRoomId": oldRoom,
-		"booked": out.Booked, "lost": out.Lost, "kept": out.Kept, "released": released}
+		"booked": out.Booked, "lost": out.Lost, "kept": out.Kept, "released": released, "pending": out.Pending}
 	if reason != "" {
 		meta["reason"] = reason
 	}
-	return out, audit.Write(tx, audit.Entry{Actor: &user.ID, Action: audit.RoomBookingSeries, TargetType: "event", TargetID: ev.ID,
+	if req != nil {
+		meta["requestId"] = req.ID
+	}
+	return out, emailed, audit.Write(tx, audit.Entry{Actor: &user.ID, Action: audit.RoomBookingSeries, TargetType: "event", TargetID: ev.ID,
 		Meta: meta, IP: ip})
 }
 
@@ -384,9 +443,20 @@ func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uin
 	if err != nil || !room.Active {
 		return nil, err
 	}
+	// A series room still waiting on approval takes new dates into its request.
+	var requestID *uint
+	var open []models.RoomRequest
+	if err := tx.Where("event_id = ? AND room_id = ? AND series AND status = ?", ev.ID, room.ID, models.RoomRequestPending).
+		Order("id DESC").Limit(1).Find(&open).Error; err != nil {
+		return nil, err
+	}
+	if len(open) == 1 {
+		requestID = &open[0].ID
+	}
 	var lost []string
 	for i := range occs {
-		result, err := placeBooking(tx, &occs[i], room, room.DefaultSetupMinutes, room.DefaultTeardownMinutes, by, "", true)
+		result, err := placeBooking(tx, &occs[i], room, room.DefaultSetupMinutes, room.DefaultTeardownMinutes,
+			placement{by: by, keepRequested: true, requestID: requestID})
 		if err != nil {
 			return nil, err
 		}
@@ -492,16 +562,17 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 }
 
 // bookCreatedSeries books the room picked on a create form for every date
-// of the new event, in the creating transaction.
-func (a *App) bookCreatedSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.User, ip string) error {
+// of the new event, in the creating transaction. Notification ids to email
+// (an approval task) are returned.
+func (a *App) bookCreatedSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.User, ip string) ([]uint, error) {
 	if roomID == nil {
-		return nil
+		return nil, nil
 	}
 	if !a.roomsEnabled() {
-		return errRoomGone
+		return nil, errRoomGone
 	}
-	_, err := bookWholeSeries(tx, ev, roomID, user, "", ip)
-	return err
+	_, emailed, err := bookWholeSeries(tx, ev, roomID, user, "", ip)
+	return emailed, err
 }
 
 // createRoomFailed answers a create whose room couldn't be booked.

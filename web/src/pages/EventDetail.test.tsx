@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, DateRooms, Events, Households, SeriesRooms, Site } from "../api";
-import type { EventDetailResponse } from "../types";
+import type { EventDetailResponse, NeedsRoom } from "../types";
 import { occurrence } from "../test/occurrence";
 import { EventDetail } from "./EventDetail";
 
@@ -695,8 +695,8 @@ describe("EventDetail dates that need a room", () => {
       occurrence({ id: 2, date: "2026-12-08", startsLocal: "2026-12-08T19:00", recurrenceRule: "FREQ=WEEKLY;BYDAY=TU" }),
     ],
   };
-  const needs = (...rows: { date: string; roomName: string }[]) =>
-    vi.spyOn(SeriesRooms, "list").mockResolvedValue({ rooms: [], dates: 2, defaultRoom: null, needsRoom: rows });
+  const needs = (...rows: NeedsRoom[]) =>
+    vi.spyOn(SeriesRooms, "list").mockResolvedValue({ rooms: [], dates: 2, defaultRoom: null, needsRoom: rows, pending: 0 });
 
   beforeEach(() => {
     vi.resetAllMocks();
@@ -708,7 +708,7 @@ describe("EventDetail dates that need a room", () => {
   });
 
   it("lists them for a manager and opens that date's editor from Pick a room", async () => {
-    needs({ date: "2026-12-08", roomName: "Fellowship Hall" });
+    needs({ date: "2026-12-08", roomName: "Fellowship Hall", status: "requested" });
     renderPage();
     expect(await screen.findByRole("heading", { name: /Dates that need a room/ })).toBeInTheDocument();
     expect(SeriesRooms.list).toHaveBeenCalledWith(7);
@@ -732,7 +732,7 @@ describe("EventDetail dates that need a room", () => {
   });
 
   it("is not shown to people who can't manage the event, and asks for nothing", async () => {
-    needs({ date: "2026-12-08", roomName: "Fellowship Hall" });
+    needs({ date: "2026-12-08", roomName: "Fellowship Hall", status: "requested" });
     vi.mocked(Events.get).mockResolvedValue({ ...series, canManage: false });
     renderPage();
     await screen.findAllByRole("article");
@@ -741,7 +741,7 @@ describe("EventDetail dates that need a room", () => {
   });
 
   it("asks nothing and shows nothing while rooms are off", async () => {
-    needs({ date: "2026-12-08", roomName: "Fellowship Hall" });
+    needs({ date: "2026-12-08", roomName: "Fellowship Hall", status: "requested" });
     vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
     renderPage();
     await screen.findAllByRole("article");

@@ -816,7 +816,9 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		if err := events.Ensure(tx, &ev, time.Now().UTC()); err != nil {
 			return err
 		}
-		return a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
+		ids, err := a.bookCreatedSeries(tx, &ev, body.RoomID, me, c.ClientIP())
+		emailed = append(emailed, ids...)
+		return err
 	})
 	if createRoomFailed(c, err) {
 		return
