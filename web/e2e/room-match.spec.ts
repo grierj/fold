@@ -24,7 +24,9 @@ test("an admin books a typed place into its room and the date shows the room onc
   await expect(row.getByRole("combobox", { name: /^Room for “Fellowship Hall”$/i })).toHaveValue(/\d+/);
   await row.getByRole("button", { name: /^Book \d+ dates? in Fellowship Hall/i }).click();
   await expect(page.getByRole("status").filter({ hasText: /Booked Fellowship Hall · Main for \d+ dates?\./ })).toBeVisible();
-  await expect(row).toHaveCount(0);
+  // The row may stay: dates the hall is already taken on (other specs in the
+  // shard book it) stay listed for another try (M2.1e). This test's own
+  // date, checked below, is free.
 
   await page.goto(`/events/${event.id}`);
   await expect(page.getByRole("heading", { name: "Typed place night", level: 1 })).toBeVisible();
