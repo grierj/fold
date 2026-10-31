@@ -30,48 +30,62 @@ function guess(location: string, rooms: Room[]): string {
 interface Result {
   n: number;
   room: string;
-  location: string;
   booked: number;
   series: number;
   busy: MatchBusy[];
   busyTotal: number;
 }
 
-function ResultNote({ result: r, forwardedRef }: { result: Result; forwardedRef: React.Ref<HTMLDivElement> }) {
-  const parts: string[] = [r.booked > 0 ? `Booked ${r.room} for ${count(r.booked, "date", "dates")}.` : `No dates were booked in ${r.room}.`];
+function summary(r: Result): string {
+  const parts: string[] = [];
+  if (r.booked > 0) parts.push(`Booked ${r.room} for ${count(r.booked, "date", "dates")}.`);
+  else parts.push(`No dates were booked in ${r.room}.${r.busyTotal === 0 ? " They already have rooms." : ""}`);
   if (r.series > 0) {
-    parts.push(r.series === 1 ? "1 series will book its later dates there too." : `${r.series} series will book their later dates there too.`);
+    parts.push(r.series === 1 ? `1 repeating event now uses ${r.room} for its later dates too.` : `${r.series} repeating events now use ${r.room} for their later dates too.`);
   }
   if (r.busyTotal > 0) {
     parts.push(r.busyTotal === 1 ? "1 date was taken, so it was left alone:" : `${r.busyTotal} dates were taken, so they were left alone:`);
   }
+  return parts.join(" ");
+}
+
+// What a booking did. Only the summary is announced; the dates left alone
+// follow as a plain list the reader can walk.
+function ResultNote({ result: r, summaryRef }: { result: Result; summaryRef: React.Ref<HTMLParagraphElement> }) {
   return (
-    <div ref={forwardedRef} role="status" tabIndex={-1} className="rounded-lg border border-border bg-sunken px-4 py-3 text-sm focus:outline-none space-y-2">
-      <p>{parts.join(" ")}</p>
+    <div className="rounded-lg border border-border bg-sunken px-4 py-3 text-sm space-y-2">
+      <p ref={summaryRef} role="status" tabIndex={-1} className="focus:outline-none">{summary(r)}</p>
       {r.busyTotal > 0 && (
-        <ul className="list-disc pl-5 space-y-1">
-          {r.busy.map((b) => (
-            <li key={`${b.eventId}-${b.date}`}>
-              <Link to={`/events/${b.eventId}`} className="text-link">{b.eventTitle || "Church event"}</Link> · {formatDayLong(b.date)}
-            </li>
-          ))}
-          {r.busyTotal > r.busy.length && <li className="list-none -ml-5">and {r.busyTotal - r.busy.length} more</li>}
-        </ul>
+        <>
+          <ul className="list-disc pl-5 space-y-1">
+            {r.busy.map((b) => (
+              <li key={`${b.eventId}-${b.date}`}>
+                <Link to={`/events/${b.eventId}`} className="text-link">{b.eventTitle || "Church event"}</Link> · {formatDayLong(b.date)}
+              </li>
+            ))}
+          </ul>
+          {r.busyTotal > r.busy.length && <p>and {r.busyTotal - r.busy.length} more</p>}
+          <p className="text-text-muted">Open an event to pick another room for its date.</p>
+        </>
       )}
     </div>
   );
 }
 
-function LocationRow({ location: l, index, rooms, value, onChange, busy, error, onBook }: {
+function LocationRow({ location: l, index, rooms, value, onChange, busy, locked, error, onBook }: {
   location: TypedLocation;
   index: number;
   rooms: Room[];
   value: string;
   onChange: (roomId: string) => void;
+  // This row's booking is in flight.
   busy: boolean;
+  // Some row's booking is in flight, so none can start.
+  locked: boolean;
   error: string | null;
   onBook: () => void;
 }) {
+  const room = rooms.find((r) => String(r.id) === value);
   return (
     <li className="bg-surface rounded-lg border border-border p-5 space-y-3" data-location={l.location}>
       <div>
@@ -88,8 +102,12 @@ function LocationRow({ location: l, index, rooms, value, onChange, busy, error, 
             </Select>
           </Field>
         </div>
-        <Button variant="secondary" layout="w-full sm:w-auto" disabled={value === "" || busy} onClick={onBook}>
-          {busy ? "Booking…" : <>Book these dates{" "}<span className="sr-only">for “{l.location}”</span></>}
+        <Button variant="secondary" layout="w-full sm:w-auto" disabled={!room || locked} onClick={onBook}>
+          {busy ? "Booking…" : room ? (
+            <>Book {count(l.dates, "date", "dates")} in {roomName(room)}{" "}<span className="sr-only">for “{l.location}”</span></>
+          ) : (
+            <>Pick a room{" "}<span className="sr-only">for “{l.location}”</span></>
+          )}
         </Button>
       </div>
     </li>
@@ -99,7 +117,8 @@ function LocationRow({ location: l, index, rooms, value, onChange, busy, error, 
 // "Match old locations" on the admin Rooms tab (M2.1e, PLAN 9.1). Before
 // rooms, places were typed; here an admin says which room each typed place
 // means and its upcoming dates are booked there. Typed places are never
-// changed. Booking happens only on the row's button, never on a change.
+// changed. Booking happens only on the row's button, never on a change. With
+// nothing typed to match, the section is not shown.
 export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
   const active = (rooms ?? []).filter((r) => r.active);
   const has = active.length > 0;
@@ -110,7 +129,8 @@ export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
   const [busyFor, setBusyFor] = useState<string | null>(null);
   const [rowError, setRowError] = useState<{ location: string; text: string } | null>(null);
   const [result, setResult] = useState<Result | null>(null);
-  const resultRef = useRef<HTMLDivElement>(null);
+  const summaryRef = useRef<HTMLParagraphElement>(null);
+  const rootRef = useRef<HTMLElement>(null);
   const roomsRef = useRef(active);
   roomsRef.current = active;
 
@@ -131,8 +151,15 @@ export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
 
   // The row may be gone after booking, so the cursor moves to what happened.
   useEffect(() => {
-    if (result) resultRef.current?.focus();
+    if (result) summaryRef.current?.focus();
   }, [result]);
+
+  // A failed booking leaves the cursor on that row's button, ready to try again.
+  useEffect(() => {
+    if (!rowError) return;
+    const li = Array.from(rootRef.current?.querySelectorAll<HTMLElement>("li[data-location]") ?? []).find((x) => x.dataset.location === rowError.location);
+    li?.querySelector<HTMLElement>("button")?.focus();
+  }, [rowError]);
 
   async function book(l: TypedLocation) {
     const roomId = Number(picked[l.location]);
@@ -142,7 +169,7 @@ export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
     setRowError(null);
     try {
       const res = await AdminRooms.matchLocation(l.location, roomId);
-      setResult((prev) => ({ n: (prev?.n ?? 0) + 1, room: roomName(room), location: l.location, ...res }));
+      setResult((prev) => ({ n: (prev?.n ?? 0) + 1, room: roomName(room), ...res }));
       await load();
     } catch (e) {
       setRowError({ location: l.location, text: errorText(e, "We couldn't book those dates.") });
@@ -152,20 +179,22 @@ export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
   }
 
   if (!has) return null;
+  // Nothing typed to match and nothing just booked: nothing to say.
+  if (locations !== null && locations.length === 0 && !result && !error) return null;
 
   return (
-    <section aria-labelledby="match-locations-heading" className="space-y-3">
+    <section ref={rootRef} aria-labelledby="match-locations-heading" className="space-y-3">
       <h2 id="match-locations-heading" className="text-xl font-bold">Match old locations</h2>
       <p className="text-sm text-text-muted max-w-prose">
-        Before rooms, places were typed. Pick the room each typed place means, and its upcoming dates are booked there. Typed places stay as they are.
+        Before rooms, people typed a place for each event. Pick the room each one means, and its upcoming dates are booked there. Typed places stay as they are.
       </p>
-      {result && <ResultNote key={result.n} result={result} forwardedRef={resultRef} />}
+      {result && <ResultNote key={result.n} result={result} summaryRef={summaryRef} />}
       {error && <ErrorNotice message={error} onRetry={() => void load()} />}
       {!error && locations === null && <Skeleton kind="lines" />}
       {!error && locations !== null && locations.length === 0 && (
         <EmptyState
           title="No typed places left to match"
-          body="Every upcoming date with a typed place has a room, or none has a place."
+          body="Places typed into upcoming events will show up here until they have a room."
         />
       )}
       {!error && locations !== null && locations.length > 0 && (
@@ -179,6 +208,7 @@ export function MatchLocations({ rooms }: { rooms: Room[] | null }) {
               value={picked[l.location] ?? ""}
               onChange={(v) => setPicked((p) => ({ ...p, [l.location]: v }))}
               busy={busyFor === l.location}
+              locked={busyFor !== null}
               error={rowError?.location === l.location ? rowError.text : null}
               onBook={() => void book(l)}
             />

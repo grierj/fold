@@ -35,6 +35,12 @@ const unbookedDatesSQL = `FROM event_occurrences o
 	WHERE o.status = 'scheduled' AND o.starts_at > now()
 	AND NOT EXISTS (SELECT 1 FROM room_bookings b WHERE b.occurrence_id = o.id)`
 
+// seriesMatchSQL picks live series with upcoming dates and no series room
+// whose own place (the event's, else the group's) matches the ? location.
+const seriesMatchSQL = `e.deleted_at IS NULL AND e.rrule <> '' AND e.default_room_id IS NULL
+	AND lower(btrim(COALESCE(NULLIF(e.location, ''), (SELECT g.location FROM groups g WHERE g.id = e.group_id), ''))) = lower(btrim(?))
+	AND EXISTS (SELECT 1 FROM event_occurrences u WHERE u.event_id = e.id AND u.status = 'scheduled' AND u.starts_at > now())`
+
 // typedLocationJSON is one typed place and how many upcoming dates without
 // a room use it. Spellings that differ only in case or outer spaces are one
 // place, shown in its most common spelling.
@@ -77,8 +83,10 @@ func (a *App) apiAdminMatchLocation(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
-	key := strings.ToLower(strings.TrimSpace(body.Location))
-	if key == "" || utf8.RuneCountInString(key) > 500 || body.RoomID == 0 {
+	// Matched in SQL on both sides (lower(btrim())), so the database's own
+	// case rules decide, as they did for the list.
+	loc := strings.TrimSpace(body.Location)
+	if loc == "" || utf8.RuneCountInString(loc) > 500 || body.RoomID == 0 {
 		jsonError(c, http.StatusBadRequest, "pick a location and a room")
 		return
 	}
@@ -88,36 +96,34 @@ func (a *App) apiAdminMatchLocation(c *gin.Context) {
 	busyTotal := 0
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		// Events, then their dates, then the room: the lock order of every
-		// other booking path.
-		var eventIDs []uint
-		if err := tx.Raw(`SELECT DISTINCT o.event_id `+unbookedDatesSQL+` AND lower(`+effectiveLocationSQL+`) = ?
-			UNION SELECT e.id FROM events e LEFT JOIN groups g ON g.id = e.group_id
-			WHERE e.deleted_at IS NULL AND e.rrule <> '' AND e.default_room_id IS NULL
-			AND lower(btrim(COALESCE(NULLIF(e.location, ''), g.location, ''))) = ?
-			ORDER BY 1`, key, key).Scan(&eventIDs).Error; err != nil {
+		// other booking path. Every write to a date takes its event's lock
+		// first, so the dates read under these locks stay as read.
+		var candidates []uint
+		if err := tx.Raw(`SELECT DISTINCT o.event_id `+unbookedDatesSQL+` AND lower(`+effectiveLocationSQL+`) = lower(btrim(?))
+			UNION SELECT e.id FROM events e WHERE `+seriesMatchSQL+`
+			ORDER BY 1`, loc, loc).Scan(&candidates).Error; err != nil {
 			return err
+		}
+		if len(candidates) == 0 {
+			return nil
+		}
+		var evs []models.Event
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", candidates).Order("id").Find(&evs).Error; err != nil {
+			return err
+		}
+		eventIDs := make([]uint, len(evs))
+		titles := make(map[uint]string, len(evs))
+		for i, e := range evs {
+			eventIDs[i] = e.ID
+			titles[e.ID] = e.Title
 		}
 		if len(eventIDs) == 0 {
 			return nil
 		}
-		var evs []models.Event
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", eventIDs).Order("id").Find(&evs).Error; err != nil {
-			return err
-		}
-		titles := make(map[uint]string, len(evs))
-		for _, e := range evs {
-			titles[e.ID] = e.Title
-		}
-		var occIDs []uint
-		if err := tx.Raw(`SELECT o.id `+unbookedDatesSQL+` AND lower(`+effectiveLocationSQL+`) = ? AND o.event_id IN ? ORDER BY o.id`,
-			key, eventIDs).Scan(&occIDs).Error; err != nil {
-			return err
-		}
 		var occs []models.EventOccurrence
-		if len(occIDs) > 0 {
-			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id IN ?", occIDs).Order("id").Find(&occs).Error; err != nil {
-				return err
-			}
+		if err := tx.Raw(`SELECT o.* `+unbookedDatesSQL+` AND lower(`+effectiveLocationSQL+`) = lower(btrim(?)) AND o.event_id IN ?
+			ORDER BY o.id FOR UPDATE OF o`, loc, eventIDs).Scan(&occs).Error; err != nil {
+			return err
 		}
 		room, err := lockRoom(tx, body.RoomID)
 		if errors.Is(err, gorm.ErrRecordNotFound) || (err == nil && !room.Active) {
@@ -141,15 +147,13 @@ func (a *App) apiAdminMatchLocation(c *gin.Context) {
 			booked++
 		}
 		res := tx.Exec(`UPDATE events e SET default_room_id = ?, default_room_pending = false, updated_at = now()
-			FROM events e2 LEFT JOIN groups g ON g.id = e2.group_id
-			WHERE e.id = e2.id AND e.id IN ? AND e.rrule <> '' AND e.default_room_id IS NULL
-			AND lower(btrim(COALESCE(NULLIF(e2.location, ''), g.location, ''))) = ?`, room.ID, eventIDs, key)
+			WHERE e.id IN ? AND `+seriesMatchSQL, room.ID, eventIDs, loc)
 		if res.Error != nil {
 			return res.Error
 		}
 		series = int(res.RowsAffected)
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.RoomLocationMatched, TargetType: "room", TargetID: room.ID,
-			Meta: map[string]any{"location": strings.TrimSpace(body.Location), "booked": booked, "busy": busyTotal, "series": series}, IP: c.ClientIP()})
+			Meta: map[string]any{"location": loc, "booked": booked, "busy": busyTotal, "series": series}, IP: c.ClientIP()})
 	})
 	switch {
 	case errors.Is(err, errRoomGone):

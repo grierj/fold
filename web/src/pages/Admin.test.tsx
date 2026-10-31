@@ -826,6 +826,24 @@ describe("room booking approval (M2.1d)", () => {
     expect(screen.getByRole("tab", { name: /^Rooms, 1 waiting/ })).toHaveTextContent(/^Rooms 1$/);
   });
 
+  it("asks for typed places only while rooms are on", async () => {
+    withRooms(false);
+    render(<MemoryRouter initialEntries={["/admin?tab=rooms"]}><AdminPage /></MemoryRouter>);
+    await screen.findByText(request.name);
+    await waitFor(() => expect(Site.get).toHaveBeenCalled());
+    expect(AdminRooms.locations).not.toHaveBeenCalled();
+  });
+
+  it("shows Match old locations below the rooms once rooms are on and one is active", async () => {
+    withRooms(true);
+    vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall], needApproval: false });
+    vi.mocked(AdminRooms.locations).mockResolvedValue({ locations: [{ location: "Room 201", dates: 4, events: 2 }] });
+    render(<MemoryRouter initialEntries={["/admin?tab=rooms"]}><AdminPage /></MemoryRouter>);
+    const heading = await screen.findByRole("heading", { name: "Match old locations" });
+    expect(await screen.findByText("4 upcoming dates across 2 events")).toBeInTheDocument();
+    expect(screen.getByText("Fellowship Hall", { selector: "span" }).compareDocumentPosition(heading)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it("shows no Needs a room list while approval is off and nothing is waiting", async () => {
     withRooms(true);
     vi.mocked(AdminRooms.list).mockResolvedValue({ rooms: [hall], needApproval: false });

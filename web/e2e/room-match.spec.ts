@@ -20,7 +20,7 @@ test("an admin books a typed place into its room and the date shows the room onc
   const row = page.locator('[data-location="Fellowship Hall"]');
   // The room named like the place is already chosen; choosing is not booking.
   await expect(row.getByRole("combobox", { name: "Room for “Fellowship Hall”" })).toHaveValue(/\d+/);
-  await row.getByRole("button", { name: /^Book these dates/ }).click();
+  await row.getByRole("button", { name: /^Book \d+ dates? in Fellowship Hall/ }).click();
   await expect(page.getByRole("status").filter({ hasText: /Booked Fellowship Hall · Main for \d+ dates?\./ })).toBeVisible();
   await expect(row).toHaveCount(0);
 
