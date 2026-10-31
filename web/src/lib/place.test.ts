@@ -22,3 +22,9 @@ it("is the typed location exactly as before when there is no room", () => {
   expect(placeLine(undefined, "")).toBe("");
   expect(placeLine(null, undefined)).toBe("");
 });
+
+it("doesn't repeat a typed location that is just the room (M2.1e)", () => {
+  expect(placeLine(hall, " fellowship hall ")).toBe("Fellowship Hall · Main");
+  expect(placeLine(hall, "Fellowship Hall · Main")).toBe("Fellowship Hall · Main");
+  expect(placeLine(hall, "Fellowship Hall annex")).toBe("Fellowship Hall · Main · Fellowship Hall annex");
+});

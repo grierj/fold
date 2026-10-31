@@ -13,6 +13,7 @@ import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminRoom
 import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
 import { RoomsTab, sortRooms } from "../components/admin/RoomsTab";
 import { RoomRequestsList } from "../components/admin/RoomRequestsList";
+import { MatchLocations } from "../components/admin/MatchLocations";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
@@ -1572,10 +1573,13 @@ export function AdminPage() {
       {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} onGroupDecided={loadGroups} />}
       {tab === "groups" && <GroupsTab users={users} groups={groups} error={groupsError} reload={loadGroups} onDeleted={groupDeleted} />}
       {tab === "rooms" && (roomsEnabled === true ? (
-        <RoomRequestsList requests={requests} needApproval={needApproval} error={requestsError}
-          reload={loadRequests} onRemoved={requestRemoved}>
-          <RoomsTab rooms={rooms} error={roomsError} reload={loadRooms} onSaved={roomSaved} />
-        </RoomRequestsList>
+        <div className="space-y-8">
+          <RoomRequestsList requests={requests} needApproval={needApproval} error={requestsError}
+            reload={loadRequests} onRemoved={requestRemoved}>
+            <RoomsTab rooms={rooms} error={roomsError} reload={loadRooms} onSaved={roomSaved} />
+          </RoomRequestsList>
+          <MatchLocations rooms={rooms} />
+        </div>
       ) : (
         <RoomsTab rooms={rooms} error={roomsEnabled === null ? siteError : roomsError}
           reload={roomsEnabled === null ? loadSite : loadRooms} onSaved={roomSaved} />

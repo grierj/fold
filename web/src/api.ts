@@ -137,6 +137,8 @@ import type {
   NeedsRoom,
   SeriesBooking,
   RoomRequest,
+  TypedLocation,
+  MatchBusy,
   OccurrenceRoom,
   NotificationSettings as NotificationSettingsData,
   NotificationFeed,
@@ -719,6 +721,10 @@ export const AdminRooms = {
   setEnabled: (enabled: boolean) => api<{ roomsEnabled: boolean }>("/admin/settings/rooms", { method: "PUT", body: { enabled } }),
   // Whether leaders' and hosts' bookings wait for an admin (M2.1d, DEC-102).
   setApproval: (enabled: boolean) => api<{ needApproval: boolean }>("/admin/settings/room-approval", { method: "PUT", body: { enabled } }),
+  // Typed places on upcoming dates without a room, and booking one place's dates into a room (M2.1e).
+  locations: () => api<{ locations: TypedLocation[] }>("/admin/rooms/locations"),
+  matchLocation: (location: string, roomId: number) =>
+    api<{ booked: number; busy: MatchBusy[]; busyTotal: number; series: number }>("/admin/rooms/locations/match", { method: "POST", body: { location, roomId } }),
 };
 
 // Open room requests (M2.1d, DEC-106): one per booking action, a date or a whole

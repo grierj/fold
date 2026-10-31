@@ -22,7 +22,7 @@ vi.mock("../api", async (actual) => ({
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }) },
   AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
   AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },
-  AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn() },
+  AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() },
   RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() },
   Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false }) },
 }));
@@ -47,6 +47,8 @@ beforeEach(() => {
   vi.mocked(AdminRooms.list).mockReset().mockResolvedValue({ rooms: [], needApproval: false });
   vi.mocked(AdminRooms.setEnabled).mockReset();
   vi.mocked(AdminRooms.setApproval).mockReset();
+  vi.mocked(AdminRooms.locations).mockReset().mockResolvedValue({ locations: [] });
+  vi.mocked(AdminRooms.matchLocation).mockReset();
   vi.mocked(RoomRequests.list).mockReset().mockResolvedValue({ requests: [] });
   vi.mocked(Admin.pending).mockReset().mockResolvedValue({ groups: [] });
   vi.mocked(Admin.approve).mockReset();
