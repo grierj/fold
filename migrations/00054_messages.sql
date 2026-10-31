@@ -3,14 +3,14 @@
 -- writes in the composer. M3.4 saves, schedules and cancels them; M3.5's
 -- message.send job sends a scheduled one and records its recipients.
 -- audience is one of the PLAN 7.2 shapes. body_html is already sanitized
--- (bluemonday) when it is stored. request_id points at an M3.9 member SMS
--- request once that table exists.
+-- (bluemonday) when it is stored. Columns for approvals (M3.9) and the SMS
+-- send window (M3.7) arrive with the milestones that use them.
 CREATE TABLE messages (
     id bigserial PRIMARY KEY,
     channel text NOT NULL DEFAULT 'email' CHECK (channel IN ('email', 'sms', 'both')),
     author_id bigint REFERENCES users(id) ON DELETE SET NULL,
-    status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'pending_approval', 'scheduled', 'sending', 'sent', 'cancelled', 'failed')),
-    category text NOT NULL DEFAULT 'announcement' CHECK (category IN ('announcement', 'reminder', 'transactional')),
+    status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'scheduled', 'sending', 'sent', 'cancelled', 'failed')),
+    category text NOT NULL DEFAULT 'announcement' CHECK (category IN ('announcement', 'reminder')),
     subject text NOT NULL DEFAULT '' CHECK (length(subject) <= 200),
     body_html text NOT NULL DEFAULT '' CHECK (length(body_html) <= 100000),
     body_text text NOT NULL DEFAULT '' CHECK (length(body_text) <= 50000),
@@ -18,10 +18,6 @@ CREATE TABLE messages (
     audience jsonb NOT NULL DEFAULT '{}',
     scheduled_at timestamptz,
     sent_at timestamptz,
-    approved_by bigint REFERENCES users(id) ON DELETE SET NULL,
-    request_id bigint,
-    send_window_override boolean NOT NULL DEFAULT false,
-    override_reason text NOT NULL DEFAULT '' CHECK (length(override_reason) <= 500),
     segments_estimate bigint NOT NULL DEFAULT 0,
     recipient_count bigint NOT NULL DEFAULT 0,
     created_at timestamptz NOT NULL DEFAULT now(),

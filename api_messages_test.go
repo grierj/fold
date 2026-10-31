@@ -65,7 +65,10 @@ func newComposeFixture(t *testing.T) composeFixture {
 	for _, u := range []*models.User{f.teen, f.opted, f.bouncing} {
 		addMember(t, app, u, f.group, models.MembershipMember)
 	}
-	app.DB.Create(&models.Consent{UserID: f.opted.ID, Channel: "email", Scope: "group:" + itoa(g.ID), Status: models.ConsentOptedOut, Source: models.ConsentSourceWebForm})
+	// Turning off message notices is what stops announcements (DEC-115).
+	if w := loginAPI(t, app, "opted", "password1234").do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": "messages", "off": true}, true); w.Code != http.StatusOK {
+		t.Fatalf("opt out: %d %s", w.Code, w.Body.String())
+	}
 	app.DB.Create(&models.Suppression{Channel: "email", Address: strings.ToLower(f.bouncing.Email), Reason: models.SuppressHardBounce})
 	return f
 }
@@ -136,6 +139,7 @@ func TestComposerRefusesOtherTargets(t *testing.T) {
 		"admin, everyone":              {f.admin, map[string]any{"type": "all_members"}, http.StatusCreated},
 		"no audience":                  {f.admin, map[string]any{}, http.StatusBadRequest},
 		"a group that isn't there":     {f.admin, map[string]any{"type": "group", "groupId": 99999}, http.StatusNotFound},
+		"leader, no such group":        {f.leader, map[string]any{"type": "group", "groupId": 99999}, http.StatusForbidden},
 		"an event list that's too big": {f.admin, map[string]any{"type": "events", "eventIds": make([]uint, 51)}, http.StatusBadRequest},
 	} {
 		if got := draft(tc.c, tc.aud); got != tc.want {
@@ -158,7 +162,7 @@ func TestAudiencePreview(t *testing.T) {
 	}
 	decodeJSON(t, w, &out)
 	s := out.Summary
-	if s.People != 4 || s.Eligible != 2 || s.Teens != 1 || s.Skipped[skipOptedOut] != 1 || s.Skipped[skipBouncing] != 1 {
+	if s.People != 4 || s.Eligible != 2 || s.Teens != 1 || s.Skipped[skipOptedOut] != 1 || s.Skipped[skipNotWorking] != 1 {
 		t.Fatalf("summary: %+v", s)
 	}
 	teens := 0
@@ -169,6 +173,20 @@ func TestAudiencePreview(t *testing.T) {
 	}
 	if teens != 1 || len(s.Recipients) != 4 {
 		t.Fatalf("recipients: %+v", s.Recipients)
+	}
+	// A leader sees that someone won't get it, not why; an admin sees why.
+	for _, r := range s.Recipients {
+		if r.Skipped != "" && r.Skipped != skipHidden {
+			t.Fatalf("a leader sees a person's reason: %+v", r)
+		}
+	}
+	decodeJSON(t, f.admin.do("POST", "/api/v1/messages/audience-preview", map[string]any{"audience": map[string]any{"type": "group", "groupId": f.group.ID}}, true), &out)
+	reasons := map[string]bool{}
+	for _, r := range out.Summary.Recipients {
+		reasons[r.Skipped] = true
+	}
+	if !reasons[skipOptedOut] || !reasons[skipNotWorking] {
+		t.Fatalf("admin reasons: %+v", out.Summary.Recipients)
 	}
 	if strings.Contains(w.Body.String(), "@") {
 		t.Fatal("the preview must never show an address")
@@ -193,11 +211,16 @@ func TestOccurrenceAudienceReachesTheAccountHolder(t *testing.T) {
 	f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, HouseholdPersonID: &kid.ID, RegisteredBy: &parent.ID, Status: models.RegGoing})
 	f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &parent.ID, Status: models.RegGoing})
 	f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &f.teen.ID, Status: models.RegDeclined})
+	// A guest registrant is named, but gets only transactional mail and
+	// reminders until they ask for updates (PLAN 7.4).
+	guest := newTestUser(t, f.app, "zguest", "password1234", models.RoleMember)
+	f.app.DB.Model(guest).Update("status", models.UserGuest)
+	f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &guest.ID, Status: models.RegGoing})
 	var out struct {
 		Summary audienceSummaryJSON `json:"summary"`
 	}
-	decodeJSON(t, f.leader.do("POST", "/api/v1/messages/audience-preview", map[string]any{"audience": map[string]any{"type": "occurrence", "occurrenceId": f.groupOcc.ID}}, true), &out)
-	if out.Summary.People != 1 || out.Summary.Recipients[0].Name != parent.PublicName() {
+	decodeJSON(t, f.admin.do("POST", "/api/v1/messages/audience-preview", map[string]any{"audience": map[string]any{"type": "occurrence", "occurrenceId": f.groupOcc.ID}}, true), &out)
+	if out.Summary.People != 2 || out.Summary.Eligible != 1 || out.Summary.Skipped[skipGuest] != 1 || out.Summary.Recipients[0].Name != parent.PublicName() {
 		t.Fatalf("household and declined registrants: %+v", out.Summary)
 	}
 }
@@ -246,9 +269,22 @@ func TestMessageDraftScheduleCancel(t *testing.T) {
 	if row.RecipientCount != 2 || auditCount(t, f.app, audit.MessageScheduled) != 1 {
 		t.Fatalf("recipients %d, audited %d", row.RecipientCount, auditCount(t, f.app, audit.MessageScheduled))
 	}
-	// Still editable while scheduled.
-	if w := f.leader.do("PUT", path, map[string]any{"subject": "Next week, again", "bodyHtml": "<p>Changed</p>", "audience": aud}, true); w.Code != http.StatusOK {
+	// Still editable while scheduled, but only into something that could
+	// still go out; the count follows the audience, and the edit is audited.
+	if w := f.leader.do("PUT", path, map[string]any{"subject": "", "bodyHtml": "", "audience": aud}, true); w.Code != http.StatusBadRequest {
+		t.Fatalf("emptying a scheduled message: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.leader.do("PUT", path, map[string]any{"subject": "Next week, again", "bodyHtml": "<p>Changed</p>", "audience": map[string]any{"type": "group", "groupId": f.group.ID, "roles": []string{"leader"}}}, true); w.Code != http.StatusOK {
 		t.Fatalf("edit scheduled: %d %s", w.Code, w.Body.String())
+	}
+	f.app.DB.First(&row, m.ID)
+	if row.Status != models.MessageScheduled || row.Subject != "Next week, again" || row.RecipientCount != 1 || auditCount(t, f.app, audit.MessageEdited) != 1 {
+		t.Fatalf("scheduled edit: %+v, audited %d", row, auditCount(t, f.app, audit.MessageEdited))
+	}
+	// What is stored is bounded, not just what was sent: escaping grows it.
+	if w := f.leader.do("PUT", path, map[string]any{"subject": "x", "bodyHtml": "<p>" + strings.Repeat("&", 60000) + "</p>", "audience": aud}, true); w.Code != http.StatusBadRequest ||
+		!strings.Contains(w.Body.String(), "message_body") {
+		t.Fatalf("too long once escaped: %d %s", w.Code, w.Body.String())
 	}
 	// Once it is sending, nothing changes.
 	f.app.DB.Model(&models.Message{}).Where("id = ?", m.ID).Update("status", models.MessageSending)

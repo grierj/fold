@@ -589,7 +589,6 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// Verified email change (M1.2): the token is the credential.
 	v1.POST("/me/email/verify", a.apiVerifyEmailChange)
 	v1.POST("/me/email/cancel", a.apiCancelEmailChange)
-	// Calendar feed link (M1.7): the raw token comes back only from POST.
 	// The composer (M3.4): announcements from leaders, hosts and admins.
 	v1.GET("/messages/compose", a.apiAuth(), a.apiComposeOptions)
 	v1.POST("/messages/audience-preview", a.apiAuth(), a.apiAudiencePreview)
@@ -599,6 +598,7 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.PUT("/messages/:id", a.apiAuth(), a.apiUpdateMessage)
 	v1.POST("/messages/:id/schedule", a.apiAuth(), a.apiScheduleMessage)
 	v1.POST("/messages/:id/cancel", a.apiAuth(), a.apiCancelMessage)
+	// Calendar feed link (M1.7): the raw token comes back only from POST.
 	v1.GET("/me/notification-settings", a.apiAuth(), a.apiGetNotificationSettings)
 	v1.PUT("/me/notification-settings", a.apiAuth(), a.apiUpdateNotificationSettings)
 	v1.GET("/me/calendar-feed", a.apiAuth(), a.apiGetMyCalendarFeed)

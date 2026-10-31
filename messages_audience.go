@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/models"
 
@@ -92,7 +93,27 @@ func (au *audienceJSON) normalize() error {
 		}
 		au.Statuses = statuses
 	}
+	au.canonical()
 	return nil
+}
+
+// canonical clears the fields au.Type doesn't use, so the stored audience
+// says only what it means.
+func (au *audienceJSON) canonical() {
+	c := audienceJSON{Type: au.Type}
+	switch au.Type {
+	case policy.AudienceOccurrence:
+		c.OccurrenceID, c.Statuses = au.OccurrenceID, au.Statuses
+	case policy.AudienceEventSeries:
+		c.EventID, c.Statuses = au.EventID, au.Statuses
+	case policy.AudienceEvents:
+		c.EventIDs, c.Statuses = dedupeIDs(au.EventIDs), au.Statuses
+	case policy.AudienceGroup:
+		c.GroupID, c.Roles = au.GroupID, au.Roles
+	case policy.AudienceUsers:
+		c.UserIDs = dedupeIDs(au.UserIDs)
+	}
+	*au = c
 }
 
 // eventIDs are the events an event audience names, after loading the
@@ -214,19 +235,24 @@ func (a *App) audienceUserIDs(db *gorm.DB, au audienceJSON, now time.Time) ([]ui
 	return dedupeIDs(out), err
 }
 
-// Why someone an audience names won't get the email.
+// Why someone an audience names won't get the email. Admins see the reason
+// for each person; leaders and hosts see only the counts and that a person
+// won't get it, since one person's consent or complaint is theirs.
 const (
 	skipNotActive  = "not active"
+	skipGuest      = "guest, hasn't asked for updates"
 	skipNoEmail    = "no email address"
-	skipBouncing   = "email bouncing"
+	skipNotWorking = "email not working"
 	skipComplained = "marked our email as spam"
-	skipOptedOut   = "turned off announcements"
+	skipOptedOut   = "turned off message notices"
+	skipHidden     = "won't get this"
 )
 
 type audienceRecipientJSON struct {
 	Name string `json:"name"`
 	Teen bool   `json:"teen"`
-	// Skipped says why this person won't get it; "" means they will.
+	// Skipped says why this person won't get it ("won't get this" unless
+	// the viewer is an admin); "" means they will.
 	Skipped string `json:"skipped,omitempty"`
 }
 
@@ -245,67 +271,66 @@ type audienceSummaryJSON struct {
 
 const maxAudiencePreview = 100
 
-// summarizeAudience filters the people for email: active (guests too, for
-// event audiences, where they registered), with an address, not suppressed,
-// and not opted out of announcements (all, or this group's). One read each.
-func (a *App) summarizeAudience(db *gorm.DB, au audienceJSON, ids []uint) (audienceSummaryJSON, error) {
+// summarizeAudience filters the people for email: active, with an address,
+// not suppressed, and not opted out of message notices (category:messages,
+// which "Turn off all optional email" and the one-click link write, DEC-115).
+// Guests are skipped: they get only transactional mail and reminders until
+// they ask for updates (PLAN 7.4). Each read goes in chunks, so an
+// all-members audience stays within Postgres's parameter limit.
+// reasons: show each person's reason (admins).
+func (a *App) summarizeAudience(db *gorm.DB, ids []uint, reasons bool) (audienceSummaryJSON, error) {
 	out := audienceSummaryJSON{Skipped: map[string]int{}, Recipients: []audienceRecipientJSON{}}
-	if len(ids) == 0 {
-		return out, nil
-	}
 	var users []models.User
-	if err := eachIDChunk(ids, func(chunk []uint) error {
+	suppressed := map[string]string{}
+	optedOut := map[uint]map[string]bool{}
+	err := eachIDChunk(ids, func(chunk []uint) error {
 		var part []models.User
 		if err := db.Select("id, name, display_name, email, status, account_type").Where("id IN ?", chunk).Find(&part).Error; err != nil {
 			return err
 		}
 		users = append(users, part...)
-		return nil
-	}); err != nil {
-		return out, err
-	}
-	emails := make([]string, 0, len(users))
-	for _, u := range users {
-		emails = append(emails, normalizeEmail(u.Email))
-	}
-	suppressed := map[string]string{}
-	var sups []models.Suppression
-	if err := db.Where("channel = 'email' AND cleared_at IS NULL AND address IN ?", emails).Find(&sups).Error; err != nil {
-		return out, err
-	}
-	for _, s := range sups {
-		if suppressed[s.Address] == "" || s.Reason != models.SuppressComplaint {
-			suppressed[s.Address] = s.Reason
+		emails := make([]string, 0, len(part))
+		for _, u := range part {
+			if e := normalizeEmail(u.Email); e != "" {
+				emails = append(emails, e)
+			}
 		}
-	}
-	scopes := []string{"all"}
-	if au.Type == policy.AudienceGroup {
-		scopes = append(scopes, "group:"+historyID(au.GroupID))
-	}
-	var optedOut []uint
-	if err := db.Raw(`SELECT user_id FROM (SELECT DISTINCT ON (user_id, scope) user_id, status FROM consents
-		WHERE channel = 'email' AND scope IN ? AND user_id IN ? ORDER BY user_id, scope, at DESC, id DESC) latest
-		WHERE status = ?`, scopes, ids, models.ConsentOptedOut).Scan(&optedOut).Error; err != nil {
+		if len(emails) > 0 {
+			var sups []models.Suppression
+			if err := db.Where("channel = 'email' AND cleared_at IS NULL AND address IN ?", emails).Find(&sups).Error; err != nil {
+				return err
+			}
+			for _, s := range sups {
+				if suppressed[s.Address] != models.SuppressComplaint {
+					suppressed[s.Address] = s.Reason
+				}
+			}
+		}
+		opts, err := emailOptOuts(db, chunk)
+		for id, scopes := range opts {
+			optedOut[id] = scopes
+		}
+		return err
+	})
+	if err != nil {
 		return out, err
 	}
-	out2 := map[uint]bool{}
-	for _, id := range optedOut {
-		out2[id] = true
-	}
-	guestsOK := au.Type == policy.AudienceOccurrence || au.Type == policy.AudienceEventSeries || au.Type == policy.AudienceEvents
+	messages := categoryScope(notify.CatMessages)
 	for i := range users {
 		u := &users[i]
 		r := audienceRecipientJSON{Name: u.PublicName(), Teen: u.AccountType == models.AccountTeen}
 		switch {
-		case u.Status != models.UserActive && !(guestsOK && u.Status == models.UserGuest):
+		case u.Status == models.UserGuest:
+			r.Skipped = skipGuest
+		case u.Status != models.UserActive:
 			r.Skipped = skipNotActive
 		case strings.TrimSpace(u.Email) == "":
 			r.Skipped = skipNoEmail
 		case suppressed[normalizeEmail(u.Email)] == models.SuppressComplaint:
 			r.Skipped = skipComplained
 		case suppressed[normalizeEmail(u.Email)] != "":
-			r.Skipped = skipBouncing
-		case out2[u.ID]:
+			r.Skipped = skipNotWorking
+		case optedOut[u.ID][messages]:
 			r.Skipped = skipOptedOut
 		}
 		out.People++
@@ -316,6 +341,9 @@ func (a *App) summarizeAudience(db *gorm.DB, au audienceJSON, ids []uint) (audie
 			}
 		} else {
 			out.Skipped[r.Skipped]++
+			if !reasons {
+				r.Skipped = skipHidden
+			}
 		}
 		out.Recipients = append(out.Recipients, r)
 	}
