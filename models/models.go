@@ -1002,7 +1002,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
-		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{},
+		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{},
 	}
 }
 
@@ -1044,3 +1044,31 @@ type Notification struct {
 	Resolution   string `gorm:"not null;default:''"`
 	ExpiresAt    *time.Time
 }
+
+// Job is one unit of background work (M3.1, PLAN 5.5). Write and claim it
+// through internal/jobs.
+type Job struct {
+	ID          uint      `gorm:"primaryKey"`
+	Kind        string    `gorm:"not null"`
+	Payload     string    `gorm:"type:jsonb;not null;default:'{}'"`
+	RunAt       time.Time `gorm:"not null;default:now()"`
+	Status      string    `gorm:"not null;default:queued"`
+	Attempts    int       `gorm:"not null;default:0"`
+	MaxAttempts int       `gorm:"not null;default:5"`
+	LockedAt    *time.Time
+	LockedBy    string    `gorm:"not null;default:''"`
+	LastError   string    `gorm:"not null;default:''"`
+	UniqueKey   *string   `gorm:"uniqueIndex"`
+	CreatedAt   time.Time `gorm:"not null;default:now()"`
+	UpdatedAt   time.Time `gorm:"not null;default:now()"`
+}
+
+// Job statuses (M3.1). failed waits for its retry; dead waits for an admin.
+const (
+	JobQueued    = "queued"
+	JobRunning   = "running"
+	JobDone      = "done"
+	JobFailed    = "failed"
+	JobDead      = "dead"
+	JobDismissed = "dismissed"
+)

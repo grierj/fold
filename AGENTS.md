@@ -100,6 +100,7 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   `E2E_SHARDS=1`. Prefer `gotoSettled` to `waitForLoadState("networkidle")`. `signIn` clears
   cookies first. Assert on roles and visible text; accept `confirm()` with `page.on("dialog")`.
   Traces: `web/test-results/shard-<n>/`.
+- Background work goes through `internal/jobs` (M3.1, PLAN 5.5): register a `jobs.Kind` and queue with `jobs.Enqueue`, giving a `unique_key` when the work must happen once (daily tasks use `<kind>:<church date>`). Handlers must be safe to run twice and return their error so the worker retries. Never start a goroutine ticker for periodic work.
 - Notifications are stored rows (PLAN 5.12), written by `notify.Send(tx, notify.Msg{...})` in the
   same transaction as the change and its `AuditLog` row. The kind registry
   (`internal/notify/kinds.go`) never looks anything up, so the caller decides what the recipient

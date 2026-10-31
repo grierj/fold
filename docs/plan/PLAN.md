@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-110.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-111.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-110; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-111; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-110) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-111) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -386,11 +386,11 @@ The field lists show the important columns, not every column. Every table has `i
 
 ### 5.5 Background jobs
 
-- Until M3.1, periodic work stays in-process and advisory-locked, without a jobs table. Occurrence extension, token/request cleanup and contact lifecycle sweeps use the existing startup/daily path. Birthdays run at startup and each church-local midnight (DEC-83), not a fixed UTC or 24-hour age timer.
+- Periodic work runs as jobs (M3.1a): each daily task is queued once per church day under the key `<kind>:<church date>`, at startup and at church-local midnight, so birthdays still turn over at church midnight (DEC-83) and several app processes run each task once.
 - From M3.1, a `jobs` table and worker live in the same binary. The worker starts with `serve`. `FOLD_WORKERS=0` turns it off, for debugging only.
-- Job kinds: `occurrences.extend`, `message.send`, `message.deliver_batch`, `reminder.schedule`, `waitlist.notify`, `webhook.process`, `provider.poll_status` (for example SMS registration or email domain verification), `cleanup.tokens`, `accounts.expire_requests`, `contact.expire_requests` and `contact.end_grants` (a daily sweep; role changes also end grants at once, 5.11), `accounts.age_rollover` (teens turn into adults at 18; household children who turn 13 are flagged to their guardians), `notification.deliver` (5.12; `notification.digest` later, M6.16), and `notifications.cleanup` (daily: auto-archives event items whose occurrence has ended, and applies retention, 5.12). Until M3.1, the notification cleanup runs on the daily ticker.
+- Job kinds: `occurrences.extend`, `message.send`, `message.deliver_batch`, `reminder.schedule`, `waitlist.notify`, `webhook.process`, `provider.poll_status` (for example SMS registration or email domain verification), `cleanup.login_throttles`, `jobs.cleanup` (finished jobs are kept 30 days), `accounts.expire_requests`, `contact.sweep` (expires contact requests and ends grants daily; role changes also end grants at once, 5.11), `accounts.age_rollover` (teens turn into adults at 18; household children who turn 13 are flagged to their guardians), `notification.deliver` (5.12; `notification.digest` later, M6.16), and `notifications.cleanup` (daily: auto-archives event items whose occurrence has ended, and applies retention, 5.12).
 - The worker claims jobs with `FOR UPDATE SKIP LOCKED` and polls every 1 to 2 seconds (`FOLD_JOB_POLL=1s`). There is no `LISTEN/NOTIFY`.
-- Retries use exponential backoff with jitter and a `max_attempts` per kind, then `dead`. The admin "System" page lists dead jobs with a retry button.
+- Retries use exponential backoff with jitter (30 seconds doubling, at most an hour, ±20%) and a `max_attempts` per kind, then `dead`. A job whose process stopped mid-run is taken back after a 15-minute lease. The admin "System" page lists dead jobs with Retry and Dismiss; admins get no notice for them until message sending (M3.5) brings failures an admin can fix (DEC-111).
 - `unique_key` makes scheduling idempotent (for example `reminder:occ:123:24h`).
 - Timed sends store `run_at` and do not depend on cron.
 - Offsite backups are not an app job: the `backup` container does them (11.8).
@@ -1517,7 +1517,7 @@ What Fold does instead: a configurable "Give" link in the menu and emails, and l
 
 Rooms (M2) can be built in parallel with M3 once M1.1a is merged.
 
-Phases 0 and 1 (v0.2, v0.3) are complete; Phase 2 (rooms) is next, see 14.5.
+Phases 0, 1 and 2 (v0.2, v0.3 and the v0.6 rooms work) are complete; Phase 3 (messaging, v0.4) is under way from M3.1, see 14.6.
 
 ### 14.3 Phase 0: Foundations
 
@@ -1720,11 +1720,14 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 
 **M3.1 Jobs table and worker**
 - Depends on: M0.1
-- Scope: 5.5. Worker, polling every 1 to 2 seconds, retries, `unique_key`, and an admin "System" page listing dead jobs with a retry button. Move the daily ticker's tasks onto jobs.
+- Scope: 5.5. Worker, polling every 1 to 2 seconds, retries, `unique_key`, and an admin "System" page listing dead jobs with a retry button. Move the daily ticker's tasks onto jobs. Two slices (14.1):
+  - **M3.1a Jobs table and worker** (built): migration 00051 `jobs`, `internal/jobs` (enqueue with `unique_key`, `FOR UPDATE SKIP LOCKED` claims, backoff with jitter, `dead` after `max_attempts`, an expired lease is taken back), `FOLD_WORKERS` and `FOLD_JOB_POLL`. The daily tasks (`occurrences.extend`, `contact.sweep`, `cleanup.login_throttles`, `notifications.cleanup`, `accounts.expire_requests`, `accounts.age_rollover`, `jobs.cleanup`) are jobs queued once per church day under `<kind>:<church date>`, at startup and at church-local midnight; finished jobs are kept 30 days.
+  - **M3.1b System page**: admins list dead jobs, retry or dismiss them, audited (DEC-111).
 - Acceptance:
-  - [ ] Two app processes never run the same job twice (`FOR UPDATE SKIP LOCKED`; a test with 2 workers and 200 jobs)
-  - [ ] A newly queued job starts within 2 seconds
-  - [ ] A failing job retries with backoff and ends `dead` after `max_attempts`
+  - [x] Two app processes never run the same job twice (`FOR UPDATE SKIP LOCKED`; a test with 2 workers and 200 jobs)
+  - [x] A newly queued job starts within 2 seconds
+  - [x] A failing job retries with backoff and ends `dead` after `max_attempts`
+  - [ ] An admin sees dead jobs on the System page and can retry or dismiss them; nobody else can (M3.1b)
 - Tests: unit tests for backoff and dedupe; Postgres concurrency test.
 
 **M3.2 Provider registry, Postmark adapter, email webhooks**
@@ -2140,6 +2143,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-108 | **The by-room Week is a rooms × days grid** (Grier, Oct 30, 2026; M2.2 planning). From `sm` up, Week shows one row per room and one column per day, and each cell lists that day's bookings as short time blocks ("7–8:30 PM Bible study"). Day keeps one column per room with time rows; phones show one room at a time as a day list. | 8.1, M2.2a |
 | DEC-109 | **Admins see bookings waiting for approval in the by-room view** (Grier, Oct 30, 2026; M2.2 planning). With approval on (DEC-102), the by-room view also shows an admin the requested bookings on a pending request, dashed and labelled "Waiting for approval", so they can judge clashes. Everyone else, and the room feed, see confirmed bookings only. A booking that lost its room (DEC-103) isn't shown to anyone. | 8.1, 9.2, M2.2 |
 | DEC-110 | **Room suggestions come with each picker's room list, on all three pickers** (Grier, Oct 30, 2026; M2.3 planning). There is no separate suggestions endpoint: the one-date picker, the series picker and the create forms' room check each return their `suggestions` with the room list, so busy marks are worked out once and the pickers can't drift. The create forms suggest too, using the visibility chosen on the form (9.3 Rule 1) and the group's tags; a new event has no same-series usages. | 9.3, M2.3 |
+| DEC-111 | **Dead jobs show on the System page; notices wait for M3.5** (Grier, Oct 30, 2026; M3.1 planning). M3.1's jobs are daily housekeeping an admin usually can't fix, and each runs again the next church day, so a notice would mostly be noise (DEC-52). Admin → System lists dead jobs in plain words, with when they failed and the error, and offers Retry and Dismiss. Admin notices for dead jobs arrive with M3.5, when failures (an email provider down, bad credentials) are things an admin can act on. | 5.5, M3.1, M3.5 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 

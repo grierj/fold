@@ -18,7 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	"fold/internal/events"
 	"fold/internal/mail"
 	"fold/models"
 	"fold/storage"
@@ -111,10 +110,9 @@ func serve(stderr io.Writer) int {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	app.startOccurrenceTicker(ctx)
-	app.startNotificationPruning(ctx)
-	app.startAccountRequestExpiry(ctx)
-	app.startAgeRollover(ctx)
+	// Background work runs from the jobs table (M3.1, PLAN 5.5).
+	waitJobs := app.startJobs(ctx)
+	defer waitJobs()
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 	go func() {
@@ -150,38 +148,6 @@ func newMailer(cfg Config, db *gorm.DB) mail.Sender {
 	}
 	s.AllowInsecure = cfg.SMTPAllowInsecure
 	return s
-}
-
-// startOccurrenceTicker extends stored occurrences out to 18 months, once
-// at startup and then daily. A second app process skips the run while the
-// advisory lock is held (5.5).
-func (a *App) startOccurrenceTicker(ctx context.Context) {
-	go func() {
-		run := func() {
-			var emailed []uint
-			if err := events.ExtendLocked(ctx, a.DB, time.Now().UTC(), a.afterExtend(&emailed)); err != nil {
-				log.Printf("occurrences: %v", err)
-			}
-			a.deliverNotificationEmails(emailed)
-			if err := a.sweepContacts(ctx, time.Now().UTC()); err != nil {
-				log.Printf("contact lifecycle: %v", err)
-			}
-			if err := a.pruneLoginThrottles(ctx); err != nil {
-				log.Printf("login throttles: %v", err)
-			}
-		}
-		run()
-		tick := time.NewTicker(24 * time.Hour)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				run()
-			}
-		}
-	}()
 }
 
 // runHealthcheck is the distroless-friendly probe used by Docker. The image

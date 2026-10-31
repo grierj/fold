@@ -751,31 +751,6 @@ func (a *App) actorName(id *uint) string {
 	return a.nameOf(*id)
 }
 
-// startNotificationPruning runs the DEC-45 retention cleanup at startup and
-// then daily.
-func (a *App) startNotificationPruning(ctx context.Context) {
-	go func() {
-		run := func() {
-			if n, err := notify.Prune(a.DB, time.Now().UTC()); err != nil {
-				log.Printf("notifications: prune: %v", err)
-			} else if n > 0 {
-				log.Printf("notifications: pruned %d", n)
-			}
-		}
-		run()
-		tick := time.NewTicker(24 * time.Hour)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				run()
-			}
-		}
-	}()
-}
-
 // ---------------------------------------------------------------------------
 // Email delivery (5.12, M1.2). Kinds marked AllowEmail send a transactional
 // email through the minimal sender right after the writing transaction

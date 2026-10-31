@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds the runtime configuration for `fold serve`, sourced from the
@@ -43,6 +44,12 @@ type Config struct {
 	SMTPAllowInsecure bool
 	// EmailFrom is the From address on transactional email.
 	EmailFrom string
+	// Workers is how many background job workers this process runs
+	// (FOLD_WORKERS, default 2; 0 turns them off, for debugging only).
+	Workers int
+	// JobPoll is how often an idle worker looks for due jobs (FOLD_JOB_POLL,
+	// default 1s).
+	JobPoll time.Duration
 }
 
 // defaultTrustedProxies is the fixed subnet of the compose network
@@ -140,6 +147,15 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	workers, err := strconv.Atoi(getEnv("FOLD_WORKERS", "2"))
+	if err != nil || workers < 0 || workers > 64 {
+		return Config{}, fmt.Errorf("FOLD_WORKERS must be a whole number from 0 to 64")
+	}
+	poll, err := time.ParseDuration(getEnv("FOLD_JOB_POLL", "1s"))
+	if err != nil || poll < 100*time.Millisecond || poll > time.Minute {
+		return Config{}, fmt.Errorf("FOLD_JOB_POLL must be a duration from 100ms to 1m, for example 1s")
+	}
+
 	return Config{
 		Env:               env,
 		Port:              getEnv("PORT", "8080"),
@@ -152,6 +168,8 @@ func LoadConfig() (Config, error) {
 		SMTPURL:           os.Getenv("FOLD_SMTP_URL"),
 		SMTPAllowInsecure: getEnvBool("FOLD_SMTP_ALLOW_INSECURE", false),
 		EmailFrom:         getEnv("FOLD_EMAIL_FROM", "Fold <noreply@localhost>"),
+		Workers:           workers,
+		JobPoll:           poll,
 	}, nil
 }
 

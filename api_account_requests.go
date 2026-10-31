@@ -761,7 +761,7 @@ func (a *App) apiSetSelfSignup(c *gin.Context) {
 
 // expirePendingRequests marks every overdue pending request expired,
 // resolves its admin bell items, and audits each one (DEC-4). It runs
-// lazily from the admin queue and daily from the ticker (5.5).
+// lazily from the admin queue and daily as the accounts.expire_requests job (5.5).
 func (a *App) expirePendingRequests() (int64, error) {
 	var ids []uint
 	if err := a.DB.Model(&models.AccountRequest{}).
@@ -789,31 +789,6 @@ func (a *App) expirePendingRequests() (int64, error) {
 		}
 	}
 	return done, nil
-}
-
-// startAccountRequestExpiry expires overdue requests at startup and
-// then daily (5.5: the daily ticker until the jobs table, M3.1).
-func (a *App) startAccountRequestExpiry(ctx context.Context) {
-	go func() {
-		run := func() {
-			if n, err := a.expirePendingRequests(); err != nil {
-				log.Printf("account requests: expire: %v", err)
-			} else if n > 0 {
-				log.Printf("account requests: expired %d", n)
-			}
-		}
-		run()
-		tick := time.NewTicker(24 * time.Hour)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				run()
-			}
-		}
-	}()
 }
 
 // ---------------------------------------------------------------------------

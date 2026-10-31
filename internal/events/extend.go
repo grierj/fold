@@ -12,7 +12,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// LockID is the session advisory lock the daily occurrence ticker takes.
+// LockID is the session advisory lock the daily occurrences.extend job takes.
 // It is not the migration lock, so a migrate and an extend can overlap.
 const LockID = 731002511
 
