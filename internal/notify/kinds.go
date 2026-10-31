@@ -156,6 +156,22 @@ func OptionalEmailCategories() []string {
 	return []string{CatAdmin, CatGroups, CatEvents, CatMessages}
 }
 
+// CategoryEmailName is what an optional category's emails are called in an
+// email footer and on the email settings page (M3.3): "group updates".
+func CategoryEmailName(category string) string {
+	switch category {
+	case CatAdmin:
+		return "notices for church admins"
+	case CatGroups:
+		return "group updates"
+	case CatEvents:
+		return "event updates"
+	case CatMessages:
+		return "message notices"
+	}
+	return "these emails"
+}
+
 // Lookup finds a kind by key.
 func Lookup(key string) (Kind, bool) {
 	k, ok := registry[key]

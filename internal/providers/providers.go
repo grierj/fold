@@ -38,6 +38,9 @@ type EmailMessage struct {
 	// every broadcast is optional too). A spam complaint stops optional mail
 	// but not account mail (DEC-112).
 	Optional bool
+	// ListUnsubscribe is the one-click unsubscribe URL (RFC 8058) for optional
+	// mail; adapters send it as List-Unsubscribe and List-Unsubscribe-Post.
+	ListUnsubscribe string
 }
 
 // EmailCaps says what an email adapter can do.

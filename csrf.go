@@ -105,5 +105,3 @@ func isSafeMethod(m string) bool {
 	}
 	return false
 }
-
-func notFound(c *gin.Context) { jsonError(c, http.StatusNotFound, "not found") }

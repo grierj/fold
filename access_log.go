@@ -8,7 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// Secrets travel in some URLs: calendar feed tokens (/cal/u/<token>.ics and
+// Secrets travel in some URLs: unsubscribe and email settings links,
+// calendar feed tokens (/cal/u/<token>.ics and
 // /cal/rooms/<roomId>/<token>.ics),
 // guest manage links, invitation links (/api/v1/invitations/<token>), and the ?token= of email links the SPA serves. The
 // access log keeps the route but never the secret, and drops every query
@@ -19,6 +20,10 @@ var secretPathPrefixes = []string{
 	"/guest/manage/",
 	"/api/v1/guest-registrations/manage/",
 	"/api/v1/invitations/",
+	// Unsubscribe and email settings links (M3.3).
+	"/u/unsubscribe/",
+	"/email-settings/",
+	"/api/v1/email-settings/",
 }
 
 func redactLogPath(path string) string {

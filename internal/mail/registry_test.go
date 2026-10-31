@@ -24,7 +24,7 @@ import (
 // Postmark built from Postmark's documented API), never a live service.
 
 // sent is what a fake saw for one message.
-type sent struct{ to, subject, text, stream string }
+type sent struct{ to, subject, text, stream, listUnsubscribe, listUnsubscribePost string }
 
 // harness builds one adapter by its registry name, with a way to read what
 // its fake received.
@@ -46,7 +46,11 @@ func harnesses() []harness {
 				db.Order("id").Find(&rows)
 				out := []sent{}
 				for _, r := range rows {
-					out = append(out, sent{to: r.ToAddress, subject: r.Subject, text: r.Body})
+					post := ""
+					if r.ListUnsubscribe != "" {
+						post = "List-Unsubscribe=One-Click" // devoutbox stores the URL; the header pair is implied
+					}
+					out = append(out, sent{to: r.ToAddress, subject: r.Subject, text: r.Body, listUnsubscribe: r.ListUnsubscribe, listUnsubscribePost: post})
 				}
 				return out
 			}
@@ -85,7 +89,8 @@ func harnesses() []harness {
 					}
 				}
 				subject, _ := new(mime.WordDecoder).DecodeHeader(msg.Header.Get("Subject"))
-				return []sent{{to: msg.Header.Get("To"), subject: subject, text: strings.TrimRight(body.String(), "\n")}}
+				return []sent{{to: msg.Header.Get("To"), subject: subject, text: strings.TrimRight(body.String(), "\n"),
+					listUnsubscribe: strings.TrimSuffix(strings.TrimPrefix(msg.Header.Get("List-Unsubscribe"), "<"), ">"), listUnsubscribePost: msg.Header.Get("List-Unsubscribe-Post")}}
 			}
 		}},
 		{"postmark", func(t *testing.T) (providers.EmailSender, func() []sent) {
@@ -148,6 +153,21 @@ func TestEmailAdapterContract(t *testing.T) {
 					t.Fatalf("something was sent: %+v", msgs)
 				}
 			})
+			t.Run("carries one-click unsubscribe headers only when asked", func(t *testing.T) {
+				s, got := h.build(t)
+				url := "https://fold.example.org/u/unsubscribe/tok"
+				if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: "sam@example.com", Subject: "s", Text: "b", ListUnsubscribe: url}); err != nil {
+					t.Fatal(err)
+				}
+				if msgs := got(); len(msgs) != 1 || msgs[0].listUnsubscribe != url || msgs[0].listUnsubscribePost != "List-Unsubscribe=One-Click" {
+					t.Fatalf("received %+v", msgs)
+				}
+				for _, bad := range []string{"javascript:alert(1)", "https://x\r\nBcc: evil@x", "https://x>, <mailto:a@b", "https://"} {
+					if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: "sam@example.com", Subject: "s", ListUnsubscribe: bad}); err == nil {
+						t.Fatalf("sent with link %q", bad)
+					}
+				}
+			})
 			t.Run("takes broadcast mail", func(t *testing.T) {
 				s, got := h.build(t)
 				if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: "sam@example.com", Subject: "News", Text: "b", Stream: providers.StreamBroadcast}); err != nil {
@@ -206,7 +226,16 @@ func newFakePostmark(t *testing.T, token string) *fakePostmark {
 			answer(http.StatusUnprocessableEntity, 406, "You tried to send to recipient(s) that have been marked as inactive.", "")
 			return
 		}
-		f.sent = append(f.sent, sent{to: body.To, subject: body.Subject, text: body.TextBody, stream: body.MessageStream})
+		s := sent{to: body.To, subject: body.Subject, text: body.TextBody, stream: body.MessageStream}
+		for _, h := range body.Headers {
+			switch h.Name {
+			case "List-Unsubscribe":
+				s.listUnsubscribe = strings.TrimSuffix(strings.TrimPrefix(h.Value, "<"), ">")
+			case "List-Unsubscribe-Post":
+				s.listUnsubscribePost = h.Value
+			}
+		}
+		f.sent = append(f.sent, s)
 		answer(http.StatusOK, 0, "OK", fmt.Sprintf("0a129aee-e1cd-480d-b08d-%012d", len(f.sent)))
 	}))
 	t.Cleanup(f.Close)

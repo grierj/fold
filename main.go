@@ -227,13 +227,14 @@ func (a *App) setupRouter() *gin.Engine {
 
 	// Routes outside the CSRF and setup middleware (C17). They authenticate
 	// with provider credentials (hooks) or signed tokens (RFC 8058 one-click
-	// unsubscribe) instead. The unsubscribe handler arrives with M3.3;
-	// until then it answers 404. TestCSRFExemptRoutesAreExact (csrf_test.go)
+	// unsubscribe) instead. TestCSRFExemptRoutesAreExact (csrf_test.go)
 	// keeps its csrfExemptRoutes list equal to these routes.
 	// Postmark's delivery reports (M3.2b): HTTP Basic credentials from the
 	// webhook URL, 404 while FOLD_POSTMARK_WEBHOOK_SECRET is unset.
 	r.POST("/hooks/postmark/email", a.postmarkEmailHook)
-	r.POST("/u/unsubscribe/:token", notFound)
+	// RFC 8058 one-click unsubscribe (M3.3): the signed token is the only
+	// authority, so mail clients can POST with no cookie or CSRF token.
+	r.POST("/u/unsubscribe/:token", a.oneClickUnsubscribe)
 
 	// First-run setup wizard takes precedence over everything else.
 	r.Use(a.setupRequired())
