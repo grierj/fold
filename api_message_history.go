@@ -227,12 +227,11 @@ func retryable(m *models.Message, c recipientCountsJSON) bool {
 	return m.Status == models.MessageFailed && c.rows == 0 && neverPrepared(m.Error)
 }
 
-// goingOut: m is sending, or due to (a retry of one that never got ready
-// is scheduled for now), so a Try again has already been pressed.
-func goingOut(m *models.Message) bool {
-	return m.Status == models.MessageSending ||
-		(m.Status == models.MessageScheduled && m.ScheduledAt != nil && !m.ScheduledAt.After(time.Now()))
-}
+// goingOut: m is sending, so a Try again has already been pressed (or its
+// first send is still going). A scheduled message, due or not, has nothing
+// to retry: it was never sent, or a retry of one that never got ready is
+// about to prepare it.
+func goingOut(m *models.Message) bool { return m.Status == models.MessageSending }
 
 // authorMayResend checks again, as message.send does, that m's author is
 // active and may still write to its audience: a "Try again" goes out in

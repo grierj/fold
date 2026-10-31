@@ -419,6 +419,8 @@ describe("a sent message's history", () => {
     await user.click(again);
     expect(Messages.retry).toHaveBeenCalledWith(5);
     expect(await screen.findByText("Sending again… 0 of 4 so far")).toBeInTheDocument();
+    // Checking again: nothing is announced until it settles again.
+    expect(document.querySelector(".sr-only[role=status]")?.textContent).toBe("");
     expect(screen.queryByText("This message didn't go out")).toBeNull();
     ask.mockRestore();
   });
@@ -428,7 +430,9 @@ describe("a sent message's history", () => {
     vi.mocked(Messages.get).mockResolvedValue({ message: sent({ failedCount: 2, error: "The email service didn't take it." }) });
     vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ failed: 1, guardianCopiesMissed: 1, guardianCopiesFailed: 1 }), canRetry: true }));
     open("/messages/5");
-    expect(await screen.findByText("1 person didn't get this")).toBeInTheDocument();
+    // Some went out: a status, not an alert.
+    expect((await screen.findByText("1 person didn't get this")).closest("[role=status]")).not.toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByText("1 guardian copy didn't go out")).toBeInTheDocument();
     expect(screen.getByText(/^Partly sent /)).toBeInTheDocument();
     const ask = vi.spyOn(window, "confirm").mockReturnValue(false);

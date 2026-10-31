@@ -65,6 +65,8 @@ export function useMessageHistory(message: Message | null, onMessage: (m: Messag
     setStale(false);
     const settledNow = !!id && wasLive.current?.id === id && wasLive.current.live && !live;
     wasLive.current = id ? { id, live } : null;
+    // Checks starting again (after Try again): the settle is said afresh.
+    if (live) setAnnounce("");
     if (!id || (!shows && !live)) return;
     let alive = true;
     let timer: number | undefined;
@@ -113,6 +115,8 @@ export function useMessageHistory(message: Message | null, onMessage: (m: Messag
     function onVisible() {
       if (alive && paused && !document.hidden) {
         paused = false;
+        // Time hidden isn't time with nothing changing.
+        lastChange = Date.now();
         void refresh(false);
       }
     }
@@ -135,9 +139,11 @@ export function useMessageHistory(message: Message | null, onMessage: (m: Messag
 }
 
 // SendProblem sits under the page title when a send failed, or failed for
-// some people: what happened in words and the error, announced, then Try
-// again as the view's one primary action when it can go out again. A
-// leader's numbers match the list: people, with guardian copies apart.
+// some people: what happened in words and the error, announced (an alert
+// when nothing went out, a status when some did), then Try again as the
+// view's one primary action when it can go out again. A leader's numbers
+// match the list: people, with guardian copies apart. It waits for the
+// history, so what is announced is said once and doesn't change.
 export function SendProblem({ message, history, busy, error, onRetry }: {
   message: Message;
   history: MessageRecipients | null;
@@ -146,17 +152,15 @@ export function SendProblem({ message, history, busy, error, onRetry }: {
   onRetry: () => void;
 }) {
   const failedAll = message.status === "failed";
-  if (!failedAll && !(message.status === "sent" && message.failedCount > 0)) return null;
-  const canRetry = !!history?.canRetry;
-  const title = failedAll
-    ? "This message didn't go out"
-    : failedLine(history?.counts.failed ?? message.failedCount, history?.counts.guardianCopiesFailed ?? 0);
+  if (!history || (!failedAll && !(message.status === "sent" && message.failedCount > 0))) return null;
+  const canRetry = history.canRetry;
+  const title = failedAll ? "This message didn't go out" : failedLine(history.counts.failed, history.counts.guardianCopiesFailed);
   const box = failedAll
     ? "border-danger-border bg-danger-subtle text-danger-on-subtle" // danger-ok: a send that failed is an error
     : "border-warning-border bg-warning-subtle text-warning-on-subtle";
   return (
     <div className={`space-y-3 rounded-lg border p-4 ${box}`}>
-      <div role="alert" className="space-y-1">
+      <div role={failedAll ? "alert" : "status"} className="space-y-1">
         <p className="font-semibold">{title}</p>
         {message.error && <p className="text-sm">{message.error}</p>}
       </div>

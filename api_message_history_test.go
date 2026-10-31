@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -156,6 +157,11 @@ func TestMessageRetrySendsOnlyToThoseItFailedFor(t *testing.T) {
 		rows[f.teen.Email].Status != models.RecipientSent {
 		t.Fatalf("rows after retry: %+v", rows)
 	}
+	// A second press while it goes out says so.
+	if w := f.admin.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true); w.Code != http.StatusConflict ||
+		!strings.Contains(w.Body.String(), "message_retry_sending") {
+		t.Fatalf("second press: %d %s", w.Code, w.Body.String())
+	}
 	runMessageJobs(t, f.app)
 	var m models.Message
 	f.app.DB.First(&m, id)
@@ -202,8 +208,8 @@ func TestMessageRetryRefusedWhenTheAuthorLostRights(t *testing.T) {
 }
 
 // A message that failed before anyone was chosen is prepared again, in
-// today's words or M3.5a's; a draft or a refused message has nothing to
-// retry, and a second press while it goes out says it's already sending.
+// today's words or M3.5a's; a draft, a refused message and a scheduled one
+// that is due (never sent) have nothing to retry.
 func TestMessageRetryWhenItNeverGotReady(t *testing.T) {
 	f := newComposeFixture(t)
 	aud := `{"type":"group","groupId":` + itoa(f.group.ID) + `,"roles":["member","leader"]}`
@@ -216,10 +222,12 @@ func TestMessageRetryWhenItNeverGotReady(t *testing.T) {
 	refused.Error = whyAuthorRefused
 	draft := stuck
 	draft.Status, draft.Error = models.MessageDraft, ""
-	for _, m := range []*models.Message{&stuck, &fresh, &refused, &draft} {
+	due := draft
+	due.Status = models.MessageScheduled
+	for _, m := range []*models.Message{&stuck, &fresh, &refused, &draft, &due} {
 		f.app.DB.Create(m)
 	}
-	for _, m := range []*models.Message{&refused, &draft} {
+	for _, m := range []*models.Message{&refused, &draft, &due} {
 		if w := f.leader.do("POST", "/api/v1/messages/"+itoa(m.ID)+"/retry", nil, true); w.Code != http.StatusConflict ||
 			!strings.Contains(w.Body.String(), "message_nothing_to_retry") {
 			t.Fatalf("%s: %d %s", m.Status, w.Code, w.Body.String())
@@ -233,10 +241,6 @@ func TestMessageRetryWhenItNeverGotReady(t *testing.T) {
 	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(stuck.ID)+"/retry", nil, true); w.Code != http.StatusOK {
 		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
 	}
-	if w := f.admin.do("POST", "/api/v1/messages/"+itoa(stuck.ID)+"/retry", nil, true); w.Code != http.StatusConflict ||
-		!strings.Contains(w.Body.String(), "message_retry_sending") {
-		t.Fatalf("second press: %d %s", w.Code, w.Body.String())
-	}
 	runMessageJobs(t, f.app)
 	f.app.DB.First(&stuck, stuck.ID)
 	if stuck.Status != models.MessageSent || recipientsOf(t, f.app, stuck.ID)[f.teen.Email].Status != models.RecipientSent {
@@ -244,12 +248,20 @@ func TestMessageRetryWhenItNeverGotReady(t *testing.T) {
 	}
 }
 
-// Every failure text Fold writes is listed in ownMessageErrors, so a copy
-// change can't quietly turn one into "a provider's words" for leaders.
+// Every failure text Fold writes (a why* string constant anywhere in the
+// package) is listed in ownMessageErrors, so a copy change can't quietly
+// turn one into "a provider's words" for leaders.
 func TestOwnMessageErrorsListEveryWhy(t *testing.T) {
 	fset := token.NewFileSet()
 	consts := map[string]string{}
-	for _, file := range []string{"messages_send.go", "api_messages.go", "api_message_history.go"} {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
 		f, err := parser.ParseFile(fset, file, nil, 0)
 		if err != nil {
 			t.Fatal(err)
@@ -271,8 +283,9 @@ func TestOwnMessageErrorsListEveryWhy(t *testing.T) {
 			return true
 		})
 	}
-	if len(consts) < 8 {
-		t.Fatalf("found only %v", consts)
+	// Eight today; fewer than six means the scan stopped finding them.
+	if len(consts) < 6 {
+		t.Fatalf("found only %d why* failure texts (%v); did they move or get renamed? Point this scan at them", len(consts), consts)
 	}
 	for name, v := range consts {
 		if !ownMessageErrors[v] {
