@@ -414,7 +414,8 @@ func toEventJSON(ev *models.Event) eventJSON {
 		ChildcareAvailable: ev.ChildcareAvailable, ChildcareNotes: ev.ChildcareNotes,
 		ChildcareCapacity: ev.ChildcareCapacity, ChildcareAges: ev.ChildcareAges,
 		RemoteAvailable: ev.RemoteAvailable, RemoteCapacity: ev.RemoteCapacity,
-		VideoProvider: videoProviderOf(ev), VideoReveal: videoRevealOf(ev),
+		ReminderEmailMinutes: ev.ReminderEmailMinutes,
+		VideoProvider:        videoProviderOf(ev), VideoReveal: videoRevealOf(ev),
 	}
 	// Fail closed like occurrenceToJSON; presentEvent refines for the
 	// event's managers, and create/update responses go to a manager.
@@ -523,6 +524,9 @@ type eventBody struct {
 	VideoProvider *string `json:"videoProvider"`
 	VideoURL      *string `json:"videoUrl"`
 	VideoReveal   *string `json:"videoReveal"`
+	// ReminderEmailMinutes: when each date's email reminder goes (M3.6):
+	// 0 off, 120, 1440, 2880 or 10080 minutes before.
+	ReminderEmailMinutes *int `json:"reminderEmailMinutes"`
 	// Create only: the room for every date (M2.1c). A series edit changes
 	// it through PUT /events/:id/room.
 	RoomID *uint `json:"roomId"`
@@ -625,6 +629,9 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 	}
 	if ed.guestsSet {
 		ev.GuestsAllowed = ed.guests
+	}
+	if ed.reminderSet {
+		ev.ReminderEmailMinutes = ed.reminder
 	}
 	// Remote attendance (M1.8 slice 2).
 	if body.RemoteAvailable != nil {

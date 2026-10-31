@@ -31,6 +31,7 @@ var errorCodes = map[string]string{
 	errMessageTestEmail:                            "message_test_email",
 	errMessageTestFail:                             "message_test_failed",
 	errMessageDailyLimit:                           "message_daily_limit",
+	errReminderTime:                                "event_reminder_time",
 	errMessageNothingToRetry:                       "message_nothing_to_retry",
 	errMessageRetryRefused:                         "message_retry_refused",
 	errMessageRetrySending:                         "message_retry_sending",

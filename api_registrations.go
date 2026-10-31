@@ -99,6 +99,8 @@ type capacityEdits struct {
 	remoteCapSet    bool
 	childcareCap    *int
 	childcareCapSet bool
+	reminder        int
+	reminderSet     bool
 }
 
 // parseGuestsAllowed reads guestsAllowed from a body: null clears it to
@@ -140,6 +142,13 @@ func parseCapacityEdits(c *gin.Context, body eventBody) (capacityEdits, bool) {
 	}
 	if !parseChildcareEdits(c, body, &ed) {
 		return ed, false
+	}
+	if body.ReminderEmailMinutes != nil {
+		if !validReminderMinutes(*body.ReminderEmailMinutes) {
+			jsonError(c, http.StatusBadRequest, errReminderTime)
+			return ed, false
+		}
+		ed.reminder, ed.reminderSet = *body.ReminderEmailMinutes, true
 	}
 	return ed, true
 }

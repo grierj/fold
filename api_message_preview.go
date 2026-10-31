@@ -116,7 +116,8 @@ func (a *App) renderMessage(m *models.Message, u *models.User, vals map[string]s
 // read, so a batch reads them once, not once per email.
 func (a *App) renderMessageWith(m *models.Message, u *models.User, vals map[string]string, f footerFacts) (renderedMessage, error) {
 	site, address := f.site, f.address
-	token := a.unsubscribeToken(u.ID, categoryScope(notify.CatMessages))
+	cat := messageCategory(m)
+	token := a.unsubscribeToken(u.ID, categoryScope(cat))
 	var lines []string
 	for _, l := range strings.Split(strings.ReplaceAll(address, "\r", ""), "\n") {
 		if l = strings.TrimSpace(l); l != "" {
@@ -125,7 +126,7 @@ func (a *App) renderMessageWith(m *models.Message, u *models.User, vals map[stri
 	}
 	html, err := content.RenderEmail(content.EmailPage{
 		Church: site, Subject: content.Merge(m.Subject, vals, false), Body: content.Merge(m.BodyHTML, vals, true),
-		Footer:      notify.YoureGetting(notify.CatMessages, site) + ".",
+		Footer:      notify.YoureGetting(cat, site) + ".",
 		SettingsURL: a.emailBaseURL() + "/email-settings/" + token, Address: lines,
 	})
 	if err != nil {
@@ -133,7 +134,7 @@ func (a *App) renderMessageWith(m *models.Message, u *models.User, vals map[stri
 	}
 	return renderedMessage{
 		Subject:     strings.TrimSpace(content.Merge(m.Subject, vals, false)),
-		Text:        content.Merge(m.BodyText, vals, false) + a.optionalEmailFooter(footerFacts{site: site, address: address}, notify.CatMessages, token),
+		Text:        content.Merge(m.BodyText, vals, false) + a.optionalEmailFooter(footerFacts{site: site, address: address}, cat, token),
 		HTML:        html,
 		Unsubscribe: a.oneClickURL(token),
 	}, nil

@@ -38,7 +38,7 @@ const maxDeadJobsListed = 100
 // jobKinds is every job kind the server runs, by name, for its label.
 func (a *App) jobKinds() map[string]jobs.Kind {
 	out := map[string]jobs.Kind{}
-	for _, k := range append(a.dailyKinds(), a.backgroundKinds()...) {
+	for _, k := range append(append(a.dailyKinds(), a.hourlyKinds()...), a.backgroundKinds()...) {
 		out[k.Name] = k
 	}
 	return out

@@ -280,7 +280,7 @@ const maxAudiencePreview = 100
 // reasons: show each person's reason (admins).
 func (a *App) summarizeAudience(db *gorm.DB, ids []uint, reasons bool) (audienceSummaryJSON, error) {
 	out := audienceSummaryJSON{Skipped: map[string]int{}, Recipients: []audienceRecipientJSON{}}
-	facts, err := recipientFacts(db, ids)
+	facts, err := recipientFacts(db, ids, notify.CatMessages)
 	if err != nil {
 		return out, err
 	}
@@ -318,7 +318,7 @@ type recipientFact struct {
 
 // recipientFacts applies the email filters to ids, in id order: the
 // preview counts them and message.send snapshots them (PLAN 7.1 step 4).
-func recipientFacts(db *gorm.DB, ids []uint) ([]recipientFact, error) {
+func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, error) {
 	var users []models.User
 	suppressed := map[string]string{}
 	optedOut := map[uint]map[string]bool{}
@@ -354,7 +354,7 @@ func recipientFacts(db *gorm.DB, ids []uint) ([]recipientFact, error) {
 	if err != nil {
 		return nil, err
 	}
-	messages := categoryScope(notify.CatMessages)
+	optOut := categoryScope(category)
 	out := make([]recipientFact, 0, len(users))
 	for _, u := range users {
 		f := recipientFact{User: u}
@@ -371,10 +371,22 @@ func recipientFacts(db *gorm.DB, ids []uint) ([]recipientFact, error) {
 			f.Skip = skipComplained
 		case suppressed[normalizeEmail(u.Email)] != "":
 			f.Skip = skipNotWorking
-		case optedOut[u.ID][messages]:
-			f.Skip = skipOptedOut
+		case optedOut[u.ID][optOut]:
+			f.Skip = skipOptedOutOf(category)
 		}
 		out = append(out, f)
 	}
 	return out, nil
 }
+
+// skipOptedOutOf is the skip reason for someone who turned off a message's
+// kind of email: messages from leaders (DEC-119), or event updates for a
+// reminder (DEC-133).
+func skipOptedOutOf(category string) string {
+	if category == notify.CatEvents {
+		return skipEventsOff
+	}
+	return skipOptedOut
+}
+
+const skipEventsOff = "turned off event updates"

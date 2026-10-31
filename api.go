@@ -297,6 +297,9 @@ type eventJSON struct {
 	Capacity        *int `json:"capacity"`
 	WaitlistEnabled bool `json:"waitlistEnabled"`
 	GuestsAllowed   int  `json:"guestsAllowed"`
+	// ReminderEmailMinutes: when each date's email reminder goes (M3.6,
+	// DEC-133); 0 is off.
+	ReminderEmailMinutes int `json:"reminderEmailMinutes"`
 	// Remote attendance (M1.8 slice 2). RemoteCapacity null means
 	// unlimited remote seats.
 	RemoteAvailable    bool   `json:"remoteAvailable"`

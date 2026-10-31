@@ -452,7 +452,7 @@ func (a *App) apiCreateMessage(c *gin.Context) {
 		jsonError(c, http.StatusForbidden, errMessageNotYours)
 		return
 	}
-	m := models.Message{AuthorID: &me.ID, Status: models.MessageDraft, Category: "announcement"}
+	m := models.Message{AuthorID: &me.ID, Status: models.MessageDraft, Category: models.MessageCategoryAnnouncement}
 	if !a.applyMessageBody(c, me, &m) {
 		return
 	}
