@@ -589,12 +589,13 @@ type Invitation struct {
 // sender for dev and tests. /dev/outbox shows them; tests read links from
 // them.
 type MailOutbox struct {
-	ID          uint      `gorm:"primaryKey"`
-	ToAddress   string    `gorm:"not null"`
-	FromAddress string    `gorm:"not null;default:''"`
-	Subject     string    `gorm:"not null"`
-	Body        string    `gorm:"not null;default:''"`
-	CreatedAt   time.Time `gorm:"not null;default:now()"`
+	ID              uint      `gorm:"primaryKey"`
+	ToAddress       string    `gorm:"not null"`
+	FromAddress     string    `gorm:"not null;default:''"`
+	Subject         string    `gorm:"not null"`
+	Body            string    `gorm:"not null;default:''"`
+	ListUnsubscribe string    `gorm:"not null;default:''"`
+	CreatedAt       time.Time `gorm:"not null;default:now()"`
 }
 
 // Notification delivery channels and statuses (5.3, 5.12).
@@ -893,6 +894,8 @@ const (
 	ConsentOptedIn       = "opted_in"
 	ConsentOptedOut      = "opted_out"
 	ConsentSourceWebForm = "web_form"
+	// ConsentSourceUnsubscribe: an email's unsubscribe link (M3.3).
+	ConsentSourceUnsubscribe = "unsubscribe_link"
 )
 
 // ContactRequest stores contact/group_add/occurrence_add outcomes, not attempt

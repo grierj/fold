@@ -1329,6 +1329,16 @@ POST /hooks/postmark/email → 200 | 400 | 401 | 404 | 413
 
 Postmark posts one JSON record per request (Delivery, Bounce, SpamComplaint; others are ignored with 200). Postmark doesn't sign webhooks: the request must carry HTTP Basic credentials `postmark:<FOLD_POSTMARK_WEBHOOK_SECRET>` (at least 24 characters, or the server won't start) from the webhook URL, compared in constant time; anything else is 401 and changes nothing. With no secret set the route is 404. The route is outside CSRF (it is in `csrfExemptRoutes`). A malformed body is 400; over 1 MB, 413. A verified report is queued as a `webhook.process` job keyed by the record's own identity (record type, id, message id and time), so a redelivered request is handled once, and answered 200 at once; a failure to queue is 500, and Postmark retries. The job matches the report to `notification_deliveries.provider_message_id`: a delivery moves `sent` to `delivered`; a bounce or complaint moves it to `bounced` with `hard bounce`, `soft bounce` or `marked as spam`. A hard bounce (or an address Postmark deactivated) adds a `hard_bounce` suppression and a spam complaint a `complaint` one; a soft bounce is only recorded (DEC-112). Every send checks suppressions first: a hard bounce or a manual one stops all mail to the address, a complaint stops optional notifications and broadcasts, and the delivery is recorded `suppressed` with the reason. Postmark also keeps its own list: it refuses an address that hard-bounced until it is reactivated in Postmark, and one that complained for good, whatever Fold allows. A report that arrives before its delivery row is written is retried for up to two minutes; after that a report about mail Fold has no row for (account mail, or another sender on the same Postmark server) still suppresses the address.
 
+### Unsubscribe links (outside `/api/v1`, M3.3a)
+
+```
+POST /u/unsubscribe/:token → 200 text "You're unsubscribed." | 404
+```
+
+Every optional email (a notification whose kind isn't required) ends with a footer saying what it is ("You're getting group updates from …"), a link to `/email-settings/<token>` (the email settings page, M3.3b) and the church's postal address when the `church_address` setting is set (PLAN 10.5). It also carries `List-Unsubscribe: <SITE_URL/u/unsubscribe/<token>>` and `List-Unsubscribe-Post: List-Unsubscribe=One-Click` (RFC 8058), written by every adapter (SMTP headers, Postmark `Headers`, the devoutbox's `list_unsubscribe` column). Required mail (account, safety and waiting tasks) never carries either.
+
+The token signs a person and the email's kind (`category:<admin|groups|events|messages>`) with a key derived from `SESSION_SECRET`; it doesn't expire. The one-click POST is outside CSRF (in `csrfExemptRoutes`) and needs no cookie: the token is the only authority. It turns off that kind of email at once (DEC-114) by appending a `consents` row (`opted_out`, source `unsubscribe_link`, with IP, user agent and time) unless the latest row already says so. A token that doesn't verify, names a scope Fold doesn't use, or names a deleted account answers 404 and changes nothing. Tokens in these paths never reach the access log.
+
 ## Conventions
 
 - `POST` create → `201`; `PUT` update → `200`; `DELETE` → `200 {}`.

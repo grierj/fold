@@ -47,6 +47,9 @@ func checkMessage(m Message) error {
 	if !headerSafe(m.To) {
 		return errors.New("mail: recipient contains a newline")
 	}
+	if m.ListUnsubscribe != "" && (!headerSafe(m.ListUnsubscribe) || !strings.HasPrefix(m.ListUnsubscribe, "https://") && !strings.HasPrefix(m.ListUnsubscribe, "http://")) {
+		return errors.New("mail: the unsubscribe link must be one http(s) URL")
+	}
 	// One address only: Postmark reads commas as a list of recipients.
 	if strings.ContainsAny(m.To, ",;") {
 		return errors.New("mail: one recipient per message")
@@ -84,7 +87,7 @@ func (d *DevOutbox) SendEmail(ctx context.Context, m Message) (string, error) {
 	if err := checkMessage(m); err != nil {
 		return "", err
 	}
-	row := models.MailOutbox{ToAddress: m.To, FromAddress: d.From, Subject: oneLine(m.Subject), Body: m.Text}
+	row := models.MailOutbox{ToAddress: m.To, FromAddress: d.From, Subject: oneLine(m.Subject), Body: m.Text, ListUnsubscribe: m.ListUnsubscribe}
 	if err := d.DB.WithContext(ctx).Create(&row).Error; err != nil {
 		return "", err
 	}
@@ -96,11 +99,12 @@ func (d *DevOutbox) Capabilities() providers.EmailCaps { return providers.EmailC
 
 // OutboxMessage is one stored email, newest first.
 type OutboxMessage struct {
-	ID        uint
-	To        string
-	Subject   string
-	Body      string
-	CreatedAt time.Time
+	ID              uint
+	To              string
+	Subject         string
+	Body            string
+	ListUnsubscribe string
+	CreatedAt       time.Time
 }
 
 // List returns the newest stored emails, for /dev/outbox and tests.
@@ -116,7 +120,7 @@ func (d *DevOutbox) List(limit int) ([]OutboxMessage, error) {
 	for _, r := range rows {
 		out = append(out, OutboxMessage{
 			ID: r.ID, To: r.ToAddress, Subject: r.Subject,
-			Body: r.Body, CreatedAt: r.CreatedAt,
+			Body: r.Body, ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt,
 		})
 	}
 	return out, nil
@@ -130,7 +134,7 @@ func (d *DevOutbox) LatestTo(address string) (OutboxMessage, error) {
 	if err != nil {
 		return OutboxMessage{}, err
 	}
-	return OutboxMessage{ID: r.ID, To: r.ToAddress, Subject: r.Subject, Body: r.Body, CreatedAt: r.CreatedAt}, nil
+	return OutboxMessage{ID: r.ID, To: r.ToAddress, Subject: r.Subject, Body: r.Body, ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -292,8 +296,13 @@ func (s *SMTPSender) SendEmail(ctx context.Context, m Message) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("mail: data: %w", err)
 	}
-	if _, err := fmt.Fprintf(w, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n",
-		from, m.To, subject, time.Now().Format(time.RFC1123Z), msgID, m.Text); err != nil {
+	unsubscribe := ""
+	if m.ListUnsubscribe != "" {
+		// RFC 8058 one-click: the mail client POSTs to the URL.
+		unsubscribe = "List-Unsubscribe: <" + m.ListUnsubscribe + ">\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"
+	}
+	if _, err := fmt.Fprintf(w, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: %s\r\n%sMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n",
+		from, m.To, subject, time.Now().Format(time.RFC1123Z), msgID, unsubscribe, m.Text); err != nil {
 		w.Close()
 		return "", fmt.Errorf("mail: write: %w", err)
 	}

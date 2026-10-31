@@ -72,11 +72,17 @@ func (p *Postmark) Send(ctx context.Context, m Message) error {
 
 // postmarkEmail is the body of POST /email.
 type postmarkEmail struct {
-	From          string `json:"From"`
-	To            string `json:"To"`
-	Subject       string `json:"Subject"`
-	TextBody      string `json:"TextBody"`
-	MessageStream string `json:"MessageStream"`
+	From          string           `json:"From"`
+	To            string           `json:"To"`
+	Subject       string           `json:"Subject"`
+	TextBody      string           `json:"TextBody"`
+	MessageStream string           `json:"MessageStream"`
+	Headers       []postmarkHeader `json:"Headers,omitempty"`
+}
+
+type postmarkHeader struct {
+	Name  string `json:"Name"`
+	Value string `json:"Value"`
 }
 
 // postmarkResult is Postmark's answer to a send: ErrorCode 0 on success.
@@ -96,7 +102,13 @@ func (p *Postmark) SendEmail(ctx context.Context, m Message) (string, error) {
 	if m.Stream == providers.StreamBroadcast {
 		stream = p.broadcast
 	}
-	body, err := json.Marshal(postmarkEmail{From: p.from, To: m.To, Subject: oneLine(m.Subject), TextBody: m.Text, MessageStream: stream})
+	email := postmarkEmail{From: p.from, To: m.To, Subject: oneLine(m.Subject), TextBody: m.Text, MessageStream: stream}
+	if m.ListUnsubscribe != "" {
+		// RFC 8058 one-click: the mail client POSTs to the URL.
+		email.Headers = []postmarkHeader{{Name: "List-Unsubscribe", Value: "<" + m.ListUnsubscribe + ">"},
+			{Name: "List-Unsubscribe-Post", Value: "List-Unsubscribe=One-Click"}}
+	}
+	body, err := json.Marshal(email)
 	if err != nil {
 		return "", err
 	}

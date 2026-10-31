@@ -903,6 +903,13 @@ func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notificati
 	text += "\n\n" + a.emailLink(n.Link)
 	// A spam complaint stops optional mail, not required notices (DEC-112).
 	msg := mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text, Optional: !k.Required}
+	if !k.Required {
+		// Optional mail says how to stop it, with a one-click link for mail
+		// clients (RFC 8058, M3.3); required mail never offers one.
+		token := a.unsubscribeToken(u.ID, categoryScope(k.Category))
+		msg.ListUnsubscribe = a.emailBaseURL() + "/u/unsubscribe/" + token
+		msg.Text += a.optionalEmailFooter(k.Category, token)
+	}
 	// The provider's id for the message lets its delivery and bounce reports
 	// find this row (M3.2).
 	// The suppressions came with the recipient, so the send skips the
