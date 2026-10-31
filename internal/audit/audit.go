@@ -257,6 +257,10 @@ const (
 	// RoomApprovalChanged: an admin turned "Room bookings need an admin's
 	// approval" on or off (DEC-102).
 	RoomApprovalChanged = "setting.room_approval_changed"
+	// RoomLocationMatched: an admin mapped a typed location to a room
+	// (M2.1e). Target type is room; meta has the location and the counts
+	// booked, busy and series rooms set.
+	RoomLocationMatched = "room.location_matched"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

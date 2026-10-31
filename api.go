@@ -673,6 +673,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/admin/room-requests", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminRoomRequests)
 	v1.POST("/admin/room-requests/:id/confirm", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiConfirmRoomRequest)
 	v1.POST("/admin/room-requests/:id/reject", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiRejectRoomRequest)
+	// Matching old locations (M2.1e, 9.1).
+	v1.GET("/admin/rooms/locations", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminTypedLocations)
+	v1.POST("/admin/rooms/locations/match", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminMatchLocation)
 	v1.GET("/events", a.optionalUser(), a.apiListOpenEvents)
 	// The calendar (M1.6): every occurrence the viewer may see over a
 	// date range, as slim rows with no attendee data.

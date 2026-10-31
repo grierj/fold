@@ -926,6 +926,21 @@ export interface SeriesBooking {
   pending: number;
 }
 
+// A typed place on upcoming dates without a room, for the admin location
+// matcher (M2.1e). Spellings that differ only in case or spaces are one.
+export interface TypedLocation {
+  location: string;
+  dates: number;
+  events: number;
+}
+
+// A matching date the room was taken on when matching a location (M2.1e).
+export interface MatchBusy {
+  eventId: number;
+  eventTitle: string;
+  date: string;
+}
+
 // An open room request in the admin list (M2.1d, DEC-106): one booking
 // action, a date or a whole series. busyDates counts its dates another
 // booking now holds the room on; confirming those needs a reason.

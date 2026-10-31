@@ -581,7 +581,9 @@ func placeLine(room *occurrenceRoomJSON, location string) string {
 	if room.Building != "" {
 		line += " · " + room.Building
 	}
-	if typed := strings.TrimSpace(location); typed != "" {
+	// A typed place that only repeats the room (often one the location
+	// matcher mapped, M2.1e) isn't said twice.
+	if typed := strings.TrimSpace(location); typed != "" && !strings.EqualFold(typed, room.Name) && !strings.EqualFold(typed, line) {
 		line += " · " + typed
 	}
 	return line

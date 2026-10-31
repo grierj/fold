@@ -1195,6 +1195,15 @@ Admins only, and 404 while rooms are off. `GET /admin/rooms` also returns `needA
 
 `roomRequest` is `{id, eventId, eventTitle, groupName, roomId, roomName, building, series, requestedBy, dates, busyDates, firstDate, firstStartsAt, createdAt}`; `busyDates` counts its dates another confirmed booking now holds the room on. Confirming makes the free dates confirmed; a busy date is double-booked with `overlapReason`, or without one goes back to the leaders as a date that lost its room (`lost`). Rejecting makes its dates `rejected` (listed in `needsRoom` with `status: "rejected"`), and a series request stops being the series room. Either way the request's task closes, the leaders or hosts get a `room.request_decided` notice, and the decision is audited (`room_request.confirmed`, `room_request.rejected`). A request already decided answers 409 with who handled it. Re-picking, releasing or cancelling every date of a request withdraws it and closes its task. A series room a leader or host picked stays unapproved (`events.default_room_pending`) until an admin confirms a request for it: while approval is on, the daily extender and series edits put its new dates on the waiting series request, or open a new one if that was withdrawn, and never confirm them directly. Rejecting a series request stops that series room. Deleting an event withdraws its requests. Changing a date's or a series' room under approval releases the old booking at once (a date has one booking); the new room holds nothing until it is approved.
 
+### Matching old locations (M2.1e)
+
+```
+GET  /api/v1/admin/rooms/locations → 200 {locations: [{location, dates, events}]}
+POST /api/v1/admin/rooms/locations/match {location, roomId} → 200 {booked, busy: [{eventId, eventTitle, date}], busyTotal, series} | 400 | 404
+```
+
+Admins only, and 404 while rooms are off (9.1). The list counts the scheduled upcoming dates with no booking by their place as pages show it (the date's own, else the event's, else the group's), most dates first, at most 200; spellings that differ only in case or outer spaces are one place, shown in its most common spelling. Matching books the room, as the admin, on every such date whose place matches; dates the room is taken on are left alone and listed in `busy` (at most 100; `busyTotal` counts them all). A series with upcoming dates whose own place (the event's, else the group's) matches and that has no series room gets this one (M2.1c), so its later dates are booked too (`series` counts them); a series whose room was rejected or stopped can get one again this way, since this is an admin's choice. Typed locations are never changed: the place line shows the room and leaves out a typed place that only repeats the room's name. Dates that already have a booking are skipped, so matching again books nothing twice; taken dates stay unbooked, so their place stays in the list for another try. Matching compares case-insensitively in the database, on both sides. Audited as `room.location_matched`.
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

@@ -12,5 +12,9 @@ export function roomName(room: Pick<OccurrenceRoom, "name" | "building">): strin
 export function placeLine(room: OccurrenceRoom | null | undefined, location: string | null | undefined): string {
   if (!room) return location ?? "";
   const typed = (location ?? "").trim();
-  return typed ? `${roomName(room)} · ${typed}` : roomName(room);
+  const name = roomName(room);
+  // A typed place that only repeats the room (often one the location
+  // matcher mapped, M2.1e) isn't said twice.
+  const repeats = [room.name, name].some((n) => n.toLowerCase() === typed.toLowerCase());
+  return typed && !repeats ? `${name} · ${typed}` : name;
 }
