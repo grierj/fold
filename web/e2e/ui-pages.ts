@@ -44,6 +44,10 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
     { id: "group-leader", who: "lee", path: `/groups/${room.id}`, ready: heading("Room 201 class") },
     { id: "event-leader", who: "lee", path: `/events/${householdEvent.id}`, ready: heading("Household check night"), prepare: async (p) => { await p.getByRole("button", { name: /^More for/ }).first().click(); await p.getByRole("menuitem", { name: "Manage sign-ups" }).click(); await expect(p.getByRole("region", { name: "Manage sign-ups" })).toBeVisible(); } },
     { id: "schedule-event", who: "lee", path: `/groups/${room.id}/events/new`, ready: (p) => p.getByRole("button", { name: "Change time zone" }) },
+    { id: "messages", who: "lee", path: "/messages", ready: heading("Messages") },
+    // The editor loads with import(); the live count is part of the page.
+    { id: "compose", who: "lee", path: `/messages/new?group=${room.id}`, ready: (p) => p.getByRole("textbox", { name: "Message" }),
+      prepare: async (p) => { await expect(p.getByRole("status").filter({ hasText: /^\d+ (people|person);/ })).toBeVisible(); } },
     { id: "admin", who: "grier", path: "/admin", ready: heading("Admin") },
     { id: "admin-users", who: "grier", path: "/admin?tab=users", ready: (p) => p.getByRole("button", { name: "New user" }) },
     { id: "admin-system", who: "grier", path: "/admin?tab=system", ready: (p) => p.getByRole("heading", { name: "Background tasks", level: 2 }) },

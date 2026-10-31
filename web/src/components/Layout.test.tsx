@@ -88,3 +88,16 @@ it("uses a labelled phone pill so the church name keeps its space", async () => 
   expect(phone).toHaveClass("min-h-11", "whitespace-nowrap");
   expect(phone).toHaveTextContent("New group");
 });
+
+it("shows Messages in the top nav only to people who can compose (M3.4c)", async () => {
+  const user = { id: 2, name: "Lee", displayName: "", avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50 };
+  auth.mockReturnValue({ user, loading: false, logout: vi.fn(), isAdmin: false, canCompose: false });
+  const { unmount } = render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
+  await screen.findByText("Grace Community Church");
+  expect(screen.queryByRole("link", { name: "Messages" })).not.toBeInTheDocument();
+  unmount();
+  auth.mockReturnValue({ user, loading: false, logout: vi.fn(), isAdmin: false, canCompose: true });
+  render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);
+  await screen.findByText("Grace Community Church");
+  expect(within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Messages" })).toHaveAttribute("href", "/messages");
+});

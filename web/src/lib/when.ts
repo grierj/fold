@@ -295,3 +295,40 @@ export function minuteOfDay(iso: string, day: string, zone: string): number {
 export function formatHour(hour: number): string {
   return fmt(`2026-01-01T${String(hour % 24).padStart(2, "0")}:00:00Z`, "UTC", { hour: "numeric" });
 }
+
+// --- A wall clock in a named zone (the composer's "Pick a date and time") ---
+
+function wallKey(instant: number, zone: string): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(instant);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}`;
+}
+
+// The day and time ("2026-11-03", "09:00") an instant reads as in `zone`.
+export function wallClock(iso: string, zone: string): { day: string; time: string } {
+  const key = wallKey(new Date(iso).getTime(), zone);
+  return { day: key.slice(0, 10), time: key.slice(11) };
+}
+
+// The UTC instant (ISO) when `zone`'s clock reads `day` at `time`, or null
+// for a malformed day or time or a zone this browser doesn't know. A time a
+// spring-forward skips comes out an hour to one side of the change, and a
+// time a fall-back repeats is one of its two instants (as Go's time.Date).
+export function wallToInstant(day: string, time: string, zone: string): string | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  const t = /^(\d{2}):(\d{2})$/.exec(time);
+  if (!m || !t) return null;
+  const guess = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(t[1]), Number(t[2]));
+  if (!Number.isFinite(guess) || new Date(guess).toISOString().slice(0, 10) !== day) return null;
+  try {
+    // Two passes find the offset in force at the answer, across a change.
+    const offsetAt = (at: number) => Date.parse(`${wallKey(at, zone)}:00Z`) - at;
+    let at = guess - offsetAt(guess);
+    at = guess - offsetAt(at);
+    return new Date(at).toISOString();
+  } catch {
+    return null;
+  }
+}

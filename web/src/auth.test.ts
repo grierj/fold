@@ -30,3 +30,14 @@ describe("clearClientData", () => {
     expect(localStorage.length + sessionStorage.length).toBe(0);
   });
 });
+
+it("says whether the person can compose, from the session and from signing in", async () => {
+  const adult: User = { id: 1, name: "Lee", displayName: "Lee", email: "lee@example.com", phone: "", hideContactFromLeaders: false, avatarUrl: "", avatarFocalX: 50, avatarFocalY: 50, role: "member", status: "active", hasPassword: true, accountType: "adult", timezone: "UTC" };
+  vi.mocked(AuthApi.me).mockResolvedValue({ user: adult, canCompose: false });
+  vi.mocked(AuthApi.login).mockResolvedValue({ user: adult, canCompose: true });
+  const { result } = renderHook(useAuth, { wrapper: AuthProvider });
+  await waitFor(() => expect(result.current.user?.id).toBe(1));
+  expect(result.current.canCompose).toBe(false);
+  await act(async () => { await result.current.login("lee@example.com", "password1234"); });
+  expect(result.current.canCompose).toBe(true);
+});

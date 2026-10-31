@@ -164,9 +164,9 @@ import type {
 } from "./types";
 
 export const Auth = {
-  me: () => api<{ user: User }>("/auth/me", { anonymousOK: true }),
+  me: () => api<{ user: User; canCompose?: boolean }>("/auth/me", { anonymousOK: true }),
   login: (email: string, password: string) =>
-    api<{ user: User }>("/auth/login", { method: "POST", body: { email, password } }),
+    api<{ user: User; canCompose?: boolean }>("/auth/login", { method: "POST", body: { email, password } }),
   logout: () => api<Record<string, never>>("/auth/logout", { method: "POST" }),
   // Password reset (M1.2): the response is uniform for known and unknown
   // addresses, so the message is shown as-is.

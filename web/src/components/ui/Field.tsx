@@ -10,7 +10,8 @@ import { FormErrorsContext } from "./FormContext";
 // a field can't be unlabeled or have an error nobody's screen reader hears.
 // Input, Textarea, Select and ZonePicker only work inside a Field, and the
 // Go guard keeps raw <input>, <select> and <textarea> inside components/ui.
-type Wiring = { id: string; describedBy?: string; invalid: boolean };
+// labelId names a control that a <label for> can't (the composer's editor).
+type Wiring = { id: string; labelId: string; describedBy?: string; invalid: boolean };
 const FieldContext = createContext<Wiring | null>(null);
 
 type FieldProps = {
@@ -32,12 +33,12 @@ export function Field({ label, hint, error: providedError, optional, id: fixed, 
   const describedBy = [hintId, errorId].filter(Boolean).join(" ") || undefined;
   return (
     <div>
-      <label className="label" htmlFor={id}>
+      <label id={`${id}-label`} className="label" htmlFor={id}>
         {label}
         {optional && <span className="font-normal text-text-muted"> (optional)</span>}
       </label>
       {hint && <p id={hintId} className="field-hint">{hint}</p>}
-      <FieldContext.Provider value={{ id, describedBy, invalid: !!error }}>{children}</FieldContext.Provider>
+      <FieldContext.Provider value={{ id, labelId: `${id}-label`, describedBy, invalid: !!error }}>{children}</FieldContext.Provider>
       {error && <FieldError id={errorId}>{error}</FieldError>}
     </div>
   );

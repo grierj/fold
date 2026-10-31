@@ -25,7 +25,7 @@ const tab = ({ isActive }: { isActive: boolean }) =>
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { pathname, search } = useLocation();
-  const { user, loading, logout, isAdmin } = useAuth();
+  const { user, loading, logout, isAdmin, canCompose } = useAuth();
   const site = useSiteName();
   usePageTitle(site, pathname);
   const header = useRef<HTMLElement>(null);
@@ -82,11 +82,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <NavLink to="/" end className={topLink}>Home</NavLink>
                   <NavLink to="/calendar" className={topLink}>Calendar</NavLink>
                   <NavLink to="/my-groups" className={topLink}>My groups</NavLink>
+                  {/* From lg up; below that, Messages is on Me, as Admin is on phones. */}
+                  {canCompose && <span className="hidden lg:contents"><NavLink to="/messages" className={topLink}>Messages</NavLink></span>}
                   <NavLink to="/groups/new" className={topLink}>New group</NavLink>
                   {isAdmin && <NavLink to="/admin" className={topLink}>Admin</NavLink>}
                 </div>
                 {/* On phones a labeled pill that leaves the church's name its room
-                    (the name clamps at two lines); Admin is on Me. */}
+                    (the name clamps at two lines); Messages and Admin are on Me. */}
                 <NavLink to="/groups/new" className={(a) => `sm:hidden shrink-0 ${pill(a)}`}>
                   <PlusIcon className="h-4 w-4" />
                   New group

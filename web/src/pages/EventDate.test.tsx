@@ -5,16 +5,18 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError, Events } from "../api";
 import { Dates } from "../date-api";
 import type { EventDate, RegistrationResponse } from "../types";
+import { Messages } from "../messages-api";
 import { EventDatePage } from "./EventDate";
 
-const actor = vi.hoisted(() => ({ user: { id: 2 } as { id: number } | null }));
+const actor = vi.hoisted(() => ({ user: { id: 2 } as { id: number } | null, canCompose: false }));
 vi.mock("../api", async (original) => ({ ...await original<typeof import("../api")>(), Events: { register: vi.fn() } }));
 vi.mock("../auth", () => ({ useAuth: () => actor }));
 vi.mock("../date-api", () => ({ Dates: { get: vi.fn(), register: vi.fn(), end: vi.fn() } }));
+vi.mock("../messages-api", () => ({ Messages: { options: vi.fn() } }));
 const occurrence = (overrides: Partial<EventDate> = {}): EventDate => ({ id: 51, eventId: 7, date: "2026-12-01", dateUrl: "/events/7/dates/2026-12-01", title: "One invited date", location: "Room 2", startsAt: "2026-12-01T19:00:00Z", endsAt: "2026-12-01T20:00:00Z", startsLocal: "2026-12-01T19:00", endsLocal: "2026-12-01T20:00", tzid: "UTC", durationMinutes: 60, remoteAvailable: true, guestsAllowed: 3, myRegistration: "going", myAttendanceMode: "remote", myGuestCount: 1, videoProvider: "link", videoUrl: "https://example.com/private-call", videoHidden: false, canSeeVideo: true, canSeeAttendees: false, canDecline: true, canBlock: true, ...overrides });
 const registration: RegistrationResponse = { registrationId: 8, userId: 2, eventId: 7, occurrenceId: 51, date: "2026-12-01", status: "going", guestCount: 1, attendanceMode: "remote", childcareCount: 2, childcareAgesNote: "Preserve this", waitlistPosition: null };
 function mount() { return render(<MemoryRouter initialEntries={["/events/7/dates/2026-12-01"]}><Routes><Route path="/events/:id/dates/:date" element={<EventDatePage />} /><Route path="/login" element={<p>Sign in first</p>} /></Routes></MemoryRouter>); }
-beforeEach(() => { vi.resetAllMocks(); actor.user = { id: 2 }; vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence() }); vi.mocked(Dates.register).mockResolvedValue({ registration }); vi.mocked(Dates.end).mockResolvedValue({}); vi.spyOn(window, "confirm").mockReturnValue(true); });
+beforeEach(() => { vi.resetAllMocks(); actor.user = { id: 2 }; actor.canCompose = false; vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence() }); vi.mocked(Dates.register).mockResolvedValue({ registration }); vi.mocked(Dates.end).mockResolvedValue({}); vi.spyOn(window, "confirm").mockReturnValue(true); });
 
 it("renders only date disclosures, never hidden parent/group/host/roster/household navigation", async () => {
   const row = { ...occurrence(), groupName: "SECRET GROUP", groupId: 88, hosts: [{ name: "SECRET HOST" }], attendees: [{ name: "SECRET ATTENDEE" }], description: "SECRET DESCRIPTION" };
@@ -259,4 +261,22 @@ it("shows the booked room as the place, with the typed location after it (M2.1b)
 it("shows only the typed location when no room is booked (M2.1b)", async () => {
   mount();
   expect(await screen.findByText("Room 2")).toBeInTheDocument();
+});
+
+it("offers Email people going for this date to someone who may write to the event (M3.4c)", async () => {
+  actor.canCompose = true;
+  vi.mocked(Messages.options).mockResolvedValue({ canCompose: true, canMessageEveryone: false, smsEnabled: false, groups: [], events: [{ id: 7, title: "One invited date", churchWide: true, dates: [] }] });
+  mount();
+  expect(await screen.findByRole("link", { name: "Email people going" })).toHaveAttribute("href", "/messages/new?occurrence=51");
+});
+
+it("doesn't offer it for an event the viewer can't write to, or ask when they can't compose", async () => {
+  actor.canCompose = true;
+  vi.mocked(Messages.options).mockResolvedValue({ canCompose: true, canMessageEveryone: false, smsEnabled: false, groups: [], events: [{ id: 8, title: "Other", churchWide: true, dates: [] }] });
+  mount(); await screen.findByText("One invited date");
+  await waitFor(() => expect(Messages.options).toHaveBeenCalled());
+  expect(screen.queryByRole("link", { name: "Email people going" })).not.toBeInTheDocument();
+  cleanup(); vi.mocked(Messages.options).mockClear(); actor.canCompose = false;
+  mount(); await screen.findByText("One invited date");
+  expect(Messages.options).not.toHaveBeenCalled();
 });

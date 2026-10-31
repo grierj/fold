@@ -102,6 +102,8 @@ const pages = [
   ["notifications", "member", "/notifications", (p) => p.getByRole("heading", { name: "Alerts" })],
   ["group-leader", "leader", `/groups/${seed.groupId}`, (p) => p.getByRole("heading", { name: "Tuesday Bible Study" })],
   ["schedule-event", "leader", `/groups/${seed.groupId}/events/new`, (p) => p.getByLabel("Time zone")],
+  ["messages", "leader", "/messages", (p) => p.getByRole("heading", { name: "Messages", level: 1 })],
+  ["compose", "leader", `/messages/new?group=${seed.groupId}`, (p) => p.getByRole("textbox", { name: "Message" })],
   ["admin", "admin", "/admin", (p) => p.getByRole("heading", { name: "Admin" })],
   ["admin-users", "admin", "/admin?tab=users", (p) => p.getByRole("heading", { name: "Admin" })],
   ["new-group", "admin", "/groups/new", (p) => p.getByLabel("Group name")],

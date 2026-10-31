@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, historyDayBounds, zoneNote, formatNextMeeting, minuteOfDay, formatHour } from "./when";
+import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, historyDayBounds, zoneNote, formatNextMeeting, minuteOfDay, formatHour, wallClock, wallToInstant } from "./when";
 
 // Saturday Oct 17 2026, 7:00 PM in Los Angeles (PDT, UTC-7) = 02:00 UTC Sunday.
 const laSat7pm = "2026-10-18T02:00:00Z";
@@ -178,5 +178,22 @@ describe("formatHour", () => {
     expect(formatHour(7)).toMatch(/^7\sAM$/);
     expect(formatHour(12)).toMatch(/^12\sPM$/);
     expect(formatHour(22)).toMatch(/^10\sPM$/);
+  });
+});
+
+describe("wallToInstant and wallClock", () => {
+  it("reads a church clock as its UTC instant, either side of daylight saving", () => {
+    expect(wallToInstant("2026-11-03", "09:00", "America/Boise")).toBe("2026-11-03T16:00:00.000Z");
+    expect(wallToInstant("2026-07-03", "09:00", "America/Boise")).toBe("2026-07-03T15:00:00.000Z");
+    expect(wallToInstant("2026-07-03", "09:00", "Asia/Kolkata")).toBe("2026-07-03T03:30:00.000Z");
+    expect(wallClock("2026-11-03T16:00:00.000Z", "America/Boise")).toEqual({ day: "2026-11-03", time: "09:00" });
+    expect(wallClock("2026-11-04T03:30:00.000Z", "America/Boise")).toEqual({ day: "2026-11-03", time: "20:30" });
+  });
+
+  it("answers null for a malformed day or time or an unknown zone", () => {
+    expect(wallToInstant("2026-02-30", "09:00", "UTC")).toBeNull();
+    expect(wallToInstant("2026-11-03", "9am", "UTC")).toBeNull();
+    expect(wallToInstant("", "09:00", "UTC")).toBeNull();
+    expect(wallToInstant("2026-11-03", "09:00", "Nowhere/Special")).toBeNull();
   });
 });

@@ -22,6 +22,9 @@ interface AuthState {
   logout: () => Promise<void>;
   refresh: () => Promise<void>;
   isAdmin: boolean;
+  // The person may write announcements: they lead an approved group, host
+  // a church-wide event, or are an admin (M3.4c). Shows Messages in the nav.
+  canCompose: boolean;
 }
 
 const AuthContext = createContext<AuthState>({
@@ -31,6 +34,7 @@ const AuthContext = createContext<AuthState>({
   logout: async () => {},
   refresh: async () => {},
   isAdmin: false,
+  canCompose: false,
 });
 
 // withZone fills in a person's time zone from this browser the first time
@@ -48,13 +52,16 @@ async function withZone(user: User): Promise<User> {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [canCompose, setCanCompose] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       await ensureCsrf();
-      const { user } = await AuthApi.me();
+      const { user, canCompose } = await AuthApi.me();
+      setCanCompose(!!user && !!canCompose);
       setUser(user ? await withZone(user) : user);
     } catch {
+      setCanCompose(false);
       setUser(null);
     } finally {
       setLoading(false);
@@ -67,11 +74,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = useCallback(async (email: string, password: string) => {
     try {
-      const { user } = await AuthApi.login(email, password);
+      const { user, canCompose } = await AuthApi.login(email, password);
+      setCanCompose(!!canCompose);
       setUser(await withZone(user));
     } catch (error) {
       // A verified pending-teen attempt clears any previous server login.
-      if (errorCode(error) === "consent_required") setUser(null);
+      if (errorCode(error) === "consent_required") { setCanCompose(false); setUser(null); }
       throw error;
     }
   }, []);
@@ -102,8 +110,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       logout,
       refresh,
       isAdmin: user?.role === "admin",
+      canCompose: !!user && canCompose,
     }),
-    [user, loading, login, logout, refresh]
+    [user, loading, login, logout, refresh, canCompose]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

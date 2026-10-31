@@ -1,0 +1,79 @@
+import { expect, test } from "@playwright/test";
+import { apiAs, fromMore, signInTo, watchCSP } from "./helpers";
+
+// The composer (M3.4c, PLAN 7.3): a leader writes to their group from its
+// page, sees the live count, previews it, sends a test to themselves,
+// schedules it for tomorrow, finds it on Messages and cancels it.
+test("a leader emails their group: write, count, preview, test, schedule, cancel", async ({ page, request }) => {
+  const csp = await watchCSP(page);
+  const admin = await apiAs(request, "grier");
+  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const room = groups.find((g) => g.name === "Room 201 class")!;
+  const subject = `Snacks this week ${Date.now()}`;
+
+  await signInTo(page, "lee", `/groups/${room.id}`);
+  await fromMore(page, "Email members", "More group actions");
+  await expect(page).toHaveURL(new RegExp(`/messages/new\\?group=${room.id}$`));
+  await expect(page.getByRole("heading", { name: "New message", level: 1 })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Send to" })).toHaveValue(`group:${room.id}`);
+  // The live count, after consent filtering.
+  await expect(page.getByRole("status").filter({ hasText: /^\d+ (people|person);/ })).toBeVisible();
+
+  await page.getByRole("textbox", { name: "Subject" }).fill(subject);
+  const body = page.getByRole("textbox", { name: "Message" });
+  await body.click();
+  await page.keyboard.type("Hi ");
+  await page.getByRole("button", { name: "Insert field" }).click();
+  await page.getByRole("menuitem", { name: "First name" }).click();
+  await expect(body).toBeFocused();
+  await page.keyboard.type(", please ");
+  await page.getByRole("button", { name: "Bold" }).click();
+  await expect(page.getByRole("button", { name: "Bold" })).toHaveAttribute("aria-pressed", "true");
+  await expect(body).toBeFocused();
+  await page.keyboard.type("bring snacks");
+  await expect(body.locator("strong")).toHaveText("bring snacks");
+  await expect(body).toContainText("Hi {{first_name}}, please bring snacks");
+
+  await page.getByRole("button", { name: "Preview" }).click();
+  await expect(page).toHaveURL(/\/messages\/\d+$/);
+  const frame = page.frameLocator('iframe[title="Email preview"]');
+  await expect(frame.getByText("Hi Lee, please")).toBeVisible();
+  await expect(frame.locator("strong")).toHaveText("bring snacks");
+  await page.getByText("Plain-text version").click();
+  await expect(page.locator("pre")).toContainText("Hi Lee, please bring snacks");
+
+  // A test needs a mail sender: dev mode's outbox (E2E_APP_ENV=dev). In
+  // production mode with no provider the page says so in words instead.
+  const outbox = (await page.request.get("/dev/outbox")).status() === 200;
+  await page.getByRole("button", { name: "Send a test to me" }).click();
+  if (outbox) {
+    await expect(page.getByText("Sent to you at lee@example.com.")).toBeVisible();
+    expect(await (await page.request.get("/dev/outbox")).text()).toContain(`[Test] ${subject}`);
+  } else {
+    await expect(page.getByRole("alert").filter({ hasText: "We couldn't send the test." })).toBeVisible();
+  }
+
+  // Tomorrow at 10:00 on the church's clock (America/Boise).
+  const tomorrow = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Boise", year: "numeric", month: "2-digit", day: "2-digit" }).format(Date.now() + 864e5);
+  await page.getByRole("radio", { name: "Pick a date and time" }).check();
+  await page.getByLabel("Date", { exact: true }).fill(tomorrow);
+  await page.getByLabel("Time", { exact: true }).fill("10:00");
+  await page.getByRole("button", { name: "Schedule" }).click();
+  const ask = page.getByRole("group", { name: /^Send to \d+ (people|person) / });
+  await expect(ask).toBeVisible();
+  await ask.getByRole("button", { name: "Schedule" }).click();
+  await expect(page.getByText(/^Scheduled for /)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Edit" })).toBeVisible();
+
+  await page.getByRole("link", { name: "Back to messages" }).click();
+  const row = page.getByRole("link").filter({ hasText: subject });
+  await expect(row).toContainText(/^Scheduled for /);
+  await expect(row).toContainText("To Room 201 class (Members, Leaders)");
+
+  await row.click();
+  page.once("dialog", (d) => void d.accept());
+  await page.getByRole("button", { name: "Cancel message" }).click();
+  await expect(page.getByText("Cancelled", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Edit" })).toHaveCount(0);
+  expect(csp).toEqual([]);
+});

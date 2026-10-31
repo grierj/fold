@@ -16,6 +16,7 @@ import { useAuth } from "../auth";
 import { OccurrenceCard } from "../components/OccurrenceCard";
 import { Attendance } from "../components/Attendance";
 import { Menu } from "../components/ui/Menu";
+import { composePath, EMAIL_GOING, EMAIL_MEMBERS } from "../components/messages/composeLinks";
 import { placeLine } from "../lib/place";
 import { EventVisibilityControl, visibilityRank } from "../components/EventVisibility";
 import { GroupVisibilityReview } from "../components/GroupVisibilityReview";
@@ -82,6 +83,7 @@ function EventRow({
   onChanged: () => void;
 }) {
   const navigate = useNavigate();
+  const { canCompose } = useAuth();
   const [cancelling, setCancelling] = useState(false);
   const [editor, setEditor] = useState<null | "date" | "series">(null);
   const time = formatTime(instance.startsAt);
@@ -112,6 +114,7 @@ function EventRow({
           { label: "Edit this date", onSelect: () => setEditor(editor === "date" ? null : "date") },
           // The event page opens its Manage sign-ups panel for this date (DEC-99).
           { label: "Manage sign-ups", onSelect: () => navigate(`/events/${instance.eventId}?manage=${instance.date}`) },
+          ...(canCompose ? [{ label: EMAIL_GOING, onSelect: () => navigate(composePath({ occurrence: instance.id })) }] : []),
           { label: instance.recurrenceRule ? "Edit series" : "Edit event", onSelect: () => setEditor(editor === "series" ? null : "series") },
           { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
         ]}
@@ -427,7 +430,7 @@ export function GroupDetail() {
 function GroupDetailContent() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const { user, loading: authLoading, isAdmin } = useAuth();
+  const { user, loading: authLoading, isAdmin, canCompose } = useAuth();
   const { people, error: householdError, retry: retryHousehold } = useHousehold(user);
   const [detail, setDetail] = useState<GroupDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -794,6 +797,7 @@ function GroupDetailContent() {
                     label="More group actions"
                     items={[
                       { label: "Edit group", onSelect: () => setEditing(true) },
+                      ...(canCompose && group.status === "active" ? [{ label: EMAIL_MEMBERS, onSelect: () => navigate(composePath({ group: group.id })) }] : []),
                       { label: coverBusy ? "Uploading cover…" : "Change cover photo", onSelect: () => coverRef.current?.click(), disabled: coverBusy },
                       ...(isMember ? [{ label: "Leave group", onSelect: () => void toggleJoin(), disabled: !!departureTarget }] : []),
                     ]}

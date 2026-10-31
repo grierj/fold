@@ -180,6 +180,17 @@ type composeEventJSON struct {
 	Dates      []composeDateJSON `json:"dates"`
 }
 
+// composeOptionsJSON is GET /messages/compose: who the author may write to.
+type composeOptionsJSON struct {
+	CanCompose         bool `json:"canCompose"`
+	CanMessageEveryone bool `json:"canMessageEveryone"`
+	// SmsEnabled shows the composer's SMS tab. Always false until an SMS
+	// provider can be set up (M3.7, DEC-117).
+	SmsEnabled bool               `json:"smsEnabled"`
+	Groups     []composeGroupJSON `json:"groups"`
+	Events     []composeEventJSON `json:"events"`
+}
+
 // How much the picker lists.
 const (
 	maxComposeEvents = 200
@@ -198,7 +209,7 @@ func (a *App) apiComposeOptions(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load the composer")
 		return
 	}
-	out := gin.H{"canCompose": ok, "canMessageEveryone": policy.IsAdmin(p), "groups": []composeGroupJSON{}, "events": []composeEventJSON{}}
+	out := composeOptionsJSON{CanCompose: ok, CanMessageEveryone: policy.IsAdmin(p), Groups: []composeGroupJSON{}, Events: []composeEventJSON{}}
 	if !ok {
 		c.JSON(http.StatusOK, out)
 		return
@@ -265,7 +276,7 @@ func (a *App) apiComposeOptions(c *gin.Context) {
 		}
 		ejson = append(ejson, e)
 	}
-	out["groups"], out["events"] = gjson, ejson
+	out.Groups, out.Events = gjson, ejson
 	c.JSON(http.StatusOK, out)
 }
 

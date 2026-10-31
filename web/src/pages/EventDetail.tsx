@@ -11,6 +11,7 @@ import { Attendance } from "../components/Attendance";
 import { DateEditor } from "../components/DateEditor";
 import { NeedsRoomList } from "../components/NeedsRoomList";
 import { Menu } from "../components/ui/Menu";
+import { composePath, EMAIL_GOING } from "../components/messages/composeLinks";
 import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { ExternalLinkIcon } from "../components/icons";
@@ -43,7 +44,7 @@ function EventDetailContent() {
   const navigate = useNavigate();
   // The group page's "Manage sign-ups" links here with ?manage=<original date> (DEC-99).
   const manageDate = useSearchParams()[0].get("manage");
-  const { user, loading: authLoading, isAdmin } = useAuth();
+  const { user, loading: authLoading, isAdmin, canCompose } = useAuth();
   const { people, error: householdError, retry: retryHousehold } = useHousehold(user);
   const [page, setPage] = useState<EventDetailResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -161,7 +162,10 @@ function EventDetailContent() {
             <Button variant="secondary" layout="flex-1 sm:flex-none" aria-expanded={editing} onClick={() => setEditing((v) => !v)}>
               {event.recurrenceRule ? "Edit series" : "Edit event"}
             </Button>
-            <Menu label="More event actions" items={[{ label: "Delete event", onSelect: () => void deleteEvent(), danger: true }]} />
+            <Menu label="More event actions" items={[
+              ...(canCompose ? [{ label: EMAIL_GOING, onSelect: () => navigate(composePath({ event: event.id })) }] : []),
+              { label: "Delete event", onSelect: () => void deleteEvent(), danger: true },
+            ]} />
           </div>
         )}
       </div>
@@ -285,6 +289,8 @@ function DateRow({
   onChanged: () => void;
   onNeedLogin: () => void;
 }) {
+  const navigate = useNavigate();
+  const { canCompose } = useAuth();
   const [editingDate, setEditingDate] = useState(false);
   // Manage sign-ups opens from the date's More menu (PR #66 review F1).
   const [managing, setManaging] = useState(manageRequested);
@@ -347,6 +353,8 @@ function DateRow({
         items={[
           { label: "Edit this date", onSelect: () => { setFocusRoom(false); setEditingDate((v) => !v); } },
           { label: "Manage sign-ups", onSelect: () => setManaging((v) => !v) },
+          // A single date's people are the event's: the header's menu has it.
+          ...(canCompose && !single ? [{ label: EMAIL_GOING, onSelect: () => navigate(composePath({ occurrence: instance.id })) }] : []),
           { label: cancelling ? "Cancelling…" : "Cancel this date", onSelect: () => void cancel(), danger: true, disabled: cancelling },
         ]}
       />}

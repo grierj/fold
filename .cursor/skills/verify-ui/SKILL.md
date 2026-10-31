@@ -74,6 +74,8 @@ UI_PAGES=schedule-event,admin UI_WIDTHS=390 node .cursor/skills/verify-ui/drive-
    | group-leader | leader | `/groups/<id>` |
    | event-leader | leader | `/events/<id>` (layout.spec.ts only) |
    | schedule-event | leader | `/groups/<id>/events/new` |
+   | messages | leader | `/messages` |
+   | compose | leader | `/messages/new?group=<id>` |
    | admin | admin | `/admin` |
    | admin-users | admin | `/admin?tab=users` |
    | new-group | admin | `/groups/new` |

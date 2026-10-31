@@ -1,0 +1,29 @@
+import { api } from "./api";
+import type { AudienceSummary, ComposeOptions, Message, MessageAudience, MessagePreview } from "./types";
+
+// The composer's API (M3.4, docs/API.md "Messages"). Email only for now.
+export interface MessageDraft {
+  subject: string;
+  bodyHtml: string;
+  audience: MessageAudience;
+}
+
+export const Messages = {
+  options: () => api<ComposeOptions>("/messages/compose"),
+  audiencePreview: (audience: MessageAudience) =>
+    api<{ summary: AudienceSummary }>("/messages/audience-preview", { method: "POST", body: { audience } }),
+  list: () => api<{ messages: Message[] }>("/messages"),
+  get: (id: number) => api<{ message: Message }>(`/messages/${id}`),
+  create: (draft: MessageDraft) => api<{ message: Message }>("/messages", { method: "POST", body: { channel: "email", ...draft } }),
+  update: (id: number, draft: MessageDraft) =>
+    api<{ message: Message }>(`/messages/${id}`, { method: "PUT", body: { channel: "email", ...draft } }),
+  // scheduledAt absent: send now.
+  schedule: (id: number, scheduledAt?: string) =>
+    api<{ message: Message; summary: AudienceSummary }>(`/messages/${id}/schedule`, { method: "POST", body: scheduledAt ? { scheduledAt } : {} }),
+  cancel: (id: number) => api<{ message: Message }>(`/messages/${id}/cancel`, { method: "POST" }),
+  preview: (id: number) => api<{ preview: MessagePreview }>(`/messages/${id}/preview`),
+  test: (id: number) => api<{ ok: boolean }>(`/messages/${id}/test`, { method: "POST" }),
+};
+
+// The HTML part as an iframe shows it (served with its own sandboxing CSP).
+export const previewHTMLPath = (id: number) => `/api/v1/messages/${id}/preview.html`;

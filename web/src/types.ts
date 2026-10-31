@@ -1054,3 +1054,95 @@ export interface AdminJob {
   lastError: string;
   failedAt: string;
 }
+
+// --- Messages: the composer (M3.4) ---
+
+type MessageStatus = "draft" | "scheduled" | "sending" | "sent" | "cancelled";
+type AudienceType = "occurrence" | "event_series" | "events" | "group" | "all_members" | "users";
+export type AudienceStatus = "going" | "maybe" | "waitlisted";
+export type AudienceRole = "member" | "leader";
+
+// Who a message goes to (PLAN 7.2). Only the fields its type uses are set.
+export interface MessageAudience {
+  type: AudienceType;
+  occurrenceId?: number;
+  eventId?: number;
+  eventIds?: number[];
+  groupId?: number;
+  userIds?: number[];
+  statuses?: AudienceStatus[];
+  roles?: AudienceRole[];
+}
+
+export interface Message {
+  id: number;
+  channel: "email" | "sms";
+  status: MessageStatus;
+  subject: string;
+  bodyHtml: string;
+  audience: MessageAudience;
+  scheduledAt: string | null;
+  sentAt: string | null;
+  authorName: string;
+  // Still a draft or scheduled, and the viewer may change it.
+  editable: boolean;
+  updatedAt: string;
+}
+
+// One person an audience names: a name and a Teen badge, never an address
+// (DEC-20, DEC-31). skipped is why they won't get it ("won't get this" for
+// leaders and hosts; the reason for admins).
+export interface AudienceRecipient {
+  name: string;
+  teen: boolean;
+  skipped?: string;
+}
+
+// The live count under the audience picker: everyone named, how many will
+// get it, the teens among them, and the rest counted by reason.
+export interface AudienceSummary {
+  people: number;
+  eligible: number;
+  teens: number;
+  skipped: Record<string, number>;
+  // The first 100 by name; more says there are others.
+  recipients: AudienceRecipient[];
+  more: boolean;
+}
+
+export interface ComposeGroup {
+  id: number;
+  name: string;
+}
+
+export interface ComposeDate {
+  occurrenceId: number;
+  date: string;
+  startsAt: string;
+}
+
+export interface ComposeEvent {
+  id: number;
+  title: string;
+  groupName?: string;
+  churchWide: boolean;
+  // The next few upcoming dates.
+  dates: ComposeDate[];
+}
+
+// What the author may write to (GET /messages/compose). smsEnabled shows
+// the SMS tab, off until texting can be set up (DEC-117).
+export interface ComposeOptions {
+  canCompose: boolean;
+  canMessageEveryone: boolean;
+  smsEnabled: boolean;
+  groups: ComposeGroup[];
+  events: ComposeEvent[];
+}
+
+// A saved message as the viewer would get it: the subject and the
+// plain-text part, merge fields filled with the viewer's own values.
+export interface MessagePreview {
+  subject: string;
+  text: string;
+}

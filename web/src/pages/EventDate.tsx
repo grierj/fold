@@ -17,6 +17,7 @@ import { placeLine } from "../lib/place";
 import { DateBadge } from "../components/DateBadge";
 import { answerLine } from "../components/RsvpButtons";
 import { DateActions } from "../components/DateActions";
+import { composePath, EMAIL_GOING, useCanEmailEvent } from "../components/messages/composeLinks";
 
 export function EventDatePage() {
   const { user } = useAuth();
@@ -90,6 +91,7 @@ function DateDetail({ id, date }: { id: string; date: string }) {
   const when = occurrence ? dateLine(occurrence.startsAt, occurrence.endsAt) : "";
   const place = occurrence ? placeLine(occurrence.room, occurrence.location) : "";
   const standing = occurrence && user ? standingLine(occurrence.myRegistration) : null;
+  const canEmail = useCanEmailEvent(Number(id));
   return <div className="max-w-2xl mx-auto px-4 py-6 space-y-5 wrap-anywhere">
     <div>
       {/* The link says where it goes for screen readers and is also not confused with the nav's Calendar tab. */}
@@ -123,6 +125,7 @@ function DateDetail({ id, date }: { id: string; date: string }) {
       <div className="flex flex-wrap gap-2">
         {occurrence.canDecline && <Button variant="danger-outline" disabled={busy} onClick={() => void end("decline")}>Can't go</Button>}
         {occurrence.canBlock && <Button variant="danger-outline" disabled={busy} onClick={() => void end("block")}>Don't add me again</Button>}
+        {canEmail && <ButtonLink variant="secondary" to={composePath({ occurrence: occurrence.id })}>{EMAIL_GOING}</ButtonLink>}
       </div>
     </section>}
   </div>;
