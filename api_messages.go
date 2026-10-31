@@ -476,7 +476,7 @@ func (a *App) apiUpdateMessage(c *gin.Context) {
 			return nil
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.MessageEdited, TargetType: "message", TargetID: m.ID,
-			Meta: map[string]any{"status": m.Status, "author": !isAuthor}, IP: c.ClientIP()})
+			Meta: map[string]any{"status": m.Status, "byOther": !isAuthor}, IP: c.ClientIP()})
 	})
 	if errors.Is(err, errLocked) {
 		jsonError(c, http.StatusConflict, errMessageLocked)
