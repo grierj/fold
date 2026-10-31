@@ -466,10 +466,16 @@ func (a *App) apiAdminListUsers(c *gin.Context) {
 	for _, id := range historyIDs {
 		history[id] = true
 	}
+	suppressed, err := openSuppressions(a.DB)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not list users")
+		return
+	}
 	out := make([]userJSON, 0, len(users))
 	for i := range users {
 		row := a.toUserJSON(&users[i])
 		row.HasTeenConsentHistory = history[users[i].ID]
+		row.EmailSuppression = suppressed[normalizeEmail(users[i].Email)]
 		out = append(out, row)
 	}
 	c.JSON(http.StatusOK, gin.H{"users": out})

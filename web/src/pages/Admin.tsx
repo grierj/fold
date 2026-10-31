@@ -12,6 +12,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminJobs, AdminRooms, AdminUsers, ApiError, Groups, Invitations, RoomRequests, Site } from "../api";
 import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
 import { RoomsTab, sortRooms } from "../components/admin/RoomsTab";
+import { EmailSuppressionNote } from "../components/admin/EmailSuppressionNote";
 import { RoomRequestsList } from "../components/admin/RoomRequestsList";
 import { MatchLocations } from "../components/admin/MatchLocations";
 import { SystemTab } from "../components/admin/SystemTab";
@@ -871,14 +872,17 @@ function PasswordReset({ user, onDone }: { user: User; onDone: () => void }) {
   );
 }
 
-type UserFilter = "all" | "admin" | "disabled" | "invited";
+type UserFilter = "all" | "admin" | "disabled" | "invited" | "email";
 const USER_FILTERS: { id: UserFilter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "admin", label: "Admins" },
   { id: "disabled", label: "Disabled" },
   { id: "invited", label: "Invited" },
+  // Shown only while someone has an email problem (M3.2c).
+  { id: "email", label: "Email problems" },
 ];
 function matchesUserFilter(u: User, filter: UserFilter): boolean {
+  if (filter === "email") return !!u.emailSuppression;
   return filter === "all" || (filter === "admin" ? u.role === "admin" : u.status === filter);
 }
 
@@ -977,6 +981,28 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
     }
   }
 
+  // Let Fold email someone again after a bounce or complaint (M3.2c, DEC-113).
+  async function clearSuppression(u: User) {
+    const who = u.displayName || u.name;
+    // Clearing a complaint restarts optional mail to someone who marked it as spam.
+    const ask = u.emailSuppression?.reason === "complaint"
+      ? `${who} marked Fold's email as spam. Only do this if they asked for email again. Let Fold email ${who} again?`
+      : `Let Fold email ${who} again?`;
+    if (!confirm(ask)) return;
+    setBusy(true);
+    setError(null);
+    setFeedStatus("");
+    try {
+      await AdminUsers.clearEmailSuppression(u.id);
+      setFeedStatus(`Fold will email ${who} again.`);
+      reload();
+    } catch (e) {
+      setError(errorText(e, "We couldn't clear that. Please try again."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // Deleting or disabling opens a panel that also picks successors (DEC-36).
   const [leaving, setLeaving] = useState<{ id: number; action: "delete" | "disable" } | null>(null);
 
@@ -1004,7 +1030,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
         <div className="mb-4 space-y-3">
           <SearchBox id="admin-user-search" label="Search by name or email" value={query} onChange={setQuery} />
           <div role="group" aria-label="Filter users" className="flex flex-wrap gap-2">
-            {USER_FILTERS.map((f) => (
+            {USER_FILTERS.filter((f) => f.id !== "email" || filter === "email" || users.some((u) => u.emailSuppression)).map((f) => (
               <Chip key={f.id} selected={filter === f.id} onClick={() => setFilter(f.id)}>{f.label}</Chip>
             ))}
           </div>
@@ -1048,6 +1074,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                       <div className="text-xs text-text-muted">{u.email}</div>
                     </div>
                   </div>
+                  {u.emailSuppression && <EmailSuppressionNote suppression={u.emailSuppression} />}
                   {editingId === u.id && (
                     <UserForm
                       initial={u}
@@ -1105,6 +1132,7 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
                       { label: "Copy person ID", onSelect: () => void copyPersonId(u), disabled: busy },
                       ...(u.accountType === "teen" || u.hasTeenConsentHistory ? [{ label: u.accountType === "teen" ? "Manage consent" : "Consent history", onSelect: () => { setConsentId(u.id); setEditingId(null); setResetId(null); setCreating(false); } }] : []),
                       { label: "Reset password", onSelect: () => { setResetId(u.id); setEditingId(null); setCreating(false); } },
+                      ...(u.emailSuppression ? [{ label: "Start emailing again", onSelect: () => void clearSuppression(u), disabled: busy }] : []),
                       { label: "Revoke calendar link", onSelect: () => void revokeCalendarLink(u), danger: true, disabled: busy },
                       ...(u.id === me?.id ? [] : [
                         {

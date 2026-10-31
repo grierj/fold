@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Admin, AdminAccountRequests, AdminGroups, AdminJobs, AdminRooms, AdminUsers, Groups, Invitations, People, RoomRequests, Site, ApiError } from "../api";
-import { ERROR_COPY } from "../lib/errors";
+import { ERROR_COPY, errorText } from "../lib/errors";
 import { ContactHistory } from "../contact-history-api";
 import type { AccountRequest, GroupSummary, Room, User } from "../types";
 import { AdminPage } from "./Admin";
@@ -19,7 +19,7 @@ vi.mock("../api", async (actual) => ({
   Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() },
   AdminGroups: { list: vi.fn(), addMember: vi.fn() },
   Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn() },
-  AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }) },
+  AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn() },
   AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
   AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },
   AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() },
@@ -877,4 +877,81 @@ it("says more than 100 on the System tab when more tasks failed than the list ho
   vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: many, more: true });
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   expect(await screen.findByRole("tab", { name: "System, more than 100" })).toHaveTextContent("System 100+");
+});
+
+describe("email suppressions on the Users tab (M3.2c, DEC-113)", () => {
+  const since = "2026-10-20T15:00:00Z";
+  const people = () => [
+    user(1, "Ann"),
+    user(2, "Bo Bounce", { emailSuppression: { reason: "hard_bounce", since } }),
+    user(3, "Cy Spam", { emailSuppression: { reason: "complaint", since } }),
+    user(4, "Di Manual", { emailSuppression: { reason: "manual", since } }),
+  ];
+
+  beforeEach(() => {
+    vi.mocked(AdminUsers.clearEmailSuppression).mockReset();
+  });
+
+  it("says in words why Fold stopped emailing someone", async () => {
+    vi.mocked(AdminUsers.list).mockResolvedValue({ users: people() });
+    render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+    expect(await screen.findByText("Email bouncing")).toBeInTheDocument();
+    expect(screen.getByText(/stopped emailing this address on .* because it bounced\. If the address works again, clear this; if you changed their email, there.s nothing to clear\. If your church uses Postmark, reactivate the address there too\./)).toBeInTheDocument();
+    expect(screen.getByText("Marked our email as spam")).toBeInTheDocument();
+    expect(screen.getByText(/optional email stopped\. Account email, like password resets, still goes\./)).toBeInTheDocument();
+    expect(screen.getByText("Email stopped on purpose")).toBeInTheDocument();
+    expect(screen.getAllByText(/Email bouncing|Marked our email as spam|Email stopped on purpose/)).toHaveLength(3);
+  });
+
+  it("shows the Email problems chip only when someone has one, and filters by it", async () => {
+    vi.mocked(AdminUsers.list).mockResolvedValue({ users: [user(1, "Ann")] });
+    const view = render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+    await screen.findByText("Ann");
+    expect(screen.queryByRole("button", { name: "Email problems" })).not.toBeInTheDocument();
+    view.unmount();
+
+    vi.mocked(AdminUsers.list).mockResolvedValue({ users: people() });
+    render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+    await userEvent.click(await screen.findByRole("button", { name: "Email problems" }));
+    expect(screen.queryByText("Ann")).not.toBeInTheDocument();
+    expect(screen.getByText("Bo Bounce")).toBeInTheDocument();
+    expect(screen.getByText("Cy Spam")).toBeInTheDocument();
+  });
+
+  it("clears a block after a confirm, says so, and reloads the list", async () => {
+    vi.mocked(AdminUsers.list).mockResolvedValue({ users: people() });
+    vi.mocked(AdminUsers.clearEmailSuppression).mockResolvedValue({ cleared: 1 });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValue(true);
+    render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+    expect(screen.queryByRole("menuitem", { name: "Start emailing again" })).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole("button", { name: "More for Ann" }));
+    expect(screen.queryByRole("menuitem", { name: "Start emailing again" })).not.toBeInTheDocument();
+    await userEvent.keyboard("{Escape}");
+
+    await userEvent.click(screen.getByRole("button", { name: "More for Bo Bounce" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Start emailing again" }));
+    expect(confirmSpy).toHaveBeenCalledWith("Let Fold email Bo Bounce again?");
+    expect(AdminUsers.clearEmailSuppression).not.toHaveBeenCalled();
+
+    const calls = vi.mocked(AdminUsers.list).mock.calls.length;
+    vi.mocked(AdminUsers.list).mockResolvedValue({ users: people().map((u) => (u.id === 2 ? { ...u, emailSuppression: undefined } : u)) });
+    await userEvent.click(screen.getByRole("button", { name: "More for Bo Bounce" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Start emailing again" }));
+    expect(AdminUsers.clearEmailSuppression).toHaveBeenCalledWith(2);
+    expect(await screen.findByText("Fold will email Bo Bounce again.")).toHaveAttribute("role", "status");
+    await waitFor(() => expect(vi.mocked(AdminUsers.list).mock.calls.length).toBeGreaterThan(calls));
+    await waitFor(() => expect(screen.queryByText("Email bouncing")).not.toBeInTheDocument());
+  });
+
+  it("keeps the block and says what went wrong when clearing fails", async () => {
+    vi.mocked(AdminUsers.list).mockResolvedValue({ users: people() });
+    vi.mocked(AdminUsers.clearEmailSuppression).mockRejectedValue(new ApiError(500, "boom"));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
+    await userEvent.click(await screen.findByRole("button", { name: "More for Bo Bounce" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Start emailing again" }));
+    expect(await screen.findByText(errorText(new ApiError(500, "boom"), "We couldn't clear that. Please try again."))).toBeInTheDocument();
+    expect(screen.getByText("Email bouncing")).toBeInTheDocument();
+    expect(screen.queryByText("Fold will email Bo Bounce again.")).not.toBeInTheDocument();
+  });
 });

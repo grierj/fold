@@ -655,6 +655,9 @@ export const AdminUsers = {
     }),
   revokeCalendarFeed: (id: number) =>
     api<{ hadLink: boolean }>(`/admin/users/${id}/calendar-feed`, { method: "DELETE" }),
+  // Let Fold email a suppressed address again (M3.2c, DEC-113).
+  clearEmailSuppression: (id: number) =>
+    api<{ cleared: number }>(`/admin/users/${id}/email-suppression/clear`, { method: "POST" }),
 };
 
 export const AdminTeenConsents = {

@@ -1735,14 +1735,14 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - Scope: `internal/providers` interfaces (5.6) and registry; move `devoutbox` and SMTP behind it; Postmark adapter (DEC-21); the `/hooks/postmark/email` handler in the CSRF-exempt group, verified by Postmark's webhook authentication. Three slices (14.1):
   - **M3.2a Registry and Postmark sending** (built): `internal/providers` (email types, `SendError`, the registry), the devoutbox, SMTP and Postmark adapters in `internal/mail` registered by name, `FOLD_EMAIL_PROVIDER` and the `FOLD_POSTMARK_*` settings; every send returns the provider's message id, and notification deliveries record it.
   - **M3.2b Webhooks and suppressions** (built): the `suppressions` table, `/hooks/postmark/email` (HTTP Basic credentials Postmark sends, 401 otherwise), events queued as `webhook.process` jobs deduplicated by Postmark's id, deliveries and bounces updating `notification_deliveries`, and sending checking suppressions (DEC-112). `MessageRecipient` arrives with M3.5 and is updated the same way.
-  - **M3.2c Seeing and clearing suppressions**: Admin → Users marks a person whose email bounces or who marked Fold's mail as spam, with Clear, audited (DEC-113).
+  - **M3.2c Seeing and clearing suppressions** (built): Admin → Users marks a person whose email bounces or who marked Fold's mail as spam, with Clear, audited (DEC-113).
 - Acceptance:
   - [x] Swapping providers is a config change only (env for now; the wizard in M4.4)
   - [x] Postmark, SMTP, and devoutbox pass the shared contract suite against `httptest` fakes built from vendor docs
   - [x] A webhook with bad credentials (Postmark doesn't sign webhooks; it sends HTTP Basic credentials) returns 401 and changes nothing
   - [x] Bounces and complaints update `notification_deliveries` and `Suppression` now, and `MessageRecipient` from M3.5
   - [x] Transactional and broadcast mail use separate Postmark message streams
-  - [ ] An admin sees who is suppressed and why, and can clear it (M3.2c)
+  - [x] An admin sees who is suppressed and why, and can clear it (M3.2c)
 - Tests: contract and webhook tests with recorded sample payloads.
 
 **M3.3 Consent and unsubscribe**

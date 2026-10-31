@@ -1068,7 +1068,8 @@ POST /api/v1/admin/groups/:id/members      → 200 {membership}          (admin)
      body: {selectionId | userId, role: "member"|"leader", overLimit?} — one target only; role=leader adds a (co-)leader; audited;
      a full group needs overLimit (audited as membership.added_over_limit)
 DELETE /api/v1/admin/groups/:id/members/:userId → 200 {departure} (admin; same confirmed body and transaction as the leader route)
-GET  /api/v1/admin/users                   → {users: [user]}           (admin)
+GET  /api/v1/admin/users                   → {users: [user]}           (admin; each may carry emailSuppression: {reason, since})
+POST /api/v1/admin/users/:id/email-suppression/clear → 200 {cleared} (admin; audited email.suppression_cleared; M3.2c)
 GET  /api/v1/admin/users/:id/teen-consents  → {consents: [teenConsent], administrativelyDisabled} (admin)
 POST /api/v1/admin/users/:id/teen-consents → 200 {} | 400 | 403 | 409  (admin)
      body: {scope: "account"|"sms"|"photos", status: "granted"|"revoked", evidenceText?}
@@ -1084,6 +1085,8 @@ POST /api/v1/admin/users/:id/password      → 200 {}                    (admin;
 DELETE /api/v1/admin/users/:id             → 200 {}                    (admin; soft delete, frees the email)
      body: {successors: {"<groupId>": <userId>}} — required for every group they lead alone
 ```
+
+`emailSuppression` says Fold stopped mailing the person's address (DEC-112, DEC-113): `hard_bounce` and `manual` stop all mail, `complaint` stops optional mail while account mail still goes; with several open reasons the stronger one shows, and `since` is when the first began. Clearing ends every open suppression on the address (kept as history) and answers how many; clearing none is 200 `{cleared: 0}` with no audit row. Postmark keeps its own list, so a hard-bounced address may also need reactivating in Postmark.
 
 Guards: cannot demote, disable or delete the last active admin, or
 yourself. Changing someone's password, email, role, or status ends all of

@@ -29,6 +29,15 @@ export interface User {
   hasTeenConsentHistory?: boolean;
   // "" until the browser fills it in; then the person's zone for emails (DEC-58).
   timezone: string;
+  // Admin list only: Fold stopped emailing this address (M3.2c, DEC-113).
+  emailSuppression?: EmailSuppression;
+}
+
+// Why Fold stopped emailing an address (DEC-112): hard_bounce and manual stop
+// all email; complaint stops optional email, and account email still goes.
+export interface EmailSuppression {
+  reason: "hard_bounce" | "complaint" | "manual";
+  since: string;
 }
 
 export interface GroupSummary {

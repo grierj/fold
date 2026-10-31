@@ -270,6 +270,9 @@ const (
 	// set it aside (M3.1b, DEC-111). Target is the job; meta has its kind.
 	JobRetried   = "job.retried"
 	JobDismissed = "job.dismissed"
+	// EmailSuppressionCleared: an admin let Fold mail a suppressed address
+	// again (M3.2c, DEC-113). Target is the user; meta has the reasons.
+	EmailSuppressionCleared = "email.suppression_cleared"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).
