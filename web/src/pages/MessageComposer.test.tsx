@@ -340,11 +340,11 @@ describe("MessageComposerPage", () => {
     expect(screen.getByRole("link", { name: "‹ Back to Book night" })).toHaveAttribute("href", "/events/3/dates/2026-11-05");
   });
 
-  it("takes an admin back to Messages from a reminder", async () => {
+  it("takes an admin back to the automatic reminders list from a reminder", async () => {
     viewer.isAdmin = true;
     vi.mocked(Messages.get).mockResolvedValue({ message: reminderMessage() });
     open("/messages/9");
-    expect(await screen.findByRole("link", { name: "Back to messages" })).toHaveAttribute("href", "/messages");
+    expect(await screen.findByRole("link", { name: "‹ Back to automatic reminders" })).toHaveAttribute("href", "/messages?show=reminders");
   });
 
   it("tells a member the composer isn't theirs", async () => {

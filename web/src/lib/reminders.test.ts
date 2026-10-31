@@ -58,6 +58,9 @@ describe("a reminder in Messages", () => {
     // 7 PM Tuesday in Boise is Wednesday in London: the event's own day shows.
     expect(reminderRowTitle({ reminder: { ...r, tzid: "Europe/London" } }, now)).toBe("Automatic reminder · Book night, Wed, Nov 4");
     expect(reminderRowTitle({ reminder: undefined }, now)).toBe("Automatic reminder");
+    // A missing or unknown zone falls back to the viewer's clock (Boise in tests).
+    expect(reminderRowTitle({ reminder: { ...r, tzid: "" } }, now)).toBe("Automatic reminder · Book night, Tue, Nov 3");
+    expect(reminderRowTitle({ reminder: { ...r, tzid: "Not/A_Zone" } }, now)).toBe("Automatic reminder · Book night, Tue, Nov 3");
     expect(reminderName(r)).toBe("Automatic reminder");
   });
 

@@ -61,7 +61,14 @@ export const reminderName = (r: Pick<MessageReminder, "kind"> | undefined) =>
 export function reminderRowTitle(m: Pick<Message, "reminder">, now = new Date()): string {
   const r = m.reminder;
   if (!r) return reminderName(r);
-  return `${reminderName(r)} · ${r.eventTitle}, ${formatShortWeekdayDay(r.startsAt, r.tzid, now)}`;
+  let day: string;
+  try {
+    day = formatShortWeekdayDay(r.startsAt, r.tzid || browserTimeZone(), now);
+  } catch {
+    // A zone the browser doesn't know: its own clock, as formatWhenIn falls back.
+    day = formatShortWeekdayDay(r.startsAt, browserTimeZone(), now);
+  }
+  return `${reminderName(r)} · ${r.eventTitle}, ${day}`;
 }
 
 // reminderDateText is the date it's for, in a sentence: "Book night, Tue,

@@ -270,6 +270,12 @@ func (a *App) reminderMayResend(m *models.Message) (bool, error) {
 	if m.OccurrenceID == nil {
 		return false, nil
 	}
+	// An audience that no longer reads as one (a gone audience, as for an
+	// announcement) can't say who is still going: nothing goes again.
+	var au audienceJSON
+	if json.Unmarshal([]byte(m.Audience), &au) != nil || au.normalize() != nil {
+		return false, nil
+	}
 	var occ models.EventOccurrence
 	if err := a.DB.First(&occ, *m.OccurrenceID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return false, nil
@@ -317,14 +323,21 @@ func (a *App) recheckReminderRows(tx *gorm.DB, m *models.Message, ids []uint, no
 	var au audienceJSON
 	_ = json.Unmarshal([]byte(m.Audience), &au)
 	current := map[uint]bool{}
-	if au.normalize() == nil {
-		still, err := a.audienceUserIDs(tx, au, now)
-		if err != nil {
+	if err := au.normalize(); err != nil {
+		// reminderMayResend refuses this first; should it slip through,
+		// nobody is sent to, under the neutral reason.
+		if err := tx.Model(&models.MessageRecipient{}).Where("id IN ? AND status = ?", ids, models.RecipientFailed).
+			Updates(map[string]any{"status": models.RecipientSuppressed, "reason": skipCantSeeDate, "error": "", "updated_at": now}).Error; err != nil {
 			return nil, err
 		}
-		for _, id := range still {
-			current[id] = true
-		}
+		return []uint{}, nil
+	}
+	still, err := a.audienceUserIDs(tx, au, now)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range still {
+		current[id] = true
 	}
 	people := make([]uint, 0, len(rows))
 	for _, r := range rows {

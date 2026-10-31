@@ -380,7 +380,9 @@ export function MessageComposerPage() {
     return page(<>
       {reminder && !isAdmin && message.reminder && datePath
         ? <ButtonLink variant="link" to={datePath}>‹ Back to {message.reminder.eventTitle}</ButtonLink>
-        : back}
+        : reminder && isAdmin
+          ? <ButtonLink variant="link" to="/messages?show=reminders">‹ Back to automatic reminders</ButtonLink>
+          : back}
       <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold focus:outline-none">{title}</h1>
       <SendProblem message={message} history={history} busy={busy === "retry"} error={retryError} onRetry={() => void retry()} />
       <section aria-label="This message" className="space-y-4 rounded-lg border border-border bg-surface p-4 sm:p-6">

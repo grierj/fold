@@ -304,6 +304,14 @@ func TestReminderRetryForManagers(t *testing.T) {
 		t.Fatalf("off: %d %s", w.Code, w.Body.String())
 	}
 	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("reminder_email_minutes", 1440)
+	// Nor does one whose audience no longer reads as one.
+	var saved models.Message
+	f.app.DB.First(&saved, id)
+	f.app.DB.Model(&models.Message{}).Where("id = ?", id).Update("audience", `{"type":"nobody"}`)
+	if w := retry(f.leader); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "reminder_retry_refused") {
+		t.Fatalf("gone audience: %d %s", w.Code, w.Body.String())
+	}
+	f.app.DB.Model(&models.Message{}).Where("id = ?", id).Update("audience", saved.Audience)
 	if w := retry(f.leader); w.Code != http.StatusOK {
 		t.Fatalf("leader: %d %s", w.Code, w.Body.String())
 	}
