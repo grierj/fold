@@ -18,6 +18,15 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	errMessageSubject:                              "message_subject",
+	errMessageBody:                                 "message_body",
+	errMessageNobody:                               "message_nobody",
+	errMessageLocked:                               "message_locked",
+	errMessageWhen:                                 "message_when",
+	errMessageChannel:                              "message_channel",
+	errMessageNotYours:                             "message_not_yours",
+	"choose who gets this message":                 "message_audience",
+	"that group or event isn't there anymore":      "message_audience_gone",
 	errChurchAddressLong:                           "church_address_long",
 	errChurchAddressCharacters:                     "church_address_characters",
 	"that kind of email can't be changed here":     "email_kind_unknown",

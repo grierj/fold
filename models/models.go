@@ -1005,7 +1005,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
-		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{}, &Suppression{},
+		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{}, &Suppression{}, &Message{},
 	}
 }
 
@@ -1096,4 +1096,39 @@ const (
 	SuppressHardBounce = "hard_bounce"
 	SuppressComplaint  = "complaint"
 	SuppressManual     = "manual"
+)
+
+// Message is one announcement written in the composer (M3.4, PLAN 5.3).
+// BodyHTML is stored sanitized. Audience is a PLAN 7.2 audience as JSON.
+type Message struct {
+	ID                 uint   `gorm:"primaryKey"`
+	Channel            string `gorm:"not null;default:email"`
+	AuthorID           *uint
+	Status             string `gorm:"not null;default:draft"`
+	Category           string `gorm:"not null;default:announcement"`
+	Subject            string `gorm:"not null;default:''"`
+	BodyHTML           string `gorm:"column:body_html;not null;default:''"`
+	BodyText           string `gorm:"not null;default:''"`
+	SMSBody            string `gorm:"column:sms_body;not null;default:''"`
+	Audience           string `gorm:"type:jsonb;not null;default:'{}'"`
+	ScheduledAt        *time.Time
+	SentAt             *time.Time
+	ApprovedBy         *uint
+	RequestID          *uint
+	SendWindowOverride bool      `gorm:"not null;default:false"`
+	OverrideReason     string    `gorm:"not null;default:''"`
+	SegmentsEstimate   int       `gorm:"not null;default:0"`
+	RecipientCount     int       `gorm:"not null;default:0"`
+	CreatedAt          time.Time `gorm:"not null;default:now()"`
+	UpdatedAt          time.Time `gorm:"not null;default:now()"`
+}
+
+// Message statuses (PLAN 5.3). Only draft and scheduled can still change.
+const (
+	MessageDraft     = "draft"
+	MessageScheduled = "scheduled"
+	MessageSending   = "sending"
+	MessageSent      = "sent"
+	MessageCancelled = "cancelled"
+	MessageFailed    = "failed"
 )

@@ -276,6 +276,10 @@ const (
 	// ChurchAddressChanged: an admin set or cleared the church's mailing
 	// address for email footers (M3.3b, DEC-116).
 	ChurchAddressChanged = "setting.church_address_changed"
+	// MessageScheduled / MessageCancelled: an author scheduled an announcement
+	// (or rescheduled it) or cancelled it (M3.4). Target is the message.
+	MessageScheduled = "message.scheduled"
+	MessageCancelled = "message.cancelled"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).
