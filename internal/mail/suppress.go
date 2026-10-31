@@ -56,11 +56,8 @@ func (s *Suppressing) SendEmail(ctx context.Context, m Message) (string, error) 
 		Pluck("reason", &reasons).Error; err != nil {
 		return "", err
 	}
-	for _, r := range reasons {
-		optional := m.Optional || m.Stream == providers.StreamBroadcast
-		if r != models.SuppressComplaint || optional {
-			return "", &ErrSuppressed{Reason: r}
-		}
+	if err := Blocked(reasons, m); err != nil {
+		return "", err
 	}
 	return s.inner.SendEmail(ctx, m)
 }
@@ -77,4 +74,18 @@ func Unwrap(s Sender) Sender {
 		return w.inner
 	}
 	return s
+}
+
+// Blocked is the suppression rule (DEC-112) for a message to an address
+// with these open reasons: a hard bounce or manual suppression refuses
+// everything, a complaint refuses optional and broadcast mail. A caller that
+// already read the reasons (a notification batch) sends through Unwrap
+// after asking this.
+func Blocked(reasons []string, m Message) error {
+	for _, r := range reasons {
+		if r != models.SuppressComplaint || m.Optional || m.Stream == providers.StreamBroadcast {
+			return &ErrSuppressed{Reason: r}
+		}
+	}
+	return nil
 }

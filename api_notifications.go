@@ -805,13 +805,17 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 		return
 	}
 	// Each recipient comes with the email consent scopes they opted out of
-	// (DEC-97), in the same read, so a batch stays at two reads.
+	// (DEC-97) and its address's open suppressions (DEC-112), in the same
+	// read, so a batch stays at two reads.
 	var users []emailRecipient
 	if err := a.DB.Model(&models.User{}).Select(`users.*, COALESCE((
 		SELECT string_agg(latest.scope, ',') FROM (
 			SELECT DISTINCT ON (c.scope) c.scope, c.status FROM consents c
 			WHERE c.user_id = users.id AND c.channel = ? ORDER BY c.scope, c.at DESC, c.id DESC
-		) latest WHERE latest.status = ?), '') AS email_opt_outs`, models.ConsentEmail, models.ConsentOptedOut).
+		) latest WHERE latest.status = ?), '') AS email_opt_outs,
+		COALESCE((SELECT string_agg(s.reason, ',') FROM suppressions s
+			WHERE s.channel = 'email' AND s.address = lower(btrim(users.email)) AND s.cleared_at IS NULL), '') AS email_suppressions`,
+		models.ConsentEmail, models.ConsentOptedOut).
 		Where("users.id IN ?", userIDs).Find(&users).Error; err != nil {
 		// Mark nothing suppressed: without a delivery record the rows stay
 		// pending, so a later delivery pass can still send them.
@@ -819,9 +823,13 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 		return
 	}
 	byID := make(map[uint]*models.User, len(users))
+	suppressed := make(map[uint][]string, len(users))
 	optOuts := make(map[uint]map[string]bool, len(users))
 	for i := range users {
 		byID[users[i].ID] = &users[i].User
+		if users[i].EmailSuppressions != "" {
+			suppressed[users[i].ID] = strings.Split(users[i].EmailSuppressions, ",")
+		}
 		for _, scope := range strings.Split(users[i].EmailOptOuts, ",") {
 			if scope == "" {
 				continue
@@ -833,7 +841,7 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 		}
 	}
 	for i := range rows {
-		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID], optOuts[rows[i].UserID])
+		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID], optOuts[rows[i].UserID], suppressed[rows[i].UserID])
 	}
 }
 
@@ -842,6 +850,9 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 type emailRecipient struct {
 	models.User
 	EmailOptOuts string
+	// EmailSuppressions are the open suppression reasons on the address
+	// (DEC-112), read with the recipient so a batch stays at two reads.
+	EmailSuppressions string
 }
 
 // emailOptOuts maps each user to the email consent scopes whose latest
@@ -871,7 +882,7 @@ func categoryScope(category string) string { return "category:" + category }
 // deliverNotificationEmail sends one row to its preloaded recipient (nil
 // when the account is gone). optedOut holds the recipient's email consent
 // scopes that opt out; only optional kinds consult it (DEC-97).
-func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notification, u *models.User, optedOut map[string]bool) {
+func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notification, u *models.User, optedOut map[string]bool, suppressions []string) {
 	k, ok := notify.Lookup(n.Kind)
 	if !ok || !k.AllowEmail {
 		return
@@ -894,12 +905,17 @@ func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notificati
 	msg := mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text, Optional: !k.Required}
 	// The provider's id for the message lets its delivery and bounce reports
 	// find this row (M3.2).
+	// The suppressions came with the recipient, so the send skips the
+	// wrapper's own read (one per batch, not one per person).
 	var providerID string
-	var err error
-	if tracked, ok := a.Mailer.(providers.EmailSender); ok {
+	err := mail.Blocked(suppressions, msg)
+	sender := mail.Unwrap(a.Mailer)
+	if err != nil {
+		// refused: recorded below
+	} else if tracked, ok := sender.(providers.EmailSender); ok {
 		providerID, err = tracked.SendEmail(ctx, msg)
 	} else {
-		err = a.Mailer.Send(ctx, msg)
+		err = sender.Send(ctx, msg)
 	}
 	if mail.IsSuppressed(err) {
 		a.recordDelivery(n.ID, u.ID, models.DeliverySuppressed, strings.TrimPrefix(err.Error(), "mail: "), "")
