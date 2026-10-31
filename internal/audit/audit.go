@@ -266,6 +266,10 @@ const (
 	RoomFeedCreated = "room_feed.created"
 	// RoomFeedRevoked: an admin turned a room's calendar-feed link off.
 	RoomFeedRevoked = "room_feed.revoked"
+	// JobRetried / JobDismissed: an admin retried a dead background job or
+	// set it aside (M3.1b, DEC-111). Target is the job; meta has its kind.
+	JobRetried   = "job.retried"
+	JobDismissed = "job.dismissed"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

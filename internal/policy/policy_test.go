@@ -1156,3 +1156,9 @@ func TestCanInviteIntoGroup(t *testing.T) {
 		}
 	}
 }
+
+func TestCanManageJobs(t *testing.T) {
+	if CanManageJobs(nil) || CanManageJobs(&Person{ID: 1}) || CanManageJobs(&Person{ID: 2, Teen: true}) || !CanManageJobs(&Person{ID: 3, Admin: true}) {
+		t.Fatal("only admins manage background jobs")
+	}
+}

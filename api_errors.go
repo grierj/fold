@@ -18,6 +18,7 @@ import (
 // TestErrorCodesKeysAreUsed fails when a message is reworded and its key
 // goes stale; TestWebErrorCopyCoversEveryCode keeps the SPA's map in step.
 var errorCodes = map[string]string{
+	errJobHandled: "job_handled",
 	"invalid upcoming date page; reload the group":                                                "group_upcoming_page",
 	"invalid contact history filters":                                                             "contact_history_filters",
 	"adding this person needs approval; send an ask to add for this date":                         "date_add_approval_required",

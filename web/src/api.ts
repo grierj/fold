@@ -101,6 +101,7 @@ export async function authenticatedCSV(path: string): Promise<Blob> {
 // ---- endpoint wrappers ----
 
 import type {
+  AdminJob,
   AccountRequest,
   PeopleSearchResponse,
   AgeBand,
@@ -723,6 +724,13 @@ export interface RoomInput {
   defaultSetupMinutes?: number;
   defaultTeardownMinutes?: number;
 }
+
+// Background jobs that ran out of attempts, for the admin System page (M3.1b).
+export const AdminJobs = {
+  list: () => api<{ jobs: AdminJob[]; more: boolean }>("/admin/jobs"),
+  retry: (id: number) => api<{ status: string }>(`/admin/jobs/${id}/retry`, { method: "POST" }),
+  dismiss: (id: number) => api<{ status: string }>(`/admin/jobs/${id}/dismiss`, { method: "POST" }),
+};
 
 export const AdminRooms = {
   list: () => api<{ rooms: Room[]; needApproval: boolean }>("/admin/rooms"),

@@ -1722,12 +1722,12 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 - Depends on: M0.1
 - Scope: 5.5. Worker, polling every 1 to 2 seconds, retries, `unique_key`, and an admin "System" page listing dead jobs with a retry button. Move the daily ticker's tasks onto jobs. Two slices (14.1):
   - **M3.1a Jobs table and worker** (built): migration 00051 `jobs`, `internal/jobs` (enqueue with `unique_key`, `FOR UPDATE SKIP LOCKED` claims, backoff with jitter, `dead` after `max_attempts`, an expired lease is taken back), `FOLD_WORKERS` and `FOLD_JOB_POLL`. The daily tasks (`occurrences.extend`, `contact.sweep`, `cleanup.login_throttles`, `notifications.cleanup`, `accounts.expire_requests`, `accounts.age_rollover`, `jobs.cleanup`) are jobs queued once per church day under `<kind>:<church date>`, at startup and at church-local midnight; finished jobs are kept 30 days.
-  - **M3.1b System page**: admins list dead jobs, retry or dismiss them, audited (DEC-111).
+  - **M3.1b System page** (built): Admin → System lists dead jobs in plain words with Retry and Dismiss, audited (DEC-111).
 - Acceptance:
   - [x] Two app processes never run the same job twice (`FOR UPDATE SKIP LOCKED`; a test with 2 workers and 200 jobs)
   - [x] A newly queued job starts within 2 seconds
   - [x] A failing job retries with backoff and ends `dead` after `max_attempts`
-  - [ ] An admin sees dead jobs on the System page and can retry or dismiss them; nobody else can (M3.1b)
+  - [x] An admin sees dead jobs on the System page and can retry or dismiss them; nobody else can (M3.1b)
 - Tests: unit tests for backoff and dedupe; Postgres concurrency test.
 
 **M3.2 Provider registry, Postmark adapter, email webhooks**

@@ -33,7 +33,12 @@ import (
 type Kind struct {
 	Name        string
 	MaxAttempts int
-	Run         func(ctx context.Context, payload json.RawMessage) error
+	// Label says what the job does, in plain words, on the System page.
+	Label string
+	// Daily: the job is queued again every church day, so a dead one is
+	// retried by tomorrow's run anyway.
+	Daily bool
+	Run   func(ctx context.Context, payload json.RawMessage) error
 }
 
 // Defaults (PLAN 5.5: FOLD_JOB_POLL=1s).

@@ -24,31 +24,31 @@ const doneJobsKept = 30 * 24 * time.Hour
 // retries it with backoff; a task that keeps failing is dead and shows on
 // the admin System page (DEC-111). Every one is safe to run twice.
 func (a *App) dailyKinds() []jobs.Kind {
-	daily := func(name string, run func(ctx context.Context, now time.Time) error) jobs.Kind {
-		return jobs.Kind{Name: name, MaxAttempts: jobs.DefaultMaxAttempts, Run: func(ctx context.Context, _ json.RawMessage) error {
+	daily := func(name, label string, run func(ctx context.Context, now time.Time) error) jobs.Kind {
+		return jobs.Kind{Name: name, Label: label, Daily: true, MaxAttempts: jobs.DefaultMaxAttempts, Run: func(ctx context.Context, _ json.RawMessage) error {
 			return run(ctx, time.Now().UTC())
 		}}
 	}
 	return []jobs.Kind{
 		// Stored occurrences reach 18 months ahead (DEC-89).
-		daily("occurrences.extend", func(ctx context.Context, now time.Time) error {
+		daily("occurrences.extend", "Adding upcoming event dates", func(ctx context.Context, now time.Time) error {
 			var emailed []uint
 			err := events.ExtendLocked(ctx, a.DB, now, a.afterExtend(&emailed))
 			a.deliverNotificationEmails(emailed)
 			return err
 		}),
 		// Contact requests expire and grants end (5.11).
-		daily("contact.sweep", a.sweepContacts),
-		daily("cleanup.login_throttles", func(ctx context.Context, _ time.Time) error { return a.pruneLoginThrottles(ctx) }),
+		daily("contact.sweep", "Closing expired contact requests and grants", a.sweepContacts),
+		daily("cleanup.login_throttles", "Clearing old sign-in limits", func(ctx context.Context, _ time.Time) error { return a.pruneLoginThrottles(ctx) }),
 		// Notification retention (DEC-45).
-		daily("notifications.cleanup", func(_ context.Context, now time.Time) error {
+		daily("notifications.cleanup", "Clearing old alerts", func(_ context.Context, now time.Time) error {
 			n, err := notify.Prune(a.DB, now)
 			if n > 0 {
 				log.Printf("notifications: pruned %d", n)
 			}
 			return err
 		}),
-		daily("accounts.expire_requests", func(context.Context, time.Time) error {
+		daily("accounts.expire_requests", "Closing expired account requests", func(context.Context, time.Time) error {
 			n, err := a.expirePendingRequests()
 			if n > 0 {
 				log.Printf("account requests: expired %d", n)
@@ -56,14 +56,14 @@ func (a *App) dailyKinds() []jobs.Kind {
 			return err
 		}),
 		// Teens turn 18 and children 13 on the church's calendar (DEC-83).
-		daily("accounts.age_rollover", func(_ context.Context, now time.Time) error {
+		daily("accounts.age_rollover", "Updating teens who turn 18 and children who turn 13", func(_ context.Context, now time.Time) error {
 			n, err := a.rolloverAges(now)
 			if n > 0 {
 				log.Printf("age rollover: updated %d people", n)
 			}
 			return err
 		}),
-		daily("jobs.cleanup", func(_ context.Context, now time.Time) error {
+		daily("jobs.cleanup", "Clearing finished background tasks", func(_ context.Context, now time.Time) error {
 			_, err := jobs.PruneDone(a.DB, now.Add(-doneJobsKept))
 			return err
 		}),

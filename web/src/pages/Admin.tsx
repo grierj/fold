@@ -9,15 +9,16 @@ import { Badge } from "../components/ui/Badge";
 import { Tabs } from "../components/ui/Tabs";
 import { roleLabel, accountStatusLabel, groupStatusLabel } from "../lib/status";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminRooms, AdminUsers, ApiError, Groups, Invitations, RoomRequests, Site } from "../api";
+import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminJobs, AdminRooms, AdminUsers, ApiError, Groups, Invitations, RoomRequests, Site } from "../api";
 import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
 import { RoomsTab, sortRooms } from "../components/admin/RoomsTab";
 import { RoomRequestsList } from "../components/admin/RoomRequestsList";
 import { MatchLocations } from "../components/admin/MatchLocations";
+import { SystemTab } from "../components/admin/SystemTab";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
-import type { AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, Room, RoomRequest, User } from "../types";
+import type { AdminJob, AgeBand, AccountRequest, DepartureConfirmation, GuardianLink, GuardianNomination, GroupSummary, Member, Room, RoomRequest, User } from "../types";
 import { useAuth } from "../auth";
 import { Menu } from "../components/ui/Menu";
 import { Avatar } from "../components/Avatar";
@@ -35,7 +36,7 @@ import { Skeleton } from "../components/ui/Skeleton";
 import { ContactHistory } from "../contact-history-api";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 
-type AdminTab = "approvals" | "groups" | "rooms" | "users" | "invite" | "settings";
+type AdminTab = "approvals" | "groups" | "rooms" | "users" | "invite" | "settings" | "system";
 
 const TeenConsentPanel = lazy(() => import("../components/TeenConsentPanel"));
 
@@ -1442,7 +1443,7 @@ export function AdminPage() {
   // /site failing leaves roomsEnabled unknown; a bookmarked Rooms tab then says so and offers a retry.
   const [siteError, setSiteError] = useState<string | null>(null);
   const roomsShown = roomsEnabled === true || (roomsEnabled === null && requestedTab === "rooms");
-  const tab: AdminTab = requestedTab && ["approvals", "groups", "users", "invite", "settings", ...(roomsShown ? ["rooms"] : [])].includes(requestedTab)
+  const tab: AdminTab = requestedTab && ["approvals", "groups", "users", "invite", "settings", "system", ...(roomsShown ? ["rooms"] : [])].includes(requestedTab)
     ? requestedTab as AdminTab : "approvals";
   const [pendingCount, setPendingCount] = useState(0);
   const [users, setUsers] = useState<User[]>([]);
@@ -1463,6 +1464,11 @@ export function AdminPage() {
   const [needApproval, setNeedApproval] = useState<boolean | null>(null);
   const [requests, setRequests] = useState<RoomRequest[] | null>(null);
   const [requestsError, setRequestsError] = useState<string | null>(null);
+  // Background tasks that ran out of attempts (M3.1b): loaded here so the
+  // System chip can count them.
+  const [deadJobs, setDeadJobs] = useState<AdminJob[] | null>(null);
+  const [moreJobs, setMoreJobs] = useState(false);
+  const [jobsError, setJobsError] = useState<string | null>(null);
 
   const loadUsers = useCallback(async () => {
     try {
@@ -1506,6 +1512,17 @@ export function AdminPage() {
       setRequestsError(errorText(e, "We couldn't load the bookings waiting for approval."));
     }
   }, []);
+  const loadJobs = useCallback(async () => {
+    setJobsError(null);
+    try {
+      const { jobs, more } = await AdminJobs.list();
+      setDeadJobs(jobs);
+      setMoreJobs(more);
+    } catch (e) {
+      setJobsError(errorText(e, "We couldn't load the background tasks."));
+    }
+  }, []);
+  const jobRemoved = useCallback((id: number) => setDeadJobs((prev) => prev && prev.filter((j) => j.id !== id)), []);
   const requestRemoved = useCallback((id: number) => setRequests((prev) => prev && prev.filter((r) => r.id !== id)), []);
   const loadSite = useCallback(() => {
     setSiteError(null);
@@ -1519,8 +1536,9 @@ export function AdminPage() {
       loadUsers();
       void loadGroups();
       loadSite();
+      void loadJobs();
     } else if (!authLoading) setUsersLoading(false);
-  }, [authLoading, user, isAdmin, loadUsers, loadGroups, loadSite]);
+  }, [authLoading, user, isAdmin, loadUsers, loadGroups, loadSite, loadJobs]);
 
   useEffect(() => {
     if (roomsEnabled) {
@@ -1538,13 +1556,18 @@ export function AdminPage() {
     );
   }
 
-  const tabs: { id: AdminTab; label: string; badge?: number; count?: number | null }[] = [
+  const tabs: { id: AdminTab; label: string; badge?: number; count?: number | string | null; spoken?: string }[] = [
     { id: "approvals", label: "Approvals", badge: pendingCount },
     { id: "groups", label: "Groups", count: groupCount },
     ...(roomsShown ? [{ id: "rooms" as const, label: "Rooms", count: roomCount, badge: requests?.length }] : []),
     { id: "users", label: "Users", count: userCount },
     { id: "invite", label: "Invite" },
     { id: "settings", label: "Settings" },
+    // A count only when something failed: "System 2", or "System 100+" when
+    // more failed than the list holds.
+    { id: "system", label: "System", ...(moreJobs
+      ? { count: `${deadJobs?.length ?? 0}+`, spoken: `System, more than ${deadJobs?.length ?? 0}` }
+      : { count: deadJobs && deadJobs.length > 0 ? deadJobs.length : null }) },
   ];
 
   return (
@@ -1554,7 +1577,7 @@ export function AdminPage() {
         onChange={(value) => setSearchParams(value === "approvals" ? {} : { tab: value })}
         options={tabs.map((t) => ({
           id: t.id,
-          accessibleName: t.badge ? `${t.label}, ${t.badge} waiting` : t.count != null ? `${t.label}, ${t.count}` : t.label,
+          accessibleName: t.spoken ?? (t.badge ? `${t.label}, ${t.badge} waiting` : t.count != null ? `${t.label}, ${t.count}` : t.label),
           label: <>{t.label}{t.badge ? (
             <span aria-hidden="true" className="ml-1.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-xs">
               {" "}{t.badge}
@@ -1588,6 +1611,7 @@ export function AdminPage() {
         usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}
       {tab === "invite" && <InviteTab />}
+      {tab === "system" && <SystemTab jobs={deadJobs} more={moreJobs} error={jobsError} reload={loadJobs} onRemoved={jobRemoved} />}
       </Tabs>
     </div>
   );
