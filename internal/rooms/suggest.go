@@ -140,7 +140,9 @@ func NormalizeTags(tags []string) []string {
 // usages per candidate room and, for those rooms, their conflicts.
 func Suggest(db *gorm.DB, s Subject) (Result, error) {
 	tags := NormalizeTags(s.Tags)
-	windows := s.Windows
+	// "The next 8" dates: soonest first, whatever order they came in.
+	windows := append([]Window(nil), s.Windows...)
+	sort.Slice(windows, func(i, j int) bool { return windows[i].Start.Before(windows[j].Start) })
 	if len(windows) > MaxBusyDates {
 		windows = windows[:MaxBusyDates]
 	}
@@ -217,7 +219,9 @@ func quoteArray(tags []string) []string {
 }
 
 // markBusy counts, per candidate, the windows another confirmed booking
-// holds it on, with the room's own setup and teardown padding (9.2).
+// holds it on, with the room's own setup and teardown padding (9.2). Like
+// the exclusion constraint, it reads booking rows alone: cancelling a date
+// or deleting an event releases its booking, so none is left to count.
 func markBusy(db *gorm.DB, usages []roomUsage, windows []Window) error {
 	if len(windows) == 0 {
 		return nil

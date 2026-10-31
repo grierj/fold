@@ -391,8 +391,14 @@ func TestSuggestionsAreFast(t *testing.T) {
 			t.Fatalf("want %d suggestions: %+v", MaxSuggestions, res)
 		}
 	}
-	if best > 100*time.Millisecond {
-		t.Fatalf("suggestions took %v, want under 100ms", best)
+	// The target is 100 ms (M2.3a). Shared CI runners are slower and noisy,
+	// so there the test only catches a plan gone badly wrong.
+	limit := 100 * time.Millisecond
+	if os.Getenv("CI") != "" {
+		limit = 300 * time.Millisecond
+	}
+	if best > limit {
+		t.Fatalf("suggestions took %v, want under %v", best, limit)
 	}
 }
 
@@ -459,4 +465,53 @@ func seedLoad(t testing.TB, f *fixture) Subject {
 		s.Windows = append(s.Windows, Window{Start: start, End: start.Add(time.Hour)})
 	}
 	return s
+}
+
+// Busy uses ordinary bookings with their real padding, checks only the
+// soonest 8 dates whatever order they arrive in, and never counts the
+// date's own booking.
+func TestSuggestionBusyCheck(t *testing.T) {
+	f := newFixture(t)
+	hall := f.room("Hall", false, nil)
+	f.db.Model(&models.Room{}).Where("id = ?", hall).Update("default_teardown_minutes", 30)
+	g := f.group("G", public, "")
+	f.use(hall, f.event(g, public), -7, "")
+	// Another event's ordinary booking, 19:00-20:00 in 3 days with 30
+	// minutes of setup: it holds [18:30, 20:00).
+	other := f.event(f.group("Other", public, ""), public)
+	start := time.Date(f.now.Year(), f.now.Month(), f.now.Day(), 19, 0, 0, 0, time.UTC).AddDate(0, 0, 3)
+	occ := models.EventOccurrence{EventID: other, OriginalDate: start.Format("2006-01-02"), StartsAt: start, EndsAt: start.Add(time.Hour), Status: "scheduled"}
+	if err := f.db.Create(&occ).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Exec(`INSERT INTO room_bookings (occurrence_id, room_id, starts_at, ends_at, setup_minutes, teardown_minutes, padded_range, status)
+		VALUES (?, ?, ?, ?, 30, 0, tstzrange(?, ?, '[)'), 'confirmed')`, occ.ID, hall, start, start.Add(time.Hour), start.Add(-30*time.Minute), start.Add(time.Hour)).Error; err != nil {
+		t.Fatal(err)
+	}
+	s := f.subject(f.event(g, public), g, public, "")
+	busyAt := func(w Window) int {
+		s.Windows = []Window{w}
+		return f.suggest(s).Suggestions[0].BusyDates
+	}
+	// 17:45-18:00 ends before the booking's padding, but the hall's own
+	// 30 minutes of teardown reach 18:30: touching, not overlapping.
+	if busyAt(Window{Start: start.Add(-75 * time.Minute), End: start.Add(-60 * time.Minute)}) != 0 {
+		t.Fatal("touching padded ranges aren't a conflict")
+	}
+	if busyAt(Window{Start: start.Add(-70 * time.Minute), End: start.Add(-50 * time.Minute)}) != 1 {
+		t.Fatal("the hall's teardown overlaps the booking's setup: busy")
+	}
+	if busyAt(Window{Start: start, End: start.Add(time.Hour), OccurrenceID: occ.ID}) != 0 {
+		t.Fatal("a date's own booking isn't a conflict")
+	}
+	// Ten weekly dates, latest first: the soonest 8 are checked, and the
+	// busy one is among them.
+	s.Windows = nil
+	for i := 9; i >= 0; i-- {
+		d := start.AddDate(0, 0, 7*i)
+		s.Windows = append(s.Windows, Window{Start: d, End: d.Add(time.Hour)})
+	}
+	if res := f.suggest(s); res.Dates != MaxBusyDates || res.Suggestions[0].BusyDates != 1 {
+		t.Fatalf("want 1 of the soonest 8 busy: %+v", res)
+	}
 }
