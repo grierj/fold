@@ -26,7 +26,7 @@ import (
 // rows (by reason in skippedBy); Teens counts the teens it was for, not
 // skipped (DEC-20). GuardianCopies counts the copies, and
 // GuardianCopiesMissed the ones that didn't go out (skipped, bounced or
-// failed).
+// failed); GuardianCopiesFailed are the failed ones, which Try again sends.
 type recipientCountsJSON struct {
 	Sent                 int `json:"sent"`
 	Delivered            int `json:"delivered"`
@@ -38,6 +38,7 @@ type recipientCountsJSON struct {
 	Teens                int `json:"teens"`
 	GuardianCopies       int `json:"guardianCopies"`
 	GuardianCopiesMissed int `json:"guardianCopiesMissed"`
+	GuardianCopiesFailed int `json:"guardianCopiesFailed"`
 	// Every row and every failed row, copies included: what "Try again"
 	// works from.
 	rows, failedRows int
@@ -80,6 +81,7 @@ const maxHistoryRecipients = 200
 const (
 	errMessageNothingToRetry = "there's nothing to send again; everyone it could reach got it"
 	errMessageRetryRefused   = "its author can no longer write to these people, so it can't be sent again"
+	errMessageRetrySending   = "it's already sending again"
 )
 
 // recipientCounts counts m's rows by status, and the skipped by reason,
@@ -108,6 +110,9 @@ func (a *App) recipientCounts(id uint) (recipientCountsJSON, map[string]int, err
 			switch g.Status {
 			case models.RecipientSuppressed, models.RecipientBounced, models.RecipientFailed:
 				c.GuardianCopiesMissed += g.N
+			}
+			if g.Status == models.RecipientFailed {
+				c.GuardianCopiesFailed += g.N
 			}
 			continue
 		}
@@ -219,7 +224,14 @@ func retryable(m *models.Message, c recipientCountsJSON) bool {
 	case c.failedRows > 0:
 		return true
 	}
-	return m.Status == models.MessageFailed && c.rows == 0 && m.Error == whyNotPrepared
+	return m.Status == models.MessageFailed && c.rows == 0 && neverPrepared(m.Error)
+}
+
+// goingOut: m is sending, or due to (a retry of one that never got ready
+// is scheduled for now), so a Try again has already been pressed.
+func goingOut(m *models.Message) bool {
+	return m.Status == models.MessageSending ||
+		(m.Status == models.MessageScheduled && m.ScheduledAt != nil && !m.ScheduledAt.After(time.Now()))
 }
 
 // authorMayResend checks again, as message.send does, that m's author is
@@ -291,6 +303,10 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not send the message again")
 		return
 	}
+	if goingOut(m) {
+		jsonError(c, http.StatusConflict, errMessageRetrySending)
+		return
+	}
 	if !retryable(m, counts) {
 		jsonError(c, http.StatusConflict, errMessageNothingToRetry)
 		return
@@ -344,7 +360,12 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 			Meta: map[string]any{"people": len(ids), "byOther": m.AuthorID == nil || *m.AuthorID != me.ID}, IP: c.ClientIP()})
 	})
 	if errors.Is(err, errLocked) {
-		jsonError(c, http.StatusConflict, errMessageNothingToRetry)
+		// Someone else pressed it first.
+		if a.DB.First(m, m.ID).Error == nil && goingOut(m) {
+			jsonError(c, http.StatusConflict, errMessageRetrySending)
+		} else {
+			jsonError(c, http.StatusConflict, errMessageNothingToRetry)
+		}
 		return
 	}
 	if err != nil {

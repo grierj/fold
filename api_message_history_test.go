@@ -1,7 +1,11 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -121,7 +125,7 @@ func TestMessageHistoryPrivacy(t *testing.T) {
 // Our own plain texts reach everyone as they are; anything else is a
 // provider's words, which only an admin reads.
 func TestMessageErrorWords(t *testing.T) {
-	for _, own := range []string{"", whyAuthorGone, whyAuthorRefused, whyAudienceGone, whyNotPrepared, whyStopped, whyNoSender} {
+	for _, own := range []string{"", whyAuthorGone, whyAuthorRefused, whyAudienceGone, whyNotPrepared, whyNotPreparedM35a, whyStopped, whyNoSender} {
 		if messageErrorFor(own, false) != own {
 			t.Errorf("%q changed for a leader", own)
 		}
@@ -197,36 +201,83 @@ func TestMessageRetryRefusedWhenTheAuthorLostRights(t *testing.T) {
 	}
 }
 
-// A message that failed before anyone was chosen is prepared again; a
-// draft or a refused message has nothing to retry.
+// A message that failed before anyone was chosen is prepared again, in
+// today's words or M3.5a's; a draft or a refused message has nothing to
+// retry, and a second press while it goes out says it's already sending.
 func TestMessageRetryWhenItNeverGotReady(t *testing.T) {
 	f := newComposeFixture(t)
 	aud := `{"type":"group","groupId":` + itoa(f.group.ID) + `,"roles":["member","leader"]}`
 	at := time.Now().Add(-2 * time.Hour)
 	stuck := models.Message{AuthorID: &f.leaderUser.ID, Status: models.MessageFailed, Subject: "Again", BodyHTML: "<p>Hi</p>", BodyText: "Hi",
-		Audience: aud, ScheduledAt: &at, Error: whyNotPrepared}
+		Audience: aud, ScheduledAt: &at, Error: whyNotPreparedM35a}
+	fresh := stuck
+	fresh.Error = whyNotPrepared
 	refused := stuck
 	refused.Error = whyAuthorRefused
 	draft := stuck
 	draft.Status, draft.Error = models.MessageDraft, ""
-	for _, m := range []*models.Message{&stuck, &refused, &draft} {
+	for _, m := range []*models.Message{&stuck, &fresh, &refused, &draft} {
 		f.app.DB.Create(m)
 	}
 	for _, m := range []*models.Message{&refused, &draft} {
-		if w := f.leader.do("POST", "/api/v1/messages/"+itoa(m.ID)+"/retry", nil, true); w.Code != http.StatusConflict {
+		if w := f.leader.do("POST", "/api/v1/messages/"+itoa(m.ID)+"/retry", nil, true); w.Code != http.StatusConflict ||
+			!strings.Contains(w.Body.String(), "message_nothing_to_retry") {
 			t.Fatalf("%s: %d %s", m.Status, w.Code, w.Body.String())
 		}
 	}
-	if h, _ := f.history(t, f.leader, stuck.ID); !h.CanRetry {
-		t.Fatal("no Try again for a message that never got ready")
+	for _, m := range []*models.Message{&stuck, &fresh} {
+		if h, _ := f.history(t, f.leader, m.ID); !h.CanRetry {
+			t.Fatalf("no Try again for %q", m.Error)
+		}
 	}
 	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(stuck.ID)+"/retry", nil, true); w.Code != http.StatusOK {
 		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+	}
+	if w := f.admin.do("POST", "/api/v1/messages/"+itoa(stuck.ID)+"/retry", nil, true); w.Code != http.StatusConflict ||
+		!strings.Contains(w.Body.String(), "message_retry_sending") {
+		t.Fatalf("second press: %d %s", w.Code, w.Body.String())
 	}
 	runMessageJobs(t, f.app)
 	f.app.DB.First(&stuck, stuck.ID)
 	if stuck.Status != models.MessageSent || recipientsOf(t, f.app, stuck.ID)[f.teen.Email].Status != models.RecipientSent {
 		t.Fatalf("after retry: %+v", stuck)
+	}
+}
+
+// Every failure text Fold writes is listed in ownMessageErrors, so a copy
+// change can't quietly turn one into "a provider's words" for leaders.
+func TestOwnMessageErrorsListEveryWhy(t *testing.T) {
+	fset := token.NewFileSet()
+	consts := map[string]string{}
+	for _, file := range []string{"messages_send.go", "api_messages.go", "api_message_history.go"} {
+		f, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			spec, ok := n.(*ast.ValueSpec)
+			if !ok {
+				return true
+			}
+			for i, name := range spec.Names {
+				if !strings.HasPrefix(name.Name, "why") || i >= len(spec.Values) {
+					continue
+				}
+				if lit, ok := spec.Values[i].(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					v, _ := strconv.Unquote(lit.Value)
+					consts[name.Name] = v
+				}
+			}
+			return true
+		})
+	}
+	if len(consts) < 8 {
+		t.Fatalf("found only %v", consts)
+	}
+	for name, v := range consts {
+		if !ownMessageErrors[v] {
+			t.Errorf("%s is not in ownMessageErrors", name)
+		}
 	}
 }
 

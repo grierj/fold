@@ -120,19 +120,11 @@ func toMessageJSON(m *models.Message, me *models.User, facts messageFacts) messa
 		UpdatedAt: m.UpdatedAt, Error: messageErrorFor(m.Error, policy.IsAdmin(asPerson(me))), FailedCount: facts.failed[m.ID]}
 }
 
-// whyProvider stands in for a provider's own error text, which a leader
-// or host can't act on (DEC-52); admins see the provider's words.
-const whyProvider = "The email service didn't take it. Try again in a little while, or ask an admin to look at the System page."
-
 // messageErrorFor is a stored error as the viewer reads it: the
-// pipeline's own plain texts as they are, anything else (a provider's
-// error) in plain words unless the viewer is an admin.
+// pipeline's own plain texts (ownMessageErrors) as they are, anything else
+// (a provider's error) in plain words unless the viewer is an admin.
 func messageErrorFor(stored string, admin bool) string {
-	switch stored {
-	case "", whyAuthorGone, whyAuthorRefused, whyAudienceGone, whyNotPrepared, whyStopped, whyNoSender:
-		return stored
-	}
-	if admin {
+	if stored == "" || ownMessageErrors[stored] || admin {
 		return stored
 	}
 	return whyProvider

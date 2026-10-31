@@ -95,7 +95,7 @@ export function MessageComposerPage() {
   // The question before sending, for exactly what was on screen (snap).
   const [confirm, setConfirm] = useState<{ eligible: number; at: string | null; snap: string } | null>(null);
   // Once it goes out: who got it, checked every few seconds while sending.
-  const { history, failed: historyFailed, retryLoad } = useMessageHistory(editing ? null : message, setMessage);
+  const { history, failed: historyFailed, stale, announce, retryLoad } = useMessageHistory(editing ? null : message, setMessage);
   const [retryError, setRetryError] = useState("");
 
   const audience = toAudience(choice);
@@ -308,7 +308,7 @@ export function MessageComposerPage() {
   // Try again (DEC-131): only the people it failed for, after asking.
   async function retry() {
     if (!message || busy) return;
-    if (!window.confirm(retryQuestion(message.failedCount))) return;
+    if (!window.confirm(retryQuestion(history?.counts.failed ?? message.failedCount, history?.counts.guardianCopiesFailed ?? 0))) return;
     setBusy("retry");
     setRetryError("");
     try {
@@ -380,7 +380,7 @@ export function MessageComposerPage() {
       <section aria-label="This message" className="space-y-4 rounded-lg border border-border bg-surface p-4 sm:p-6">
         <div className="space-y-1">
           <p className="text-lg font-semibold">{statusLabel(message, zone)}</p>
-          {history && <p className="text-sm">{historyLine(history, message.status)}</p>}
+          {history && <p className="text-sm">{historyLine(history, message)}</p>}
           {history && message.status !== "sending" && history.counts.teens > 0 && <p className="text-sm text-text-muted">{historyTeenLine(history.counts.teens)}</p>}
           {history && message.status !== "sending" && guardianLine(history.counts) && <p className="text-sm text-text-muted">{guardianLine(history.counts)}</p>}
           {historyFailed && !history && (
@@ -388,6 +388,13 @@ export function MessageComposerPage() {
               We couldn't load who got it. <Button variant="link" onClick={retryLoad}>Load again</Button>
             </p>
           )}
+          {stale && (
+            <p className="text-sm text-text-muted">
+              Nothing has changed for a while. <Button variant="link" onClick={retryLoad}>Refresh to check again</Button>
+            </p>
+          )}
+          {/* Said once when a send settles, not on every check. */}
+          <p role="status" className="sr-only">{announce}</p>
         </div>
         {scheduled && message.editable && <p className="text-sm text-text-muted">You can change or cancel it until it starts sending.</p>}
         <dl className="grid gap-1 text-sm sm:grid-cols-[8rem_1fr]">

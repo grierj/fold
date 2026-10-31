@@ -111,7 +111,27 @@ const (
 	// whyNoSender fails a row at once when no email service is set up:
 	// retrying for an hour can't help until an admin sets one up.
 	whyNoSender = "No email service is set up yet, so it couldn't go out. Once an admin sets one up, try again."
+	// whyProvider stands in for a provider's own error text, which a
+	// leader or host can't act on (DEC-52); admins see the provider's words.
+	whyProvider = "The email service didn't take it. Try again in a little while. If it keeps happening, ask an admin to open this message to see what went wrong."
+	// whyNotPreparedM35a is how M3.5a worded whyNotPrepared; rows stored
+	// then still carry it.
+	whyNotPreparedM35a = "We couldn't get this ready to send. Schedule it again to try once more."
 )
+
+// ownMessageErrors are the failure texts Fold itself writes, which anyone
+// who may see the message reads as they are; any other stored error is a
+// provider's words. TestOwnMessageErrorsListEveryWhy keeps every why*
+// constant here, so a copy change can't drop one; an old wording stays
+// listed for the rows that carry it.
+var ownMessageErrors = map[string]bool{
+	whyAuthorGone: true, whyAuthorRefused: true, whyAudienceGone: true, whyNotPrepared: true, whyStopped: true,
+	whyNoSender: true, whyProvider: true, whyNotPreparedM35a: true,
+}
+
+// neverPrepared: err says the message failed before anyone was chosen
+// because it couldn't be got ready, in today's words or M3.5a's.
+func neverPrepared(err string) bool { return err == whyNotPrepared || err == whyNotPreparedM35a }
 
 // prepareMessage is message.send: steps 1–5 and 7 of PLAN 7.1. When its
 // last attempt fails, the message fails with a reason instead of staying

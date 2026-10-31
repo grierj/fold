@@ -1096,7 +1096,7 @@ export interface Message {
 // The people a sent message was for, by status (M3.5b). skipped never went
 // out (counted by reason in skippedBy); teens are the teens it was for.
 // Guardian copies are counted apart (DEC-132): guardianCopiesMissed are the
-// copies that didn't go out.
+// copies that didn't go out, guardianCopiesFailed the failed ones among them.
 export interface MessageRecipientCounts {
   sent: number;
   delivered: number;
@@ -1108,6 +1108,7 @@ export interface MessageRecipientCounts {
   teens: number;
   guardianCopies: number;
   guardianCopiesMissed: number;
+  guardianCopiesFailed: number;
 }
 
 // "missed" is a skip, bounce, complaint or failure: a leader or host sees

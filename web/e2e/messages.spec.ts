@@ -101,14 +101,15 @@ test("a leader sends now and the page follows it: sent with counts, or failed wi
   const dev = (await page.request.get("/dev/outbox")).status() === 200;
   // The page checks every 5 seconds while it waits and sends.
   if (dev) {
-    await expect(page.getByText(/^Sent to \d+ (people|person)/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/^Sent to \d+ (people|person)/).first()).toBeVisible({ timeout: 20_000 });
     await expect(page.getByText(/^Sent (Today|Yesterday)/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0);
     await page.getByText("See who got it").click();
     await expect(page.getByRole("listitem").filter({ hasText: "· Sent" }).first()).toBeVisible();
     expect(await (await page.request.get("/dev/outbox")).text()).toContain(subject);
   } else {
-    const banner = page.getByRole("status").filter({ hasText: "This message didn't go out" });
+    const banner = page.getByRole("alert").filter({ hasText: "This message didn't go out" });
+    const again = page.getByRole("button", { name: "Try again" });
     await expect(banner).toBeVisible({ timeout: 20_000 });
     await expect(banner).toContainText("No email service is set up yet");
     await expect(page.getByText("Failed", { exact: true })).toBeVisible();
@@ -118,11 +119,12 @@ test("a leader sends now and the page follows it: sent with counts, or failed wi
     // Try again asks, sends to the same people, and fails the same way.
     const asked: string[] = [];
     page.once("dialog", (d) => { asked.push(d.message()); void d.accept(); });
-    await banner.getByRole("button", { name: "Try again" }).click();
+    await again.click();
     await expect.poll(() => asked).toEqual([expect.stringMatching(/^Send again to the \d+ (people|person) it didn't reach\?$/)]);
-    await expect(page.getByText(/^Sending… \d+ of \d+ so far$/)).toBeVisible();
+    await expect(page.getByText(/^Sending again… \d+ of \d+ so far$/)).toBeVisible();
     await expect(banner).toHaveCount(0);
-    await expect(banner.getByRole("button", { name: "Try again" })).toBeVisible({ timeout: 20_000 });
+    await expect(banner).toBeVisible({ timeout: 20_000 });
+    await expect(again).toBeVisible();
     await expect(page.getByText("Failed", { exact: true })).toBeVisible();
   }
 

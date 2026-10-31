@@ -60,12 +60,12 @@ export function GuardianCopiesSetting() {
     <div className="mb-6 max-w-xl space-y-2">
       <Checkbox
         label="Send guardians a copy of messages to their teens"
-        description="Each confirmed guardian gets an email copy, marked as a copy. Off by default."
+        description="When a message goes to a teen, their confirmed parents or guardians also get an email copy, marked as a copy. Takes effect for messages sent from now on. Off by default."
         checked={on === true}
         disabled={saving || on === null}
         onChange={(e) => void change(e.target.checked)}
       />
-      <p role="status" className="text-sm text-success">{ok ? "Saved" : ""}</p>
+      <p role="status" className="text-sm text-success empty:hidden">{ok ? "Saved" : ""}</p>
       {error && <FormError>{error}</FormError>}
     </div>
   );

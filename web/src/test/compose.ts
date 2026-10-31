@@ -33,7 +33,7 @@ export function message(over: Partial<Message> = {}): Message {
 // (DEC-132). adminRecipients is the same list as an admin gets it.
 export function recipients(over: Partial<MessageRecipients> = {}): MessageRecipients {
   return {
-    counts: { sent: 2, delivered: 0, bounced: 0, complained: 0, failed: 0, skipped: 1, queued: 0, teens: 1, guardianCopies: 1, guardianCopiesMissed: 0 },
+    counts: { sent: 2, delivered: 0, bounced: 0, complained: 0, failed: 0, skipped: 1, queued: 0, teens: 1, guardianCopies: 1, guardianCopiesMissed: 0, guardianCopiesFailed: 0 },
     skippedBy: { "turned off messages from leaders": 1 },
     recipients: [
       { name: "Ann Adult", teen: false, status: "sent" },

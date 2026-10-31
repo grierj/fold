@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composeOptions, recipients, summary } from "../test/compose";
-import { audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
+import { audienceLabel, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
 
 describe("audiences", () => {
   it("turns the picker's choice into the API's audience and back", () => {
@@ -72,6 +72,8 @@ describe("counts", () => {
 });
 
 describe("history", () => {
+  const sent = { status: "sent" as const, sentAt: "2026-11-02T16:00:00Z" }, failed = { status: "failed" as const, sentAt: null };
+  const sending = { status: "sending" as const, sentAt: null };
   const counts = (over: Partial<ReturnType<typeof recipients>["counts"]>) => ({ ...recipients().counts, ...over });
 
   it("words a sent message's counts", () => {
@@ -79,21 +81,28 @@ describe("history", () => {
       counts: counts({ sent: 120, delivered: 10, complained: 2, bounced: 3, skipped: 9 }),
       skippedBy: { "turned off messages from leaders": 6, "no email address": 3 },
     });
-    expect(historyLine(h, "sent")).toBe("Sent to 132 people · 3 bounced · 9 skipped (6 turned off messages from leaders, 3 have no email address)");
-    expect(historyLine(recipients({ counts: counts({ sent: 1, skipped: 0 }) }), "sent")).toBe("Sent to 1 person");
-    expect(historyLine(recipients({ counts: counts({ sent: 128, failed: 4, skipped: 0 }) }), "sent")).toBe("Sent to 128 people · 4 didn't get it");
-    expect(historyLine(recipients({ counts: counts({ sent: 0, failed: 4, skipped: 0 }) }), "failed")).toBe("4 didn't get it");
-    expect(historyLine(recipients({ counts: counts({ sent: 0, skipped: 0 }) }), "sent")).toBe("No one was on the list.");
+    expect(historyLine(h, sent)).toBe("Sent to 132 people · 3 bounced · 9 skipped (6 turned off messages from leaders, 3 have no email address)");
+    expect(historyLine(recipients({ counts: counts({ sent: 1, skipped: 0 }) }), sent)).toBe("Sent to 1 person");
+    expect(historyLine(recipients({ counts: counts({ sent: 128, failed: 4, skipped: 0 }) }), sent)).toBe("Sent to 128 people · 4 didn't get it");
+    expect(historyLine(recipients({ counts: counts({ sent: 0, failed: 4, skipped: 0 }) }), failed)).toBe("4 didn't get it");
+    expect(historyLine(recipients({ counts: counts({ sent: 0, skipped: 0 }) }), sent)).toBe("No one was on the list.");
   });
 
   it("counts the way while it sends", () => {
-    expect(historyLine(recipients({ counts: counts({ sent: 38, failed: 2, queued: 92, skipped: 9 }) }), "sending")).toBe("Sending… 40 of 132 so far");
+    expect(historyLine(recipients({ counts: counts({ sent: 38, failed: 2, queued: 92, skipped: 9 }) }), sending)).toBe("Sending… 40 of 132 so far");
+    expect(historyLine(recipients({ counts: counts({ sent: 128, queued: 4 }) }), { status: "sending", sentAt: "2026-11-02T16:00:00Z" })).toBe("Sending again… 128 of 132 so far");
   });
 
   it("asks before trying again", () => {
     expect(retryQuestion(4)).toBe("Send again to the 4 people it didn't reach?");
     expect(retryQuestion(1)).toBe("Send again to the 1 person it didn't reach?");
     expect(retryQuestion(0)).toBe("Try sending this message again?");
+    expect(retryQuestion(1, 1)).toBe("Send again to the 1 person and 1 guardian copy it didn't reach?");
+    expect(retryQuestion(0, 2)).toBe("Send the 2 guardian copies that didn't go out again?");
+    // The banner says the same.
+    expect(failedLine(1, 1)).toBe("1 person didn't get this");
+    expect(failedLine(3, 0)).toBe("3 people didn't get this");
+    expect(failedLine(0, 1)).toBe("1 guardian copy didn't go out");
     expect(historyTeenLine(0)).toBe("");
     expect(historyTeenLine(2)).toBe("2 of the people it was for are teens.");
   });

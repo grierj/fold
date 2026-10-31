@@ -82,6 +82,7 @@ export const ERROR_COPY = {
   message_daily_limit: "You've already sent 5 messages to these people today. Schedule this one for tomorrow, or ask an admin to send it.",
   message_nothing_to_retry: "There's nothing to send again: everyone it could reach got it.",
   message_retry_refused: "Its author can no longer write to these people, so it can't be sent again. Write a new message if it still needs to go out.",
+  message_retry_sending: "It's already sending again.",
   reply_to_invalid: "Enter one email address, like office@yourchurch.org, or leave it empty.",
   email_kind_unknown: "That kind of email can't be changed here. Refresh and try again.",
   link_expired: "This link has expired or was already used. Ask for a new one and try again.",

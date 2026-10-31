@@ -140,11 +140,12 @@ function reasonList(by: Record<string, number>): string {
 
 // historyLine is a sent message's count (M3.5b): "Sent to 132 people · 3
 // bounced · 9 skipped (6 turned off messages from leaders, 3 have no email
-// address)", or while it goes out, "Sending… 40 of 132 so far".
-export function historyLine(h: Pick<MessageRecipients, "counts" | "skippedBy">, status: Message["status"]): string {
+// address)", or while it goes out, "Sending… 40 of 132 so far" ("Sending
+// again…" for a Try again: it was sent before).
+export function historyLine(h: Pick<MessageRecipients, "counts" | "skippedBy">, m: Pick<Message, "status" | "sentAt">): string {
   const c = h.counts;
   const done = c.sent + c.delivered + c.bounced + c.complained + c.failed;
-  if (status === "sending") return `Sending… ${done} of ${done + c.queued} so far`;
+  if (m.status === "sending") return `${m.sentAt ? "Sending again" : "Sending"}… ${done} of ${done + c.queued} so far`;
   // Someone who marked it as spam got it.
   const reached = c.sent + c.delivered + c.complained;
   const parts: string[] = [];
@@ -155,17 +156,24 @@ export function historyLine(h: Pick<MessageRecipients, "counts" | "skippedBy">, 
   return parts.length ? parts.join(" · ") : "No one was on the list.";
 }
 
+const guardianCopies = (n: number) => `${n} guardian ${n === 1 ? "copy" : "copies"}`;
+
 // guardianLine counts a settled message's guardian copies (DEC-19): "2
 // guardian copies sent · 1 didn't go out", or "" for none. A leader sees
 // only this count, never the guardians' names (DEC-132).
 export function guardianLine(c: Pick<MessageRecipientCounts, "guardianCopies" | "guardianCopiesMissed">): string {
-  const copies = (n: number) => `${n} guardian ${n === 1 ? "copy" : "copies"}`;
   const sent = c.guardianCopies - c.guardianCopiesMissed;
   const parts: string[] = [];
-  if (sent) parts.push(`${copies(sent)} sent`);
-  if (c.guardianCopiesMissed) parts.push(`${sent ? c.guardianCopiesMissed : copies(c.guardianCopiesMissed)} didn't go out`);
+  if (sent) parts.push(`${guardianCopies(sent)} sent`);
+  if (c.guardianCopiesMissed) parts.push(`${sent ? c.guardianCopiesMissed : guardianCopies(c.guardianCopiesMissed)} didn't go out`);
   return parts.join(" · ");
 }
+
+// failedLine heads a partly sent message's banner: "1 person didn't get
+// this", or when only guardian copies failed, "1 guardian copy didn't go
+// out", matching the counts below it.
+export const failedLine = (failed: number, copies: number) =>
+  failed > 0 || copies === 0 ? `${people(failed)} didn't get this` : `${guardianCopies(copies)} didn't go out`;
 
 // Each person's status in a message's history, in words.
 export const HISTORY_WORDS: Record<HistoryStatus, string> = {
@@ -175,9 +183,14 @@ export const HISTORY_WORDS: Record<HistoryStatus, string> = {
   waiting: "Waiting",
 };
 
-// retryQuestion is the confirm before "Try again" (DEC-131).
-export const retryQuestion = (failed: number) =>
-  failed > 0 ? `Send again to the ${people(failed)} it didn't reach?` : "Try sending this message again?";
+// retryQuestion is the confirm before "Try again" (DEC-131), in the
+// banner's words: people, and guardian copies apart.
+export function retryQuestion(failed: number, copies = 0): string {
+  if (failed > 0 && copies > 0) return `Send again to the ${people(failed)} and ${guardianCopies(copies)} it didn't reach?`;
+  if (failed > 0) return `Send again to the ${people(failed)} it didn't reach?`;
+  if (copies > 0) return `Send the ${guardianCopies(copies)} that didn't go out again?`;
+  return "Try sending this message again?";
+}
 
 // historyTeenLine counts the teens a sent message was for (DEC-20), or "".
 export function historyTeenLine(teens: number): string {
