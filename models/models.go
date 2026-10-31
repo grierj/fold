@@ -594,6 +594,7 @@ type MailOutbox struct {
 	FromAddress     string    `gorm:"not null;default:''"`
 	Subject         string    `gorm:"not null"`
 	Body            string    `gorm:"not null;default:''"`
+	HTMLBody        string    `gorm:"column:html_body;not null;default:''"`
 	ListUnsubscribe string    `gorm:"not null;default:''"`
 	CreatedAt       time.Time `gorm:"not null;default:now()"`
 }

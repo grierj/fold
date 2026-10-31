@@ -920,11 +920,7 @@ func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notificati
 		// Optional mail says how to stop it, with a one-click link for mail
 		// clients (RFC 8058, M3.3); required mail never offers one.
 		token := a.unsubscribeToken(u.ID, categoryScope(k.Category))
-		// Mail clients honor one-click links over https only (RFC 8058); dev
-		// runs on http.
-		if base := a.emailBaseURL(); strings.HasPrefix(base, "https://") || a.Config.IsDev() {
-			msg.ListUnsubscribe = base + "/u/unsubscribe/" + token
-		}
+		msg.ListUnsubscribe = a.oneClickURL(token)
 		msg.Text += a.optionalEmailFooter(footer, k.Category, token)
 	}
 	// The provider's id for the message lets its delivery and bounce reports

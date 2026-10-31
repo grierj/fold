@@ -1,0 +1,33 @@
+{
+  "_comment": "Shared by internal/content/sms_test.go and web/src/lib/sms.test.ts (M3.4b, PLAN 7.3). the text is `text` repeated `times` times (once when unset), or `parts` joined, each repeated the same way; `church` frames it with the prefix and STOP footer first.",
+  "segments": [
+    { "name": "empty", "text": "", "encoding": "GSM-7", "units": 0, "segments": 0 },
+    { "name": "160 GSM-7 characters are one text", "text": "a", "times": 160, "encoding": "GSM-7", "units": 160, "segments": 1 },
+    { "name": "161 GSM-7 characters are two", "text": "a", "times": 161, "encoding": "GSM-7", "units": 161, "segments": 2 },
+    { "name": "306 GSM-7 characters are two parts of 153", "text": "a", "times": 306, "encoding": "GSM-7", "units": 306, "segments": 2 },
+    { "name": "307 GSM-7 characters are three", "text": "a", "times": 307, "encoding": "GSM-7", "units": 307, "segments": 3 },
+    { "name": "an extended character counts twice", "text": "€", "times": 80, "encoding": "GSM-7", "units": 160, "segments": 1 },
+    { "name": "an escape pair never splits across parts (306 septets take three)", "parts": [{ "text": "a", "times": 152 }, { "text": "€" }, { "text": "a", "times": 152 }], "encoding": "GSM-7", "units": 306, "segments": 3 },
+    { "name": "accented GSM letters stay GSM-7", "text": "Café à Zürich", "encoding": "GSM-7", "units": 13, "segments": 1 },
+    { "name": "70 UCS-2 units are one text", "text": "ж", "times": 70, "encoding": "UCS-2", "units": 70, "segments": 1 },
+    { "name": "71 UCS-2 units are two", "text": "ж", "times": 71, "encoding": "UCS-2", "units": 71, "segments": 2 },
+    { "name": "one emoji switches to UCS-2 and counts as two units", "parts": [{ "text": "a", "times": 68 }, { "text": "🙂" }], "encoding": "UCS-2", "units": 70, "segments": 1 },
+    { "name": "an emoji past 70 units makes two", "parts": [{ "text": "a", "times": 69 }, { "text": "🙂" }], "encoding": "UCS-2", "units": 71, "segments": 2 },
+    { "name": "a surrogate pair never splits across parts (134 units take three)", "parts": [{ "text": "a", "times": 66 }, { "text": "🙂" }, { "text": "a", "times": 66 }], "encoding": "UCS-2", "units": 134, "segments": 3 },
+    { "name": "the prefix and footer count", "church": "First Baptist", "text": "a", "times": 123, "encoding": "GSM-7", "units": 160, "segments": 1 },
+    { "name": "one more character past the frame makes two", "church": "First Baptist", "text": "a", "times": 124, "encoding": "GSM-7", "units": 161, "segments": 2 }
+  ],
+  "donation": [
+    { "text": "Please give generously this Sunday", "warn": true },
+    { "text": "Our TITHE envelopes are in the lobby", "warn": true },
+    { "text": "Donations welcome at the door", "warn": true },
+    { "text": "The offering is after the sermon", "warn": true },
+    { "text": "Support us at https://tithe.ly/give/123", "warn": true },
+    { "text": "Visit firstbaptist.org/giving to help", "warn": true },
+    { "text": "Visit https://www.pushpay.com/g/firstbaptist", "warn": true },
+    { "text": "Visit give.firstbaptist.org", "warn": true },
+    { "text": "Rehearsal moved to 7pm in room 4", "warn": false },
+    { "text": "Forgiven people forgive: sermon notes at firstbaptist.org/sermons", "warn": false },
+    { "text": "Bring a dish to share: firstbaptist.org/potluck", "warn": false }
+  ]
+}

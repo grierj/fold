@@ -30,7 +30,10 @@ var policy = func() *bluemonday.Policy {
 // italic, underline, strike, two heading sizes, lists, quotes, rules, links
 // (http, https, mailto) and button links. Scripts, styles, event handlers,
 // javascript: links and everything else are removed.
-func SanitizeHTML(s string) string { return strings.TrimSpace(policy.Sanitize(s)) }
+// Merge fields survive, including as a link's address.
+func SanitizeHTML(s string) string {
+	return strings.TrimSpace(restoreLinkFields(policy.Sanitize(protectLinkFields(s))))
+}
 
 var blankLines = regexp.MustCompile(`\n{3,}`)
 

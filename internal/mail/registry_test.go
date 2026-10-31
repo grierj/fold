@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	netmail "net/mail"
@@ -24,7 +26,7 @@ import (
 // Postmark built from Postmark's documented API), never a live service.
 
 // sent is what a fake saw for one message.
-type sent struct{ to, subject, text, stream, listUnsubscribe, listUnsubscribePost string }
+type sent struct{ to, subject, text, html, stream, listUnsubscribe, listUnsubscribePost string }
 
 // harness builds one adapter by its registry name, with a way to read what
 // its fake received.
@@ -50,7 +52,7 @@ func harnesses() []harness {
 					if r.ListUnsubscribe != "" {
 						post = "List-Unsubscribe=One-Click" // devoutbox stores the URL; the header pair is implied
 					}
-					out = append(out, sent{to: r.ToAddress, subject: r.Subject, text: r.Body, listUnsubscribe: r.ListUnsubscribe, listUnsubscribePost: post})
+					out = append(out, sent{to: r.ToAddress, subject: r.Subject, text: r.Body, html: r.HTMLBody, listUnsubscribe: r.ListUnsubscribe, listUnsubscribePost: post})
 				}
 				return out
 			}
@@ -79,17 +81,9 @@ func harnesses() []harness {
 				if err != nil {
 					t.Fatal(err)
 				}
-				body := new(strings.Builder)
-				buf := make([]byte, 4096)
-				for {
-					n, err := msg.Body.Read(buf)
-					body.Write(buf[:n])
-					if err != nil {
-						break
-					}
-				}
+				text, html := smtpParts(t, msg)
 				subject, _ := new(mime.WordDecoder).DecodeHeader(msg.Header.Get("Subject"))
-				return []sent{{to: msg.Header.Get("To"), subject: subject, text: strings.TrimRight(body.String(), "\n"),
+				return []sent{{to: msg.Header.Get("To"), subject: subject, text: text, html: html,
 					listUnsubscribe: strings.TrimSuffix(strings.TrimPrefix(msg.Header.Get("List-Unsubscribe"), "<"), ">"), listUnsubscribePost: msg.Header.Get("List-Unsubscribe-Post")}}
 			}
 		}},
@@ -168,6 +162,19 @@ func TestEmailAdapterContract(t *testing.T) {
 					}
 				}
 			})
+			t.Run("carries an HTML part beside the text when given", func(t *testing.T) {
+				s, got := h.build(t)
+				// One long line, past SMTP's 998-character limit, and a "=" and
+				// non-ASCII that quoted-printable must carry through.
+				html := `<p class="x">Grüße ` + strings.Repeat("long ", 400) + `</p>`
+				if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: "sam@example.com", Subject: "s", Text: "plain = body", HTML: html}); err != nil {
+					t.Fatal(err)
+				}
+				msgs := got()
+				if len(msgs) != 1 || msgs[0].text != "plain = body" || msgs[0].html != html {
+					t.Fatalf("received %+v", msgs)
+				}
+			})
 			t.Run("takes broadcast mail", func(t *testing.T) {
 				s, got := h.build(t)
 				if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: "sam@example.com", Subject: "News", Text: "b", Stream: providers.StreamBroadcast}); err != nil {
@@ -226,7 +233,7 @@ func newFakePostmark(t *testing.T, token string) *fakePostmark {
 			answer(http.StatusUnprocessableEntity, 406, "You tried to send to recipient(s) that have been marked as inactive.", "")
 			return
 		}
-		s := sent{to: body.To, subject: body.Subject, text: body.TextBody, stream: body.MessageStream}
+		s := sent{to: body.To, subject: body.Subject, text: body.TextBody, html: body.HtmlBody, stream: body.MessageStream}
 		for _, h := range body.Headers {
 			switch h.Name {
 			case "List-Unsubscribe":
@@ -350,5 +357,36 @@ func TestPostmarkAnswersWeTrustCarefully(t *testing.T) {
 	}
 	if p.token != "tok" {
 		t.Fatalf("token not trimmed: %q", p.token)
+	}
+}
+
+// smtpParts reads the plain and HTML parts of a message the fake SMTP
+// server received (the multipart reader undoes quoted-printable).
+func smtpParts(t *testing.T, msg *netmail.Message) (text, html string) {
+	t.Helper()
+	media, params, err := mime.ParseMediaType(msg.Header.Get("Content-Type"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if media != "multipart/alternative" {
+		b, _ := io.ReadAll(msg.Body)
+		return strings.TrimRight(string(b), "\n"), ""
+	}
+	r := multipart.NewReader(msg.Body, params["boundary"])
+	for {
+		p, err := r.NextPart()
+		if err == io.EOF {
+			return text, html
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(p)
+		s := strings.ReplaceAll(string(b), "\r\n", "\n")
+		if strings.HasPrefix(p.Header.Get("Content-Type"), "text/html") {
+			html = s
+		} else {
+			text = s
+		}
 	}
 }

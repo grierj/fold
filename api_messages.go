@@ -333,6 +333,10 @@ func (a *App) applyMessageBody(c *gin.Context, me *models.User, m *models.Messag
 	if _, ok := a.checkAudience(c, me, &body.Audience); !ok {
 		return false
 	}
+	if msg := mergeFieldError(subject+"\n"+clean, body.Audience); msg != "" {
+		jsonError(c, http.StatusBadRequest, msg)
+		return false
+	}
 	aud, _ := json.Marshal(body.Audience)
 	m.Channel, m.Subject, m.BodyHTML, m.BodyText, m.Audience = body.Channel, subject, clean, text, string(aud)
 	return true

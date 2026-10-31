@@ -246,6 +246,7 @@ func (a *App) setupRouter() *gin.Engine {
 
 	// Dev-only mail outbox (M1.2). The handler 404s unless APP_ENV=dev.
 	r.GET("/dev/outbox", a.devOutbox)
+	r.GET("/dev/outbox/:id/html", a.devOutboxHTML)
 
 	// JSON API.
 	a.registerAPIRoutes(r)
