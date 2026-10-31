@@ -76,6 +76,6 @@ it("words the kinds as the email footer does", async () => {
   get.mockResolvedValue({ emailSettings: { kinds: [...kinds, { category: "admin", off: false }], optionalEmailOff: false }, email: "a•••@example.com", fromCategory: "messages" });
   open("abc");
   expect(await screen.findByText(/You came here from a message notice/)).toBeInTheDocument();
-  expect(await screen.findByRole("checkbox", { name: /^Message notices/ })).toBeInTheDocument();
+  expect(await screen.findByRole("checkbox", { name: /^Messages from leaders/ })).toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: /^Admin notices/ })).toBeInTheDocument();
 });

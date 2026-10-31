@@ -38,7 +38,7 @@ it("shows a skeleton while loading, then a switch per kind and the all-off switc
   await act(async () => { finish(settings(kinds({ events: true }))); });
   expect(await screen.findByRole("checkbox", { name: /^Group updates/ })).toBeChecked();
   expect(screen.getByRole("checkbox", { name: /^Event updates/ })).not.toBeChecked();
-  expect(screen.getByRole("checkbox", { name: /^Message notices/ })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: /^Messages from leaders/ })).toBeChecked();
   expect(screen.queryByRole("checkbox", { name: /^Admin notices/ })).not.toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: new RegExp(`^${all}`) })).not.toBeChecked();
   expect(screen.getByText(/Account and safety email always comes/)).toBeInTheDocument();
@@ -62,7 +62,7 @@ it("turns every kind off at once, and the all-off switch follows the kinds", asy
   await userEvent.click(allBox);
   expect(update).toHaveBeenCalledWith({ off: true });
   expect(await screen.findByText("Saved")).toBeInTheDocument();
-  for (const label of [/^Group updates/, /^Event updates/, /^Message notices/]) {
+  for (const label of [/^Group updates/, /^Event updates/, /^Messages from leaders/]) {
     expect(screen.getByRole("checkbox", { name: label })).not.toBeChecked();
   }
   expect(allBox).toBeChecked();

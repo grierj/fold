@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-118.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-120.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-118; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-120; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-118) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-120) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -1767,7 +1767,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - [x] 160 GSM-7 characters = 1 segment; 161 = 2 segments; 70 UCS-2 code units = 1 segment and 71 = 2 segments (one emoji counts as 2 units) (counts include the auto prefix and footer) (`sms-cases.json`, run by Go and TypeScript)
   - [x] `<script>`, `on*` attributes, and `javascript:` links are stripped
   - [x] Leaders see only own groups and own events in the picker, and hosts see only events they host; the API refuses other targets
-  - [ ] An SMS mentioning giving or donations (the 7.3 word list, or a link to a giving page: a giving word in the address or a giving service) shows the donation-ask warning (DEC-3) (the check is built and tested in M3.4b; the warning shows in the SMS tab, hidden until texting is set up, DEC-117)
+  - [ ] An SMS mentioning giving or donations (the 7.3 word list, or a link to a giving page: a giving word in the address or a giving service) shows the donation-ask warning (DEC-3) (the check is built and tested in M3.4b; the warning shows in the SMS tab, hidden until texting is set up, DEC-117; the giving-page setting comes with it, DEC-120)
   - [x] The recipient preview shows Teen badges and a teen count (DEC-20) (the API; the page in M3.4c)
 - Tests: segment table tests; sanitizer tests; policy tests; Playwright compose-and-schedule test.
 
@@ -1797,7 +1797,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 
 **M3.7 Telnyx SMS, inbound, keywords, revocation**
 - Depends on: M3.5, M3.11
-- Scope: Telnyx adapter (send, inbound and status webhooks in the CSRF-exempt group, signature check), SMS opt-in flow with the phone ownership check (code or YES reply) and confirmation text, the keyword list and automatic phrase opt-outs from 7.4, caps on HELP and automatic replies, the read-only opt-out log, and the SMS relay of replies (7.8).
+- Scope: Telnyx adapter (send, inbound and status webhooks in the CSRF-exempt group, signature check), SMS opt-in flow with the phone ownership check (code or YES reply) and confirmation text, the keyword list and automatic phrase opt-outs from 7.4, caps on HELP and automatic replies, the read-only opt-out log, and the SMS relay of replies (7.8). Showing the composer's SMS tab (DEC-117) with a "Giving page link" admin setting that always sets off the donation warning (DEC-120).
 - Acceptance:
   - [ ] Each of `STOP`, `STOPALL`, `QUIT`, `END`, `REVOKE`, `OPT OUT`, `OPTOUT`, `CANCEL`, `UNSUBSCRIBE` (any case, surrounding punctuation ignored) opts out of all SMS and is recorded; `START` opts back in; `HELP` replies with the help text
   - [ ] "Please stop texting me" opts the person out at once and gets the confirmation text, with no admin step; it appears in the read-only opt-out log; texting `START` opts back in (DEC-27)
@@ -2161,6 +2161,8 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-116 | **The church's mailing address is an admin setting now** (Grier, Oct 31, 2026; M3.3 planning). Admin → Settings gets "Church mailing address" (`church_address`), shown in the footer of optional email (PLAN 10.5, CAN-SPAM); unset, admins see a reminder and mail still sends. The setup wizard (M4.2) asks for it later. | 5.3, 10.5, M3.3, M4.2 |
 | DEC-117 | **The composer's SMS tab waits for texting** (Grier, Oct 31, 2026; M3.4 planning). The SMS counter, the automatic prefix and footer, and the donation-ask warning are built and tested in M3.4, but the SMS tab stays hidden until an SMS provider is configured (M3.7), so nobody sees a tab that can't send. The per-segment cost estimate arrives with M3.7's settings. | 7.3, M3.4, M3.7 |
 | DEC-118 | **Images in email come after M3.5** (Grier, Oct 31, 2026; M3.4 planning). The composer ships with bold, italic, links, headings, lists and a button block; image upload (public assets through `Store`, type and size checks, email-safe rendering) follows once sending works. | 7.3, M3.4 |
+| DEC-119 | **Announcements follow the "Messages from leaders" switch** (Grier, Oct 31, 2026; M3.4 review). The email settings kind DEC-115 called "message alerts" (`category:messages`) is labelled **Messages from leaders** ("Announcements from your group leaders, event hosts and church admins"), and it alone decides whether someone gets an announcement; "Turn off all optional email" and an announcement's one-click link turn it off too. Footers read "You're getting messages from leaders at <church>". | 7.3, 7.4, M3.3, M3.4 |
+| DEC-120 | **The SMS donation warning matches patterns until texting arrives** (Grier, Oct 31, 2026; M3.4 review). With no giving-page setting, the DEC-3 warning fires on giving words, links whose address has a giving word as a word, and links to known giving services (Tithe.ly, Pushpay, Givelify and similar). A "Giving page link" admin setting, so the church's own URL always warns, is built with the SMS tab in M3.7. | 7.3, DEC-3, M3.4, M3.7 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 
