@@ -12,6 +12,7 @@ import (
 	"fold/internal/audit"
 	"fold/internal/events"
 	"fold/internal/policy"
+	"fold/internal/rooms"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -214,7 +215,10 @@ func (a *App) apiSeriesRooms(c *gin.Context) {
 			needs = append(needs, needsRoomJSON{Date: h.Date, RoomName: h.RoomName, Status: h.Status})
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"rooms": rooms, "dates": len(occs), "defaultRoom": a.seriesRoom(ev), "needsRoom": needs, "pending": pending})
+	suggestions := a.roomSuggestions(suggestFor{person: asPerson(apiUser(c)), eventID: ev.ID, groupID: ev.GroupID,
+		visibility: ev.Visibility, capacity: ev.Capacity, windows: windowsOf(occs)}, offeredRooms(rooms))
+	c.JSON(http.StatusOK, gin.H{"rooms": rooms, "dates": len(occs), "defaultRoom": a.seriesRoom(ev), "needsRoom": needs, "pending": pending,
+		"suggestions": suggestions})
 }
 
 // seriesRoom is the event's series room, or nil.
@@ -573,10 +577,13 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 		return
 	}
 	me := apiUser(c)
+	var group *models.Group
 	if body.GroupID != nil {
-		if _, _, ok := a.loadManagedGroupID(c, *body.GroupID); !ok {
+		g, _, ok := a.loadManagedGroupID(c, *body.GroupID)
+		if !ok {
 			return
 		}
+		group = g
 	} else if !policy.IsAdmin(asPerson(me)) {
 		jsonError(c, http.StatusForbidden, "admin required")
 		return
@@ -586,22 +593,27 @@ func (a *App) apiCheckRooms(c *gin.Context) {
 		return
 	}
 	now := time.Now()
-	windows := []timeWindow{}
+	windows, upcoming := []timeWindow{}, []rooms.Window{}
 	for _, w := range whens {
 		if w.StartsAt.After(now) {
 			windows = append(windows, timeWindow{w.StartsAt, w.EndsAt})
+			upcoming = append(upcoming, rooms.Window{Start: w.StartsAt, End: w.EndsAt})
 		}
 	}
 	ed, ok := parseCapacityEdits(c, body.eventBody)
 	if !ok {
 		return
 	}
-	rooms, err := roomChoices(a.DB, asPerson(me), windows, 0, ed.cap)
+	list, err := roomChoices(a.DB, asPerson(me), windows, 0, ed.cap)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list rooms")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"rooms": rooms, "dates": len(windows)})
+	// A new event has no dates of its own yet; Rule 1 uses the visibility
+	// picked on the form (DEC-110).
+	suggestions := a.roomSuggestions(suggestFor{person: asPerson(me), groupID: body.GroupID,
+		visibility: createVisibility(body.Visibility, group), capacity: ed.cap, windows: upcoming}, offeredRooms(list))
+	c.JSON(http.StatusOK, gin.H{"rooms": list, "dates": len(windows), "suggestions": suggestions})
 }
 
 // bookCreatedSeries books the room picked on a create form for every date

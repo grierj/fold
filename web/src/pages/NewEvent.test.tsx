@@ -196,6 +196,7 @@ describe("NewEvent", () => {
     await screen.findByRole("option", { name: "Fellowship Hall · Main (80 seats)" });
     expect(SeriesRooms.check).toHaveBeenLastCalledWith({
       startsLocal: "2026-12-02T19:00", durationMinutes: 90, tzid: "America/Denver", recurrenceRule: "FREQ=WEEKLY;BYDAY=WE", capacity: null, groupId: 5,
+      visibility: "public",
     });
     await userEvent.selectOptions(room, "3");
     await userEvent.click(screen.getByRole("button", { name: "Schedule event" }));

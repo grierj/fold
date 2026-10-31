@@ -27,9 +27,9 @@ beforeEach(() => {
 });
 
 // The page keeps the chosen room, as both create forms do.
-function Harness({ schedule, groupId, onChange }: { schedule: Schedule | null; groupId?: number; onChange?: (id: number | null) => void }) {
+function Harness({ schedule, groupId, visibility, onChange }: { schedule: Schedule | null; groupId?: number; visibility?: string; onChange?: (id: number | null) => void }) {
   const [roomId, setRoomId] = useState<number | null>(null);
-  return <CreateRoomField id="t-room" schedule={schedule} groupId={groupId} roomId={roomId} onChange={(id) => { setRoomId(id); onChange?.(id); }} />;
+  return <CreateRoomField id="t-room" schedule={schedule} groupId={groupId} visibility={visibility} roomId={roomId} onChange={(id) => { setRoomId(id); onChange?.(id); }} />;
 }
 const select = () => screen.findByRole("combobox", { name: /^Room/ });
 
@@ -187,5 +187,31 @@ describe("scheduleFields and scheduleReady", () => {
     expect(scheduleReady({ ...when, days: [] }, "UTC", emptySeats)).toBe(false);
     expect(scheduleReady({ ...when, days: [], recurring: false }, "UTC", emptySeats)).toBe(true);
     expect(scheduleReady(when, "UTC", { ...emptySeats, capacity: "1e" })).toBe(false);
+  });
+});
+
+describe("CreateRoomField suggestions", () => {
+  it("sends the chosen visibility, and checks again when it changes", async () => {
+    const { rerender } = render(<Harness schedule={weekly} groupId={5} visibility="private" />);
+    await waitFor(() => expect(SeriesRooms.check).toHaveBeenCalledWith({ ...weekly, groupId: 5, visibility: "private" }));
+    rerender(<Harness schedule={weekly} groupId={5} visibility="invite_only" />);
+    await waitFor(() => expect(SeriesRooms.check).toHaveBeenCalledWith({ ...weekly, groupId: 5, visibility: "invite_only" }));
+  });
+
+  it("lists suggested rooms first with why, then every other room once", async () => {
+    vi.mocked(SeriesRooms.check).mockResolvedValue({
+      rooms: [hall, chapel, closet], dates: 10,
+      suggestions: { rooms: [{ roomId: 1, uses: 3, reason: "Used by similar groups 3 times", busyDates: 0 }], otherKinds: false, dates: 8 },
+    });
+    render(<Harness schedule={weekly} groupId={5} visibility="public" />);
+    const box = await select();
+    await waitFor(() => expect(box.querySelectorAll("optgroup")).toHaveLength(2));
+    const groups = Array.from(box.querySelectorAll("optgroup")).map((g) => [g.label, Array.from(g.querySelectorAll("option")).map((o) => o.textContent)]);
+    expect(groups).toEqual([
+      ["Suggested", ["Fellowship Hall · Main (80 seats) — Used by similar groups 3 times"]],
+      ["Other rooms", ["Chapel — in use on 2 of 10 dates", "Closet · Annex (1 seat) — may be too small"]],
+    ]);
+    await userEvent.selectOptions(box, "1");
+    expect(box).toHaveValue("1");
   });
 });

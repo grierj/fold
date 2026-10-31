@@ -272,7 +272,14 @@ func (a *App) apiDateRooms(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list rooms")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"rooms": out, "booking": booking})
+	offered := map[uint]bool{}
+	for _, r := range out {
+		offered[r.ID] = true
+	}
+	suggestions := a.roomSuggestions(suggestFor{person: me, eventID: ev.ID, groupID: ev.GroupID,
+		visibility: policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride), capacity: effectiveCapacity(ev, occ),
+		windows: windowsOf([]models.EventOccurrence{*occ})}, offered)
+	c.JSON(http.StatusOK, gin.H{"rooms": out, "booking": booking, "suggestions": suggestions})
 }
 
 // dateBooking is a date's booking for its managers, or nil.

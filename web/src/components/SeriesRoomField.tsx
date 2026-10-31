@@ -3,10 +3,11 @@ import { SeriesRooms, Site } from "../api";
 import { useAuth } from "../auth";
 import { errorText } from "../lib/errors";
 import { roomName } from "../lib/place";
-import type { OccurrenceRoom, SeriesBooking, SeriesRoom } from "../types";
+import type { OccurrenceRoom, SeriesBooking, SeriesRoom, RoomSuggestions } from "../types";
 import { Field, FormError, Select, Textarea } from "./ui/Field";
 import { Button } from "./ui/Button";
 import { Skeleton } from "./ui/Skeleton";
+import { RoomOptions } from "./RoomOptions";
 
 const NONE = "none";
 const REASON_MAX = 500;
@@ -17,13 +18,13 @@ function dateCount(n: number): string {
 }
 
 // A room as the whole-series picker words it, like RoomField's option: seats,
-// then how many of the dates something else holds it on, then a size warning.
-// `dates` is how many dates the booking would cover.
-export function seriesRoomLabel(room: SeriesRoom, dates: number): string {
+// then why it was suggested (if it was), how many of the dates something else
+// holds it on, and a size warning. `dates` is how many dates the booking would cover.
+export function seriesRoomLabel(room: SeriesRoom, dates: number, reason?: string): string {
   const seats = room.capacity === null ? "" : ` (${room.capacity} ${room.capacity === 1 ? "seat" : "seats"})`;
   let busy = "";
   if (room.busyDates > 0) busy = dates <= 1 ? " — in use at this time" : ` — in use on ${room.busyDates} of ${dates} dates`;
-  return `${roomName(room)}${seats}${busy}${room.tooSmall ? " — may be too small" : ""}`;
+  return `${roomName(room)}${seats}${reason ? ` — ${reason}` : ""}${busy}${room.tooSmall ? " — may be too small" : ""}`;
 }
 
 // What picking a room will do to dates it is busy on, said before it is booked.
@@ -85,6 +86,7 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
   // Upcoming dates waiting on an admin's approval of the series room (M2.1d).
   const [pendingCount, setPendingCount] = useState(0);
   const [rooms, setRooms] = useState<SeriesRoom[]>([]);
+  const [suggestions, setSuggestions] = useState<RoomSuggestions | null>(null);
   const [dates, setDates] = useState(0);
   const [current, setCurrent] = useState<OccurrenceRoom | null>(null);
   const [status, setStatus] = useState("");
@@ -124,6 +126,7 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
       setRooms(res.rooms);
       setDates(res.dates);
       setCurrent(res.defaultRoom);
+      setSuggestions(res.suggestions ?? null);
       setPick(res.defaultRoom ? String(res.defaultRoom.id) : NONE);
       setNeedsCount(res.needsRoom.length);
       setPendingCount(res.pending);
@@ -226,9 +229,7 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
             <Select value={pick} aria-busy={busy || undefined} onChange={(e) => choose(e.target.value)}>
               <option value={NONE}>No series room</option>
               {hidden && <option value={String(hidden.id)}>{roomName(hidden)}</option>}
-              {rooms.map((r) => (
-                <option key={r.id} value={String(r.id)}>{seriesRoomLabel(r, dates)}</option>
-              ))}
+              <RoomOptions rooms={rooms} suggestions={suggestions} label={(r, reason) => seriesRoomLabel(r, dates, reason)} />
             </Select>
           </Field>
           <Button variant="secondary" disabled={busy || pick === value} onClick={apply}>

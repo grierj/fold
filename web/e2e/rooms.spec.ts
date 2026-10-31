@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, signIn } from "./helpers";
+import { apiAs, pickRoom, signIn } from "./helpers";
 
 // M2.1b: a leader books a room for one date from the event editor, the room
 // becomes the date's place, and releasing it brings the typed location back.
@@ -21,8 +21,7 @@ test("a leader books the Fellowship Hall for a date, sees it as the place, and r
 
   await page.getByRole("button", { name: "Edit event" }).click();
   const room = page.getByRole("combobox", { name: /^Room/ });
-  await expect(room.getByRole("option", { name: "Fellowship Hall · Main (80 seats)" })).toBeAttached();
-  await room.selectOption({ label: "Fellowship Hall · Main (80 seats)" });
+  await pickRoom(room, "Fellowship Hall · Main (80 seats)");
   await expect(page.getByRole("status").filter({ hasText: "Booked Fellowship Hall." })).toBeVisible();
   // Booking needs no Save: the page behind already shows the room first, then the typed location.
   await expect(page.getByText("Fellowship Hall · Main · north door", { exact: true })).toBeVisible();
@@ -53,7 +52,7 @@ test("a leader books the Fellowship Hall for every date of a weekly event", asyn
 
   await page.getByRole("button", { name: "Edit series" }).click();
   const room = page.getByRole("combobox", { name: /^Room for every date/ });
-  await room.selectOption({ label: "Fellowship Hall · Main (80 seats)" });
+  await pickRoom(room, "Fellowship Hall · Main (80 seats)");
   // Choosing books nothing: the button does.
   await expect(page.getByRole("article").first()).not.toContainText("Fellowship Hall");
   await page.getByRole("button", { name: "Book for every date" }).click();
@@ -94,7 +93,7 @@ test("a series room busy on one date lists it, and Pick a room books another roo
   await expect(page.getByRole("heading", { name: "Busy first date", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: "Edit series" }).click();
   const room = page.getByRole("combobox", { name: /^Room for every date/ });
-  const hallOption = room.locator("option", { hasText: /^Fellowship Hall · Main \(80 seats\) — in use on 1 of \d+ dates$/ });
+  const hallOption = room.locator("option", { hasText: /^Fellowship Hall · Main \(80 seats\)( — Used .+)? — in use on 1 of \d+ dates$/ });
   await room.selectOption((await hallOption.getAttribute("value"))!);
   await expect(page.getByRole("status").filter({ hasText: "will be listed under" })).toBeVisible();
   await page.getByRole("button", { name: "Book for every date" }).click();
@@ -105,7 +104,36 @@ test("a series room busy on one date lists it, and Pick a room books another roo
   await list.getByRole("button", { name: /^Pick a room/ }).click();
   const dateRoom = page.getByRole("combobox", { name: /^Room \(optional\)/ });
   await expect(dateRoom).toBeFocused();
-  await dateRoom.selectOption({ label: "Library (20 seats)" });
+  await pickRoom(dateRoom, "Library (20 seats)");
   await expect(page.getByRole("status").filter({ hasText: "Booked Library." })).toBeVisible();
   await expect(page.getByRole("heading", { name: /Dates that need a room/ })).toHaveCount(0);
+});
+
+// M2.3b: a room the group has used before is suggested first, saying why,
+// and the other rooms stay listed after it.
+test("a leader sees the room their group used before under Suggested", async ({ page, request }) => {
+  const admin = await apiAs(request, "grier");
+  const name = `Prayer room ${Date.now() % 100000}`;
+  const { room: prayer } = (await admin("POST", "/admin/rooms", { name, capacity: 12 })) as { room: { id: number } };
+  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const group = groups.find((g) => g.name === "Room 201 class")!;
+  const lee = await apiAs(request, "lee");
+  const day = (n: number) => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+  const { event: before } = (await lee("POST", `/groups/${group.id}/events`, {
+    title: "Earlier prayer night", startsLocal: `${day(44)}T06:00`, durationMinutes: 30, tzid: "America/Boise",
+  })) as { event: { id: number } };
+  await lee("PUT", `/events/${before.id}/dates/${day(44)}/room`, { roomId: prayer.id });
+  const { event } = (await lee("POST", `/groups/${group.id}/events`, {
+    title: "Next prayer night", startsLocal: `${day(45)}T06:00`, durationMinutes: 30, tzid: "America/Boise",
+  })) as { event: { id: number } };
+
+  await signIn(page, "lee");
+  await page.goto(`/events/${event.id}`);
+  await expect(page.getByRole("heading", { name: "Next prayer night", level: 1 })).toBeVisible();
+  await page.getByRole("button", { name: "Edit event" }).click();
+  const room = page.getByRole("combobox", { name: /^Room/ });
+  await expect(room.locator('optgroup[label="Suggested"] option').first()).toHaveText(`${name} (12 seats) — Used by this group once`);
+  await expect(room.locator('optgroup[label="Other rooms"] option', { hasText: /^Fellowship Hall/ })).toBeAttached();
+  await pickRoom(room, name);
+  await expect(page.getByRole("status").filter({ hasText: `Booked ${name}.` })).toBeVisible();
 });

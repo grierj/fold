@@ -1155,7 +1155,7 @@ PUT  /api/v1/admin/rooms/:id        → 200 {room}                          (adm
 While rooms are on (`roomsEnabled`), whoever runs an event (its group's leaders, a church-wide event's hosts, admins) books a room for one date. Every route here is 404 while rooms are off.
 
 ```
-GET /api/v1/events/:id/dates/:date/rooms → 200 {rooms: [roomPickerItem], booking: roomBooking | null}
+GET /api/v1/events/:id/dates/:date/rooms → 200 {rooms: [roomPickerItem], booking: roomBooking | null, suggestions}
 PUT /api/v1/events/:id/dates/:date/room {roomId: number | null, overlapReason?, setupMinutes?, teardownMinutes?}
     → 200 {booking: roomBooking | null} | 403 room_restricted | 404 | 409 room_busy
 ```
@@ -1169,11 +1169,11 @@ Cancelling a date releases its room. Moving a date (a per-date reschedule or a s
 ### Series rooms (M2.1c)
 
 ```
-GET  /api/v1/events/:id/rooms → 200 {rooms: [seriesRoom], dates, defaultRoom: {id, name, building} | null, needsRoom: [{date, roomName}]}
+GET  /api/v1/events/:id/rooms → 200 {rooms: [seriesRoom], dates, defaultRoom: {id, name, building} | null, needsRoom: [{date, roomName}], suggestions}
 PUT  /api/v1/events/:id/room {roomId: number | null, overlapReason?}
      → 200 {defaultRoom, booked, lost: [date], kept} | 403 room_restricted | 404
-POST /api/v1/rooms/check {groupId?, startsLocal, durationMinutes, tzid?, recurrenceRule?, rruleUntil?, capacity?}
-     → 200 {rooms: [seriesRoom], dates}
+POST /api/v1/rooms/check {groupId?, startsLocal, durationMinutes, tzid?, recurrenceRule?, rruleUntil?, capacity?, visibility?}
+     → 200 {rooms: [seriesRoom], dates, suggestions}
 ```
 
 `seriesRoom` is `{id, name, building, capacity, features, restricted, busyDates, tooSmall}`: `busyDates` counts how many of the event's scheduled future dates (`dates`) another confirmed booking holds the room on, never saying whose; the event's own bookings don't count. `tooSmall` compares the event's seat cap only.
@@ -1181,6 +1181,12 @@ POST /api/v1/rooms/check {groupId?, startsLocal, durationMinutes, tzid?, recurre
 `PUT …/room` books the room for the whole series (DEC-103): it is stored as `events.default_room_id` and booked on every scheduled future date. Dates the room is busy on keep a `requested` booking that holds nothing and are returned in `lost` and listed in `needsRoom`; an admin's `overlapReason` double-books them instead. A date booked in another room on its own keeps it (`kept`), and so does a booking only an admin could make unless an admin is booking; bookings in the old series room, and requested ones, are replaced. `roomId: null` stops the series room and releases its bookings. Audited as `room_booking.series`. Dates added later, by the daily extender or a series edit, or restored by one, are booked in the series room; a busy one is `requested` and the leaders or hosts get one `room.lost` notice. A deactivated series room books nothing new. A series room an admin chose keeps booking new dates even if it is restricted (it was an admin's choice); a leader may still change or stop it, which leaves admin-only bookings where they are. A date booked on its own in the same room as the series room counts as the series room's booking when the series room changes or stops. The daily extender adds each event's dates under the event's lock; a failure booking their rooms is logged and never stops the dates being added.
 
 The create routes (`POST /groups/:id/events`, `POST /events`) accept `roomId` and book it for every date in the creating transaction, the same way; a room the creator can't book refuses the whole create (403 `room_restricted`, 404). `POST /rooms/check` gives the create form its busy counts: with `groupId` the caller must run that group; without it, the caller must be an admin (church-wide events).
+
+### Room suggestions (M2.3, DEC-110)
+
+The three room pickers above (one date, the series, and the create forms' `POST /rooms/check`) each return `suggestions: {rooms: [{roomId, uses, reason, busyDates}], otherKinds, dates}` with their room list (PLAN 9.3). `rooms` is at most 5, best first, and only rooms the same response lists. `reason` is ready to show ("Used by this group 6 times", "Used by this event once", "Used by similar groups 2 times", "Used 4 times") and `uses` is the count it names. `busyDates` counts how many of the first `dates` dates (at most 8) another confirmed booking holds the room on, with the room's padding; busy rooms come last. The pickers show their own busy note, which covers every date being booked. `otherKinds: true` means no room had been used by a group sharing a tag with this event's group, so these are labelled "Used by other kinds of events".
+
+A usage is a confirmed booking on a scheduled date from the last 12 months or still to come. Whether it counts depends on that date's own visibility, never its group's: public and private events count public and private usages; an invite-only event also counts its own group's; an event's own dates always count. The visibility used is the date's (one date), the event's (series), or the one picked on the create form (`visibility`, else the group's, else public for a church-wide event). Restricted rooms are suggested to admins only. Suggestions name no other event, group or date. They are a shortcut, never a gate: every listed room can still be chosen, and a failed suggestion read leaves the picker working without them.
 
 ### Room booking approval (M2.1d)
 

@@ -263,3 +263,18 @@ it("does not repeat the waiting line right after a booking said it", async () =>
   expect(await screen.findByRole("status")).toHaveTextContent("Sent to an admin for approval: 10 dates.");
   expect(screen.getByRole("status")).not.toHaveTextContent("Waiting for an admin");
 });
+
+it("lists suggested rooms first with why and busy dates, then the rest", async () => {
+  vi.mocked(SeriesRooms.list).mockResolvedValue({
+    rooms: [hall, chapel, closet], dates: 10, defaultRoom: null, needsRoom: [], pending: 0,
+    suggestions: { rooms: [{ roomId: 2, uses: 4, reason: "Used by this event 4 times", busyDates: 2 }], otherKinds: false, dates: 8 },
+  });
+  show();
+  const box = await select();
+  const groups = Array.from(box.querySelectorAll("optgroup")).map((g) => [g.label, Array.from(g.querySelectorAll("option")).map((o) => o.textContent)]);
+  expect(groups).toEqual([
+    ["Suggested", ["Chapel — Used by this event 4 times — in use on 2 of 10 dates"]],
+    ["Other rooms", ["Fellowship Hall · Main (80 seats)", "Closet · Annex (1 seat) — may be too small"]],
+  ]);
+  expect((box as HTMLSelectElement).options[0].textContent).toBe("No series room");
+});

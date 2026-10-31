@@ -144,3 +144,13 @@ export async function soon<L extends Locator>(locator: L, timeout = 5_000): Prom
   }
   return locator;
 }
+
+// Picks a room by the start of its option's words. A room a group has used
+// also says why it is suggested ("… — Used by this group 2 times", M2.3), and
+// other specs on the same server may have booked it, so an exact label would
+// depend on what ran first.
+export async function pickRoom(select: Locator, name: string) {
+  const option = select.locator("option").filter({ hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`) }).first();
+  await expect(option).toBeAttached();
+  await select.selectOption((await option.getAttribute("value"))!);
+}

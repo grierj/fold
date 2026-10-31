@@ -3,11 +3,12 @@ import { SeriesRooms, Site } from "../api";
 import { errorText } from "../lib/errors";
 import { roomName } from "../lib/place";
 import type { WhenState } from "../lib/useWhenState";
-import type { SeriesRoom } from "../types";
+import type { RoomSuggestions, SeriesRoom } from "../types";
 import { seatsBody, seatsProblem, type SeatsValue } from "./SeatsField";
 import { seriesRoomLabel } from "./SeriesRoomField";
 import { Field, FormError, Select } from "./ui/Field";
 import { Button } from "./ui/Button";
+import { RoomOptions } from "./RoomOptions";
 
 const NONE = "none";
 const DEBOUNCE_MS = 400;
@@ -59,12 +60,15 @@ function notes(room: SeriesRoom, dates: number): string[] {
 // the server again (after a short pause) when the time, repeat or seat limit
 // change. The room is booked for every date when the event is scheduled. It
 // shows nothing while rooms are off.
-export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
+export function CreateRoomField({ id, schedule, groupId, visibility, roomId, onChange }: {
   id: string;
   // Null until the dates are filled in.
   schedule: Schedule | null;
   // The group the event is for; omitted for a church-wide event.
   groupId?: number;
+  // The visibility chosen on the form: room suggestions count only uses it
+  // allows (PLAN 9.3 Rule 1, DEC-110).
+  visibility?: string;
   roomId: number | null;
   // The chosen room, or null. Also called with null when a fresh check no
   // longer lists the chosen room.
@@ -72,6 +76,7 @@ export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
 }) {
   const [enabled, setEnabled] = useState(false);
   const [rooms, setRooms] = useState<SeriesRoom[]>([]);
+  const [suggestions, setSuggestions] = useState<RoomSuggestions | null>(null);
   const [dates, setDates] = useState(0);
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,24 +96,26 @@ export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
     return () => { alive = false; };
   }, []);
 
-  const key = schedule ? JSON.stringify([schedule, groupId ?? null]) : "";
+  const key = schedule ? JSON.stringify([schedule, groupId ?? null, visibility ?? null]) : "";
   useEffect(() => {
     if (!enabled) return;
     if (!key) {
       setRooms([]);
+      setSuggestions(null);
       setDates(0);
       setError(null);
       setChecking(false);
       return;
     }
-    const [fields, group] = JSON.parse(key) as [Schedule, number | null];
+    const [fields, group, vis] = JSON.parse(key) as [Schedule, number | null, string | null];
     const mine = ++seq.current;
     setChecking(true);
     const timer = setTimeout(async () => {
       try {
-        const res = await SeriesRooms.check(group === null ? { ...fields } : { ...fields, groupId: group });
+        const res = await SeriesRooms.check({ ...fields, ...(group === null ? {} : { groupId: group }), ...(vis === null ? {} : { visibility: vis }) });
         if (seq.current !== mine) return;
         setRooms(res.rooms);
+        setSuggestions(res.suggestions ?? null);
         setDates(res.dates);
         setError(null);
         const { roomId: chosen, onChange: report } = latest.current;
@@ -127,6 +134,7 @@ export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
         if (seq.current === mine) {
           // Labels and notes about the previous dates would mislead, so none stay.
           setRooms([]);
+          setSuggestions(null);
           setDates(0);
           setError(errorText(e, "We couldn't check which rooms are free."));
         }
@@ -165,9 +173,7 @@ export function CreateRoomField({ id, schedule, groupId, roomId, onChange }: {
         <Select value={value} disabled={!schedule} aria-busy={checking || undefined} onChange={(e) => choose(e.target.value)}>
           <option value={NONE}>No room</option>
           {shown && <option value={String(shown.id)}>{roomName(shown)}</option>}
-          {rooms.map((r) => (
-            <option key={r.id} value={String(r.id)}>{seriesRoomLabel(r, dates)}</option>
-          ))}
+          <RoomOptions rooms={rooms} suggestions={suggestions} label={(r, reason) => seriesRoomLabel(r, dates, reason)} />
         </Select>
       </Field>
       <div role="status" className="space-y-2 empty:hidden">
