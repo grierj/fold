@@ -244,7 +244,7 @@ const (
 	skipNoEmail    = "no email address"
 	skipNotWorking = "email not working"
 	skipComplained = "marked our email as spam"
-	skipOptedOut   = "turned off message notices"
+	skipOptedOut   = "turned off messages from leaders"
 	skipHidden     = "won't get this"
 )
 
@@ -272,7 +272,7 @@ type audienceSummaryJSON struct {
 const maxAudiencePreview = 100
 
 // summarizeAudience filters the people for email: active, with an address,
-// not suppressed, and not opted out of message notices (category:messages,
+// not suppressed, and not opted out of messages from leaders (category:messages,
 // which "Turn off all optional email" and the one-click link write, DEC-115).
 // Guests are skipped: they get only transactional mail and reminders until
 // they ask for updates (PLAN 7.4). Each read goes in chunks, so an

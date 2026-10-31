@@ -41,7 +41,7 @@ func TestMergeFields(t *testing.T) {
 func TestRenderEmail(t *testing.T) {
 	body := SanitizeHTML(`<h2>News</h2><p>Hello <a class="fold-button" href="https://example.org/x">Sign up</a></p>`)
 	out, err := RenderEmail(EmailPage{Church: "First <Church>", Subject: "News & notes", Body: body,
-		Footer: "You're getting message notices from First Church.", SettingsURL: "https://fold.example.org/email-settings/tok",
+		Footer: "You're getting messages from leaders at First Church.", SettingsURL: "https://fold.example.org/email-settings/tok",
 		Address: []string{"1 Main St", "Springfield"}})
 	if err != nil {
 		t.Fatal(err)

@@ -65,7 +65,7 @@ func newComposeFixture(t *testing.T) composeFixture {
 	for _, u := range []*models.User{f.teen, f.opted, f.bouncing} {
 		addMember(t, app, u, f.group, models.MembershipMember)
 	}
-	// Turning off message notices is what stops announcements (DEC-115).
+	// Turning off messages from leaders is what stops announcements (DEC-115, DEC-119).
 	if w := loginAPI(t, app, "opted", "password1234").do("PUT", "/api/v1/me/notification-settings", map[string]any{"category": "messages", "off": true}, true); w.Code != http.StatusOK {
 		t.Fatalf("opt out: %d %s", w.Code, w.Body.String())
 	}

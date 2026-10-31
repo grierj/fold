@@ -167,9 +167,21 @@ func CategoryEmailName(category string) string {
 	case CatEvents:
 		return "event updates"
 	case CatMessages:
-		return "message notices"
+		// Announcements that leaders, hosts and admins write (DEC-119).
+		return "messages from leaders"
 	}
 	return "these emails"
+}
+
+// YoureGetting starts an optional email's footer: "You're getting group
+// updates from First Church". Messages from leaders are "at" the church, so
+// the sentence doesn't say "from" twice.
+func YoureGetting(category, church string) string {
+	prep := " from "
+	if category == CatMessages {
+		prep = " at "
+	}
+	return "You're getting " + CategoryEmailName(category) + prep + church
 }
 
 // Lookup finds a kind by key.

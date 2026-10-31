@@ -119,7 +119,7 @@ func (a *App) renderMessage(m *models.Message, u *models.User, vals map[string]s
 	}
 	html, err := content.RenderEmail(content.EmailPage{
 		Church: site, Subject: content.Merge(m.Subject, vals, false), Body: content.Merge(m.BodyHTML, vals, true),
-		Footer:      "You're getting " + notify.CategoryEmailName(notify.CatMessages) + " from " + site + ".",
+		Footer:      notify.YoureGetting(notify.CatMessages, site) + ".",
 		SettingsURL: a.emailBaseURL() + "/email-settings/" + token, Address: lines,
 	})
 	if err != nil {

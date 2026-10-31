@@ -152,7 +152,7 @@ type footerFacts struct{ site, address string }
 // optionalEmailFooter ends an optional email (PLAN 10.5): what it is, how to
 // stop that kind or change email settings, and the church's address.
 func (a *App) optionalEmailFooter(f footerFacts, category, token string) string {
-	footer := "\n\n--\nYou're getting " + notify.CategoryEmailName(category) + " from " + f.site +
+	footer := "\n\n--\n" + notify.YoureGetting(category, f.site) +
 		". To stop them or change which emails you get, visit " + a.emailBaseURL() + "/email-settings/" + token
 	if addr := strings.TrimSpace(f.address); addr != "" {
 		for _, line := range strings.Split(strings.ReplaceAll(addr, "\r", ""), "\n") {
