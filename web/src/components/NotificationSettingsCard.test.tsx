@@ -1,79 +1,116 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
+import type { EmailSettingsChange } from "../api";
+import type { EmailKind } from "../types";
 
 const get = vi.fn();
 const update = vi.fn();
 vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
-  NotificationSettings: { get: () => get(), update: (off: boolean) => update(off) },
+  NotificationSettings: { get: () => get(), update: (c: EmailSettingsChange) => update(c) },
 }));
 
 import { ApiError } from "../api";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
 
-const label = "Turn off all optional email";
+const all = "Turn off all optional email";
+const kinds = (off: Partial<Record<EmailKind["category"], boolean>> = {}): EmailKind[] =>
+  (["groups", "events", "messages"] as const).map((category) => ({ category, off: !!off[category] }));
+const settings = (k: EmailKind[]) => ({ settings: { kinds: k, optionalEmailOff: k.every((x) => x.off) } });
 
+// The server applies a change the way the real one does.
+let state = kinds();
 beforeEach(() => {
-  get.mockReset().mockResolvedValue({ settings: { optionalEmailOff: false } });
-  update.mockReset().mockImplementation(async (off: boolean) => ({ settings: { optionalEmailOff: off } }));
+  state = kinds();
+  get.mockReset().mockImplementation(async () => settings(state));
+  update.mockReset().mockImplementation(async (c: EmailSettingsChange) => {
+    state = state.map((k) => (!c.category || k.category === c.category ? { ...k, off: c.off } : k));
+    return settings(state);
+  });
 });
 
-it("shows a skeleton line while loading, then the switch as the server has it", async () => {
+it("shows a skeleton while loading, then a switch per kind and the all-off switch", async () => {
   let finish: (v: unknown) => void = () => {};
   get.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   render(<NotificationSettingsCard />);
   expect(screen.getByText("Loading your email settings…")).toBeInTheDocument();
-  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
-  await act(async () => { finish({ settings: { optionalEmailOff: true } }); });
-  expect(await screen.findByRole("checkbox", { name: new RegExp(`^${label}`) })).toBeChecked();
-  expect(screen.getByText(/Stops emails about group and event updates/)).toBeInTheDocument();
+  await act(async () => { finish(settings(kinds({ events: true }))); });
+  expect(await screen.findByRole("checkbox", { name: /^Group updates/ })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: /^Event updates/ })).not.toBeChecked();
+  expect(screen.getByRole("checkbox", { name: /^Message alerts/ })).toBeChecked();
+  expect(screen.queryByRole("checkbox", { name: /^Admin notices/ })).not.toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: new RegExp(`^${all}`) })).not.toBeChecked();
+  expect(screen.getByText(/Account and safety email always comes/)).toBeInTheDocument();
 });
 
-it("saves on change with no Save button and says Saved", async () => {
+it("saves one kind on change with no Save button and says Saved", async () => {
   render(<NotificationSettingsCard />);
-  const box = await screen.findByRole("checkbox", { name: new RegExp(`^${label}`) });
-  expect(box).not.toBeChecked();
+  const box = await screen.findByRole("checkbox", { name: /^Group updates/ });
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
   await userEvent.click(box);
-  expect(update).toHaveBeenCalledWith(true);
+  expect(update).toHaveBeenCalledWith({ category: "groups", off: true });
   expect(await screen.findByText("Saved")).toBeInTheDocument();
   expect(screen.getByRole("status")).toHaveTextContent("Saved");
-  expect(box).toBeChecked();
+  expect(box).not.toBeChecked();
 });
 
-it("disables the switch while it saves, so saves can't overlap", async () => {
+it("turns every kind off at once, and the all-off switch follows the kinds", async () => {
+  render(<NotificationSettingsCard />);
+  const allBox = await screen.findByRole("checkbox", { name: new RegExp(`^${all}`) });
+  await userEvent.click(allBox);
+  expect(update).toHaveBeenCalledWith({ off: true });
+  expect(await screen.findByText("Saved")).toBeInTheDocument();
+  for (const label of [/^Group updates/, /^Event updates/, /^Message alerts/]) {
+    expect(screen.getByRole("checkbox", { name: label })).not.toBeChecked();
+  }
+  expect(allBox).toBeChecked();
+  // Turning one kind back on means not everything is off.
+  await userEvent.click(screen.getByRole("checkbox", { name: /^Event updates/ }));
+  expect(await screen.findByRole("checkbox", { name: new RegExp(`^${all}`) })).not.toBeChecked();
+});
+
+it("disables the switches while one saves, so saves can't overlap", async () => {
   let finish: (v: unknown) => void = () => {};
   update.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
   render(<NotificationSettingsCard />);
-  const box = await screen.findByRole("checkbox", { name: new RegExp(`^${label}`) });
+  const box = await screen.findByRole("checkbox", { name: /^Group updates/ });
   await userEvent.click(box);
   expect(box).toBeDisabled();
+  expect(screen.getByRole("checkbox", { name: /^Event updates/ })).toBeDisabled();
   await userEvent.click(box);
   expect(update).toHaveBeenCalledOnce();
-  await act(async () => { finish({ settings: { optionalEmailOff: true } }); });
+  await act(async () => { finish(settings(kinds({ groups: true }))); });
   expect(await screen.findByText("Saved")).toHaveClass("text-success");
   expect(box).toBeEnabled();
 });
 
-it("puts the box back and says what went wrong when saving fails, without server text", async () => {
+it("puts the switches back and says what went wrong when saving fails, without server text", async () => {
   update.mockRejectedValueOnce(new ApiError(500, "private server text"));
   render(<NotificationSettingsCard />);
-  const box = await screen.findByRole("checkbox", { name: new RegExp(`^${label}`) });
+  const box = await screen.findByRole("checkbox", { name: /^Group updates/ });
   await userEvent.click(box);
   expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't save your changes.");
-  expect(box).not.toBeChecked();
+  expect(box).toBeChecked();
   expect(box).toBeEnabled();
   expect(screen.queryByText("Saved")).not.toBeInTheDocument();
   expect(screen.queryByText("private server text")).not.toBeInTheDocument();
 });
 
-it("offers a retry when the first load fails, then shows the switch", async () => {
+it("offers a retry when the first load fails, then shows the switches", async () => {
   get.mockRejectedValueOnce(new ApiError(500, "private server text"));
   render(<NotificationSettingsCard />);
   expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't load your email settings.");
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   expect(screen.queryByText("private server text")).not.toBeInTheDocument();
   await userEvent.click(screen.getByRole("button", { name: "Try again" }));
-  expect(await screen.findByRole("checkbox", { name: new RegExp(`^${label}`) })).toBeInTheDocument();
+  const group = await screen.findByRole("group", { name: /^Optional email/ });
+  expect(within(group).getByRole("checkbox", { name: /^Group updates/ })).toBeInTheDocument();
+});
+
+it("lists admin notices for admins", async () => {
+  state = [...kinds(), { category: "admin", off: false }];
+  render(<NotificationSettingsCard />);
+  expect(await screen.findByRole("checkbox", { name: /^Admin notices/ })).toBeInTheDocument();
+  expect(screen.getByText("For church admins")).toBeInTheDocument();
 });

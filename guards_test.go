@@ -89,6 +89,7 @@ var tsContracts = []struct {
 	{notificationJSON{}, "Notification"},
 	{notificationSettingsJSON{}, "NotificationSettings"},
 	{roomJSON{}, "Room"},
+	{emailKindJSON{}, "EmailKind"},
 	{adminJobJSON{}, "AdminJob"},
 	{roomSuggestionJSON{}, "RoomSuggestion"},
 	{roomSuggestionsJSON{}, "RoomSuggestions"},

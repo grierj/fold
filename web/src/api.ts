@@ -145,6 +145,7 @@ import type {
   MatchBusy,
   OccurrenceRoom,
   NotificationSettings as NotificationSettingsData,
+  EmailKind,
   NotificationFeed,
   NotificationFilter,
   OpenedDecision,
@@ -510,6 +511,10 @@ export const Admin = {
     api<unknown>(`/admin/groups/${id}`, { method: "DELETE" }),
   setTimezone: (timezone: string) =>
     api<{ timezone: string }>("/admin/timezone", { method: "PUT", body: { timezone } }),
+  // The church's mailing address for email footers (DEC-116).
+  churchAddress: () => api<{ address: string }>("/admin/settings/church-address"),
+  setChurchAddress: (address: string) =>
+    api<{ address: string }>("/admin/settings/church-address", { method: "PUT", body: { address } }),
 };
 
 // Multipart upload: the browser sets Content-Type with the boundary;
@@ -559,11 +564,27 @@ export const Profile = {
   deleteAvatar: () => api<Record<string, never>>("/me/avatar", { method: "DELETE" }),
 };
 
-// The optional-email switch (DEC-97).
+// One email switch (DEC-97, DEC-115): a kind of email, or with no category
+// every optional kind at once.
+export interface EmailSettingsChange {
+  category?: EmailKind["category"];
+  off: boolean;
+}
+
+// Me > Notifications: the signed-in email switches.
 export const NotificationSettings = {
   get: () => api<{ settings: NotificationSettingsData }>("/me/notification-settings"),
-  update: (optionalEmailOff: boolean) =>
-    api<{ settings: NotificationSettingsData }>("/me/notification-settings", { method: "PUT", body: { optionalEmailOff } }),
+  update: (change: EmailSettingsChange) =>
+    api<{ settings: NotificationSettingsData }>("/me/notification-settings", { method: "PUT", body: change }),
+};
+
+// The email settings page an email's link opens, without signing in (M3.3b).
+// The token in the link is the authority.
+export const EmailSettingsLink = {
+  get: (token: string) =>
+    api<{ emailSettings: NotificationSettingsData; email: string; fromCategory: string }>(`/email-settings/${encodeURIComponent(token)}`),
+  update: (token: string, change: EmailSettingsChange) =>
+    api<{ emailSettings: NotificationSettingsData }>(`/email-settings/${encodeURIComponent(token)}`, { method: "PUT", body: change }),
 };
 
 // The personal calendar feed link (M1.7): only create returns the URL,

@@ -849,8 +849,15 @@ export interface ContactHistoryResponse {
 
 // Me > Notifications (DEC-97): one switch for now. Optional email is every
 // notification email except account, safety and requests waiting on you.
+// One optional kind of email and whether the person turned it off (DEC-115).
+export interface EmailKind {
+  category: "admin" | "groups" | "events" | "messages";
+  off: boolean;
+}
+
 export interface NotificationSettings {
   optionalEmailOff: boolean;
+  kinds: EmailKind[];
 }
 
 // A bookable room (M2.1a). Admins manage rooms; notes are for admins only.
