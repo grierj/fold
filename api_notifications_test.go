@@ -951,6 +951,7 @@ func TestOptionalEmailSwitch(t *testing.T) {
 	if !settings(lc) {
 		t.Fatal("switch didn't stick")
 	}
+	// Every optional kind, even admin notices for a member (DEC-97).
 	optional := len(notify.OptionalEmailCategories())
 	if n := contactCount(t, app, &models.Consent{}, "user_id = ? AND channel = 'email' AND status = 'opted_out' AND source = 'web_form'", leader.ID); n != int64(optional) {
 		t.Fatalf("%d opt-out rows, want one per optional category (%d), even after a repeat", n, optional)

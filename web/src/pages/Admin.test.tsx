@@ -18,7 +18,7 @@ vi.mock("../api", async (actual) => ({
   Invitations: { create: vi.fn() },
   Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() },
   AdminGroups: { list: vi.fn(), addMember: vi.fn() },
-  Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn() },
+  Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn(), churchAddress: vi.fn().mockResolvedValue({ address: "Grace Church" }), setChurchAddress: vi.fn() },
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn() },
   AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
   AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },

@@ -28,6 +28,7 @@ const Join = lazy(() => import("./pages/Join").then((m) => ({ default: m.Join })
 const SetPassword = lazy(() => import("./pages/SetPassword").then((m) => ({ default: m.SetPassword })));
 const GuestConfirm = lazy(() => import("./pages/GuestConfirm").then((m) => ({ default: m.GuestConfirm })));
 const GuestManage = lazy(() => import("./pages/GuestManage").then((m) => ({ default: m.GuestManage })));
+const EmailSettingsPage = lazy(() => import("./pages/EmailSettings").then((m) => ({ default: m.EmailSettingsPage })));
 const GuardianConsentPage = lazy(() => import("./pages/GuardianConsent").then((m) => ({ default: m.GuardianConsentPage })));
 const ContactHistoryPage = lazy(() => import("./pages/ContactHistory").then((m) => ({ default: m.ContactHistoryPage })));
 const AdminPage = lazy(() => import("./pages/Admin").then((module) => ({ default: module.AdminPage })));
@@ -75,6 +76,7 @@ export default function App() {
         <Route path="/guardian-consent" element={<Suspense fallback={null}><GuardianConsentPage /></Suspense>} />
         <Route path="/guest/confirm" element={<GuestConfirm />} />
         <Route path="/guest/manage/:token" element={<GuestManage />} />
+        <Route path="/email-settings/:token" element={<EmailSettingsPage />} />
         <Route path="/groups/new" element={<NewGroup />} />
         <Route path="/groups/:id" element={<GroupDetail />} />
         <Route path="/groups/:id/events/new" element={<NewEvent />} />

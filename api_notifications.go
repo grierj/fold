@@ -993,78 +993,35 @@ func (a *App) emailLink(path string) string {
 // the single DEC-97 switch; M3.12 adds per-category Email and Text switches.
 type notificationSettingsJSON struct {
 	OptionalEmailOff bool `json:"optionalEmailOff"`
-}
-
-// optionalEmailOff reports whether every optional category's latest email
-// consent opts out, which is what the switch writes.
-func optionalEmailOff(db *gorm.DB, userID uint) (bool, error) {
-	optOuts, err := emailOptOuts(db, []uint{userID})
-	if err != nil {
-		return false, err
-	}
-	for _, c := range notify.OptionalEmailCategories() {
-		if !optOuts[userID][categoryScope(c)] {
-			return false, nil
-		}
-	}
-	return true, nil
+	// Kinds are the optional kinds with their switches (DEC-115).
+	Kinds []emailKindJSON `json:"kinds"`
 }
 
 func (a *App) apiGetNotificationSettings(c *gin.Context) {
-	off, err := optionalEmailOff(a.DB, apiUser(c).ID)
+	s, err := a.emailSettingsFor(a.DB, apiUser(c))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load notification settings")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"settings": notificationSettingsJSON{OptionalEmailOff: off}})
+	c.JSON(http.StatusOK, gin.H{"settings": notificationSettingsJSON{OptionalEmailOff: s.OptionalEmailOff, Kinds: s.Kinds}})
 }
 
-// apiUpdateNotificationSettings turns all optional email off or back on by
-// appending one consent row per optional category whose state changes
-// (DEC-97). Required email (account, safety, requests waiting on you) is
-// never affected. The append-only consents rows, with their IP and user
-// agent, are the record of the change (5.3), so no AuditLog row is added.
+// apiUpdateNotificationSettings changes one email switch (DEC-115): a kind
+// ({category, off}) or every optional kind ({optionalEmailOff}, DEC-97).
+// Required email (account, safety, requests waiting on you) is never
+// affected. The append-only consents rows, with their IP and user agent,
+// are the record of the change (5.3), so no AuditLog row is added.
 func (a *App) apiUpdateNotificationSettings(c *gin.Context) {
-	var body struct {
-		OptionalEmailOff *bool `json:"optionalEmailOff"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.OptionalEmailOff == nil {
-		jsonError(c, http.StatusBadRequest, "invalid request")
-		return
-	}
 	me := apiUser(c)
-	status := models.ConsentOptedIn
-	if *body.OptionalEmailOff {
-		status = models.ConsentOptedOut
-	}
-	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		// One writer per person at a time, so two quick toggles can't
-		// interleave their rows.
-		if err := tx.Exec("SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE", me.ID).Error; err != nil {
-			return err
-		}
-		optOuts, err := emailOptOuts(tx, []uint{me.ID})
-		if err != nil {
-			return err
-		}
-		for _, cat := range notify.OptionalEmailCategories() {
-			if optOuts[me.ID][categoryScope(cat)] == *body.OptionalEmailOff {
-				continue
-			}
-			if err := tx.Create(&models.Consent{
-				UserID: me.ID, Channel: models.ConsentEmail, Scope: categoryScope(cat), Status: status,
-				Source: models.ConsentSourceWebForm, IP: c.ClientIP(), UserAgent: clipRunes(c.Request.UserAgent(), 500),
-			}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not save notification settings")
+	if !a.applyEmailSettings(c, me, models.ConsentSourceWebForm) {
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"settings": notificationSettingsJSON{OptionalEmailOff: *body.OptionalEmailOff}})
+	s, err := a.emailSettingsFor(a.DB, me)
+	if err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not load notification settings")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"settings": notificationSettingsJSON{OptionalEmailOff: s.OptionalEmailOff, Kinds: s.Kinds}})
 }
 
 // clipRunes keeps at most n runes of s (a request header we store).

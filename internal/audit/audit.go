@@ -273,6 +273,9 @@ const (
 	// EmailSuppressionCleared: an admin let Fold mail a suppressed address
 	// again (M3.2c, DEC-113). Target is the user; meta has the reasons.
 	EmailSuppressionCleared = "email.suppression_cleared"
+	// ChurchAddressChanged: an admin set or cleared the church's mailing
+	// address for email footers (M3.3b, DEC-116).
+	ChurchAddressChanged = "setting.church_address_changed"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

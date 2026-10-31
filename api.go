@@ -638,6 +638,12 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.POST("/admin/account-requests/:id/approve", a.apiAuth(), a.apiAdmin(), a.apiApproveAccountRequest)
 	v1.POST("/admin/account-requests/:id/reject", a.apiAuth(), a.apiAdmin(), a.apiRejectAccountRequest)
 	v1.PUT("/admin/self-signup", a.apiAuth(), a.apiAdmin(), a.apiSetSelfSignup)
+	// The church's mailing address for email footers (M3.3b, DEC-116).
+	v1.GET("/admin/settings/church-address", a.apiAuth(), a.apiAdmin(), a.apiAdminGetChurchAddress)
+	v1.PUT("/admin/settings/church-address", a.apiAuth(), a.apiAdmin(), a.apiAdminSetChurchAddress)
+	// Email settings from an email's link, without signing in (M3.3b).
+	v1.GET("/email-settings/:token", a.apiTokenEmailSettings)
+	v1.PUT("/email-settings/:token", a.apiTokenUpdateEmailSettings)
 
 	// Groups.
 	v1.GET("/groups", a.optionalUser(), a.apiListGroups)

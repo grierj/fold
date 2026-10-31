@@ -20,7 +20,7 @@ vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
   CalendarFeeds: { get: () => get(), create: vi.fn(), setScope: vi.fn(), revoke: vi.fn() },
   Profile: { update: vi.fn(), changePassword: vi.fn() },
-  NotificationSettings: { get: () => Promise.resolve({ settings: { optionalEmailOff: true } }), update: vi.fn() },
+  NotificationSettings: { get: () => Promise.resolve({ settings: { optionalEmailOff: true, kinds: [{ category: "groups", off: true }] } }), update: vi.fn() },
 }));
 vi.mock("../auth", () => ({ useAuth: () => ({ user: actor.user, loading: false, refresh: actor.refresh, logout: vi.fn(), isAdmin: false }) }));
 

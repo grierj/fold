@@ -16,6 +16,7 @@ import { EmailSuppressionNote } from "../components/admin/EmailSuppressionNote";
 import { RoomRequestsList } from "../components/admin/RoomRequestsList";
 import { MatchLocations } from "../components/admin/MatchLocations";
 import { SystemTab } from "../components/admin/SystemTab";
+import { ChurchAddressSetting } from "../components/admin/ChurchAddressSetting";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
@@ -1615,6 +1616,7 @@ export function AdminPage() {
 
       {tab === "settings" && <section aria-labelledby="admin-settings-heading">
         <h2 id="admin-settings-heading" className="text-xl font-bold mb-4">Church settings</h2>
+        <ChurchAddressSetting />
         <ChurchTimezone />
         <SelfSignupSetting />
         <RoomsSetting enabled={roomsEnabled} onChanged={setRoomsEnabled} />
