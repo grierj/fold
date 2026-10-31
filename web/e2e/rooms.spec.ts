@@ -109,8 +109,9 @@ test("a series room busy on one date lists it, and Pick a room books another roo
   await expect(page.getByRole("heading", { name: /Dates that need a room/ })).toHaveCount(0);
 });
 
-// M2.3b: a room the group has used before is suggested first, saying why,
-// and the other rooms stay listed after it.
+// M2.3b: a room the group has used before is suggested, saying why, and
+// every other room stays listed. Other specs in the shard may book rooms for
+// the same group, so this checks its own room, not the order.
 test("a leader sees the room their group used before under Suggested", async ({ page, request }) => {
   const admin = await apiAs(request, "grier");
   const name = `Prayer room ${Date.now() % 100000}`;
@@ -132,8 +133,8 @@ test("a leader sees the room their group used before under Suggested", async ({ 
   await expect(page.getByRole("heading", { name: "Next prayer night", level: 1 })).toBeVisible();
   await page.getByRole("button", { name: "Edit event" }).click();
   const room = page.getByRole("combobox", { name: /^Room/ });
-  await expect(room.locator('optgroup[label="Suggested"] option').first()).toHaveText(`${name} (12 seats) — Used by this group once`);
-  await expect(room.locator('optgroup[label="Other rooms"] option', { hasText: /^Fellowship Hall/ })).toBeAttached();
+  await expect(room.locator('optgroup[label="Suggested"] option').filter({ hasText: name })).toHaveText(`${name} (12 seats) — Used by this group once`);
+  await expect(room.locator("option", { hasText: /^Fellowship Hall/ })).toHaveCount(1);
   await pickRoom(room, name);
   await expect(page.getByRole("status").filter({ hasText: `Booked ${name}.` })).toBeVisible();
 });
