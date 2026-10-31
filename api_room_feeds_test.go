@@ -148,3 +148,44 @@ func TestRoomFeedContents(t *testing.T) {
 		t.Errorf("after deleting the group and unconfirming A:\n%s", body)
 	}
 }
+
+// The feed keeps its bytes while nothing changes, even with many bookings
+// that tie on every event field (a 304 on If-None-Match); a cancelled date,
+// one past 12 months and an unconfirmed booking are left out; a group's
+// own place shows for a group that isn't invite-only.
+func TestRoomFeedIsStableAndScoped(t *testing.T) {
+	f := newBookingFixture(t)
+	f.app.DB.Model(&models.Group{}).Where("id = ?", f.group).Update("location", "Church annex")
+	for i := 0; i < 15; i++ {
+		ev := createFeedEvent(t, f.leader, f.group, "Night "+itoa(uint(i)), f.startOn.AddDate(0, 0, i+1), "")
+		if w := f.leader.do("PUT", "/api/v1/events/"+itoa(ev.ID)+"/dates/"+feedDate(f.startOn.AddDate(0, 0, i+1))+"/room", map[string]any{"roomId": f.hall.ID}, true); w.Code != http.StatusOK {
+			t.Fatalf("book %d: %d %s", i, w.Code, w.Body.String())
+		}
+	}
+	link := f.roomFeed(t, f.hall.ID)
+	anon := newAPIClient(t, f.app)
+	first := fetchFeed(t, anon, link)
+	for i := 0; i < 5; i++ {
+		if again := fetchFeed(t, anon, link); again.Body.String() != first.Body.String() {
+			t.Fatal("the feed's bytes changed with no change to the data")
+		}
+	}
+	if w := fetchFeedIf(t, anon, link, first.Header().Get("ETag")); w.Code != http.StatusNotModified {
+		t.Fatalf("If-None-Match: %d", w.Code)
+	}
+	if !strings.Contains(first.Body.String(), "Church annex") {
+		t.Fatal("a non-invite-only group's place should show after the room")
+	}
+
+	// Cancel one date, push one past the window, and unconfirm one.
+	var occs []models.EventOccurrence
+	f.app.DB.Joins("JOIN room_bookings b ON b.occurrence_id = event_occurrences.id").Order("event_occurrences.starts_at").Find(&occs)
+	f.app.DB.Model(&occs[0]).Update("status", models.OccurrenceCancelled)
+	far := time.Now().UTC().AddDate(1, 0, 2)
+	f.app.DB.Model(&occs[1]).Updates(map[string]any{"starts_at": far, "ends_at": far.Add(time.Hour)})
+	f.app.DB.Model(&models.RoomBooking{}).Where("occurrence_id = ?", occs[2].ID).Update("status", models.BookingRejected)
+	body := fetchFeed(t, anon, link).Body.String()
+	if got, want := strings.Count(body, "BEGIN:VEVENT"), strings.Count(first.Body.String(), "BEGIN:VEVENT")-3; got != want {
+		t.Fatalf("want %d entries after cancelling, moving and rejecting, got %d", want, got)
+	}
+}

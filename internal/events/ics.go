@@ -64,7 +64,12 @@ func RenderFeed(f Feed) []byte {
 		if singles[i].EventID != singles[j].EventID {
 			return singles[i].EventID < singles[j].EventID
 		}
-		return singles[i].OriginalDate < singles[j].OriginalDate
+		if singles[i].OriginalDate != singles[j].OriginalDate {
+			return singles[i].OriginalDate < singles[j].OriginalDate
+		}
+		// Room-feed entries carry no event: their own UID orders them, so
+		// unchanged data keeps the same bytes and ETag.
+		return singles[i].UID < singles[j].UID
 	})
 
 	var blocks [][]string

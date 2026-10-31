@@ -66,6 +66,11 @@ export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => vo
     }
   }
 
+  // A new link appears in the box: put focus there so it can be copied.
+  useEffect(() => {
+    if (link) linkRef.current?.focus();
+  }, [link]);
+
   async function remake() {
     if (!confirm(`Make a new calendar link for ${room.name}? The old link will stop working.`)) return;
     await create();
@@ -82,6 +87,8 @@ export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => vo
       setCreatedAt(null);
       setLink(null);
       setStatus("Calendar link turned off.");
+      // The button that was pressed is gone; keep keyboard users in the panel.
+      headingRef.current?.focus();
     } catch (err) {
       setError(errorText(err, "We couldn't turn off the calendar link."));
     } finally {
@@ -107,13 +114,13 @@ export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => vo
 
   return (
     <section aria-labelledby={`room-feed-${room.id}`} className="bg-surface rounded-lg border border-border p-6 space-y-4 max-w-xl">
-      <h3 id={`room-feed-${room.id}`} ref={headingRef} tabIndex={-1} className="text-lg font-bold focus:outline-none">
+      <h2 id={`room-feed-${room.id}`} ref={headingRef} tabIndex={-1} className="text-lg font-bold focus:outline-none">
         Calendar feed for {room.name}
-      </h3>
+      </h2>
       <p className="text-sm text-text-muted">
-        Follow this room&rsquo;s bookings in a calendar app, like the church office calendar.
-        In the app, choose Add calendar &rarr; From URL (or Subscribe) and paste the link.
-        Dates most people can&rsquo;t see show as Reserved.
+        Share this link with the office, or anyone who needs to see when this room is booked. Anyone
+        with the link sees each booking&rsquo;s title, time and link; invite-only dates show only as
+        Reserved. In a calendar app, choose Add calendar &rarr; From URL (or Subscribe) and paste the link.
       </p>
       {loadError ? (
         <ErrorNotice message={loadError} onRetry={load} />
@@ -126,7 +133,7 @@ export function RoomFeedPanel({ room, onClose }: { room: Room; onClose: () => vo
             <Field
               id={`room-feed-link-${room.id}`}
               label="Calendar link"
-              hint="Save this link now; we won't show it again. Anyone with it can see this room's bookings. Making a new link stops the old one."
+              hint="Save this link now; we won't show it again. Making a new link stops the old one."
             >
               <Input ref={linkRef} value={link} readOnly layout="font-mono text-sm" onFocus={(e) => e.currentTarget.select()} />
             </Field>

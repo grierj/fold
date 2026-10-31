@@ -151,7 +151,9 @@ func (a *App) apiAdminRevokeRoomFeed(c *gin.Context) {
 
 // feedRoom serves /cal/rooms/<roomId>/<token>.ics. Every failure that
 // isn't the server's is the same plain 404: rooms off, a wrong, revoked or
-// other room's token, or a room that was deactivated.
+// other room's token, or a room that was deactivated. Deactivating keeps
+// the link, so turning the room back on brings it back; an admin turns the
+// link off to end it.
 func (a *App) feedRoom(c *gin.Context) {
 	param := c.Param("token")
 	roomID, err := strconv.ParseUint(c.Param("roomId"), 10, 63)
@@ -217,10 +219,12 @@ func (a *App) buildRoomFeed(room *models.Room, now time.Time) (events.Feed, erro
 			return err
 		}
 		evIDs, gIDs := []uint{}, []uint{}
+		wantEv, wantGroup := map[uint]bool{}, map[uint]bool{}
 		for i := range occs {
 			occByID[occs[i].ID] = &occs[i]
-			if evByID[occs[i].EventID] == nil {
-				evIDs = append(evIDs, occs[i].EventID)
+			if id := occs[i].EventID; evByID[id] == nil && !wantEv[id] {
+				wantEv[id] = true
+				evIDs = append(evIDs, id)
 			}
 		}
 		var evs []models.Event
@@ -229,7 +233,8 @@ func (a *App) buildRoomFeed(room *models.Room, now time.Time) (events.Feed, erro
 		}
 		for i := range evs {
 			evByID[evs[i].ID] = &evs[i]
-			if g := evs[i].GroupID; g != nil && groups[*g] == nil {
+			if g := evs[i].GroupID; g != nil && groups[*g] == nil && !wantGroup[*g] {
+				wantGroup[*g] = true
 				gIDs = append(gIDs, *g)
 			}
 		}
@@ -255,7 +260,9 @@ func (a *App) buildRoomFeed(room *models.Room, now time.Time) (events.Feed, erro
 		single := events.FeedSingle{
 			UID:   "room-" + strconv.FormatUint(uint64(room.ID), 10) + "-booking-" + strconv.FormatUint(uint64(b.ID), 10) + "@" + host,
 			Title: roomFeedTitle, Location: roomLine, TZID: tz,
-			StartsAt: b.StartsAt, EndsAt: b.EndsAt, UpdatedAt: b.UpdatedAt, Status: "CONFIRMED",
+			// The date's own change time too, so a date that becomes Reserved
+			// gets a newer DTSTAMP and calendars replace its old title.
+			StartsAt: b.StartsAt, EndsAt: b.EndsAt, UpdatedAt: laterTime(occ.UpdatedAt, b.UpdatedAt), Status: "CONFIRMED",
 		}
 		if ev != nil && roomFeedDescribes(ev, occ, groups) {
 			grp := (*models.Group)(nil)

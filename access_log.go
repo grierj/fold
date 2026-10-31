@@ -28,8 +28,12 @@ func redactLogPath(path string) string {
 		}
 		rest := path[len(p):]
 		// A room feed keeps its room id; the token after it is the secret.
+		// Anything but digits in the id's place may be a token itself.
 		if p == "/cal/rooms/" {
 			roomID, _, _ := strings.Cut(rest, "/")
+			if roomID == "" || strings.Trim(roomID, "0123456789") != "" {
+				return p + "REDACTED.ics"
+			}
 			return p + roomID + "/REDACTED.ics"
 		}
 		if path == "/api/v1/invitations/accept" {

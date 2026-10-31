@@ -239,7 +239,7 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
         <RoomFormPanel onSaved={(r) => saved(r, "added")} onCancel={cancel} />
       ) : rooms.length > 0 && (
         // While another room's form is open, switching would drop its edits, so the openers wait.
-        <div><Button variant="secondary" data-opener="new" disabled={open !== null} onClick={startAdding}>Add room</Button></div>
+        <div><Button variant="secondary" data-opener="new" disabled={open !== null || feedOpen !== null} onClick={startAdding}>Add room</Button></div>
       )}
       {sortRooms(rooms).map((r) => open === r.id ? (
         <RoomFormPanel key={r.id} room={r} onSaved={(saved_) => saved(saved_, "saved")} onCancel={cancel} />
@@ -254,11 +254,11 @@ export function RoomsTab({ rooms, error, reload, onSaved }: {
               </div>
               {details(r) && <p className="text-sm text-text-muted mt-0.5">{details(r)}</p>}
             </div>
-            <Button variant="secondary" data-opener={r.id} aria-label={`Edit ${r.name}`} disabled={open !== null}
+            <Button variant="secondary" data-opener={r.id} aria-label={`Edit ${r.name}`} disabled={open !== null || feedOpen !== null}
               onClick={() => { setStatus(""); setOpen(r.id); }}>Edit</Button>
             {r.active && (
               <Button variant="secondary" data-feed-opener={r.id} aria-label={`Calendar feed for ${r.name}`}
-                disabled={feedOpen !== null} onClick={() => { setStatus(""); setFeedOpen(r.id); }}>Calendar feed</Button>
+                disabled={feedOpen !== null || open !== null} onClick={() => { setStatus(""); setFeedOpen(r.id); }}>Calendar feed</Button>
             )}
             <Button variant="secondary" aria-label={`${r.active ? "Deactivate" : "Reactivate"} ${r.name}`} disabled={busyId === r.id}
               onClick={() => void setActive(r, !r.active)}>{r.active ? "Deactivate" : "Reactivate"}</Button>
