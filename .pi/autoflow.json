@@ -1,0 +1,27 @@
+{
+  "checks": {
+    "unit": {
+      "id": "unit",
+      "argv": ["bash", ".pi/autoflow-check.sh"],
+      "timeoutMs": 900000
+    },
+    "e2e": [
+      {
+        "id": "playwright",
+        "argv": ["make", "e2e"],
+        "timeoutMs": 1200000
+      },
+      {
+        "id": "provision",
+        "argv": ["make", "provision-dry-run"],
+        "timeoutMs": 600000
+      }
+    ],
+    "uiGlobs": ["web/src/**", "web/public/**", "web/index.html", "templates/**"]
+  },
+  "pr": {
+    "remote": "origin",
+    "base": "master",
+    "mergeMethod": "merge"
+  }
+}
