@@ -187,11 +187,14 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
 		// The claim holds only if nobody changed the message since it was
-		// read: an edit or a reschedule in between leaves it to the next job.
+		// read; if somebody did, it is checked again (stillDue).
 		res := tx.Model(&models.Message{}).Where("id = ? AND status = ? AND scheduled_at = ? AND updated_at = ?", m.ID, models.MessageScheduled, m.ScheduledAt, m.UpdatedAt).
 			Updates(map[string]any{"status": models.MessageSending, "error": "", "updated_at": time.Now()})
-		if res.Error != nil || res.RowsAffected == 0 {
+		if res.Error != nil {
 			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			return stillDue(tx, m.ID)
 		}
 		if len(rows) > 0 {
 			if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&rows, 500).Error; err != nil {
@@ -281,8 +284,14 @@ func (a *App) refuseMessage(db *gorm.DB, m *models.Message, read *models.Message
 			q = q.Where("updated_at = ?", read.UpdatedAt)
 		}
 		res := q.Updates(map[string]any{"status": models.MessageFailed, "error": why, "updated_at": time.Now()})
-		if res.Error != nil || res.RowsAffected == 0 {
+		if res.Error != nil {
 			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			if read != nil {
+				return stillDue(tx, m.ID)
+			}
+			return nil
 		}
 		return audit.Write(tx, audit.Entry{Actor: m.AuthorID, Action: audit.MessageRefused, TargetType: "message", TargetID: m.ID,
 			Meta: map[string]any{"why": why}})
@@ -741,4 +750,23 @@ func (a *App) audienceKeys(au audienceJSON) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// errChangedWhilePreparing: the message was edited while message.send
+// worked on it and is still due, so the job runs again on the new version.
+var errChangedWhilePreparing = errors.New("the message changed while it was being prepared")
+
+// stillDue answers a missed claim: nil when the message is no longer
+// scheduled or was moved later (another job, or none, has it), else
+// errChangedWhilePreparing so the job retries. An edit queues no job of its
+// own, so without this a mid-claim edit would wait for the daily reaper.
+func stillDue(tx *gorm.DB, id uint) error {
+	var m models.Message
+	if err := tx.Select("id, status, scheduled_at").First(&m, id).Error; err != nil {
+		return err
+	}
+	if m.Status == models.MessageScheduled && m.ScheduledAt != nil && !m.ScheduledAt.After(time.Now().Add(time.Second)) {
+		return errChangedWhilePreparing
+	}
+	return nil
 }
