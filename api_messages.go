@@ -36,6 +36,11 @@ type messageJSON struct {
 	// Editable: still a draft or scheduled, and the viewer may change it.
 	Editable  bool      `json:"editable"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// Error says why it failed, or why some people didn't get it (M3.5):
+	// the pipeline's words or the provider's error, never an address.
+	Error string `json:"error"`
+	// FailedCount is how many people a send failed for: "Partly sent".
+	FailedCount int `json:"failedCount"`
 }
 
 // Composer limits, matching the CHECKs in migration 00054.
@@ -57,40 +62,62 @@ const (
 	errMessageNotYours = "you can't send to those people"
 )
 
-// messageAuthorNames reads the authors of msgs in one query.
-func (a *App) messageAuthorNames(msgs []models.Message) (map[uint]string, error) {
-	ids := []uint{}
+// messageFacts is what a list of messages shows beyond their own rows:
+// each author's name, and how many people each send failed for.
+type messageFacts struct {
+	authors map[uint]string
+	failed  map[uint]int
+}
+
+// loadMessageFacts reads them for msgs in two queries, whatever the count.
+func (a *App) loadMessageFacts(msgs []models.Message) (messageFacts, error) {
+	out := messageFacts{authors: map[uint]string{}, failed: map[uint]int{}}
+	ids, settled := []uint{}, []uint{}
 	for _, m := range msgs {
 		if m.AuthorID != nil {
 			ids = append(ids, *m.AuthorID)
 		}
+		if m.Status == models.MessageSent || m.Status == models.MessageFailed {
+			settled = append(settled, m.ID)
+		}
 	}
-	out := map[uint]string{}
-	if len(ids) == 0 {
-		return out, nil
+	if len(ids) > 0 {
+		var users []models.User
+		if err := a.DB.Select("id, name, display_name").Where("id IN ?", dedupeIDs(ids)).Find(&users).Error; err != nil {
+			return out, err
+		}
+		for _, u := range users {
+			out.authors[u.ID] = u.PublicName()
+		}
 	}
-	var users []models.User
-	if err := a.DB.Select("id, name, display_name").Where("id IN ?", dedupeIDs(ids)).Find(&users).Error; err != nil {
-		return nil, err
-	}
-	for _, u := range users {
-		out[u.ID] = u.PublicName()
+	if len(settled) > 0 {
+		var counts []struct {
+			MessageID uint
+			N         int
+		}
+		if err := a.DB.Model(&models.MessageRecipient{}).Select("message_id, count(*) AS n").
+			Where("message_id IN ? AND status = ?", settled, models.RecipientFailed).Group("message_id").Scan(&counts).Error; err != nil {
+			return out, err
+		}
+		for _, c := range counts {
+			out.failed[c.MessageID] = c.N
+		}
 	}
 	return out, nil
 }
 
-func toMessageJSON(m *models.Message, me *models.User, authors map[uint]string) messageJSON {
+func toMessageJSON(m *models.Message, me *models.User, facts messageFacts) messageJSON {
 	var au audienceJSON
 	_ = json.Unmarshal([]byte(m.Audience), &au)
 	isAuthor := m.AuthorID != nil && *m.AuthorID == me.ID
 	name := ""
 	if m.AuthorID != nil {
-		name = authors[*m.AuthorID]
+		name = facts.authors[*m.AuthorID]
 	}
 	return messageJSON{ID: m.ID, Channel: m.Channel, Status: m.Status, Subject: m.Subject, BodyHTML: m.BodyHTML,
 		Audience: au, ScheduledAt: m.ScheduledAt, SentAt: m.SentAt, AuthorName: name,
 		Editable:  (m.Status == models.MessageDraft || m.Status == models.MessageScheduled) && policy.CanEditMessage(asPerson(me), isAuthor),
-		UpdatedAt: m.UpdatedAt}
+		UpdatedAt: m.UpdatedAt, Error: m.Error, FailedCount: facts.failed[m.ID]}
 }
 
 // respondMessage re-reads m and answers with it.
@@ -99,12 +126,12 @@ func (a *App) respondMessage(c *gin.Context, status int, m *models.Message, extr
 		jsonError(c, http.StatusInternalServerError, "could not load the message")
 		return
 	}
-	authors, err := a.messageAuthorNames([]models.Message{*m})
+	facts, err := a.loadMessageFacts([]models.Message{*m})
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load the message")
 		return
 	}
-	out := gin.H{"message": toMessageJSON(m, apiUser(c), authors)}
+	out := gin.H{"message": toMessageJSON(m, apiUser(c), facts)}
 	for k, v := range extra {
 		out[k] = v
 	}
@@ -458,14 +485,14 @@ func (a *App) apiListMessages(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list messages")
 		return
 	}
-	authors, err := a.messageAuthorNames(rows)
+	facts, err := a.loadMessageFacts(rows)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not list messages")
 		return
 	}
 	out := make([]messageJSON, 0, len(rows))
 	for i := range rows {
-		out = append(out, toMessageJSON(&rows[i], me, authors))
+		out = append(out, toMessageJSON(&rows[i], me, facts))
 	}
 	c.JSON(http.StatusOK, gin.H{"messages": out})
 }

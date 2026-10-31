@@ -601,6 +601,9 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.GET("/messages/:id/preview", a.apiAuth(), a.apiPreviewMessage)
 	v1.GET("/messages/:id/preview.html", a.apiAuth(), a.apiPreviewMessageHTML)
 	v1.POST("/messages/:id/test", a.apiAuth(), a.apiTestMessage)
+	// History and Try again (M3.5b, DEC-131).
+	v1.GET("/messages/:id/recipients", a.apiAuth(), a.apiMessageRecipients)
+	v1.POST("/messages/:id/retry", a.apiAuth(), a.apiRetryMessage)
 	// Calendar feed link (M1.7): the raw token comes back only from POST.
 	v1.GET("/me/notification-settings", a.apiAuth(), a.apiGetNotificationSettings)
 	v1.PUT("/me/notification-settings", a.apiAuth(), a.apiUpdateNotificationSettings)
@@ -653,6 +656,12 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// The church's mailing address for email footers (M3.3b, DEC-116).
 	v1.GET("/admin/settings/church-address", a.apiAuth(), a.apiAdmin(), a.apiAdminGetChurchAddress)
 	v1.PUT("/admin/settings/church-address", a.apiAuth(), a.apiAdmin(), a.apiAdminSetChurchAddress)
+	// What the send pipeline reads (M3.5b): guardian copies (DEC-19) and
+	// where replies go (DEC-130).
+	v1.GET("/admin/settings/guardian-copies", a.apiAuth(), a.apiAdmin(), a.apiAdminGetGuardianCopies)
+	v1.PUT("/admin/settings/guardian-copies", a.apiAuth(), a.apiAdmin(), a.apiAdminSetGuardianCopies)
+	v1.GET("/admin/settings/reply-to", a.apiAuth(), a.apiAdmin(), a.apiAdminGetReplyTo)
+	v1.PUT("/admin/settings/reply-to", a.apiAuth(), a.apiAdmin(), a.apiAdminSetReplyTo)
 	// Email settings from an email's link, without signing in (M3.3b).
 	v1.GET("/email-settings/:token", a.apiTokenEmailSettings)
 	v1.PUT("/email-settings/:token", a.apiTokenUpdateEmailSettings)

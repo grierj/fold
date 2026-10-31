@@ -77,3 +77,57 @@ test("a leader emails their group: write, count, preview, test, schedule, cancel
   await expect(page.getByRole("button", { name: "Edit" })).toHaveCount(0);
   expect(csp).toEqual([]);
 });
+
+// Sending (M3.5) and its history (M3.5b): Send now goes out within a few
+// seconds and the page follows it without a reload. In production mode the
+// e2e server has no email service, so the send fails in words, with Try
+// again; in dev mode (E2E_APP_ENV=dev) the outbox takes it and the page
+// says who it reached.
+test("a leader sends now and the page follows it: sent with counts, or failed with Try again", async ({ page, request }) => {
+  const csp = await watchCSP(page);
+  const admin = await apiAs(request, "grier");
+  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const room = groups.find((g) => g.name === "Room 201 class")!;
+  const subject = `Room change ${Date.now()}`;
+
+  await signInTo(page, "lee", `/messages/new?group=${room.id}`);
+  await expect(page.getByRole("status").filter({ hasText: /^\d+ (people|person);/ })).toBeVisible();
+  await page.getByRole("textbox", { name: "Subject" }).fill(subject);
+  await page.getByRole("textbox", { name: "Message" }).click();
+  await page.keyboard.type("We're meeting in Room 104 this week.");
+  await page.getByRole("button", { name: "Send now" }).click();
+  await page.getByRole("group", { name: /^Send to \d+ (people|person) now\?$/ }).getByRole("button", { name: "Send now" }).click();
+
+  const dev = (await page.request.get("/dev/outbox")).status() === 200;
+  // The page checks every 5 seconds while it waits and sends.
+  if (dev) {
+    await expect(page.getByText(/^Sent to \d+ (people|person)/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/^Sent (Today|Yesterday)/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(0);
+    await page.getByText("See who got it").click();
+    await expect(page.getByRole("listitem").filter({ hasText: "· Sent" }).first()).toBeVisible();
+    expect(await (await page.request.get("/dev/outbox")).text()).toContain(subject);
+  } else {
+    const banner = page.getByRole("status").filter({ hasText: "This message didn't go out" });
+    await expect(banner).toBeVisible({ timeout: 20_000 });
+    await expect(banner).toContainText("No email service is set up yet");
+    await expect(page.getByText("Failed", { exact: true })).toBeVisible();
+    await expect(page.getByText(/^\d+ didn't get it/)).toBeVisible();
+    await page.getByText("See who got it").click();
+    await expect(page.getByRole("listitem").filter({ hasText: "· Didn't get it" }).first()).toBeVisible();
+    // Try again asks, sends to the same people, and fails the same way.
+    const asked: string[] = [];
+    page.once("dialog", (d) => { asked.push(d.message()); void d.accept(); });
+    await banner.getByRole("button", { name: "Try again" }).click();
+    await expect.poll(() => asked).toEqual([expect.stringMatching(/^Send again to the \d+ (people|person) it didn't reach\?$/)]);
+    await expect(page.getByText(/^Sending… \d+ of \d+ so far$/)).toBeVisible();
+    await expect(banner).toHaveCount(0);
+    await expect(banner.getByRole("button", { name: "Try again" })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("Failed", { exact: true })).toBeVisible();
+  }
+
+  // The list says the same in words.
+  await page.getByRole("link", { name: "Back to messages" }).click();
+  await expect(page.getByRole("link").filter({ hasText: subject })).toContainText(dev ? /^Sent / : /^Failed/);
+  expect(csp).toEqual([]);
+});

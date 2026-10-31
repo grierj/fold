@@ -1794,11 +1794,11 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - [ ] An SMS mentioning giving or donations (the 7.3 word list, or a link to a giving page: a giving word in the address or a giving service) shows the donation-ask warning (DEC-3) (the check is built and tested in M3.4b; the warning shows in the SMS tab, hidden until texting is set up, DEC-117; the giving-page setting comes with it, DEC-120)
 - Tests: segment table tests; sanitizer tests; policy tests; Playwright compose-and-schedule test.
 
-**M3.5 Send pipeline**
+**M3.5 Send pipeline** (built)
 - Depends on: M3.4, M1.5, M1.10
 - Scope: 7.1, 7.2, and the email side of 7.5: audience snapshot, dedupe, filters, guardian copies, batches, rate limits, scheduled sends, history page. Two slices (14.1):
   - **M3.5a The pipeline** (built): migration 00056 `message_recipients` (and `messages.error`); `message.send` (send-time policy check, snapshot with reasons, guardian copies, batches of 50) and `message.deliver_batch` (each email rendered for its reader, From "<author> via <church>", Reply-To the church office address, DEC-130; retries, then failed rows); delivery and bounce reports on recipients; the daily `messages.reap` backstop; the per-author daily limit (5 per group per day; admins none). Email has no provider token bucket: Postmark meters its own API, and the jobs pool bounds concurrency; SMS throughput arrives with M3.8.
-  - **M3.5b History and controls**: the recipient history (counts by status and reason, names with Teen badges and guardian-copy marks, never addresses), "Try again" for the people a send failed for (DEC-131), and the admin settings for guardian copies (audited) and where replies go.
+  - **M3.5b History and controls** (built): the recipient history (`GET /messages/:id/recipients`: counts by status and reason, the first 200 names with Teen badges and guardian-copy marks, each person's status in words, each person's reason for admins only, never addresses), shown on the message's page with a summary line that follows a send every 5 seconds until it settles; "Partly sent" and "Failed" on the list; "Try again" for the people a send failed for (DEC-131; `POST /messages/:id/retry`, author or admin, the author's rights checked again, audited `message.retried`); and the admin settings for guardian copies and where replies go (Admin → Settings, each audited). A send with no email service set up fails at once in words instead of retrying for an hour, so Try again works once one is set up.
 - Acceptance:
   - [x] A person in two chosen groups gets one copy
   - [x] Opted-out and suppressed people are skipped and counted with reasons
@@ -1807,8 +1807,8 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - [x] Teens without `account` consent and all household people get nothing; messages about a household person's registration go to the account holder (DEC-8)
   - [x] With `guardian_copies` off (default), guardians get no copies; with it on, each confirmed guardian gets one marked copy per message to their teen (DEC-19); no copy is ever sent by SMS (DEC-29)
   - [x] A scheduled message can be cancelled until sending starts
-  - [x] A provider outage retries and then shows a failed state with the error (the API; the page in M3.5b)
-  - [ ] "Try again" resends to just the people a send failed for, never twice to anyone it reached (M3.5b)
+  - [x] A provider outage retries and then shows a failed state with the error (the API in M3.5a; the page in M3.5b)
+  - [x] "Try again" resends to just the people a send failed for, never twice to anyone it reached (M3.5b)
 - Tests: pipeline tests with devoutbox; failure injection.
 
 **M3.6 Email reminders**

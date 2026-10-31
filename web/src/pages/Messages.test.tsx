@@ -26,6 +26,10 @@ describe("MessagesPage", () => {
       message({ id: 3, status: "cancelled", scheduledAt: "2030-11-05T16:30:00Z" }),
       message({ id: 4, status: "cancelled" }),
       message({ id: 5, status: "scheduled", scheduledAt: "2026-01-01T16:00:00Z" }),
+      message({ id: 6, status: "sending" }),
+      message({ id: 7, status: "sent", sentAt: "2026-01-02T16:00:00Z" }),
+      message({ id: 8, status: "sent", sentAt: "2026-01-02T16:00:00Z", failedCount: 2 }),
+      message({ id: 9, status: "failed", error: "No email service is set up yet." }),
     ] });
     open();
     const links = await screen.findAllByRole("link");
@@ -40,6 +44,11 @@ describe("MessagesPage", () => {
     expect(rows[3]).toHaveTextContent("Discarded");
     // Send now: the sender (M3.5) hasn't picked it up yet.
     expect(rows[4]).toHaveTextContent("Waiting to send");
+    // After it goes out (M3.5b).
+    expect(rows[5]).toHaveTextContent(/^Sending/);
+    expect(rows[6]).toHaveTextContent(/^Sent /);
+    expect(rows[7]).toHaveTextContent(/^Partly sent /);
+    expect(rows[8]).toHaveTextContent(/^Failed/);
     expect(screen.queryByText(/Showing your latest/)).toBeNull();
     expect(screen.getAllByRole("link", { name: "New message" })).toHaveLength(1);
     expect(screen.getByRole("link", { name: "New message" })).toHaveClass("btn-primary");

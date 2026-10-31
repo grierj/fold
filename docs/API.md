@@ -1265,7 +1265,7 @@ Leaders, hosts and admins write announcements (`policy.CanComposeMessages`): adm
 
 `summary` is `{people, eligible, teens, skipped: {reason: count}, recipients: [{name, teen, skipped?}] (first 100 by name), more}`: names and counts only, never addresses (DEC-31), with a teen count and Teen badges (DEC-20). People are skipped when they are guests (they get only transactional mail and reminders until they ask for updates, PLAN 7.4), not active, have no address, have email that isn't working or marked our email as spam (suppressions), or turned off messages from leaders (the latest `category:messages` email consent, which "Turn off all optional email" and the one-click link also write, DEC-115). The counts by reason are for everyone; each person's own reason is shown only to an admin, and a leader or host sees "won't get this". Each read goes in chunks of ids.
 
-`message` is `{id, channel, status, subject, bodyHtml, audience, scheduledAt, sentAt, authorName, editable, updatedAt}`. Only email is accepted for now (`message_channel`): texting stays hidden until an SMS provider is set up (DEC-117). `bodyHtml` is sanitized with bluemonday before it is stored (paragraphs, bold, italic, underline, strike, two heading sizes, lists, quotes, rules, http/https/mailto links and `fold-button` links; scripts, styles, `on*` attributes and `javascript:` links are removed) and a plain-text part is made from it. Scheduling needs a subject, a body and at least one eligible person (`message_nobody`), and a time from now to a year ahead (`message_when`); it is audited `message.scheduled` and stores the eligible count. Drafts and scheduled messages can be edited or cancelled. Editing a scheduled message checks it could still go out (as scheduling does) and refreshes its count; that edit, and an admin editing someone else's message, are audited `message.edited`. The body is limited to 100,000 characters of sanitized HTML and 50,000 of plain text (`message_body`); once a message is sending or sent, changes are 409 `message_locked`. Sending arrives with M3.5.
+`message` is `{id, channel, status, subject, bodyHtml, audience, scheduledAt, sentAt, authorName, editable, updatedAt, error, failedCount}`. `status` is `draft`, `scheduled`, `sending`, `sent`, `failed` or `cancelled`; `error` says why it failed, or why some people didn't get it (M3.5), and `failedCount` is how many people the send failed for (one count per message, read for the whole list in one query), which the list shows as "Partly sent". Only email is accepted for now (`message_channel`): texting stays hidden until an SMS provider is set up (DEC-117). `bodyHtml` is sanitized with bluemonday before it is stored (paragraphs, bold, italic, underline, strike, two heading sizes, lists, quotes, rules, http/https/mailto links and `fold-button` links; scripts, styles, `on*` attributes and `javascript:` links are removed) and a plain-text part is made from it. Scheduling needs a subject, a body and at least one eligible person (`message_nobody`), and a time from now to a year ahead (`message_when`); it is audited `message.scheduled` and stores the eligible count. Drafts and scheduled messages can be edited or cancelled. Editing a scheduled message checks it could still go out (as scheduling does) and refreshes its count; that edit, and an admin editing someone else's message, are audited `message.edited`. The body is limited to 100,000 characters of sanitized HTML and 50,000 of plain text (`message_body`); once a message is sending or sent, changes are 409 `message_locked`. Sending arrives with M3.5.
 
 #### Merge fields, preview and test sends (M3.4b)
 
@@ -1300,17 +1300,18 @@ Each batch sends its queued rows one at a time. Each email is rendered for its r
 - goes out with Reply-To set to the church office address in the `reply_to_address` setting, when it holds one plain address (DEC-130; the relay replaces it in M3.11)
 - is on the broadcast stream, with the reader's footer and one-click unsubscribe
 
-Right before sending, each reader's suppressions, account status and messages-from-leaders switch are read again, so someone who bounced, was disabled or opted out since the snapshot is skipped.
+Right before sending, each reader's suppressions, account status and messages-from-leaders switch are read again, so someone who bounced, was disabled or opted out since the snapshot is skipped, with the same reason words the snapshot uses.
 
 Each row is sent under a row lock (`FOR UPDATE SKIP LOCKED`) and recorded as `sent`, with the provider's id, in the same transaction, so two workers never send the same row. Delivery is at least once: a crash between the provider accepting an email and that commit can send it again on the retry. A batch stops after 10 minutes, inside the jobs lease, and its retry carries on.
 
 How a send error is handled depends on whether a retry can help (`mail.IsPermanent`):
 
 - **Permanent errors fail that row at once.** These are a message refused before sending, a provider refusal (`SendError.Permanent`), and an SMTP 5xx such as "no such user".
+- **No email service at all fails that row at once** (M3.5b), with "No email service is set up yet, so it couldn't go out. Once an admin sets one up, try again." Retrying in the same process can't help; once a provider is set and the server restarted, Try again sends it.
 - **Any other error retries the batch.** It stops and retries with the jobs backoff, 8 attempts (about an hour). On the last attempt, each such row fails with its error and the rest are still tried.
 - **An error that isn't about one send fails the batch's queued rows** on the last attempt. That covers a database error and a render failure.
 
-A `message.send` that never succeeds fails the message: "We couldn't get this ready to send. Schedule it again to try once more." Its claim holds only if the message hasn't been edited or rescheduled since the job read it.
+A `message.send` that never succeeds fails the message: "We couldn't get this ready to send. Try again to send it." (Try again prepares it again from the start, M3.5b) Its claim holds only if the message hasn't been edited or rescheduled since the job read it.
 
 When no row is left queued, the message is `sent`, or `failed` when nobody was reached and some sends failed. Either way it carries the first error and is audited `message.sent` with the counts.
 
@@ -1319,6 +1320,29 @@ A daily `messages.reap` settles any send that stopped with no job left, such as 
 Postmark delivery, bounce and spam reports move a row to `delivered`, `bounced` or `complained`, as they do for notification email.
 
 A leader or host may schedule at most 5 messages a day to one group's people (a group audience or its events) or to one church-wide event's, counted in the church's day. The check runs at scheduling and when a scheduled message is edited. A 6th is 400 `message_daily_limit`. Admins have no limit.
+
+#### History and Try again (M3.5b)
+
+```
+GET  /api/v1/messages/:id/recipients     → 200 {counts, skippedBy, recipients, more, canRetry} | 404   (its author or an admin)
+POST /api/v1/messages/:id/retry          → 200 {message} | 403 message_retry_refused | 404 | 409 message_nothing_to_retry
+GET  /api/v1/admin/settings/guardian-copies → 200 {on}                              (admin)
+PUT  /api/v1/admin/settings/guardian-copies → 200 {on} | 400                         (admin; audited setting.guardian_copies_changed)
+     body: {on}
+GET  /api/v1/admin/settings/reply-to     → 200 {address}                              (admin)
+PUT  /api/v1/admin/settings/reply-to     → 200 {address} | 400 reply_to_invalid       (admin; audited setting.reply_to_changed)
+     body: {address} — one plain address (`validEmail`), or empty for none
+```
+
+`counts` is `{sent, delivered, bounced, complained, failed, skipped, queued, teens}`: the message's `message_recipients` rows by status, guardian copies included (`skipped` is the `suppressed` rows, `queued` also covers deferred texts), and `teens` the teens it was for and didn't skip (DEC-20). `skippedBy` counts the skipped by reason, in the preview's words. `recipients` is the first 200 rows by name, `[{name, teen, status, reason?, copyOf?}]`; `more` says there are others. `copyOf` is the teen's name on a guardian's copy (DEC-19). Two queries read it all, whatever the size.
+
+The privacy rule is the composer preview's. The counts, by status and by reason, are for everyone who may see the message. Each person's `status` is `sent`, `delivered`, `waiting` (queued) or `missed`, which covers skipped, bounced, marked as spam and failed alike, so a leader or host can't tell one person's consent, bounce or complaint. Only an admin gets each person's `reason` ("turned off messages from leaders", "bounced: the address doesn't take email", "couldn't send: …"). No response carries an address: `message_recipients.address` never leaves the worker (DEC-31), and send errors are stored with addresses replaced by `[email]`.
+
+`canRetry` shows "Try again" (DEC-131): the message is `sent` or `failed` with failed rows, or failed before anyone was chosen because it couldn't be got ready, and its author is active and may still write to its audience. `retry` checks the same, then in one transaction sets only the `failed` rows back to `queued` (clearing their error), the message to `sending` (clearing its error), queues `message.deliver_batch` jobs for those rows under fresh keys, and audits `message.retried` with the count. Rows that were sent, delivered, bounced or skipped are never queued again, so nobody it reached gets it twice. A message that never got ready goes back to `scheduled` for now and `message.send` prepares it from the start. Whoever presses it, an admin included, it goes out in the author's name, so the author's rights are what is checked: an author who can no longer write to these people is 403 `message_retry_refused` and nothing changes. A message with nothing to retry (or one someone else just retried) is 409 `message_nothing_to_retry`.
+
+The message's page shows the counts as a line ("Sent to 132 people · 3 bounced · 9 skipped (6 turned off messages from leaders, 3 have no email address)"), a failed send's error under the title with Try again as its one primary action, and "See who got it". While a message is sending, or due to send, the page reads the message and its counts every 5 seconds ("Sending… 40 of 132 so far") and stops when it settles or the page closes.
+
+`guardian_copies` is `true` or `false` (default off): each confirmed guardian of a teen recipient gets an email copy (DEC-19). `reply_to_address` is where replies to announcements go until the M3.11 relay (DEC-130). Both are on Admin → Settings; each change writes its audit row in the same transaction.
 
 ### Notifications
 

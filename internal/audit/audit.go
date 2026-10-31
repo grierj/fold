@@ -276,6 +276,12 @@ const (
 	// ChurchAddressChanged: an admin set or cleared the church's mailing
 	// address for email footers (M3.3b, DEC-116).
 	ChurchAddressChanged = "setting.church_address_changed"
+	// GuardianCopiesChanged: an admin turned guardian copies of messages to
+	// teens on or off (M3.5b, DEC-19); meta has on.
+	GuardianCopiesChanged = "setting.guardian_copies_changed"
+	// ReplyToChanged: an admin set or cleared where replies to
+	// announcements go (M3.5b, DEC-130); meta says whether one is set.
+	ReplyToChanged = "setting.reply_to_changed"
 	// MessageScheduled / MessageCancelled: an author scheduled an announcement
 	// (or rescheduled it) or cancelled it (M3.4). Target is the message.
 	MessageScheduled = "message.scheduled"
@@ -291,6 +297,9 @@ const (
 	// message finished sending, with its counts.
 	MessageRefused = "message.refused"
 	MessageSent    = "message.sent"
+	// MessageRetried: its author or an admin sent a message again to the
+	// people it failed for (M3.5b, DEC-131); meta has the count.
+	MessageRetried = "message.retried"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

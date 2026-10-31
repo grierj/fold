@@ -408,8 +408,11 @@ func TestSMTPHeaderInjection(t *testing.T) {
 }
 
 func TestNoSenderFails(t *testing.T) {
-	if err := (NoSender{}).Send(context.Background(), Message{To: "a@b.c"}); err == nil {
+	if err := (NoSender{}).Send(context.Background(), Message{To: "a@b.c"}); err == nil || !NotConfigured(err) {
 		t.Fatal("NoSender sent")
+	}
+	if NotConfigured(errors.New("other")) {
+		t.Fatal("any error is not configured")
 	}
 }
 

@@ -1,0 +1,215 @@
+package main
+
+import (
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"fold/internal/audit"
+	"fold/internal/mail"
+	"fold/models"
+)
+
+func (f composeFixture) history(t *testing.T, c *apiClient, id uint) (messageRecipientsJSON, string) {
+	t.Helper()
+	w := c.do("GET", "/api/v1/messages/"+itoa(id)+"/recipients", nil, false)
+	if w.Code != http.StatusOK {
+		t.Fatalf("recipients: %d %s", w.Code, w.Body.String())
+	}
+	var out messageRecipientsJSON
+	decodeJSON(t, w, &out)
+	return out, w.Body.String()
+}
+
+func historyRow(h messageRecipientsJSON, name string) historyRecipientJSON {
+	for _, r := range h.Recipients {
+		if r.Name == name && r.CopyOf == "" {
+			return r
+		}
+	}
+	return historyRecipientJSON{}
+}
+
+// sendWithOneFailure sends to the fixture's group with the leader's own
+// address refused (550), so one row fails and the message is partly sent.
+func (f composeFixture) sendWithOneFailure(t *testing.T) uint {
+	t.Helper()
+	next := f.app.Mailer
+	f.app.Mailer = pickySender{next: next, bad: f.leaderUser.Email, code: 550}
+	id := f.scheduleNow(t, f.leader, "Partly", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
+	runMessageJobs(t, f.app)
+	f.app.Mailer = next
+	return id
+}
+
+// The history follows the preview's privacy rule: counts by reason for
+// everyone, each person's status in words for the author, each person's
+// reason only for an admin, guardian copies marked, never an address.
+func TestMessageHistoryPrivacy(t *testing.T) {
+	f := newComposeFixture(t)
+	parent := newTestUser(t, f.app, "parent", "password1234", models.RoleMember)
+	f.app.DB.Create(&models.GuardianLink{GuardianUserID: parent.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed})
+	f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"})
+	id := f.sendWithOneFailure(t)
+
+	lead, body := f.history(t, f.leader, id)
+	if strings.Contains(body, "@") {
+		t.Fatalf("an address in the leader's history: %s", body)
+	}
+	c := lead.Counts
+	if c.Sent != 2 || c.Failed != 1 || c.Skipped != 2 || c.Queued != 0 || c.Teens != 1 ||
+		lead.SkippedBy[skipOptedOut] != 1 || lead.SkippedBy[skipNotWorking] != 1 || len(lead.Recipients) != 5 || lead.More {
+		t.Fatalf("leader counts: %+v", lead)
+	}
+	if r := historyRow(lead, f.teen.PublicName()); r.Status != historySent || !r.Teen || r.Reason != "" {
+		t.Fatalf("teen: %+v", r)
+	}
+	for _, u := range []*models.User{f.opted, f.bouncing, f.leaderUser} {
+		if r := historyRow(lead, u.PublicName()); r.Status != historyMissed || r.Reason != "" {
+			t.Fatalf("a leader sees %s's reason: %+v", u.Name, r)
+		}
+	}
+	copied := false
+	for _, r := range lead.Recipients {
+		copied = copied || (r.Name == parent.PublicName() && r.CopyOf == f.teen.PublicName() && !r.Teen)
+	}
+	if !copied || !lead.CanRetry {
+		t.Fatalf("copy mark or retry: %+v", lead)
+	}
+
+	adm, body := f.history(t, f.admin, id)
+	if strings.Contains(body, "@") {
+		t.Fatalf("an address in the admin's history: %s", body)
+	}
+	if historyRow(adm, f.opted.PublicName()).Reason != skipOptedOut || historyRow(adm, f.bouncing.PublicName()).Reason != skipNotWorking ||
+		!strings.HasPrefix(historyRow(adm, f.leaderUser.PublicName()).Reason, "couldn't send") {
+		t.Fatalf("admin reasons: %+v", adm.Recipients)
+	}
+	if w := f.member.do("GET", "/api/v1/messages/"+itoa(id)+"/recipients", nil, false); w.Code != http.StatusNotFound {
+		t.Fatalf("member: %d", w.Code)
+	}
+	// The list says "Partly sent" from one count per message.
+	var list struct {
+		Messages []messageJSON `json:"messages"`
+	}
+	decodeJSON(t, f.leader.do("GET", "/api/v1/messages", nil, false), &list)
+	if len(list.Messages) != 1 || list.Messages[0].FailedCount != 1 || list.Messages[0].Status != models.MessageSent || list.Messages[0].Error == "" {
+		t.Fatalf("list: %+v", list.Messages)
+	}
+}
+
+// "Try again" (DEC-131) sends again to just the people it failed for, in
+// new batches, and nobody it reached gets it twice; it is audited.
+func TestMessageRetrySendsOnlyToThoseItFailedFor(t *testing.T) {
+	f := newComposeFixture(t)
+	id := f.sendWithOneFailure(t)
+	outbox := func(email string) int64 {
+		var n int64
+		f.app.DB.Model(&models.MailOutbox{}).Where("lower(to_address) = lower(?)", email).Count(&n)
+		return n
+	}
+	if outbox(f.teen.Email) != 1 || outbox(f.leaderUser.Email) != 0 {
+		t.Fatalf("first send: teen %d, leader %d", outbox(f.teen.Email), outbox(f.leaderUser.Email))
+	}
+	w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"sending"`) {
+		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+	}
+	if rows := recipientsOf(t, f.app, id); rows[f.leaderUser.Email].Status != models.RecipientQueued || rows[f.leaderUser.Email].Error != "" ||
+		rows[f.teen.Email].Status != models.RecipientSent {
+		t.Fatalf("rows after retry: %+v", rows)
+	}
+	runMessageJobs(t, f.app)
+	var m models.Message
+	f.app.DB.First(&m, id)
+	if m.Status != models.MessageSent || m.Error != "" || outbox(f.leaderUser.Email) != 1 || outbox(f.teen.Email) != 1 {
+		t.Fatalf("after retry: %+v, leader %d, teen %d", m, outbox(f.leaderUser.Email), outbox(f.teen.Email))
+	}
+	if auditCount(t, f.app, audit.MessageRetried) != 1 {
+		t.Fatal("a retry is audited")
+	}
+	// Nothing is left to send.
+	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true); w.Code != http.StatusConflict ||
+		!strings.Contains(w.Body.String(), "message_nothing_to_retry") {
+		t.Fatalf("again: %d %s", w.Code, w.Body.String())
+	}
+	if h, _ := f.history(t, f.leader, id); h.CanRetry {
+		t.Fatal("canRetry with nothing to retry")
+	}
+	if w := f.member.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true); w.Code != http.StatusNotFound {
+		t.Fatalf("member: %d", w.Code)
+	}
+}
+
+// A retry checks again that the author may write to these people, even
+// when an admin presses it, and changes nothing when not.
+func TestMessageRetryRefusedWhenTheAuthorLostRights(t *testing.T) {
+	f := newComposeFixture(t)
+	id := f.sendWithOneFailure(t)
+	f.app.DB.Model(&models.Membership{}).Where("user_id = ? AND group_id = ?", f.leaderUser.ID, f.group.ID).Update("role", models.MembershipMember)
+	if h, _ := f.history(t, f.admin, id); h.CanRetry {
+		t.Fatal("canRetry for an author who lost rights")
+	}
+	for _, c := range []*apiClient{f.leader, f.admin} {
+		if w := c.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true); w.Code != http.StatusForbidden ||
+			!strings.Contains(w.Body.String(), "message_retry_refused") {
+			t.Fatalf("refused: %d %s", w.Code, w.Body.String())
+		}
+	}
+	if rows := recipientsOf(t, f.app, id); rows[f.leaderUser.Email].Status != models.RecipientFailed {
+		t.Fatalf("a refused retry changed rows: %+v", rows)
+	}
+	if auditCount(t, f.app, audit.MessageRetried) != 0 {
+		t.Fatal("a refused retry was audited")
+	}
+}
+
+// A message that failed before anyone was chosen is prepared again; a
+// draft or a refused message has nothing to retry.
+func TestMessageRetryWhenItNeverGotReady(t *testing.T) {
+	f := newComposeFixture(t)
+	aud := `{"type":"group","groupId":` + itoa(f.group.ID) + `,"roles":["member","leader"]}`
+	at := time.Now().Add(-2 * time.Hour)
+	stuck := models.Message{AuthorID: &f.leaderUser.ID, Status: models.MessageFailed, Subject: "Again", BodyHTML: "<p>Hi</p>", BodyText: "Hi",
+		Audience: aud, ScheduledAt: &at, Error: whyNotPrepared}
+	refused := stuck
+	refused.Error = whyAuthorRefused
+	draft := stuck
+	draft.Status, draft.Error = models.MessageDraft, ""
+	for _, m := range []*models.Message{&stuck, &refused, &draft} {
+		f.app.DB.Create(m)
+	}
+	for _, m := range []*models.Message{&refused, &draft} {
+		if w := f.leader.do("POST", "/api/v1/messages/"+itoa(m.ID)+"/retry", nil, true); w.Code != http.StatusConflict {
+			t.Fatalf("%s: %d %s", m.Status, w.Code, w.Body.String())
+		}
+	}
+	if h, _ := f.history(t, f.leader, stuck.ID); !h.CanRetry {
+		t.Fatal("no Try again for a message that never got ready")
+	}
+	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(stuck.ID)+"/retry", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("retry: %d %s", w.Code, w.Body.String())
+	}
+	runMessageJobs(t, f.app)
+	f.app.DB.First(&stuck, stuck.ID)
+	if stuck.Status != models.MessageSent || recipientsOf(t, f.app, stuck.ID)[f.teen.Email].Status != models.RecipientSent {
+		t.Fatalf("after retry: %+v", stuck)
+	}
+}
+
+// With no email service at all, a send fails at once in plain words
+// instead of retrying for an hour.
+func TestMessageFailsAtOnceWithNoEmailService(t *testing.T) {
+	f := newComposeFixture(t)
+	f.app.Mailer = mail.NoSender{}
+	id := f.scheduleNow(t, f.leader, "Nowhere", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
+	runMessageJobs(t, f.app)
+	var m models.Message
+	f.app.DB.First(&m, id)
+	var attempts int
+	f.app.DB.Model(&models.Job{}).Where("kind = ?", kindMessageBatch).Pluck("attempts", &attempts)
+	if m.Status != models.MessageFailed || m.Error != whyNoSender || attempts != 1 {
+		t.Fatalf("message %+v after %d attempts", m, attempts)
+	}
+}

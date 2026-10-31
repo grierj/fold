@@ -1057,7 +1057,7 @@ export interface AdminJob {
 
 // --- Messages: the composer (M3.4) ---
 
-type MessageStatus = "draft" | "scheduled" | "sending" | "sent" | "cancelled";
+type MessageStatus = "draft" | "scheduled" | "sending" | "sent" | "failed" | "cancelled";
 type AudienceType = "occurrence" | "event_series" | "events" | "group" | "all_members" | "users";
 export type AudienceStatus = "going" | "maybe" | "waitlisted";
 export type AudienceRole = "member" | "leader";
@@ -1087,6 +1087,48 @@ export interface Message {
   // Still a draft or scheduled, and the viewer may change it.
   editable: boolean;
   updatedAt: string;
+  // Why it failed, or why some people didn't get it (M3.5); "" otherwise.
+  error: string;
+  // How many people the send failed for: "Partly sent" when it was sent.
+  failedCount: number;
+}
+
+// A sent message's rows by status (M3.5b). skipped never went out
+// (counted by reason in skippedBy); teens are the teens it was for.
+export interface MessageRecipientCounts {
+  sent: number;
+  delivered: number;
+  bounced: number;
+  complained: number;
+  failed: number;
+  skipped: number;
+  queued: number;
+  teens: number;
+}
+
+// "missed" is a skip, bounce, complaint or failure: a leader or host sees
+// only that; an admin also gets each person's reason.
+export type HistoryStatus = "sent" | "delivered" | "missed" | "waiting";
+
+// One person in a message's history: a name, a Teen badge, a guardian
+// copy's teen (copyOf), never an address (DEC-31).
+export interface MessageHistoryRecipient {
+  name: string;
+  teen: boolean;
+  status: HistoryStatus;
+  reason?: string;
+  copyOf?: string;
+}
+
+// GET /messages/:id/recipients.
+export interface MessageRecipients {
+  counts: MessageRecipientCounts;
+  skippedBy: Record<string, number>;
+  // The first 200 by name; more says there are others.
+  recipients: MessageHistoryRecipient[];
+  more: boolean;
+  // Show "Try again" (DEC-131).
+  canRetry: boolean;
 }
 
 // One person an audience names: a name and a Teen badge, never an address

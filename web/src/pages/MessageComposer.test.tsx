@@ -7,7 +7,7 @@ import { Messages } from "../messages-api";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { ERROR_COPY } from "../lib/errors";
 import { polyfillEditorLayout } from "../test/editor";
-import { composeOptions, message, summary } from "../test/compose";
+import { composeOptions, message, recipients, summary } from "../test/compose";
 import { wallClock, wallToInstant } from "../lib/when";
 import { MessageComposerPage } from "./MessageComposer";
 
@@ -23,7 +23,7 @@ vi.mock("../messages-api", () => ({
   previewHTMLPath: (id: number) => `/api/v1/messages/${id}/preview.html`,
   Messages: {
     options: vi.fn(), audiencePreview: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(),
-    schedule: vi.fn(), cancel: vi.fn(), preview: vi.fn(), test: vi.fn(),
+    schedule: vi.fn(), cancel: vi.fn(), preview: vi.fn(), test: vi.fn(), recipients: vi.fn(), retry: vi.fn(),
   },
 }));
 
@@ -50,6 +50,7 @@ beforeEach(() => {
   vi.mocked(Messages.create).mockImplementation(async (d) => ({ message: message({ id: 9, subject: d.subject, bodyHtml: d.bodyHtml, audience: d.audience }) }));
   vi.mocked(Messages.preview).mockResolvedValue({ preview: { subject: "Bring a friend", text: "Hi Lee\n\nYou're getting messages from leaders" } });
   vi.mocked(Messages.test).mockResolvedValue({ ok: true });
+  vi.mocked(Messages.recipients).mockResolvedValue(recipients());
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -313,7 +314,7 @@ describe("MessageComposerPage", () => {
   it("is read only once sent", async () => {
     vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sent", sentAt: "2026-10-30T16:30:00Z", editable: false }) });
     open("/messages/5");
-    expect(await screen.findByText(/^Sent /)).toBeInTheDocument();
+    expect(await screen.findByText(/^Sent (?!to )/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(await screen.findByText("{{first_name}}", { exact: false })).toBeInTheDocument();
@@ -343,5 +344,119 @@ describe("MessageComposerPage", () => {
     open("/messages/5");
     await editorReady();
     expect(screen.queryByRole("tab", { name: "Text" })).toBeNull();
+  });
+});
+
+// After it goes out (M3.5b): the counts in words, who got it, a failed
+// send's error with Try again, and polling while it sends.
+describe("a sent message's history", () => {
+  const sent = (over: Partial<Parameters<typeof message>[0]> = {}) =>
+    message({ status: "sent", sentAt: "2026-10-30T16:30:00Z", editable: false, ...over });
+  const counts = (over: Partial<ReturnType<typeof recipients>["counts"]>) => ({ ...recipients().counts, ...over });
+
+  it("words the counts and lists who got it with Teen badges and copy marks", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.get).mockResolvedValue({ message: sent() });
+    vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ bounced: 1 }) }));
+    open("/messages/5");
+    expect(await screen.findByText("Sent to 3 people · 1 bounced · 1 skipped (1 turned off messages from leaders)")).toBeInTheDocument();
+    expect(screen.getByText("1 of the people it was for is a teen.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    await user.click(screen.getByText("See who got it"));
+    const rows = within(screen.getByRole("list")).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      "Ann Adult· Sent",
+      "Opal Opted· Didn't get it",
+      "Pat ParentCopy for Tia Teen· Sent",
+      "Tia TeenTeen· Sent",
+    ]);
+  });
+
+  it("shows an admin each person's reason and how many more there are", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.get).mockResolvedValue({ message: sent() });
+    vi.mocked(Messages.recipients).mockResolvedValue(recipients({
+      counts: counts({ sent: 250 }), more: true,
+      recipients: [{ name: "Opal Opted", teen: false, status: "missed", reason: "turned off messages from leaders" }],
+    }));
+    open("/messages/5");
+    await user.click(await screen.findByText("See who got it"));
+    expect(screen.getByText("· Didn't get it: turned off messages from leaders")).toBeInTheDocument();
+    expect(screen.getByText("And 250 more")).toBeInTheDocument();
+  });
+
+  it("shows a failed send's error under the title, and Try again asks before resending", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "failed", editable: false, error: "The email service didn't answer." }) });
+    vi.mocked(Messages.recipients).mockResolvedValue(recipients({
+      counts: counts({ sent: 0, failed: 4, skipped: 0, teens: 0 }), skippedBy: {}, canRetry: true,
+      recipients: [{ name: "Ann Adult", teen: false, status: "missed" }],
+    }));
+    open("/messages/5");
+    const banner = (await screen.findByText("This message didn't go out")).closest("[role=status]") as HTMLElement;
+    expect(banner).toHaveTextContent("The email service didn't answer.");
+    expect(screen.getByText("Failed")).toBeInTheDocument();
+    expect(await screen.findByText("4 didn't get it")).toBeInTheDocument();
+    const again = await within(banner).findByRole("button", { name: "Try again" });
+    expect(again).toHaveClass("btn-primary");
+    expect(document.querySelectorAll(".btn-primary")).toHaveLength(1);
+
+    const ask = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    await user.click(again);
+    expect(ask).toHaveBeenLastCalledWith("Send again to the 4 people it didn't reach?");
+    expect(Messages.retry).not.toHaveBeenCalled();
+    vi.mocked(Messages.retry).mockResolvedValue({ message: message({ status: "sending", editable: false, updatedAt: "2026-10-31T16:00:00Z" }) });
+    vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ sent: 0, queued: 4, skipped: 0 }), skippedBy: {} }));
+    await user.click(again);
+    expect(Messages.retry).toHaveBeenCalledWith(5);
+    expect(await screen.findByText("Sending… 0 of 4 so far")).toBeInTheDocument();
+    expect(screen.queryByText("This message didn't go out")).toBeNull();
+    ask.mockRestore();
+  });
+
+  it("says how many a partly sent message didn't reach", async () => {
+    vi.mocked(Messages.get).mockResolvedValue({ message: sent({ failedCount: 2, error: "The email service refused it." }) });
+    vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ failed: 2 }), canRetry: true }));
+    open("/messages/5");
+    expect(await screen.findByText("2 people didn't get this")).toBeInTheDocument();
+    expect(screen.getByText(/^Partly sent /)).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+  });
+
+  it("checks every 5 seconds while sending and stops once it settles", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false }) });
+      vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ sent: 1, queued: 2, skipped: 0 }) }));
+      open("/messages/5");
+      expect(await screen.findByText("Sending… 1 of 3 so far")).toBeInTheDocument();
+      vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ sent: 2, queued: 1, skipped: 0 }) }));
+      await act(() => vi.advanceTimersByTimeAsync(5000));
+      expect(await screen.findByText("Sending… 2 of 3 so far")).toBeInTheDocument();
+      vi.mocked(Messages.get).mockResolvedValue({ message: sent({ updatedAt: "2026-10-31T16:00:00Z" }) });
+      vi.mocked(Messages.recipients).mockResolvedValue(recipients({ counts: counts({ skipped: 0 }) }));
+      await act(() => vi.advanceTimersByTimeAsync(5000));
+      expect(await screen.findByText("Sent to 3 people")).toBeInTheDocument();
+      const gets = vi.mocked(Messages.get).mock.calls.length;
+      await act(() => vi.advanceTimersByTimeAsync(20000));
+      expect(Messages.get).toHaveBeenCalledTimes(gets);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops checking when the page goes away", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sending", editable: false }) });
+      const router = open("/messages/5");
+      expect(await screen.findByText(/^Sending… /)).toBeInTheDocument();
+      await act(() => router.navigate("/messages"));
+      const gets = vi.mocked(Messages.get).mock.calls.length;
+      await act(() => vi.advanceTimersByTimeAsync(20000));
+      expect(Messages.get).toHaveBeenCalledTimes(gets);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

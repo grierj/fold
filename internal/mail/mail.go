@@ -406,6 +406,10 @@ func (NoSender) Capabilities() providers.EmailCaps { return providers.EmailCaps{
 
 var errNoSender = errors.New("mail: no sender configured; set FOLD_EMAIL_PROVIDER, FOLD_POSTMARK_SERVER_TOKEN or FOLD_SMTP_URL (see .env.example)")
 
+// NotConfigured: err came from NoSender. Retrying in this process can't
+// help; a restart with a provider set can.
+func NotConfigured(err error) bool { return errors.Is(err, errNoSender) }
+
 // Address is the bare address of a From value like "Fold <a@b.org>".
 func Address(from string) string { return fromAddress(from) }
 
