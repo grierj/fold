@@ -27,11 +27,14 @@ const (
 	StreamBroadcast Stream = "broadcast"
 )
 
-// EmailMessage is one plain-text email to one address.
+// EmailMessage is one email to one address: plain text, with an HTML part
+// when HTML is set.
 type EmailMessage struct {
 	To      string
 	Subject string
 	Text    string
+	// HTML, when set, is the same message as HTML; Text stays the plain part.
+	HTML string
 	// Stream is "" or StreamTransactional for account mail.
 	Stream Stream
 	// Optional: the person may turn this mail off (an optional notification;

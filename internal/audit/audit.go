@@ -283,6 +283,9 @@ const (
 	// MessageEdited: someone changed a scheduled message, or an admin changed
 	// someone else's.
 	MessageEdited = "message.edited"
+	// MessageTestSent: an author sent a message to themselves as a test
+	// (M3.4b); counted to limit tests to ten an hour.
+	MessageTestSent = "message.test_sent"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

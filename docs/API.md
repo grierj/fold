@@ -1265,6 +1265,24 @@ Leaders, hosts and admins write announcements (`policy.CanComposeMessages`): adm
 
 `message` is `{id, channel, status, subject, bodyHtml, audience, scheduledAt, sentAt, authorName, editable, updatedAt}`. Only email is accepted for now (`message_channel`): texting stays hidden until an SMS provider is set up (DEC-117). `bodyHtml` is sanitized with bluemonday before it is stored (paragraphs, bold, italic, underline, strike, two heading sizes, lists, quotes, rules, http/https/mailto links and `fold-button` links; scripts, styles, `on*` attributes and `javascript:` links are removed) and a plain-text part is made from it. Scheduling needs a subject, a body and at least one eligible person (`message_nobody`), and a time from now to a year ahead (`message_when`); it is audited `message.scheduled` and stores the eligible count. Drafts and scheduled messages can be edited or cancelled. Editing a scheduled message checks it could still go out (as scheduling does) and refreshes its count; that edit, and an admin editing someone else's message, are audited `message.edited`. The body is limited to 100,000 characters of sanitized HTML and 50,000 of plain text (`message_body`); once a message is sending or sent, changes are 409 `message_locked`. Sending arrives with M3.5.
 
+#### Merge fields, preview and test sends (M3.4b)
+
+```
+GET  /api/v1/messages/:id/preview        → 200 {preview: {subject, text}} | 404
+GET  /api/v1/messages/:id/preview.html   → 200 text/html | 404              (for an iframe)
+POST /api/v1/messages/:id/test           → 200 {ok} | 400 | 404 | 502
+```
+
+Merge fields (PLAN 7.3) are `{{first_name}}` and, in a message to one event's people (an `occurrence` or `event_series` audience), `{{event_title}}`, `{{event_time}}`, `{{event_link}}` and `{{manage_link}}`; a link's address can be `{{event_link}}` or `{{manage_link}}` and survives sanitizing. Saving refuses any other field (`message_merge_unknown`) and event fields for any other audience (`message_merge_event`). Values are HTML-escaped in the HTML part.
+
+A preview or test first checks again that the viewer may write to the audience (roles and events change after a draft is saved), then renders the saved message as the viewer would get it: merge fields with the viewer's own values (their first name; the event's title, the audience's date, else its next upcoming one, else its latest, in the event's time zone, and its page for both links; M3.5 gives a guest their own manage link), the email layout (`internal/content/email.html`: one 600px column of tables with inline styles, the church name above the body and, below, "You're getting message notices from …", "To stop them or change which emails you get, visit your email settings" (linking the viewer's own settings page, as the plain-text footer does), and the church's mailing address), and the plain-text part with the same footer as optional notices. `preview.html` is served with its own Content-Security-Policy (`default-src 'none'`, inline styles and https images only, `sandbox` with no scripts) and `no-store`; the dev outbox shows each stored email's HTML the same way at `/dev/outbox/<id>/html`.
+
+`test` sends the message to the viewer's own address on the broadcast stream with its one-click unsubscribe header, subject `[Test] …`. It needs a subject and body. It is audited `message.test_sent` before sending, under a lock on the viewer's row, and those rows limit it to 10 tries an hour (a try that fails still counts) (`message_test_limit`, a 400: it is the author's own inbox, so not a DEC-52 429). An address that is suppressed answers `message_test_email`; a provider failure is 502 `message_test_failed`.
+
+Every email adapter now sends an HTML part when there is one: SMTP as `multipart/alternative` with quoted-printable text and HTML parts, Postmark as `HtmlBody`, devoutbox in `mail_outboxes.html_body` (migration 00055).
+
+The SMS counter (`internal/content/sms.go`, `web/src/lib/sms.ts`, one table of cases in `web/src/lib/sms-cases.json`) counts GSM-7 septets (160 per text, 153 per part, extended characters count 2) or UCS-2 UTF-16 units (70, 67 per part), never splitting an escape or surrogate pair, after adding the `<church>: ` prefix and the `Reply STOP to opt out` footer. The donation-ask check (DEC-3) looks for give, donate, tithe and offering words and for links to giving pages (a giving word in the address, or a giving service such as Tithe.ly, Pushpay or Givelify). Both wait for the SMS tab (DEC-117).
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

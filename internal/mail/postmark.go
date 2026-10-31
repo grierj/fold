@@ -76,6 +76,7 @@ type postmarkEmail struct {
 	To            string           `json:"To"`
 	Subject       string           `json:"Subject"`
 	TextBody      string           `json:"TextBody"`
+	HtmlBody      string           `json:"HtmlBody,omitempty"`
 	MessageStream string           `json:"MessageStream"`
 	Headers       []postmarkHeader `json:"Headers,omitempty"`
 }
@@ -102,7 +103,7 @@ func (p *Postmark) SendEmail(ctx context.Context, m Message) (string, error) {
 	if m.Stream == providers.StreamBroadcast {
 		stream = p.broadcast
 	}
-	email := postmarkEmail{From: p.from, To: m.To, Subject: oneLine(m.Subject), TextBody: m.Text, MessageStream: stream}
+	email := postmarkEmail{From: p.from, To: m.To, Subject: oneLine(m.Subject), TextBody: m.Text, HtmlBody: m.HTML, MessageStream: stream}
 	if m.ListUnsubscribe != "" {
 		// RFC 8058 one-click: the mail client POSTs to the URL.
 		email.Headers = []postmarkHeader{{Name: "List-Unsubscribe", Value: "<" + m.ListUnsubscribe + ">"},

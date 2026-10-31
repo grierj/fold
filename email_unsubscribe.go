@@ -163,3 +163,13 @@ func (a *App) optionalEmailFooter(f footerFacts, category, token string) string 
 	}
 	return footer
 }
+
+// oneClickURL is the List-Unsubscribe link for token, or "" where mail
+// clients would ignore it: they honor one-click links over https only
+// (RFC 8058), and dev runs on http.
+func (a *App) oneClickURL(token string) string {
+	if base := a.emailBaseURL(); strings.HasPrefix(base, "https://") || a.Config.IsDev() {
+		return base + "/u/unsubscribe/" + token
+	}
+	return ""
+}

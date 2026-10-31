@@ -8,6 +8,7 @@
 package mail
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -15,8 +16,11 @@ import (
 	"errors"
 	"fmt"
 	"mime"
+	"mime/multipart"
+	"mime/quotedprintable"
 	"net"
 	"net/smtp"
+	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
@@ -28,7 +32,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// Message is one plain-text email to one address; Stream is "" for
+// Message is one email to one address (plain text, HTML optional); Stream is "" for
 // account mail.
 type Message = providers.EmailMessage
 
@@ -87,7 +91,7 @@ func (d *DevOutbox) SendEmail(ctx context.Context, m Message) (string, error) {
 	if err := checkMessage(m); err != nil {
 		return "", err
 	}
-	row := models.MailOutbox{ToAddress: m.To, FromAddress: d.From, Subject: oneLine(m.Subject), Body: m.Text, ListUnsubscribe: m.ListUnsubscribe}
+	row := models.MailOutbox{ToAddress: m.To, FromAddress: d.From, Subject: oneLine(m.Subject), Body: m.Text, HTMLBody: m.HTML, ListUnsubscribe: m.ListUnsubscribe}
 	if err := d.DB.WithContext(ctx).Create(&row).Error; err != nil {
 		return "", err
 	}
@@ -99,10 +103,13 @@ func (d *DevOutbox) Capabilities() providers.EmailCaps { return providers.EmailC
 
 // OutboxMessage is one stored email, newest first.
 type OutboxMessage struct {
-	ID              uint
-	To              string
-	Subject         string
-	Body            string
+	ID      uint
+	To      string
+	Subject string
+	Body    string
+	// HTML is the HTML part (LatestTo); List leaves it empty and sets HasHTML.
+	HTML            string
+	HasHTML         bool
 	ListUnsubscribe string
 	CreatedAt       time.Time
 }
@@ -113,14 +120,15 @@ func (d *DevOutbox) List(limit int) ([]OutboxMessage, error) {
 		limit = 50
 	}
 	var rows []models.MailOutbox
-	if err := d.DB.Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+	// The HTML stays in the table; HasHTML says the page has one to link.
+	if err := d.DB.Select("id, to_address, from_address, subject, body, list_unsubscribe, created_at, CASE WHEN html_body <> '' THEN '-' ELSE '' END AS html_body").Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]OutboxMessage, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, OutboxMessage{
 			ID: r.ID, To: r.ToAddress, Subject: r.Subject,
-			Body: r.Body, ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt,
+			Body: r.Body, HasHTML: r.HTMLBody != "", ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt,
 		})
 	}
 	return out, nil
@@ -134,7 +142,7 @@ func (d *DevOutbox) LatestTo(address string) (OutboxMessage, error) {
 	if err != nil {
 		return OutboxMessage{}, err
 	}
-	return OutboxMessage{ID: r.ID, To: r.ToAddress, Subject: r.Subject, Body: r.Body, ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt}, nil
+	return OutboxMessage{ID: r.ID, To: r.ToAddress, Subject: r.Subject, Body: r.Body, HTML: r.HTMLBody, HasHTML: r.HTMLBody != "", ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -301,8 +309,13 @@ func (s *SMTPSender) SendEmail(ctx context.Context, m Message) (string, error) {
 		// RFC 8058 one-click: the mail client POSTs to the URL.
 		unsubscribe = "List-Unsubscribe: <" + m.ListUnsubscribe + ">\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"
 	}
-	if _, err := fmt.Fprintf(w, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: %s\r\n%sMIME-Version: 1.0\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n%s\r\n",
-		from, m.To, subject, time.Now().Format(time.RFC1123Z), msgID, unsubscribe, m.Text); err != nil {
+	contentType, body, err := mimeBody(m)
+	if err != nil {
+		w.Close()
+		return "", fmt.Errorf("mail: body: %w", err)
+	}
+	if _, err := fmt.Fprintf(w, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: %s\r\n%sMIME-Version: 1.0\r\n%s\r\n%s\r\n",
+		from, m.To, subject, time.Now().Format(time.RFC1123Z), msgID, unsubscribe, contentType, body); err != nil {
 		w.Close()
 		return "", fmt.Errorf("mail: write: %w", err)
 	}
@@ -369,4 +382,45 @@ func oneURL(s string) bool {
 	}
 	u, err := url.Parse(s)
 	return err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != ""
+}
+
+// mimeBody is the Content-Type header line and the body for m: plain text
+// alone, or multipart/alternative (text first, then HTML) when m has HTML.
+// Both parts are quoted-printable then, so a long HTML line never breaks
+// SMTP's 998-character line limit.
+func mimeBody(m Message) (string, string, error) {
+	if m.HTML == "" {
+		return "Content-Type: text/plain; charset=utf-8\r\n", m.Text, nil
+	}
+	var b bytes.Buffer
+	w := multipart.NewWriter(&b)
+	for _, part := range []struct{ typ, body string }{{"text/plain", m.Text}, {"text/html", m.HTML}} {
+		pw, err := w.CreatePart(textproto.MIMEHeader{
+			"Content-Type":              {part.typ + "; charset=utf-8"},
+			"Content-Transfer-Encoding": {"quoted-printable"},
+		})
+		if err != nil {
+			return "", "", err
+		}
+		qp := quotedprintable.NewWriter(pw)
+		if _, err := qp.Write([]byte(part.body)); err != nil {
+			return "", "", err
+		}
+		if err := qp.Close(); err != nil {
+			return "", "", err
+		}
+	}
+	if err := w.Close(); err != nil {
+		return "", "", err
+	}
+	return "Content-Type: multipart/alternative; boundary=\"" + w.Boundary() + "\"\r\n", b.String(), nil
+}
+
+// HTMLOf returns the HTML part of the stored email id, for /dev/outbox.
+func (d *DevOutbox) HTMLOf(id uint) (string, error) {
+	var r models.MailOutbox
+	if err := d.DB.Select("id, html_body").First(&r, id).Error; err != nil {
+		return "", err
+	}
+	return r.HTMLBody, nil
 }
