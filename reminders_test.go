@@ -40,7 +40,7 @@ func TestReminderSweepQueuesOncePerDate(t *testing.T) {
 		}
 	}
 	var queued []models.Job
-	f.app.DB.Where("kind = ?", kindReminderSend).Find(&queued)
+	f.app.DB.Where("kind = ? AND (payload->>'occurrenceId')::bigint = ?", kindReminderSend, f.groupOcc.ID).Find(&queued)
 	if len(queued) != 1 || !queued[0].RunAt.Equal(due.UTC()) && queued[0].RunAt.Sub(due).Abs() > time.Second {
 		t.Fatalf("queued: %+v", queued)
 	}
@@ -51,7 +51,7 @@ func TestReminderSweepQueuesOncePerDate(t *testing.T) {
 		t.Fatal(err)
 	}
 	var n int64
-	f.app.DB.Model(&models.Job{}).Where("kind = ?", kindReminderSend).Count(&n)
+	f.app.DB.Model(&models.Job{}).Where("kind = ? AND (payload->>'occurrenceId')::bigint = ?", kindReminderSend, f.groupOcc.ID).Count(&n)
 	if n != 0 {
 		t.Fatal("an event with reminders off was queued")
 	}
@@ -73,7 +73,7 @@ func TestReminderSendsOnceToGoingAndWaitlist(t *testing.T) {
 	reminderFor(t, f.app, f.groupOcc, 1440)
 	reminderFor(t, f.app, f.groupOcc, 1440) // a second run sends nothing more
 	got := reminderMails(t, f.app, f.teen.Email)
-	if len(got) != 1 || !strings.HasPrefix(got[0].Subject, "Reminder: Book night, ") ||
+	if len(got) != 1 || !strings.HasPrefix(got[0].Subject, "Reminder: Book night on ") ||
 		!strings.Contains(got[0].Body, "Hi "+firstName(f.teen.PublicName())) ||
 		!strings.Contains(got[0].HTMLBody, occurrenceDatePath(f.groupEvent.ID, f.groupOcc.OriginalDate)) ||
 		!strings.Contains(got[0].Body, "You're getting event updates") || strings.Contains(got[0].FromAddress, " via ") {
@@ -185,5 +185,86 @@ func TestEventReminderTime(t *testing.T) {
 	}
 	if f.groupEvent.ReminderEmailMinutes != 1440 {
 		t.Fatalf("default: %d", f.groupEvent.ReminderEmailMinutes)
+	}
+}
+
+// "Off" chosen at creation stays off; no choice means 1 day.
+func TestNewEventReminderDefaults(t *testing.T) {
+	f := newComposeFixture(t)
+	create := func(body map[string]any) eventJSON {
+		body["title"], body["startsLocal"], body["durationMinutes"], body["tzid"] = "New", feedStart(4).Format("2006-01-02T15:04"), 60, "UTC"
+		var out struct {
+			Event eventJSON `json:"event"`
+		}
+		w := f.leader.do("POST", "/api/v1/groups/"+itoa(f.group.ID)+"/events", body, true)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: %d %s", w.Code, w.Body.String())
+		}
+		decodeJSON(t, w, &out)
+		return out.Event
+	}
+	if ev := create(map[string]any{"reminderEmailMinutes": 0}); ev.ReminderEmailMinutes != 0 {
+		t.Fatalf("off at creation: %d", ev.ReminderEmailMinutes)
+	}
+	var stored models.Event
+	f.app.DB.Where("title = ?", "New").Order("id").First(&stored)
+	if stored.ReminderEmailMinutes != 0 {
+		t.Fatalf("stored: %d", stored.ReminderEmailMinutes)
+	}
+	if ev := create(map[string]any{}); ev.ReminderEmailMinutes != 1440 {
+		t.Fatalf("default: %d", ev.ReminderEmailMinutes)
+	}
+}
+
+// Nobody going means no reminder message; a guest who registered gets
+// one (PLAN 7.4); moving a date a little later after its reminder went
+// sends no second one.
+func TestReminderGuestsEmptyDatesAndMoves(t *testing.T) {
+	f := newComposeFixture(t)
+	reminderFor(t, f.app, f.groupOcc, 1440)
+	var n int64
+	f.app.DB.Model(&models.Message{}).Where("category = ?", models.MessageCategoryReminder).Count(&n)
+	if n != 0 {
+		t.Fatalf("a date with nobody going made %d reminders", n)
+	}
+	guest := newTestUser(t, f.app, "guest", "password1234", models.RoleMember)
+	f.app.DB.Model(guest).Update("status", models.UserGuest)
+	f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &guest.ID, Status: models.RegGoing})
+	reminderFor(t, f.app, f.groupOcc, 1440)
+	if len(reminderMails(t, f.app, guest.Email)) != 1 {
+		t.Fatal("a guest registrant gets the reminder for their event")
+	}
+	moved := f.groupOcc
+	moved.StartsAt = moved.StartsAt.Add(time.Hour)
+	f.app.DB.Model(&models.EventOccurrence{}).Where("id = ?", moved.ID).Update("starts_at", moved.StartsAt)
+	reminderFor(t, f.app, moved, 1440)
+	if got := len(reminderMails(t, f.app, guest.Email)); got != 1 {
+		t.Fatalf("moving the date an hour later re-reminded: %d", got)
+	}
+}
+
+// Inside two hours the waitlist note promises no email about a spot.
+func TestReminderWaitlistCopyNearTheStart(t *testing.T) {
+	if _, body := reminderText(reminderWaitlist, "", 120); strings.Contains(body, "we'll let you know") {
+		t.Fatalf("2-hour note: %s", body)
+	}
+	if _, body := reminderText(reminderWaitlist, "Hall {{first_name}}", 1440); !strings.Contains(body, "we'll let you know") || strings.Contains(body, "{{first_name}}</p>") && strings.Contains(body, "Hall {{") {
+		t.Fatalf("1-day note: %s", body)
+	}
+}
+
+// The daily reaper leaves reminders to their own job.
+func TestReapLeavesRemindersAlone(t *testing.T) {
+	f := newComposeFixture(t)
+	old := time.Now().Add(-2 * time.Hour)
+	key := "going:1:1:1440"
+	r := models.Message{Status: models.MessageScheduled, Category: models.MessageCategoryReminder, Subject: "s", Audience: "{}", ScheduledAt: &old, ReminderKey: &key}
+	f.app.DB.Create(&r)
+	if err := f.app.reapMessages(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	f.app.DB.First(&r, r.ID)
+	if r.Status != models.MessageScheduled {
+		t.Fatalf("reaped a reminder: %+v", r)
 	}
 }

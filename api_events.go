@@ -765,7 +765,8 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		// The group's visibility is copied once; later group changes only
 		// tighten it (DEC-48).
 		GroupID: &gid, Visibility: g.Visibility,
-		CreatedBy: apiUser(c).ID,
+		CreatedBy:            apiUser(c).ID,
+		ReminderEmailMinutes: defaultReminderMinutes,
 	}
 	applySpec(&ev, spec, body, ed, vid)
 	if !textOK(c, ev.Title, ev.Description, ev.Location) {
@@ -791,7 +792,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 	}
 	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&ev).Error; err != nil {
+		if err := createEvent(tx, &ev); err != nil {
 			return err
 		}
 		if err := audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.EventCreated, TargetType: "event", TargetID: ev.ID,
