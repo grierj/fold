@@ -38,14 +38,18 @@ type Sender interface {
 	Send(ctx context.Context, m Message) error
 }
 
-// checkMessage refuses what no adapter may send: no recipient, or a
-// recipient with a newline, which could inject headers.
+// checkMessage refuses what no adapter may send: no recipient, a recipient
+// with a newline (which could inject headers) or more than one recipient.
 func checkMessage(m Message) error {
 	if strings.TrimSpace(m.To) == "" {
 		return errors.New("mail: no recipient")
 	}
 	if !headerSafe(m.To) {
 		return errors.New("mail: recipient contains a newline")
+	}
+	// One address only: Postmark reads commas as a list of recipients.
+	if strings.ContainsAny(m.To, ",;") {
+		return errors.New("mail: one recipient per message")
 	}
 	return nil
 }
@@ -344,3 +348,6 @@ func (NoSender) SendEmail(context.Context, Message) (string, error) { return "",
 func (NoSender) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "none"} }
 
 var errNoSender = errors.New("mail: no sender configured; set FOLD_EMAIL_PROVIDER, FOLD_POSTMARK_SERVER_TOKEN or FOLD_SMTP_URL (see .env.example)")
+
+// Address is the bare address of a From value like "Fold <a@b.org>".
+func Address(from string) string { return fromAddress(from) }

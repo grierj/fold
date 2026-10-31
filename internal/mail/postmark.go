@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -42,6 +43,7 @@ func NewPostmark(token, from, transactional, broadcast string) (*Postmark, error
 	if strings.TrimSpace(token) == "" {
 		return nil, errors.New("mail: Postmark needs FOLD_POSTMARK_SERVER_TOKEN (the server's API token)")
 	}
+	token = strings.TrimSpace(token)
 	if strings.TrimSpace(from) == "" || !headerSafe(from) {
 		return nil, errors.New("mail: Postmark needs a From address (set FOLD_EMAIL_FROM)")
 	}
@@ -52,7 +54,9 @@ func NewPostmark(token, from, transactional, broadcast string) (*Postmark, error
 		broadcast = defaultPostmarkBroadcast
 	}
 	return &Postmark{token: token, from: from, transactional: transactional, broadcast: broadcast,
-		baseURL: postmarkAPI, client: &http.Client{Timeout: 15 * time.Second}}, nil
+		baseURL: postmarkAPI, client: &http.Client{Timeout: 15 * time.Second,
+			// Never follow a redirect: it would resend the token elsewhere.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
 
 // Capabilities: Postmark has streams, webhooks and 500-message batches.
@@ -114,13 +118,20 @@ func (p *Postmark) SendEmail(ctx context.Context, m Message) (string, error) {
 	}
 	var res postmarkResult
 	jsonErr := json.Unmarshal(raw, &res)
-	if resp.StatusCode == http.StatusOK && jsonErr == nil && res.ErrorCode == 0 && res.MessageID != "" {
+	if resp.StatusCode == http.StatusOK && (jsonErr != nil || res.ErrorCode == 0) {
+		// Postmark took the message. An answer we can't read still means it
+		// was sent, so it must never be retried into a duplicate.
+		if jsonErr != nil || res.MessageID == "" {
+			log.Printf("mail: postmark accepted a message but its answer had no MessageID")
+		}
 		return res.MessageID, nil
 	}
 	msg := res.Message
 	if msg == "" {
 		msg = http.StatusText(resp.StatusCode)
 	}
+	// Postmark's messages can quote the address; errors are stored and logged.
+	msg = strings.ReplaceAll(msg, m.To, "<recipient>")
 	return "", &providers.SendError{Provider: "postmark", Code: res.ErrorCode, Message: msg,
 		// Postmark answers 422 for a message it will never take (a bad or
 		// inactive address, a bad sender) and 401 for a bad token; 429 and

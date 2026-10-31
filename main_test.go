@@ -247,11 +247,15 @@ func TestChooseMailer(t *testing.T) {
 		want string
 	}{
 		{env(), "none"},
-		{env("FOLD_SMTP_URL", "smtp://localhost:25"), "smtp"},
 		{env("FOLD_POSTMARK_SERVER_TOKEN", "tok"), "postmark"},
-		{env("FOLD_EMAIL_PROVIDER", "smtp", "FOLD_SMTP_URL", "smtp://localhost:25", "FOLD_POSTMARK_SERVER_TOKEN", "tok"), "smtp"},
+		{env("FOLD_EMAIL_PROVIDER", "smtp", "FOLD_POSTMARK_SERVER_TOKEN", "tok"), "smtp"},
+		{env(), "smtp"}, // with cfg.SMTPURL below
 	} {
-		s, err := chooseMailer(prod, nil, tc.get)
+		cfg := prod
+		if tc.want == "smtp" {
+			cfg.SMTPURL = "smtp://localhost:25" // Config, not the environment, holds it
+		}
+		s, err := chooseMailer(cfg, nil, tc.get)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.want, err)
 		}

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -144,12 +145,25 @@ func newMailer(cfg Config, db *gorm.DB) mail.Sender {
 }
 
 func chooseMailer(cfg Config, db *gorm.DB, get func(string) string) (mail.Sender, error) {
-	name := mail.Choose(get, cfg.IsDev())
+	// SMTP settings come from Config, which has already checked them.
+	settings := func(k string) string {
+		switch k {
+		case "FOLD_SMTP_URL":
+			return cfg.SMTPURL
+		case "FOLD_SMTP_ALLOW_INSECURE":
+			return strconv.FormatBool(cfg.SMTPAllowInsecure)
+		}
+		return get(k)
+	}
+	name := mail.Choose(settings, cfg.IsDev())
 	if name == "" {
 		log.Println("WARNING: no email provider is set (FOLD_POSTMARK_SERVER_TOKEN or FOLD_SMTP_URL); transactional email (password resets, invitations) will fail")
 		return mail.NoSender{}, nil
 	}
-	sender, err := providers.NewEmail(name, providers.Settings{Get: get, DB: db, From: cfg.EmailFrom})
+	if strings.HasSuffix(mail.Address(cfg.EmailFrom), "@localhost") && !cfg.IsDev() {
+		log.Println("WARNING: FOLD_EMAIL_FROM is a localhost address; providers will refuse to send it. Set it to an address at your church's domain")
+	}
+	sender, err := providers.NewEmail(name, providers.Settings{Get: settings, DB: db, From: cfg.EmailFrom})
 	if err != nil {
 		return nil, err
 	}

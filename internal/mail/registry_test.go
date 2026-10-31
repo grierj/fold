@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"fold/internal/providers"
 	"fold/internal/testdb"
@@ -63,12 +64,12 @@ func harnesses() []harness {
 				t.Fatal(err)
 			}
 			return s, func() []sent {
+				// The fake finishes (and its fields are safe to read) when the
+				// client quits; a refused send never connects.
 				select {
 				case <-fake.done:
-				default:
-					if fake.data == "" {
-						return []sent{}
-					}
+				case <-time.After(500 * time.Millisecond):
+					return []sent{}
 				}
 				msg, err := netmail.ReadMessage(strings.NewReader(fake.data))
 				if err != nil {
@@ -136,9 +137,9 @@ func TestEmailAdapterContract(t *testing.T) {
 					t.Fatalf("received %+v", msgs)
 				}
 			})
-			t.Run("refuses a recipient with a newline or none", func(t *testing.T) {
+			t.Run("refuses a recipient with a newline, none, or several", func(t *testing.T) {
 				s, got := h.build(t)
-				for _, to := range []string{"sam@example.com\r\nBcc: x@evil.test", " "} {
+				for _, to := range []string{"sam@example.com\r\nBcc: x@evil.test", " ", "sam@example.com, pat@example.com"} {
 					if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: to, Subject: "s", Text: "b"}); err == nil {
 						t.Fatalf("sent to %q", to)
 					}
@@ -282,5 +283,43 @@ func TestChooseEmailProvider(t *testing.T) {
 	}
 	if _, err := providers.NewEmail("carrier-pigeon", providers.Settings{}); err == nil || !strings.Contains(err.Error(), "devoutbox, postmark, smtp") {
 		t.Fatalf("unknown provider: %v", err)
+	}
+}
+
+// A 200 Postmark couldn't explain is still sent (never retried into a
+// duplicate); an error never quotes the recipient; a redirect is never
+// followed with the token.
+func TestPostmarkAnswersWeTrustCarefully(t *testing.T) {
+	ctx := context.Background()
+	var redirected bool
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { redirected = true }))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body postmarkEmail
+		json.NewDecoder(r.Body).Decode(&body)
+		switch body.To {
+		case "garbled@example.com":
+			w.Write([]byte("not json"))
+		case "redirect@example.com":
+			http.Redirect(w, r, target.URL+"/email", http.StatusTemporaryRedirect)
+		default:
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			w.Write([]byte(`{"ErrorCode":300,"Message":"Invalid 'To' address: '` + body.To + `'."}`))
+		}
+	}))
+	defer srv.Close()
+	p, _ := NewPostmark(" tok \n", "Fold <noreply@example.com>", "", "")
+	p.baseURL = srv.URL
+	if id, err := p.SendEmail(ctx, providers.EmailMessage{To: "garbled@example.com", Subject: "s"}); err != nil || id != "" {
+		t.Fatalf("a 200 is sent: %q %v", id, err)
+	}
+	if _, err := p.SendEmail(ctx, providers.EmailMessage{To: "lee@example.com", Subject: "s"}); err == nil || strings.Contains(err.Error(), "lee@example.com") || !strings.Contains(err.Error(), "<recipient>") {
+		t.Fatalf("error quotes the recipient: %v", err)
+	}
+	if _, err := p.SendEmail(ctx, providers.EmailMessage{To: "redirect@example.com", Subject: "s"}); err == nil || redirected {
+		t.Fatalf("followed a redirect: %v (redirected %v)", err, redirected)
+	}
+	if p.token != "tok" {
+		t.Fatalf("token not trimmed: %q", p.token)
 	}
 }
