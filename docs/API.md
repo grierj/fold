@@ -1233,6 +1233,16 @@ Signed-in adults only (401 signed out); teens get 404, and so does everyone whil
 
 Only confirmed bookings show. Admins also see bookings waiting for approval on a pending request, marked `waiting: true` (DEC-109); they hold nothing yet. A booking that lost its room isn't shown. At most 2000 bookings; past that, `truncated` is true.
 
+### Background jobs: the System page (M3.1b, DEC-111)
+
+```
+GET  /api/v1/admin/jobs             → 200 {jobs: [adminJob], more}
+POST /api/v1/admin/jobs/:id/retry   → 200 {status: "queued"} | 404 | 409   (audited job.retried)
+POST /api/v1/admin/jobs/:id/dismiss → 200 {status: "dismissed"} | 404 | 409 (audited job.dismissed)
+```
+
+Admins only (403 otherwise). The list holds background jobs that ran out of attempts (`dead`), latest failure first, at most 100 (`more` says there are more). `adminJob` is `{id, kind, label, runsDaily, attempts, lastError, failedAt}`: `label` says what the job does in plain words (its kind when the server doesn't know it), `runsDaily` means tomorrow's run tries again by itself, and `lastError` is the job's last error, one line, without email addresses. A job's payload is never shown. Retry queues the job again from its first attempt; Dismiss sets it aside, and it is deleted with finished jobs after 30 days. Retrying or dismissing a job that is no longer dead answers 409 `job_handled`. Admins get no notice for dead jobs yet (DEC-111).
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

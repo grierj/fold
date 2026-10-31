@@ -768,3 +768,7 @@ func CanManageGuestRegistration(p *Person, guest, active bool, ev EventView, g G
 	}
 	return active && p != nil && (CanRegisterEvent(p, ev, g, r) || exactDateAccess)
 }
+
+// CanManageJobs: only admins see dead background jobs and retry or dismiss
+// them (M3.1b, the System page).
+func CanManageJobs(p *Person) bool { return IsAdmin(p) }

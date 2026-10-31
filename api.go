@@ -676,6 +676,10 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// Matching old locations (M2.1e, 9.1).
 	v1.GET("/admin/rooms/locations", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminTypedLocations)
 	v1.POST("/admin/rooms/locations/match", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminMatchLocation)
+	// The System page (M3.1b): dead background jobs, for admins.
+	v1.GET("/admin/jobs", a.apiAuth(), a.jobManager(), a.apiAdminDeadJobs)
+	v1.POST("/admin/jobs/:id/retry", a.apiAuth(), a.jobManager(), a.apiAdminRetryJob)
+	v1.POST("/admin/jobs/:id/dismiss", a.apiAuth(), a.jobManager(), a.apiAdminDismissJob)
 	// Room feeds (M2.2b): an admin makes, replaces or turns off a room's link.
 	v1.GET("/admin/rooms/:id/feed", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminGetRoomFeed)
 	v1.POST("/admin/rooms/:id/feed", a.roomsOn(), a.apiAuth(), a.roomManager(), a.apiAdminCreateRoomFeed)

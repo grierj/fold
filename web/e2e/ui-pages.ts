@@ -46,6 +46,7 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
     { id: "schedule-event", who: "lee", path: `/groups/${room.id}/events/new`, ready: (p) => p.getByRole("button", { name: "Change time zone" }) },
     { id: "admin", who: "grier", path: "/admin", ready: heading("Admin") },
     { id: "admin-users", who: "grier", path: "/admin?tab=users", ready: (p) => p.getByRole("button", { name: "New user" }) },
+    { id: "admin-system", who: "grier", path: "/admin?tab=system", ready: (p) => p.getByRole("heading", { name: "Background tasks", level: 2 }) },
     // Both the catalog and the match section (the seed types "Room 201" on its dates) are loaded before it is scanned.
     { id: "admin-rooms", who: "grier", path: "/admin?tab=rooms",
       ready: (p) => p.getByRole("button", { name: /^(Pick a room|Book \d+ dates? in )/ }).first(),

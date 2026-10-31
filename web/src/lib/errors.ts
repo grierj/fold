@@ -62,6 +62,7 @@ export const ERROR_COPY = {
   room_name_taken: "There's already a room with that name in that building. Pick another name.",
   room_busy: "That room is already booked then. Pick another room, or ask an admin.",
   room_restricted: "Only an admin can book that room.",
+  job_handled: "Someone already handled this task. Refresh to see the latest.",
   link_expired: "This link has expired or was already used. Ask for a new one and try again.",
   session_expired: "Your session timed out. Reload the page and try again.",
   signed_out: "You've been signed out. Please sign in again.",

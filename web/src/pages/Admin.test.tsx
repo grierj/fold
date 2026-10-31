@@ -2,7 +2,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Admin, AdminAccountRequests, AdminGroups, AdminRooms, AdminUsers, Groups, Invitations, People, RoomRequests, Site, ApiError } from "../api";
+import { Admin, AdminAccountRequests, AdminGroups, AdminJobs, AdminRooms, AdminUsers, Groups, Invitations, People, RoomRequests, Site, ApiError } from "../api";
 import { ERROR_COPY } from "../lib/errors";
 import { ContactHistory } from "../contact-history-api";
 import type { AccountRequest, GroupSummary, Room, User } from "../types";
@@ -24,6 +24,7 @@ vi.mock("../api", async (actual) => ({
   AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },
   AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() },
   RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() },
+  AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() },
   Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false }) },
 }));
 
@@ -43,6 +44,7 @@ const user = (id: number, name: string, extra: Partial<User> = {}): User => ({ i
 const group = (id: number, name: string, extra: Partial<GroupSummary> = {}): GroupSummary => ({ id, name, description: "", tags: [], imageUrl: "", coverFocalX: 50, coverFocalY: 50, location: "", leaderName: "", memberCount: 1, nextEventAt: null, status: "active", leaderId: 1, visibility: "public", deletionRequested: false, memberLimit: null, ...extra });
 
 beforeEach(() => {
+  vi.mocked(AdminJobs.list).mockReset().mockResolvedValue({ jobs: [], more: false });
   vi.mocked(Site.get).mockReset().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false });
   vi.mocked(AdminRooms.list).mockReset().mockResolvedValue({ rooms: [], needApproval: false });
   vi.mocked(AdminRooms.setEnabled).mockReset();
@@ -67,7 +69,7 @@ beforeEach(() => {
   vi.mocked(Groups.confirmMemberDeparture).mockReset();
 });
 
-it("keeps all five sections in one scrolling row with shared chip targets", async () => {
+it("keeps all six sections in one scrolling row with shared chip targets", async () => {
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
   await screen.findByText(request.name);
   const navigation = screen.getByRole("tablist", { name: "Admin sections" });
@@ -75,7 +77,7 @@ it("keeps all five sections in one scrolling row with shared chip targets", asyn
   expect(navigation).not.toHaveClass("grid", "flex-wrap");
   expect(navigation.parentElement).toHaveClass("overflow-x-auto");
   const buttons = within(navigation).getAllByRole("tab");
-  expect(buttons).toHaveLength(5);
+  expect(buttons).toHaveLength(6);
   for (const button of buttons) expect(button).toHaveClass("chip");
   expect(buttons[0]).toHaveAccessibleName("Approvals, 1 waiting");
   expect(buttons[0].textContent).toBe("Approvals 1");
@@ -852,4 +854,27 @@ describe("room booking approval (M2.1d)", () => {
     await waitFor(() => expect(RoomRequests.list).toHaveBeenCalled());
     expect(screen.queryByRole("heading", { name: "Needs a room" })).not.toBeInTheDocument();
   });
+});
+
+it("shows failed background tasks on the System tab, counted only when there are some", async () => {
+  vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: [{ id: 4, kind: "occurrences.extend", label: "Adding upcoming event dates", runsDaily: true, attempts: 5, lastError: "boom", failedAt: "2026-10-30T13:00:00Z" }], more: false });
+  render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+  const tab = await screen.findByRole("tab", { name: "System, 1" });
+  expect(tab).toHaveTextContent("System 1");
+  await userEvent.click(tab);
+  expect(await screen.findByRole("heading", { name: "Adding upcoming event dates" })).toBeInTheDocument();
+  expect(AdminJobs.list).toHaveBeenCalledTimes(1);
+});
+
+it("shows no count on the System tab when nothing failed", async () => {
+  render(<MemoryRouter initialEntries={["/admin?tab=system"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByText("Nothing needs attention.")).toBeInTheDocument();
+  expect(screen.getByRole("tab", { name: "System" })).toHaveTextContent(/^System$/);
+});
+
+it("says more than 100 on the System tab when more tasks failed than the list holds", async () => {
+  const many = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, kind: "x", label: `Task ${i}`, runsDaily: false, attempts: 5, lastError: "", failedAt: "2026-10-30T13:00:00Z" }));
+  vi.mocked(AdminJobs.list).mockResolvedValue({ jobs: many, more: true });
+  render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);
+  expect(await screen.findByRole("tab", { name: "System, more than 100" })).toHaveTextContent("System 100+");
 });
