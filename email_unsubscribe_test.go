@@ -129,3 +129,21 @@ func TestOneClickUnsubscribe(t *testing.T) {
 		t.Fatalf("deleted user: %d", w.Code)
 	}
 }
+
+// Outside dev, the one-click header goes out only over https (RFC 8058);
+// the footer link is there either way.
+func TestOneClickNeedsHTTPS(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "root", "password1234", models.RoleAdmin)
+	newTestUser(t, app, "lee", "password1234", models.RoleMember)
+	adminClient, leeClient := loginAPI(t, app, "root", "password1234"), loginAPI(t, app, "lee", "password1234")
+	app.Config.Env = "prod"
+	app.Config.SiteURL = "http://groups.example.org"
+	if mail := approveGroupFor(t, app, leeClient, adminClient, "Plain http"); mail.ListUnsubscribe != "" || !strings.Contains(mail.Body, "http://groups.example.org/email-settings/") {
+		t.Fatalf("http: %+v", mail)
+	}
+	app.Config.SiteURL = "https://groups.example.org"
+	if mail := approveGroupFor(t, app, leeClient, adminClient, "Over https"); !strings.HasPrefix(mail.ListUnsubscribe, "https://groups.example.org/u/unsubscribe/") {
+		t.Fatalf("https: %+v", mail)
+	}
+}

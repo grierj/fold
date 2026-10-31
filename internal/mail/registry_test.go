@@ -162,7 +162,7 @@ func TestEmailAdapterContract(t *testing.T) {
 				if msgs := got(); len(msgs) != 1 || msgs[0].listUnsubscribe != url || msgs[0].listUnsubscribePost != "List-Unsubscribe=One-Click" {
 					t.Fatalf("received %+v", msgs)
 				}
-				for _, bad := range []string{"javascript:alert(1)", "https://x\r\nBcc: evil@x"} {
+				for _, bad := range []string{"javascript:alert(1)", "https://x\r\nBcc: evil@x", "https://x>, <mailto:a@b", "https://"} {
 					if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: "sam@example.com", Subject: "s", ListUnsubscribe: bad}); err == nil {
 						t.Fatalf("sent with link %q", bad)
 					}

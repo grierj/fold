@@ -814,8 +814,10 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 			WHERE c.user_id = users.id AND c.channel = ? ORDER BY c.scope, c.at DESC, c.id DESC
 		) latest WHERE latest.status = ?), '') AS email_opt_outs,
 		COALESCE((SELECT string_agg(s.reason, ',') FROM suppressions s
-			WHERE s.channel = 'email' AND s.address = lower(btrim(users.email)) AND s.cleared_at IS NULL), '') AS email_suppressions`,
-		models.ConsentEmail, models.ConsentOptedOut).
+			WHERE s.channel = 'email' AND s.address = lower(btrim(users.email)) AND s.cleared_at IS NULL), '') AS email_suppressions,
+		COALESCE((SELECT value FROM settings WHERE key = 'site_name'), '') AS site_name,
+		COALESCE((SELECT value FROM settings WHERE key = ?), '') AS church_address`,
+		models.ConsentEmail, models.ConsentOptedOut, settingChurchAddress).
 		Where("users.id IN ?", userIDs).Find(&users).Error; err != nil {
 		// Mark nothing suppressed: without a delivery record the rows stay
 		// pending, so a later delivery pass can still send them.
@@ -840,8 +842,15 @@ func (a *App) deliverNotificationEmails(ids []uint) {
 			optOuts[users[i].ID][scope] = true
 		}
 	}
+	footer := footerFacts{site: "Fold"}
+	if len(users) > 0 {
+		if users[0].SiteName != "" {
+			footer.site = users[0].SiteName
+		}
+		footer.address = users[0].ChurchAddress
+	}
 	for i := range rows {
-		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID], optOuts[rows[i].UserID], suppressed[rows[i].UserID])
+		a.deliverNotificationEmail(ctx, &rows[i], byID[rows[i].UserID], optOuts[rows[i].UserID], suppressed[rows[i].UserID], footer)
 	}
 }
 
@@ -853,6 +862,10 @@ type emailRecipient struct {
 	// EmailSuppressions are the open suppression reasons on the address
 	// (DEC-112), read with the recipient so a batch stays at two reads.
 	EmailSuppressions string
+	// SiteName and ChurchAddress ride along for optional email footers, so
+	// footers add no reads (the same on every row).
+	SiteName      string
+	ChurchAddress string
 }
 
 // emailOptOuts maps each user to the email consent scopes whose latest
@@ -882,7 +895,7 @@ func categoryScope(category string) string { return "category:" + category }
 // deliverNotificationEmail sends one row to its preloaded recipient (nil
 // when the account is gone). optedOut holds the recipient's email consent
 // scopes that opt out; only optional kinds consult it (DEC-97).
-func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notification, u *models.User, optedOut map[string]bool, suppressions []string) {
+func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notification, u *models.User, optedOut map[string]bool, suppressions []string, footer footerFacts) {
 	k, ok := notify.Lookup(n.Kind)
 	if !ok || !k.AllowEmail {
 		return
@@ -907,8 +920,12 @@ func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notificati
 		// Optional mail says how to stop it, with a one-click link for mail
 		// clients (RFC 8058, M3.3); required mail never offers one.
 		token := a.unsubscribeToken(u.ID, categoryScope(k.Category))
-		msg.ListUnsubscribe = a.emailBaseURL() + "/u/unsubscribe/" + token
-		msg.Text += a.optionalEmailFooter(k.Category, token)
+		// Mail clients honor one-click links over https only (RFC 8058); dev
+		// runs on http.
+		if base := a.emailBaseURL(); strings.HasPrefix(base, "https://") || a.Config.IsDev() {
+			msg.ListUnsubscribe = base + "/u/unsubscribe/" + token
+		}
+		msg.Text += a.optionalEmailFooter(footer, k.Category, token)
 	}
 	// The provider's id for the message lets its delivery and bounce reports
 	// find this row (M3.2).

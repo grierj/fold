@@ -146,20 +146,15 @@ func setEmailConsent(tx *gorm.DB, userID uint, scope, status, source, ip, userAg
 // (PLAN 10.5, DEC-116); empty until an admin sets it.
 const settingChurchAddress = "church_address"
 
-func (a *App) churchAddress() string {
-	var s models.Setting
-	if a.DB.Where("key = ?", settingChurchAddress).First(&s).Error != nil {
-		return ""
-	}
-	return strings.TrimSpace(s.Value)
-}
+// footerFacts are the church's name and address for one batch of email.
+type footerFacts struct{ site, address string }
 
 // optionalEmailFooter ends an optional email (PLAN 10.5): what it is, how to
 // stop that kind or change email settings, and the church's address.
-func (a *App) optionalEmailFooter(category, token string) string {
-	footer := "\n\n--\nYou're getting " + notify.CategoryEmailName(category) + " from " + a.siteName() +
+func (a *App) optionalEmailFooter(f footerFacts, category, token string) string {
+	footer := "\n\n--\nYou're getting " + notify.CategoryEmailName(category) + " from " + f.site +
 		". To stop them or change which emails you get, visit " + a.emailBaseURL() + "/email-settings/" + token
-	if addr := a.churchAddress(); addr != "" {
+	if addr := strings.TrimSpace(f.address); addr != "" {
 		for _, line := range strings.Split(strings.ReplaceAll(addr, "\r", ""), "\n") {
 			if line = strings.TrimSpace(line); line != "" {
 				footer += "\n" + line
