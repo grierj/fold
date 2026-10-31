@@ -1162,3 +1162,9 @@ func TestCanManageJobs(t *testing.T) {
 		t.Fatal("only admins manage background jobs")
 	}
 }
+
+func TestCanClearSuppression(t *testing.T) {
+	if CanClearSuppression(nil) || CanClearSuppression(&Person{ID: 1}) || !CanClearSuppression(&Person{ID: 2, Admin: true}) {
+		t.Fatal("only admins clear an email suppression")
+	}
+}

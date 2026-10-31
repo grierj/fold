@@ -772,3 +772,7 @@ func CanManageGuestRegistration(p *Person, guest, active bool, ev EventView, g G
 // CanManageJobs: only admins see dead background jobs and retry or dismiss
 // them (M3.1b, the System page).
 func CanManageJobs(p *Person) bool { return IsAdmin(p) }
+
+// CanClearSuppression: only admins let Fold mail a suppressed address
+// again (M3.2c, DEC-113).
+func CanClearSuppression(p *Person) bool { return IsAdmin(p) }

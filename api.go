@@ -71,6 +71,16 @@ type userJSON struct {
 	// Timezone is the person's own zone for emails (DEC-58); "" means
 	// the church's, until the browser fills it in.
 	Timezone string `json:"timezone"`
+	// EmailSuppression: Fold stopped mailing this person's address (admin
+	// list only, M3.2c, DEC-113).
+	EmailSuppression *emailSuppressionJSON `json:"emailSuppression,omitempty"`
+}
+
+// emailSuppressionJSON is why Fold stopped mailing an address: hard_bounce
+// and manual stop all mail, complaint optional mail (DEC-112).
+type emailSuppressionJSON struct {
+	Reason string    `json:"reason"`
+	Since  time.Time `json:"since"`
 }
 
 // toUserJSON is unrestricted: only self/session and admin account endpoints
@@ -741,6 +751,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	v1.DELETE("/admin/groups/:id/members/:userId", a.apiAuth(), a.apiAdmin(), a.apiRemoveGroupMemberConfirmed)
 	v1.GET("/admin/users", a.apiAuth(), a.apiAdmin(), a.apiAdminListUsers)
 	v1.POST("/admin/users", a.apiAuth(), a.apiAdmin(), a.apiAdminCreateUser)
+	// Email suppressions (M3.2c): let Fold mail a bounced address again.
+	v1.POST("/admin/users/:id/email-suppression/clear", a.apiAuth(), a.apiAdmin(), a.apiAdminClearSuppression)
 	v1.PUT("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminUpdateUser)
 	v1.GET("/admin/users/:id/sole-leader-groups", a.apiAuth(), a.apiAdmin(), a.apiAdminSoleLedGroups)
 	v1.DELETE("/admin/users/:id", a.apiAuth(), a.apiAdmin(), a.apiAdminDeleteUser)
