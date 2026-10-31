@@ -35,7 +35,7 @@ it("counts events with the singular and the empty wording", () => {
   expect(weekCountText(12)).toBe("12 events this week");
 });
 
-it("still marks today for screen readers", () => {
+it("marks today in words, not color alone", () => {
   view(new Map());
-  expect(screen.getAllByText(", today").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Today").length).toBeGreaterThan(0);
 });

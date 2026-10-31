@@ -112,6 +112,7 @@ import type {
   EventDetailResponse,
   EventHostRow,
   CalendarOccurrence,
+  RoomCalendar,
   DepartureConfirmationResponse,
   DeparturePreview,
   EventOccurrence,
@@ -331,6 +332,13 @@ export const Calendar = {
     if (q.remote) p.set("remote", "1");
     if (q.childcare) p.set("childcare", "1");
     return api<{ occurrences: CalendarOccurrence[]; truncated: boolean }>(`/calendar?${p}`);
+  },
+  // The by-room view (M2.2a): one day or the Sunday-to-Saturday week holding
+  // date, in the church's zone. 404 while rooms are off and for teens.
+  rooms: (q: { view: "day" | "week"; date?: string }) => {
+    const p = new URLSearchParams({ view: q.view });
+    if (q.date) p.set("date", q.date);
+    return api<RoomCalendar>(`/calendar/rooms?${p}`);
   },
 };
 

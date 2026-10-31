@@ -26,3 +26,16 @@ func BookingNeedsApproval(p *Person, approvalOn bool) bool { return approvalOn &
 
 // CanDecideRoomRequest: only admins confirm or reject a room request.
 func CanDecideRoomRequest(p *Person) bool { return IsAdmin(p) }
+
+// CanSeeRoomCalendar: the by-room view and its "Reserved" blocks are for
+// signed-in adults (section 6). Teens and guests never see it.
+func CanSeeRoomCalendar(p *Person) bool { return p != nil && !p.Teen }
+
+// CanListRoom: a restricted room is listed in the by-room view only for
+// admins (DEC-104). Its name still shows as the place of a date anyone can
+// see.
+func CanListRoom(p *Person, restricted bool) bool { return !restricted || IsAdmin(p) }
+
+// CanSeeWaitingBookings: bookings waiting for an admin's approval hold
+// nothing, and only admins see them in the by-room view (DEC-109).
+func CanSeeWaitingBookings(p *Person) bool { return IsAdmin(p) }

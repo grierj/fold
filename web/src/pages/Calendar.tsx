@@ -12,7 +12,7 @@ import { Field, Select } from "../components/ui/Field";
 import { EmptyState } from "../components/ui/EmptyState";
 import { Illustration } from "../components/ui/Illustration";
 import { Skeleton } from "../components/ui/Skeleton";
-import { ViewSwitch } from "../components/ui/ViewSwitch";
+import { CalendarViewSwitch, useRoomCalendarShown } from "../components/calendar/CalendarViews";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { ChevronLeftIcon, ChevronRightIcon } from "../components/icons";
 import { DaySection } from "../components/calendar/EventRow";
@@ -38,6 +38,7 @@ export function CalendarPage() {
   const group = params.get("group") ?? "";
   // Admins only: also list deleted groups' events (DEC-68). Off by default.
   const deleted = !!isAdmin && params.get("deleted") === "1";
+  const roomsShown = useRoomCalendarShown();
 
   const [agendaDays, setAgendaDays] = useState(AGENDA_STEP);
   const [occs, setOccs] = useState<CalendarOccurrence[]>([]);
@@ -114,13 +115,10 @@ export function CalendarPage() {
       <h1 className="text-3xl font-bold text-text">Calendar</h1>
 
       <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
-        <ViewSwitch
-          label="Calendar view"
-          items={(["agenda", "week", "month"] as View[]).map((v) => ({
-            label: v[0].toUpperCase() + v.slice(1),
-            to: link({ view: v === "agenda" ? null : v }),
-            current: v === view,
-          }))}
+        <CalendarViewSwitch
+          current={view}
+          rooms={roomsShown}
+          to={(v) => (v === "rooms" ? `/calendar/rooms${params.get("date") ? `?date=${params.get("date")}` : ""}` : link({ view: v === "agenda" ? null : v }))}
         />
         {view !== "agenda" && (
           <div className="flex items-center gap-2">

@@ -98,13 +98,15 @@ test("the calendar shows what sam may see, in all three views", async ({ page, r
   await proveView(page, "month");
 
   // Keyboard: the view switch, then period nav, then the chip and picker.
+  // The seed turns rooms on, so Sam also gets Rooms after Month (M2.2a).
+  await expect(page.getByRole("navigation", { name: "Calendar view" }).getByRole("link", { name: "Rooms" })).toBeVisible();
   await page.getByRole("link", { name: "Agenda", exact: true }).focus();
   const order: string[] = [];
-  for (let i = 0; i < 7; i++) {
+  for (let i = 0; i < 8; i++) {
     await page.keyboard.press("Tab");
     order.push(await page.evaluate(() => document.activeElement?.getAttribute("aria-label") || document.activeElement?.textContent?.trim() || ""));
   }
-  expect(order.slice(0, 6)).toEqual(["Week", "Month", "Previous month", "Next month", "Today", "Just mine"]);
+  expect(order.slice(0, 7)).toEqual(["Week", "Month", "Rooms", "Previous month", "Next month", "Today", "Just mine"]);
   await signOut(page);
 });
 

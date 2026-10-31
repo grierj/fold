@@ -22,7 +22,7 @@ export function WeekView({ days, byDay, today }: { days: string[]; byDay: Map<st
             >
               <h3 className={`text-sm font-semibold ${empty ? "" : "mb-2"} ${d === today ? "text-primary" : "text-text"}`}>
                 {formatWeekday(d)}
-                {d === today && <span className="sr-only">, today</span>}
+                {d === today && <span className="block text-xs font-semibold">Today</span>}
               </h3>
               {empty ? (
                 <p className="text-sm text-text-muted">

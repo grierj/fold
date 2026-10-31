@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, historyDayBounds, zoneNote, formatNextMeeting } from "./when";
+import { badgeParts, formatCalendarDay, formatPeriod, formatTime, formatWhen, formatWhenRange, heldIn, historyDayBounds, zoneNote, formatNextMeeting, minuteOfDay, formatHour } from "./when";
 
 // Saturday Oct 17 2026, 7:00 PM in Los Angeles (PDT, UTC-7) = 02:00 UTC Sunday.
 const laSat7pm = "2026-10-18T02:00:00Z";
@@ -159,5 +159,24 @@ describe("formatNextMeeting", () => {
   it("keeps the viewer-zone day and the ordinary wording for other days", () => {
     expect(formatNextMeeting("2026-10-19T01:00:00Z", "America/New_York", now)).toEqual({ soon: true, text: "Tonight · 9:00 PM" });
     expect(formatNextMeeting("2026-10-19T23:00:00Z", "America/Boise", now)).toEqual({ soon: false, text: "Tomorrow at 5:00 PM" });
+  });
+});
+
+describe("minuteOfDay", () => {
+  it("reads the instant on the zone's wall clock", () => {
+    // 01:30 UTC on Oct 22 is 7:30 PM on Oct 21 in Denver (MDT, UTC-6).
+    expect(minuteOfDay("2026-10-22T01:30:00Z", "2026-10-21", "America/Denver")).toBe(19 * 60 + 30);
+  });
+  it("clamps to the day", () => {
+    expect(minuteOfDay("2026-10-21T01:00:00Z", "2026-10-21", "America/Denver")).toBe(0);
+    expect(minuteOfDay("2026-10-22T07:00:00Z", "2026-10-21", "America/Denver")).toBe(1440);
+  });
+});
+
+describe("formatHour", () => {
+  it("names the hour", () => {
+    expect(formatHour(7)).toMatch(/^7\sAM$/);
+    expect(formatHour(12)).toMatch(/^12\sPM$/);
+    expect(formatHour(22)).toMatch(/^10\sPM$/);
   });
 });
