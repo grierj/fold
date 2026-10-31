@@ -3,7 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
 import { Messages } from "../messages-api";
-import { composeOptions, message } from "../test/compose";
+import { composeOptions, message, reminderMessage } from "../test/compose";
 import { MessagesPage } from "./Messages";
 
 const actor = vi.hoisted(() => ({ canCompose: true }));
@@ -87,5 +87,20 @@ describe("MessagesPage", () => {
     expect(alert).toHaveTextContent("We couldn't load your messages. Please try again in a minute.");
     expect(within(alert).getByRole("button", { name: "Try again" })).toBeInTheDocument();
     expect(alert).not.toHaveTextContent("boom");
+  });
+
+  it("names an automatic reminder by its date, with its status in words (M3.6b)", async () => {
+    vi.mocked(Messages.options).mockResolvedValue(composeOptions());
+    vi.mocked(Messages.list).mockResolvedValue({ messages: [
+      reminderMessage(),
+      reminderMessage({ id: 10, status: "failed", sentAt: null, reminder: { ...reminderMessage().reminder!, kind: "waitlist" } }),
+    ] });
+    open();
+    const row = (await screen.findByRole("link", { name: /Automatic reminder/ }));
+    expect(row).toHaveAttribute("href", "/messages/9");
+    expect(row).toHaveTextContent(/^Sent .*Automatic reminder · Book night, Thu, Nov 5(, 2026)?To everyone goingUpdated /);
+    expect(row).not.toHaveTextContent("{{");
+    expect(row).not.toHaveTextContent("By ");
+    expect(screen.getByRole("link", { name: /Automatic waitlist note/ })).toHaveTextContent(/^FailedAutomatic waitlist note · Book night, Thu, Nov 5(, 2026)?To everyone on the waitlist/);
   });
 });

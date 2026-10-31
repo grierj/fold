@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
-import { ApiError, Events } from "../api";
+import { ApiError, Events, Site } from "../api";
 import { Dates } from "../date-api";
 import type { EventDate, RegistrationResponse } from "../types";
 import { Messages } from "../messages-api";
@@ -280,4 +280,36 @@ it("doesn't offer it for an event the viewer can't write to, or ask when they ca
   cleanup(); vi.mocked(Messages.options).mockClear(); actor.canCompose = false;
   mount(); await screen.findByText("One invited date");
   expect(Messages.options).not.toHaveBeenCalled();
+});
+
+it("shows its event's managers the date's reminder lines, each sent one linking to its history (M3.6b)", async () => {
+  vi.spyOn(Site, "get").mockResolvedValue({ name: "Grace", timezone: "America/Boise", selfSignup: "off", roomsEnabled: false });
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canDecline: false, canBlock: false, reminders: {
+    minutes: 1440, dueAt: "2026-01-30T19:00:00Z",
+    messages: [
+      { messageId: 61, kind: "going", status: "sent", sentAt: "2026-01-30T19:00:00Z", reached: 12, failed: 0 },
+      { messageId: 62, kind: "waitlist", status: "sent", sentAt: "2026-01-30T19:00:00Z", reached: 3, failed: 0 },
+    ],
+  } }) });
+  mount();
+  expect(await screen.findByRole("heading", { level: 2, name: "Reminder email" })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Reminder emailed to 12 people · Fri, Jan 30 at 12:00 PM" })).toHaveAttribute("href", "/messages/61");
+  expect(screen.getByRole("link", { name: "Waitlist note emailed to 3 people · Fri, Jan 30 at 12:00 PM" })).toHaveAttribute("href", "/messages/62");
+});
+
+it("says before it goes when the reminder will, and when reminders are off, without a link", async () => {
+  vi.spyOn(Site, "get").mockResolvedValue({ name: "Grace", timezone: "America/Boise", selfSignup: "off", roomsEnabled: false });
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ startsAt: "2030-12-03T02:00:00Z", reminders: { minutes: 2880, dueAt: "2030-12-01T02:00:00Z", messages: [] } }) });
+  mount();
+  expect(await screen.findByText("Reminder goes out Sat, Nov 30 at 7:00 PM")).toBeInTheDocument();
+  cleanup();
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ reminders: { minutes: 0, dueAt: null, messages: [] } }) });
+  mount();
+  expect(await screen.findByText("Reminders are off for this event")).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /Reminder/ })).not.toBeInTheDocument();
+});
+
+it("shows no reminder lines to anyone the API doesn't send them to", async () => {
+  mount(); await screen.findByText("One invited date");
+  expect(screen.queryByText("Reminder email")).not.toBeInTheDocument();
 });

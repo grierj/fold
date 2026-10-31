@@ -260,6 +260,9 @@ export interface EventOccurrence {
   spotsLeft: number | null;
   waitlistEnabled: boolean;
   guestsAllowed: number;
+  // The series' reminder time (M3.6), for its Edit series form; 0 is off.
+  // Optional in fixtures; the API always sends it.
+  reminderEmailMinutes?: number;
   // Remote attendance (M1.8 slice 2): the second seat pool, mirroring
   // the in-person fields. remoteCapacity is this date's effective cap.
   childcareAvailable: boolean;
@@ -786,6 +789,8 @@ export interface EventDate {
  groupId?: number;
  groupName?: string;
  room?: OccurrenceRoom;
+ // This date's email reminders (M3.6b), only for its event's managers.
+ reminders?: DateReminders;
   id: number;
   eventId: number;
   date: string;
@@ -1094,6 +1099,43 @@ export interface Message {
   error: string;
   // How many people the send failed for: "Partly sent" when it was sent.
   failedCount: number;
+  // An automatic event reminder (M3.6) has no author and is never
+  // editable; reminder names its date (absent once the date is gone).
+  category: "announcement" | "reminder";
+  reminder?: MessageReminder;
+}
+
+// The date an automatic reminder is for. kind is the going reminder or
+// the waitlist note (DEC-133).
+export interface MessageReminder {
+  kind: ReminderKind;
+  occurrenceId: number;
+  eventId: number;
+  eventTitle: string;
+  date: string;
+  startsAt: string;
+}
+
+export type ReminderKind = "going" | "waitlist";
+
+// A date's email reminders as its event's managers see them on the date
+// page (M3.6b): the event's reminder time (0 off), when this date's
+// reminder goes (null when off), and each reminder written for it.
+export interface DateReminders {
+  minutes: number;
+  dueAt: string | null;
+  messages: DateReminder[];
+}
+
+// One reminder message: how many people it reached (guardian copies
+// apart, DEC-132) and failed for.
+export interface DateReminder {
+  messageId: number;
+  kind: ReminderKind;
+  status: MessageStatus;
+  sentAt: string | null;
+  reached: number;
+  failed: number;
 }
 
 // The people a sent message was for, by status (M3.5b). skipped never went

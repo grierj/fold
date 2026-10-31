@@ -35,6 +35,8 @@ var errorCodes = map[string]string{
 	errMessageNothingToRetry:                       "message_nothing_to_retry",
 	errMessageRetryRefused:                         "message_retry_refused",
 	errMessageRetrySending:                         "message_retry_sending",
+	errMessageReminder:                             "message_reminder",
+	errReminderRetryRefused:                        "reminder_retry_refused",
 	errReplyToInvalid:                              "reply_to_invalid",
 	"choose who gets this message":                 "message_audience",
 	"that group or event isn't there anymore":      "message_audience_gone",

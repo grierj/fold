@@ -266,3 +266,58 @@ func messageCategory(m *models.Message) string {
 	}
 	return notify.CatMessages
 }
+
+// dateRemindersJSON is a date's email reminders as its event's managers see
+// them on the date page (M3.6b, DEC-133): the event's reminder time
+// (Minutes, 0 off), when this date's reminder goes (DueAt, absent when
+// off), and each reminder written for it, oldest first.
+type dateRemindersJSON struct {
+	Minutes  int                `json:"minutes"`
+	DueAt    *time.Time         `json:"dueAt"`
+	Messages []dateReminderJSON `json:"messages"`
+}
+
+// dateReminderJSON is one reminder message: going (the reminder) or
+// waitlist (the "still on the waitlist" note), its status, and how many
+// people it reached and failed for, guardian copies apart (DEC-132).
+type dateReminderJSON struct {
+	MessageID uint       `json:"messageId"`
+	Kind      string     `json:"kind"`
+	Status    string     `json:"status"`
+	SentAt    *time.Time `json:"sentAt"`
+	Reached   int        `json:"reached"`
+	Failed    int        `json:"failed"`
+}
+
+// dateReminders reads them in one query. Call it only for a manager.
+func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dateRemindersJSON, error) {
+	out := &dateRemindersJSON{Minutes: ev.ReminderEmailMinutes, Messages: []dateReminderJSON{}}
+	if ev.ReminderEmailMinutes > 0 {
+		due := occ.StartsAt.Add(-time.Duration(ev.ReminderEmailMinutes) * time.Minute).UTC()
+		out.DueAt = &due
+	}
+	var rows []struct {
+		ID          uint
+		ReminderKey *string
+		Status      string
+		SentAt      *time.Time
+		Reached     int
+		Failed      int
+	}
+	if err := a.DB.Raw(`SELECT m.id, m.reminder_key, m.status, m.sent_at,
+		count(r.id) FILTER (WHERE r.copy_of_user_id IS NULL AND r.status IN ?) AS reached,
+		count(r.id) FILTER (WHERE r.copy_of_user_id IS NULL AND r.status = ?) AS failed
+		FROM messages m LEFT JOIN message_recipients r ON r.message_id = m.id
+		WHERE m.occurrence_id = ? AND m.category = ?
+		GROUP BY m.id ORDER BY m.id`,
+		[]string{models.RecipientSent, models.RecipientDelivered, models.RecipientComplained}, models.RecipientFailed,
+		occ.ID, models.MessageCategoryReminder).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		m := models.Message{ReminderKey: r.ReminderKey}
+		out.Messages = append(out.Messages, dateReminderJSON{MessageID: r.ID, Kind: reminderKind(&m), Status: r.Status,
+			SentAt: r.SentAt, Reached: r.Reached, Failed: r.Failed})
+	}
+	return out, nil
+}

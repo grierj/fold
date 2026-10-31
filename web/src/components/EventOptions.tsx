@@ -5,6 +5,7 @@ import { ChildcareField, type ChildcareValue } from "./ChildcareField";
 import { RemoteField, type RemoteValue } from "./RemoteField";
 import { SeatsField, type SeatsValue } from "./SeatsField";
 import { VideoField, type VideoValue } from "./VideoField";
+import { ReminderField, reminderSummary } from "./ReminderField";
 import { Button } from "./ui/Button";
 
 const VISIBILITY_NAMES: Record<Visibility, string> = { public: "Public", private: "Private", invite_only: "Invite only" };
@@ -17,12 +18,14 @@ export function optionsSummary({
   video,
   remote,
   childcare,
+  reminder,
 }: {
   visibility?: Visibility;
   seats: SeatsValue;
   video: VideoValue;
   remote: RemoteValue;
   childcare: ChildcareValue;
+  reminder?: number;
 }): string {
   const cap = seats.capacity.trim();
   const seatText = cap === "" ? "No seat limit" : `${cap} ${cap === "1" ? "seat" : "seats"}${seats.waitlist ? " with waitlist" : ""}`;
@@ -32,6 +35,7 @@ export function optionsSummary({
     video.provider === "none" ? "No video" : "Video link",
     ...(remote.available ? ["Remote seats"] : []),
     childcare.available ? "Childcare" : "No childcare",
+    ...(reminder !== undefined ? [reminderSummary(reminder)] : []),
   ];
   return parts.join(" · ");
 }
@@ -92,7 +96,8 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 // Everything inside More options, in one order for the group, church-wide and
 // Edit series forms: who can see it (a create form passes the shared
 // VisibilityField; Edit series sets visibility in its own panel), seats and
-// waitlist, Online (video and remote together) and childcare.
+// waitlist, Online (video and remote together), childcare and the reminder
+// email (M3.6b).
 export function EventOptions({
   idPrefix,
   open,
@@ -110,6 +115,8 @@ export function EventOptions({
   childcare,
   onChildcare,
   childcareError,
+  reminder,
+  onReminder,
 }: {
   idPrefix: string;
   open: boolean;
@@ -127,12 +134,14 @@ export function EventOptions({
   childcare: ChildcareValue;
   onChildcare: (next: ChildcareValue) => void;
   childcareError?: string | null;
+  reminder: number;
+  onReminder: (minutes: number) => void;
 }) {
   return (
     <MoreOptions
       open={open}
       onOpenChange={onOpenChange}
-      summary={optionsSummary({ visibility: visibility?.value, seats, video, remote, childcare })}
+      summary={optionsSummary({ visibility: visibility?.value, seats, video, remote, childcare, reminder })}
     >
       {visibility?.field}
       <Section title="Seats">
@@ -144,6 +153,9 @@ export function EventOptions({
       </Section>
       <Section title="Childcare">
         <ChildcareField idPrefix={idPrefix} value={childcare} onChange={onChildcare} error={childcareError} />
+      </Section>
+      <Section title="Reminders">
+        <ReminderField idPrefix={idPrefix} value={reminder} onChange={onReminder} />
       </Section>
     </MoreOptions>
   );

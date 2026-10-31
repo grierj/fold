@@ -254,6 +254,9 @@ type dateOccurrenceJSON struct {
 	GroupName        string    `json:"groupName,omitempty"`
 	// Room is the date's confirmed room, shown as its place (9.2, M2.1b).
 	Room *occurrenceRoomJSON `json:"room,omitempty"`
+	// Reminders is this date's email reminders (M3.6b), only for its
+	// event's managers; absent for everyone else.
+	Reminders *dateRemindersJSON `json:"reminders,omitempty"`
 }
 
 func presentOccurrenceDate(ev *models.Event, occ *models.EventOccurrence, groupLocation string, ordinary, manager, attendees bool, reg models.Registration, invited *occurrenceRead, now time.Time) dateOccurrenceJSON {
@@ -386,6 +389,12 @@ func (a *App) loadOccurrenceDate(c *gin.Context) (dateOccurrenceJSON, bool) {
 	}
 	out := presentOccurrenceDate(ev, &occ, groupLocation, ordinary, manager, attendees, reg, invited, now)
 	out.Room = a.occurrenceRooms(a.DB, []uint{occ.ID})[occ.ID]
+	if ordinary && manager {
+		if out.Reminders, err = a.dateReminders(ev, &occ); err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not load this date")
+			return dateOccurrenceJSON{}, false
+		}
+	}
 	if ordinary {
 		out.CanRegister = me != nil && a.canRegisterDateIn(a.DB, me, ev, occ.ID)
 		out.Visibility = policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride)

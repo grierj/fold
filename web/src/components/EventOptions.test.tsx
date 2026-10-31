@@ -25,6 +25,8 @@ describe("optionsSummary", () => {
       }),
     ).toBe("Visible to: Invite only · 20 seats with waitlist · Video link · Remote seats · Childcare");
     expect(optionsSummary({ ...base, seats: { ...emptySeats, capacity: "1" } })).toBe("1 seat · No video · No childcare");
+    expect(optionsSummary({ ...base, reminder: 1440 })).toBe("No seat limit · No video · No childcare · Reminder email 1 day before");
+    expect(optionsSummary({ ...base, reminder: 0 })).toBe("No seat limit · No video · No childcare · No reminder email");
   });
 });
 
@@ -34,6 +36,7 @@ function Harness({ open = false }: { open?: boolean }) {
   const [video, setVideo] = useState(emptyVideo);
   const [remote, setRemote] = useState(emptyRemote);
   const [childcare, setChildcare] = useState(emptyChildcare);
+  const [reminder, setReminder] = useState(1440);
   return (
     <EventOptions
       idPrefix="t"
@@ -47,6 +50,8 @@ function Harness({ open = false }: { open?: boolean }) {
       onRemote={setRemote}
       childcare={childcare}
       onChildcare={setChildcare}
+      reminder={reminder}
+      onReminder={setReminder}
     />
   );
 }
@@ -56,14 +61,14 @@ describe("EventOptions", () => {
     render(<Harness />);
     const toggle = screen.getByRole("button", { name: "More options" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(toggle).toHaveAccessibleDescription("No seat limit · No video · No childcare");
+    expect(toggle).toHaveAccessibleDescription("No seat limit · No video · No childcare · Reminder email 1 day before");
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.queryByText("No seat limit · No video · No childcare")).not.toBeInTheDocument();
+    expect(screen.queryByText("No seat limit · No video · No childcare · Reminder email 1 day before")).not.toBeInTheDocument();
     const region = document.getElementById(toggle.getAttribute("aria-controls")!)!;
     expect(region).toBeVisible();
     const titles = Array.from(region.querySelectorAll("h3")).map((h) => h.textContent);
-    expect(titles).toEqual(["Seats", "Online", "Childcare"]);
+    expect(titles).toEqual(["Seats", "Online", "Childcare", "Reminders"]);
     // Video and remote sit together under Online.
     const online = region.querySelectorAll('[role="group"]')[1];
     expect(online).toHaveTextContent("Video");
@@ -75,8 +80,21 @@ describe("EventOptions", () => {
     await userEvent.type(screen.getByLabelText(/^Seat limit/), "8");
     await userEvent.click(screen.getByLabelText(/^Childcare available/));
     await userEvent.click(screen.getByRole("button", { name: "More options" }));
-    expect(screen.getByText("8 seats · No video · Childcare")).toBeInTheDocument();
+    expect(screen.getByText("8 seats · No video · Childcare · Reminder email 1 day before")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "More options" }));
     expect(screen.getByLabelText(/^Seat limit/)).toHaveValue(8);
+  });
+});
+
+describe("ReminderField in More options", () => {
+  it("offers the five reminder times, 1 day before by default, and says who hears", async () => {
+    render(<Harness open />);
+    const select = screen.getByLabelText("Reminder email");
+    expect(select).toHaveValue("1440");
+    expect(select).toHaveAccessibleDescription("We'll email everyone going. People on the waitlist hear they're still waiting.");
+    expect(Array.from((select as HTMLSelectElement).options).map((o) => o.text)).toEqual(["Off", "2 hours before", "1 day before", "2 days before", "1 week before"]);
+    await userEvent.selectOptions(select, "Off");
+    await userEvent.click(screen.getByRole("button", { name: "More options" }));
+    expect(screen.getByText("No seat limit · No video · No childcare · No reminder email")).toBeInTheDocument();
   });
 });

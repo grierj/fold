@@ -5,6 +5,7 @@ import { Messages } from "../messages-api";
 import type { ComposeOptions, Message } from "../types";
 import { errorText } from "../lib/errors";
 import { audienceLabel, statusLabel } from "../lib/messages";
+import { reminderAudience, reminderRowTitle } from "../lib/reminders";
 import { browserTimeZone, formatWhen } from "../lib/when";
 import { useChurchZoneLoad } from "../lib/useEventZone";
 import { ErrorNotice } from "../components/ErrorNotice";
@@ -16,6 +17,8 @@ import { Skeleton } from "../components/ui/Skeleton";
 // first, each with its state in words, its subject, who it goes to and when
 // it last changed. An admin sees everyone's, with the author's name. When a
 // message goes out reads on the church's clock; "Updated" on the viewer's.
+// An admin's list also has automatic event reminders (M3.6b), named by
+// their date; a leader's has only what they wrote.
 
 // GET /messages answers at most this many, newest first.
 const LIST_LIMIT = 200;
@@ -70,8 +73,14 @@ export function MessagesPage() {
             <li key={m.id}>
               <Link to={`/messages/${m.id}`} className="block rounded-lg border border-border bg-surface p-4 hover:border-border-strong">
                 <span className="block text-sm font-semibold text-text-muted">{statusLabel(m, zone)}</span>
-                <span className="mt-1 block text-lg font-semibold text-text">{m.subject || "Untitled message"}</span>
-                <span className="mt-1 block text-sm text-text-muted">To {audienceLabel(m.audience, options)}</span>
+                {m.category === "reminder" ? <>
+                  {/* An automatic reminder (M3.6b): its date, not its subject, which holds merge fields. */}
+                  <span className="mt-1 block text-lg font-semibold text-text">{reminderRowTitle(m)}</span>
+                  <span className="mt-1 block text-sm text-text-muted">To {reminderAudience(m.reminder).toLowerCase()}</span>
+                </> : <>
+                  <span className="mt-1 block text-lg font-semibold text-text">{m.subject || "Untitled message"}</span>
+                  <span className="mt-1 block text-sm text-text-muted">To {audienceLabel(m.audience, options)}</span>
+                </>}
                 <span className="mt-1 block text-sm text-text-muted">
                   Updated {formatWhen(m.updatedAt)}{m.authorName && m.authorName !== me ? ` · By ${m.authorName}` : ""}
                 </span>

@@ -69,7 +69,7 @@ describe("NewEvent", () => {
     await ready();
     const toggle = screen.getByRole("button", { name: "More options" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByText("Visible to: Public · No seat limit · No video · No childcare")).toBeInTheDocument();
+    expect(screen.getByText("Visible to: Public · No seat limit · No video · No childcare · Reminder email 1 day before")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Who can see this event" })).not.toBeInTheDocument();
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -93,6 +93,19 @@ describe("NewEvent", () => {
       capacity: 12, waitlistEnabled: true, durationMinutes: 90, tzid: "America/Denver", recurrenceRule: "",
     }));
     expect(await screen.findByText("Group page")).toBeInTheDocument();
+  });
+
+  it("sends the reminder time: 1 day before unless changed (M3.6b)", async () => {
+    renderForm();
+    await ready();
+    await userEvent.type(screen.getByLabelText("Date"), "2026-12-02");
+    await userEvent.click(screen.getByRole("button", { name: "More options" }));
+    const select = screen.getByLabelText("Reminder email");
+    expect(select).toHaveValue("1440");
+    await userEvent.selectOptions(select, "1 week before");
+    await userEvent.click(screen.getByRole("button", { name: "Schedule event" }));
+    await waitFor(() => expect(Groups.createEvent).toHaveBeenCalled());
+    expect(Groups.createEvent).toHaveBeenCalledWith("5", expect.objectContaining({ reminderEmailMinutes: 10080 }));
   });
 
   it("sends a weekly rule from Every week and the chosen duration preset", async () => {

@@ -4,6 +4,7 @@ import { VisibilityField } from "../components/EventVisibility";
 import type { Visibility } from "../types";
 import { WhenFields } from "../components/WhenFields";
 import { EventOptions } from "../components/EventOptions";
+import { DEFAULT_REMINDER_MINUTES } from "../components/ReminderField";
 import { CreateRoomField, scheduleFields, scheduleReady } from "../components/CreateRoomField";
 import { emptySeats, focusSeatLimit, isSeatsError, seatsBody, seatsProblem, type SeatsValue } from "../components/SeatsField";
 import { FormActions } from "../components/ui/FormActions";
@@ -44,6 +45,7 @@ export function NewEvent() {
   const [childcare, setChildcare] = useState<ChildcareValue>(emptyChildcare);
   const [remote, setRemote] = useState<RemoteValue>(emptyRemote);
   const [seats, setSeats] = useState<SeatsValue>(emptySeats);
+  const [reminder, setReminder] = useState(DEFAULT_REMINDER_MINUTES);
   // The room for every date; the event page lists any dates it is busy on.
   const [roomId, setRoomId] = useState<number | null>(null);
   // Closed on create; a problem inside it opens it (DEC-95).
@@ -56,7 +58,7 @@ export function NewEvent() {
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
   const dirty = useDirty(
-    { title, description, date, startTime, durationMin, recurring, days, tzid, location, visibility, visReason, video, childcare, remote, seats, roomId },
+    { title, description, date, startTime, durationMin, recurring, days, tzid, location, visibility, visReason, video, childcare, remote, seats, roomId, reminder },
     !loading && !authLoading && tzid !== "",
   );
   const { guard, markSaved } = useUnsavedChanges(dirty);
@@ -146,6 +148,7 @@ export function NewEvent() {
         ...seatsBody(seats),
         ...remoteBody(remote),
         ...childcareBody(childcare),
+        reminderEmailMinutes: reminder,
         ...(roomId !== null ? { roomId } : {}),
       });
       markSaved();
@@ -282,6 +285,8 @@ export function NewEvent() {
           childcare={childcare}
           onChildcare={setChildcare}
           childcareError={childcareError}
+          reminder={reminder}
+          onReminder={setReminder}
         />
         <FormActions>
           <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>

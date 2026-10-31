@@ -21,9 +21,9 @@ function ymd(instant: Date, zone: string): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).format(instant);
 }
 
-function nextDay(day: string): string {
+function nextDay(day: string, by = 1): string {
   const [y, m, d] = day.split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  return new Date(Date.UTC(y, m - 1, d + by)).toISOString().slice(0, 10);
 }
 
 // "7:00 PM"
@@ -32,13 +32,22 @@ export function formatTime(iso: string, zone = browserTimeZone()): string {
 }
 
 // "Today at 7:00 PM", "Tomorrow at 7:00 PM", or "Sat, Oct 17 at 7:00 PM".
-export function formatWhen(iso: string, zone = browserTimeZone(), now = new Date()): string {
+// past also says "Yesterday at 7:00 PM", for something that already
+// happened (when a reminder went out).
+export function formatWhen(iso: string, zone = browserTimeZone(), now = new Date(), past = false): string {
   const day = ymd(new Date(iso), zone);
   const today = ymd(now, zone);
   const time = formatTime(iso, zone);
   if (day === today) return `Today at ${time}`;
   if (day === nextDay(today)) return `Tomorrow at ${time}`;
+  if (past && day === nextDay(today, -1)) return `Yesterday at ${time}`;
   return `${fmt(iso, zone, { weekday: "short", month: "short", day: "numeric" })} at ${time}`;
+}
+
+// lowerLead is a when-phrase for the middle of a sentence: "today at 7:00
+// PM", "yesterday at 7:00 PM"; a date ("Tue, Nov 3 at …") stays as it is.
+export function lowerLead(when: string): string {
+  return /^(Today|Tomorrow|Yesterday) /.test(when) ? when[0].toLowerCase() + when.slice(1) : when;
 }
 
 // A group card's next-meeting line (DEC-99). When the meeting is today in the
@@ -244,6 +253,12 @@ export function formatEventDay(iso: string, zone = browserTimeZone(), now = new 
   return fmt(iso, zone, { weekday: "long", month: "short", day: "numeric", ...(otherYear ? { year: "numeric" } : {}) });
 }
 
+// "Tue, Nov 3", or "Wed, Nov 3, 2027" in another year.
+export function formatShortWeekdayDay(iso: string, zone = browserTimeZone(), now = new Date()): string {
+  const otherYear = dayOf(iso, zone).slice(0, 4) !== ymd(now, zone).slice(0, 4);
+  return fmt(iso, zone, { weekday: "short", month: "short", day: "numeric", ...(otherYear ? { year: "numeric" } : {}) });
+}
+
 // "Nov 4", or "Nov 4, 2027" in another year.
 export function formatShortDay(iso: string, zone = browserTimeZone(), now = new Date()): string {
   const otherYear = dayOf(iso, zone).slice(0, 4) !== ymd(now, zone).slice(0, 4);
@@ -336,14 +351,14 @@ export function wallToInstant(day: string, time: string, zone: string): string |
 // formatWhenIn is formatWhen on `zone`'s clock (the church's, for when a
 // message goes out), with the zone's short name ("MST") when the viewer's
 // clock reads differently at that instant.
-export function formatWhenIn(iso: string, zone: string, now = new Date(), viewer = browserTimeZone()): string {
+export function formatWhenIn(iso: string, zone: string, now = new Date(), viewer = browserTimeZone(), past = false): string {
   try {
-    const text = formatWhen(iso, zone, now);
+    const text = formatWhen(iso, zone, now, past);
     if (wallKey(new Date(iso).getTime(), zone) === wallKey(new Date(iso).getTime(), viewer)) return text;
     const name = new Intl.DateTimeFormat(undefined, { timeZone: zone, timeZoneName: "short" })
       .formatToParts(new Date(iso)).find((p) => p.type === "timeZoneName")?.value;
     return name ? `${text} ${name}` : text;
   } catch {
-    return formatWhen(iso, viewer, now);
+    return formatWhen(iso, viewer, now, past);
   }
 }

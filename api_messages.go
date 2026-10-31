@@ -41,7 +41,39 @@ type messageJSON struct {
 	Error string `json:"error"`
 	// FailedCount is how many people a send failed for: "Partly sent".
 	FailedCount int `json:"failedCount"`
+	// Category is announcement, or reminder for an automatic event
+	// reminder (M3.6), which has no author and is never editable.
+	Category string `json:"category"`
+	// Reminder names a reminder's date; absent for an announcement, and for
+	// a reminder whose date is gone.
+	Reminder *messageReminderJSON `json:"reminder,omitempty"`
 }
+
+// messageReminderJSON is the date an automatic reminder is for: "Automatic
+// reminder for Book night, Tue, Nov 3". Kind is going (the reminder) or
+// waitlist (the "still on the waitlist" note, DEC-133).
+type messageReminderJSON struct {
+	Kind         string    `json:"kind"`
+	OccurrenceID uint      `json:"occurrenceId"`
+	EventID      uint      `json:"eventId"`
+	EventTitle   string    `json:"eventTitle"`
+	Date         string    `json:"date"`
+	StartsAt     time.Time `json:"startsAt"`
+}
+
+// reminderKind is going or waitlist, from a reminder's key
+// ("<kind>:<occurrence>:<start>:<minutes>", writeReminder).
+func reminderKind(m *models.Message) string {
+	if m.ReminderKey != nil && strings.HasPrefix(*m.ReminderKey, reminderWaitlist+":") {
+		return reminderWaitlist
+	}
+	return reminderGoing
+}
+
+const (
+	errMessageReminder      = "automatic reminders can't be changed here; change the event's reminder time instead"
+	errReminderRetryRefused = "this date has started or was cancelled, so its reminder can't be sent again"
+)
 
 // Composer limits, matching the CHECKs in migration 00054.
 const (
@@ -63,22 +95,40 @@ const (
 )
 
 // messageFacts is what a list of messages shows beyond their own rows:
-// each author's name, and how many people each send failed for.
+// each author's name, how many people each send failed for, and each
+// reminder's date.
 type messageFacts struct {
 	authors map[uint]string
 	failed  map[uint]int
+	dates   map[uint]messageReminderJSON
 }
 
-// loadMessageFacts reads them for msgs in two queries, whatever the count.
+// loadMessageFacts reads them for msgs in three queries, whatever the count.
 func (a *App) loadMessageFacts(msgs []models.Message) (messageFacts, error) {
-	out := messageFacts{authors: map[uint]string{}, failed: map[uint]int{}}
-	ids, settled := []uint{}, []uint{}
+	out := messageFacts{authors: map[uint]string{}, failed: map[uint]int{}, dates: map[uint]messageReminderJSON{}}
+	ids, settled, occs := []uint{}, []uint{}, []uint{}
 	for _, m := range msgs {
 		if m.AuthorID != nil {
 			ids = append(ids, *m.AuthorID)
 		}
 		if m.Status == models.MessageSent || m.Status == models.MessageFailed {
 			settled = append(settled, m.ID)
+		}
+		if m.Category == models.MessageCategoryReminder && m.OccurrenceID != nil {
+			occs = append(occs, *m.OccurrenceID)
+		}
+	}
+	if len(occs) > 0 {
+		// A deleted event keeps its title here: an admin's list still says
+		// what the reminder was for.
+		var rows []messageReminderJSON
+		if err := a.DB.Raw(`SELECT o.id AS occurrence_id, o.event_id, COALESCE(o.title_override, e.title) AS event_title,
+			o.original_date AS date, o.starts_at FROM event_occurrences o JOIN events e ON e.id = o.event_id WHERE o.id IN ?`,
+			dedupeIDs(occs)).Scan(&rows).Error; err != nil {
+			return out, err
+		}
+		for _, r := range rows {
+			out.dates[r.OccurrenceID] = r
 		}
 	}
 	if len(ids) > 0 {
@@ -114,10 +164,19 @@ func toMessageJSON(m *models.Message, me *models.User, facts messageFacts) messa
 	if m.AuthorID != nil {
 		name = facts.authors[*m.AuthorID]
 	}
-	return messageJSON{ID: m.ID, Channel: m.Channel, Status: m.Status, Subject: m.Subject, BodyHTML: m.BodyHTML,
+	reminder := m.Category == models.MessageCategoryReminder
+	out := messageJSON{ID: m.ID, Channel: m.Channel, Status: m.Status, Subject: m.Subject, BodyHTML: m.BodyHTML,
 		Audience: au, ScheduledAt: m.ScheduledAt, SentAt: m.SentAt, AuthorName: name,
-		Editable:  (m.Status == models.MessageDraft || m.Status == models.MessageScheduled) && policy.CanEditMessage(asPerson(me), isAuthor),
-		UpdatedAt: m.UpdatedAt, Error: messageErrorFor(m.Error, policy.IsAdmin(asPerson(me))), FailedCount: facts.failed[m.ID]}
+		Editable:  (m.Status == models.MessageDraft || m.Status == models.MessageScheduled) && policy.CanEditMessage(asPerson(me), isAuthor, reminder),
+		UpdatedAt: m.UpdatedAt, Error: messageErrorFor(m.Error, policy.IsAdmin(asPerson(me))), FailedCount: facts.failed[m.ID],
+		Category: m.Category}
+	if reminder && m.OccurrenceID != nil {
+		if d, ok := facts.dates[*m.OccurrenceID]; ok {
+			d.Kind = reminderKind(m)
+			out.Reminder = &d
+		}
+	}
+	return out
 }
 
 // messageErrorFor is a stored error as the viewer reads it: the
@@ -463,17 +522,74 @@ func (a *App) apiCreateMessage(c *gin.Context) {
 	a.respondMessage(c, http.StatusCreated, &m, nil)
 }
 
-// loadMessage finds a message the viewer may see: its author's, or any for
-// an admin. Anyone else gets 404.
+// loadMessage finds a message the viewer may read (policy.CanReadMessage):
+// its author's, any for an admin, and an automatic reminder for anyone who
+// manages its event. Anyone else gets 404.
 func (a *App) loadMessage(c *gin.Context) (*models.Message, bool) {
 	me := apiUser(c)
 	id, err := strconv.ParseUint(c.Param("id"), 10, 63)
 	var m models.Message
-	if err != nil || a.DB.First(&m, id).Error != nil || !policy.CanEditMessage(asPerson(me), m.AuthorID != nil && *m.AuthorID == me.ID) {
+	if err != nil || a.DB.First(&m, id).Error != nil {
+		jsonError(c, http.StatusNotFound, "message not found")
+		return nil, false
+	}
+	p := asPerson(me)
+	isAuthor := m.AuthorID != nil && *m.AuthorID == me.ID
+	reminder := m.Category == models.MessageCategoryReminder
+	manages := false
+	if reminder && !p.Admin && m.OccurrenceID != nil {
+		var err error
+		if manages, err = a.managesOccurrenceEvent(me, *m.OccurrenceID); err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not load the message")
+			return nil, false
+		}
+	}
+	if !policy.CanReadMessage(p, isAuthor, reminder, manages) {
 		jsonError(c, http.StatusNotFound, "message not found")
 		return nil, false
 	}
 	return &m, true
+}
+
+// managesOccurrenceEvent: me manages the event a date belongs to, by the
+// facts the event page uses (policy.CanManageEvent). A deleted event or
+// date is managed by no one.
+func (a *App) managesOccurrenceEvent(me *models.User, occID uint) (bool, error) {
+	var occ models.EventOccurrence
+	if err := a.DB.Select("id, event_id").First(&occ, occID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	var ev models.Event
+	if err := a.DB.First(&ev, occ.EventID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	f := a.factsFor(me, &ev)
+	return policy.CanManageEvent(asPerson(me), f.view, f.rel), nil
+}
+
+// loadOwnMessage is loadMessage for the composer's own actions (edit,
+// schedule, cancel, preview, test): the author or an admin
+// (policy.CanEditMessage). An automatic reminder is read only: 409.
+func (a *App) loadOwnMessage(c *gin.Context) (*models.Message, bool) {
+	m, ok := a.loadMessage(c)
+	if !ok {
+		return nil, false
+	}
+	me := apiUser(c)
+	reminder := m.Category == models.MessageCategoryReminder
+	if !policy.CanEditMessage(asPerson(me), m.AuthorID != nil && *m.AuthorID == me.ID, reminder) {
+		if reminder {
+			jsonError(c, http.StatusConflict, errMessageReminder)
+		} else {
+			jsonError(c, http.StatusNotFound, "message not found")
+		}
+		return nil, false
+	}
+	return m, true
 }
 
 func (a *App) apiGetMessage(c *gin.Context) {
@@ -519,7 +635,7 @@ func editable(c *gin.Context, m *models.Message) bool {
 // apiUpdateMessage edits a draft or a scheduled message; the audience is
 // checked again, since roles change.
 func (a *App) apiUpdateMessage(c *gin.Context) {
-	m, ok := a.loadMessage(c)
+	m, ok := a.loadOwnMessage(c)
 	if !ok || !editable(c, m) {
 		return
 	}
@@ -579,7 +695,7 @@ func (a *App) apiUpdateMessage(c *gin.Context) {
 // time, or now. It needs a subject, a body and at least one person who can
 // get it; M3.5 sends it.
 func (a *App) apiScheduleMessage(c *gin.Context) {
-	m, ok := a.loadMessage(c)
+	m, ok := a.loadOwnMessage(c)
 	if !ok || !editable(c, m) {
 		return
 	}
@@ -644,7 +760,7 @@ var errLocked = errors.New("message locked")
 
 // apiCancelMessage stops a draft or a scheduled message for good.
 func (a *App) apiCancelMessage(c *gin.Context) {
-	m, ok := a.loadMessage(c)
+	m, ok := a.loadOwnMessage(c)
 	if !ok || !editable(c, m) {
 		return
 	}

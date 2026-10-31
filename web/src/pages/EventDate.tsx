@@ -18,6 +18,7 @@ import { DateBadge } from "../components/DateBadge";
 import { answerLine } from "../components/RsvpButtons";
 import { DateActions } from "../components/DateActions";
 import { composePath, EMAIL_GOING, useCanEmailEvent } from "../components/messages/composeLinks";
+import { DateReminderLines } from "../components/DateReminders";
 
 export function EventDatePage() {
   const { user } = useAuth();
@@ -127,6 +128,7 @@ function DateDetail({ id, date }: { id: string; date: string }) {
         {occurrence.canBlock && <Button variant="danger-outline" disabled={busy} onClick={() => void end("block")}>Don't add me again</Button>}
         {canEmail && <ButtonLink variant="secondary" to={composePath({ occurrence: occurrence.id })}>{EMAIL_GOING}</ButtonLink>}
       </div>
+      {occurrence.reminders && <DateReminderLines reminders={occurrence.reminders} />}
     </section>}
   </div>;
 }

@@ -146,7 +146,7 @@ func (a *App) renderMessageWith(m *models.Message, u *models.User, vals map[stri
 // and time only to someone who may still write to its people. false means
 // the error response was sent.
 func (a *App) renderedForViewer(c *gin.Context) (*models.Message, renderedMessage, bool) {
-	m, ok := a.loadMessage(c)
+	m, ok := a.loadOwnMessage(c)
 	if !ok {
 		return nil, renderedMessage{}, false
 	}

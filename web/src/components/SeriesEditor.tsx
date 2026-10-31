@@ -11,6 +11,7 @@ import { Field, FormError, Input, Textarea } from "./ui/Field";
 import { FormActions } from "./ui/FormActions";
 import { Button } from "./ui/Button";
 import { EventOptions } from "./EventOptions";
+import { DEFAULT_REMINDER_MINUTES } from "./ReminderField";
 import { WhenFields } from "./WhenFields";
 import { RoomField } from "./RoomField";
 import { SeriesRoomField } from "./SeriesRoomField";
@@ -33,6 +34,8 @@ export interface SeriesFields {
   capacity: number | null;
   waitlistEnabled: boolean;
   guestsAllowed: number;
+  // The reminder time (M3.6b); absent reads as the default.
+  reminderEmailMinutes?: number;
   videoProvider?: VideoProvider;
   videoUrl?: string;
   videoReveal?: VideoReveal;
@@ -88,6 +91,8 @@ export function SeriesEditor({
   const [until, setUntil] = useState(instance.rruleUntil ?? "");
   const initialSeats = seatsFrom(instance.capacity, instance.waitlistEnabled, instance.guestsAllowed);
   const [seats, setSeats] = useState<SeatsValue>(initialSeats);
+  const initialReminder = instance.reminderEmailMinutes ?? DEFAULT_REMINDER_MINUTES;
+  const [reminder, setReminder] = useState(initialReminder);
   const initialVideo: VideoValue = {
     provider: instance.videoProvider ?? "none",
     url: instance.videoUrl ?? "",
@@ -107,7 +112,7 @@ export function SeriesEditor({
   const [childcareError, setChildcareError] = useState<string | null>(null);
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
-  const dirty = useDirty({ date, time, duration, recurring, days, tzid, title, description, location, rule, until, seats, video, childcare, remote });
+  const dirty = useDirty({ date, time, duration, recurring, days, tzid, title, description, location, rule, until, seats, video, childcare, remote, reminder });
   const { guard, markSaved } = useUnsavedChanges(dirty);
 
   async function save(e: React.FormEvent) {
@@ -177,6 +182,7 @@ export function SeriesEditor({
       videoProvider?: VideoProvider;
       videoUrl?: string;
       videoReveal?: VideoReveal;
+      reminderEmailMinutes?: number;
     } = {
       title: title.trim(),
       description: description.trim(),
@@ -191,6 +197,7 @@ export function SeriesEditor({
     if (capTrimmed !== capInitial) body.capacity = capTrimmed === "" ? null : Number(capTrimmed);
     if (seats.waitlist !== instance.waitlistEnabled) body.waitlistEnabled = seats.waitlist;
     if (seats.guests !== instance.guestsAllowed) body.guestsAllowed = seats.guests;
+    if (reminder !== initialReminder) body.reminderEmailMinutes = reminder;
     // Same only-when-changed rule as capacity: an untouched remote cap
     // on the group page must not clobber a per-date override.
     if (remote.available !== initialRemote.available || remote.capacity.trim() !== initialRemote.capacity) {
@@ -279,6 +286,8 @@ export function SeriesEditor({
         childcare={childcare}
         onChildcare={setChildcare}
         childcareError={childcareError}
+        reminder={reminder}
+        onReminder={setReminder}
       />
       <FormActions>
         <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>

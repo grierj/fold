@@ -73,6 +73,15 @@ func CanComposeMessages(p *Person, leadsApprovedGroup, hostsEvent bool) bool {
 }
 
 // CanEditMessage: the author, or an admin, while it hasn't started sending.
-func CanEditMessage(p *Person, isAuthor bool) bool {
-	return p != nil && (p.Admin || isAuthor)
+// An automatic reminder (M3.6) is never edited: its event's reminder time
+// is what changes it.
+func CanEditMessage(p *Person, isAuthor, isReminder bool) bool {
+	return p != nil && !isReminder && (p.Admin || isAuthor)
+}
+
+// CanReadMessage: who may open a message's page and history — its author,
+// an admin, and for an automatic reminder (which has no author) anyone
+// who manages its event (CanManageEvent; DEC-133).
+func CanReadMessage(p *Person, isAuthor, isReminder, managesEvent bool) bool {
+	return p != nil && (p.Admin || isAuthor || (isReminder && managesEvent))
 }

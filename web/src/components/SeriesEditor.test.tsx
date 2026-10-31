@@ -170,6 +170,24 @@ describe("SeriesEditor form layout (DEC-95)", () => {
     expect(Events.update).toHaveBeenLastCalledWith(7, expect.objectContaining({ capacity: 12, waitlistEnabled: true }));
   });
 
+  it("shows the series' reminder time and sends it only once changed (M3.6b)", async () => {
+    vi.mocked(Events.update).mockClear();
+    const first = render(<SeriesEditor series={{ ...baseSeries, reminderEmailMinutes: 120 }} idPrefix="rem" onSaved={() => {}} />);
+    expect(screen.getByLabelText("Reminder email")).toHaveValue("120");
+    await userEvent.click(screen.getByRole("button", { name: "Save series" }));
+    expect(vi.mocked(Events.update).mock.calls[0][1]).not.toHaveProperty("reminderEmailMinutes");
+    first.unmount();
+    render(<SeriesEditor series={{ ...baseSeries, reminderEmailMinutes: 120 }} idPrefix="rem2" onSaved={() => {}} />);
+    await userEvent.selectOptions(screen.getByLabelText("Reminder email"), "Off");
+    await userEvent.click(screen.getByRole("button", { name: "Save series" }));
+    expect(Events.update).toHaveBeenLastCalledWith(7, expect.objectContaining({ reminderEmailMinutes: 0 }));
+  });
+
+  it("reads a missing reminder time as the default, 1 day before", () => {
+    render(<SeriesEditor series={baseSeries} idPrefix="rem0" onSaved={() => {}} />);
+    expect(screen.getByLabelText("Reminder email")).toHaveValue("1440");
+  });
+
   it("opens a closed More options and focuses the field with the problem", async () => {
     vi.mocked(Events.update).mockClear();
     render(<SeriesEditor series={{ ...baseSeries, remoteAvailable: true, remoteCapacity: 0 }} idPrefix="closed" onSaved={() => {}} />);

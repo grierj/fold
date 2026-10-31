@@ -7,7 +7,7 @@ import { Messages } from "../messages-api";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
 import { ERROR_COPY } from "../lib/errors";
 import { polyfillEditorLayout } from "../test/editor";
-import { adminRecipients, composeOptions, message, recipients, summary } from "../test/compose";
+import { adminRecipients, composeOptions, message, recipients, reminderMessage, summary } from "../test/compose";
 import { wallClock, wallToInstant } from "../lib/when";
 import { MessageComposerPage } from "./MessageComposer";
 
@@ -319,6 +319,30 @@ describe("MessageComposerPage", () => {
     expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
     expect(await screen.findByText("{{first_name}}", { exact: false })).toBeInTheDocument();
+  });
+
+  it("shows an automatic reminder read only, with its date in place of an author (M3.6b)", async () => {
+    const r = reminderMessage().reminder!;
+    vi.mocked(Messages.get).mockResolvedValue({ message: reminderMessage({ reminder: { ...r, startsAt: "2030-11-06T02:00:00Z" } }) });
+    open("/messages/9");
+    expect(await screen.findByRole("heading", { level: 1, name: "Reminder: {{event_title}}, {{event_time}}" })).toBeInTheDocument();
+    const line = screen.getByText(/^Automatic reminder/);
+    expect(line).toHaveTextContent("Automatic reminder for Book night, Tue, Nov 5 at 7:00 PM");
+    expect(within(line).getByRole("link")).toHaveAttribute("href", "/events/3/dates/2026-11-05");
+    expect(screen.getByText("Everyone going")).toBeInTheDocument();
+    expect(screen.queryByText("Written by")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Cancel message" })).toBeNull();
+    expect(await screen.findByText("{{first_name}}", { exact: false })).toBeInTheDocument();
+    // A leader came from the date page; it isn't on their Messages list.
+    expect(screen.getByRole("link", { name: "Back to the event date" })).toHaveAttribute("href", "/events/3/dates/2026-11-05");
+  });
+
+  it("takes an admin back to Messages from a reminder", async () => {
+    viewer.isAdmin = true;
+    vi.mocked(Messages.get).mockResolvedValue({ message: reminderMessage() });
+    open("/messages/9");
+    expect(await screen.findByRole("link", { name: "Back to messages" })).toHaveAttribute("href", "/messages");
   });
 
   it("tells a member the composer isn't theirs", async () => {
