@@ -359,9 +359,12 @@ func recipientFacts(db *gorm.DB, ids []uint, category string) ([]recipientFact, 
 	for _, u := range users {
 		f := recipientFact{User: u}
 		switch {
-		case u.Status == models.UserGuest:
+		// Guests get transactional mail and reminders for the event they
+		// registered for, nothing else (PLAN 7.4); a reminder's guests go
+		// on through the checks below.
+		case u.Status == models.UserGuest && category != notify.CatEvents:
 			f.Skip = skipGuest
-		case u.Status != models.UserActive:
+		case u.Status != models.UserActive && u.Status != models.UserGuest:
 			// Disabled accounts and teens waiting for account consent
 			// (pending_consent) get nothing (DEC-38, DEC-8).
 			f.Skip = skipNotActive

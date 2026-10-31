@@ -6,6 +6,7 @@ import (
 	"errors"
 	"html"
 	"strconv"
+	"strings"
 	"time"
 
 	"fold/internal/content"
@@ -32,9 +33,12 @@ const (
 	kindReminderSend  = "reminder.send"
 	// The sweep looks this far ahead, more than an hour so a late wake-up
 	// misses nothing, and this far back, so a reminder due while the
-	// process was restarting still goes.
+	// process was down for a few hours, or for an event created after its
+	// reminder time, still goes as soon as it can (before the date starts).
 	reminderLookahead = 2 * time.Hour
-	reminderLookback  = 15 * time.Minute
+	reminderLookback  = 6 * time.Hour
+	// longestReminder bounds the sweep's scan to dates it could reach.
+	longestReminder = 10080 * time.Minute
 )
 
 // Reminder times a leader can choose (DEC-133), in minutes before the
@@ -82,11 +86,12 @@ func (a *App) hourlyKinds() []jobs.Kind {
 }
 
 // sweepReminders queues reminder.send for each scheduled date whose
-// reminder falls between a little before now and two hours ahead, with
-// someone going or waitlisted. The job key names the date, its start and
-// the reminder time, so the hourly overlap and restarts queue nothing
-// twice, and a date that moves gets a new job (the old one finds the start
-// changed and does nothing).
+// reminder falls between six hours back and two hours ahead. Whether
+// anyone is going is checked when the job runs, so someone who signs up
+// after this sweep and before the reminder time still gets it. The job key
+// names the date, its start and the reminder time, so the hourly overlap
+// and restarts queue nothing twice, and a date that moves gets a new job
+// (the old one finds the start changed and does nothing).
 func (a *App) sweepReminders(ctx context.Context, now time.Time) error {
 	type due struct {
 		ID       uint
@@ -97,11 +102,10 @@ func (a *App) sweepReminders(ctx context.Context, now time.Time) error {
 	if err := a.DB.WithContext(ctx).Raw(`SELECT o.id, o.starts_at, e.reminder_email_minutes AS minutes
 		FROM event_occurrences o JOIN events e ON e.id = o.event_id AND e.deleted_at IS NULL
 		WHERE o.status = ? AND e.reminder_email_minutes > 0
-		  AND o.starts_at > ?
-		  AND o.starts_at - make_interval(mins => e.reminder_email_minutes::int) BETWEEN ? AND ?
-		  AND EXISTS (SELECT 1 FROM registrations r WHERE r.occurrence_id = o.id AND r.status IN ?)`,
-		models.OccurrenceScheduled, now, now.Add(-reminderLookback), now.Add(reminderLookahead),
-		[]string{models.RegGoing, models.RegWaitlisted}).Scan(&rows).Error; err != nil {
+		  AND o.starts_at > ? AND o.starts_at <= ?
+		  AND o.starts_at - make_interval(mins => e.reminder_email_minutes::int) BETWEEN ? AND ?`,
+		models.OccurrenceScheduled, now, now.Add(longestReminder+reminderLookahead), now.Add(-reminderLookback), now.Add(reminderLookahead)).
+		Scan(&rows).Error; err != nil {
 		return err
 	}
 	for _, r := range rows {
@@ -146,6 +150,23 @@ func (a *App) sendReminder(ctx context.Context, p reminderJob, now time.Time) er
 		kinds = append(kinds, reminderWaitlist)
 	}
 	for _, kind := range kinds {
+		// Nobody with that status: no message at all.
+		var n int64
+		if err := db.Model(&models.Registration{}).Where("occurrence_id = ? AND status = ?", occ.ID, reminderStatus(kind)).Count(&n).Error; err != nil {
+			return err
+		}
+		if n == 0 {
+			continue
+		}
+		// A date moved a little later, or a reminder time shortened, after
+		// its reminder went: the one already sent covers it.
+		covered, err := reminderAlreadyCovers(db, occ.ID, kind, p)
+		if err != nil {
+			return err
+		}
+		if covered {
+			continue
+		}
 		id, err := a.writeReminder(db, &ev, &occ, p, kind, now)
 		if err != nil {
 			return err
@@ -164,12 +185,8 @@ func (a *App) sendReminder(ctx context.Context, p reminderJob, now time.Time) er
 // written, and returns its id if it still needs preparing (0 if not).
 func (a *App) writeReminder(db *gorm.DB, ev *models.Event, occ *models.EventOccurrence, p reminderJob, kind string, now time.Time) (uint, error) {
 	key := kind + ":" + historyID(occ.ID) + ":" + strconv.FormatInt(p.StartsAt, 10) + ":" + strconv.Itoa(p.Minutes)
-	status := models.RegGoing
-	if kind == reminderWaitlist {
-		status = models.RegWaitlisted
-	}
-	aud, _ := json.Marshal(audienceJSON{Type: policy.AudienceOccurrence, OccurrenceID: occ.ID, Statuses: []string{status}})
-	subject, body := reminderText(kind, occurrencePlace(ev, occ))
+	aud, _ := json.Marshal(audienceJSON{Type: policy.AudienceOccurrence, OccurrenceID: occ.ID, Statuses: []string{reminderStatus(kind)}})
+	subject, body := reminderText(kind, occurrencePlace(ev, occ), p.Minutes)
 	clean := content.SanitizeHTML(body)
 	// Due as soon as this job runs (now may be a test's clock).
 	at := time.Now()
@@ -204,19 +221,34 @@ func occurrencePlace(ev *models.Event, occ *models.EventOccurrence) string {
 // reminderText is a reminder's subject and body. The event, time and links
 // are merge fields, filled for each reader at send time; the place is the
 // date's own, which every registrant who can still see the date may see.
-func reminderText(kind, place string) (string, string) {
+func reminderText(kind, place string, minutes int) (string, string) {
 	where := ""
 	if place != "" {
-		where = "<p>Where: " + html.EscapeString(place) + "</p>"
+		// A place can't become a merge field.
+		where = "<p>Where: " + html.EscapeString(strings.ReplaceAll(place, "{{", "{ {")) + "</p>"
 	}
 	button := `<p><a class="fold-button" href="{{manage_link}}">See the details</a></p>`
 	if kind == reminderWaitlist {
-		return "Still on the waitlist: {{event_title}}, {{event_time}}",
-			"<p>Hi {{first_name}},</p><p>{{event_title}} on {{event_time}} is still full, so you're still on the waitlist. We'll email you right away if a spot opens.</p>" + where + button
+		// Inside the last two hours the waitlist no longer moves on its own
+		// (DEC-80), so the note doesn't promise a spot by email.
+		promise := "If a spot opens, we'll let you know."
+		if minutes <= 120 {
+			promise = "The organizers can still add you if a spot opens."
+		}
+		return "Still on the waitlist: {{event_title}} on {{event_time}}",
+			"<p>Hi {{first_name}},</p><p>{{event_title}} is on {{event_time}} and it's still full, so you're on the waitlist. " + promise + "</p>" + where + button
 	}
-	return "Reminder: {{event_title}}, {{event_time}}",
+	return "Reminder: {{event_title}} on {{event_time}}",
 		"<p>Hi {{first_name}},</p><p>This is a reminder that you're going to <strong>{{event_title}}</strong> on {{event_time}}.</p>" + where + button +
-			"<p>Can't make it? Change your RSVP on the same page, so someone else can have your spot.</p>"
+			"<p>Can't make it? Change your RSVP, so someone else can have your spot.</p>"
+}
+
+// reminderStatus is the registration status a reminder kind is for.
+func reminderStatus(kind string) string {
+	if kind == reminderWaitlist {
+		return models.RegWaitlisted
+	}
+	return models.RegGoing
 }
 
 // skipCantSeeDate: a registrant who can no longer see the date (it was
@@ -228,7 +260,9 @@ const skipCantSeeDate = "can't see this date anymore"
 // invitation), checked at send time. It returns the ids who may.
 func (a *App) reminderReaders(db *gorm.DB, occID uint, ids []uint, now time.Time) (map[uint]bool, error) {
 	var occ models.EventOccurrence
-	if err := db.First(&occ, occID).Error; err != nil {
+	if err := db.First(&occ, occID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, errAudienceGone
+	} else if err != nil {
 		return nil, err
 	}
 	var users []models.User
@@ -238,15 +272,25 @@ func (a *App) reminderReaders(db *gorm.DB, occID uint, ids []uint, now time.Time
 	out := map[uint]bool{}
 	for i := range users {
 		u := &users[i]
-		vs, err := a.dateCandidates(u, a.DB.Where("id = ?", occ.EventID))
+		// A guest is never loaded as an actor (AGENTS.md, C5): they see what
+		// a signed-out visitor sees, so only a public date, and hold no
+		// exact-date invitations.
+		viewer := u
+		if u.Status == models.UserGuest {
+			viewer = nil
+		}
+		vs, err := a.dateCandidates(viewer, db.Where("id = ?", occ.EventID))
 		if err != nil {
 			return nil, err
 		}
-		if ev := vs.ByID[occ.EventID]; ev != nil && vs.canSeeDate(u, ev, &occ) {
+		if ev := vs.ByID[occ.EventID]; ev != nil && vs.canSeeDate(viewer, ev, &occ) {
 			out[u.ID] = true
 			continue
 		}
-		scoped, err := a.scopedOccurrenceReads(u, a.DB.Model(&models.EventOccurrence{}).Where("id = ?", occ.ID), now)
+		if viewer == nil {
+			continue
+		}
+		scoped, err := a.scopedOccurrenceReads(u, db.Model(&models.EventOccurrence{}).Where("id = ?", occ.ID), now)
 		if err != nil {
 			return nil, err
 		}
@@ -320,4 +364,56 @@ func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dat
 			SentAt: r.SentAt, Reached: r.Reached, Failed: r.Failed})
 	}
 	return out, nil
+}
+
+// defaultReminderMinutes is a new event's reminder time: 1 day (DEC-133).
+const defaultReminderMinutes = 1440
+
+// createEvent inserts ev. GORM leaves a zero value out of an INSERT, so the
+// column's default (1 day) would replace a leader's "Off"; an Off is
+// written explicitly after.
+func createEvent(tx *gorm.DB, ev *models.Event) error {
+	// Create reads the column's default back into ev, so the choice is
+	// kept from before it.
+	off := ev.ReminderEmailMinutes == 0
+	if err := tx.Create(ev).Error; err != nil {
+		return err
+	}
+	if off {
+		ev.ReminderEmailMinutes = 0
+		return tx.Model(ev).Update("reminder_email_minutes", 0).Error
+	}
+	return nil
+}
+
+// reminderAlreadyCovers reports whether a reminder of this kind already
+// went for the date at a time still inside the new reminder's lead: its
+// own reminder time (from its key: kind:occ:start:minutes) is less than
+// p.Minutes before the new one. A date moved an hour later sends no second
+// email; a date moved a week later does, and so does a changed reminder
+// time (a 1-day reminder shortened to 2 hours sends the 2-hour one too:
+// the leader asked for it).
+func reminderAlreadyCovers(db *gorm.DB, occID uint, kind string, p reminderJob) (bool, error) {
+	var keys []string
+	if err := db.Model(&models.Message{}).Where("occurrence_id = ? AND category = ? AND reminder_key LIKE ? AND status IN ?",
+		occID, models.MessageCategoryReminder, kind+":%", []string{models.MessageSending, models.MessageSent}).
+		Pluck("reminder_key", &keys).Error; err != nil {
+		return false, err
+	}
+	at := p.StartsAt - int64(p.Minutes)*60
+	for _, k := range keys {
+		parts := strings.Split(k, ":")
+		if len(parts) != 4 {
+			continue
+		}
+		start, err1 := strconv.ParseInt(parts[2], 10, 64)
+		minutes, err2 := strconv.Atoi(parts[3])
+		if err1 != nil || err2 != nil || (start == p.StartsAt && minutes == p.Minutes) {
+			continue
+		}
+		if was := start - int64(minutes)*60; at-was < int64(p.Minutes)*60 {
+			return true, nil
+		}
+	}
+	return false, nil
 }

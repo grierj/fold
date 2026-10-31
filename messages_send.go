@@ -179,6 +179,9 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 			return err
 		}
 		can, err := a.reminderReaders(db, *m.OccurrenceID, ids, now)
+		if errors.Is(err, errAudienceGone) {
+			return a.refuseMessage(db, &m, read, whyAudienceGone)
+		}
 		if err != nil {
 			return err
 		}
@@ -493,7 +496,7 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			// Who the reader is now: someone disabled or opted out since
 			// the snapshot doesn't get it.
 			switch {
-			case reader == nil || reader.Status != models.UserActive:
+			case reader == nil || !(reader.Status == models.UserActive || reader.Status == models.UserGuest && m.Category == models.MessageCategoryReminder):
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipNotActive, "", "")
 			case optedOut[row.UserID][optOut]:
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipOptedOutOf(messageCategory(&m)), "", "")
@@ -718,7 +721,7 @@ func (a *App) reapMessages(ctx context.Context, now time.Time) error {
 			AND (j.payload->>'messageId')::bigint = messages.id)`
 	}
 	var stuck []models.Message
-	if err := db.Select("id, author_id").Where("status = ? AND scheduled_at < ? AND "+live(kindMessageSend), models.MessageScheduled, now.Add(-time.Hour)).
+	if err := db.Select("id, author_id").Where("status = ? AND category <> ? AND scheduled_at < ? AND "+live(kindMessageSend), models.MessageScheduled, models.MessageCategoryReminder, now.Add(-time.Hour)).
 		Find(&stuck).Error; err != nil {
 		return err
 	}
