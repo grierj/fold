@@ -1329,6 +1329,22 @@ POST /hooks/postmark/email → 200 | 400 | 401 | 404 | 413
 
 Postmark posts one JSON record per request (Delivery, Bounce, SpamComplaint; others are ignored with 200). Postmark doesn't sign webhooks: the request must carry HTTP Basic credentials `postmark:<FOLD_POSTMARK_WEBHOOK_SECRET>` (at least 24 characters, or the server won't start) from the webhook URL, compared in constant time; anything else is 401 and changes nothing. With no secret set the route is 404. The route is outside CSRF (it is in `csrfExemptRoutes`). A malformed body is 400; over 1 MB, 413. A verified report is queued as a `webhook.process` job keyed by the record's own identity (record type, id, message id and time), so a redelivered request is handled once, and answered 200 at once; a failure to queue is 500, and Postmark retries. The job matches the report to `notification_deliveries.provider_message_id`: a delivery moves `sent` to `delivered`; a bounce or complaint moves it to `bounced` with `hard bounce`, `soft bounce` or `marked as spam`. A hard bounce (or an address Postmark deactivated) adds a `hard_bounce` suppression and a spam complaint a `complaint` one; a soft bounce is only recorded (DEC-112). Every send checks suppressions first: a hard bounce or a manual one stops all mail to the address, a complaint stops optional notifications and broadcasts, and the delivery is recorded `suppressed` with the reason. Postmark also keeps its own list: it refuses an address that hard-bounced until it is reactivated in Postmark, and one that complained for good, whatever Fold allows. A report that arrives before its delivery row is written is retried for up to two minutes; after that a report about mail Fold has no row for (account mail, or another sender on the same Postmark server) still suppresses the address.
 
+### Email settings (M3.3b, DEC-115, DEC-116)
+
+```
+GET  /api/v1/email-settings/:token    → 200 {emailSettings, email, fromCategory} | 404   (no sign-in)
+PUT  /api/v1/email-settings/:token    → 200 {emailSettings} | 400 | 404             (no sign-in; CSRF token as usual)
+     body: {category, off} for one kind, or {off} for every kind listed
+GET  /api/v1/me/notification-settings → 200 {settings: {optionalEmailOff, kinds}}
+PUT  /api/v1/me/notification-settings → 200 {settings}
+     body: {category, off}, or {optionalEmailOff} (DEC-97) for every kind
+GET  /api/v1/admin/settings/church-address → 200 {address}                          (admin)
+PUT  /api/v1/admin/settings/church-address → 200 {address} | 400 church_address_long (admin; audited setting.church_address_changed)
+     body: {address} — up to 6 lines and 300 characters; empty clears it
+```
+
+`emailSettings` is `{kinds: [{category, off}], optionalEmailOff}`: the optional kinds the person can get, in order (`groups`, `events`, `messages`, and `admin` for admins only), each off when its latest email consent opts out, and `optionalEmailOff` when every listed kind is off. Account and safety email can't be turned off and isn't listed. The token is an email's unsubscribe token (M3.3a); `email` is the address masked (`s•••@example.com`) and `fromCategory` the kind the link came from. A kind the person doesn't get is 400 `email_kind_unknown`. Each change appends a `consents` row for every kind whose state changes (source `unsubscribe_link` from the token page, `web_form` from Me), with IP and user agent, and nothing for a kind already in that state. The church address is shown, line by line, at the bottom of optional email (PLAN 10.5).
+
 ### Unsubscribe links (outside `/api/v1`, M3.3a)
 
 ```

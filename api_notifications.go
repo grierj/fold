@@ -997,21 +997,6 @@ type notificationSettingsJSON struct {
 	Kinds []emailKindJSON `json:"kinds"`
 }
 
-// optionalEmailOff reports whether every optional category's latest email
-// consent opts out, which is what the switch writes.
-func optionalEmailOff(db *gorm.DB, userID uint) (bool, error) {
-	optOuts, err := emailOptOuts(db, []uint{userID})
-	if err != nil {
-		return false, err
-	}
-	for _, c := range notify.OptionalEmailCategories() {
-		if !optOuts[userID][categoryScope(c)] {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
 func (a *App) apiGetNotificationSettings(c *gin.Context) {
 	s, err := a.emailSettingsFor(a.DB, apiUser(c))
 	if err != nil {

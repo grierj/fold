@@ -31,6 +31,7 @@ func TestEmailSettingsByLink(t *testing.T) {
 	newTestUser(t, app, "root", "password1234", models.RoleAdmin)
 	lee := newTestUser(t, app, "lee", "password1234", models.RoleMember)
 	anon := newAPIClient(t, app)
+	anon.fetchCSRF() // signed out, like the page: a CSRF token but no session
 	path := "/api/v1/email-settings/" + app.unsubscribeToken(lee.ID, "category:groups")
 
 	var got tokenSettings
