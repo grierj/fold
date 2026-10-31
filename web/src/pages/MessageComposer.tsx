@@ -1,10 +1,11 @@
 import { lazy, Suspense, useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth";
 import { Messages, previewHTMLPath } from "../messages-api";
 import type { ComposeOptions, Message, MessagePreview } from "../types";
 import { ERROR_COPY, errorCode, errorText, type ErrorCode } from "../lib/errors";
 import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
+import { reminderAudience, reminderDateText, reminderName } from "../lib/reminders";
 import { useChurchZoneLoad } from "../lib/useEventZone";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
 import { browserTimeZone, wallClock, wallToInstant, zoneNote } from "../lib/when";
@@ -370,11 +371,18 @@ export function MessageComposerPage() {
 
   const oneEvent = isOneEvent(audience);
   const scheduled = message?.status === "scheduled";
-  const title = editing ? (message ? "Edit message" : "New message") : message?.subject || "Untitled message";
+  const title = editing ? (message ? "Edit message" : "New message") : message?.displaySubject || message?.subject || "Untitled message";
 
   if (!editing && message) {
+    const reminder = message.category === "reminder";
+    // A leader opens a reminder from its date page (it isn't on their list), so that is where back goes.
+    const datePath = message.reminder ? `/events/${message.reminder.eventId}/dates/${message.reminder.date}` : null;
     return page(<>
-      {back}
+      {reminder && !isAdmin && message.reminder && datePath
+        ? <ButtonLink variant="link" to={datePath}>‹ Back to {message.reminder.eventTitle}</ButtonLink>
+        : reminder && isAdmin
+          ? <ButtonLink variant="link" to="/messages?show=reminders">‹ Back to automatic reminders</ButtonLink>
+          : back}
       <h1 ref={heading} tabIndex={-1} className="text-3xl font-bold focus:outline-none">{title}</h1>
       <SendProblem message={message} history={history} busy={busy === "retry"} error={retryError} onRetry={() => void retry()} />
       <section aria-label="This message" className="space-y-4 rounded-lg border border-border bg-surface p-4 sm:p-6">
@@ -397,10 +405,17 @@ export function MessageComposerPage() {
           <p role="status" className="sr-only">{announce}</p>
         </div>
         {scheduled && message.editable && <p className="text-sm text-text-muted">You can change or cancel it until it starts sending.</p>}
+        {/* An automatic reminder (M3.6b) has no author: what it was for, in place of the author line. */}
+        {reminder && (
+          <p className="text-sm">
+            {reminderName(message.reminder)}
+            {message.reminder && datePath && <> for <Link to={datePath} className="font-medium text-primary underline">{reminderDateText(message.reminder)}</Link></>}
+          </p>
+        )}
         <dl className="grid gap-1 text-sm sm:grid-cols-[8rem_1fr]">
           <dt className="font-medium text-text-muted">To</dt>
-          <dd>{audienceLabel(message.audience, options)}</dd>
-          {message.authorName && message.authorName !== (user?.displayName || user?.name) && <>
+          <dd>{reminder ? reminderAudience(message.reminder) : audienceLabel(message.audience, options)}</dd>
+          {!reminder && message.authorName && message.authorName !== (user?.displayName || user?.name) && <>
             <dt className="font-medium text-text-muted">Written by</dt>
             <dd>{message.authorName}</dd>
           </>}

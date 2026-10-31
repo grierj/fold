@@ -213,6 +213,9 @@ type occurrenceJSON struct {
 	SpotsLeft       *int `json:"spotsLeft"`
 	WaitlistEnabled bool `json:"waitlistEnabled"`
 	GuestsAllowed   int  `json:"guestsAllowed"`
+	// ReminderEmailMinutes is the series' reminder time (M3.6), for its
+	// Edit series form; 0 is off.
+	ReminderEmailMinutes int `json:"reminderEmailMinutes"`
 	// Remote attendance (M1.8 slice 2): a second seat pool. The remote
 	// fields mirror the in-person ones; remoteCapacity is the effective
 	// cap for this date (per-date override wins), null is unlimited.

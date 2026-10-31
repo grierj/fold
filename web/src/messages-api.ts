@@ -13,7 +13,8 @@ export const Messages = {
   options: (eventId?: number) => api<ComposeOptions>(`/messages/compose${eventId ? `?event=${eventId}` : ""}`),
   audiencePreview: (audience: MessageAudience) =>
     api<{ summary: AudienceSummary }>("/messages/audience-preview", { method: "POST", body: { audience } }),
-  list: () => api<{ messages: Message[] }>("/messages"),
+  // category: one kind only, each with its own 200 (an admin's chips, M3.6b).
+  list: (category?: "announcement" | "reminder") => api<{ messages: Message[] }>(`/messages${category ? `?category=${category}` : ""}`),
   get: (id: number) => api<{ message: Message }>(`/messages/${id}`),
   create: (draft: MessageDraft) => api<{ message: Message }>("/messages", { method: "POST", body: { channel: "email", ...draft } }),
   update: (id: number, draft: MessageDraft) =>

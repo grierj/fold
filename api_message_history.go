@@ -261,7 +261,131 @@ func (a *App) authorMayResend(m *models.Message) (bool, error) {
 	return false, err
 }
 
-// apiMessageRecipients is a message's history, for its author or an admin.
+// reminderMayResend: an automatic reminder has no author, so a "Try again"
+// needs only what reminder.send needs: its date still scheduled and not
+// yet started, and its event's reminders still on (who pressed it was
+// checked by loadMessage: an admin or a manager of the event). Each person
+// is checked again by recheckReminderRows.
+func (a *App) reminderMayResend(m *models.Message) (bool, error) {
+	if m.OccurrenceID == nil {
+		return false, nil
+	}
+	// An audience that no longer reads as one (a gone audience, as for an
+	// announcement) can't say who is still going: nothing goes again.
+	var au audienceJSON
+	if json.Unmarshal([]byte(m.Audience), &au) != nil || au.normalize() != nil {
+		return false, nil
+	}
+	var occ models.EventOccurrence
+	if err := a.DB.First(&occ, *m.OccurrenceID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	var ev models.Event
+	if err := a.DB.Select("id, reminder_email_minutes").First(&ev, occ.EventID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return ev.ReminderEmailMinutes > 0 && occ.Status == models.OccurrenceScheduled && occ.StartsAt.After(time.Now()), nil
+}
+
+// Why a reminder's failed row isn't sent again: its person's answer
+// changed since (they cancelled, declined, or moved off or onto the
+// waitlist).
+const (
+	skipNoLongerGoing    = "no longer going"
+	skipNoLongerWaitlist = "no longer on the waitlist"
+)
+
+// recheckReminderRows checks a reminder's failed rows again before a Try
+// again, as message.send does: someone no longer going (or no longer on
+// the waitlist, for the waitlist note), or who can no longer see the date
+// (M1.13), is skipped with that reason, not sent to. A guardian copy
+// follows its teen. It answers the row ids still to send.
+func (a *App) recheckReminderRows(tx *gorm.DB, m *models.Message, ids []uint, now time.Time) ([]uint, error) {
+	if len(ids) == 0 || m.OccurrenceID == nil {
+		return ids, nil
+	}
+	var rows []models.MessageRecipient
+	if err := tx.Select("id, user_id, copy_of_user_id").Where("id IN ?", ids).Order("id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	subject := func(r models.MessageRecipient) uint {
+		if r.CopyOfUserID != nil {
+			return *r.CopyOfUserID
+		}
+		return r.UserID
+	}
+	// Who the reminder's audience reaches now (the date's registrants with
+	// its status, a household person's through its account holder).
+	var au audienceJSON
+	_ = json.Unmarshal([]byte(m.Audience), &au)
+	current := map[uint]bool{}
+	if err := au.normalize(); err != nil {
+		// reminderMayResend refuses this first; should it slip through,
+		// nobody is sent to, under the neutral reason.
+		if err := tx.Model(&models.MessageRecipient{}).Where("id IN ? AND status = ?", ids, models.RecipientFailed).
+			Updates(map[string]any{"status": models.RecipientSuppressed, "reason": skipCantSeeDate, "error": "", "updated_at": now}).Error; err != nil {
+			return nil, err
+		}
+		return []uint{}, nil
+	}
+	still, err := a.audienceUserIDs(tx, au, now)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range still {
+		current[id] = true
+	}
+	people := make([]uint, 0, len(rows))
+	for _, r := range rows {
+		people = append(people, subject(r))
+	}
+	can, err := a.reminderReaders(tx, *m.OccurrenceID, dedupeIDs(people), now)
+	if err != nil {
+		return nil, err
+	}
+	answer := skipNoLongerGoing
+	if reminderKind(m) == reminderWaitlist {
+		answer = skipNoLongerWaitlist
+	}
+	keep := []uint{}
+	drop := map[string][]uint{}
+	for _, r := range rows {
+		switch {
+		case !current[subject(r)]:
+			drop[answer] = append(drop[answer], r.ID)
+		case !can[subject(r)]:
+			drop[skipCantSeeDate] = append(drop[skipCantSeeDate], r.ID)
+		default:
+			keep = append(keep, r.ID)
+		}
+	}
+	for why, list := range drop {
+		if err := tx.Model(&models.MessageRecipient{}).Where("id IN ? AND status = ?", list, models.RecipientFailed).
+			Updates(map[string]any{"status": models.RecipientSuppressed, "reason": why, "error": "", "updated_at": now}).Error; err != nil {
+			return nil, err
+		}
+	}
+	return keep, nil
+}
+
+// mayResend is whether m can go out again, and if not, why: an
+// announcement's author must still be able to write to its people; a
+// reminder's date must still be ahead.
+func (a *App) mayResend(m *models.Message) (bool, string, error) {
+	if m.Category == models.MessageCategoryReminder {
+		ok, err := a.reminderMayResend(m)
+		return ok, errReminderRetryRefused, err
+	}
+	ok, err := a.authorMayResend(m)
+	return ok, errMessageRetryRefused, err
+}
+
+// apiMessageRecipients is a message's history, for whoever may read it
+// (loadMessage): its author, an admin, or a reminder's event managers.
 func (a *App) apiMessageRecipients(c *gin.Context) {
 	m, ok := a.loadMessage(c)
 	if !ok {
@@ -280,7 +404,7 @@ func (a *App) apiMessageRecipients(c *gin.Context) {
 	}
 	out := messageRecipientsJSON{Counts: counts, SkippedBy: by, Recipients: list, More: more}
 	if retryable(m, counts) {
-		if out.CanRetry, err = a.authorMayResend(m); err != nil {
+		if out.CanRetry, _, err = a.mayResend(m); err != nil {
 			jsonError(c, http.StatusInternalServerError, "could not load who got the message")
 			return
 		}
@@ -310,11 +434,11 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 		jsonError(c, http.StatusConflict, errMessageNothingToRetry)
 		return
 	}
-	if may, err := a.authorMayResend(m); err != nil {
+	if may, why, err := a.mayResend(m); err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not send the message again")
 		return
 	} else if !may {
-		jsonError(c, http.StatusForbidden, errMessageRetryRefused)
+		jsonError(c, http.StatusForbidden, why)
 		return
 	}
 	me := apiUser(c)
@@ -347,11 +471,22 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 				Order("id").Pluck("id", &ids).Error; err != nil {
 				return err
 			}
+			if m.Category == models.MessageCategoryReminder {
+				var err error
+				if ids, err = a.recheckReminderRows(tx, m, ids, now); err != nil {
+					return err
+				}
+			}
 			if err := tx.Model(&models.MessageRecipient{}).Where("id IN ? AND status = ?", ids, models.RecipientFailed).
 				Updates(map[string]any{"status": models.RecipientQueued, "error": "", "updated_at": now}).Error; err != nil {
 				return err
 			}
-			if err := enqueueBatches(tx, m.ID, ids, "retry"+strconv.FormatInt(now.UnixNano(), 36)); err != nil {
+			if len(ids) == 0 {
+				// Nobody left to send to: it settles as it now stands.
+				if err := a.settleMessage(tx, m.ID); err != nil {
+					return err
+				}
+			} else if err := enqueueBatches(tx, m.ID, ids, "retry"+strconv.FormatInt(now.UnixNano(), 36)); err != nil {
 				return err
 			}
 		}

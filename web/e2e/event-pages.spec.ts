@@ -187,3 +187,37 @@ test("RSVP is a segmented control, counts come first, and Can't go never lists a
   await expect(first.getByText(/can.t go/i).and(first.locator(":not(button)"))).toHaveCount(0);
   await expect(first.getByText("Sam Member")).toHaveCount(0);
 });
+
+// M3.6b (DEC-133): a leader picks the reminder time in Edit series, and the
+// date page tells them when it goes out.
+test("a leader sets the reminder in Edit series and sees when it goes out on a date page", async ({ page, request }) => {
+  const admin = await apiAs(request, "grier");
+  const { groups } = (await admin("GET", "/groups")) as { groups: { id: number; name: string }[] };
+  const room = groups.find((g) => g.name === "Room 201 class")!;
+  const lee = await apiAs(request, "lee");
+  const d = new Date(Date.now() + 9 * 864e5).toISOString().slice(0, 10);
+  const { event } = (await lee("POST", `/groups/${room.id}/events`, {
+    title: "Reminder night", startsLocal: `${d}T19:00`, durationMinutes: 60, tzid: "America/Boise",
+    location: "Room 201", recurrenceRule: "FREQ=WEEKLY;COUNT=3",
+  })) as { event: { id: number } };
+
+  await signIn(page, "lee");
+  await page.goto(`/events/${event.id}`);
+  await expect(page.getByRole("heading", { name: "Reminder night", level: 1 })).toBeVisible();
+  await page.getByRole("button", { name: "Edit series" }).click();
+  const reminder = page.getByRole("combobox", { name: "Reminder email" });
+  await expect(reminder).toHaveValue("1440");
+  await reminder.selectOption({ label: "2 days before" });
+  await page.getByRole("button", { name: "Save series" }).click();
+  await expect(page.getByRole("button", { name: "Save series" })).toHaveCount(0);
+  const saved = (await lee("GET", `/events/${event.id}`)) as { event: { reminderEmailMinutes: number } };
+  expect(saved.event.reminderEmailMinutes).toBe(2880);
+
+  // Two days before 7:00 PM on the first date, on the church's clock.
+  const due = new Date(`${d}T12:00:00Z`);
+  due.setUTCDate(due.getUTCDate() - 2);
+  const day = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" }).format(due);
+  await page.goto(`/events/${event.id}/dates/${d}`);
+  await expect(page.getByRole("heading", { name: "Reminder email", level: 2 })).toBeVisible();
+  await expect(page.getByText(new RegExp(`^Reminder goes out ${day} at 7:00 PM`))).toBeVisible();
+});

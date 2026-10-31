@@ -311,6 +311,82 @@ func messageCategory(m *models.Message) string {
 	return notify.CatMessages
 }
 
+// dateRemindersJSON is a date's email reminders as its event's managers see
+// them on the date page (M3.6b, DEC-133): the event's reminder time
+// (Minutes, 0 off), when this date's reminder goes (DueAt, absent when
+// off), whether one already sent covers that one so it won't go (Covered,
+// reminderAlreadyCovers' rule), and each reminder written for it, oldest
+// first.
+type dateRemindersJSON struct {
+	Minutes  int                `json:"minutes"`
+	DueAt    *time.Time         `json:"dueAt"`
+	Covered  bool               `json:"covered"`
+	Messages []dateReminderJSON `json:"messages"`
+}
+
+// dateReminderJSON is one reminder message: going (the reminder) or
+// waitlist (the "still on the waitlist" note), its status, and its people,
+// guardian copies apart (DEC-132), as the history counts them (M3.5b):
+// Reached got it (sent or delivered), Failed didn't (bounced, marked as
+// spam, or failed), Skipped weren't sent it (suppressed, with a reason).
+type dateReminderJSON struct {
+	MessageID uint       `json:"messageId"`
+	Kind      string     `json:"kind"`
+	Status    string     `json:"status"`
+	SentAt    *time.Time `json:"sentAt"`
+	Reached   int        `json:"reached"`
+	Failed    int        `json:"failed"`
+	Skipped   int        `json:"skipped"`
+}
+
+// dateReminders reads them in one query. Call it only for a manager.
+func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dateRemindersJSON, error) {
+	out := &dateRemindersJSON{Minutes: ev.ReminderEmailMinutes, Messages: []dateReminderJSON{}}
+	if ev.ReminderEmailMinutes > 0 {
+		due := occ.StartsAt.Add(-time.Duration(ev.ReminderEmailMinutes) * time.Minute).UTC()
+		out.DueAt = &due
+	}
+	var rows []struct {
+		ID          uint
+		ReminderKey *string
+		Status      string
+		SentAt      *time.Time
+		Reached     int
+		Failed      int
+		Skipped     int
+	}
+	if err := a.DB.Raw(`SELECT m.id, m.reminder_key, m.status, m.sent_at,
+		count(r.id) FILTER (WHERE r.copy_of_user_id IS NULL AND r.status IN ?) AS reached,
+		count(r.id) FILTER (WHERE r.copy_of_user_id IS NULL AND r.status IN ?) AS failed,
+		count(r.id) FILTER (WHERE r.copy_of_user_id IS NULL AND r.status = ?) AS skipped
+		FROM messages m LEFT JOIN message_recipients r ON r.message_id = m.id
+		WHERE m.occurrence_id = ? AND m.category = ?
+		GROUP BY m.id ORDER BY m.id`,
+		[]string{models.RecipientSent, models.RecipientDelivered},
+		[]string{models.RecipientBounced, models.RecipientComplained, models.RecipientFailed}, models.RecipientSuppressed,
+		occ.ID, models.MessageCategoryReminder).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	next := reminderJob{OccurrenceID: occ.ID, StartsAt: occ.StartsAt.Unix(), Minutes: ev.ReminderEmailMinutes}
+	for _, r := range rows {
+		m := models.Message{ReminderKey: r.ReminderKey}
+		kind := reminderKind(&m)
+		out.Messages = append(out.Messages, dateReminderJSON{MessageID: r.ID, Kind: kind, Status: r.Status,
+			SentAt: r.SentAt, Reached: r.Reached, Failed: r.Failed, Skipped: r.Skipped})
+		if kind != reminderGoing || r.ReminderKey == nil || ev.ReminderEmailMinutes == 0 {
+			continue
+		}
+		// The very reminder (written already, whatever came of it), or another sent
+		// one close enough before it, means it won't go again.
+		same, covers := reminderKeyCovers(*r.ReminderKey, next)
+		gone := r.Status == models.MessageSending || r.Status == models.MessageSent
+		if same || (covers && gone) {
+			out.Covered = true
+		}
+	}
+	return out, nil
+}
+
 // defaultReminderMinutes is a new event's reminder time: 1 day (DEC-133).
 const defaultReminderMinutes = 1440
 
@@ -345,20 +421,31 @@ func reminderAlreadyCovers(db *gorm.DB, occID uint, kind string, p reminderJob) 
 		Pluck("reminder_key", &keys).Error; err != nil {
 		return false, err
 	}
-	at := p.StartsAt - int64(p.Minutes)*60
 	for _, k := range keys {
-		parts := strings.Split(k, ":")
-		if len(parts) != 4 {
-			continue
-		}
-		start, err1 := strconv.ParseInt(parts[2], 10, 64)
-		minutes, err2 := strconv.Atoi(parts[3])
-		if err1 != nil || err2 != nil || (start == p.StartsAt && minutes == p.Minutes) {
-			continue
-		}
-		if was := start - int64(minutes)*60; at-was < int64(p.Minutes)*60 {
+		if _, covers := reminderKeyCovers(k, p); covers {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+// reminderKeyCovers compares a reminder already written under key
+// (kind:occ:start:minutes) with the one p would send: same is the very
+// same reminder (date, start and time alike); covers is another one whose
+// time is less than p.Minutes before p's (reminderAlreadyCovers' rule).
+func reminderKeyCovers(key string, p reminderJob) (same, covers bool) {
+	parts := strings.Split(key, ":")
+	if len(parts) != 4 {
+		return false, false
+	}
+	start, err1 := strconv.ParseInt(parts[2], 10, 64)
+	minutes, err2 := strconv.Atoi(parts[3])
+	if err1 != nil || err2 != nil {
+		return false, false
+	}
+	if start == p.StartsAt && minutes == p.Minutes {
+		return true, false
+	}
+	at, was := p.StartsAt-int64(p.Minutes)*60, start-int64(minutes)*60
+	return false, at-was < int64(p.Minutes)*60
 }

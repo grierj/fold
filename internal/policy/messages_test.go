@@ -46,7 +46,49 @@ func TestCanMessageAudience(t *testing.T) {
 		!CanComposeMessages(admin, false, false) || CanComposeMessages(teen, true, true) {
 		t.Error("CanComposeMessages")
 	}
-	if !CanEditMessage(member, true) || CanEditMessage(member, false) || !CanEditMessage(admin, false) {
-		t.Error("CanEditMessage")
+}
+
+func TestCanEditMessage(t *testing.T) {
+	admin, member := &Person{ID: 1, Admin: true}, &Person{ID: 2}
+	for _, tc := range []struct {
+		name               string
+		p                  *Person
+		author, isReminder bool
+		want               bool
+	}{
+		{"signed out", nil, false, false, false},
+		{"author", member, true, false, true},
+		{"someone else", member, false, false, false},
+		{"admin, another's message", admin, false, false, true},
+		{"admin, a reminder", admin, false, true, false},
+		{"anyone, a reminder", member, false, true, false},
+	} {
+		if got := CanEditMessage(tc.p, tc.author, tc.isReminder); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestCanReadMessage(t *testing.T) {
+	admin, member := &Person{ID: 1, Admin: true}, &Person{ID: 2}
+	for _, tc := range []struct {
+		name                        string
+		p                           *Person
+		author, isReminder, manages bool
+		want                        bool
+	}{
+		{"signed out", nil, false, false, false, false},
+		{"signed out, a reminder of an event they'd manage", nil, false, true, true, false},
+		{"author", member, true, false, false, true},
+		{"someone else's announcement", member, false, false, false, false},
+		{"an announcement to an event they manage", member, false, false, true, false},
+		{"admin, any announcement", admin, false, false, false, true},
+		{"admin, any reminder", admin, false, true, false, true},
+		{"manager, the event's reminder", member, false, true, true, true},
+		{"not a manager, a reminder", member, false, true, false, false},
+	} {
+		if got := CanReadMessage(tc.p, tc.author, tc.isReminder, tc.manages); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

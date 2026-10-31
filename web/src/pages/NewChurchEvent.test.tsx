@@ -41,7 +41,7 @@ it("shares the group form's order: When, Location, then a closed More options wi
   expect(screen.getByRole("button", { name: "1½ hr" })).toHaveAttribute("aria-pressed", "true");
   const toggle = screen.getByRole("button", { name: "More options" });
   expect(toggle).toHaveAttribute("aria-expanded", "false");
-  expect(screen.getByText("Visible to: Public · No seat limit · No video · No childcare")).toBeInTheDocument();
+  expect(screen.getByText("Visible to: Public · No seat limit · No video · No childcare · Reminder 1 day before")).toBeInTheDocument();
   // Church-wide events offer public or private only.
   await userEvent.click(toggle);
   expect(screen.getByRole("group", { name: "Who can see this event" })).toBeInTheDocument();
@@ -65,6 +65,18 @@ it("sends the seat limit, the other host and a weekly rule", async () => {
   }));
   expect(await screen.findByText("Event page")).toBeInTheDocument();
   expect(router.state.location.pathname).toBe("/events/4");
+});
+
+it("sends the reminder time, 1 day before by default (M3.6b)", async () => {
+  renderForm();
+  await screen.findByText("Mountain time");
+  await userEvent.type(screen.getByLabelText("Title"), "Potluck");
+  await userEvent.type(screen.getByLabelText("Date"), "2026-12-02");
+  await userEvent.click(screen.getByRole("button", { name: "More options" }));
+  expect(screen.getByLabelText("Reminder email")).toHaveValue("1440");
+  await userEvent.click(screen.getByRole("button", { name: "Schedule event" }));
+  await waitFor(() => expect(Events.createChurch).toHaveBeenCalled());
+  expect(Events.createChurch).toHaveBeenCalledWith(expect.objectContaining({ reminderEmailMinutes: 1440 }));
 });
 
 it("asks before leaving unsaved edits", async () => {

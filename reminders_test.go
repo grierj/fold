@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"fold/internal/audit"
 	"fold/models"
 )
 
@@ -188,6 +190,283 @@ func TestEventReminderTime(t *testing.T) {
 	}
 }
 
+// failedReminder sends the fixture date's reminder to the teen and an
+// outsider going to it, with the outsider's address refused (550), so
+// the reminder is partly sent, and answers its message id.
+func failedReminder(t *testing.T, f composeFixture) (uint, *models.User) {
+	t.Helper()
+	outsider := newTestUser(t, f.app, "outsider", "password1234", models.RoleMember)
+	for _, u := range []*models.User{f.teen, outsider} {
+		f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &u.ID, Status: models.RegGoing})
+	}
+	next := f.app.Mailer
+	f.app.Mailer = pickySender{next: next, bad: outsider.Email, code: 550}
+	reminderFor(t, f.app, f.groupOcc, 1440)
+	f.app.Mailer = next
+	var m models.Message
+	if err := f.app.DB.Where("occurrence_id = ? AND category = ?", f.groupOcc.ID, models.MessageCategoryReminder).First(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	if m.Status != models.MessageSent {
+		t.Fatalf("reminder: %+v", m)
+	}
+	return m.ID, outsider
+}
+
+// A reminder's page and history are open to its event's managers, read
+// only, under the leader rules (no reasons, no addresses, DEC-132); a
+// member of the group or another group's leader gets 404 (DEC-133 D).
+func TestReminderMessageReadableByEventManagers(t *testing.T) {
+	f := newComposeFixture(t)
+	id, _ := failedReminder(t, f)
+	path := "/api/v1/messages/" + itoa(id)
+	var got struct {
+		Message messageJSON `json:"message"`
+	}
+	w := f.leader.do("GET", path, nil, false)
+	decodeJSON(t, w, &got)
+	m := got.Message
+	if w.Code != http.StatusOK || m.Category != models.MessageCategoryReminder || m.Editable || m.AuthorName != "" || m.Reminder == nil ||
+		m.Reminder.Kind != reminderGoing || m.Reminder.EventTitle != "Book night" || m.Reminder.OccurrenceID != f.groupOcc.ID ||
+		m.Reminder.EventID != f.groupEvent.ID || m.Reminder.Date != f.groupOcc.OriginalDate || m.FailedCount != 1 {
+		t.Fatalf("leader: %d %s", w.Code, w.Body.String())
+	}
+	// The heading reads as the emails did; the subject itself stays as written.
+	if want := "Reminder: Book night on " + formatWhen(f.groupOcc.StartsAt, time.UTC); m.DisplaySubject != want || m.Subject != "Reminder: {{event_title}} on {{event_time}}" {
+		t.Fatalf("subject %q, display %q, want %q", m.Subject, m.DisplaySubject, want)
+	}
+	h, body := f.history(t, f.leader, id)
+	if strings.Contains(body, "@") || h.Counts.Sent != 1 || h.Counts.Failed != 1 || !h.CanRetry {
+		t.Fatalf("leader history: %s", body)
+	}
+	for _, r := range h.Recipients {
+		if r.Reason != "" {
+			t.Fatalf("a leader sees a reason: %s", body)
+		}
+	}
+	if w := f.admin.do("GET", path+"/recipients", nil, false); w.Code != http.StatusOK {
+		t.Fatalf("admin history: %d", w.Code)
+	}
+	teen := loginAPI(t, f.app, "teen", "password1234")
+	for name, c := range map[string]*apiClient{"member": teen, "another group's leader": f.host, "someone else": f.member} {
+		for _, p := range []string{path, path + "/recipients"} {
+			if w := c.do("GET", p, nil, false); w.Code != http.StatusNotFound {
+				t.Fatalf("%s %s: %d", name, p, w.Code)
+			}
+		}
+	}
+	// Read only, for its managers and admins alike.
+	for name, req := range map[string]func() int{
+		"leader edits": func() int {
+			return f.leader.do("PUT", path, map[string]any{"subject": "x", "bodyHtml": "<p>x</p>"}, true).Code
+		},
+		"admin edits": func() int {
+			return f.admin.do("PUT", path, map[string]any{"subject": "x", "bodyHtml": "<p>x</p>"}, true).Code
+		},
+		"admin cancels":   func() int { return f.admin.do("POST", path+"/cancel", nil, true).Code },
+		"leader previews": func() int { return f.leader.do("GET", path+"/preview", nil, false).Code },
+		"admin tests":     func() int { return f.admin.do("POST", path+"/test", nil, true).Code },
+	} {
+		if code := req(); code != http.StatusConflict {
+			t.Fatalf("%s: %d", name, code)
+		}
+	}
+	if w := f.leader.do("PUT", path, map[string]any{"subject": "x"}, true); !strings.Contains(w.Body.String(), "message_reminder") {
+		t.Fatalf("edit refusal: %s", w.Body.String())
+	}
+}
+
+// Try again on a failed reminder works for a manager of its event and is
+// refused for anyone else, and once the date has started.
+func TestReminderRetryForManagers(t *testing.T) {
+	f := newComposeFixture(t)
+	id, outsider := failedReminder(t, f)
+	retry := func(c *apiClient) *httptest.ResponseRecorder {
+		return c.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true)
+	}
+	for name, c := range map[string]*apiClient{"another group's leader": f.host, "someone else": f.member} {
+		if w := retry(c); w.Code != http.StatusNotFound {
+			t.Fatalf("%s: %d", name, w.Code)
+		}
+	}
+	// A date that has started has no use for its reminder.
+	f.app.DB.Model(&models.EventOccurrence{}).Where("id = ?", f.groupOcc.ID).Update("starts_at", time.Now().Add(-time.Minute))
+	if w := retry(f.leader); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "reminder_retry_refused") {
+		t.Fatalf("started: %d %s", w.Code, w.Body.String())
+	}
+	if h, _ := f.history(t, f.leader, id); h.CanRetry {
+		t.Fatal("Try again offered for a date that has started")
+	}
+	f.app.DB.Model(&models.EventOccurrence{}).Where("id = ?", f.groupOcc.ID).Update("starts_at", f.groupOcc.StartsAt)
+	// Nor does an event whose reminders were turned off since.
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("reminder_email_minutes", 0)
+	if w := retry(f.leader); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "reminder_retry_refused") {
+		t.Fatalf("off: %d %s", w.Code, w.Body.String())
+	}
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("reminder_email_minutes", 1440)
+	// Nor does one whose audience no longer reads as one.
+	var saved models.Message
+	f.app.DB.First(&saved, id)
+	f.app.DB.Model(&models.Message{}).Where("id = ?", id).Update("audience", `{"type":"nobody"}`)
+	if w := retry(f.leader); w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "reminder_retry_refused") {
+		t.Fatalf("gone audience: %d %s", w.Code, w.Body.String())
+	}
+	f.app.DB.Model(&models.Message{}).Where("id = ?", id).Update("audience", saved.Audience)
+	if w := retry(f.leader); w.Code != http.StatusOK {
+		t.Fatalf("leader: %d %s", w.Code, w.Body.String())
+	}
+	runMessageJobs(t, f.app)
+	if n := len(reminderMails(t, f.app, outsider.Email)); n != 1 {
+		t.Fatalf("outsider got %d", n)
+	}
+	if n := len(reminderMails(t, f.app, f.teen.Email)); n != 1 {
+		t.Fatalf("the teen it reached got %d", n)
+	}
+	var a models.AuditLog
+	f.app.DB.Where("action = ? AND target_id = ?", audit.MessageRetried, id).First(&a)
+	if a.ActorID == nil || *a.ActorID != f.leaderUser.ID {
+		t.Fatalf("audit: %+v", a)
+	}
+}
+
+// Try again skips anyone who can no longer see the date (M1.13), as the
+// first send would have.
+func TestReminderRetrySkipsWhoCantSeeTheDate(t *testing.T) {
+	f := newComposeFixture(t)
+	id, outsider := failedReminder(t, f)
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("visibility", models.VisibilityInviteOnly)
+	f.app.DB.Model(&models.Group{}).Where("id = ?", f.group.ID).Update("visibility", models.VisibilityInviteOnly)
+	if w := f.admin.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("admin: %d %s", w.Code, w.Body.String())
+	}
+	runMessageJobs(t, f.app)
+	var r models.MessageRecipient
+	f.app.DB.Where("message_id = ? AND user_id = ?", id, outsider.ID).First(&r)
+	var m models.Message
+	f.app.DB.First(&m, id)
+	if r.Status != models.RecipientSuppressed || r.Reason != skipCantSeeDate || m.Status != models.MessageSent || len(reminderMails(t, f.app, outsider.Email)) != 0 {
+		t.Fatalf("row %+v, message %s", r, m.Status)
+	}
+}
+
+// The date page shows its event's managers the date's reminders: the time
+// it goes, and each one sent with how many it reached. Nobody else gets
+// the field (DEC-133 D).
+func TestDateRemindersForManagersOnly(t *testing.T) {
+	f := newComposeFixture(t)
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("waitlist_enabled", true)
+	waiting := newTestUser(t, f.app, "waiting", "password1234", models.RoleMember)
+	f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, UserID: &waiting.ID, Status: models.RegWaitlisted})
+	path := "/api/v1/events/" + itoa(f.groupEvent.ID) + "/dates/" + f.groupOcc.OriginalDate
+	read := func(c *apiClient) (dateOccurrenceJSON, string) {
+		t.Helper()
+		w := c.do("GET", path, nil, false)
+		if w.Code != http.StatusOK {
+			t.Fatalf("date: %d %s", w.Code, w.Body.String())
+		}
+		var out struct {
+			Occurrence dateOccurrenceJSON `json:"occurrence"`
+		}
+		decodeJSON(t, w, &out)
+		return out.Occurrence, w.Body.String()
+	}
+	// Before it goes: when it will.
+	d, _ := read(f.leader)
+	due := f.groupOcc.StartsAt.Add(-24 * time.Hour)
+	if d.Reminders == nil || d.Reminders.Minutes != 1440 || d.Reminders.DueAt == nil || !d.Reminders.DueAt.Equal(due) || d.Reminders.Covered || len(d.Reminders.Messages) != 0 {
+		t.Fatalf("upcoming: %+v", d.Reminders)
+	}
+	failedReminder(t, f)
+	d, _ = read(f.leader)
+	r := d.Reminders
+	if r == nil || len(r.Messages) != 2 {
+		t.Fatalf("sent: %+v", r)
+	}
+	going, wait := r.Messages[0], r.Messages[1]
+	if going.Kind != reminderGoing || going.Status != models.MessageSent || going.Reached != 1 || going.Failed != 1 || going.SentAt == nil ||
+		wait.Kind != reminderWaitlist || wait.Reached != 1 || wait.Failed != 0 {
+		t.Fatalf("messages: %+v", r.Messages)
+	}
+	// The one sent covers this date: the page won't say it still goes.
+	if !r.Covered {
+		t.Fatal("a sent reminder doesn't cover its own date")
+	}
+	// Counted as the history counts them: a bounce or a spam report didn't
+	// get it, and a skip is counted apart.
+	f.app.DB.Model(&models.MessageRecipient{}).Where("message_id = ? AND user_id = ?", going.MessageID, f.teen.ID).Update("status", models.RecipientComplained)
+	f.app.DB.Model(&models.MessageRecipient{}).Where("message_id = ? AND status = ?", wait.MessageID, models.RecipientSent).
+		Updates(map[string]any{"status": models.RecipientSuppressed, "reason": skipEventsOff})
+	d, _ = read(f.leader)
+	if g, w := d.Reminders.Messages[0], d.Reminders.Messages[1]; g.Reached != 0 || g.Failed != 2 || w.Reached != 0 || w.Skipped != 1 {
+		t.Fatalf("counts: %+v", d.Reminders.Messages)
+	}
+	// A reminder time shortened to 2 hours sends that one too, so it isn't covered.
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("reminder_email_minutes", 120)
+	if d, _ := read(f.leader); d.Reminders.Covered {
+		t.Fatalf("2 hours: %+v", d.Reminders)
+	}
+	if d, _ := read(f.admin); d.Reminders == nil {
+		t.Fatal("an admin manages every event")
+	}
+	teen := loginAPI(t, f.app, "teen", "password1234")
+	anon := newAPIClient(t, f.app)
+	for name, c := range map[string]*apiClient{"member": teen, "going outsider": loginAPI(t, f.app, "outsider", "password1234"), "another group's leader": f.host, "signed out": anon} {
+		if _, body := read(c); strings.Contains(body, `"reminders"`) {
+			t.Fatalf("%s sees reminders: %s", name, body)
+		}
+	}
+	// Off: no time it goes.
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("reminder_email_minutes", 0)
+	if d, _ := read(f.leader); d.Reminders == nil || d.Reminders.Minutes != 0 || d.Reminders.DueAt != nil || len(d.Reminders.Messages) != 2 {
+		t.Fatalf("off: %+v", d.Reminders)
+	}
+}
+
+// An admin's Messages list has reminders, marked by category with their
+// date; a leader's keeps only what they wrote (DEC-133 D).
+func TestMessageListRemindersForAdminsOnly(t *testing.T) {
+	f := newComposeFixture(t)
+	id, _ := failedReminder(t, f)
+	own := f.scheduleNow(t, f.leader, "Mine", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
+	list := func(c *apiClient, query string) map[uint]messageJSON {
+		var out struct {
+			Messages []messageJSON `json:"messages"`
+		}
+		decodeJSON(t, c.do("GET", "/api/v1/messages"+query, nil, false), &out)
+		byID := map[uint]messageJSON{}
+		for _, m := range out.Messages {
+			byID[m.ID] = m
+		}
+		return byID
+	}
+	admin := list(f.admin, "")
+	if m, ok := admin[id]; !ok || m.Category != models.MessageCategoryReminder || m.Reminder == nil || m.Reminder.EventTitle != "Book night" ||
+		m.Reminder.Date != f.groupOcc.OriginalDate || !m.Reminder.StartsAt.Equal(f.groupOcc.StartsAt) || m.Reminder.TZID != "UTC" {
+		t.Fatalf("admin list: %+v", m)
+	}
+	if m := admin[own]; m.Category != models.MessageCategoryAnnouncement || m.Reminder != nil || m.DisplaySubject != "" {
+		t.Fatalf("announcement: %+v", m)
+	}
+	// Each kind on its own, each with its own 200, so reminders can't
+	// crowd announcements out.
+	if a := list(f.admin, "?category=announcement"); len(a) != 1 || a[own].ID != own {
+		t.Fatalf("announcements: %+v", a)
+	}
+	if r := list(f.admin, "?category=reminder"); len(r) != 1 || r[id].ID != id {
+		t.Fatalf("reminders: %+v", r)
+	}
+	if w := f.admin.do("GET", "/api/v1/messages?category=everything", nil, false); w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown category: %d", w.Code)
+	}
+	leader := list(f.leader, "")
+	if _, ok := leader[id]; ok || len(leader) != 1 {
+		t.Fatalf("leader list: %+v", leader)
+	}
+	if r := list(f.leader, "?category=reminder"); len(r) != 0 {
+		t.Fatalf("a leader's reminders: %+v", r)
+	}
+}
+
 // "Off" chosen at creation stays off; no choice means 1 day.
 func TestNewEventReminderDefaults(t *testing.T) {
 	f := newComposeFixture(t)
@@ -297,5 +576,24 @@ func TestReminderShortenedTimeSendsAgain(t *testing.T) {
 	reminderFor(t, f.app, f.groupOcc, 120)
 	if got := len(reminderMails(t, f.app, f.teen.Email)); got != 2 {
 		t.Fatalf("reminders after shortening: %d", got)
+	}
+}
+
+// Try again skips anyone no longer going (cancelled since, say), as the
+// first send would have, with that reason.
+func TestReminderRetrySkipsWhoIsNoLongerGoing(t *testing.T) {
+	f := newComposeFixture(t)
+	id, outsider := failedReminder(t, f)
+	f.app.DB.Model(&models.Registration{}).Where("occurrence_id = ? AND user_id = ?", f.groupOcc.ID, outsider.ID).Update("status", models.RegCancelled)
+	if w := f.leader.do("POST", "/api/v1/messages/"+itoa(id)+"/retry", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("leader: %d %s", w.Code, w.Body.String())
+	}
+	runMessageJobs(t, f.app)
+	var r models.MessageRecipient
+	f.app.DB.Where("message_id = ? AND user_id = ?", id, outsider.ID).First(&r)
+	var m models.Message
+	f.app.DB.First(&m, id)
+	if r.Status != models.RecipientSuppressed || r.Reason != skipNoLongerGoing || m.Status != models.MessageSent || len(reminderMails(t, f.app, outsider.Email)) != 0 {
+		t.Fatalf("row %+v, message %s", r, m.Status)
 	}
 }

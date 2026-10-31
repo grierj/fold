@@ -1,13 +1,14 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../api";
 import { Messages } from "../messages-api";
-import { composeOptions, message } from "../test/compose";
+import { composeOptions, message, reminderMessage } from "../test/compose";
 import { MessagesPage } from "./Messages";
 
-const actor = vi.hoisted(() => ({ canCompose: true }));
-vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader", displayName: "" }, loading: false, isAdmin: false, canCompose: actor.canCompose }) }));
+const actor = vi.hoisted(() => ({ canCompose: true, isAdmin: false }));
+vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2, name: "Lee Leader", displayName: "" }, loading: false, isAdmin: actor.isAdmin, canCompose: actor.canCompose }) }));
 vi.mock("../messages-api", () => ({ Messages: { list: vi.fn(), options: vi.fn() } }));
 vi.mock("../api", async (importActual) => ({
   ...(await importActual<typeof import("../api")>()),
@@ -15,7 +16,7 @@ vi.mock("../api", async (importActual) => ({
 }));
 
 const open = () => render(<MemoryRouter><MessagesPage /></MemoryRouter>);
-afterEach(() => { vi.clearAllMocks(); actor.canCompose = true; });
+afterEach(() => { vi.clearAllMocks(); actor.canCompose = true; actor.isAdmin = false; });
 
 describe("MessagesPage", () => {
   it("lists each message with its state in words, subject, audience and update time", async () => {
@@ -87,5 +88,50 @@ describe("MessagesPage", () => {
     expect(alert).toHaveTextContent("We couldn't load your messages. Please try again in a minute.");
     expect(within(alert).getByRole("button", { name: "Try again" })).toBeInTheDocument();
     expect(alert).not.toHaveTextContent("boom");
+  });
+
+  it("gives an admin Announcements and Automatic reminders chips, each its own list (M3.6b)", async () => {
+    actor.isAdmin = true;
+    vi.mocked(Messages.options).mockResolvedValue(composeOptions());
+    vi.mocked(Messages.list).mockImplementation(async (category) => ({ messages: category === "reminder" ? [
+      reminderMessage(),
+      reminderMessage({ id: 10, status: "failed", sentAt: null, reminder: { ...reminderMessage().reminder!, kind: "waitlist" } }),
+    ] : [message({ id: 1 })] }));
+    open();
+    const announcements = await screen.findByRole("button", { name: "Announcements" });
+    expect(announcements).toHaveAttribute("aria-pressed", "true");
+    expect(Messages.list).toHaveBeenLastCalledWith("announcement");
+    expect(await screen.findByRole("link", { name: /Bring a friend/ })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Automatic reminder/ })).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Automatic reminders" }));
+    expect(Messages.list).toHaveBeenLastCalledWith("reminder");
+    expect(screen.getByRole("button", { name: "Automatic reminders" })).toHaveAttribute("aria-pressed", "true");
+    const row = await screen.findByRole("link", { name: /Automatic reminder ·/ });
+    expect(row).toHaveAttribute("href", "/messages/9");
+    // The date reads in the event's zone (America/Boise).
+    expect(row).toHaveTextContent(/^Sent .*Automatic reminder · Book night, Thu, Nov 5(, 2026)?To everyone goingUpdated /);
+    expect(row).not.toHaveTextContent("{{");
+    expect(row).not.toHaveTextContent("By ");
+    expect(screen.getByRole("link", { name: /Automatic waitlist note/ })).toHaveTextContent(/^FailedAutomatic waitlist note · Book night, Thu, Nov 5(, 2026)?To everyone on the waitlist/);
+    expect(screen.queryByRole("link", { name: /Bring a friend/ })).toBeNull();
+  });
+
+  it("says what would appear when there are no automatic reminders yet", async () => {
+    actor.isAdmin = true;
+    vi.mocked(Messages.options).mockResolvedValue(composeOptions());
+    vi.mocked(Messages.list).mockResolvedValue({ messages: [] });
+    render(<MemoryRouter initialEntries={["/messages?show=reminders"]}><MessagesPage /></MemoryRouter>);
+    expect(await screen.findByText("No automatic reminders yet")).toBeInTheDocument();
+    expect(Messages.list).toHaveBeenCalledWith("reminder");
+  });
+
+  it("shows a leader no chips and their own list", async () => {
+    vi.mocked(Messages.options).mockResolvedValue(composeOptions());
+    vi.mocked(Messages.list).mockResolvedValue({ messages: [message({ id: 1 })] });
+    open();
+    expect(await screen.findByRole("link", { name: /Bring a friend/ })).toBeInTheDocument();
+    expect(Messages.list).toHaveBeenCalledWith(undefined);
+    expect(screen.queryByRole("button", { name: "Automatic reminders" })).toBeNull();
   });
 });

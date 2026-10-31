@@ -35,7 +35,7 @@ Reconciled against merged history through [PR #163](https://github.com/grierj/fo
 | M3.3 Consent and unsubscribe (slices M3.3a–b) | done: M3.3a merged (#206), M3.3b (#207) | Claude | `consent/m3.3b-settings` |
 | M3.4 Composer (slices M3.4a–c) | done: M3.4a merged (#208), M3.4b (#209), M3.4c (#211) | Claude | `messages/m3.4c-composer` |
 | M3.5 Send pipeline (slices M3.5a–b) | done: M3.5a merged (#214), M3.5b (#215) | Claude | `messages/m3.5b-history` |
-| M3.6 Email reminders (slices M3.6a–b) | in progress: M3.6a sending reminders | Claude | `reminders/m3.6a-send` |
+| M3.6 Email reminders (slices M3.6a–b) | built: M3.6a sending reminders (in review), M3.6b the reminder controls | Claude | `reminders/m3.6b-controls` |
 | Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | done (merged, #43) | Wright | `simplicity` |
 
 ## Other merged work (not milestones)
