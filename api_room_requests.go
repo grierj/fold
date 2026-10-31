@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -67,32 +68,44 @@ func (a *App) apiSetRoomApproval(c *gin.Context) {
 }
 
 // openRoomRequest starts a request; the caller places its dates.
-func openRoomRequest(tx *gorm.DB, eventID, roomID, by uint, series bool) (*models.RoomRequest, error) {
-	req := models.RoomRequest{EventID: eventID, RoomID: roomID, Series: series, RequestedBy: &by, Status: models.RoomRequestPending}
+func openRoomRequest(tx *gorm.DB, eventID, roomID uint, by *uint, series bool) (*models.RoomRequest, error) {
+	req := models.RoomRequest{EventID: eventID, RoomID: roomID, Series: series, RequestedBy: by, Status: models.RoomRequestPending}
 	return &req, tx.Create(&req).Error
 }
 
 // notifyRoomRequested gives every admin the request as a task.
-func notifyRoomRequested(tx *gorm.DB, req *models.RoomRequest, ev *models.Event, room *models.Room, dates int, actor uint) ([]uint, error) {
+func notifyRoomRequested(tx *gorm.DB, req *models.RoomRequest, ev *models.Event, room *models.Room, dates int, actor *uint) ([]uint, error) {
 	change := room.Name + " for 1 date"
 	if dates != 1 {
 		change = fmt.Sprintf("%s for %d dates", room.Name, dates)
 	}
 	return notify.Send(tx, notify.Msg{
-		Kind: notify.RoomRequested, To: adminIDs(tx), Actor: &actor,
+		Kind: notify.RoomRequested, To: adminIDs(tx), Actor: actor,
 		SubjectType: "room_request", SubjectID: req.ID, Link: roomRequestsLink,
-		Vars:      notify.Vars{Actor: nameIn(tx, actor), Event: ev.Title, Change: change}, // group-ok: admin tasks go to admins
+		Vars:      notify.Vars{Actor: askerName(tx, actor), Event: ev.Title, Change: change}, // group-ok: admin tasks go to admins
 		Data:      map[string]any{"requestId": req.ID, "eventId": ev.ID},
 		DedupeKey: fmt.Sprintf("room.requested:%d", req.ID),
 	})
+}
+
+func askerName(tx *gorm.DB, id *uint) string {
+	if id == nil {
+		return ""
+	}
+	return nameIn(tx, *id)
 }
 
 // closeEmptyRoomRequests withdraws pending requests none of whose dates
 // still wait (re-picked, released or cancelled), and closes their tasks.
 func closeEmptyRoomRequests(tx *gorm.DB) error {
 	var ids []uint
-	if err := tx.Raw(`UPDATE room_requests q SET status = ?, updated_at = now() WHERE q.status = ?
-		AND NOT EXISTS (SELECT 1 FROM room_bookings b WHERE b.request_id = q.id AND b.status = ?) RETURNING q.id`,
+	// SKIP LOCKED: a request an admin is deciding right now is locked by
+	// that decision, which settles it anyway; waiting on it here could
+	// deadlock against the decision waiting on this caller's dates.
+	if err := tx.Raw(`UPDATE room_requests SET status = ?, updated_at = now() WHERE id IN (
+			SELECT q.id FROM room_requests q WHERE q.status = ?
+			AND NOT EXISTS (SELECT 1 FROM room_bookings b WHERE b.request_id = q.id AND b.status = ?)
+			FOR UPDATE SKIP LOCKED) RETURNING id`,
 		models.RoomRequestWithdrawn, models.RoomRequestPending, models.BookingRequested).Scan(&ids).Error; err != nil {
 		return err
 	}
@@ -117,10 +130,12 @@ type roomRequestJSON struct {
 	RequestedBy string `json:"requestedBy"`
 	// Dates waiting, and how many of them another booking now holds the
 	// room on (confirming those needs a double-book reason).
-	Dates     int       `json:"dates"`
-	BusyDates int       `json:"busyDates"`
-	FirstDate string    `json:"firstDate"`
-	CreatedAt time.Time `json:"createdAt"`
+	Dates     int    `json:"dates"`
+	BusyDates int    `json:"busyDates"`
+	FirstDate string `json:"firstDate"`
+	// FirstStartsAt: when the first waiting date starts (UTC).
+	FirstStartsAt time.Time `json:"firstStartsAt"`
+	CreatedAt     time.Time `json:"createdAt"`
 }
 
 // apiAdminRoomRequests lists the open requests, oldest first.
@@ -132,12 +147,14 @@ func (a *App) apiAdminRoomRequests(c *gin.Context) {
 		RequestedByID                             *uint
 		Dates, BusyDates                          int
 		FirstDate                                 string
+		FirstStartsAt                             time.Time
 		CreatedAt                                 time.Time
 	}
 	if err := a.DB.Raw(`SELECT q.id, q.event_id, e.title AS event_title, coalesce(g.name, '') AS group_name,
 			q.room_id, r.name AS room_name, r.building, q.series, q.requested_by AS requested_by_id, q.created_at,
-			count(*) AS dates, min(o.original_date) AS first_date,
+			count(*) AS dates, min(o.original_date) AS first_date, min(o.starts_at) AS first_starts_at,
 			count(*) FILTER (WHERE EXISTS (SELECT 1 FROM room_bookings c WHERE c.room_id = b.room_id AND c.status = 'confirmed'
+				AND c.starts_at < b.ends_at + interval '480 minutes' AND c.starts_at > b.starts_at - interval '8 days' -- an event lasts at most 7 days (events.MaxDurationMinutes), padding 4 hours
 				AND c.occurrence_id <> b.occurrence_id AND c.padded_range && b.padded_range)) AS busy_dates
 		FROM room_requests q
 		JOIN events e ON e.id = q.event_id
@@ -157,7 +174,7 @@ func (a *App) apiAdminRoomRequests(c *gin.Context) {
 			GroupName: r.GroupName, // group-ok: admins see every group
 			RoomID:    r.RoomID, RoomName: r.RoomName, Building: r.Building, Series: r.Series,
 			RequestedBy: a.actorName(r.RequestedByID), Dates: r.Dates, BusyDates: r.BusyDates,
-			FirstDate: r.FirstDate, CreatedAt: r.CreatedAt})
+			FirstDate: r.FirstDate, FirstStartsAt: r.FirstStartsAt, CreatedAt: r.CreatedAt})
 	}
 	c.JSON(http.StatusOK, gin.H{"requests": out})
 }
@@ -226,7 +243,8 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 	var body struct {
 		OverlapReason string `json:"overlapReason"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil {
+	// The body is optional.
+	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
@@ -283,6 +301,12 @@ func (a *App) apiConfirmRoomRequest(c *gin.Context) {
 				lost = append(lost, occ.OriginalDate)
 			}
 		}
+		if req.Series && ev.DefaultRoomID != nil && *ev.DefaultRoomID == req.RoomID {
+			// The series room is approved: its new dates confirm directly.
+			if err := tx.Model(ev).Update("default_room_pending", false).Error; err != nil {
+				return err
+			}
+		}
 		now := time.Now().UTC()
 		if err := tx.Model(req).Updates(map[string]any{"status": models.RoomRequestConfirmed, "decided_by": me.ID, "decided_at": now, "updated_at": now}).Error; err != nil {
 			return err
@@ -326,7 +350,8 @@ func (a *App) apiRejectRoomRequest(c *gin.Context) {
 	var body struct {
 		Reason string `json:"reason"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil {
+	// The body is optional.
+	if err := c.ShouldBindJSON(&body); err != nil && !errors.Is(err, io.EOF) {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
@@ -355,7 +380,7 @@ func (a *App) apiRejectRoomRequest(c *gin.Context) {
 			return res.Error
 		}
 		if req.Series && ev.DefaultRoomID != nil && *ev.DefaultRoomID == req.RoomID {
-			if err := tx.Model(ev).Update("default_room_id", nil).Error; err != nil {
+			if err := tx.Model(ev).Updates(map[string]any{"default_room_id": nil, "default_room_pending": false}).Error; err != nil {
 				return err
 			}
 		}

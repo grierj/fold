@@ -28,14 +28,14 @@ test("a leader's room waits for an admin, who confirms it", async ({ page, reque
     // Nothing is held yet: the place is still the typed location.
     await expect(page.getByText("south door", { exact: true })).toBeVisible();
 
-    // The admin sees it under Needs a room and confirms it.
+    // The admin sees it under Needs a room and approves it.
     await signIn(page, "grier");
     await page.goto("/admin?tab=rooms");
     await expect(page.getByRole("heading", { name: "Needs a room" })).toBeVisible();
     const row = page.getByRole("listitem").filter({ has: page.getByRole("heading", { name: "Approval night" }) });
     await expect(row.getByText("Fellowship Hall · Main", { exact: true })).toBeVisible();
-    await row.getByRole("button", { name: "Confirm" }).click();
-    await expect(page.getByRole("status").filter({ hasText: "Confirmed Fellowship Hall · Main for 1 date." })).toBeVisible();
+    await row.getByRole("button", { name: "Approve for Approval night" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Approved Fellowship Hall · Main for Approval night: 1 date." })).toBeVisible();
     await expect(page.getByRole("heading", { name: "Approval night" })).toHaveCount(0);
 
     // The leader's date now shows the room first, then the typed location.

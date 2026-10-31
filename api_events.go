@@ -1158,7 +1158,11 @@ func deleteEventRows(tx *gorm.DB, eventIDs []uint) error {
 	if err := tx.Where("event_id IN ?", eventIDs).Delete(&models.EventHost{}).Error; err != nil {
 		return err
 	}
-	return tx.Where("id IN ?", eventIDs).Delete(&models.Event{}).Error
+	if err := tx.Where("id IN ?", eventIDs).Delete(&models.Event{}).Error; err != nil {
+		return err
+	}
+	// The dates' bookings went with them; withdraw requests left waiting.
+	return closeEmptyRoomRequests(tx)
 }
 
 func (a *App) apiCancelOccurrence(c *gin.Context) {

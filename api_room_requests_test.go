@@ -193,3 +193,110 @@ func TestRoomApprovalReject(t *testing.T) {
 		t.Fatal("a rejected request leaves the list")
 	}
 }
+
+// A series room no admin approved keeps sending new dates to an admin, even
+// after its request was withdrawn (the leader released every date).
+func TestRoomApprovalSeriesRoomStaysUnapproved(t *testing.T) {
+	f := newBookingFixture(t)
+	approvalOn(t, f)
+	start := f.startOn.AddDate(0, 0, 1)
+	series := createFeedEvent(t, f.leader, f.group, "Weekly", start, "FREQ=WEEKLY;COUNT=3")
+	if code, out := f.seriesRoom(t, f.leader, series, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK || out.Pending != 3 {
+		t.Fatalf("series: %d %+v", code, out)
+	}
+	for i := 0; i < 3; i++ {
+		d := feedDate(start.AddDate(0, 0, 7*i))
+		if w := f.leader.do("PUT", "/api/v1/events/"+itoa(series.ID)+"/dates/"+d+"/room", map[string]any{"roomId": nil}, true); w.Code != http.StatusOK {
+			t.Fatalf("release %s: %d", d, w.Code)
+		}
+	}
+	if len(listRequests(t, f.admin)) != 0 || contactCount(t, f.app, &models.RoomRequest{}, "status = ?", models.RoomRequestWithdrawn) != 1 {
+		t.Fatal("releasing every date withdraws the request")
+	}
+	// The extender adds the last date again: it waits on a new request.
+	last := feedDate(start.AddDate(0, 0, 14))
+	if err := f.app.DB.Where("event_id = ? AND original_date = ?", series.ID, last).Delete(&models.EventOccurrence{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var emailed []uint
+	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend(&emailed)); err != nil {
+		t.Fatal(err)
+	}
+	if n := seriesBookings(t, f.app, series.ID, models.BookingConfirmed); n != 0 {
+		t.Fatalf("%d dates confirmed in a room no admin approved", n)
+	}
+	reqs := listRequests(t, f.admin)
+	if len(reqs) != 1 || reqs[0].Dates != 1 || reqs[0].RequestedBy != "leader" {
+		t.Fatalf("the new date should wait on a new request: %+v", reqs)
+	}
+	// Once an admin approves it, new dates confirm directly.
+	if w := f.admin.do("POST", "/api/v1/admin/room-requests/"+itoa(reqs[0].ID)+"/confirm", nil, true); w.Code != http.StatusOK {
+		t.Fatalf("confirm with no body: %d %s", w.Code, w.Body.String())
+	}
+	if err := f.app.DB.Where("event_id = ? AND original_date = ?", series.ID, last).Delete(&models.EventOccurrence{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := events.Extend(f.app.DB, time.Now().UTC(), f.app.afterExtend(&emailed)); err != nil {
+		t.Fatal(err)
+	}
+	if n := seriesBookings(t, f.app, series.ID, models.BookingConfirmed); n != 1 {
+		t.Fatalf("%d confirmed after approval; want the regenerated date", n)
+	}
+}
+
+func TestRoomApprovalCreateDeleteAndGuards(t *testing.T) {
+	f := newBookingFixture(t)
+	approvalOn(t, f)
+	start := f.startOn.AddDate(0, 0, 2)
+	w := f.leader.do("POST", "/api/v1/groups/"+itoa(f.group)+"/events", map[string]any{"title": "Asked", "startsLocal": start.Format("2006-01-02T15:04"),
+		"durationMinutes": 60, "tzid": "UTC", "recurrenceRule": "FREQ=WEEKLY;COUNT=2", "roomId": f.hall.ID}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create with a room under approval: %d %s", w.Code, w.Body.String())
+	}
+	reqs := listRequests(t, f.admin)
+	if len(reqs) != 1 || reqs[0].Dates != 2 || reqs[0].FirstStartsAt.IsZero() {
+		t.Fatalf("a create under approval opens one request: %+v", reqs)
+	}
+	for _, path := range []string{"/confirm", "/reject"} {
+		if w := f.leader.do("POST", "/api/v1/admin/room-requests/"+itoa(reqs[0].ID)+path, nil, true); w.Code != http.StatusForbidden {
+			t.Fatalf("leader %s: %d", path, w.Code)
+		}
+	}
+	if w := f.leader.do("PUT", "/api/v1/admin/settings/room-approval", map[string]any{"enabled": false}, true); w.Code != http.StatusForbidden {
+		t.Fatalf("leader turning approval off: %d", w.Code)
+	}
+
+	// Deleting the event withdraws its request and closes the admins' task.
+	if w := f.leader.do("DELETE", "/api/v1/events/"+itoa(reqs[0].EventID), nil, true); w.Code != http.StatusOK && w.Code != http.StatusNoContent {
+		t.Fatalf("delete the event: %d %s", w.Code, w.Body.String())
+	}
+	if n := contactCount(t, f.app, &models.RoomRequest{}, "status = ?", models.RoomRequestPending); n != 0 {
+		t.Fatalf("%d requests still pending after the event was deleted", n)
+	}
+	if n := contactCount(t, f.app, &models.Notification{}, "kind = ? AND waiting AND resolved_at IS NULL", notify.RoomRequested); n != 0 {
+		t.Fatalf("%d admin tasks left open", n)
+	}
+}
+
+func TestRoomApprovalConfirmWithReason(t *testing.T) {
+	f := newBookingFixture(t)
+	approvalOn(t, f)
+	if code, _ := f.book(t, f.leader, f.eventA, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK {
+		t.Fatalf("leader request: %d", code)
+	}
+	// The admin then books B over A's time (A's request holds nothing).
+	if code, body := f.book(t, f.admin, f.eventB, map[string]any{"roomId": f.hall.ID}); code != http.StatusOK || !strings.Contains(body, `"status":"confirmed"`) {
+		t.Fatalf("admin booking B: %d %s", code, body)
+	}
+	reqs := listRequests(t, f.admin)
+	if len(reqs) != 1 || reqs[0].BusyDates != 1 {
+		t.Fatalf("A's request should show its date busy: %+v", reqs)
+	}
+	w := f.admin.do("POST", "/api/v1/admin/room-requests/"+itoa(reqs[0].ID)+"/confirm", map[string]any{"overlapReason": "Both fit"}, true)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"overlapped":1`) {
+		t.Fatalf("confirm with a reason: %d %s", w.Code, w.Body.String())
+	}
+	if n := contactCount(t, f.app, &models.RoomBooking{}, "status = ? AND allow_overlap AND overlap_reason = ?", models.BookingConfirmed, "Both fit"); n != 1 {
+		t.Fatalf("%d double-bookings with the reason", n)
+	}
+}

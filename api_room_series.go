@@ -323,9 +323,13 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 	}
 	var req *models.RoomRequest
 	var requestID *uint
-	if room != nil && policy.BookingNeedsApproval(me, roomApprovalOn(tx)) {
+	// Re-booking the series room an admin already approved (to retry lost
+	// dates) needs no new approval.
+	approved := ev.DefaultRoomID != nil && room != nil && *ev.DefaultRoomID == room.ID && !ev.DefaultRoomPending
+	needsApproval := room != nil && !approved && policy.BookingNeedsApproval(me, roomApprovalOn(tx))
+	if needsApproval {
 		var err error
-		if req, err = openRoomRequest(tx, ev.ID, room.ID, user.ID, true); err != nil {
+		if req, err = openRoomRequest(tx, ev.ID, room.ID, &user.ID, true); err != nil {
 			return out, nil, err
 		}
 		requestID = &req.ID
@@ -398,7 +402,7 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 	}
 	if req != nil {
 		var err error
-		if emailed, err = notifyRoomRequested(tx, req, ev, room, out.Pending, user.ID); err != nil {
+		if emailed, err = notifyRoomRequested(tx, req, ev, room, out.Pending, &user.ID); err != nil {
 			return out, nil, err
 		}
 	}
@@ -406,10 +410,13 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 	if err := closeEmptyRoomRequests(tx); err != nil {
 		return out, nil, err
 	}
-	if err := tx.Model(&models.Event{}).Where("id = ?", ev.ID).Update("default_room_id", roomID).Error; err != nil {
+	// Until an admin approves it, the series room's new dates keep going to
+	// an admin, even if this request is withdrawn or had nothing to wait on.
+	if err := tx.Model(&models.Event{}).Where("id = ?", ev.ID).
+		Updates(map[string]any{"default_room_id": roomID, "default_room_pending": needsApproval}).Error; err != nil {
 		return out, nil, err
 	}
-	ev.DefaultRoomID = roomID
+	ev.DefaultRoomID, ev.DefaultRoomPending = roomID, needsApproval
 	meta := map[string]any{"eventId": ev.ID, "roomId": roomID, "previousRoomId": oldRoom,
 		"booked": out.Booked, "lost": out.Lost, "kept": out.Kept, "released": released, "pending": out.Pending}
 	if reason != "" {
@@ -426,45 +433,80 @@ func bookWholeSeries(tx *gorm.DB, ev *models.Event, roomID *uint, user *models.U
 // the daily extender or a series edit) or brought back (DEC-91) and have no
 // booking. A busy date keeps a requested booking; its date is returned.
 // A series room that was since deactivated books nothing.
-func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uint) ([]string, error) {
+//
+// A series room not yet approved (default_room_pending) books new dates as
+// a request while approval is on: into the waiting series request, or a
+// new one if that was withdrawn. Notification ids to email are returned.
+func bookSeriesRoom(tx *gorm.DB, ev *models.Event, occurrenceIDs []uint, by *uint) ([]string, []uint, error) {
 	if ev.DefaultRoomID == nil || len(occurrenceIDs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var occs []models.EventOccurrence
 	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 		Where("id IN ? AND status = ? AND starts_at > now() AND NOT EXISTS (SELECT 1 FROM room_bookings b WHERE b.occurrence_id = event_occurrences.id)",
 			occurrenceIDs, models.OccurrenceScheduled).Order("id").Find(&occs).Error; err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(occs) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	room, err := lockRoom(tx, *ev.DefaultRoomID)
 	if err != nil || !room.Active {
-		return nil, err
+		return nil, nil, err
 	}
-	// A series room still waiting on approval takes new dates into its request.
+	var req *models.RoomRequest
+	opened := false
+	if ev.DefaultRoomPending && roomApprovalOn(tx) {
+		var open []models.RoomRequest
+		if err := tx.Where("event_id = ? AND room_id = ? AND series AND status = ?", ev.ID, room.ID, models.RoomRequestPending).
+			Limit(1).Find(&open).Error; err != nil {
+			return nil, nil, err
+		}
+		if len(open) == 1 {
+			req = &open[0]
+		} else {
+			// Asked for by whoever asked for the series room last.
+			var last []models.RoomRequest
+			if err := tx.Where("event_id = ? AND room_id = ? AND series", ev.ID, room.ID).Order("id DESC").Limit(1).Find(&last).Error; err != nil {
+				return nil, nil, err
+			}
+			var asker *uint
+			if len(last) == 1 {
+				asker = last[0].RequestedBy
+			}
+			if req, err = openRoomRequest(tx, ev.ID, room.ID, asker, true); err != nil {
+				return nil, nil, err
+			}
+			opened = true
+		}
+	}
 	var requestID *uint
-	var open []models.RoomRequest
-	if err := tx.Where("event_id = ? AND room_id = ? AND series AND status = ?", ev.ID, room.ID, models.RoomRequestPending).
-		Order("id DESC").Limit(1).Find(&open).Error; err != nil {
-		return nil, err
-	}
-	if len(open) == 1 {
-		requestID = &open[0].ID
+	if req != nil {
+		requestID = &req.ID
 	}
 	var lost []string
+	waiting := 0
 	for i := range occs {
 		result, err := placeBooking(tx, &occs[i], room, room.DefaultSetupMinutes, room.DefaultTeardownMinutes,
 			placement{by: by, keepRequested: true, requestID: requestID})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		if result == bookedRequested {
+		switch result {
+		case bookedRequested:
 			lost = append(lost, occs[i].OriginalDate)
+		case bookedPending:
+			waiting++
 		}
 	}
-	return lost, nil
+	if !opened {
+		return lost, nil, nil
+	}
+	if waiting == 0 {
+		return lost, nil, tx.Delete(req).Error
+	}
+	emailed, err := notifyRoomRequested(tx, req, ev, room, waiting, req.RequestedBy)
+	return lost, emailed, err
 }
 
 // settleDateRooms brings an event's bookings in line after its dates
@@ -476,15 +518,16 @@ func settleDateRooms(tx *gorm.DB, ev *models.Event, moved, added []uint, by *uin
 	if err != nil {
 		return nil, err
 	}
-	more, err := bookSeriesRoom(tx, ev, added, by)
+	more, emailed, err := bookSeriesRoom(tx, ev, added, by)
 	if err != nil {
 		return nil, err
 	}
 	lost = append(lost, more...)
 	if len(lost) == 0 {
-		return nil, nil
+		return emailed, nil
 	}
-	return notifyRoomLost(tx, ev, lost)
+	ids, err := notifyRoomLost(tx, ev, lost)
+	return append(emailed, ids...), err
 }
 
 // afterExtend books the series room for dates the daily extender adds,

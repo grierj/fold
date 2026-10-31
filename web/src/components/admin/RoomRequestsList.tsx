@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { ApiError, RoomRequests } from "../../api";
 import { errorText } from "../../lib/errors";
 import { roomName } from "../../lib/place";
-import { formatDayLong, formatWhen } from "../../lib/when";
+import { dayOf, formatDayLong, formatTime, formatWhen } from "../../lib/when";
 import type { RoomRequest } from "../../types";
 import { ErrorNotice } from "../ErrorNotice";
 import { Button } from "../ui/Button";
@@ -11,13 +12,15 @@ import { Field, FormError, Textarea } from "../ui/Field";
 import { Skeleton } from "../ui/Skeleton";
 
 const REASON_MAX = 500;
+const WHO = "the people running it";
 
 const dateCount = (n: number) => `${n} ${n === 1 ? "date" : "dates"}`;
 
-// "1 date, Tuesday, November 10" or "Every date from Tuesday, November 10 (40 dates)".
+// "Tuesday, November 10 at 7:00 PM" or "Every date from Tuesday, November 10 at 7:00 PM (40 dates)",
+// in the viewer's zone.
 function datesLine(r: RoomRequest): string {
-  const first = formatDayLong(r.firstDate);
-  return r.series ? `Every date from ${first} (${dateCount(r.dates)})` : `${dateCount(r.dates)}, ${first}`;
+  const first = `${formatDayLong(dayOf(r.firstStartsAt))} at ${formatTime(r.firstStartsAt)}`;
+  return r.series ? `Every date from ${first} (${dateCount(r.dates)})` : first;
 }
 
 function busyLine(r: RoomRequest): string {
@@ -25,21 +28,24 @@ function busyLine(r: RoomRequest): string {
   return `${r.busyDates} of these dates ${r.busyDates === 1 ? "is" : "are"} now taken.`;
 }
 
-// What a confirm did, in words.
-function confirmedMessage(room: string, res: { confirmed: number; overlapped: number; lost: string[] }): string {
+// What an approve did, in words.
+function approvedMessage(room: string, title: string, res: { confirmed: number; overlapped: number; lost: string[] }): string {
   const total = res.confirmed + res.overlapped;
   const back = res.lost.length;
-  const backText = `${dateCount(back)} went back to the leader.`;
-  if (total === 0) return `Nothing was booked: ${backText}`;
+  const backText = `${dateCount(back)} went back to ${WHO}.`;
+  if (total === 0) return `Nothing was booked for ${title}: ${backText}`;
   const base = res.overlapped > 0
-    ? `Confirmed ${room} for ${dateCount(total)}, ${res.overlapped} of them double-booked.`
-    : `Confirmed ${room} for ${dateCount(total)}.`;
+    ? `Approved ${room} for ${title}: ${dateCount(total)}, ${res.overlapped} of them double-booked.`
+    : `Approved ${room} for ${title}: ${dateCount(total)}.`;
   return back > 0 ? `${base} ${backText}` : base;
 }
 
-// One open request: Confirm and Not approved. A request with busy dates
-// explains what Confirm does to them first (DEC-106), and Not approved takes
-// an optional reason. Either opens inline, not in a dialog.
+// The server's outcome words, in the verbs of this page.
+const OUTCOME: Record<string, string> = { confirmed: "approved", rejected: "rejected", withdrawn: "withdrawn" };
+
+// One open request: Approve and Reject. A request with busy dates explains
+// what Approve does to them first (DEC-106), and Reject takes an optional
+// reason. Either opens inline, not in a dialog.
 function RequestRow({ request: r, onDone, onStale }: {
   request: RoomRequest;
   // The decision went through: the message to announce.
@@ -47,22 +53,34 @@ function RequestRow({ request: r, onDone, onStale }: {
   // Someone else decided it first: the message to announce, and a fresh list.
   onStale: (id: number, message: string) => void;
 }) {
-  const [mode, setMode] = useState<"idle" | "confirm" | "reject">("idle");
+  const [mode, setMode] = useState<"idle" | "approve" | "reject">("idle");
+  // The button whose panel just closed, which takes the cursor back.
+  const [returnTo, setReturnTo] = useState<"approve" | "reject" | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const panel = useRef<HTMLDivElement>(null);
+  const root = useRef<HTMLLIElement>(null);
   const room = roomName({ name: r.roomName, building: r.building });
+  const title = r.eventTitle || "Church event";
 
   // An opened panel takes the cursor, in its reason field.
   useEffect(() => {
-    if (mode !== "idle") panel.current?.querySelector<HTMLElement>("textarea")?.focus();
+    if (mode !== "idle") root.current?.querySelector<HTMLElement>("[data-panel] textarea")?.focus();
   }, [mode]);
+  useEffect(() => {
+    if (mode !== "idle" || !returnTo) return;
+    root.current?.querySelector<HTMLElement>(`[data-opener="${returnTo}"]`)?.focus();
+    setReturnTo(null);
+  }, [mode, returnTo]);
 
-  function open(next: "confirm" | "reject") {
+  function open(next: "approve" | "reject") {
     setReason("");
     setError(null);
     setMode(next);
+  }
+  function close() {
+    if (mode !== "idle") setReturnTo(mode);
+    setMode("idle");
   }
 
   async function run(action: () => Promise<string>) {
@@ -73,67 +91,67 @@ function RequestRow({ request: r, onDone, onStale }: {
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         // Lost the race: not an error, someone else handled it.
-        const outcome = typeof e.data.resolution === "string" ? e.data.resolution : "handled";
+        const raw = typeof e.data.resolution === "string" ? e.data.resolution : "";
+        const outcome = OUTCOME[raw] ?? (raw || "handled");
         const by = typeof e.data.resolvedBy === "string" && e.data.resolvedBy ? e.data.resolvedBy : "someone";
         onStale(r.id, `Already ${outcome} by ${by}.`);
         return;
       }
-      setError(errorText(e, mode === "reject" ? "We couldn't send that." : "We couldn't confirm that."));
+      setError(errorText(e, mode === "reject" ? "We couldn't send that." : "We couldn't approve that."));
       setBusy(false);
     }
   }
 
-  const confirm = () => run(async () => {
-    const res = await RoomRequests.confirm(r.id, reason.trim() || undefined);
-    return confirmedMessage(room, res);
-  });
+  const approve = () => run(async () => approvedMessage(room, title, await RoomRequests.confirm(r.id, reason.trim() || undefined)));
   const reject = () => run(async () => {
     await RoomRequests.reject(r.id, reason.trim() || undefined);
-    return `Didn't approve ${room} for ${r.eventTitle || "the event"}. The leaders were told.`;
+    return `Rejected ${room} for ${title}. The people running it were told.`;
   });
 
+  // Names for a screen reader, which hears these buttons in a list of cards.
+  const forTitle = <>{" "}<span className="sr-only">for {title}</span></>;
   const idBase = `room-request-${r.id}`;
   return (
-    <li className="bg-surface rounded-lg border border-border p-5 space-y-3" data-request={r.id}>
+    <li ref={root} className="bg-surface rounded-lg border border-border p-6 space-y-3" data-request={r.id}>
       <div>
-        <h3 className="font-bold wrap-anywhere">{r.eventTitle || "Church event"}</h3>
+        <h3 className="font-bold wrap-anywhere"><Link to={`/events/${r.eventId}`} className="text-link">{title}</Link></h3>
         {r.groupName && <p className="text-sm text-text-muted wrap-anywhere">{r.groupName}</p>}
       </div>
-      <p>Wants <span className="font-semibold">{room}</span></p>
+      <p className="wrap-anywhere">Wants <span className="font-semibold">{room}</span></p>
       <p>{datesLine(r)}</p>
       <p className="text-sm text-text-muted">Asked by {r.requestedBy} · {formatWhen(r.createdAt)}</p>
-      {r.busyDates > 0 && (
+      {r.busyDates > 0 && mode !== "approve" && (
         <p className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>{busyLine(r)}</p>
       )}
       {error && <FormError>{error}</FormError>}
       {mode === "idle" && (
         <div className="flex flex-wrap gap-3">
-          <Button variant="primary" disabled={busy} onClick={() => (r.busyDates > 0 ? open("confirm") : void confirm())}>Confirm</Button>
-          <Button variant="danger-outline" disabled={busy} onClick={() => open("reject")}>Not approved</Button>
+          <Button variant="primary" data-opener="approve" disabled={busy} onClick={() => (r.busyDates > 0 ? open("approve") : void approve())}>Approve{forTitle}</Button>
+          <Button variant="danger-outline" data-opener="reject" disabled={busy} onClick={() => open("reject")}>Reject{forTitle}</Button>
         </div>
       )}
-      {mode === "confirm" && (
-        <div ref={panel} className="space-y-3 rounded-md border border-warning-border bg-warning-subtle p-3">
+      {mode === "approve" && (
+        <div data-panel className="space-y-3 rounded-md border border-warning-border bg-warning-subtle p-3">
           <p className="text-sm text-warning-on-subtle">
-            {busyLine(r)} Without a reason, {r.busyDates === 1 ? "it goes" : "they go"} back to the leader to pick another room. Give a reason to book {r.busyDates === 1 ? "it" : "them"} anyway.
+            <span aria-hidden="true">⚠ </span>{busyLine(r)} Without a reason, {r.busyDates === 1 ? "it goes" : "they go"} back to {WHO} to pick another room. Give a reason to book {r.busyDates === 1 ? "it" : "them"} anyway.
           </p>
           <Field id={`${idBase}-reason`} label="Double-book reason" optional hint={`Up to ${REASON_MAX} characters. It goes in the admin record.`}>
             <Textarea rows={2} maxLength={REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
           <div className="flex flex-wrap gap-3">
-            <Button variant="primary" disabled={busy} onClick={() => void confirm()}>{busy ? "Confirming…" : "Confirm"}</Button>
-            <Button variant="secondary" disabled={busy} onClick={() => setMode("idle")}>Back</Button>
+            <Button variant="primary" disabled={busy} onClick={() => void approve()}>{busy ? "Approving…" : <>Approve{forTitle}</>}</Button>
+            <Button variant="secondary" disabled={busy} onClick={close}>Back{forTitle}</Button>
           </div>
         </div>
       )}
       {mode === "reject" && (
-        <div ref={panel} className="space-y-3">
-          <Field id={`${idBase}-why`} label="Tell the leader why" optional hint={`Up to ${REASON_MAX} characters.`}>
+        <div data-panel className="space-y-3">
+          <Field id={`${idBase}-why`} label="Tell them why" optional hint={`Up to ${REASON_MAX} characters.`}>
             <Textarea rows={2} maxLength={REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />
           </Field>
           <div className="flex flex-wrap gap-3">
-            <Button variant="danger-outline" disabled={busy} onClick={() => void reject()}>{busy ? "Sending…" : "Send"}</Button>
-            <Button variant="secondary" disabled={busy} onClick={() => setMode("idle")}>Cancel</Button>
+            <Button variant="danger-outline" disabled={busy} onClick={() => void reject()}>{busy ? "Sending…" : <>Reject and tell them{forTitle}</>}</Button>
+            <Button variant="secondary" disabled={busy} onClick={close}>Cancel{forTitle}</Button>
           </div>
         </div>
       )}
@@ -141,16 +159,12 @@ function RequestRow({ request: r, onDone, onStale }: {
   );
 }
 
-// Whether the list has anything to say: approval is on, requests are open, or
-// loading them failed.
-export function roomRequestsShown(requests: RoomRequest[] | null, needApproval: boolean | null, error: string | null): boolean {
-  return (requests?.length ?? 0) > 0 || needApproval === true || error !== null;
-}
-
 // "Needs a room" on the admin Rooms tab (M2.1d, DEC-105): bookings waiting
 // for an admin's yes or no, and nothing else. Dates that lost their room stay
-// the leader's job. It shows while approval is on or requests are open.
-export function RoomRequestsList({ requests, needApproval, error, reload, onRemoved }: {
+// the leader's job. It shows while approval is on, requests are open, or the
+// admin has just decided one. The room catalog comes in as `children`, so
+// this is the one place that decides whether it needs a "Rooms" heading.
+export function RoomRequestsList({ requests, needApproval, error, reload, onRemoved, children }: {
   // Null until loaded.
   requests: RoomRequest[] | null;
   needApproval: boolean | null;
@@ -158,42 +172,49 @@ export function RoomRequestsList({ requests, needApproval, error, reload, onRemo
   reload: () => void;
   // A request was decided; the list drops it.
   onRemoved: (id: number) => void;
+  children: ReactNode;
 }) {
-  const [status, setStatus] = useState("");
+  // n makes a repeat of the same words still count as a new announcement.
+  const [status, setStatus] = useState({ text: "", n: 0 });
   const statusRef = useRef<HTMLParagraphElement>(null);
 
   // The row is gone after a decision, so the cursor moves to what happened.
   useEffect(() => {
-    if (status) statusRef.current?.focus();
-  }, [status]);
+    if (status.n > 0) statusRef.current?.focus();
+  }, [status.n]);
 
-  if (!roomRequestsShown(requests, needApproval, error) && !status) return null;
-
+  const say = (text: string) => setStatus((s) => ({ text, n: s.n + 1 }));
+  const shown = (requests?.length ?? 0) > 0 || needApproval === true || error !== null || status.n > 0;
   return (
-    <section aria-labelledby="room-requests-heading" className="space-y-3">
-      <h2 id="room-requests-heading" className="text-xl font-bold">Needs a room</h2>
-      {/* Always rendered so screen readers announce the text when it arrives. */}
-      <p ref={statusRef} role="status" tabIndex={-1} className={status ? "text-sm text-text-muted focus:outline-none" : "sr-only"}>{status}</p>
-      {error && <ErrorNotice message={error} onRetry={reload} />}
-      {!error && requests === null && <Skeleton kind="lines" />}
-      {!error && requests !== null && requests.length === 0 && (
-        <EmptyState
-          title="No bookings are waiting for approval."
-          body="When a leader or host books a room, you'll confirm or decline it here."
-        />
-      )}
-      {!error && requests !== null && requests.length > 0 && (
-        <ul className="space-y-3">
-          {requests.map((r) => (
-            <RequestRow
-              key={r.id}
-              request={r}
-              onDone={(id, message) => { setStatus(message); onRemoved(id); }}
-              onStale={(id, message) => { setStatus(message); onRemoved(id); reload(); }}
-            />
-          ))}
-        </ul>
-      )}
-    </section>
+    <div className="space-y-8">
+      {shown && <section aria-labelledby="room-requests-heading" className="space-y-3">
+        <h2 id="room-requests-heading" className="text-xl font-bold">Needs a room</h2>
+        <p key={status.n} ref={statusRef} role="status" tabIndex={-1} className={status.text ? "text-sm text-text-muted focus:outline-none" : "sr-only"}>{status.text}</p>
+        {error && <ErrorNotice message={error} onRetry={reload} />}
+        {!error && requests === null && <Skeleton kind="lines" />}
+        {!error && requests !== null && requests.length === 0 && needApproval === true && (
+          <EmptyState
+            title="No bookings are waiting for approval."
+            body="When a leader or host books a room, you'll approve or reject it here."
+          />
+        )}
+        {!error && requests !== null && requests.length > 0 && (
+          <ul className="space-y-3">
+            {requests.map((r) => (
+              <RequestRow
+                key={r.id}
+                request={r}
+                onDone={(id, message) => { say(message); onRemoved(id); }}
+                onStale={(id, message) => { say(message); onRemoved(id); reload(); }}
+              />
+            ))}
+          </ul>
+        )}
+      </section>}
+      <div className="space-y-3">
+        {shown && <h2 className="text-xl font-bold">Rooms</h2>}
+        {children}
+      </div>
+    </div>
   );
 }

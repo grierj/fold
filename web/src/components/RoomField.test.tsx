@@ -47,7 +47,7 @@ it("loads the rooms for the date and words each option", async () => {
   ]);
   expect(box).toHaveValue("none");
   expect(screen.getByText("A room that's in use can only be booked by an admin. Ask an admin if you need it.")).toBeInTheDocument();
-  expect(screen.getByText(/Closing this form won't undo it\./)).toBeInTheDocument();
+  expect(screen.getByText(/If bookings need an admin's approval, it waits for one\./)).toBeInTheDocument();
 });
 
 it("shows a loading line, not a blocked editor, until the rooms arrive", async () => {
@@ -238,6 +238,14 @@ it("puts the cursor in the Room select once the rooms load, only when asked", as
 it("leaves focus alone without focusOnLoad", async () => {
   show();
   expect(await select()).not.toHaveFocus();
+});
+
+it("says an admin didn't approve a date, keeps No room chosen, and asks for another room", async () => {
+  vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [hall], booking: booked({ status: "rejected" }) });
+  show();
+  const box = await select();
+  expect(box).toHaveValue("none");
+  expect(screen.getByRole("status")).toHaveTextContent("An admin didn't approve Fellowship Hall for this date. Pick another room.");
 });
 
 it("says in words that a booking waits for an admin, and shows its room", async () => {

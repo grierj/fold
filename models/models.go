@@ -310,11 +310,14 @@ type Event struct {
 	Location        string  `gorm:"not null"`           // empty = the group's location
 	// DefaultRoomID is the series room (M2.1c): new dates are booked in it.
 	DefaultRoomID *uint
-	CreatedBy     uint `gorm:"not null"`
-	Creator       User `gorm:"foreignKey:CreatedBy"`
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	DeletedAt     gorm.DeletedAt `gorm:"index"`
+	// DefaultRoomPending: the series room still awaits an admin's approval
+	// (M2.1d), so its new dates go to a request instead of confirming.
+	DefaultRoomPending bool `gorm:"not null;default:false"`
+	CreatedBy          uint `gorm:"not null"`
+	Creator            User `gorm:"foreignKey:CreatedBy"`
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	DeletedAt          gorm.DeletedAt `gorm:"index"`
 }
 
 // EventHost is an adult assigned to a church-wide event (DEC-7). Hosts get

@@ -221,7 +221,7 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
             id={id}
             label="Room for every date"
             optional
-            hint="Choose a room, then book it for every upcoming date. A date you gave its own room keeps it. “No series room” releases the rooms it booked."
+            hint="Choose a room, then book it for every upcoming date. If bookings need an admin's approval, they wait for one. A date you gave its own room keeps it. “No series room” releases the rooms it booked."
           >
             <Select value={pick} aria-busy={busy || undefined} onChange={(e) => choose(e.target.value)}>
               <option value={NONE}>No series room</option>

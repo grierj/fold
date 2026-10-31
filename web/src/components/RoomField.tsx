@@ -187,6 +187,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
   if (!enabled && !loadError) return null;
 
   const waiting = booking?.pending === true;
+  const rejected = booking?.status === "rejected";
   const requested = booking?.status === "requested" && !waiting;
   const value = booking && (booking.status === "confirmed" || waiting) ? String(booking.roomId) : requested ? "" : NONE;
   const anyBusy = rooms.some((r) => r.busy);
@@ -208,7 +209,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
       )}
       {!loading && !loadError && (
         <>
-          <Field id={id} label="Room" optional hint="Booked as soon as you choose it, so you don't need to press Save. Closing this form won't undo it.">
+          <Field id={id} label="Room" optional hint="Saved as soon as you choose it, so you don't need to press Save. If bookings need an admin's approval, it waits for one.">
             <Select value={value} aria-busy={busy || undefined} onChange={(e) => choose(e.target.value)}>
               {requested && <option value="">Pick a room</option>}
               <option value={NONE}>No room</option>
@@ -223,6 +224,11 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
           <div role="status" className="space-y-2 empty:hidden">
             {status && <p className="text-sm text-text-muted">{status}</p>}
             {waiting && <p className="text-sm text-text-muted">Waiting for an admin to approve {booking?.roomName ?? "the room"}.</p>}
+            {rejected && (
+              <p className="rounded-md border border-warning-border bg-warning-subtle p-3 text-sm text-warning-on-subtle">
+                <span aria-hidden="true">⚠ </span>An admin didn't approve {booking?.roomName} for this date. Pick another room.
+              </p>
+            )}
             {requested && (
               <p className="rounded-md border border-warning-border bg-warning-subtle p-3 text-sm text-warning-on-subtle">
                 <span aria-hidden="true">⚠ </span>{booking?.roomName} was taken at the new time, so this date has no room. Pick another room.

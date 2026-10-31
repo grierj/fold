@@ -773,7 +773,7 @@ describe("room booking approval (M2.1d)", () => {
   const approval = () => screen.findByRole("checkbox", { name: /Room bookings need an admin's approval/ });
   const waiting = {
     id: 5, eventId: 9, eventTitle: "Weekly Bible study", groupName: "Room 201 class", roomId: 1, roomName: "Fellowship Hall", building: "Main",
-    series: true, requestedBy: "Lee Park", dates: 40, busyDates: 0, firstDate: "2026-11-10", createdAt: "2026-10-30T15:00:00Z",
+    series: true, requestedBy: "Lee Park", dates: 40, busyDates: 0, firstDate: "2026-11-10", firstStartsAt: "2026-11-10T19:00:00Z", createdAt: "2026-10-30T15:00:00Z",
   };
 
   it("offers the switch only while rooms are on, with its hint", async () => {
@@ -790,7 +790,7 @@ describe("room booking approval (M2.1d)", () => {
     const box = await approval();
     await waitFor(() => expect(box).toBeEnabled());
     expect(box).not.toBeChecked();
-    expect(screen.getByText("When this is on, leaders' and hosts' bookings wait for an admin. Admins' own bookings are confirmed at once.")).toBeInTheDocument();
+    expect(screen.getByText("When this is on, leaders' and hosts' bookings wait for an admin. Admins' own bookings are confirmed at once. Turning it off leaves open requests here for you to decide.")).toBeInTheDocument();
     await userEvent.click(box);
     expect(AdminRooms.setApproval).toHaveBeenCalledWith(true);
     expect(box).toBeChecked();
@@ -820,6 +820,8 @@ describe("room booking approval (M2.1d)", () => {
     expect(screen.getByText("Weekly Bible study")).toBeInTheDocument();
     expect(heading.compareDocumentPosition(await screen.findByText("kitchen", { exact: false }))).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(screen.getByRole("tab", { name: /^Rooms, 1 waiting/ })).toBeInTheDocument();
+    // Like Approvals, the chip shows the waiting count and not the room count too, so its words match its name.
+    expect(screen.getByRole("tab", { name: /^Rooms, 1 waiting/ })).toHaveTextContent(/^Rooms 1$/);
   });
 
   it("shows no Needs a room list while approval is off and nothing is waiting", async () => {

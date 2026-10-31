@@ -21,11 +21,21 @@ CREATE TABLE room_requests (
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_room_requests_pending ON room_requests (created_at) WHERE status = 'pending';
+CREATE INDEX idx_room_requests_event ON room_requests (event_id);
+-- At most one waiting request for a series room per event.
+CREATE UNIQUE INDEX idx_room_requests_one_series ON room_requests (event_id) WHERE series AND status = 'pending';
 
 ALTER TABLE room_bookings ADD COLUMN request_id bigint REFERENCES room_requests(id) ON DELETE SET NULL;
 CREATE INDEX idx_room_bookings_request ON room_bookings (request_id) WHERE request_id IS NOT NULL;
 
+-- default_room_pending: the series room a leader or host picked has not been
+-- approved yet, so every new date of it goes to an admin, even after its
+-- request was withdrawn. An admin's confirm clears it; a reject clears the
+-- series room.
+ALTER TABLE events ADD COLUMN default_room_pending boolean NOT NULL DEFAULT false;
+
 -- +goose Down
+ALTER TABLE events DROP COLUMN default_room_pending;
 DROP INDEX idx_room_bookings_request;
 ALTER TABLE room_bookings DROP COLUMN request_id;
 DROP TABLE room_requests;

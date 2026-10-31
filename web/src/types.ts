@@ -942,5 +942,7 @@ export interface RoomRequest {
   dates: number;
   busyDates: number;
   firstDate: string;
+  // When the first waiting date starts (UTC).
+  firstStartsAt: string;
   createdAt: string;
 }

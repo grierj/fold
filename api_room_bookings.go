@@ -108,7 +108,7 @@ func placeBooking(tx *gorm.DB, occ *models.EventOccurrence, room *models.Room, s
 		if free && p.requestID != nil {
 			// The insert proved the room free; the booking then waits for an
 			// admin, holding nothing until it is confirmed.
-			return bookedPending, tx.Exec(`UPDATE room_bookings SET status = ?, request_id = ? WHERE occurrence_id = ?`,
+			return bookedPending, tx.Exec(`UPDATE room_bookings SET status = ?, request_id = ?, updated_at = now() WHERE occurrence_id = ?`,
 				models.BookingRequested, *p.requestID, occ.ID).Error
 		}
 		if free {
@@ -340,6 +340,11 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 	errDateGone, errAdminBooking := errors.New("date gone"), errors.New("admin booking")
 	var emailed []uint
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		// The event first, as every series and approval path takes it, so a
+		// date's booking and an admin deciding its request can't deadlock.
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&models.Event{}, ev.ID).Error; err != nil {
+			return err
+		}
 		// Book against the date as it is under the lock: a reschedule or a
 		// cancel that committed since it was read must win.
 		locked, err := lockOccurrence(tx, occ.ID)
@@ -410,7 +415,7 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 		var req *models.RoomRequest
 		var requestID *uint
 		if policy.BookingNeedsApproval(me, roomApprovalOn(tx)) {
-			if req, err = openRoomRequest(tx, ev.ID, room.ID, user.ID, false); err != nil {
+			if req, err = openRoomRequest(tx, ev.ID, room.ID, &user.ID, false); err != nil {
 				return err
 			}
 			requestID = &req.ID
@@ -423,7 +428,7 @@ func (a *App) apiSetDateRoom(c *gin.Context) {
 			return errBusy
 		}
 		if result == bookedPending {
-			ids, err := notifyRoomRequested(tx, req, ev, &room, 1, user.ID)
+			ids, err := notifyRoomRequested(tx, req, ev, &room, 1, &user.ID)
 			emailed = append(emailed, ids...)
 			if err != nil {
 				return err

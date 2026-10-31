@@ -12,7 +12,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Admin, AdminAccountRequests, AdminGuardianLinks, AdminGroups, AdminRooms, AdminUsers, ApiError, Groups, Invitations, RoomRequests, Site } from "../api";
 import { RejectGroupDialog } from "../components/admin/RejectGroupDialog";
 import { RoomsTab, sortRooms } from "../components/admin/RoomsTab";
-import { RoomRequestsList, roomRequestsShown } from "../components/admin/RoomRequestsList";
+import { RoomRequestsList } from "../components/admin/RoomRequestsList";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
@@ -1420,7 +1420,7 @@ function RoomApprovalSetting({ enabled, onChanged }: { enabled: boolean | null; 
     <div className="mb-6 max-w-xl space-y-2">
       <Checkbox
         label="Room bookings need an admin's approval"
-        description="When this is on, leaders' and hosts' bookings wait for an admin. Admins' own bookings are confirmed at once."
+        description="When this is on, leaders' and hosts' bookings wait for an admin. Admins' own bookings are confirmed at once. Turning it off leaves open requests here for you to decide."
         checked={pending ?? enabled === true}
         disabled={saving || enabled === null}
         onChange={(e) => void change(e.target.checked)}
@@ -1558,7 +1558,7 @@ export function AdminPage() {
             <span aria-hidden="true" className="ml-1.5 inline-flex items-center justify-center min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-xs">
               {" "}{t.badge}
             </span>
-          ) : null}{t.count != null && <span className="font-normal">{" "}{t.count}</span>}</>,
+          ) : null}{t.count != null && !t.badge && <span className="font-normal">{" "}{t.count}</span>}</>,
         }))}>
 
       {tab === "settings" && <section aria-labelledby="admin-settings-heading">
@@ -1571,15 +1571,15 @@ export function AdminPage() {
       </section>}
       {tab === "approvals" && <ApprovalsTab onCount={setPendingCount} onGroupDecided={loadGroups} />}
       {tab === "groups" && <GroupsTab users={users} groups={groups} error={groupsError} reload={loadGroups} onDeleted={groupDeleted} />}
-      {tab === "rooms" && <div className="space-y-8">
-        {roomsEnabled === true && <RoomRequestsList requests={requests} needApproval={needApproval} error={requestsError}
-          reload={loadRequests} onRemoved={requestRemoved} />}
-        <div className="space-y-3">
-          {roomsEnabled === true && roomRequestsShown(requests, needApproval, requestsError) && <h2 className="text-xl font-bold">Rooms</h2>}
-          <RoomsTab rooms={rooms} error={roomsEnabled === null ? siteError : roomsError}
-            reload={roomsEnabled === null ? loadSite : loadRooms} onSaved={roomSaved} />
-        </div>
-      </div>}
+      {tab === "rooms" && (roomsEnabled === true ? (
+        <RoomRequestsList requests={requests} needApproval={needApproval} error={requestsError}
+          reload={loadRequests} onRemoved={requestRemoved}>
+          <RoomsTab rooms={rooms} error={roomsError} reload={loadRooms} onSaved={roomSaved} />
+        </RoomRequestsList>
+      ) : (
+        <RoomsTab rooms={rooms} error={roomsEnabled === null ? siteError : roomsError}
+          reload={roomsEnabled === null ? loadSite : loadRooms} onSaved={roomSaved} />
+      ))}
       {tab === "users" && (
         usersLoading ? <Skeleton kind="lines" /> : <UsersTab users={users} reload={loadUsers} />
       )}
