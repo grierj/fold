@@ -89,7 +89,7 @@ export function ProfilePage() {
       <Avatar url={user.avatarUrl || undefined} name={publicName} focalX={user.avatarFocalX} focalY={user.avatarFocalY} size="w-16 h-16" textSize="text-2xl" />
       <div><p className="text-xl font-semibold">{publicName}</p><p className="text-text-muted">Choose what you want to update.</p></div>
     </div>
-    {canCompose && <Link to="/messages" className={`${isAdmin ? "lg:hidden" : "sm:hidden"} flex min-h-11 items-center gap-3 rounded-lg border border-border bg-surface px-4 font-medium`}><MailIcon />Messages</Link>}
+    {canCompose && <Link to="/messages" className={`lg:hidden flex min-h-11 items-center gap-3 rounded-lg border border-border bg-surface px-4 font-medium`}><MailIcon />Messages</Link>}
     {isAdmin && <Link to="/admin" className="sm:hidden flex min-h-11 items-center gap-3 rounded-lg border border-border bg-surface px-4 font-medium"><AdminIcon />Admin</Link>}
     {menu(true)}
     {/* The header already offers Log out on desktop; phones reach it here. */}

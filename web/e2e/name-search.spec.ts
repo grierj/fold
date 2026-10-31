@@ -48,7 +48,7 @@ test("name picker keeps safe identities, teen guidance and existing adult add co
       expect(layout.overflow, name).toBe(0);
       expect(layout.clipped, name).toEqual([]);
       expect(layout.cutOff, name).toEqual([]);
-      expect(layout.under24, name).toEqual([]);
+      expect(layout.under24, `${name}@${width}`).toEqual([]);
       const { violations } = await new AxeBuilder({ page: p }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze();
       expect(violations.filter((v) => v.impact === "serious" || v.impact === "critical").map((v) => ({ id: v.id, targets: v.nodes.map((n) => n.target) })), `${name}@${width}`).toEqual([]);
       const rows = await p.getByRole("listbox", { name: "People" }).getByRole("option").evaluateAll((nodes) => nodes.map((n) => n.getBoundingClientRect().height));

@@ -101,9 +101,9 @@ it("shows Messages in the top nav only to people who can compose (M3.4c)", async
   await screen.findByText("Grace Community Church");
   const link = within(screen.getByRole("navigation", { name: "Main" })).getByRole("link", { name: "Messages" });
   expect(link).toHaveAttribute("href", "/messages");
-  // From sm up, beside the other links; an admin's fuller nav adds it from lg up.
-  expect(link.parentElement).toHaveClass("contents");
-  expect(link.parentElement).not.toHaveClass("hidden");
+  // From lg up, beside the other links; below that it is on Me, so the
+  // church's name keeps its room.
+  expect(link.parentElement).toHaveClass("hidden", "lg:contents");
   unmount2();
   auth.mockReturnValue({ user, loading: false, logout: vi.fn(), isAdmin: true, canCompose: true });
   render(<MemoryRouter><Layout><h1>Welcome</h1></Layout></MemoryRouter>);

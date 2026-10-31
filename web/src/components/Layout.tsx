@@ -82,11 +82,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <NavLink to="/" end className={topLink}>Home</NavLink>
                   <NavLink to="/calendar" className={topLink}>Calendar</NavLink>
                   <NavLink to="/my-groups" className={topLink}>My groups</NavLink>
-                  {/* Messages sits beside Admin from sm up. An admin's nav has one more
-                      link, and at 768px Messages squeezed the church name to 13px
-                      (layout.spec.ts), so for admins it joins the nav from lg up and
-                      is on Me below that. */}
-                  {canCompose && <span className={isAdmin ? "hidden lg:contents" : "contents"}><NavLink to="/messages" className={topLink}>Messages</NavLink></span>}
+                  {/* Messages joins the nav from lg up and is on Me below that: at
+                      768px one more link squeezed the church name (to 13px for an
+                      admin, 20px for a leader; layout.spec.ts, name-search.spec.ts). */}
+                  {canCompose && <span className="hidden lg:contents"><NavLink to="/messages" className={topLink}>Messages</NavLink></span>}
                   <NavLink to="/groups/new" className={topLink}>New group</NavLink>
                   {isAdmin && <NavLink to="/admin" className={topLink}>Admin</NavLink>}
                 </div>
