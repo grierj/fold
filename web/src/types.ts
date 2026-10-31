@@ -859,6 +859,44 @@ export interface Room {
   defaultTeardownMinutes: number;
 }
 
+// The by-room view (M2.2a, 8.1): every active room the viewer may see
+// listed (restricted rooms for admins only), with its bookings over one day
+// or one week in the church's zone. from and to are the first and last day.
+export interface RoomCalendar {
+  timezone: string;
+  from: string;
+  to: string;
+  rooms: RoomCalendarRoom[];
+  truncated: boolean;
+}
+
+export interface RoomCalendarRoom {
+  id: number;
+  name: string;
+  building: string;
+  capacity: number | null;
+  restricted: boolean;
+  bookings: RoomSlot[];
+}
+
+// One booking in the by-room view. A date the viewer can't see is only
+// its times and reserved: true, never a title, group or link. waiting marks
+// a booking that waits for an admin's approval (admins only, DEC-109).
+export interface RoomSlot {
+  startsAt: string;
+  endsAt: string;
+  reserved?: boolean;
+  eventId?: number;
+  date?: string;
+  dateUrl?: string;
+  title?: string;
+  groupId?: number;
+  groupName?: string;
+  hostedBy?: string;
+  churchWide?: boolean;
+  waiting?: boolean;
+}
+
 // The room a date is booked in, shown as its place (M2.1b, 9.2).
 export interface OccurrenceRoom {
   id: number;

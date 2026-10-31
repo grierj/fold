@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-106.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-109.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-106; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-109; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-106) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-109) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -326,7 +326,7 @@ The field lists show the important columns, not every column. Every table has `i
 
 **Rooms (optional; hidden when `rooms_enabled=false`)**
 
-- `Room(name, building, capacity, features, notes, active, restricted, default_setup_minutes, default_teardown_minutes, color)`. `restricted` rooms (for example the nursery) can be booked only by admins. Each booking copies the room's default setup and teardown minutes; an admin may override them on one booking (DEC-101). `color` arrives with M2.2, when the by-room view uses it.
+- `Room(name, building, capacity, features, notes, active, restricted, default_setup_minutes, default_teardown_minutes)`. `restricted` rooms (for example the nursery) can be booked only by admins. Each booking copies the room's default setup and teardown minutes; an admin may override them on one booking (DEC-101). Rooms have no color: the by-room view tells them apart by column and name (DEC-107).
 - `RoomBooking(occurrence_id, room_id, starts_at, ends_at, setup_minutes, teardown_minutes, padded_range tstzrange, status confirmed|requested|rejected, allow_overlap, overlap_reason, created_by)`. The app computes `padded_range = [starts_at - setup, ends_at + teardown)` on every insert and update (a `timestamptz - interval` expression is not immutable, so it cannot be used inside the constraint). Conflicts are enforced by a PostgreSQL exclusion constraint `EXCLUDE USING gist (room_id WITH =, padded_range WITH &&) WHERE (status = 'confirmed' AND NOT allow_overlap)`, using `btree_gist` (DEC-1). A `CHECK` keeps `padded_range` consistent with the four source columns. An admin double-booking sets `allow_overlap=true` with a reason.
 
 **Messaging and consent**
@@ -1652,7 +1652,7 @@ Phase 1 is done (v0.3), merged through PR #184. It delivered events with time zo
 
 ### 14.5 Phase 2: Rooms
 
-Rooms are optional (9.1) and touch the database, API and UI together, so every milestone ships as thin slices in this order (14.1): the database change, then the API and internals, then the UI. A slice may land hidden behind `rooms_enabled` until its UI exists. M2.1a (the room catalog and the rooms switch) is built. In the release table rooms are v0.6, after email (v0.4) and the MVP (v0.5); they may run in parallel with Phase 3 because they share only events and occurrences.
+Rooms are optional (9.1) and touch the database, API and UI together, so every milestone ships as thin slices in this order (14.1): the database change, then the API and internals, then the UI. A slice may land hidden behind `rooms_enabled` until its UI exists. M2.1 (slices a to e) and M2.2a (the by-room view) are built. In the release table rooms are v0.6, after email (v0.4) and the MVP (v0.5); they may run in parallel with Phase 3 because they share only events and occurrences.
 
 Design defaults for this phase (decided here so slices don't reopen them; change them in review if wrong):
 
@@ -1666,7 +1666,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 **M2.1 Rooms and bookings**
 
 - **M2.1a Room catalog and the rooms switch**
-  - Database: `rooms` (5.3 `Room` fields with the DEC-101 default padding; `color` waits for M2.2) and the `rooms_enabled` setting (default off).
+  - Database: `rooms` (5.3 `Room` fields with the DEC-101 default padding; no color, DEC-107) and the `rooms_enabled` setting (default off).
   - API: admin create, edit and deactivate under `/api/v1/admin/rooms` (no delete: history stays), `policy.CanManageRooms`, audited; every room endpoint answers 404 while rooms are off; `GET /site` says whether rooms are on.
   - UI: a Rooms tab in Admin (list, add, edit, deactivate; restricted rooms labelled), and a Rooms on/off switch in admin Settings that saves at once (DEC-98).
   - Acceptance: with rooms off no room UI shows and every room endpoint is 404; only admins manage rooms; deactivating keeps history.
@@ -1696,9 +1696,9 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 **M2.2 By-room view and room feed**
 
 - **M2.2a By-room view**
-  - API: `GET /api/v1/calendar/rooms?view=day|week&date=` returns, per active room, the confirmed bookings in range. A booking the viewer can't see (policy date visibility) is `{start, end, reserved: true}` with no title, group, event id or link; restricted rooms show to admins only.
-  - UI: `/calendar/rooms` (a Rooms view beside Agenda, Week and Month when rooms are on): columns per room with time rows from `sm` up, one room at a time on phones; "Reserved" blocks are grey with the word.
-  - Acceptance: members, leaders and admins each see exactly the details section 6 allows; JSON for a hidden booking has no identifying keys (a key-list test); teens and guests get 404.
+  - API: `GET /api/v1/calendar/rooms?view=day|week&date=` returns, per active room, the confirmed bookings in range, in church time. A booking the viewer can't see (policy date visibility) is `{startsAt, endsAt, reserved: true}` with no title, group, event id or link; restricted rooms show to admins only. Admins also see bookings waiting for approval, marked (DEC-109).
+  - UI: `/calendar/rooms` (a Rooms view beside Agenda, Week and Month when rooms are on): Day is one column per room with time rows from `sm` up, Week is a rooms × days grid (DEC-108), and phones show one room at a time as a day list; "Reserved" blocks are grey with the word, and waiting ones are dashed with "Waiting for approval".
+  - Acceptance: members, leaders and admins each see exactly the details section 6 allows; JSON for a hidden booking has no identifying keys (a key-list test); teens get 404 and signed-out visitors 401.
 - **M2.2b Room ICS feed**
   - Database: `room_feed_tokens` (5.3).
   - API: admins issue and revoke a token per room (`room_feed_tokens`); `/cal/rooms/<roomId>/<token>.ics` exports confirmed bookings, titling invite-only and hidden bookings "Reserved"; the token never reaches the access log (existing redaction).
@@ -2136,6 +2136,9 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-104 | **A restricted room shows as the place** (Grier, Oct 30, 2026; PR #192). "Restricted" limits who may book a room, not who may know where an event is: a date booked in a restricted room shows the room's name as its place, in pages and calendars, to anyone who can see that date. Restricted rooms stay out of room lists, pickers, the by-room view and room feeds for non-admins. | 9.1, 9.2, M2.1, M2.2 |
 | DEC-105 | **The admin "Needs a room" list is approvals only** (Grier, Oct 30, 2026; M2.1d). It shows bookings waiting for an admin's yes or no. Dates that lost their room (a clash, DEC-103) stay the leader's job on the event page; a stored marker (`room_bookings.request_id` on a pending request) keeps the two apart. | 9.2, M2.1d |
 | DEC-106 | **One request per booking action** (Grier, Oct 30, 2026; M2.1d). A leader's booking under approval is one request and one admin task, covering one date or a whole series: "Weekly Bible study wants Fellowship Hall, 40 dates (2 busy)". Confirm or reject applies to all its dates; dates that became busy need a double-book reason to confirm, or go back to the leader. | 9.2, M2.1d |
+| DEC-107 | **Rooms have no color** (Grier, Oct 30, 2026; M2.2 planning). The by-room view tells rooms apart by column and name, so the planned `rooms.color` field is dropped: no migration, no swatch picker, nothing more to check for contrast. | 5.3, M2.2 |
+| DEC-108 | **The by-room Week is a rooms × days grid** (Grier, Oct 30, 2026; M2.2 planning). From `sm` up, Week shows one row per room and one column per day, and each cell lists that day's bookings as short time blocks ("7–8:30 PM Bible study"). Day keeps one column per room with time rows; phones show one room at a time as a day list. | 8.1, M2.2a |
+| DEC-109 | **Admins see bookings waiting for approval in the by-room view** (Grier, Oct 30, 2026; M2.2 planning). With approval on (DEC-102), the by-room view also shows an admin the requested bookings on a pending request, dashed and labelled "Waiting for approval", so they can judge clashes. Everyone else, and the room feed, see confirmed bookings only. A booking that lost its room (DEC-103) isn't shown to anyone. | 8.1, 9.2, M2.2 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 

@@ -4,12 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CalendarOccurrence } from "../types";
 import { CalendarPage } from "./Calendar";
 
-const { list, groups, auth } = vi.hoisted(() => ({ list: vi.fn(), groups: vi.fn(), auth: vi.fn() }));
+const { list, groups, auth, site } = vi.hoisted(() => ({ list: vi.fn(), groups: vi.fn(), auth: vi.fn(), site: vi.fn() }));
 vi.mock("../auth", () => ({ useAuth: auth }));
 vi.mock("../api", async (importActual) => ({
   ApiError: (await importActual<typeof import("../api")>()).ApiError,
   Calendar: { list },
   Groups: { list: groups },
+  Site: { get: site },
 }));
 
 const occ = (eventId: number, o: Partial<CalendarOccurrence> = {}): CalendarOccurrence => ({
@@ -25,6 +26,8 @@ beforeEach(() => {
   list.mockReset();
   groups.mockReset();
   groups.mockResolvedValue({ groups: [] });
+  site.mockReset();
+  site.mockResolvedValue({ roomsEnabled: false });
   auth.mockReturnValue({ user: { id: 1 }, isAdmin: false });
 });
 
@@ -73,5 +76,36 @@ describe("week count line", () => {
   ])("says %j as %s", async (occs, text) => {
     show(occs as CalendarOccurrence[], week);
     expect(await screen.findByText(text)).toBeInTheDocument();
+  });
+});
+
+describe("the Rooms view item (M2.2a)", () => {
+  it("shows Rooms to signed-in adults when rooms are on", async () => {
+    site.mockResolvedValue({ roomsEnabled: true });
+    auth.mockReturnValue({ user: { id: 1, accountType: "adult" }, isAdmin: false });
+    show([]);
+    expect(await screen.findByRole("link", { name: "Rooms" })).toHaveAttribute("href", "/calendar/rooms");
+  });
+
+  it("hides Rooms when rooms are off", async () => {
+    auth.mockReturnValue({ user: { id: 1, accountType: "adult" }, isAdmin: false });
+    show([]);
+    await waitFor(() => expect(site).toHaveBeenCalled());
+    await screen.findByRole("link", { name: "Month" });
+    expect(screen.queryByRole("link", { name: "Rooms" })).not.toBeInTheDocument();
+  });
+
+  it("hides Rooms from teens and signed-out visitors without asking", async () => {
+    site.mockResolvedValue({ roomsEnabled: true });
+    auth.mockReturnValue({ user: { id: 1, accountType: "teen" }, isAdmin: false });
+    const { unmount } = show([]);
+    await screen.findByRole("link", { name: "Month" });
+    expect(screen.queryByRole("link", { name: "Rooms" })).not.toBeInTheDocument();
+    unmount();
+    auth.mockReturnValue({ user: null, isAdmin: false });
+    show([]);
+    await screen.findByRole("link", { name: "Month" });
+    expect(screen.queryByRole("link", { name: "Rooms" })).not.toBeInTheDocument();
+    expect(site).not.toHaveBeenCalled();
   });
 });

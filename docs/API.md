@@ -1204,6 +1204,19 @@ POST /api/v1/admin/rooms/locations/match {location, roomId} → 200 {booked, bus
 
 Admins only, and 404 while rooms are off (9.1). The list counts the scheduled upcoming dates with no booking by their place as pages show it (the date's own, else the event's, else the group's), most dates first, at most 200; spellings that differ only in case or outer spaces are one place, shown in its most common spelling. Matching books the room, as the admin, on every such date whose place matches; dates the room is taken on are left alone and listed in `busy` (at most 100; `busyTotal` counts them all). A series with upcoming dates whose own place (the event's, else the group's) matches and that has no series room gets this one (M2.1c), so its later dates are booked too (`series` counts them); a series whose room was rejected or stopped can get one again this way, since this is an admin's choice. Typed locations are never changed: the place line shows the room and leaves out a typed place that only repeats the room's name. Dates that already have a booking are skipped, so matching again books nothing twice; taken dates stay unbooked, so their place stays in the list for another try. Matching compares case-insensitively in the database, on both sides. Audited as `room.location_matched`.
 
+### By-room view (M2.2a)
+
+```
+GET /api/v1/calendar/rooms?view=day|week&date=YYYY-MM-DD → 200 {timezone, from, to, rooms: [roomCalendarRoom], truncated}
+```
+
+Signed-in adults only (401 signed out); teens get 404, and so does everyone while rooms are off. The window is in the church's time zone (`timezone`): one day, or the Sunday-to-Saturday week holding `date` (`view` defaults to `day`, `date` to today). `from` and `to` are the first and last day, inclusive. `roomCalendarRoom` is `{id, name, building, capacity, restricted, bookings: [roomSlot]}`, active rooms ordered by building and name; restricted rooms are listed for admins only (DEC-104). A `roomSlot` is one booking overlapping the window, by its event's own time (padding not included), in start order:
+
+- a date the viewer can see: `{startsAt, endsAt, eventId, date, title, churchWide?, dateUrl?, groupId?, groupName?, hostedBy?}`. `dateUrl` is set when only that date is open to the viewer (the series isn't). The group appears only when the viewer may see it; an opened event of a hidden group says `hostedBy` the church. An exact-date invitation gives the title and `dateUrl`, never the group.
+- any other date: exactly `{startsAt, endsAt, reserved: true}`, with nothing that says whose it is.
+
+Only confirmed bookings show. Admins also see bookings waiting for approval on a pending request, marked `waiting: true` (DEC-109); they hold nothing yet. A booking that lost its room isn't shown. At most 2000 bookings; past that, `truncated` is true.
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

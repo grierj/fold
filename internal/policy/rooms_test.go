@@ -62,3 +62,30 @@ func TestRoomApprovalPolicy(t *testing.T) {
 		t.Error("only admins decide room requests")
 	}
 }
+
+func TestRoomCalendarPolicy(t *testing.T) {
+	member, teen, admin := &Person{ID: 1}, &Person{ID: 2, Teen: true}, &Person{ID: 3, Admin: true}
+	for _, tc := range []struct {
+		name                       string
+		p                          *Person
+		calendar, restricted, wait bool
+	}{
+		{"signed out", nil, false, false, false},
+		{"teen", teen, false, false, false},
+		{"member or leader", member, true, false, false},
+		{"admin", admin, true, true, true},
+	} {
+		if got := CanSeeRoomCalendar(tc.p); got != tc.calendar {
+			t.Errorf("%s: calendar got %v, want %v", tc.name, got, tc.calendar)
+		}
+		if got := CanListRoom(tc.p, true); got != tc.restricted {
+			t.Errorf("%s: restricted room got %v, want %v", tc.name, got, tc.restricted)
+		}
+		if !CanListRoom(tc.p, false) {
+			t.Errorf("%s: an ordinary room should be listed", tc.name)
+		}
+		if got := CanSeeWaitingBookings(tc.p); got != tc.wait {
+			t.Errorf("%s: waiting bookings got %v, want %v", tc.name, got, tc.wait)
+		}
+	}
+}
