@@ -49,3 +49,21 @@ it("says how long an address may be when the server refuses it", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent("Keep the address to 6 lines and 300 characters.");
   expect(screen.queryByText("server words")).not.toBeInTheDocument();
 });
+
+it("refuses more than six lines before sending", async () => {
+  view();
+  const box = await screen.findByRole("textbox", { name: /Church mailing address/ });
+  await userEvent.type(box, "1{enter}2{enter}3{enter}4{enter}5{enter}6{enter}7");
+  await userEvent.click(screen.getByRole("button", { name: "Save address" }));
+  expect(await screen.findByText("Keep the address to 6 lines.")).toBeInTheDocument();
+  expect(setChurchAddress).not.toHaveBeenCalled();
+});
+
+it("says when the address couldn't load, with a retry, instead of the reminder", async () => {
+  churchAddress.mockRejectedValueOnce(new ApiError(500, "server words"));
+  view();
+  expect(await screen.findByText("We couldn't load the church's mailing address.")).toBeInTheDocument();
+  expect(screen.queryByText(/Add your church's mailing address/)).not.toBeInTheDocument();
+  await userEvent.click(screen.getByRole("button", { name: "Try again" }));
+  expect(await screen.findByRole("textbox", { name: /Church mailing address/ })).toBeInTheDocument();
+});

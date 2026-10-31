@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"fold/internal/audit"
@@ -82,10 +83,12 @@ func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string) 
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return false
 	}
-	kinds := emailKindsFor(u)
+	// "Turn off all optional email" writes every optional kind, even one the
+	// person doesn't get now, so it survives becoming an admin (DEC-97).
+	kinds := notify.OptionalEmailCategories()
 	if body.Category != nil {
 		found := false
-		for _, k := range kinds {
+		for _, k := range emailKindsFor(u) {
 			found = found || k == *body.Category
 		}
 		if !found {
@@ -184,6 +187,14 @@ func (a *App) apiAdminSetChurchAddress(c *gin.Context) {
 		}
 	}
 	addr := strings.Join(lines, "\n")
+	for _, r := range addr {
+		// Plain characters only: no NUL (Postgres refuses it) or other control,
+		// line-separator or text-direction characters in an email footer.
+		if r != '\n' && (unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == '\u2028' || r == '\u2029') {
+			jsonError(c, http.StatusBadRequest, errChurchAddressCharacters)
+			return
+		}
+	}
 	if utf8.RuneCountInString(addr) > maxChurchAddress || len(lines) > 6 {
 		jsonError(c, http.StatusBadRequest, errChurchAddressLong)
 		return
@@ -205,6 +216,8 @@ func (a *App) apiAdminSetChurchAddress(c *gin.Context) {
 }
 
 const errChurchAddressLong = "the address must be at most 300 characters on 6 lines"
+
+const errChurchAddressCharacters = "the address has a character that can't go in an email"
 
 // churchAddress is the church's postal address for footers, or "".
 func (a *App) churchAddress() string {

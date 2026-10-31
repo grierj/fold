@@ -62,8 +62,9 @@ func TestEmailSettingsByLink(t *testing.T) {
 	}
 	var rows []models.Consent
 	app.DB.Where("user_id = ?", lee.ID).Order("id").Find(&rows)
-	// events, then groups and messages (events already off): three rows.
-	if len(rows) != 3 || rows[0].Source != models.ConsentSourceUnsubscribe {
+	// events, then every other optional kind (events already off; admin
+	// notices too, so it survives becoming an admin): four rows.
+	if len(rows) != 4 || rows[0].Source != models.ConsentSourceUnsubscribe {
 		t.Fatalf("consent rows: %+v", rows)
 	}
 
@@ -103,6 +104,12 @@ func TestChurchAddressSetting(t *testing.T) {
 	}
 	if app.churchAddress() != "Grace Church\n12 Main St\nBoise, ID" || auditCount(t, app, "setting.church_address_changed") != 1 {
 		t.Fatal("not saved or not audited")
+	}
+	for _, bad := range []string{"a\u0000b", "tab\there", "rtl\u202eoverride", "line\u2028sep"} {
+		if w := root.do("PUT", "/api/v1/admin/settings/church-address", map[string]any{"address": bad}, true); w.Code != http.StatusBadRequest ||
+			!strings.Contains(w.Body.String(), "church_address_characters") {
+			t.Fatalf("%q: %d %s", bad, w.Code, w.Body.String())
+		}
 	}
 	if w := root.do("PUT", "/api/v1/admin/settings/church-address", map[string]any{"address": strings.Repeat("x\n", 7)}, true); w.Code != http.StatusBadRequest ||
 		!strings.Contains(w.Body.String(), "church_address_long") {

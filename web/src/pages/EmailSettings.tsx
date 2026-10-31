@@ -10,12 +10,13 @@ import { ButtonLink } from "../components/ui/Button";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Skeleton } from "../components/ui/Skeleton";
 import type { NotificationSettings } from "../types";
+import { useAuth } from "../auth";
 
 // "You came here from …": one email of the kind the link came from.
 const ONE_OF: Record<string, string> = {
   groups: "a group update",
   events: "an event update",
-  messages: "a message alert",
+  messages: "a message notice",
   admin: "an admin notice",
 };
 
@@ -24,6 +25,7 @@ const ONE_OF: Record<string, string> = {
 // switches as Me > Notifications.
 export function EmailSettingsPage() {
   const { token = "" } = useParams<{ token: string }>();
+  const { user } = useAuth();
   const [who, setWho] = useState<{ email: string; from: string } | null>(null);
   const [gone, setGone] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -70,7 +72,9 @@ export function EmailSettingsPage() {
           <div className="mt-6">
             <EmailSettings load={load} save={save} first={who.from} />
           </div>
-          <p className="mt-6 text-sm"><Link to="/login" className="text-link">Sign in to see all your settings</Link></p>
+          <p className="mt-6 text-sm">{user
+            ? <Link to="/profile/notifications" className="text-link">See all your settings</Link>
+            : <Link to="/login" className="text-link">Sign in to see all your settings</Link>}</p>
         </>
       )}
     </div>

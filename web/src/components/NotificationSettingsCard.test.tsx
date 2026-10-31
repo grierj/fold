@@ -38,10 +38,11 @@ it("shows a skeleton while loading, then a switch per kind and the all-off switc
   await act(async () => { finish(settings(kinds({ events: true }))); });
   expect(await screen.findByRole("checkbox", { name: /^Group updates/ })).toBeChecked();
   expect(screen.getByRole("checkbox", { name: /^Event updates/ })).not.toBeChecked();
-  expect(screen.getByRole("checkbox", { name: /^Message alerts/ })).toBeChecked();
+  expect(screen.getByRole("checkbox", { name: /^Message notices/ })).toBeChecked();
   expect(screen.queryByRole("checkbox", { name: /^Admin notices/ })).not.toBeInTheDocument();
   expect(screen.getByRole("checkbox", { name: new RegExp(`^${all}`) })).not.toBeChecked();
   expect(screen.getByText(/Account and safety email always comes/)).toBeInTheDocument();
+  expect(screen.getByText("Check this to stop every kind above. Uncheck it to turn them all back on.")).toBeInTheDocument();
 });
 
 it("saves one kind on change with no Save button and says Saved", async () => {
@@ -61,7 +62,7 @@ it("turns every kind off at once, and the all-off switch follows the kinds", asy
   await userEvent.click(allBox);
   expect(update).toHaveBeenCalledWith({ off: true });
   expect(await screen.findByText("Saved")).toBeInTheDocument();
-  for (const label of [/^Group updates/, /^Event updates/, /^Message alerts/]) {
+  for (const label of [/^Group updates/, /^Event updates/, /^Message notices/]) {
     expect(screen.getByRole("checkbox", { name: label })).not.toBeChecked();
   }
   expect(allBox).toBeChecked();
@@ -76,13 +77,16 @@ it("disables the switches while one saves, so saves can't overlap", async () => 
   render(<NotificationSettingsCard />);
   const box = await screen.findByRole("checkbox", { name: /^Group updates/ });
   await userEvent.click(box);
-  expect(box).toBeDisabled();
-  expect(screen.getByRole("checkbox", { name: /^Event updates/ })).toBeDisabled();
+  // aria-disabled, not disabled, so keyboard focus stays on the switch.
+  expect(box).toHaveAttribute("aria-disabled", "true");
+  expect(box).toHaveFocus();
+  expect(screen.getByRole("checkbox", { name: /^Event updates/ })).toHaveAttribute("aria-disabled", "true");
   await userEvent.click(box);
+  await userEvent.click(screen.getByRole("checkbox", { name: /^Event updates/ }));
   expect(update).toHaveBeenCalledOnce();
   await act(async () => { finish(settings(kinds({ groups: true }))); });
   expect(await screen.findByText("Saved")).toHaveClass("text-success");
-  expect(box).toBeEnabled();
+  expect(box).not.toHaveAttribute("aria-disabled");
 });
 
 it("puts the switches back and says what went wrong when saving fails, without server text", async () => {
@@ -90,9 +94,9 @@ it("puts the switches back and says what went wrong when saving fails, without s
   render(<NotificationSettingsCard />);
   const box = await screen.findByRole("checkbox", { name: /^Group updates/ });
   await userEvent.click(box);
-  expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't save your changes.");
+  expect(await screen.findByRole("alert")).toHaveTextContent("We couldn't save your changes. Try again.");
   expect(box).toBeChecked();
-  expect(box).toBeEnabled();
+  expect(box).not.toHaveAttribute("aria-disabled");
   expect(screen.queryByText("Saved")).not.toBeInTheDocument();
   expect(screen.queryByText("private server text")).not.toBeInTheDocument();
 });

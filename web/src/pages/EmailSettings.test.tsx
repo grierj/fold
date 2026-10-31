@@ -11,6 +11,12 @@ vi.mock("../api", async (orig) => ({
   EmailSettingsLink: { get: (t: string) => get(t), update: (t: string, c: EmailSettingsChange) => update(t, c) },
 }));
 
+let signedIn = false;
+vi.mock("../auth", async (orig) => ({
+  ...(await orig<typeof import("../auth")>()),
+  useAuth: () => ({ user: signedIn ? { id: 1, name: "Sam" } : null }),
+}));
+
 import { ApiError } from "../api";
 import { EmailSettingsPage } from "./EmailSettings";
 
@@ -21,6 +27,7 @@ const kinds = [
 ];
 
 beforeEach(() => {
+  signedIn = false;
   get.mockReset().mockResolvedValue({ emailSettings: { kinds, optionalEmailOff: false }, email: "s•••@example.com", fromCategory: "events" });
   update.mockReset().mockImplementation(async (_t: string, c: EmailSettingsChange) => ({
     emailSettings: { kinds: kinds.map((k) => (!c.category || k.category === c.category ? { ...k, off: c.off } : k)), optionalEmailOff: !c.category && c.off },
@@ -56,4 +63,19 @@ it("says plainly when the link no longer works, never in red", async () => {
   expect(screen.getByText("Sign in to change your email settings.")).toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+});
+
+it("sends a signed-in visitor to their own notification settings", async () => {
+  signedIn = true;
+  open("abc");
+  expect(await screen.findByRole("link", { name: "See all your settings" })).toHaveAttribute("href", "/profile/notifications");
+  expect(screen.queryByRole("link", { name: "Sign in to see all your settings" })).not.toBeInTheDocument();
+});
+
+it("words the kinds as the email footer does", async () => {
+  get.mockResolvedValue({ emailSettings: { kinds: [...kinds, { category: "admin", off: false }], optionalEmailOff: false }, email: "a•••@example.com", fromCategory: "messages" });
+  open("abc");
+  expect(await screen.findByText(/You came here from a message notice/)).toBeInTheDocument();
+  expect(await screen.findByRole("checkbox", { name: /^Message notices/ })).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: /^Admin notices/ })).toBeInTheDocument();
 });

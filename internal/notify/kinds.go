@@ -161,7 +161,7 @@ func OptionalEmailCategories() []string {
 func CategoryEmailName(category string) string {
 	switch category {
 	case CatAdmin:
-		return "notices for church admins"
+		return "admin notices"
 	case CatGroups:
 		return "group updates"
 	case CatEvents:
