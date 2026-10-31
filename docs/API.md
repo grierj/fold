@@ -1346,6 +1346,23 @@ The message's page shows the counts as a line ("Sent to 132 people · 3 bounced 
 
 `guardian_copies` is `true` or `false` (default off): each confirmed guardian of a teen recipient gets an email copy (DEC-19). `reply_to_address` is where replies to announcements go until the M3.11 relay (DEC-130). Both are on Admin → Settings; each change writes its audit row in the same transaction.
 
+#### Event reminders (M3.6a)
+
+Every event has `reminderEmailMinutes`, which says how long before each date its email reminder goes: `0` (off), `120`, `1440` (the default), `2880` or `10080` (DEC-133). It is set on create and update like the other event fields. Any other value is 400 `event_reminder_time`.
+
+A reminder is a message the pipeline sends (`category` `reminder`, no author, `occurrenceId` set). It is never a bell row (DEC-44).
+
+- **Scheduling.** An hourly `reminders.sweep` (queued as `reminders.sweep:<UTC hour>`) queues one `reminder.send` job at the exact reminder time. This happens for each scheduled date whose reminder falls between 6 hours ago and 2 hours ahead. A reminder missed by a few hours of downtime, or one for an event created after its reminder time, goes as soon as it can, before the date starts. The job's key names the date, its start and the reminder time. Whether anyone is going is checked when the job runs, so the first person to sign up shortly before the reminder time still gets it.
+- **Stale jobs do nothing.** That covers a cancelled, moved or deleted date, a reminder time that was changed or turned off (the new time queues a new job), a date that has started, and a date with nobody of that status. A reminder already sent whose time falls inside the new reminder's lead covers the new one, so a date moved an hour later sends no second email. A date moved a week later gets a new reminder, and so does a changed reminder time: a 1-day reminder shortened to 2 hours also sends the 2-hour one.
+- **Two messages per date.** The job writes the going reminder ("Reminder: Book night on Tue, Nov 3 · 7:00 PM MST") and, when the event has a waitlist, the waitlist note ("Still on the waitlist: …"). Inside 2 hours the note doesn't promise an email about a spot, since the waitlist no longer moves on its own (DEC-80). Each is written once (`reminder_key`) and goes through `message.send`; the daily reaper leaves reminders to their job.
+- **Who gets it.**
+  - Recipients are the date's registrants with that status (a household person's reaches the account holder). Guests are included, because reminders for their event are mail they get (PLAN 7.4).
+  - Each one is checked again for whether they may still see the date: the date's effective visibility, or a live exact-date invitation. Those who can't are skipped: "can't see this date anymore".
+  - Then the usual filters apply, with the **Event updates** switch (`category:events`) instead of Messages from leaders. Someone who turned it off is skipped: "turned off event updates".
+  - Guardian copies follow `guardian_copies` as for any non-transactional email (DEC-19).
+- **What it looks like.** A reminder is From the church name with no author, and replies go to the office address. The footer says "You're getting event updates from …".
+- **What it says.** The text is the reader's own: first name, the date's title (its own when it has one), time and place, and a button to their date page, where they can change their RSVP.
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

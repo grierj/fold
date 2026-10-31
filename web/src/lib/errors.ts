@@ -80,6 +80,7 @@ export const ERROR_COPY = {
   message_test_email: "We can't send to your email address right now, usually because earlier mail to it bounced. Ask an admin to check it, then try again.",
   message_test_failed: "We couldn't send the test. Try again in a few minutes.",
   message_daily_limit: "You've already sent 5 messages to these people today. Schedule this one for tomorrow, or ask an admin to send it.",
+  event_reminder_time: "Pick a reminder time from the list: off, or 2 hours, 1 day, 2 days or 1 week before.",
   message_nothing_to_retry: "There's nothing to send again: everyone it could reach got it.",
   message_retry_refused: "Its author can no longer write to these people, so it can't be sent again. Write a new message if it still needs to go out.",
   message_retry_sending: "It's already sending again.",

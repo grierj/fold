@@ -352,13 +352,14 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 	}
 	ev := models.Event{
 		Visibility: vis, CreatedBy: creator.ID,
+		ReminderEmailMinutes: defaultReminderMinutes,
 	}
 	applySpec(&ev, spec, body.eventBody, ed, vid)
 	if !textOK(c, ev.Title, ev.Description, ev.Location) {
 		return
 	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Create(&ev).Error; err != nil {
+		if err := createEvent(tx, &ev); err != nil {
 			return err
 		}
 		for _, id := range hostIDs {

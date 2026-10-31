@@ -286,6 +286,9 @@ type Event struct {
 	// GuestsAllowed caps the extra unnamed guests one registration may
 	// bring (0-5, enforced by a CHECK).
 	GuestsAllowed int `gorm:"not null;default:0"`
+	// ReminderEmailMinutes is how long before each date its email reminder
+	// goes (M3.6, DEC-133): 0 off, 120, 1440 (the default), 2880 or 10080.
+	ReminderEmailMinutes int `gorm:"not null;default:1440"`
 	// Remote attendance (M1.8 slice 2): people may register remote only
 	// when RemoteAvailable is on. Remote seats count against
 	// RemoteCapacity (nil means unlimited; 0 means no remote seats),
@@ -1118,10 +1121,21 @@ type Message struct {
 	SegmentsEstimate int `gorm:"not null;default:0"`
 	RecipientCount   int `gorm:"not null;default:0"`
 	// Error says why a message failed or was refused at send time.
-	Error     string    `gorm:"not null;default:''"`
-	CreatedAt time.Time `gorm:"not null;default:now()"`
-	UpdatedAt time.Time `gorm:"not null;default:now()"`
+	Error string `gorm:"not null;default:''"`
+	// OccurrenceID and ReminderKey mark an automatic reminder (M3.6): its
+	// date, and one key per date, time and kind.
+	OccurrenceID *uint     `gorm:"index:idx_messages_occurrence,where:occurrence_id IS NOT NULL"`
+	ReminderKey  *string   `gorm:"uniqueIndex:idx_messages_reminder_key,where:reminder_key IS NOT NULL"`
+	CreatedAt    time.Time `gorm:"not null;default:now()"`
+	UpdatedAt    time.Time `gorm:"not null;default:now()"`
 }
+
+// Message categories (PLAN 5.3): what the composer writes, and what the
+// reminder sweep writes (M3.6).
+const (
+	MessageCategoryAnnouncement = "announcement"
+	MessageCategoryReminder     = "reminder"
+)
 
 // Message statuses (PLAN 5.3). Only draft and scheduled can still change.
 const (

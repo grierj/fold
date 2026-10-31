@@ -334,6 +334,9 @@ export interface EventSeries {
   capacity: number | null;
   waitlistEnabled: boolean;
   guestsAllowed: number;
+  // When each date's email reminder goes, in minutes before (M3.6,
+  // DEC-133): 0 off, 120, 1440 (the default), 2880 or 10080.
+  reminderEmailMinutes: number;
   // Remote attendance (M1.8 slice 2). remoteCapacity null is unlimited.
   childcareAvailable: boolean;
   childcareCapacity: number | null;

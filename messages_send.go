@@ -14,7 +14,6 @@ import (
 	"fold/internal/content"
 	"fold/internal/jobs"
 	"fold/internal/mail"
-	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/internal/providers"
 	"fold/models"
@@ -82,7 +81,9 @@ func (a *App) messageKinds() []jobs.Kind {
 }
 
 // backgroundKinds are the job kinds queued by events, not by the day.
-func (a *App) backgroundKinds() []jobs.Kind { return append(a.eventKinds(), a.messageKinds()...) }
+func (a *App) backgroundKinds() []jobs.Kind {
+	return append(append(a.eventKinds(), a.messageKinds()...), a.reminderKinds()...)
+}
 
 // enqueueMessageSend queues message.send for a message scheduled at when.
 // The key carries the time, so rescheduling queues a new job and the old
@@ -164,24 +165,56 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 	read := &m
 	var au audienceJSON
 	_ = json.Unmarshal([]byte(m.Audience), &au)
-	// 1. The author's rights are checked again: roles change after scheduling.
-	var author models.User
-	if m.AuthorID == nil || db.First(&author, *m.AuthorID).Error != nil || author.Status != models.UserActive {
-		return a.refuseMessage(db, &m, read, whyAuthorGone)
-	}
-	ids, err := a.resolveAudience(&author, &au, now)
-	switch {
-	case errors.Is(err, errAudienceRefused):
-		return a.refuseMessage(db, &m, read, whyAuthorRefused)
-	case errors.Is(err, errAudienceGone), errors.Is(err, errAudienceInvalid):
-		return a.refuseMessage(db, &m, read, whyAudienceGone)
-	case err != nil:
-		return err
+	category := messageCategory(&m)
+	var ids []uint
+	var hidden map[uint]bool
+	if m.Category == models.MessageCategoryReminder {
+		// A reminder has no author: its date's registrants, each checked
+		// again for whether they may still see the date (M3.6, M1.13).
+		if err := au.normalize(); err != nil || m.OccurrenceID == nil {
+			return a.refuseMessage(db, &m, read, whyAudienceGone)
+		}
+		var err error
+		if ids, err = a.audienceUserIDs(db, au, now); err != nil {
+			return err
+		}
+		can, err := a.reminderReaders(db, *m.OccurrenceID, ids, now)
+		if errors.Is(err, errAudienceGone) {
+			return a.refuseMessage(db, &m, read, whyAudienceGone)
+		}
+		if err != nil {
+			return err
+		}
+		hidden = map[uint]bool{}
+		for _, id := range ids {
+			hidden[id] = !can[id]
+		}
+	} else {
+		// 1. The author's rights are checked again: roles change after scheduling.
+		var author models.User
+		if m.AuthorID == nil || db.First(&author, *m.AuthorID).Error != nil || author.Status != models.UserActive {
+			return a.refuseMessage(db, &m, read, whyAuthorGone)
+		}
+		var err error
+		ids, err = a.resolveAudience(&author, &au, now)
+		switch {
+		case errors.Is(err, errAudienceRefused):
+			return a.refuseMessage(db, &m, read, whyAuthorRefused)
+		case errors.Is(err, errAudienceGone), errors.Is(err, errAudienceInvalid):
+			return a.refuseMessage(db, &m, read, whyAudienceGone)
+		case err != nil:
+			return err
+		}
 	}
 	// 2–4. Who it reaches, each once, and who is skipped and why.
-	facts, err := recipientFacts(db, ids)
+	facts, err := recipientFacts(db, ids, category)
 	if err != nil {
 		return err
+	}
+	for i := range facts {
+		if facts[i].Skip == "" && hidden[facts[i].User.ID] {
+			facts[i].Skip = skipCantSeeDate
+		}
 	}
 	rows := make([]models.MessageRecipient, 0, len(facts))
 	direct := map[uint]bool{}
@@ -202,7 +235,7 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 	// 5. Guardian copies (DEC-19): by email only (DEC-29), each guardian
 	// filtered like anyone else.
 	if len(teens) > 0 && a.settingValue(settingGuardianCopies) == "true" {
-		copies, err := guardianCopyRows(db, m.ID, teens, direct)
+		copies, err := guardianCopyRows(db, m.ID, teens, direct, category)
 		if err != nil {
 			return err
 		}
@@ -264,7 +297,7 @@ func enqueueBatches(tx *gorm.DB, messageID uint, ids []uint, gen string) error {
 // queued for those who can get email, suppressed with the reason for the
 // rest. A guardian of two teens gets one copy for each; a guardian the
 // message already reaches directly gets none.
-func guardianCopyRows(db *gorm.DB, messageID uint, teens []uint, direct map[uint]bool) ([]models.MessageRecipient, error) {
+func guardianCopyRows(db *gorm.DB, messageID uint, teens []uint, direct map[uint]bool, category string) ([]models.MessageRecipient, error) {
 	var links []models.GuardianLink
 	if err := db.Where("teen_user_id IN ? AND status = ?", teens, models.GuardianConfirmed).Order("id").Find(&links).Error; err != nil {
 		return nil, err
@@ -278,7 +311,7 @@ func guardianCopyRows(db *gorm.DB, messageID uint, teens []uint, direct map[uint
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	facts, err := recipientFacts(db, dedupeIDs(ids))
+	facts, err := recipientFacts(db, dedupeIDs(ids), category)
 	if err != nil {
 		return nil, err
 	}
@@ -448,7 +481,7 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 	from := a.messageFromName(db, &m, footer.site)
 	replyTo := a.replyToAddress()
 	sender := mail.Unwrap(a.Mailer)
-	messages := categoryScope(notify.CatMessages)
+	optOut := categoryScope(messageCategory(&m))
 	last := jobs.LastAttempt(ctx)
 	for _, row := range rows {
 		reader := readers[row.UserID]
@@ -463,10 +496,10 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 			// Who the reader is now: someone disabled or opted out since
 			// the snapshot doesn't get it.
 			switch {
-			case reader == nil || reader.Status != models.UserActive:
+			case reader == nil || !(reader.Status == models.UserActive || reader.Status == models.UserGuest && m.Category == models.MessageCategoryReminder):
 				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipNotActive, "", "")
-			case optedOut[row.UserID][messages]:
-				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipOptedOut, "", "")
+			case optedOut[row.UserID][optOut]:
+				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipOptedOutOf(messageCategory(&m)), "", "")
 			}
 			msg, err := a.messageEmail(&m, row, reader, readers, values, footer)
 			if err != nil {
@@ -647,9 +680,17 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	if err := q.Order("COALESCE(r.user_id, r.registered_by), o.starts_at").Scan(&dates).Error; err != nil {
 		return nil, err
 	}
+	title := ev.Title
+	if au.Type == policy.AudienceOccurrence {
+		// One date: its own title, when it has one.
+		var occ models.EventOccurrence
+		if db.Select("id, title_override").First(&occ, au.OccurrenceID).Error == nil && occ.TitleOverride != nil && *occ.TitleOverride != "" {
+			title = *occ.TitleOverride
+		}
+	}
 	link := a.emailLink("/events/" + historyID(ev.ID))
 	for id := range out {
-		out[id][content.FieldEventTitle], out[id][content.FieldEventLink], out[id][content.FieldManageLink] = ev.Title, link, link
+		out[id][content.FieldEventTitle], out[id][content.FieldEventLink], out[id][content.FieldManageLink] = title, link, link
 	}
 	for _, d := range dates {
 		if v := out[d.UID]; v != nil {
@@ -680,7 +721,7 @@ func (a *App) reapMessages(ctx context.Context, now time.Time) error {
 			AND (j.payload->>'messageId')::bigint = messages.id)`
 	}
 	var stuck []models.Message
-	if err := db.Select("id, author_id").Where("status = ? AND scheduled_at < ? AND "+live(kindMessageSend), models.MessageScheduled, now.Add(-time.Hour)).
+	if err := db.Select("id, author_id").Where("status = ? AND category <> ? AND scheduled_at < ? AND "+live(kindMessageSend), models.MessageScheduled, models.MessageCategoryReminder, now.Add(-time.Hour)).
 		Find(&stuck).Error; err != nil {
 		return err
 	}
