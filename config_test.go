@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -103,5 +104,27 @@ func TestClientIPTrustsOnlyTheProxySubnet(t *testing.T) {
 		if got := w.Body.String(); got != tc.want {
 			t.Errorf("%s: ClientIP = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestJobWorkerSettings(t *testing.T) {
+	t.Setenv("APP_ENV", "prod")
+	t.Setenv("SESSION_SECRET", "test-session-secret-at-least-32-bytes")
+	t.Setenv("DATABASE_URL", "postgres://unused")
+	cfg, err := LoadConfig()
+	if err != nil || cfg.Workers != 2 || cfg.JobPoll != time.Second {
+		t.Fatalf("defaults: %+v %v", cfg, err)
+	}
+	t.Setenv("FOLD_WORKERS", "0")
+	t.Setenv("FOLD_JOB_POLL", "2s")
+	if cfg, err := LoadConfig(); err != nil || cfg.Workers != 0 || cfg.JobPoll != 2*time.Second {
+		t.Fatalf("set: %+v %v", cfg, err)
+	}
+	for env, bad := range map[string]string{"FOLD_WORKERS": "-1", "FOLD_JOB_POLL": "forever"} {
+		t.Setenv(env, bad)
+		if _, err := LoadConfig(); err == nil || !strings.Contains(err.Error(), env) {
+			t.Fatalf("%s=%s: %v", env, bad, err)
+		}
+		t.Setenv(env, "")
 	}
 }

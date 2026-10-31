@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -713,6 +714,23 @@ func zoneOrChurch(tx *gorm.DB, tz string) *time.Location {
 }
 
 // churchZone is the church's zone from its setting, else UTC.
+// churchZoneErr is churchZone, reporting a failed read instead of guessing
+// UTC. An unset or unknown zone is UTC, as there.
+func churchZoneErr(tx *gorm.DB) (*time.Location, error) {
+	var s models.Setting
+	err := tx.Where("key = ?", settingTimezone).First(&s).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return time.UTC, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if loc, err := events.LoadZone(s.Value); err == nil {
+		return loc, nil
+	}
+	return time.UTC, nil
+}
+
 func churchZone(tx *gorm.DB) *time.Location {
 	var s models.Setting
 	if tx.Where("key = ?", settingTimezone).First(&s).Error == nil {
@@ -749,31 +767,6 @@ func (a *App) actorName(id *uint) string {
 		return "Fold"
 	}
 	return a.nameOf(*id)
-}
-
-// startNotificationPruning runs the DEC-45 retention cleanup at startup and
-// then daily.
-func (a *App) startNotificationPruning(ctx context.Context) {
-	go func() {
-		run := func() {
-			if n, err := notify.Prune(a.DB, time.Now().UTC()); err != nil {
-				log.Printf("notifications: prune: %v", err)
-			} else if n > 0 {
-				log.Printf("notifications: pruned %d", n)
-			}
-		}
-		run()
-		tick := time.NewTicker(24 * time.Hour)
-		defer tick.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-tick.C:
-				run()
-			}
-		}
-	}()
 }
 
 // ---------------------------------------------------------------------------

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"fold/internal/accounts"
@@ -234,24 +233,4 @@ func flagHouseholdChild13(tx *gorm.DB, person *models.HouseholdPerson, today tim
 func nextAgeRollover(now time.Time, zone *time.Location) time.Time {
 	local := now.In(zone)
 	return time.Date(local.Year(), local.Month(), local.Day()+1, 0, 0, 0, 0, zone)
-}
-
-func (a *App) startAgeRollover(ctx context.Context) {
-	go func() {
-		for {
-			if n, err := a.rolloverAges(time.Now().UTC()); err != nil {
-				log.Printf("age rollover: %v", err)
-			} else if n > 0 {
-				log.Printf("age rollover: updated %d people", n)
-			}
-			now := time.Now()
-			timer := time.NewTimer(nextAgeRollover(now, churchZone(a.DB)).Sub(now))
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-			}
-		}
-	}()
 }
