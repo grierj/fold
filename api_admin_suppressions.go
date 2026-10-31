@@ -54,17 +54,18 @@ func (a *App) apiAdminClearSuppression(c *gin.Context) {
 	address := normalizeEmail(u.Email)
 	var cleared int64
 	err = a.DB.Transaction(func(tx *gorm.DB) error {
+		// One statement clears them and says which, so the audit row names
+		// exactly what was cleared.
 		var reasons []string
-		if err := tx.Model(&models.Suppression{}).Where("channel = ? AND address = ? AND cleared_at IS NULL", "email", address).
-			Pluck("reason", &reasons).Error; err != nil {
+		if err := tx.Raw(`UPDATE suppressions SET cleared_at = ?, cleared_by = ?
+			WHERE channel = 'email' AND address = ? AND cleared_at IS NULL RETURNING reason`, time.Now(), me.ID, address).
+			Scan(&reasons).Error; err != nil {
 			return err
 		}
-		res := tx.Model(&models.Suppression{}).Where("channel = ? AND address = ? AND cleared_at IS NULL", "email", address).
-			Updates(map[string]any{"cleared_at": time.Now(), "cleared_by": me.ID})
-		if res.Error != nil || res.RowsAffected == 0 {
-			return res.Error
+		if len(reasons) == 0 {
+			return nil
 		}
-		cleared = res.RowsAffected
+		cleared = int64(len(reasons))
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.EmailSuppressionCleared, TargetType: "user", TargetID: u.ID,
 			Meta: map[string]any{"reasons": reasons}, IP: c.ClientIP()})
 	})

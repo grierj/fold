@@ -10,7 +10,7 @@ function suppressionLabel(reason: EmailSuppression["reason"]): string {
     case "complaint":
       return "Marked our email as spam";
     default:
-      return "Email stopped by an admin";
+      return "Email stopped on purpose";
   }
 }
 
@@ -18,7 +18,7 @@ function explanation(s: EmailSuppression): string {
   const day = formatEventDay(s.since);
   switch (s.reason) {
     case "hard_bounce":
-      return `Fold stopped emailing this address on ${day} because it bounced. Clear it once the address is fixed. If your church uses Postmark, reactivate the address there too.`;
+      return `Fold stopped emailing this address on ${day} because it bounced. If the address works again, clear this; if you changed their email, there's nothing to clear. If your church uses Postmark, reactivate the address there too.`;
     case "complaint":
       return "They marked Fold's email as spam, so optional email stopped. Account email, like password resets, still goes.";
     default:

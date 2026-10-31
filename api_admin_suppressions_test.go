@@ -25,6 +25,9 @@ func TestAdminSeesAndClearsSuppressions(t *testing.T) {
 	sam := newTestUser(t, app, "sam", "password1234", models.RoleMember)
 	pat := newTestUser(t, app, "pat", "password1234", models.RoleMember)
 	admin, member := loginAPI(t, app, "admin", "password1234"), loginAPI(t, app, "sam", "password1234")
+	// A login stored with capitals still matches its lowercased suppression.
+	app.DB.Model(sam).Update("email", "Sam.Mixed@Example.com")
+	sam.Email = "Sam.Mixed@Example.com"
 	suppress(t, app, strings.ToLower(sam.Email), models.SuppressComplaint)
 	suppress(t, app, strings.ToLower(sam.Email), models.SuppressHardBounce)
 	suppress(t, app, strings.ToLower(pat.Email), models.SuppressComplaint)

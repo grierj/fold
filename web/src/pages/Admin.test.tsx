@@ -896,11 +896,11 @@ describe("email suppressions on the Users tab (M3.2c, DEC-113)", () => {
     vi.mocked(AdminUsers.list).mockResolvedValue({ users: people() });
     render(<MemoryRouter initialEntries={["/admin?tab=users"]}><AdminPage /></MemoryRouter>);
     expect(await screen.findByText("Email bouncing")).toBeInTheDocument();
-    expect(screen.getByText(/stopped emailing this address on .* because it bounced\. Clear it once the address is fixed\. If your church uses Postmark, reactivate the address there too\./)).toBeInTheDocument();
+    expect(screen.getByText(/stopped emailing this address on .* because it bounced\. If the address works again, clear this; if you changed their email, there.s nothing to clear\. If your church uses Postmark, reactivate the address there too\./)).toBeInTheDocument();
     expect(screen.getByText("Marked our email as spam")).toBeInTheDocument();
     expect(screen.getByText(/optional email stopped\. Account email, like password resets, still goes\./)).toBeInTheDocument();
-    expect(screen.getByText("Email stopped by an admin")).toBeInTheDocument();
-    expect(screen.getAllByText(/Email bouncing|Marked our email as spam|Email stopped by an admin/)).toHaveLength(3);
+    expect(screen.getByText("Email stopped on purpose")).toBeInTheDocument();
+    expect(screen.getAllByText(/Email bouncing|Marked our email as spam|Email stopped on purpose/)).toHaveLength(3);
   });
 
   it("shows the Email problems chip only when someone has one, and filters by it", async () => {

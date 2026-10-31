@@ -984,7 +984,11 @@ function UsersTab({ users, reload }: { users: User[]; reload: () => void }) {
   // Let Fold email someone again after a bounce or complaint (M3.2c, DEC-113).
   async function clearSuppression(u: User) {
     const who = u.displayName || u.name;
-    if (!confirm(`Let Fold email ${who} again?`)) return;
+    // Clearing a complaint restarts optional mail to someone who marked it as spam.
+    const ask = u.emailSuppression?.reason === "complaint"
+      ? `${who} marked Fold's email as spam. Only do this if they asked for email again. Let Fold email ${who} again?`
+      : `Let Fold email ${who} again?`;
+    if (!confirm(ask)) return;
     setBusy(true);
     setError(null);
     setFeedStatus("");
