@@ -248,6 +248,7 @@ export function NewEvent() {
           id="event-room"
           schedule={scheduleReady(when, tzid, seats) ? scheduleFields(when, tzid, seats) : null}
           groupId={Number(id)}
+          visibility={visibility}
           roomId={roomId}
           onChange={setRoomId}
         />

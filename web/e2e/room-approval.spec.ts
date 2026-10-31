@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, signIn } from "./helpers";
+import { apiAs, pickRoom, signIn } from "./helpers";
 
 // M2.1d: with approval on, a leader's room booking waits for an admin, the
 // admin confirms it from the Rooms tab, and the leader's date shows the room.
@@ -23,7 +23,7 @@ test("a leader's room waits for an admin, who confirms it", async ({ page, reque
     await page.goto(`/events/${event.id}`);
     await expect(page.getByRole("heading", { name: "Approval night", level: 1 })).toBeVisible();
     await page.getByRole("button", { name: "Edit event" }).click();
-    await page.getByRole("combobox", { name: /^Room/ }).selectOption({ label: "Fellowship Hall · Main (80 seats)" });
+    await pickRoom(page.getByRole("combobox", { name: /^Room/ }), "Fellowship Hall · Main (80 seats)");
     await expect(page.getByRole("status").filter({ hasText: "Waiting for an admin to approve Fellowship Hall." })).toBeVisible();
     // Nothing is held yet: the place is still the typed location.
     await expect(page.getByText("south door", { exact: true })).toBeVisible();

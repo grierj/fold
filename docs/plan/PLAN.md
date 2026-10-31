@@ -1652,7 +1652,7 @@ Phase 1 is done (v0.3), merged through PR #184. It delivered events with time zo
 
 ### 14.5 Phase 2: Rooms
 
-Rooms are optional (9.1) and touch the database, API and UI together, so every milestone ships as thin slices in this order (14.1): the database change, then the API and internals, then the UI. A slice may land hidden behind `rooms_enabled` until its UI exists. M2.1 (slices a to e) and M2.2 (the by-room view and the room feed) are built; M2.3 (suggestions) is next. In the release table rooms are v0.6, after email (v0.4) and the MVP (v0.5); they may run in parallel with Phase 3 because they share only events and occurrences.
+Rooms are optional (9.1) and touch the database, API and UI together, so every milestone ships as thin slices in this order (14.1): the database change, then the API and internals, then the UI. A slice may land hidden behind `rooms_enabled` until its UI exists. M2.1 (slices a to e), M2.2 (the by-room view and the room feed) and M2.3 (room suggestions) are built, so Phase 2 is complete. In the release table rooms are v0.6, after email (v0.4) and the MVP (v0.5); they may run in parallel with Phase 3 because they share only events and occurrences.
 
 Design defaults for this phase (decided here so slices don't reopen them; change them in review if wrong):
 
@@ -1713,7 +1713,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - Tests: all 13 cases in the 9.3 table, plus explicitly opened and tightened dates and a church-wide event (no tags, so no type filter); a benchmark with 50 rooms and 20,000 bookings under 100 ms on Postgres.
 - **M2.3b Suggestions in the picker**
   - API: each room picker's own response (one date, the series, and the create forms' `POST /rooms/check`, which also takes the chosen visibility) carries up to 5 `suggestions` with counts and a reason ("Used by this group 6 times"), and says when they are "Used by other kinds of events" (DEC-110). The JSON never carries other events' titles, groups or dates (a key-list test).
-  - UI: all three Room fields (Edit this date, Edit series, the create forms) show "Suggested" first, each with its reason and Busy marks ("Busy on 2 of 8 dates"), then the other rooms.
+  - UI: all three Room fields (Edit this date, Edit series, the create forms) show "Suggested" first, each with its reason and the picker's own busy note ("in use on 2 of 10 dates", across every date being booked), then the other rooms. Built.
   - Acceptance: suggestions are a shortcut, never a gate: every bookable room stays pickable by hand.
 
 ### 14.6 Phase 3: Messaging

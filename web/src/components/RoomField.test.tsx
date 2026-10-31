@@ -266,3 +266,42 @@ it("shows the waiting line, not Booked, after choosing a room that needs approva
   expect(screen.getByRole("status")).not.toHaveTextContent("Booked Fellowship Hall.");
   expect(await select()).toHaveValue("1");
 });
+
+// Each <optgroup> of the select, with its options' words (M2.3, DEC-110).
+function groupsOf(box: HTMLElement) {
+  return Array.from(box.querySelectorAll("optgroup")).map((g) => ({
+    label: g.label,
+    options: Array.from(g.querySelectorAll("option")).map((o) => o.textContent),
+  }));
+}
+
+it("lists suggested rooms first with why, then every other room once", async () => {
+  vi.mocked(DateRooms.list).mockResolvedValue({
+    rooms: [hall, chapel, closet], booking: null,
+    suggestions: { rooms: [{ roomId: 3, uses: 6, reason: "Used by this group 6 times", busyDates: 0 }, { roomId: 2, uses: 1, reason: "Used once", busyDates: 1 }], otherKinds: false, dates: 1 },
+  });
+  show();
+  const box = await select();
+  expect((box as HTMLSelectElement).options[0].textContent).toBe("No room");
+  expect(groupsOf(box)).toEqual([
+    { label: "Suggested", options: ["Closet · Annex (1 seat) — may be too small — Used by this group 6 times", "Chapel — in use at this time — Used once"] },
+    { label: "Other rooms", options: ["Fellowship Hall · Main (80 seats)"] },
+  ]);
+  // A busy suggestion is still only an admin's to book.
+  expect(screen.getByRole("option", { name: /^Chapel/ })).toBeDisabled();
+  await userEvent.selectOptions(box, "3");
+  expect(DateRooms.set).toHaveBeenCalledWith(7, "2026-12-01", { roomId: 3 });
+});
+
+it("labels suggestions from other kinds of events, and shows no groups without suggestions", async () => {
+  vi.mocked(DateRooms.list).mockResolvedValue({
+    rooms: [hall, chapel], booking: null,
+    suggestions: { rooms: [{ roomId: 1, uses: 2, reason: "Used 2 times", busyDates: 0 }], otherKinds: true, dates: 1 },
+  });
+  const { unmount } = render(<Form noValidate onSubmit={(e) => e.preventDefault()}><RoomField eventId={7} date="2026-12-01" idPrefix="t" /></Form>);
+  expect(groupsOf(await select()).map((g) => g.label)).toEqual(["Used by other kinds of events", "Other rooms"]);
+  unmount();
+  vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [hall, chapel], booking: null, suggestions: { rooms: [], otherKinds: false, dates: 1 } });
+  show();
+  expect(groupsOf(await select())).toEqual([]);
+});

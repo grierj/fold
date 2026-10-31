@@ -94,9 +94,11 @@ it("offers a Room beside Location when rooms are on and books it for the series 
   await userEvent.type(screen.getByLabelText("Date"), "2026-12-02");
   await userEvent.click(screen.getByRole("button", { name: "Every week" }));
   await screen.findByRole("option", { name: "Fellowship Hall · Main (80 seats)" });
-  // A church-wide event has no group, so the check sends none, and it sends what create sends.
+  // A church-wide event has no group, so the check sends none, and it sends what create sends,
+  // with the visibility chosen for room suggestions.
   expect(SeriesRooms.check).toHaveBeenLastCalledWith({
     startsLocal: "2026-12-02T19:00", durationMinutes: 90, tzid: "America/Denver", recurrenceRule: "FREQ=WEEKLY;BYDAY=WE", capacity: null,
+    visibility: "public",
   });
   await userEvent.selectOptions(room, "3");
   await userEvent.click(screen.getByRole("button", { name: "Schedule event" }));

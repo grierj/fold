@@ -201,6 +201,7 @@ export function NewChurchEvent() {
         <CreateRoomField
           id="church-event-room"
           schedule={scheduleReady(when, tzid, seats) ? scheduleFields(when, tzid, seats) : null}
+          visibility={visibility}
           roomId={roomId}
           onChange={setRoomId}
         />

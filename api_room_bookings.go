@@ -272,7 +272,19 @@ func (a *App) apiDateRooms(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not list rooms")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"rooms": out, "booking": booking})
+	offered := map[uint]bool{}
+	for _, r := range out {
+		offered[r.ID] = true
+	}
+	// Rule 4's capacity tiebreak uses the same seats as the too-small note.
+	var seats *int
+	if want > 0 {
+		seats = &want
+	}
+	suggestions := a.roomSuggestions(suggestFor{person: me, eventID: ev.ID, groupID: ev.GroupID,
+		visibility: policy.EffectiveVisibility(ev.Visibility, occ.VisibilityOverride), capacity: seats,
+		windows: windowsOf([]models.EventOccurrence{*occ})}, offered)
+	c.JSON(http.StatusOK, gin.H{"rooms": out, "booking": booking, "suggestions": suggestions})
 }
 
 // dateBooking is a date's booking for its managers, or nil.

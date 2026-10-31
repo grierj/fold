@@ -1,4 +1,3 @@
 ^internal/testdb/testdb\.go:[0-9]+:[0-9]+: unreachable func: [A-Za-z][A-Za-z0-9]*$
 ^internal/notify/kinds\.go:[0-9]+:[0-9]+: unreachable func: Kinds$
 ^models/models\.go:[0-9]+:[0-9]+: unreachable func: All$
-^internal/rooms/suggest\.go:[0-9]+:[0-9]+: unreachable func: [A-Za-z][A-Za-z0-9]*$

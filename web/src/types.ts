@@ -953,6 +953,24 @@ export interface SeriesRoom {
   tooSmall: boolean;
 }
 
+// Room suggestions (M2.3, PLAN 9.3, DEC-110): up to 5 rooms best first, each
+// with ready-made copy for why ("Used by this group 6 times"). Only room ids
+// and counts, never another event's title, group or date. otherKinds: none
+// matched the group's kind, so these are "Used by other kinds of events".
+// busyDates counts how many of `dates` checked dates the room is taken on.
+export interface RoomSuggestion {
+  roomId: number;
+  uses: number;
+  reason: string;
+  busyDates: number;
+}
+
+export interface RoomSuggestions {
+  rooms: RoomSuggestion[];
+  otherKinds: boolean;
+  dates: number;
+}
+
 // A date whose booking holds nothing: it lost its room when it moved, or
 // the room was busy when the series was booked (DEC-103).
 export interface NeedsRoom {

@@ -135,6 +135,7 @@ import type {
   RoomFeed,
   RoomBooking,
   RoomPickerItem,
+  RoomSuggestions,
   SeriesRoom,
   NeedsRoom,
   SeriesBooking,
@@ -764,7 +765,7 @@ export interface DateRoomInput {
 
 export const DateRooms = {
   list: (eventId: number, date: string) =>
-    api<{ rooms: RoomPickerItem[]; booking: RoomBooking | null }>(`/events/${eventId}/dates/${date}/rooms`),
+    api<{ rooms: RoomPickerItem[]; booking: RoomBooking | null; suggestions?: RoomSuggestions }>(`/events/${eventId}/dates/${date}/rooms`),
   set: (eventId: number, date: string, body: DateRoomInput) =>
     api<{ booking: RoomBooking | null }>(`/events/${eventId}/dates/${date}/room`, { method: "PUT", body }),
 };
@@ -775,13 +776,14 @@ export const DateRooms = {
 // an admin's overlapReason double-books busy dates instead.
 export const SeriesRooms = {
   list: (eventId: number) =>
-    api<{ rooms: SeriesRoom[]; dates: number; defaultRoom: OccurrenceRoom | null; needsRoom: NeedsRoom[]; pending: number }>(
+    api<{ rooms: SeriesRoom[]; dates: number; defaultRoom: OccurrenceRoom | null; needsRoom: NeedsRoom[]; pending: number; suggestions?: RoomSuggestions }>(
       `/events/${eventId}/rooms`,
     ),
   set: (eventId: number, body: { roomId: number | null; overlapReason?: string }) =>
     api<SeriesBooking>(`/events/${eventId}/room`, { method: "PUT", body }),
   // Rooms for an event not yet created: the create form sends its date
-  // fields (and groupId for a group event) and books with roomId on create.
+  // fields (and groupId for a group event, and the visibility chosen, which
+  // room suggestions use) and books with roomId on create.
   check: (body: Record<string, unknown>) =>
-    api<{ rooms: SeriesRoom[]; dates: number }>(`/rooms/check`, { method: "POST", body }),
+    api<{ rooms: SeriesRoom[]; dates: number; suggestions?: RoomSuggestions }>(`/rooms/check`, { method: "POST", body }),
 };

@@ -3,19 +3,21 @@ import { DateRooms, Site, type DateRoomInput } from "../api";
 import { useAuth } from "../auth";
 import { errorCode, errorText } from "../lib/errors";
 import { roomName } from "../lib/place";
-import type { RoomBooking, RoomPickerItem } from "../types";
+import type { RoomBooking, RoomPickerItem, RoomSuggestions } from "../types";
 import { Field, FormError, Input, Select, Textarea } from "./ui/Field";
 import { Button } from "./ui/Button";
 import { Skeleton } from "./ui/Skeleton";
+import { RoomOptions } from "./RoomOptions";
 
 const NONE = "none";
 const REASON_MAX = 500;
 
-// A room as the picker words it: "Fellowship Hall · Main (80 seats)", then
-// what a leader should know before choosing it.
-function optionLabel(room: RoomPickerItem): string {
+// A room as the picker words it: "Fellowship Hall · Main (80 seats)", then what
+// a leader should know before choosing it, then why it was suggested, if it was
+// (last, so a phone that clips the option still shows the busy note).
+function optionLabel(room: RoomPickerItem, reason?: string): string {
   const seats = room.capacity === null ? "" : ` (${room.capacity} ${room.capacity === 1 ? "seat" : "seats"})`;
-  return `${roomName(room)}${seats}${room.busy ? " — in use at this time" : ""}${room.tooSmall ? " — may be too small" : ""}`;
+  return `${roomName(room)}${seats}${room.busy ? " — in use at this time" : ""}${room.tooSmall ? " — may be too small" : ""}${reason ? ` — ${reason}` : ""}`;
 }
 
 // The Room control of "Edit this date" and the single-date "Edit event"
@@ -40,6 +42,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [rooms, setRooms] = useState<RoomPickerItem[]>([]);
+  const [suggestions, setSuggestions] = useState<RoomSuggestions | null>(null);
   const [booking, setBooking] = useState<RoomBooking | null>(null);
   const [status, setStatus] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -83,6 +86,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
       if (!alive.current) return;
       setRooms(res.rooms);
       setBooking(res.booking);
+      setSuggestions(res.suggestions ?? null);
     } catch (e) {
       if (alive.current) setLoadError(errorText(e, "We couldn't load the rooms."));
     } finally {
@@ -213,9 +217,7 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
             <Select value={value} aria-busy={busy || undefined} onChange={(e) => choose(e.target.value)}>
               {requested && <option value="">Pick a room</option>}
               <option value={NONE}>No room</option>
-              {rooms.map((r) => (
-                <option key={r.id} value={String(r.id)} disabled={r.busy && !isAdmin}>{optionLabel(r)}</option>
-              ))}
+              <RoomOptions rooms={rooms} suggestions={suggestions} label={optionLabel} disabled={(r) => r.busy && !isAdmin} />
             </Select>
           </Field>
           {!isAdmin && anyBusy && (
