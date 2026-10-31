@@ -9,16 +9,19 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"math/big"
 	"mime"
 	"net"
 	netmail "net/mail"
+	"net/textproto"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"fold/internal/providers"
 	"fold/internal/testdb"
 )
 
@@ -440,5 +443,25 @@ func TestSMTPAddsDateMessageIDAndEncodesSubject(t *testing.T) {
 	}
 	if got, err := new(mime.WordDecoder).DecodeHeader(raw); err != nil || got != "Café night" {
 		t.Fatalf("decoded subject %q, %v", got, err)
+	}
+}
+
+// What a retry can't fix is permanent: a message refused before sending,
+// a provider's refusal, an SMTP 5xx; a 4xx or a timeout may pass (M3.5).
+func TestIsPermanent(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{checkMessage(Message{To: "a@example.com, b@example.com"}), true},
+		{&providers.SendError{Permanent: true}, true},
+		{&providers.SendError{Permanent: false}, false},
+		{fmt.Errorf("mail: rcpt: %w", &textproto.Error{Code: 550, Msg: "no such user"}), true},
+		{fmt.Errorf("mail: rcpt: %w", &textproto.Error{Code: 451, Msg: "try later"}), false},
+		{errors.New("mail: dial: timeout"), false},
+	} {
+		if got := IsPermanent(tc.err); got != tc.want {
+			t.Errorf("%v: %v, want %v", tc.err, got, tc.want)
+		}
 	}
 }

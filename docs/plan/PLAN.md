@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-129.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-131.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-129; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-131; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-129) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-131) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -389,7 +389,7 @@ The field lists show the important columns, not every column. Every table has `i
 
 - Periodic work runs as jobs (M3.1a): each daily task is queued once per church day under the key `<kind>:<church date>`, at startup and at church-local midnight, so birthdays still turn over at church midnight (DEC-83) and several app processes run each task once.
 - From M3.1, a `jobs` table and worker live in the same binary. The worker starts with `serve`. `FOLD_WORKERS=0` turns it off, for debugging only.
-- Job kinds: `occurrences.extend`, `message.send`, `message.deliver_batch`, `reminder.schedule`, `waitlist.notify`, `webhook.process`, `provider.poll_status` (for example SMS registration or email domain verification), `cleanup.login_throttles`, `jobs.cleanup` (finished jobs are kept 30 days), `accounts.expire_requests`, `contact.sweep` (expires contact requests and ends grants daily; role changes also end grants at once, 5.11), `accounts.age_rollover` (teens turn into adults at 18; household children who turn 13 are flagged to their guardians), `notification.deliver` (5.12; `notification.digest` later, M6.16), `push.deliver` (one per device of each notification or message recipient with push on, `unique_key` `push:n:<notification_id>:d:<device_id>` or `push:mr:<recipient_id>:d:<device_id>`; the payload holds device ids, never endpoints; 404/410 deletes the device, DEC-125), and `notifications.cleanup` (daily: auto-archives event items whose occurrence has ended, applies retention, 5.12, and prunes failed or expired push devices).
+- Job kinds: `occurrences.extend`, `message.send`, `message.deliver_batch`, `messages.reap` (daily: settles a send that stopped with no job left, M3.5), `reminder.schedule`, `waitlist.notify`, `webhook.process`, `provider.poll_status` (for example SMS registration or email domain verification), `cleanup.login_throttles`, `jobs.cleanup` (finished jobs are kept 30 days), `accounts.expire_requests`, `contact.sweep` (expires contact requests and ends grants daily; role changes also end grants at once, 5.11), `accounts.age_rollover` (teens turn into adults at 18; household children who turn 13 are flagged to their guardians), `notification.deliver` (5.12; `notification.digest` later, M6.16), `push.deliver` (one per device of each notification or message recipient with push on, `unique_key` `push:n:<notification_id>:d:<device_id>` or `push:mr:<recipient_id>:d:<device_id>`; the payload holds device ids, never endpoints; 404/410 deletes the device, DEC-125), and `notifications.cleanup` (daily: auto-archives event items whose occurrence has ended, applies retention, 5.12, and prunes failed or expired push devices).
 - The worker claims jobs with `FOR UPDATE SKIP LOCKED` and polls every 1 to 2 seconds (`FOLD_JOB_POLL=1s`). There is no `LISTEN/NOTIFY`.
 - Retries use exponential backoff with jitter (30 seconds doubling, at most an hour, ±20%) and a `max_attempts` per kind, then `dead`. A job whose process stopped mid-run is taken back after a 15-minute lease. The admin "System" page lists dead jobs with Retry and Dismiss; admins get no notice for them until message sending (M3.5) brings failures an admin can fix (DEC-111).
 - `unique_key` makes scheduling idempotent (for example `reminder:occ:123:24h`).
@@ -1796,16 +1796,19 @@ Design defaults for this phase (decided here so slices don't reopen them; change
 
 **M3.5 Send pipeline**
 - Depends on: M3.4, M1.5, M1.10
-- Scope: 7.1, 7.2, and the email side of 7.5: audience snapshot, dedupe, filters, guardian copies, batches, rate limits, scheduled sends, history page.
+- Scope: 7.1, 7.2, and the email side of 7.5: audience snapshot, dedupe, filters, guardian copies, batches, rate limits, scheduled sends, history page. Two slices (14.1):
+  - **M3.5a The pipeline** (built): migration 00056 `message_recipients` (and `messages.error`); `message.send` (send-time policy check, snapshot with reasons, guardian copies, batches of 50) and `message.deliver_batch` (each email rendered for its reader, From "<author> via <church>", Reply-To the church office address, DEC-130; retries, then failed rows); delivery and bounce reports on recipients; the daily `messages.reap` backstop; the per-author daily limit (5 per group per day; admins none). Email has no provider token bucket: Postmark meters its own API, and the jobs pool bounds concurrency; SMS throughput arrives with M3.8.
+  - **M3.5b History and controls**: the recipient history (counts by status and reason, names with Teen badges and guardian-copy marks, never addresses), "Try again" for the people a send failed for (DEC-131), and the admin settings for guardian copies (audited) and where replies go.
 - Acceptance:
-  - [ ] A person in two chosen groups gets one copy
-  - [ ] Opted-out and suppressed people are skipped and counted with reasons
-  - [ ] A leader demoted between scheduling and sending is refused at send time
-  - [ ] Disabled accounts are never recipients, even though their memberships and registrations are kept (DEC-38)
-  - [ ] Teens without `account` consent and all household people get nothing; messages about a household person's registration go to the account holder (DEC-8)
-  - [ ] With `guardian_copies` off (default), guardians get no copies; with it on, each confirmed guardian gets one marked copy per message to their teen (DEC-19); no copy is ever sent by SMS (DEC-29)
-  - [ ] A scheduled message can be cancelled until sending starts
-  - [ ] A provider outage retries and then shows a failed state with the error
+  - [x] A person in two chosen groups gets one copy
+  - [x] Opted-out and suppressed people are skipped and counted with reasons
+  - [x] A leader demoted between scheduling and sending is refused at send time
+  - [x] Disabled accounts are never recipients, even though their memberships and registrations are kept (DEC-38)
+  - [x] Teens without `account` consent and all household people get nothing; messages about a household person's registration go to the account holder (DEC-8)
+  - [x] With `guardian_copies` off (default), guardians get no copies; with it on, each confirmed guardian gets one marked copy per message to their teen (DEC-19); no copy is ever sent by SMS (DEC-29)
+  - [x] A scheduled message can be cancelled until sending starts
+  - [x] A provider outage retries and then shows a failed state with the error (the API; the page in M3.5b)
+  - [ ] "Try again" resends to just the people a send failed for, never twice to anyone it reached (M3.5b)
 - Tests: pipeline tests with devoutbox; failure injection.
 
 **M3.6 Email reminders**
@@ -2225,6 +2228,8 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-127 | **Web push is called "Notifications on this device"** (Grier, Oct 31, 2026; M3.13 review). The in-app list and bell are already "Alerts", so push avoids that word: the card is "Notifications on this device", the button "Turn on notifications", the test "Send a test notification", the off switches "Turn off notifications on this device" and "Turn off notifications everywhere", the composer's switch "Push notification too", and the directions page lives at `/notifications/setup` (the in-app list is `/notifications`). "Alerts" stays for the in-app list only. | 5.12, 7.3, M3.13 |
 | DEC-128 | **Checks an agent can't run are built best effort, merged, and listed for the first church** (Grier, Oct 31, 2026; M3.13 review). A check only a person can run on real devices or live services (phones, mail providers, TLS on a real domain, SMS) doesn't block a merge. The PR builds it best effort, tests what an agent can, and adds the check to `docs/FIRST-CHURCH-CHECKS.md`, run by hand when the first church starts using Fold. Other such items (mail, text) are collected there as they come. | 14.1, AGENTS.md, M3.13 |
 | DEC-129 | **"Send a test notification" allows 10 an hour per person** (Grier, Oct 31, 2026; M3.13 review). Past that it answers 200 with an honest line, "You just sent a few tests. Try again in a few minutes.", not the usual "Sent". It is the person's own device and nothing is revealed about any account, so DEC-52 doesn't apply; it is not a 429. Turning notifications on (`PUT /push/subscriptions`, 30 an hour) follows the same rule: past the limit it saves nothing and says so ("Try again in a few minutes"), so the card never shows "on" without a subscription. | 5.12, M3.13b |
+| DEC-130 | **Replies to an announcement go to the church office until the relay** (Grier, Oct 31, 2026; M3.5 planning). Announcements are From "<author> via <church>" over the church's sending address (7.8). Until the M3.11 reply relay, their Reply-To is an admin setting, "Where replies go" (`reply_to_address`, the church office email); empty means no Reply-To. Personal addresses never appear (DEC-31). | 7.1, 7.8, M3.5, M3.11 |
+| DEC-131 | **A failed send can be tried again** (Grier, Oct 31, 2026; M3.5 planning). When a provider outage outlasts the retries, the message shows its failed state with the error, and its author or an admin can resend to just the people it failed for; nobody it reached gets it twice. | 7.1, M3.5b |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 

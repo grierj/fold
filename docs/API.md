@@ -1285,6 +1285,41 @@ Every email adapter now sends an HTML part when there is one: SMTP as `multipart
 
 The SMS counter (`internal/content/sms.go`, `web/src/lib/sms.ts`, one table of cases in `web/src/lib/sms-cases.json`) counts GSM-7 septets (160 per text, 153 per part, extended characters count 2) or UCS-2 UTF-16 units (70, 67 per part), never splitting an escape or surrogate pair, after adding the `<church>: ` prefix and the `Reply STOP to opt out` footer. The donation-ask check (DEC-3) looks for give, donate, tithe and offering words and for links to giving pages (a giving word in the address, or a giving service such as Tithe.ly, Pushpay or Givelify). Both wait for the SMS tab (DEC-117).
 
+#### Sending (M3.5a)
+
+Scheduling queues the `message.send` job for the message's time; there is no new endpoint. At that time the job:
+
+1. Checks again that the author is active and may still write to the audience (`resolveAudience`, the same check the handlers make). If not, the message is `failed`, its `error` says why ("Pat can't write to these people anymore, so it wasn't sent."), it is audited `message.refused`, and nothing is sent.
+2. Snapshots who it reaches into `message_recipients`, one row per person, each once even when they are in two chosen groups or events. People skipped for the reasons the preview shows (guest, not active, which covers disabled accounts and teens waiting for account consent, no address, email not working, marked as spam, turned off messages from leaders) get a `suppressed` row with that reason.
+3. Adds guardian copies when the church setting `guardian_copies` is `true` (default off; DEC-19). Each confirmed guardian of a teen recipient gets one row with `copy_of_user_id` set, filtered like anyone else, by email only (DEC-29).
+4. Marks the message `sending` with the queued count, and queues `message.deliver_batch` jobs of 50.
+
+Each batch sends its queued rows one at a time. Each email is rendered for its reader: their first name, and for one event's people their own date and date page for `{{event_time}}` and `{{manage_link}}`. A guardian copy carries the teen's values, the subject "Copy: …", and the line "Copy: sent to Sam because your church sends guardian copies." Every email:
+
+- is From "<author> via <church>" over the configured From address (PLAN 7.8)
+- goes out with Reply-To set to the church office address in the `reply_to_address` setting, when it holds one plain address (DEC-130; the relay replaces it in M3.11)
+- is on the broadcast stream, with the reader's footer and one-click unsubscribe
+
+Right before sending, each reader's suppressions, account status and messages-from-leaders switch are read again, so someone who bounced, was disabled or opted out since the snapshot is skipped.
+
+Each row is sent under a row lock (`FOR UPDATE SKIP LOCKED`) and recorded as `sent`, with the provider's id, in the same transaction, so two workers never send the same row. Delivery is at least once: a crash between the provider accepting an email and that commit can send it again on the retry. A batch stops after 10 minutes, inside the jobs lease, and its retry carries on.
+
+How a send error is handled depends on whether a retry can help (`mail.IsPermanent`):
+
+- **Permanent errors fail that row at once.** These are a message refused before sending, a provider refusal (`SendError.Permanent`), and an SMTP 5xx such as "no such user".
+- **Any other error retries the batch.** It stops and retries with the jobs backoff, 8 attempts (about an hour). On the last attempt, each such row fails with its error and the rest are still tried.
+- **An error that isn't about one send fails the batch's queued rows** on the last attempt. That covers a database error and a render failure.
+
+A `message.send` that never succeeds fails the message: "We couldn't get this ready to send. Schedule it again to try once more." Its claim holds only if the message hasn't been edited or rescheduled since the job read it.
+
+When no row is left queued, the message is `sent`, or `failed` when nobody was reached and some sends failed. Either way it carries the first error and is audited `message.sent` with the counts.
+
+A daily `messages.reap` settles any send that stopped with no job left, such as a process that died on a last attempt. A message still scheduled an hour past its time fails. A sending one fails its queued rows ("Sending stopped before these went out.") and settles.
+
+Postmark delivery, bounce and spam reports move a row to `delivered`, `bounced` or `complained`, as they do for notification email.
+
+A leader or host may schedule at most 5 messages a day to one group's people (a group audience or its events) or to one church-wide event's, counted in the church's day. The check runs at scheduling and when a scheduled message is edited. A 6th is 400 `message_daily_limit`. Admins have no limit.
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

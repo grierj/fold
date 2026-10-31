@@ -40,6 +40,8 @@ func (a *App) dailyKinds() []jobs.Kind {
 		// Contact requests expire and grants end (5.11).
 		daily("contact.sweep", "Closing expired contact requests and grants", a.sweepContacts),
 		daily("cleanup.login_throttles", "Clearing old sign-in limits", func(ctx context.Context, _ time.Time) error { return a.pruneLoginThrottles(ctx) }),
+		// Announcements that stopped where no job will pick them up (M3.5).
+		daily("messages.reap", "Settling announcements that stopped sending", a.reapMessages),
 		// Notification retention (DEC-45).
 		daily("notifications.cleanup", "Clearing old alerts", func(_ context.Context, now time.Time) error {
 			n, err := notify.Prune(a.DB, now)
@@ -76,7 +78,7 @@ func (a *App) dailyKinds() []jobs.Kind {
 // waits for running jobs to finish after ctx ends.
 func (a *App) startJobs(ctx context.Context) func() {
 	kinds := a.dailyKinds()
-	runner := jobs.NewRunner(a.DB, append(kinds, a.eventKinds()...)...)
+	runner := jobs.NewRunner(a.DB, append(kinds, a.backgroundKinds()...)...)
 	runner.Poll = a.Config.JobPoll
 	if a.Config.Workers <= 0 {
 		log.Println("WARNING: FOLD_WORKERS=0; background jobs will not run in this process")

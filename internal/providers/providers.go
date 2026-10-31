@@ -35,6 +35,11 @@ type EmailMessage struct {
 	Text    string
 	// HTML, when set, is the same message as HTML; Text stays the plain part.
 	HTML string
+	// FromName replaces the display name of the configured From address
+	// ("Pat via First Church", PLAN 7.8); the address itself never changes.
+	FromName string
+	// ReplyTo is one address replies go to (the church office, DEC-130).
+	ReplyTo string
 	// Stream is "" or StreamTransactional for account mail.
 	Stream Stream
 	// Optional: the person may turn this mail off (an optional notification;

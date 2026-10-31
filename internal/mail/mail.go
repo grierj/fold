@@ -15,16 +15,19 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"mime"
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
+	netmail "net/mail"
 	"net/smtp"
 	"net/textproto"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fold/internal/providers"
 	"fold/models"
@@ -46,19 +49,47 @@ type Sender interface {
 // with a newline (which could inject headers) or more than one recipient.
 func checkMessage(m Message) error {
 	if strings.TrimSpace(m.To) == "" {
-		return errors.New("mail: no recipient")
+		return refused{errors.New("mail: no recipient")}
 	}
 	if !headerSafe(m.To) {
-		return errors.New("mail: recipient contains a newline")
+		return refused{errors.New("mail: recipient contains a newline")}
 	}
 	if m.ListUnsubscribe != "" && !oneURL(m.ListUnsubscribe) {
-		return errors.New("mail: the unsubscribe link must be one http(s) URL")
+		return refused{errors.New("mail: the unsubscribe link must be one http(s) URL")}
+	}
+	if !replyToOK(m.ReplyTo) {
+		return refused{errors.New("mail: the reply-to must be one plain address")}
+	}
+	if utf8.RuneCountInString(m.FromName) > 200 {
+		return refused{errors.New("mail: the sender name is too long")}
 	}
 	// One address only: Postmark reads commas as a list of recipients.
 	if strings.ContainsAny(m.To, ",;") {
-		return errors.New("mail: one recipient per message")
+		return refused{errors.New("mail: one recipient per message")}
 	}
 	return nil
+}
+
+// refused is an error the message itself causes, found before sending.
+type refused struct{ error }
+
+func (r refused) Unwrap() error { return r.error }
+
+// IsPermanent: sending the same message again can't help. The adapter
+// refused it before sending, the provider said so (SendError.Permanent), or
+// an SMTP server answered 5xx (a "no such user", say). Anything else, a
+// timeout or a 4xx, may pass.
+func IsPermanent(err error) bool {
+	var r refused
+	if errors.As(err, &r) {
+		return true
+	}
+	var se *providers.SendError
+	if errors.As(err, &se) {
+		return se.Permanent
+	}
+	var tp *textproto.Error
+	return errors.As(err, &tp) && tp.Code >= 500
 }
 
 // oneLine keeps a subject on one header line.
@@ -91,7 +122,7 @@ func (d *DevOutbox) SendEmail(ctx context.Context, m Message) (string, error) {
 	if err := checkMessage(m); err != nil {
 		return "", err
 	}
-	row := models.MailOutbox{ToAddress: m.To, FromAddress: d.From, Subject: oneLine(m.Subject), Body: m.Text, HTMLBody: m.HTML, ListUnsubscribe: m.ListUnsubscribe}
+	row := models.MailOutbox{ToAddress: m.To, FromAddress: fromWithName(d.From, m), ReplyTo: m.ReplyTo, Subject: oneLine(m.Subject), Body: m.Text, HTMLBody: m.HTML, ListUnsubscribe: m.ListUnsubscribe}
 	if err := d.DB.WithContext(ctx).Create(&row).Error; err != nil {
 		return "", err
 	}
@@ -110,6 +141,8 @@ type OutboxMessage struct {
 	// HTML is the HTML part (LatestTo); List leaves it empty and sets HasHTML.
 	HTML            string
 	HasHTML         bool
+	From            string
+	ReplyTo         string
 	ListUnsubscribe string
 	CreatedAt       time.Time
 }
@@ -121,14 +154,14 @@ func (d *DevOutbox) List(limit int) ([]OutboxMessage, error) {
 	}
 	var rows []models.MailOutbox
 	// The HTML stays in the table; HasHTML says the page has one to link.
-	if err := d.DB.Select("id, to_address, from_address, subject, body, list_unsubscribe, created_at, CASE WHEN html_body <> '' THEN '-' ELSE '' END AS html_body").Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+	if err := d.DB.Select("id, to_address, from_address, reply_to, subject, body, list_unsubscribe, created_at, CASE WHEN html_body <> '' THEN '-' ELSE '' END AS html_body").Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]OutboxMessage, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, OutboxMessage{
 			ID: r.ID, To: r.ToAddress, Subject: r.Subject,
-			Body: r.Body, HasHTML: r.HTMLBody != "", ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt,
+			Body: r.Body, HasHTML: r.HTMLBody != "", From: r.FromAddress, ReplyTo: r.ReplyTo, ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt,
 		})
 	}
 	return out, nil
@@ -142,7 +175,7 @@ func (d *DevOutbox) LatestTo(address string) (OutboxMessage, error) {
 	if err != nil {
 		return OutboxMessage{}, err
 	}
-	return OutboxMessage{ID: r.ID, To: r.ToAddress, Subject: r.Subject, Body: r.Body, HTML: r.HTMLBody, HasHTML: r.HTMLBody != "", ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt}, nil
+	return OutboxMessage{ID: r.ID, To: r.ToAddress, Subject: r.Subject, Body: r.Body, HTML: r.HTMLBody, HasHTML: r.HTMLBody != "", From: r.FromAddress, ReplyTo: r.ReplyTo, ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -309,21 +342,26 @@ func (s *SMTPSender) SendEmail(ctx context.Context, m Message) (string, error) {
 		// RFC 8058 one-click: the mail client POSTs to the URL.
 		unsubscribe = "List-Unsubscribe: <" + m.ListUnsubscribe + ">\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"
 	}
+	if m.ReplyTo != "" {
+		unsubscribe = "Reply-To: " + m.ReplyTo + "\r\n" + unsubscribe
+	}
 	contentType, body, err := mimeBody(m)
 	if err != nil {
 		w.Close()
 		return "", fmt.Errorf("mail: body: %w", err)
 	}
 	if _, err := fmt.Fprintf(w, "From: %s\r\nTo: %s\r\nSubject: %s\r\nDate: %s\r\nMessage-ID: %s\r\n%sMIME-Version: 1.0\r\n%s\r\n%s\r\n",
-		from, m.To, subject, time.Now().Format(time.RFC1123Z), msgID, unsubscribe, contentType, body); err != nil {
+		fromWithName(from, m), m.To, subject, time.Now().Format(time.RFC1123Z), msgID, unsubscribe, contentType, body); err != nil {
 		w.Close()
 		return "", fmt.Errorf("mail: write: %w", err)
 	}
 	if err := w.Close(); err != nil {
 		return "", fmt.Errorf("mail: send: %w", err)
 	}
+	// The server accepted the message when DATA closed; a failed QUIT
+	// (a dropped connection, say) must not make a caller send it again.
 	if err := c.Quit(); err != nil {
-		return msgID, err
+		log.Printf("mail: smtp quit after a sent message: %v", err)
 	}
 	return msgID, nil
 }
@@ -423,4 +461,23 @@ func (d *DevOutbox) HTMLOf(id uint) (string, error) {
 		return "", err
 	}
 	return r.HTMLBody, nil
+}
+
+// fromWithName is the From header for from with m's display name, if any:
+// the configured address under a new name, encoded when it isn't ASCII.
+func fromWithName(from string, m Message) string {
+	name := strings.TrimSpace(oneLine(m.FromName))
+	if name == "" {
+		return from
+	}
+	return (&netmail.Address{Name: name, Address: fromAddress(from)}).String()
+}
+
+// replyToOK: empty, or exactly one plain address with no display name.
+func replyToOK(s string) bool {
+	if s == "" {
+		return true
+	}
+	a, err := netmail.ParseAddress(s)
+	return err == nil && a.Name == "" && a.Address == s && headerSafe(s) && !strings.ContainsAny(s, ",;")
 }

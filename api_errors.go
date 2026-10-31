@@ -30,6 +30,7 @@ var errorCodes = map[string]string{
 	errMessageTestLimit:                            "message_test_limit",
 	errMessageTestEmail:                            "message_test_email",
 	errMessageTestFail:                             "message_test_failed",
+	errMessageDailyLimit:                           "message_daily_limit",
 	"choose who gets this message":                 "message_audience",
 	"that group or event isn't there anymore":      "message_audience_gone",
 	errChurchAddressLong:                           "church_address_long",
