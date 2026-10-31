@@ -28,6 +28,14 @@ func TestMergeFields(t *testing.T) {
 	if strings.Contains(PlainText(clean), "merge-field.invalid") {
 		t.Fatal("the stand-in address never shows")
 	}
+	// A link field in any case keeps its link.
+	if got := SanitizeHTML(`<a href="{{ Manage_Link }}">x</a>`); !strings.Contains(got, `href="{{manage_link}}"`) {
+		t.Fatalf("mixed-case link field: %s", got)
+	}
+	// Misspelled fields are found, so saving can refuse them.
+	if got := strings.Join(FieldsIn("{{first name}} {{first-name}} {{field2}} {x}"), ","); got != "first name,first-name,field2" {
+		t.Fatalf("misspelled fields: %s", got)
+	}
 }
 
 func TestRenderEmail(t *testing.T) {
@@ -41,7 +49,7 @@ func TestRenderEmail(t *testing.T) {
 	for _, want := range []string{
 		"<title>News &amp; notes</title>", "First &lt;Church&gt;", `max-width:600px`,
 		`<h2 style="margin:24px 0 12px 0;`, `background-color:#1d4ed8;color:#ffffff;`, `href="https://example.org/x"`,
-		`href="https://fold.example.org/email-settings/tok"`, "Change which emails you get", "<br>1 Main St<br>Springfield",
+		`href="https://fold.example.org/email-settings/tok"`, "visit your email settings", "<br>1 Main St<br>Springfield",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in\n%s", want, out)

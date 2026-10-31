@@ -17,6 +17,7 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // Preview and "Send a test to me" (M3.4b, PLAN 7.3). Both render a saved
@@ -83,7 +84,12 @@ func (a *App) sampleValues(m *models.Message, me *models.User) map[string]string
 	}
 	link := a.emailLink("/events/" + historyID(ev.ID))
 	vals[content.FieldEventTitle], vals[content.FieldEventLink], vals[content.FieldManageLink] = ev.Title, link, link
-	if q.First(&occ).Error == nil {
+	found := q.First(&occ).Error == nil
+	if !found && au.Type == policy.AudienceEventSeries {
+		// Nothing upcoming: show the latest date, so the preview isn't blank.
+		found = a.DB.Select("id, starts_at").Where("event_id = ?", ev.ID).Order("starts_at DESC").First(&occ).Error == nil
+	}
+	if found {
 		loc, err := time.LoadLocation(ev.TZID)
 		if err != nil {
 			loc = time.UTC
@@ -127,41 +133,51 @@ func (a *App) renderMessage(m *models.Message, u *models.User, vals map[string]s
 	}, nil
 }
 
-// apiPreviewMessage answers the subject and plain-text part as the author
-// would get them; apiPreviewMessageHTML is the HTML part, for an iframe.
-func (a *App) apiPreviewMessage(c *gin.Context) {
+// renderedForViewer loads a message the viewer may see and renders it as
+// they would get it. The audience is checked again first, since roles and
+// events change after a draft is saved: a preview shows an event's title
+// and time only to someone who may still write to its people. false means
+// the error response was sent.
+func (a *App) renderedForViewer(c *gin.Context) (*models.Message, renderedMessage, bool) {
 	m, ok := a.loadMessage(c)
 	if !ok {
-		return
+		return nil, renderedMessage{}, false
 	}
 	me := apiUser(c)
+	var au audienceJSON
+	_ = json.Unmarshal([]byte(m.Audience), &au)
+	if _, ok := a.checkAudience(c, me, &au); !ok {
+		return nil, renderedMessage{}, false
+	}
 	r, err := a.renderMessage(m, me, a.sampleValues(m, me))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not show the preview")
-		return
+		return nil, renderedMessage{}, false
 	}
-	c.JSON(http.StatusOK, gin.H{"preview": r})
+	return m, r, true
+}
+
+// apiPreviewMessage answers the subject and plain-text part as the viewer
+// would get them; apiPreviewMessageHTML is the HTML part, for an iframe.
+func (a *App) apiPreviewMessage(c *gin.Context) {
+	if _, r, ok := a.renderedForViewer(c); ok {
+		c.JSON(http.StatusOK, gin.H{"preview": r})
+	}
 }
 
 func (a *App) apiPreviewMessageHTML(c *gin.Context) {
-	m, ok := a.loadMessage(c)
-	if !ok {
-		return
+	if _, r, ok := a.renderedForViewer(c); ok {
+		serveEmailHTML(c, r.HTML)
 	}
-	me := apiUser(c)
-	r, err := a.renderMessage(m, me, a.sampleValues(m, me))
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not show the preview")
-		return
-	}
-	serveEmailHTML(c, r.HTML)
 }
 
 // apiTestMessage sends the message to the viewer's own address, as an
 // announcement goes out (the broadcast stream, with its unsubscribe link),
-// with "[Test]" before the subject. Ten an hour, counted from the audit log.
+// with "[Test]" before the subject. Ten tries an hour: the audit row is
+// written, under a lock on the viewer's row, before the send, so parallel
+// requests can't pass the count together.
 func (a *App) apiTestMessage(c *gin.Context) {
-	m, ok := a.loadMessage(c)
+	m, r, ok := a.renderedForViewer(c)
 	if !ok {
 		return
 	}
@@ -178,17 +194,25 @@ func (a *App) apiTestMessage(c *gin.Context) {
 		jsonError(c, http.StatusBadRequest, errMessageTestEmail)
 		return
 	}
-	var sent int64
-	if err := a.DB.Model(&models.AuditLog{}).Where("actor_id = ? AND action = ? AND at > ?", me.ID, audit.MessageTestSent, time.Now().Add(-time.Hour)).
-		Count(&sent).Error; err != nil {
-		jsonError(c, http.StatusInternalServerError, errMessageTestFail)
-		return
-	}
-	if sent >= testSendsPerHour {
+	errLimit := errors.New("limit")
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SELECT id FROM users WHERE id = ? FOR UPDATE", me.ID).Error; err != nil {
+			return err
+		}
+		var tries int64
+		if err := tx.Model(&models.AuditLog{}).Where("actor_id = ? AND action = ? AND at > ?", me.ID, audit.MessageTestSent, time.Now().Add(-time.Hour)).
+			Count(&tries).Error; err != nil {
+			return err
+		}
+		if tries >= testSendsPerHour {
+			return errLimit
+		}
+		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.MessageTestSent, TargetType: "message", TargetID: m.ID, IP: c.ClientIP()})
+	})
+	if errors.Is(err, errLimit) {
 		jsonError(c, http.StatusBadRequest, errMessageTestLimit)
 		return
 	}
-	r, err := a.renderMessage(m, me, a.sampleValues(m, me))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, errMessageTestFail)
 		return
@@ -204,10 +228,6 @@ func (a *App) apiTestMessage(c *gin.Context) {
 	}
 	if err != nil {
 		jsonError(c, http.StatusBadGateway, errMessageTestFail)
-		return
-	}
-	if err := audit.Write(a.DB, audit.Entry{Actor: &me.ID, Action: audit.MessageTestSent, TargetType: "message", TargetID: m.ID, IP: c.ClientIP()}); err != nil {
-		jsonError(c, http.StatusInternalServerError, errMessageTestFail)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

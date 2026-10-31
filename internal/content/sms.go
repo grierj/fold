@@ -102,7 +102,7 @@ var (
 	donationWords = regexp.MustCompile(`(?i)\b(give|gives|giving|donate|donates|donating|donation|donations|tithe|tithes|tithing|offering|offerings)\b`)
 	urlRe         = regexp.MustCompile(`(?i)\b((?:https?://)?(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s]*)?)`)
 	givingHosts   = []string{"tithe.ly", "pushpay.com", "givelify.com", "easytithe.com", "paypal.me", "paypal.com", "venmo.com", "cash.app", "givebutter.com", "onrealm.org"}
-	givingPath    = regexp.MustCompile(`(?i)(give|giving|donat|tithe|offering)`)
+	givingPath    = regexp.MustCompile(`(?i)(^|[^a-z])(give|giving|donate|donations?|tithes?|tithing|offerings?)([^a-z]|$)`)
 )
 
 // DonationAsk reports whether text reads as asking for money (DEC-3).
@@ -122,7 +122,7 @@ func DonationAsk(text string) bool {
 				return true
 			}
 		}
-		if givingPath.MatchString(u.Path) || givingPath.MatchString(strings.Split(host, ".")[0]) {
+		if givingPath.MatchString(u.EscapedPath()) || givingPath.MatchString(strings.Split(host, ".")[0]) {
 			return true
 		}
 	}

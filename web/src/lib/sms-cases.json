@@ -28,6 +28,10 @@
     { "text": "Visit give.firstbaptist.org", "warn": true },
     { "text": "Rehearsal moved to 7pm in room 4", "warn": false },
     { "text": "Forgiven people forgive: sermon notes at firstbaptist.org/sermons", "warn": false },
-    { "text": "Bring a dish to share: firstbaptist.org/potluck", "warn": false }
+    { "text": "Bring a dish to share: firstbaptist.org/potluck", "warn": false },
+    { "text": "Sermon series: firstbaptist.org/forgiveness", "warn": false },
+    { "text": "Youth night: forgive.example.org/night", "warn": false },
+    { "text": "Visit firstbaptist.org/%67ive-today", "warn": false },
+    { "text": "Visit firstbaptist.org/donate-now", "warn": true }
   ]
 }

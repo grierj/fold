@@ -68,11 +68,18 @@ func TestMessagePreview(t *testing.T) {
 		t.Fatalf("preview.html: %d %v", w.Code, w.Header())
 	}
 	if !strings.Contains(html, "Book night news</title>") || !strings.Contains(html, `/events/`+itoa(f.groupEvent.ID)+`" rel=`) || !strings.Contains(html, `style="display:inline-block;`) ||
-		!strings.Contains(html, "Change which emails you get") || strings.Contains(html, "{{") {
+		!strings.Contains(html, "visit your email settings") || strings.Contains(html, "{{") {
 		t.Fatalf("preview html:\n%s", html)
 	}
 	if w := f.host.do("GET", path+"/preview", nil, false); w.Code != http.StatusNotFound {
 		t.Fatalf("someone else's preview: %d", w.Code)
+	}
+	// Stepping down ends the preview too: it would show the event's details.
+	f.app.DB.Model(&models.Membership{}).Where("group_id = ? AND user_id = ?", f.group.ID, f.leaderUser.ID).Update("role", models.MembershipMember)
+	for _, p := range []string{"/preview", "/preview.html"} {
+		if w := f.leader.do("GET", path+p, nil, false); w.Code != http.StatusForbidden {
+			t.Fatalf("former leader %s: %d", p, w.Code)
+		}
 	}
 }
 

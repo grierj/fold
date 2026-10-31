@@ -24,14 +24,19 @@ var MergeFields = []string{FieldFirstName, FieldEventTitle, FieldEventTime, Fiel
 // IsEventField: the field needs a message to one event's people.
 func IsEventField(f string) bool { return f != FieldFirstName }
 
-var mergeRe = regexp.MustCompile(`\{\{\s*([A-Za-z_]+)\s*\}\}`)
+// mergeRe matches anything in double braces, so a misspelled field
+// ("{{first name}}") is caught and refused instead of sent as written.
+var mergeRe = regexp.MustCompile(`\{\{([^{}]*)\}\}`)
 
-// FieldsIn lists the distinct fields s uses, known or not, lowercased.
+func fieldName(inner string) string { return strings.ToLower(strings.TrimSpace(inner)) }
+
+// FieldsIn lists the distinct fields s uses, known or not, trimmed and
+// lowercased.
 func FieldsIn(s string) []string {
 	seen := map[string]bool{}
 	out := []string{}
 	for _, m := range mergeRe.FindAllStringSubmatch(s, -1) {
-		f := strings.ToLower(m[1])
+		f := fieldName(m[1])
 		if !seen[f] {
 			seen[f] = true
 			out = append(out, f)
@@ -54,7 +59,7 @@ func IsMergeField(f string) bool {
 // "". inHTML escapes each value for HTML text or an attribute.
 func Merge(s string, values map[string]string, inHTML bool) string {
 	return mergeRe.ReplaceAllStringFunc(s, func(m string) string {
-		v := values[strings.ToLower(mergeRe.FindStringSubmatch(m)[1])]
+		v := values[fieldName(mergeRe.FindStringSubmatch(m)[1])]
 		if inHTML {
 			return html.EscapeString(v)
 		}
@@ -68,9 +73,14 @@ func Merge(s string, values map[string]string, inHTML bool) string {
 // link, always one of its own.
 const mergeLinkBase = "https://merge-field.invalid/"
 
-var linkFieldRe = regexp.MustCompile(`\{\{\s*(event_link|manage_link)\s*\}\}`)
+var linkFieldRe = regexp.MustCompile(`(?i)\{\{\s*(event_link|manage_link)\s*\}\}`)
 
-func protectLinkFields(s string) string { return linkFieldRe.ReplaceAllString(s, mergeLinkBase+"$1") }
+// protectLinkFields swaps link fields, in any case, for their stand-in URL.
+func protectLinkFields(s string) string {
+	return linkFieldRe.ReplaceAllStringFunc(s, func(m string) string {
+		return mergeLinkBase + fieldName(linkFieldRe.FindStringSubmatch(m)[1])
+	})
+}
 
 func restoreLinkFields(s string) string {
 	for _, f := range []string{FieldEventLink, FieldManageLink} {

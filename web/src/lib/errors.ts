@@ -77,7 +77,7 @@ export const ERROR_COPY = {
   message_merge_unknown: "One of the merge fields isn't one Fold knows. Use the fields under Insert field, spelled the same way.",
   message_merge_event: "Event fields like the event's title or time only work when you write to one event's people. Remove them, or choose an event.",
   message_test_limit: "You've sent 10 tests in the last hour. Try again a little later.",
-  message_test_email: "We can't send to your own email address right now. Check it on your Me page, then try again.",
+  message_test_email: "We can't send to your email address right now, usually because earlier mail to it bounced. Ask an admin to check it, then try again.",
   message_test_failed: "We couldn't send the test. Try again in a few minutes.",
   email_kind_unknown: "That kind of email can't be changed here. Refresh and try again.",
   link_expired: "This link has expired or was already used. Ask for a new one and try again.",

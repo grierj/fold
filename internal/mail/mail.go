@@ -118,7 +118,8 @@ func (d *DevOutbox) List(limit int) ([]OutboxMessage, error) {
 		limit = 50
 	}
 	var rows []models.MailOutbox
-	if err := d.DB.Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
+	// The HTML stays in the table; HasHTML says the page has one to link.
+	if err := d.DB.Select("id, to_address, from_address, subject, body, list_unsubscribe, created_at, CASE WHEN html_body <> '' THEN '-' ELSE '' END AS html_body").Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]OutboxMessage, 0, len(rows))

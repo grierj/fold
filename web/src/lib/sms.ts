@@ -77,7 +77,7 @@ const GIVING_HOSTS = [
   "givebutter.com",
   "onrealm.org",
 ];
-const GIVING_PATH = /(give|giving|donat|tithe|offering)/i;
+const GIVING_PATH = /(^|[^a-z])(give|giving|donate|donations?|tithes?|tithing|offerings?)([^a-z]|$)/i;
 
 /** isDonationAsk: the text reads as asking for money (DEC-3). */
 export function isDonationAsk(text: string): boolean {
