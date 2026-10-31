@@ -103,11 +103,13 @@ func (d *DevOutbox) Capabilities() providers.EmailCaps { return providers.EmailC
 
 // OutboxMessage is one stored email, newest first.
 type OutboxMessage struct {
-	ID              uint
-	To              string
-	Subject         string
-	Body            string
+	ID      uint
+	To      string
+	Subject string
+	Body    string
+	// HTML is the HTML part (LatestTo); List leaves it empty and sets HasHTML.
 	HTML            string
+	HasHTML         bool
 	ListUnsubscribe string
 	CreatedAt       time.Time
 }
@@ -126,7 +128,7 @@ func (d *DevOutbox) List(limit int) ([]OutboxMessage, error) {
 	for _, r := range rows {
 		out = append(out, OutboxMessage{
 			ID: r.ID, To: r.ToAddress, Subject: r.Subject,
-			Body: r.Body, HTML: r.HTMLBody, ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt,
+			Body: r.Body, HasHTML: r.HTMLBody != "", ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt,
 		})
 	}
 	return out, nil
@@ -140,7 +142,7 @@ func (d *DevOutbox) LatestTo(address string) (OutboxMessage, error) {
 	if err != nil {
 		return OutboxMessage{}, err
 	}
-	return OutboxMessage{ID: r.ID, To: r.ToAddress, Subject: r.Subject, Body: r.Body, HTML: r.HTMLBody, ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt}, nil
+	return OutboxMessage{ID: r.ID, To: r.ToAddress, Subject: r.Subject, Body: r.Body, HTML: r.HTMLBody, HasHTML: r.HTMLBody != "", ListUnsubscribe: r.ListUnsubscribe, CreatedAt: r.CreatedAt}, nil
 }
 
 // ---------------------------------------------------------------------------
