@@ -100,34 +100,48 @@ const reportGrace = 2 * time.Minute
 // only moves a delivery forward, and a suppression is added once.
 func (a *App) applyEmailEvent(ctx context.Context, e providers.Event) error {
 	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// The report is about a notification's email or an announcement's
+		// (M3.5); each table moves its row forward the same way.
 		deliveries := tx.Model(&models.NotificationDelivery{}).Where("channel = ? AND provider_message_id = ?", models.DeliveryEmail, e.MessageID)
-		var res *gorm.DB
+		recipients := tx.Model(&models.MessageRecipient{}).Where("channel = ? AND provider_message_id = ?", models.DeliveryEmail, e.MessageID)
+		var res, mres *gorm.DB
 		switch e.Kind {
 		case providers.EventDelivered:
 			res = deliveries.Where("status = ?", models.DeliverySent).Update("status", models.DeliveryDelivered)
+			mres = recipients.Where("status = ?", models.RecipientSent).Updates(map[string]any{"status": models.RecipientDelivered, "updated_at": time.Now()})
 		case providers.EventBounced, providers.EventComplained:
 			reason := "soft bounce"
+			status := models.RecipientBounced
 			switch {
 			case e.Kind == providers.EventComplained:
-				reason = "marked as spam"
+				reason, status = "marked as spam", models.RecipientComplained
 			case e.Permanent:
 				reason = "hard bounce"
 			}
 			res = deliveries.Where("status IN ?", []string{models.DeliverySent, models.DeliveryDelivered}).
 				Updates(map[string]any{"status": models.DeliveryBounced, "reason": reason})
+			mres = recipients.Where("status IN ?", []string{models.RecipientSent, models.RecipientDelivered}).
+				Updates(map[string]any{"status": status, "reason": reason, "updated_at": time.Now()})
 		default:
 			return nil
 		}
 		if res.Error != nil {
 			return res.Error
 		}
-		if res.RowsAffected == 0 && recent(e.At) {
-			var n int64
+		if mres.Error != nil {
+			return mres.Error
+		}
+		if res.RowsAffected+mres.RowsAffected == 0 && recent(e.At) {
+			var n, mn int64
 			if err := tx.Model(&models.NotificationDelivery{}).Where("channel = ? AND provider_message_id = ?", models.DeliveryEmail, e.MessageID).
 				Count(&n).Error; err != nil {
 				return err
 			}
-			if n == 0 {
+			if err := tx.Model(&models.MessageRecipient{}).Where("channel = ? AND provider_message_id = ?", models.DeliveryEmail, e.MessageID).
+				Count(&mn).Error; err != nil {
+				return err
+			}
+			if n+mn == 0 {
 				return errDeliveryNotYet
 			}
 		}

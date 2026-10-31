@@ -189,7 +189,18 @@ func (r *Runner) RunOnce(ctx context.Context, worker string) (bool, error) {
 			Updates(map[string]any{"status": models.JobQueued, "attempts": gorm.Expr("attempts - 1"), "locked_at": nil,
 				"last_error": "this version of Fold doesn't run this kind of task", "run_at": time.Now().Add(unknownKindWait), "updated_at": time.Now()}).Error
 	}
-	return true, r.finish(job, worker, safeRun(ctx, kind, json.RawMessage(job.Payload)), false)
+	return true, r.finish(job, worker, safeRun(context.WithValue(ctx, attemptKey{}, job.Attempts >= job.MaxAttempts), kind, json.RawMessage(job.Payload)), false)
+}
+
+// attemptKey carries whether a run is its job's last attempt.
+type attemptKey struct{}
+
+// LastAttempt reports whether the running job will not be retried if it
+// fails: a handler can record the failure itself (a message's failed
+// state) before returning the error.
+func LastAttempt(ctx context.Context) bool {
+	last, _ := ctx.Value(attemptKey{}).(bool)
+	return last
 }
 
 // safeRun turns a handler's panic into an error, so one bad job never

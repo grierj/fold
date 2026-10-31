@@ -220,7 +220,7 @@ func (a *App) apiTestMessage(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 	err = a.Mailer.Send(ctx, mail.Message{To: me.Email, Subject: "[Test] " + r.Subject, Text: r.Text, HTML: r.HTML,
-		Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe})
+		Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe, FromName: a.messageFromName(a.DB, m), ReplyTo: a.replyToAddress()})
 	var suppressed *mail.ErrSuppressed
 	if errors.As(err, &suppressed) {
 		jsonError(c, http.StatusBadRequest, errMessageTestEmail)

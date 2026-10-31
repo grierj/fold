@@ -26,7 +26,7 @@ import (
 // Postmark built from Postmark's documented API), never a live service.
 
 // sent is what a fake saw for one message.
-type sent struct{ to, subject, text, html, stream, listUnsubscribe, listUnsubscribePost string }
+type sent struct{ to, from, replyTo, subject, text, html, stream, listUnsubscribe, listUnsubscribePost string }
 
 // harness builds one adapter by its registry name, with a way to read what
 // its fake received.
@@ -52,7 +52,7 @@ func harnesses() []harness {
 					if r.ListUnsubscribe != "" {
 						post = "List-Unsubscribe=One-Click" // devoutbox stores the URL; the header pair is implied
 					}
-					out = append(out, sent{to: r.ToAddress, subject: r.Subject, text: r.Body, html: r.HTMLBody, listUnsubscribe: r.ListUnsubscribe, listUnsubscribePost: post})
+					out = append(out, sent{to: r.ToAddress, from: r.FromAddress, replyTo: r.ReplyTo, subject: r.Subject, text: r.Body, html: r.HTMLBody, listUnsubscribe: r.ListUnsubscribe, listUnsubscribePost: post})
 				}
 				return out
 			}
@@ -83,7 +83,7 @@ func harnesses() []harness {
 				}
 				text, html := smtpParts(t, msg)
 				subject, _ := new(mime.WordDecoder).DecodeHeader(msg.Header.Get("Subject"))
-				return []sent{{to: msg.Header.Get("To"), subject: subject, text: text, html: html,
+				return []sent{{to: msg.Header.Get("To"), from: msg.Header.Get("From"), replyTo: msg.Header.Get("Reply-To"), subject: subject, text: text, html: html,
 					listUnsubscribe: strings.TrimSuffix(strings.TrimPrefix(msg.Header.Get("List-Unsubscribe"), "<"), ">"), listUnsubscribePost: msg.Header.Get("List-Unsubscribe-Post")}}
 			}
 		}},
@@ -162,6 +162,36 @@ func TestEmailAdapterContract(t *testing.T) {
 					}
 				}
 			})
+			t.Run("names the sender and sets Reply-To, keeping the address", func(t *testing.T) {
+				s, got := h.build(t)
+				if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: "sam@example.com", Subject: "s", Text: "b",
+					FromName: "Pat Lee via First Church", ReplyTo: "office@example.org"}); err != nil {
+					t.Fatal(err)
+				}
+				msgs := got()
+				if len(msgs) != 1 || msgs[0].replyTo != "office@example.org" {
+					t.Fatalf("received %+v", msgs)
+				}
+				from, err := netmail.ParseAddress(msgs[0].from)
+				if err != nil || from.Name != "Pat Lee via First Church" || from.Address != "noreply@example.com" {
+					t.Fatalf("from %q: %+v %v", msgs[0].from, from, err)
+				}
+				for _, bad := range []string{"a@example.org, b@example.org", "Office <office@example.org>", "office@example.org\r\nBcc: x@evil.test", "not an address"} {
+					if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: "sam@example.com", Subject: "s", ReplyTo: bad}); err == nil {
+						t.Fatalf("sent with reply-to %q", bad)
+					}
+				}
+			})
+			t.Run("keeps a sender name on one line", func(t *testing.T) {
+				s, got := h.build(t)
+				if _, err := s.SendEmail(context.Background(), providers.EmailMessage{To: "sam@example.com", Subject: "s", Text: "b", FromName: "Pat\r\nBcc: x@evil.test"}); err != nil {
+					t.Fatal(err)
+				}
+				msgs := got()
+				if len(msgs) != 1 || strings.ContainsAny(msgs[0].from, "\r\n") || strings.Contains(strings.ToLower(msgs[0].from), "bcc:") && !strings.Contains(msgs[0].from, "\"") {
+					t.Fatalf("header broke: %+v", msgs)
+				}
+			})
 			t.Run("carries an HTML part beside the text when given", func(t *testing.T) {
 				s, got := h.build(t)
 				// One long line, past SMTP's 998-character limit, and a "=" and
@@ -233,7 +263,7 @@ func newFakePostmark(t *testing.T, token string) *fakePostmark {
 			answer(http.StatusUnprocessableEntity, 406, "You tried to send to recipient(s) that have been marked as inactive.", "")
 			return
 		}
-		s := sent{to: body.To, subject: body.Subject, text: body.TextBody, html: body.HtmlBody, stream: body.MessageStream}
+		s := sent{to: body.To, from: body.From, replyTo: body.ReplyTo, subject: body.Subject, text: body.TextBody, html: body.HtmlBody, stream: body.MessageStream}
 		for _, h := range body.Headers {
 			switch h.Name {
 			case "List-Unsubscribe":

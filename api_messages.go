@@ -129,35 +129,44 @@ func (a *App) canCompose(me *models.User) (bool, error) {
 // checkAudience normalizes au and answers whether me may send to it, and
 // who it reaches; false means the error response was sent.
 func (a *App) checkAudience(c *gin.Context, me *models.User, au *audienceJSON) ([]uint, bool) {
-	if err := au.normalize(); err != nil {
+	ids, err := a.resolveAudience(me, au, time.Now())
+	switch {
+	case errors.Is(err, errAudienceInvalid):
 		jsonError(c, http.StatusBadRequest, errAudienceInvalid.Error())
-		return nil, false
-	}
-	targets, err := a.audienceTargets(a.DB, me, *au)
-	if errors.Is(err, errAudienceGone) {
+	case errors.Is(err, errAudienceGone) && policy.IsAdmin(asPerson(me)):
+		jsonError(c, http.StatusNotFound, errAudienceGone.Error())
+	case errors.Is(err, errAudienceGone), errors.Is(err, errAudienceRefused):
 		// Only an admin learns a target is gone; anyone else hears what a
 		// target that isn't theirs answers, so ids can't be probed.
-		if policy.IsAdmin(asPerson(me)) {
-			jsonError(c, http.StatusNotFound, errAudienceGone.Error())
-		} else {
-			jsonError(c, http.StatusForbidden, errMessageNotYours)
-		}
-		return nil, false
-	}
-	if err != nil {
+		jsonError(c, http.StatusForbidden, errMessageNotYours)
+	case err != nil:
 		jsonError(c, http.StatusInternalServerError, "could not check who gets this message")
-		return nil, false
+	default:
+		return ids, true
+	}
+	return nil, false
+}
+
+// errAudienceRefused: me may not message that audience (policy).
+var errAudienceRefused = errors.New("not allowed to message that audience")
+
+// resolveAudience normalizes au, checks that me may message it
+// (policy.CanMessageAudience) and returns who it reaches. The handlers and
+// message.send (at send time, PLAN 7.1 step 1) share it. Errors are
+// errAudienceInvalid, errAudienceGone, errAudienceRefused or a database
+// error.
+func (a *App) resolveAudience(me *models.User, au *audienceJSON, now time.Time) ([]uint, error) {
+	if err := au.normalize(); err != nil {
+		return nil, errAudienceInvalid
+	}
+	targets, err := a.audienceTargets(a.DB, me, *au)
+	if err != nil {
+		return nil, err
 	}
 	if !policy.CanMessageAudience(asPerson(me), au.Type, targets) {
-		jsonError(c, http.StatusForbidden, errMessageNotYours)
-		return nil, false
+		return nil, errAudienceRefused
 	}
-	ids, err := a.audienceUserIDs(a.DB, *au, time.Now())
-	if err != nil {
-		jsonError(c, http.StatusInternalServerError, "could not check who gets this message")
-		return nil, false
-	}
-	return ids, true
+	return a.audienceUserIDs(a.DB, *au, now)
 }
 
 // composeGroupJSON / composeEventJSON are what the picker offers.
@@ -553,6 +562,13 @@ func (a *App) apiScheduleMessage(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if full, err := a.dailyLimitReached(me, m.ID, au, when); err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not schedule the message")
+		return
+	} else if full {
+		jsonError(c, http.StatusBadRequest, errMessageDailyLimit)
+		return
+	}
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
 		res := tx.Model(&models.Message{}).Where("id = ? AND status IN ?", m.ID, []string{models.MessageDraft, models.MessageScheduled}).
 			Updates(map[string]any{"status": models.MessageScheduled, "scheduled_at": when, "recipient_count": s.Eligible, "updated_at": now})
@@ -561,6 +577,9 @@ func (a *App) apiScheduleMessage(c *gin.Context) {
 		}
 		if res.RowsAffected == 0 {
 			return errLocked
+		}
+		if err := enqueueMessageSend(tx, m.ID, when); err != nil {
+			return err
 		}
 		return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.MessageScheduled, TargetType: "message", TargetID: m.ID,
 			Meta: map[string]any{"audience": au.Type, "recipients": s.Eligible, "at": when}, IP: c.ClientIP()})

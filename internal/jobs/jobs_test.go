@@ -82,6 +82,30 @@ func TestJobRunsOnceAndIsDone(t *testing.T) {
 	}
 }
 
+// A handler learns when it is on its last attempt, so it can record the
+// failure itself before giving up (M3.5).
+func TestLastAttempt(t *testing.T) {
+	db := testdb.Shared(t)
+	var seen []bool
+	r := runner(db, Kind{Name: "count", Run: func(ctx context.Context, _ json.RawMessage) error {
+		seen = append(seen, LastAttempt(ctx))
+		return errors.New("again")
+	}})
+	Enqueue(db, "count", nil, time.Now(), "", 3)
+	for range 3 {
+		db.Model(&models.Job{}).Where("status = ?", models.JobFailed).Update("run_at", time.Now().Add(-time.Second))
+		if ran, err := r.RunOnce(context.Background(), "w"); !ran || err != nil {
+			t.Fatalf("run: %v %v", ran, err)
+		}
+	}
+	if len(seen) != 3 || seen[0] || seen[1] || !seen[2] {
+		t.Fatalf("last attempt seen as %v", seen)
+	}
+	if LastAttempt(context.Background()) {
+		t.Fatal("outside a job it is never the last attempt")
+	}
+}
+
 // A failing job retries with backoff and is dead after max_attempts.
 func TestFailingJobRetriesThenDies(t *testing.T) {
 	db := testdb.Shared(t)

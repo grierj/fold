@@ -286,6 +286,11 @@ const (
 	// MessageTestSent: an author sent a message to themselves as a test
 	// (M3.4b); counted to limit tests to ten an hour.
 	MessageTestSent = "message.test_sent"
+	// MessageRefused: at send time the author could no longer write to the
+	// audience (or it was gone), so it failed unsent (M3.5). MessageSent: a
+	// message finished sending, with its counts.
+	MessageRefused = "message.refused"
+	MessageSent    = "message.sent"
 
 	// CalendarTokenRegenerated: a person created their calendar-feed
 	// link or made a new one, which revokes the old link (M1.7, 8.2).

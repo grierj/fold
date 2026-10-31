@@ -79,6 +79,7 @@ export const ERROR_COPY = {
   message_test_limit: "You've sent 10 tests in the last hour. Try again a little later.",
   message_test_email: "We can't send to your email address right now, usually because earlier mail to it bounced. Ask an admin to check it, then try again.",
   message_test_failed: "We couldn't send the test. Try again in a few minutes.",
+  message_daily_limit: "You've already sent 5 messages to these people today. Schedule this one for tomorrow, or ask an admin to send it.",
   email_kind_unknown: "That kind of email can't be changed here. Refresh and try again.",
   link_expired: "This link has expired or was already used. Ask for a new one and try again.",
   session_expired: "Your session timed out. Reload the page and try again.",

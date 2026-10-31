@@ -280,12 +280,51 @@ const maxAudiencePreview = 100
 // reasons: show each person's reason (admins).
 func (a *App) summarizeAudience(db *gorm.DB, ids []uint, reasons bool) (audienceSummaryJSON, error) {
 	out := audienceSummaryJSON{Skipped: map[string]int{}, Recipients: []audienceRecipientJSON{}}
+	facts, err := recipientFacts(db, ids)
+	if err != nil {
+		return out, err
+	}
+	for _, f := range facts {
+		r := audienceRecipientJSON{Name: f.User.PublicName(), Teen: f.User.AccountType == models.AccountTeen, Skipped: f.Skip}
+		out.People++
+		if r.Skipped == "" {
+			out.Eligible++
+			if r.Teen {
+				out.Teens++
+			}
+		} else {
+			out.Skipped[r.Skipped]++
+			if !reasons {
+				r.Skipped = skipHidden
+			}
+		}
+		out.Recipients = append(out.Recipients, r)
+	}
+	sort.SliceStable(out.Recipients, func(i, j int) bool {
+		return strings.ToLower(out.Recipients[i].Name) < strings.ToLower(out.Recipients[j].Name)
+	})
+	if len(out.Recipients) > maxAudiencePreview {
+		out.Recipients, out.More = out.Recipients[:maxAudiencePreview], true
+	}
+	return out, nil
+}
+
+// recipientFact is one person an audience names, and why they won't get
+// the email ("" when they will).
+type recipientFact struct {
+	User models.User
+	Skip string
+}
+
+// recipientFacts applies the email filters to ids, in id order: the
+// preview counts them and message.send snapshots them (PLAN 7.1 step 4).
+func recipientFacts(db *gorm.DB, ids []uint) ([]recipientFact, error) {
 	var users []models.User
 	suppressed := map[string]string{}
 	optedOut := map[uint]map[string]bool{}
 	err := eachIDChunk(ids, func(chunk []uint) error {
 		var part []models.User
-		if err := db.Select("id, name, display_name, email, status, account_type").Where("id IN ?", chunk).Find(&part).Error; err != nil {
+		if err := db.Select("id, name, display_name, email, status, account_type").Where("id IN ?", chunk).Order("id").Find(&part).Error; err != nil {
 			return err
 		}
 		users = append(users, part...)
@@ -313,45 +352,29 @@ func (a *App) summarizeAudience(db *gorm.DB, ids []uint, reasons bool) (audience
 		return err
 	})
 	if err != nil {
-		return out, err
+		return nil, err
 	}
 	messages := categoryScope(notify.CatMessages)
-	for i := range users {
-		u := &users[i]
-		r := audienceRecipientJSON{Name: u.PublicName(), Teen: u.AccountType == models.AccountTeen}
+	out := make([]recipientFact, 0, len(users))
+	for _, u := range users {
+		f := recipientFact{User: u}
 		switch {
 		case u.Status == models.UserGuest:
-			r.Skipped = skipGuest
+			f.Skip = skipGuest
 		case u.Status != models.UserActive:
-			r.Skipped = skipNotActive
+			// Disabled accounts and teens waiting for account consent
+			// (pending_consent) get nothing (DEC-38, DEC-8).
+			f.Skip = skipNotActive
 		case strings.TrimSpace(u.Email) == "":
-			r.Skipped = skipNoEmail
+			f.Skip = skipNoEmail
 		case suppressed[normalizeEmail(u.Email)] == models.SuppressComplaint:
-			r.Skipped = skipComplained
+			f.Skip = skipComplained
 		case suppressed[normalizeEmail(u.Email)] != "":
-			r.Skipped = skipNotWorking
+			f.Skip = skipNotWorking
 		case optedOut[u.ID][messages]:
-			r.Skipped = skipOptedOut
+			f.Skip = skipOptedOut
 		}
-		out.People++
-		if r.Skipped == "" {
-			out.Eligible++
-			if r.Teen {
-				out.Teens++
-			}
-		} else {
-			out.Skipped[r.Skipped]++
-			if !reasons {
-				r.Skipped = skipHidden
-			}
-		}
-		out.Recipients = append(out.Recipients, r)
-	}
-	sort.SliceStable(out.Recipients, func(i, j int) bool {
-		return strings.ToLower(out.Recipients[i].Name) < strings.ToLower(out.Recipients[j].Name)
-	})
-	if len(out.Recipients) > maxAudiencePreview {
-		out.Recipients, out.More = out.Recipients[:maxAudiencePreview], true
+		out = append(out, f)
 	}
 	return out, nil
 }

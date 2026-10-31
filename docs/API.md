@@ -1285,6 +1285,25 @@ Every email adapter now sends an HTML part when there is one: SMTP as `multipart
 
 The SMS counter (`internal/content/sms.go`, `web/src/lib/sms.ts`, one table of cases in `web/src/lib/sms-cases.json`) counts GSM-7 septets (160 per text, 153 per part, extended characters count 2) or UCS-2 UTF-16 units (70, 67 per part), never splitting an escape or surrogate pair, after adding the `<church>: ` prefix and the `Reply STOP to opt out` footer. The donation-ask check (DEC-3) looks for give, donate, tithe and offering words and for links to giving pages (a giving word in the address, or a giving service such as Tithe.ly, Pushpay or Givelify). Both wait for the SMS tab (DEC-117).
 
+#### Sending (M3.5a)
+
+Scheduling queues the `message.send` job for the message's time; there is no new endpoint. At that time the job:
+
+1. Checks again that the author is active and may still write to the audience (`resolveAudience`, the same check the handlers make). If not, the message is `failed`, its `error` says why ("Pat can't write to these people anymore, so it wasn't sent."), it is audited `message.refused`, and nothing is sent.
+2. Snapshots who it reaches into `message_recipients`, one row per person, each once even when they are in two chosen groups or events. People skipped for the reasons the preview shows (guest, not active, which covers disabled accounts and teens waiting for account consent, no address, email not working, marked as spam, turned off messages from leaders) get a `suppressed` row with that reason.
+3. Adds guardian copies when the church setting `guardian_copies` is `true` (default off; DEC-19). Each confirmed guardian of a teen recipient gets one row with `copy_of_user_id` set, filtered like anyone else, by email only (DEC-29).
+4. Marks the message `sending` with the queued count, and queues `message.deliver_batch` jobs of 50.
+
+Each batch sends its queued rows one at a time. Each email is rendered for its reader: their first name, and for one event's people their own date and date page for `{{event_time}}` and `{{manage_link}}`. A guardian copy carries the teen's values, the subject "Copy: …", and the line "Copy: sent to Sam because your church sends guardian copies." Every email:
+
+- is From "<author> via <church>" over the configured From address (PLAN 7.8)
+- goes out with Reply-To set to the church office address in the `reply_to_address` setting, when it holds one plain address (DEC-130; the relay replaces it in M3.11)
+- is on the broadcast stream, with the reader's footer and one-click unsubscribe
+
+Suppressions are read again right before sending. A row moves to `sent` (with the provider's id) as soon as it goes, so a retried batch never sends twice. A refusal (`SendError.Permanent`) fails that row. Any other provider error stops the batch and retries it with the jobs backoff, 8 attempts (about an hour). After the last attempt its rows are `failed` with the error. When no row is left queued, the message is `sent`, or `failed` when nobody was reached and some sends failed, with the first error, and audited `message.sent` with the counts. Postmark delivery, bounce and spam reports move a row to `delivered`, `bounced` or `complained`, as they do for notification email.
+
+A leader or host may schedule at most 5 messages a day to one group's people (a group audience or its events) or to one church-wide event's, counted in the church's day. A 6th is 400 `message_daily_limit`. Admins have no limit.
+
 ### Notifications
 
 Stored per-recipient rows, never a derived feed or localStorage dismissal list.

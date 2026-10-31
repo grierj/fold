@@ -596,6 +596,7 @@ type MailOutbox struct {
 	Body            string    `gorm:"not null;default:''"`
 	HTMLBody        string    `gorm:"column:html_body;not null;default:''"`
 	ListUnsubscribe string    `gorm:"not null;default:''"`
+	ReplyTo         string    `gorm:"not null;default:''"`
 	CreatedAt       time.Time `gorm:"not null;default:now()"`
 }
 
@@ -1006,7 +1007,7 @@ func All() []any {
 		&Notification{}, &AccountToken{}, &Invitation{}, &MailOutbox{}, &NotificationDelivery{},
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
-		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{}, &Suppression{}, &Message{},
+		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{}, &Suppression{}, &Message{}, &MessageRecipient{},
 	}
 }
 
@@ -1114,10 +1115,12 @@ type Message struct {
 	Audience         string `gorm:"type:jsonb;not null;default:'{}'"`
 	ScheduledAt      *time.Time
 	SentAt           *time.Time
-	SegmentsEstimate int       `gorm:"not null;default:0"`
-	RecipientCount   int       `gorm:"not null;default:0"`
-	CreatedAt        time.Time `gorm:"not null;default:now()"`
-	UpdatedAt        time.Time `gorm:"not null;default:now()"`
+	SegmentsEstimate int `gorm:"not null;default:0"`
+	RecipientCount   int `gorm:"not null;default:0"`
+	// Error says why a message failed or was refused at send time.
+	Error     string    `gorm:"not null;default:''"`
+	CreatedAt time.Time `gorm:"not null;default:now()"`
+	UpdatedAt time.Time `gorm:"not null;default:now()"`
 }
 
 // Message statuses (PLAN 5.3). Only draft and scheduled can still change.
@@ -1128,4 +1131,34 @@ const (
 	MessageSent      = "sent"
 	MessageCancelled = "cancelled"
 	MessageFailed    = "failed"
+)
+
+// MessageRecipient is one person a sent message reached or skipped (M3.5,
+// PLAN 5.3, 7.1): the snapshot message.send takes. CopyOfUserID marks a
+// guardian copy (DEC-19). Address never leaves the worker (DEC-31).
+type MessageRecipient struct {
+	ID                uint   `gorm:"primaryKey"`
+	MessageID         uint   `gorm:"not null;uniqueIndex:message_recipients_once;index:idx_message_recipients_message"`
+	UserID            *uint  `gorm:"uniqueIndex:message_recipients_once"`
+	Channel           string `gorm:"not null;default:email;uniqueIndex:message_recipients_once"`
+	Address           string `gorm:"not null;default:''"`
+	Status            string `gorm:"not null;default:queued;index:idx_message_recipients_message"`
+	Reason            string `gorm:"not null;default:''"`
+	CopyOfUserID      *uint  `gorm:"uniqueIndex:message_recipients_once"`
+	ProviderMessageID string `gorm:"not null;default:'';index:idx_message_recipients_provider,where:provider_message_id <> ''"`
+	Error             string `gorm:"not null;default:''"`
+	SentAt            *time.Time
+	CreatedAt         time.Time `gorm:"not null;default:now()"`
+	UpdatedAt         time.Time `gorm:"not null;default:now()"`
+}
+
+// Message recipient statuses (PLAN 5.3).
+const (
+	RecipientQueued     = "queued"
+	RecipientSuppressed = "suppressed"
+	RecipientSent       = "sent"
+	RecipientDelivered  = "delivered"
+	RecipientBounced    = "bounced"
+	RecipientComplained = "complained"
+	RecipientFailed     = "failed"
 )
