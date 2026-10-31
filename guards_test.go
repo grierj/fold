@@ -397,11 +397,12 @@ func TestNoVideoEmbed(t *testing.T) {
 			return err
 		}
 		// The composer's email preview is the one iframe allowed: our own
-		// page, sandboxed with no scripts (M3.4c). Such an iframe says why
-		// with "iframe-ok:" on the line before it.
+		// page, sandboxed with no scripts (M3.4c). It lives only in the
+		// composer and says why with "iframe-ok:" on the line before it.
+		allowed := filepath.ToSlash(p) == "web/src/pages/MessageComposer.tsx"
 		lines := strings.Split(string(b), "\n")
 		for i, line := range lines {
-			if strings.Contains(strings.ToLower(line), "<iframe") && (i == 0 || !strings.Contains(lines[i-1], "iframe-ok:")) {
+			if strings.Contains(strings.ToLower(line), "<iframe") && (!allowed || i == 0 || !strings.Contains(lines[i-1], "iframe-ok:")) {
 				t.Errorf("%s:%d embeds an <iframe>; video is a link out in a new tab (DEC-16)", p, i+1)
 			}
 		}
