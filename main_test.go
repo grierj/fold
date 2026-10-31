@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/gob"
 	"fmt"
+	"fold/internal/providers"
 	"fold/models"
 	"github.com/gin-gonic/gin"
 	"net/http"
@@ -225,6 +226,46 @@ func TestMemberHelpIsEmbedded(t *testing.T) {
 	for _, heading := range []string{"## Share an email", "## Create a separate account", "## Teen accounts and consent", "## Birthdays"} {
 		if !strings.Contains(w.Body.String(), heading) {
 			t.Fatalf("missing member guidance section %q", heading)
+		}
+	}
+}
+
+// The email provider is a configuration choice (M3.2): the registry builds
+// whichever adapter the environment names, and a broken one stops the
+// server instead of dropping mail.
+func TestChooseMailer(t *testing.T) {
+	env := func(kv ...string) func(string) string {
+		m := map[string]string{}
+		for i := 0; i+1 < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return func(k string) string { return m[k] }
+	}
+	prod := Config{Env: "prod", EmailFrom: "Fold <noreply@example.com>"}
+	for _, tc := range []struct {
+		get  func(string) string
+		want string
+	}{
+		{env(), "none"},
+		{env("FOLD_POSTMARK_SERVER_TOKEN", "tok"), "postmark"},
+		{env("FOLD_EMAIL_PROVIDER", "smtp", "FOLD_POSTMARK_SERVER_TOKEN", "tok"), "smtp"},
+		{env(), "smtp"}, // with cfg.SMTPURL below
+	} {
+		cfg := prod
+		if tc.want == "smtp" {
+			cfg.SMTPURL = "smtp://localhost:25" // Config, not the environment, holds it
+		}
+		s, err := chooseMailer(cfg, nil, tc.get)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.want, err)
+		}
+		if got := s.(providers.EmailSender).Capabilities().Name; got != tc.want {
+			t.Errorf("chose %s, want %s", got, tc.want)
+		}
+	}
+	for _, get := range []func(string) string{env("FOLD_EMAIL_PROVIDER", "postmark"), env("FOLD_EMAIL_PROVIDER", "pigeon"), env("FOLD_EMAIL_PROVIDER", "smtp")} {
+		if _, err := chooseMailer(prod, nil, get); err == nil {
+			t.Error("a provider without its settings should be refused")
 		}
 	}
 }

@@ -16,6 +16,7 @@ import (
 	"fold/internal/mail"
 	"fold/internal/notify"
 	"fold/internal/policy"
+	"fold/internal/providers"
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
@@ -876,12 +877,12 @@ func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notificati
 		return
 	}
 	if !k.Required && optedOut[categoryScope(k.Category)] {
-		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "optional email turned off")
+		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "optional email turned off", "")
 		return
 	}
 	if u == nil ||
 		(u.Status != models.UserActive && u.Status != models.UserGuest) {
-		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "recipient not active")
+		a.recordDelivery(n.ID, n.UserID, models.DeliverySuppressed, "recipient not active", "")
 		return
 	}
 	text := n.EmailTitle
@@ -889,19 +890,33 @@ func (a *App) deliverNotificationEmail(ctx context.Context, n *models.Notificati
 		text += "\n\n" + n.EmailBody
 	}
 	text += "\n\n" + a.emailLink(n.Link)
-	if err := a.Mailer.Send(ctx, mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text}); err != nil {
+	msg := mail.Message{To: u.Email, Subject: n.EmailTitle, Text: text}
+	// The provider's id for the message lets its delivery and bounce reports
+	// find this row (M3.2).
+	var providerID string
+	var err error
+	if tracked, ok := a.Mailer.(providers.EmailSender); ok {
+		providerID, err = tracked.SendEmail(ctx, msg)
+	} else {
+		err = a.Mailer.Send(ctx, msg)
+	}
+	if err != nil {
 		log.Printf("notification email for notification %d: %v", n.ID, err)
-		a.recordDelivery(n.ID, u.ID, models.DeliveryFailed, err.Error())
+		a.recordDelivery(n.ID, u.ID, models.DeliveryFailed, err.Error(), "")
 		return
 	}
-	a.recordDelivery(n.ID, u.ID, models.DeliverySent, "")
+	a.recordDelivery(n.ID, u.ID, models.DeliverySent, "", providerID)
 }
 
 // recordDelivery writes one notification_deliveries row. The unique
 // (notification_id, channel) keeps a second delivery of the same row from
 // duplicating the record.
-func (a *App) recordDelivery(notificationID, userID uint, status, reason string) {
+func (a *App) recordDelivery(notificationID, userID uint, status, reason, providerID string) {
 	var sentAt *time.Time
+	var pid *string
+	if providerID != "" {
+		pid = &providerID
+	}
 	if status == models.DeliverySent {
 		now := time.Now().UTC()
 		sentAt = &now
@@ -911,7 +926,7 @@ func (a *App) recordDelivery(notificationID, userID uint, status, reason string)
 		DoNothing: true,
 	}).Create(&models.NotificationDelivery{
 		NotificationID: notificationID, Channel: models.DeliveryEmail,
-		UserID: userID, Status: status, Reason: reason, SentAt: sentAt,
+		UserID: userID, Status: status, Reason: reason, SentAt: sentAt, ProviderMessageID: pid,
 	}).Error
 }
 
