@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fold/internal/providers"
 	"fold/models"
@@ -47,25 +48,47 @@ type Sender interface {
 // with a newline (which could inject headers) or more than one recipient.
 func checkMessage(m Message) error {
 	if strings.TrimSpace(m.To) == "" {
-		return errors.New("mail: no recipient")
+		return refused{errors.New("mail: no recipient")}
 	}
 	if !headerSafe(m.To) {
-		return errors.New("mail: recipient contains a newline")
+		return refused{errors.New("mail: recipient contains a newline")}
 	}
 	if m.ListUnsubscribe != "" && !oneURL(m.ListUnsubscribe) {
-		return errors.New("mail: the unsubscribe link must be one http(s) URL")
+		return refused{errors.New("mail: the unsubscribe link must be one http(s) URL")}
 	}
 	if !replyToOK(m.ReplyTo) {
-		return errors.New("mail: the reply-to must be one plain address")
+		return refused{errors.New("mail: the reply-to must be one plain address")}
 	}
-	if len(m.FromName) > 200 {
-		return errors.New("mail: the sender name is too long")
+	if utf8.RuneCountInString(m.FromName) > 200 {
+		return refused{errors.New("mail: the sender name is too long")}
 	}
 	// One address only: Postmark reads commas as a list of recipients.
 	if strings.ContainsAny(m.To, ",;") {
-		return errors.New("mail: one recipient per message")
+		return refused{errors.New("mail: one recipient per message")}
 	}
 	return nil
+}
+
+// refused is an error the message itself causes, found before sending.
+type refused struct{ error }
+
+func (r refused) Unwrap() error { return r.error }
+
+// IsPermanent: sending the same message again can't help. The adapter
+// refused it before sending, the provider said so (SendError.Permanent), or
+// an SMTP server answered 5xx (a "no such user", say). Anything else, a
+// timeout or a 4xx, may pass.
+func IsPermanent(err error) bool {
+	var r refused
+	if errors.As(err, &r) {
+		return true
+	}
+	var se *providers.SendError
+	if errors.As(err, &se) {
+		return se.Permanent
+	}
+	var tp *textproto.Error
+	return errors.As(err, &tp) && tp.Code >= 500
 }
 
 // oneLine keeps a subject on one header line.

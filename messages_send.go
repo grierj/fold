@@ -14,6 +14,7 @@ import (
 	"fold/internal/content"
 	"fold/internal/jobs"
 	"fold/internal/mail"
+	"fold/internal/notify"
 	"fold/internal/policy"
 	"fold/internal/providers"
 	"fold/models"
@@ -100,8 +101,31 @@ func (a *App) settingValue(key string) string {
 	return strings.TrimSpace(s.Value)
 }
 
-// prepareMessage is message.send: steps 1–5 and 7 of PLAN 7.1.
+// Failure texts a message's author reads on its page.
+const (
+	whyAuthorGone    = "It wasn't sent because its author's account isn't active anymore."
+	whyAuthorRefused = "It wasn't sent because its author can no longer write to these people."
+	whyAudienceGone  = "It wasn't sent because that group or event isn't there anymore."
+	whyNotPrepared   = "We couldn't get this ready to send. Schedule it again to try once more."
+	whyStopped       = "Sending stopped before these went out."
+)
+
+// prepareMessage is message.send: steps 1–5 and 7 of PLAN 7.1. When its
+// last attempt fails, the message fails with a reason instead of staying
+// scheduled.
 func (a *App) prepareMessage(ctx context.Context, id uint) error {
+	err := a.prepareMessageOnce(ctx, id)
+	if err != nil && jobs.LastAttempt(ctx) {
+		log.Printf("message %d: couldn't prepare it: %s", id, jobs.CleanError(err))
+		var m models.Message
+		if a.DB.Select("id, author_id").First(&m, id).Error == nil {
+			return a.refuseMessage(a.DB, &m, nil, whyNotPrepared)
+		}
+	}
+	return err
+}
+
+func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 	db := a.DB.WithContext(ctx)
 	var m models.Message
 	if err := db.First(&m, id).Error; errors.Is(err, gorm.ErrRecordNotFound) {
@@ -114,38 +138,40 @@ func (a *App) prepareMessage(ctx context.Context, id uint) error {
 	if m.Status != models.MessageScheduled || m.ScheduledAt == nil || m.ScheduledAt.After(now.Add(time.Second)) {
 		return nil
 	}
+	read := &m
 	var au audienceJSON
 	_ = json.Unmarshal([]byte(m.Audience), &au)
 	// 1. The author's rights are checked again: roles change after scheduling.
 	var author models.User
 	if m.AuthorID == nil || db.First(&author, *m.AuthorID).Error != nil || author.Status != models.UserActive {
-		return a.refuseMessage(db, &m, "Its author's account isn't active anymore, so it wasn't sent.")
+		return a.refuseMessage(db, &m, read, whyAuthorGone)
 	}
 	ids, err := a.resolveAudience(&author, &au, now)
 	switch {
 	case errors.Is(err, errAudienceRefused):
-		return a.refuseMessage(db, &m, author.PublicName()+" can't write to these people anymore, so it wasn't sent.")
+		return a.refuseMessage(db, &m, read, whyAuthorRefused)
 	case errors.Is(err, errAudienceGone), errors.Is(err, errAudienceInvalid):
-		return a.refuseMessage(db, &m, "That group or event isn't there anymore, so it wasn't sent.")
+		return a.refuseMessage(db, &m, read, whyAudienceGone)
 	case err != nil:
 		return err
 	}
-	// 2–4. Who it reaches, each once (dedupeIDs), and who is skipped and why.
+	// 2–4. Who it reaches, each once, and who is skipped and why.
 	facts, err := recipientFacts(db, ids)
 	if err != nil {
 		return err
 	}
 	rows := make([]models.MessageRecipient, 0, len(facts))
+	direct := map[uint]bool{}
 	var teens []uint
 	for _, f := range facts {
-		uid := f.User.ID
-		row := models.MessageRecipient{MessageID: m.ID, UserID: &uid, Channel: models.DeliveryEmail, Status: models.RecipientQueued}
+		row := models.MessageRecipient{MessageID: m.ID, UserID: f.User.ID, Channel: models.DeliveryEmail, Status: models.RecipientQueued}
+		direct[f.User.ID] = true
 		if f.Skip != "" {
 			row.Status, row.Reason = models.RecipientSuppressed, f.Skip
 		} else {
 			row.Address = strings.TrimSpace(f.User.Email)
 			if f.User.AccountType == models.AccountTeen {
-				teens = append(teens, uid)
+				teens = append(teens, f.User.ID)
 			}
 		}
 		rows = append(rows, row)
@@ -153,14 +179,16 @@ func (a *App) prepareMessage(ctx context.Context, id uint) error {
 	// 5. Guardian copies (DEC-19): by email only (DEC-29), each guardian
 	// filtered like anyone else.
 	if len(teens) > 0 && a.settingValue(settingGuardianCopies) == "true" {
-		copies, err := guardianCopyRows(db, m.ID, teens)
+		copies, err := guardianCopyRows(db, m.ID, teens, direct)
 		if err != nil {
 			return err
 		}
 		rows = append(rows, copies...)
 	}
 	return db.Transaction(func(tx *gorm.DB) error {
-		res := tx.Model(&models.Message{}).Where("id = ? AND status = ?", m.ID, models.MessageScheduled).
+		// The claim holds only if nobody changed the message since it was
+		// read: an edit or a reschedule in between leaves it to the next job.
+		res := tx.Model(&models.Message{}).Where("id = ? AND status = ? AND scheduled_at = ? AND updated_at = ?", m.ID, models.MessageScheduled, m.ScheduledAt, m.UpdatedAt).
 			Updates(map[string]any{"status": models.MessageSending, "error": "", "updated_at": time.Now()})
 		if res.Error != nil || res.RowsAffected == 0 {
 			return res.Error
@@ -201,18 +229,21 @@ func enqueueBatches(tx *gorm.DB, messageID uint, ids []uint) error {
 
 // guardianCopyRows are the copy rows for the confirmed guardians of teens:
 // queued for those who can get email, suppressed with the reason for the
-// rest. A guardian of two teens gets one copy for each.
-func guardianCopyRows(db *gorm.DB, messageID uint, teens []uint) ([]models.MessageRecipient, error) {
+// rest. A guardian of two teens gets one copy for each; a guardian the
+// message already reaches directly gets none.
+func guardianCopyRows(db *gorm.DB, messageID uint, teens []uint, direct map[uint]bool) ([]models.MessageRecipient, error) {
 	var links []models.GuardianLink
 	if err := db.Where("teen_user_id IN ? AND status = ?", teens, models.GuardianConfirmed).Order("id").Find(&links).Error; err != nil {
 		return nil, err
 	}
-	if len(links) == 0 {
-		return nil, nil
-	}
-	ids := make([]uint, 0, len(links))
+	ids := []uint{}
 	for _, l := range links {
-		ids = append(ids, l.GuardianUserID)
+		if !direct[l.GuardianUserID] {
+			ids = append(ids, l.GuardianUserID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil, nil
 	}
 	facts, err := recipientFacts(db, dedupeIDs(ids))
 	if err != nil {
@@ -225,11 +256,11 @@ func guardianCopyRows(db *gorm.DB, messageID uint, teens []uint) ([]models.Messa
 	out := make([]models.MessageRecipient, 0, len(links))
 	for _, l := range links {
 		f, ok := byID[l.GuardianUserID]
-		if !ok {
+		if !ok || direct[l.GuardianUserID] {
 			continue
 		}
-		gid, teen := l.GuardianUserID, *l.TeenUserID
-		row := models.MessageRecipient{MessageID: messageID, UserID: &gid, CopyOfUserID: &teen, Channel: models.DeliveryEmail, Status: models.RecipientQueued}
+		teen := *l.TeenUserID
+		row := models.MessageRecipient{MessageID: messageID, UserID: l.GuardianUserID, CopyOfUserID: &teen, Channel: models.DeliveryEmail, Status: models.RecipientQueued}
 		if f.Skip != "" {
 			row.Status, row.Reason = models.RecipientSuppressed, f.Skip
 		} else {
@@ -240,12 +271,16 @@ func guardianCopyRows(db *gorm.DB, messageID uint, teens []uint) ([]models.Messa
 	return out, nil
 }
 
-// refuseMessage fails a scheduled message at send time, saying why, and
-// audits it.
-func (a *App) refuseMessage(db *gorm.DB, m *models.Message, why string) error {
+// refuseMessage fails a scheduled message before it sends, saying why, and
+// audits it. read, when set, is the message as the job read it: if it has
+// changed since, the refusal is left to the next job.
+func (a *App) refuseMessage(db *gorm.DB, m *models.Message, read *models.Message, why string) error {
 	return db.Transaction(func(tx *gorm.DB) error {
-		res := tx.Model(&models.Message{}).Where("id = ? AND status = ?", m.ID, models.MessageScheduled).
-			Updates(map[string]any{"status": models.MessageFailed, "error": why, "updated_at": time.Now()})
+		q := tx.Model(&models.Message{}).Where("id = ? AND status = ?", m.ID, models.MessageScheduled)
+		if read != nil {
+			q = q.Where("updated_at = ?", read.UpdatedAt)
+		}
+		res := q.Updates(map[string]any{"status": models.MessageFailed, "error": why, "updated_at": time.Now()})
 		if res.Error != nil || res.RowsAffected == 0 {
 			return res.Error
 		}
@@ -277,7 +312,9 @@ func (a *App) settleMessage(tx *gorm.DB, id uint) error {
 	status, why := models.MessageSent, ""
 	if by[models.RecipientFailed] > 0 {
 		var first models.MessageRecipient
-		tx.Select("error").Where("message_id = ? AND status = ?", id, models.RecipientFailed).Order("id").First(&first)
+		if err := tx.Select("error").Where("message_id = ? AND status = ?", id, models.RecipientFailed).Order("id").First(&first).Error; err != nil {
+			return err
+		}
 		why = first.Error
 		if reached == 0 {
 			status = models.MessageFailed
@@ -297,13 +334,43 @@ func (a *App) settleMessage(tx *gorm.DB, id uint) error {
 		Meta: map[string]any{"status": status, "sent": reached, "skipped": by[models.RecipientSuppressed], "failed": by[models.RecipientFailed]}})
 }
 
-// deliverMessageBatch is message.deliver_batch: it sends the batch's rows
-// that are still queued, recording each as soon as it goes, so a retry
-// never sends a row twice. A provider error that may pass stops the batch
-// and retries it; on the last attempt the rest are marked failed with the
-// error, so the message settles instead of hanging.
+// batchDeadline keeps a batch well inside the jobs lease (15 minutes), so
+// no second worker takes it over while it is still sending.
+const batchDeadline = 10 * time.Minute
+
+// errStopBatch: a send error that may pass stopped the batch; the job
+// retries it.
+var errStopBatch = errors.New("stop the batch and retry it")
+
+// deliverMessageBatch is message.deliver_batch. Each queued row is sent
+// under a row lock (SKIP LOCKED), so two workers never send the same row,
+// and recorded in the same transaction. A crash between the provider
+// accepting an email and the commit can still send that one again on the
+// retry: delivery is at least once. A send error that may pass stops the
+// batch to retry it; on the last attempt each such row fails with its
+// error instead, so every row is tried and the message settles. Any other
+// error on the last attempt fails the rows still queued.
 func (a *App) deliverMessageBatch(ctx context.Context, p messageBatchJob) error {
-	db := a.DB.WithContext(ctx)
+	ctx, cancel := context.WithTimeout(ctx, batchDeadline)
+	defer cancel()
+	err := a.deliverMessageBatchOnce(ctx, p)
+	if err == nil || !jobs.LastAttempt(ctx) {
+		return err
+	}
+	// Records outlive the batch's deadline.
+	db := a.DB.WithContext(context.WithoutCancel(ctx))
+	log.Printf("message %d: giving up on a batch after its last attempt: %s", p.MessageID, jobs.CleanError(err))
+	return db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&models.MessageRecipient{}).Where("id IN ? AND status = ?", p.RecipientIDs, models.RecipientQueued).
+			Updates(map[string]any{"status": models.RecipientFailed, "error": jobs.CleanError(err), "updated_at": time.Now()}).Error; err != nil {
+			return err
+		}
+		return a.settleMessage(tx, p.MessageID)
+	})
+}
+
+func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) error {
+	db := a.DB.WithContext(context.WithoutCancel(ctx))
 	var m models.Message
 	if err := db.First(&m, p.MessageID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
@@ -326,7 +393,7 @@ func (a *App) deliverMessageBatch(ctx context.Context, p messageBatchJob) error 
 	}
 	var au audienceJSON
 	_ = json.Unmarshal([]byte(m.Audience), &au)
-	values, err := a.recipientValues(db, &m, au, rows, readers)
+	values, err := a.recipientValues(db, &m, au, readers)
 	if err != nil {
 		return err
 	}
@@ -334,68 +401,72 @@ func (a *App) deliverMessageBatch(ctx context.Context, p messageBatchJob) error 
 	if err != nil {
 		return err
 	}
-	from := a.messageFromName(db, &m)
+	optedOut, err := emailOptOuts(db, keysOf(readers))
+	if err != nil {
+		return err
+	}
+	footer := footerFacts{site: a.siteName(), address: a.churchAddress()}
+	from := a.messageFromName(db, &m, footer.site)
 	replyTo := a.replyToAddress()
 	sender := mail.Unwrap(a.Mailer)
-	var stop error
+	messages := categoryScope(notify.CatMessages)
+	last := jobs.LastAttempt(ctx)
 	for _, row := range rows {
-		reader := readers[*row.UserID]
-		if reader == nil {
-			a.markRecipient(db, row.ID, models.RecipientSuppressed, "account gone", "", "")
-			continue
-		}
-		msg, err := a.messageEmail(&m, row, reader, readers, values)
+		reader := readers[row.UserID]
+		err := db.Transaction(func(tx *gorm.DB) error {
+			var held uint
+			if err := tx.Raw("SELECT id FROM message_recipients WHERE id = ? AND status = ? FOR UPDATE SKIP LOCKED", row.ID, models.RecipientQueued).Scan(&held).Error; err != nil {
+				return err
+			}
+			if held == 0 {
+				return nil // another worker has it, or it is done
+			}
+			// Who the reader is now: someone disabled or opted out since
+			// the snapshot doesn't get it.
+			switch {
+			case reader == nil || reader.Status != models.UserActive:
+				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipNotActive, "", "")
+			case optedOut[row.UserID][messages]:
+				return markRecipient(tx, row.ID, models.RecipientSuppressed, skipOptedOut, "", "")
+			}
+			msg, err := a.messageEmail(&m, row, reader, readers, values, footer)
+			if err != nil {
+				return err
+			}
+			msg.FromName, msg.ReplyTo = from, replyTo
+			var providerID string
+			err = mail.Blocked(blocked[normalizeEmail(row.Address)], msg)
+			if err == nil {
+				if tracked, ok := sender.(providers.EmailSender); ok {
+					providerID, err = tracked.SendEmail(ctx, msg)
+				} else {
+					err = sender.Send(ctx, msg)
+				}
+			}
+			switch {
+			case err == nil:
+				return markRecipient(tx, row.ID, models.RecipientSent, "", providerID, "")
+			case mail.IsSuppressed(err):
+				return markRecipient(tx, row.ID, models.RecipientSuppressed, strings.TrimPrefix(err.Error(), "mail: "), "", "")
+			case mail.IsPermanent(err), last:
+				return markRecipient(tx, row.ID, models.RecipientFailed, "", "", jobs.CleanError(err))
+			default:
+				return errors.Join(errStopBatch, err)
+			}
+		})
 		if err != nil {
 			return err
 		}
-		msg.FromName, msg.ReplyTo = from, replyTo
-		var providerID string
-		err = mail.Blocked(blocked[normalizeEmail(row.Address)], msg)
-		if err == nil {
-			if tracked, ok := sender.(providers.EmailSender); ok {
-				providerID, err = tracked.SendEmail(ctx, msg)
-			} else {
-				err = sender.Send(ctx, msg)
-			}
-		}
-		var sendErr *providers.SendError
-		switch {
-		case err == nil:
-			a.markRecipient(db, row.ID, models.RecipientSent, "", providerID, "")
-		case mail.IsSuppressed(err):
-			a.markRecipient(db, row.ID, models.RecipientSuppressed, strings.TrimPrefix(err.Error(), "mail: "), "", "")
-		case errors.As(err, &sendErr) && sendErr.Permanent:
-			a.markRecipient(db, row.ID, models.RecipientFailed, "", "", jobs.CleanError(err))
-		default:
-			stop = err
-		}
-		if stop != nil {
-			break
-		}
 	}
-	if stop != nil && !jobs.LastAttempt(ctx) {
-		return stop
-	}
-	return db.Transaction(func(tx *gorm.DB) error {
-		if stop != nil {
-			log.Printf("message %d: giving up on a batch after its last attempt: %s", m.ID, jobs.CleanError(stop))
-			if err := tx.Model(&models.MessageRecipient{}).Where("id IN ? AND status = ?", p.RecipientIDs, models.RecipientQueued).
-				Updates(map[string]any{"status": models.RecipientFailed, "error": jobs.CleanError(stop), "updated_at": time.Now()}).Error; err != nil {
-				return err
-			}
-		}
-		return a.settleMessage(tx, m.ID)
-	})
+	return db.Transaction(func(tx *gorm.DB) error { return a.settleMessage(tx, m.ID) })
 }
 
-func (a *App) markRecipient(db *gorm.DB, id uint, status, reason, providerID, errText string) {
+func markRecipient(tx *gorm.DB, id uint, status, reason, providerID, errText string) error {
 	updates := map[string]any{"status": status, "reason": reason, "provider_message_id": providerID, "error": errText, "updated_at": time.Now()}
 	if status == models.RecipientSent {
 		updates["sent_at"] = time.Now()
 	}
-	if err := db.Model(&models.MessageRecipient{}).Where("id = ? AND status = ?", id, models.RecipientQueued).Updates(updates).Error; err != nil {
-		log.Printf("message recipient %d: recording %s: %v", id, status, err)
-	}
+	return tx.Model(&models.MessageRecipient{}).Where("id = ? AND status = ?", id, models.RecipientQueued).Updates(updates).Error
 }
 
 // batchReaders loads everyone a batch is for, and the teens its copies
@@ -403,9 +474,7 @@ func (a *App) markRecipient(db *gorm.DB, id uint, status, reason, providerID, er
 func (a *App) batchReaders(db *gorm.DB, rows []models.MessageRecipient) (map[uint]*models.User, error) {
 	ids := []uint{}
 	for _, r := range rows {
-		if r.UserID != nil {
-			ids = append(ids, *r.UserID)
-		}
+		ids = append(ids, r.UserID)
 		if r.CopyOfUserID != nil {
 			ids = append(ids, *r.CopyOfUserID)
 		}
@@ -441,14 +510,14 @@ func batchSuppressions(db *gorm.DB, rows []models.MessageRecipient) (map[string]
 }
 
 // messageFromName is "Pat Lee via First Church" (PLAN 7.8): the author's
-// name in the From header over the church's own address.
-func (a *App) messageFromName(db *gorm.DB, m *models.Message) string {
-	site := a.siteName()
+// name in the From header over the church's own address, kept short.
+func (a *App) messageFromName(db *gorm.DB, m *models.Message, site string) string {
+	name := site
 	var author models.User
-	if m.AuthorID == nil || db.Select("id, name, display_name").First(&author, *m.AuthorID).Error != nil {
-		return site
+	if m.AuthorID != nil && db.Select("id, name, display_name").First(&author, *m.AuthorID).Error == nil {
+		name = author.PublicName() + " via " + site
 	}
-	return author.PublicName() + " via " + site
+	return clipRunes(name, 120)
 }
 
 // replyToAddress is the church office address replies go to (DEC-130),
@@ -464,14 +533,14 @@ func (a *App) replyToAddress() string {
 // messageEmail renders m for one row's reader. A guardian copy is the
 // teen's message with the teen's values, marked as a copy, with the
 // guardian's own footer and unsubscribe link (DEC-19).
-func (a *App) messageEmail(m *models.Message, row models.MessageRecipient, reader *models.User, readers map[uint]*models.User, values map[uint]map[string]string) (mail.Message, error) {
+func (a *App) messageEmail(m *models.Message, row models.MessageRecipient, reader *models.User, readers map[uint]*models.User, values map[uint]map[string]string, footer footerFacts) (mail.Message, error) {
 	vals := values[reader.ID]
 	msg := *m
 	if row.CopyOfUserID != nil {
-		teen := readers[*row.CopyOfUserID]
 		name := "your teen"
-		if teen != nil {
-			name = teen.PublicName()
+		if teen := readers[*row.CopyOfUserID]; teen != nil {
+			// A name can't become a merge field.
+			name = strings.ReplaceAll(teen.PublicName(), "{{", "{ {")
 		}
 		vals = values[*row.CopyOfUserID]
 		note := "Copy: sent to " + name + " because your church sends guardian copies."
@@ -479,7 +548,7 @@ func (a *App) messageEmail(m *models.Message, row models.MessageRecipient, reade
 		msg.BodyHTML = "<p><em>" + html.EscapeString(note) + "</em></p>" + m.BodyHTML
 		msg.BodyText = note + "\n\n" + m.BodyText
 	}
-	r, err := a.renderMessage(&msg, reader, vals)
+	r, err := a.renderMessageWith(&msg, reader, vals, footer)
 	if err != nil {
 		return mail.Message{}, err
 	}
@@ -489,8 +558,9 @@ func (a *App) messageEmail(m *models.Message, row models.MessageRecipient, reade
 
 // recipientValues are each reader's merge values (PLAN 7.3), by user id:
 // the first name, and for one event's people the event, with the date and
-// page of the reader's own registration (the next one, for a series).
-func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, rows []models.MessageRecipient, readers map[uint]*models.User) (map[uint]map[string]string, error) {
+// page of the reader's own registration in the audience's statuses (the
+// next one, for a series).
+func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, readers map[uint]*models.User) (map[uint]map[string]string, error) {
 	out := map[uint]map[string]string{}
 	for id, u := range readers {
 		out[id] = map[string]string{content.FieldFirstName: firstName(u.PublicName())}
@@ -510,6 +580,10 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	if err != nil {
 		loc = time.UTC
 	}
+	statuses := au.Statuses
+	if len(statuses) == 0 {
+		statuses = defaultRegStatuses
+	}
 	type next struct {
 		UID          uint
 		OriginalDate string
@@ -518,7 +592,7 @@ func (a *App) recipientValues(db *gorm.DB, m *models.Message, au audienceJSON, r
 	var dates []next
 	q := db.Table("registrations r").Select("DISTINCT ON (COALESCE(r.user_id, r.registered_by)) COALESCE(r.user_id, r.registered_by) AS uid, o.original_date, o.starts_at").
 		Joins("JOIN event_occurrences o ON o.id = r.occurrence_id").
-		Where("o.event_id = ? AND COALESCE(r.user_id, r.registered_by) IN ?", ev.ID, keysOf(readers))
+		Where("o.event_id = ? AND r.status IN ? AND COALESCE(r.user_id, r.registered_by) IN ?", ev.ID, statuses, keysOf(readers))
 	if au.Type == policy.AudienceOccurrence {
 		q = q.Where("o.id = ?", au.OccurrenceID)
 	} else {
@@ -546,6 +620,49 @@ func keysOf(m map[uint]*models.User) []uint {
 		out = append(out, k)
 	}
 	return out
+}
+
+// reapMessages is the daily backstop for a send that stopped in a way no
+// job will pick up (the process died on a job's last attempt): a message
+// still scheduled long after its time with no send job left fails with a
+// reason, and a sending one with no batch job left fails its queued rows
+// and settles, so "Try again" can resend them.
+func (a *App) reapMessages(ctx context.Context, now time.Time) error {
+	db := a.DB.WithContext(ctx)
+	live := func(kind string) string {
+		return `NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = '` + kind + `' AND j.status IN ('queued', 'running', 'failed')
+			AND (j.payload->>'messageId')::bigint = messages.id)`
+	}
+	var stuck []models.Message
+	if err := db.Select("id, author_id").Where("status = ? AND scheduled_at < ? AND "+live(kindMessageSend), models.MessageScheduled, now.Add(-time.Hour)).
+		Find(&stuck).Error; err != nil {
+		return err
+	}
+	for i := range stuck {
+		if err := a.refuseMessage(db, &stuck[i], nil, whyNotPrepared); err != nil {
+			return err
+		}
+	}
+	var sending []uint
+	if err := db.Model(&models.Message{}).Where("status = ? AND updated_at < ? AND "+live(kindMessageBatch), models.MessageSending, now.Add(-time.Hour)).
+		Pluck("id", &sending).Error; err != nil {
+		return err
+	}
+	for _, id := range sending {
+		if err := db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&models.MessageRecipient{}).Where("message_id = ? AND status = ?", id, models.RecipientQueued).
+				Updates(map[string]any{"status": models.RecipientFailed, "error": whyStopped, "updated_at": now}).Error; err != nil {
+				return err
+			}
+			return a.settleMessage(tx, id)
+		}); err != nil {
+			return err
+		}
+	}
+	if n := len(stuck) + len(sending); n > 0 {
+		log.Printf("messages: settled %d that had stopped", n)
+	}
+	return nil
 }
 
 // Per-author limit (PLAN 7.5): a leader or host may send at most this many
@@ -612,11 +729,15 @@ func (a *App) audienceKeys(au audienceJSON) ([]string, error) {
 		return nil, err
 	}
 	out := []string{}
+	seen := map[string]bool{}
 	for _, ev := range evs {
+		k := "e" + historyID(ev.ID)
 		if ev.GroupID != nil {
-			out = append(out, "g"+historyID(*ev.GroupID))
-		} else {
-			out = append(out, "e"+historyID(ev.ID))
+			k = "g" + historyID(*ev.GroupID)
+		}
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
 		}
 	}
 	return out, nil

@@ -1139,7 +1139,7 @@ const (
 type MessageRecipient struct {
 	ID                uint   `gorm:"primaryKey"`
 	MessageID         uint   `gorm:"not null;uniqueIndex:message_recipients_once;index:idx_message_recipients_message"`
-	UserID            *uint  `gorm:"uniqueIndex:message_recipients_once"`
+	UserID            uint   `gorm:"not null;uniqueIndex:message_recipients_once"`
 	Channel           string `gorm:"not null;default:email;uniqueIndex:message_recipients_once"`
 	Address           string `gorm:"not null;default:''"`
 	Status            string `gorm:"not null;default:queued;index:idx_message_recipients_message"`

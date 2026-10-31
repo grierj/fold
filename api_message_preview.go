@@ -109,7 +109,13 @@ func firstName(name string) string {
 
 // renderMessage renders m for the reader u with the given merge values.
 func (a *App) renderMessage(m *models.Message, u *models.User, vals map[string]string) (renderedMessage, error) {
-	site, address := a.siteName(), a.churchAddress()
+	return a.renderMessageWith(m, u, vals, footerFacts{site: a.siteName(), address: a.churchAddress()})
+}
+
+// renderMessageWith renders with the church's name and address already
+// read, so a batch reads them once, not once per email.
+func (a *App) renderMessageWith(m *models.Message, u *models.User, vals map[string]string, f footerFacts) (renderedMessage, error) {
+	site, address := f.site, f.address
 	token := a.unsubscribeToken(u.ID, categoryScope(notify.CatMessages))
 	var lines []string
 	for _, l := range strings.Split(strings.ReplaceAll(address, "\r", ""), "\n") {
@@ -220,7 +226,7 @@ func (a *App) apiTestMessage(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 	err = a.Mailer.Send(ctx, mail.Message{To: me.Email, Subject: "[Test] " + r.Subject, Text: r.Text, HTML: r.HTML,
-		Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe, FromName: a.messageFromName(a.DB, m), ReplyTo: a.replyToAddress()})
+		Stream: providers.StreamBroadcast, Optional: true, ListUnsubscribe: r.Unsubscribe, FromName: a.messageFromName(a.DB, m, a.siteName()), ReplyTo: a.replyToAddress()})
 	var suppressed *mail.ErrSuppressed
 	if errors.As(err, &suppressed) {
 		jsonError(c, http.StatusBadRequest, errMessageTestEmail)

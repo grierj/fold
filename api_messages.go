@@ -496,8 +496,16 @@ func (a *App) apiUpdateMessage(c *gin.Context) {
 	// and its count follows the new audience.
 	scheduled := m.Status == models.MessageScheduled
 	if scheduled {
-		_, s, ok := a.sendable(c, me, m)
+		au, s, ok := a.sendable(c, me, m)
 		if !ok {
+			return
+		}
+		// A new audience counts against its own group's daily limit.
+		if full, err := a.dailyLimitReached(me, m.ID, au, *m.ScheduledAt); err != nil {
+			jsonError(c, http.StatusInternalServerError, "could not save the message")
+			return
+		} else if full {
+			jsonError(c, http.StatusBadRequest, errMessageDailyLimit)
 			return
 		}
 		fields["recipient_count"] = s.Eligible

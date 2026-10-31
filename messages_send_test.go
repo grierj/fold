@@ -3,7 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/textproto"
+	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -57,7 +61,7 @@ func recipientsOf(t *testing.T, app *App, id uint) map[string]models.MessageReci
 	out := map[string]models.MessageRecipient{}
 	for _, r := range rows {
 		var u models.User
-		app.DB.First(&u, *r.UserID)
+		app.DB.First(&u, r.UserID)
 		key := u.Email
 		if r.CopyOfUserID != nil {
 			key = "copy:" + key
@@ -162,7 +166,7 @@ func TestMessagePipelineChecksAgainAtSendTime(t *testing.T) {
 	f.app.DB.First(&m, id)
 	var after int64
 	f.app.DB.Model(&models.MailOutbox{}).Count(&after)
-	if m.Status != models.MessageFailed || !strings.Contains(m.Error, "can't write to these people") || after != before || auditCount(t, f.app, audit.MessageRefused) != 1 {
+	if m.Status != models.MessageFailed || m.Error != whyAuthorRefused || after != before || auditCount(t, f.app, audit.MessageRefused) != 1 {
 		t.Fatalf("demoted: %+v, sent %d", m, after-before)
 	}
 }
@@ -299,5 +303,109 @@ func TestMessageDailyLimit(t *testing.T) {
 	}
 	for range dailyMessagesPerGroup + 1 {
 		f.scheduleNow(t, f.admin, "Admin", "<p>Hi</p>", aud)
+	}
+}
+
+// pickySender passes everything to the outbox except mail to one address,
+// which it refuses the way an SMTP server does: 550 is permanent, 451 may
+// pass.
+type pickySender struct {
+	next mail.Sender
+	bad  string
+	code int
+}
+
+func (s pickySender) Send(ctx context.Context, m mail.Message) error {
+	_, err := s.SendEmail(ctx, m)
+	return err
+}
+
+func (s pickySender) SendEmail(ctx context.Context, m mail.Message) (string, error) {
+	if m.To == s.bad {
+		return "", fmt.Errorf("mail: rcpt: %w", &textproto.Error{Code: s.code, Msg: "no"})
+	}
+	return mail.Unwrap(s.next).(providers.EmailSender).SendEmail(ctx, m)
+}
+
+func (pickySender) Capabilities() providers.EmailCaps { return providers.EmailCaps{Name: "picky"} }
+
+// One bad address fails only its own row; the rest of its batch still
+// goes. A 5xx fails at once; a 4xx is retried, then fails alone.
+func TestMessagePipelineOneBadAddress(t *testing.T) {
+	for _, code := range []int{550, 451} {
+		f := newComposeFixture(t)
+		f.app.Mailer = pickySender{next: f.app.Mailer, bad: f.leaderUser.Email, code: code}
+		id := f.scheduleNow(t, f.leader, "Mixed", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
+		runMessageJobs(t, f.app)
+		rows := recipientsOf(t, f.app, id)
+		var m models.Message
+		f.app.DB.First(&m, id)
+		if rows[f.leaderUser.Email].Status != models.RecipientFailed || rows[f.teen.Email].Status != models.RecipientSent ||
+			m.Status != models.MessageSent || m.Error == "" {
+			t.Fatalf("%d: message %+v, rows %+v", code, m, rows)
+		}
+	}
+}
+
+// A guardian the message already reaches directly gets no second copy.
+func TestMessagePipelineNoCopyForADirectGuardian(t *testing.T) {
+	f := newComposeFixture(t)
+	f.app.DB.Create(&models.GuardianLink{GuardianUserID: f.leaderUser.ID, TeenUserID: &f.teen.ID, Status: models.GuardianConfirmed})
+	f.app.DB.Create(&models.Setting{Key: settingGuardianCopies, Value: "true"})
+	id := f.scheduleNow(t, f.leader, "Direct", "<p>Hi</p>", map[string]any{"type": "group", "groupId": f.group.ID})
+	runMessageJobs(t, f.app)
+	if _, ok := recipientsOf(t, f.app, id)["copy:"+f.leaderUser.Email]; ok {
+		t.Fatal("a guardian who got it directly also got a copy")
+	}
+}
+
+// A series reader's date is their own next registration in the
+// audience's statuses, not a date they declined.
+func TestMessagePipelineSeriesDateFollowsTheReader(t *testing.T) {
+	f := newComposeFixture(t)
+	ev := createFeedEvent(t, f.leader, f.group.ID, "Weekly", feedStart(2), "FREQ=WEEKLY;COUNT=3")
+	var occs []models.EventOccurrence
+	f.app.DB.Where("event_id = ?", ev.ID).Order("starts_at").Find(&occs)
+	if len(occs) < 2 {
+		t.Fatalf("occurrences: %d", len(occs))
+	}
+	f.app.DB.Create(&models.Registration{OccurrenceID: occs[0].ID, UserID: &f.teen.ID, Status: models.RegDeclined})
+	f.app.DB.Create(&models.Registration{OccurrenceID: occs[1].ID, UserID: &f.teen.ID, Status: models.RegGoing})
+	f.scheduleNow(t, f.leader, "Weekly", `<p><a href="{{manage_link}}">Your date</a></p>`, map[string]any{"type": "event_series", "eventId": ev.ID})
+	runMessageJobs(t, f.app)
+	got, _ := devOutbox(t, f.app).LatestTo(f.teen.Email)
+	if !strings.Contains(got.HTML, occurrenceDatePath(ev.ID, occs[1].OriginalDate)) {
+		t.Fatalf("manage link: %s", got.HTML)
+	}
+}
+
+// The daily backstop settles a send that stopped with no job left.
+func TestReapMessages(t *testing.T) {
+	f := newComposeFixture(t)
+	old := time.Now().Add(-2 * time.Hour)
+	stuck := models.Message{AuthorID: &f.leaderUser.ID, Status: models.MessageScheduled, Subject: "s", Audience: "{}", ScheduledAt: &old}
+	sending := models.Message{AuthorID: &f.leaderUser.ID, Status: models.MessageSending, Subject: "s", Audience: "{}", ScheduledAt: &old}
+	f.app.DB.Create(&stuck)
+	f.app.DB.Create(&sending)
+	f.app.DB.Model(&models.Message{}).Where("id IN ?", []uint{stuck.ID, sending.ID}).Update("updated_at", old)
+	f.app.DB.Create(&models.MessageRecipient{MessageID: sending.ID, UserID: f.teen.ID, Status: models.RecipientQueued, Address: f.teen.Email})
+	if err := f.app.reapMessages(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	f.app.DB.First(&stuck, stuck.ID)
+	f.app.DB.First(&sending, sending.ID)
+	if stuck.Status != models.MessageFailed || stuck.Error != whyNotPrepared || sending.Status != models.MessageFailed || sending.Error != whyStopped {
+		t.Fatalf("stuck %+v, sending %+v", stuck, sending)
+	}
+}
+
+// The daily limit in the error copy is the limit the server enforces.
+func TestDailyLimitCopyMatches(t *testing.T) {
+	b, err := os.ReadFile("web/src/lib/errors.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "already sent "+strconv.Itoa(dailyMessagesPerGroup)+" messages") || !strings.Contains(errMessageDailyLimit, strconv.Itoa(dailyMessagesPerGroup)) {
+		t.Fatal("the message_daily_limit copy doesn't match dailyMessagesPerGroup")
 	}
 }

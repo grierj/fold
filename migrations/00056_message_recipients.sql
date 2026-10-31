@@ -5,15 +5,17 @@
 -- people get a row too, with the reason, so history can count them. A
 -- guardian copy (DEC-19) is a row for the guardian with copy_of_user_id
 -- set to the teen. address stays in the worker: no API returns it (DEC-31).
+-- Rows go with their person (CASCADE), so the uniqueness below never
+-- meets two rows that lost their user.
 CREATE TABLE message_recipients (
     id bigserial PRIMARY KEY,
     message_id bigint NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
-    user_id bigint REFERENCES users(id) ON DELETE SET NULL,
+    user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     channel text NOT NULL DEFAULT 'email' CHECK (channel IN ('email', 'sms')),
     address text NOT NULL DEFAULT '' CHECK (length(address) <= 320),
     status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'suppressed', 'deferred', 'sent', 'delivered', 'bounced', 'complained', 'failed')),
     reason text NOT NULL DEFAULT '' CHECK (length(reason) <= 200),
-    copy_of_user_id bigint REFERENCES users(id) ON DELETE SET NULL,
+    copy_of_user_id bigint REFERENCES users(id) ON DELETE CASCADE,
     provider_message_id text NOT NULL DEFAULT '' CHECK (length(provider_message_id) <= 200),
     error text NOT NULL DEFAULT '' CHECK (length(error) <= 2000),
     sent_at timestamptz,
