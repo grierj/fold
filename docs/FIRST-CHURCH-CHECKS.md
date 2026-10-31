@@ -8,7 +8,7 @@ Each item says what to do, what you should see, and the milestone it came from.
 
 Follow the directions page at `/notifications/setup` literally, on each device below. Record the iOS version you used.
 
-- [ ] **iPhone or iPad, iOS 16.4 or newer, Home Screen app.** Add Fold to the Home Screen, open it, sign in, go to Me → Notifications and tap "Turn on notifications". You should see the iOS permission prompt only after the tap. Tap "Send a test notification", lock the phone, and see it on the Lock Screen. Also check that hiding previews (Settings → Notifications → Show Previews) still shows only "Open Fold to review an update"-style text.
+- [ ] **iPhone or iPad, iOS 16.4 or newer, Home Screen app.** Add Fold to the Home Screen, open it, sign in, go to Me → Notifications and tap "Turn on notifications". You should see the iOS permission prompt only after the tap. Tap "Send a test notification", lock the phone, and see it on the Lock Screen. Then set Settings → Notifications → Show Previews to "When Unlocked": you should see the text hidden on the Lock Screen and shown after unlocking, as the directions page says.
 - [ ] **Android, Chrome.** Same steps, with or without the app installed. You should see the Chrome prompt and the test notification.
 - [ ] **Desktop Safari (Mac).** Same steps. You should see the Safari prompt and a macOS notification.
 - [ ] **Edge on Windows.** Same steps. You should see the test notification. This also confirms the Windows push host (`notify.windows.com`) is on the allow-list.
