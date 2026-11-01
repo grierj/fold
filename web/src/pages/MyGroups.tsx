@@ -41,7 +41,7 @@ function MeetingSoon() {
         Groups meeting soon
       </h2>
       <div className="fold-list">
-        {groups.map((g) => <GroupCard key={g.id} group={g} headingLevel={3} />)}
+        {groups.map((g, index) => <GroupCard key={g.id} group={g} headingLevel={3} priority={index === 0} />)}
       </div>
     </section>
   );
@@ -131,8 +131,8 @@ export function MyGroups() {
       )}
       {!loading && groups.length > 0 && (
         <div className="fold-list">
-          {groups.map((g) => (
-            <GroupCard key={g.id} group={g} headingLevel={2} showRole={false} />
+          {groups.map((g, index) => (
+            <GroupCard key={g.id} group={g} headingLevel={2} showRole={false} priority={index === 0} />
           ))}
         </div>
       )}

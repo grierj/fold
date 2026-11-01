@@ -44,15 +44,18 @@ This redesign keeps the chosen brand, routes and behavior; it changes compositio
 - Inputs and touch targets at least 44px. Focus is immediate, visible, never clipped.
 - One primary action per view; selected RSVP and chips remain explicit in text and state.
 - New copy has no uppercase/tracked labels, glued arrows, decorative dots or middle-dot strings.
-  Existing test-contracted date punctuation remains; `.hallmark/verification.md` records the
-  strict Hallmark exceptions. Do not silently change tests or claim a clean Floor.
+  Product-approved event/date wording remains (PLAN DEC-92). The user authorized fixing
+  the three deferred copy findings; `.hallmark/verification.md` records the before/after wording.
 - Preserve all content facts, handlers, ids, URLs, test hooks, consent and legal language.
 - Keep all loading, empty, error, full and permission-dependent states. No invented states.
-- No tests edited to accept the redesign. Record any copy tightened for a Hallmark gate.
+- Never weaken behavior assertions to accept styling. When the user authorizes a copy change,
+  update exact wording expectations and retain interaction tests. Record the changed wording.
 
 ## Motion and assets
 - Still by default; state feedback only. No lift/scale on cards, no entrance animations.
 - Existing covers, avatars, illustrations and mark remain; no invented people or image slots.
+- Group lists give only their first cover eager/high-priority loading; later covers stay lazy
+  with async decoding. Keep explicit square dimensions and the user's focal point.
 - Colors and font literals belong only to the existing theme block; SVG assets retain theirs.
 
 ## Exports

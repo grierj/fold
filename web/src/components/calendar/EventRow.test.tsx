@@ -27,6 +27,16 @@ it("uses second-level day headings directly below the calendar page heading", ()
 });
 
 describe("EventRow", () => {
+  it.each([
+    ["2026-10-23T01:00:00Z", "2026-10-23T02:30:00Z", "7:00 PM to 8:30 PM"],
+    ["2026-10-22T17:30:00Z", "2026-10-22T18:30:00Z", "11:30 AM to 12:30 PM"],
+    ["2026-10-23T05:30:00Z", "2026-10-23T06:30:00Z", "11:30 PM to 12:30 AM"],
+  ])("names both ends of %s to %s in the viewer's zone", (startsAt, endsAt, expected) => {
+    wrap(<EventRow occ={occ({ startsAt, endsAt })} />);
+    expect(screen.getByText(expected)).toBeInTheDocument();
+    expect(screen.getByRole("link")).toHaveAccessibleName(expect.stringContaining(expected));
+  });
+
   it("marks events with remote seats using the neutral badge", () => {
     wrap(<EventRow occ={occ({ remoteAvailable: true })} />);
     expect(screen.getByText("Remote")).toHaveClass("bg-sunken", "text-text-muted");

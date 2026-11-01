@@ -1,6 +1,39 @@
 [
  {
   "mode": "redesign",
+  "depth": "polish",
+  "scope": "app",
+  "theme": "Fold brand (approved product system)",
+  "shape": "existing working app",
+  "entry": "web/src/App.tsx",
+  "signature": "date-led agenda and explicit RSVP",
+  "prompt": "Fix the three failures and address lazy-thumbnail performance. Implement optional recommended UI additions.",
+  "base": "e71a8e7",
+  "branch": "design/hallmark-fold",
+  "changes": [
+   "two-sentence upload hint",
+   "explicit to between calendar time endpoints",
+   "visible No events on empty weekdays",
+   "only first group cover eager/high; later covers lazy/auto with async decoding",
+   "intrinsic thumbnail dimensions and priority regression coverage"
+  ],
+  "result": {
+   "floorFailures": 0,
+   "reflexFailures": 0,
+   "warnings": 0,
+   "waiver": "7b retained brand roles, nine occurrences",
+   "tests": 1376,
+   "browserChecks": 39,
+   "eagerGzipKB": 172.7,
+   "independentReview": "ship; explicitly approved, no blockers",
+   "reviewRun": "fa9fe2c6-bf85-4e2e-a0c1-aa51439ccc43",
+   "evidence": "/tmp/fold-verify-proof/20261101T204553Z-3995714",
+   "details": ".hallmark/verification.md"
+  },
+  "date": "2026-11-01"
+ },
+ {
+  "mode": "redesign",
   "depth": "full",
   "scope": "app",
   "shape": "working app; date-led agenda and group directory",

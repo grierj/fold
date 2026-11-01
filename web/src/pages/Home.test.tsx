@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -76,6 +76,23 @@ describe("Home tag filters", () => {
     auth.mockReturnValue({ user: null, loading: false });
     list.mockReset();
     list.mockImplementation(listLikeTheAPI);
+  });
+
+  it.each([false, true])("prioritizes only the first visible group cover, including after filtering (signed in=%s)", async (signedIn) => {
+    auth.mockReturnValue({ user: signedIn ? { id: 2, displayName: "Sam" } : null, loading: false });
+    const { container } = renderHome();
+    await screen.findByRole("heading", { name: "Youth Choir" });
+    const images = container.querySelectorAll("#groups a img");
+    expect(images).toHaveLength(4);
+    images.forEach((image, index) => {
+      expect(image).toHaveAttribute("loading", index === 0 ? "eager" : "lazy");
+      expect(image).toHaveAttribute("fetchpriority", index === 0 ? "high" : "auto");
+    });
+    await userEvent.click((await chips()).getByRole("button", { name: "prayer" }));
+    await waitFor(() => expect(container.querySelectorAll("#groups a img")).toHaveLength(1));
+    const first = screen.getByRole("link", { name: /Prayer Team/ }).querySelector("img");
+    expect(first).toHaveAttribute("loading", "eager");
+    expect(first).toHaveAttribute("fetchpriority", "high");
   });
 
   it("shows no summary or markers before a tag is chosen", async () => {

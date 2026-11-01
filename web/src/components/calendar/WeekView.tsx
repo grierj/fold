@@ -26,8 +26,7 @@ export function WeekView({ days, byDay, today }: { days: string[]; byDay: Map<st
               </h3>
               {empty ? (
                 <p className="text-sm text-text-muted">
-                  <span aria-hidden="true">–</span>
-                  <span className="sr-only">No events</span>
+                  No events
                 </p>
               ) : (
                 <ul className="space-y-1">

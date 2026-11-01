@@ -23,9 +23,10 @@ it("shrinks days with no events and keeps busy days wide (DEC-99)", () => {
   const busy = columns.find((c) => !c.hasAttribute("data-empty"))!;
   expect(busy).toHaveClass("flex-1");
   expect(busy).toHaveTextContent("Event 1");
-  // An empty day shows only its name and a dash; the words are for screen readers.
-  expect(empty[0]).toHaveTextContent(/^\w{3} \d+–No events$/);
-  expect(empty[0].querySelector("[aria-hidden=true]")).toHaveTextContent("–");
+  // Empty days explain themselves to sighted people as well as screen readers.
+  expect(empty[0]).toHaveTextContent(/^\w{3} \d+No events$/);
+  expect(empty[0].querySelector("p")).toBeVisible();
+  expect(empty[0].querySelector(".sr-only, [aria-hidden=true]")).toBeNull();
 });
 
 it("counts events with the singular and the empty wording", () => {

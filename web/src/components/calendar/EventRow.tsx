@@ -71,7 +71,7 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
     >
       <span className="flex flex-wrap items-center gap-2 sm:row-span-2 sm:content-start">
         <span className={`tabular-nums text-sm ${solid ? "text-primary-foreground" : "text-text-muted"}`}>
-          {formatTime(occ.startsAt)} – {formatTime(occ.endsAt)}
+          {formatTime(occ.startsAt)} to {formatTime(occ.endsAt)}
         </span>
         <StatusBadge state={state} solid={solid} />
         {occ.remoteAvailable && <RemoteBadge />}

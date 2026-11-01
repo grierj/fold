@@ -352,8 +352,8 @@ export function Home() {
           )}
           {!error && groups.length > 0 && (
             <div className="fold-list">
-              {groups.map((g) => (
-                <GroupCard key={g.id} group={g} />
+              {groups.map((g, index) => (
+                <GroupCard key={g.id} group={g} priority={index === 0} />
               ))}
             </div>
           )}

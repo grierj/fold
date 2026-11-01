@@ -13,10 +13,13 @@ export function GroupCard({
   group,
   headingLevel = 3,
   showRole = true,
+  priority = false,
 }: {
   group: GroupSummary;
   headingLevel?: 2 | 3;
   showRole?: boolean;
+  // The list's first cover may be LCP; keep later covers lazy.
+  priority?: boolean;
 }) {
   const next = group.nextEventAt ? formatNextMeeting(group.nextEventAt) : null;
   const Heading = headingLevel === 2 ? "h2" : "h3";
@@ -37,7 +40,11 @@ export function GroupCard({
           alt=""
           className="w-full h-full object-cover"
           style={{ objectPosition: focalPosition(group.coverFocalX, group.coverFocalY) }}
-          loading="lazy"
+          width={112}
+          height={112}
+          loading={priority ? "eager" : "lazy"}
+          fetchPriority={priority ? "high" : "auto"}
+          decoding={priority ? "auto" : "async"}
         />
       </div>
       <div className="min-w-0 flex-1 space-y-1">
