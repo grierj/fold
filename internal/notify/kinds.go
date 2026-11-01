@@ -139,11 +139,14 @@ type Kind struct {
 	// Default off.
 	AllowPush  bool
 	PushRender func(Vars) (title, body string)
-	// PushSoon marks a change to a dated event, whose rows carry the
-	// occurrence as their subject (SubjectType "occurrence"). When that
-	// date starts within 24 hours its push is urgent (a short TTL, high
-	// urgency) and goes at once whatever the hour, outside the hourly
-	// limit (DEC-126); otherwise it is an ordinary optional push.
+	// PushSoon marks a change to a dated event or to someone's place on
+	// one ("you're in", removed). Its rows name the date: the occurrence
+	// as their subject (SubjectType "occurrence"), or the event as their
+	// subject with the dates' original dates in Data "dates" (room.lost;
+	// the earliest counts). When that date starts within 24 hours its push
+	// is urgent (a short TTL, high urgency) and goes at once whatever the
+	// hour, outside the hourly limit (DEC-126); otherwise it is an
+	// ordinary optional push. A row that names no date is never urgent.
 	PushSoon bool
 }
 
@@ -553,7 +556,7 @@ func init() {
 			return title, body
 		},
 		// A row about someone in the household names nobody (research 2.4).
-		AllowPush: true, PushRender: func(v Vars) (string, string) {
+		AllowPush: true, PushSoon: true, PushRender: func(v Vars) (string, string) {
 			if v.Person != "" {
 				return safePush(v)
 			}
@@ -575,7 +578,7 @@ func init() {
 			return "Registration removed: " + or(v.Event, "an event"), body
 		},
 		// The leader's note stays in Fold.
-		AllowPush: true, PushRender: func(v Vars) (string, string) {
+		AllowPush: true, PushSoon: true, PushRender: func(v Vars) (string, string) {
 			if v.Person != "" {
 				return safePush(v)
 			}
@@ -648,8 +651,10 @@ func init() {
 				"The room you booked is taken at the new time. Pick another room on the event page."
 		},
 		// No room name: a room can say where a group meets (DEC-124).
-		// Change is the date count ("1 date", "3 dates").
-		AllowPush: true, PushRender: func(v Vars) (string, string) {
+		// Change is the date count ("1 date", "3 dates"). The row names
+		// the event, and Data "dates" the dates, so the earliest decides
+		// whether it is urgent (PushSoon).
+		AllowPush: true, PushSoon: true, PushRender: func(v Vars) (string, string) {
 			return "Room booking lost: " + or(v.Event, "an event"), "Pick another room for " + or(v.Change, "a date") + " in Fold."
 		},
 	})

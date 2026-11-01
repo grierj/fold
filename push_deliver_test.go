@@ -539,7 +539,9 @@ func TestPushOptionsFollowTheKind(t *testing.T) {
 		{notify.OccurrenceCancelled, &soon.ID, 6 * time.Hour, push.UrgencyHigh},
 		{notify.EventChanged, &soon.ID, 6 * time.Hour, push.UrgencyHigh},
 		{notify.OccurrenceCancelled, &later.ID, 24 * time.Hour, push.UrgencyNormal},
-		{notify.RegistrationPromoted, &soon.ID, 24 * time.Hour, push.UrgencyNormal},
+		{notify.RegistrationPromoted, &soon.ID, 6 * time.Hour, push.UrgencyHigh},
+		{notify.RegistrationPromoted, &later.ID, 24 * time.Hour, push.UrgencyNormal},
+		{notify.GroupApproved, &soon.ID, 24 * time.Hour, push.UrgencyNormal},
 		{notify.GroupApproved, nil, 24 * time.Hour, push.UrgencyNormal},
 		{notify.GroupPending, nil, 72 * time.Hour, push.UrgencyLow},
 		{notify.AccountRequested, nil, 72 * time.Hour, push.UrgencyLow},
@@ -837,14 +839,65 @@ func TestUrgentPushesSkipQuietHours(t *testing.T) {
 	if j := pushJobFor(t, app, waits, phone); j.Status != models.JobQueued || !j.RunAt.Equal(time.Date(2030, 1, 16, 8, 0, 0, 0, denverZone)) {
 		t.Fatalf("3 days away: %+v", j)
 	}
-	// Cancelled and restored dates are event changes too; a "you're in"
-	// isn't (it waits).
-	for kind, exempt := range map[string]bool{notify.OccurrenceCancelled: true, notify.OccurrenceRestored: true, notify.RegistrationPromoted: false} {
+	// Cancelled and restored dates, "you're in" and a removal are changes
+	// to that date too; an approved group names no date.
+	for kind, exempt := range map[string]bool{notify.OccurrenceCancelled: true, notify.OccurrenceRestored: true,
+		notify.RegistrationPromoted: true, notify.RegistrationRemoved: true, notify.GroupApproved: false} {
 		k, _ := notify.Lookup(kind)
 		got, err := app.startsSoon(context.Background(), k, &models.Notification{Kind: kind, SubjectType: "occurrence", SubjectID: &tonight.ID}, clock.at)
 		if err != nil || got != exempt {
 			t.Errorf("%s 3 hours away: soon %v (%v), want %v", kind, got, err, exempt)
 		}
+		if got, _ := app.startsSoon(context.Background(), k, &models.Notification{Kind: kind, SubjectType: "occurrence", SubjectID: &later.ID}, clock.at); got {
+			t.Errorf("%s 3 days away is soon", kind)
+		}
+	}
+}
+
+// A "you're in" off the waitlist at 11 PM for a 7 AM date goes at once,
+// as does a lost room whose earliest date is that morning; a lost room
+// only on later dates waits (DEC-126).
+func TestDateChangesForTheMorningSkipQuietHours(t *testing.T) {
+	app, f := pushTestApp(t)
+	clock := quietHours(app)
+	pat := denverMember(t, app, "pat")
+	phone := newPushDevice(t, app, pat, "phone")
+	leader := newTestUser(t, app, "leader", "password123456", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Supper club", models.GroupActive)
+	ev, morning := seedEvent(t, app, g, leader.ID, time.Date(2030, 1, 16, 7, 0, 0, 0, denverZone))
+	_, far := seedEvent(t, app, g, leader.ID, clock.at.Add(72*time.Hour))
+	farLater := models.EventOccurrence{EventID: ev.ID, OriginalDate: "2030-01-25", StartsAt: clock.at.Add(10 * 24 * time.Hour),
+		EndsAt: clock.at.Add(10*24*time.Hour + time.Hour), Status: models.OccurrenceScheduled}
+	if err := app.DB.Create(&farLater).Error; err != nil {
+		t.Fatal(err)
+	}
+	send := func(m notify.Msg) uint {
+		m.To, m.Link = []uint{pat.ID}, "/events/1"
+		m.Vars = notify.Vars{Event: "Supper club", Change: "1 date"}
+		ids, err := notify.Send(app.DB, m)
+		if err != nil || len(ids) != 1 {
+			t.Fatalf("notify: %v %v", ids, err)
+		}
+		return ids[0]
+	}
+	in := send(notify.Msg{Kind: notify.RegistrationPromoted, SubjectType: "occurrence", SubjectID: morning.ID})
+	roomSoon := send(notify.Msg{Kind: notify.RoomLost, SubjectType: "event", SubjectID: ev.ID,
+		Data: map[string]any{"eventId": ev.ID, "dates": []string{farLater.OriginalDate, morning.OriginalDate}}})
+	roomLater := send(notify.Msg{Kind: notify.RoomLost, SubjectType: "event", SubjectID: far.EventID,
+		Data: map[string]any{"eventId": far.EventID, "dates": []string{far.OriginalDate}}})
+	for _, id := range []uint{in, roomSoon, roomLater} {
+		runPushJobs(t, app, id, phone)
+	}
+	for _, id := range []uint{in, roomSoon} {
+		if status, reason := pushDelivery(t, app, id); status != models.DeliverySent || reason != pushSentSoon {
+			t.Errorf("notification %d: %q %q, want sent at once", id, status, reason)
+		}
+	}
+	if f.count(phone.path) != 2 {
+		t.Fatalf("sends %v", f.sent)
+	}
+	if j := pushJobFor(t, app, roomLater, phone); j.Status != models.JobQueued || !j.RunAt.Equal(time.Date(2030, 1, 16, 8, 0, 0, 0, denverZone)) {
+		t.Fatalf("a lost room 3 days away: %+v", j)
 	}
 }
 

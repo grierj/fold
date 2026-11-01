@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -191,21 +192,36 @@ func pushOptions(k notify.Kind, n *models.Notification, soon bool) push.Options 
 	return opts
 }
 
-// startsSoon reports whether n is a change to an event date (a PushSoon
-// kind, whose rows carry the occurrence as their subject) that starts
-// within 24 hours of now, or already has. Such a push is urgent and goes
-// whatever the hour (DEC-126). A kind whose row names no occurrence is
-// never soon.
+// startsSoon reports whether n is about an event date (a PushSoon kind)
+// that starts within 24 hours of now, or already has. The row names the
+// date by its occurrence subject, or by its event subject plus Data
+// "dates" (the original dates; the earliest counts). Such a push is
+// urgent and goes whatever the hour (DEC-126). A row that names no date
+// is never soon.
 func (a *App) startsSoon(ctx context.Context, k notify.Kind, n *models.Notification, now time.Time) (bool, error) {
-	if !k.PushSoon || n.SubjectType != "occurrence" || n.SubjectID == nil {
+	if !k.PushSoon || n.SubjectID == nil {
 		return false, nil
 	}
-	var o models.EventOccurrence
-	err := a.DB.WithContext(ctx).Select("starts_at").First(&o, *n.SubjectID).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	db := a.DB.WithContext(ctx).Model(&models.EventOccurrence{})
+	switch n.SubjectType {
+	case "occurrence":
+		db = db.Where("id = ?", *n.SubjectID)
+	case "event":
+		var data struct {
+			Dates []string `json:"dates"`
+		}
+		if json.Unmarshal([]byte(n.Data), &data) != nil || len(data.Dates) == 0 {
+			return false, nil
+		}
+		db = db.Where("event_id = ? AND original_date IN ?", *n.SubjectID, data.Dates)
+	default:
 		return false, nil
 	}
-	return err == nil && o.StartsAt.Before(now.Add(24*time.Hour)), err
+	var first sql.NullTime
+	if err := db.Select("min(starts_at)").Row().Scan(&first); err != nil {
+		return false, err
+	}
+	return first.Valid && first.Time.Before(now.Add(24*time.Hour)), nil
 }
 
 // Delivery reasons a push row can carry (notification_deliveries.reason).
