@@ -52,14 +52,16 @@ function renderHome(path = "/") {
   );
 }
 
-// The filter chips sit in the hero, apart from the tags on each card.
+// All tags live in a disclosure; selected tags also remain inline.
 async function chips() {
+  const toggle = await screen.findByRole("button", { name: /^Filters/ });
+  if (toggle.getAttribute("aria-expanded") === "false") await userEvent.click(toggle);
   await screen.findByRole("button", { name: "All" });
   await screen.findAllByRole("button", { name: "prayer" });
   return within(screen.getByRole("button", { name: "All" }).parentElement!);
 }
 
-const summary = () => screen.getByText(/Showing groups tagged/);
+const summary = () => screen.getByRole("group", { name: "Selected group filters" });
 
 beforeEach(() => {
   site.mockReset();
@@ -98,13 +100,13 @@ describe("Home tag filters", () => {
   it("shows no summary or markers before a tag is chosen", async () => {
     renderHome();
     const bar = await chips();
-    expect(screen.queryByText(/Showing groups tagged/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Selected group filters" })).not.toBeInTheDocument();
     expect(bar.getByRole("button", { name: "choir" })).toHaveAttribute("aria-pressed", "false");
     expect(bar.queryByText("+")).not.toBeInTheDocument();
     expect(bar.queryByText("✓")).not.toBeInTheDocument();
   });
 
-  it("marks the selected tag, offers + on the others, and says what is shown", async () => {
+  it("marks selected tags and explains that matching any selected tag is enough", async () => {
     renderHome();
     const bar = await chips();
     await userEvent.click(bar.getByRole("button", { name: "choir" }));
@@ -112,10 +114,9 @@ describe("Home tag filters", () => {
     expect(choir).toHaveAttribute("aria-pressed", "true");
     // The check mark is drawn by .chip[aria-pressed="true"] in index.css.
     expect(within(choir).queryByText("+")).not.toBeInTheDocument();
-    expect(within(bar.getByRole("button", { name: "youth" })).getByText("+")).toBeInTheDocument();
-    expect(summary()).toHaveTextContent(/^Showing groups tagged choir\. Clear$/);
-    expect(summary()).toHaveAttribute("aria-live", "polite");
-    expect(within(summary()).getByText("choir").tagName).toBe("STRONG");
+    expect(screen.getByText(/Groups matching any selected tag are shown/)).toBeVisible();
+    expect(within(summary()).getByRole("button", { name: "Remove choir filter" })).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("2 groups"));
   });
 
   it("words two tags with or, and Clear resets the filter", async () => {
@@ -123,20 +124,22 @@ describe("Home tag filters", () => {
     const bar = await chips();
     await userEvent.click(bar.getByRole("button", { name: "choir" }));
     await userEvent.click(bar.getByRole("button", { name: "band" }));
-    expect(summary()).toHaveTextContent(/^Showing groups tagged choir or band\. Clear$/);
+    expect(summary()).toHaveTextContent("Any of:");
+    expect(within(summary()).getByRole("button", { name: "Remove choir filter" })).toBeVisible();
+    expect(within(summary()).getByRole("button", { name: "Remove band filter" })).toBeVisible();
     expect(summary()).not.toHaveTextContent("must match");
     expect(await screen.findByRole("heading", { name: "Youth Band" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Sunday Choir" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Prayer Team" })).not.toBeInTheDocument();
     await userEvent.click(within(summary()).getByRole("button", { name: "Clear" }));
-    expect(screen.queryByText(/Showing groups tagged/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Selected group filters" })).not.toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Prayer Team" })).toBeInTheDocument();
   });
 
-  it("lists three or more tags with commas and a final or", async () => {
+  it("keeps all three selected tags available to remove", async () => {
     renderHome("/?tag=choir&tag=youth&tag=band");
     await chips();
-    expect(summary()).toHaveTextContent(/^Showing groups tagged choir, youth, or band\. Clear$/);
+    for (const tag of ["choir", "youth", "band"]) expect(within(summary()).getByRole("button", { name: `Remove ${tag} filter` })).toBeVisible();
   });
 
   it("explains an empty search-plus-tags result and offers to clear the tags", async () => {
@@ -370,7 +373,7 @@ describe("Home signed in (DEC-94)", () => {
     const target = screen.getByRole("heading", { name: "Groups" }).closest("section")!;
     expect(target).toHaveAttribute("id", "groups");
     expect(target).toContainElement(screen.getAllByRole("heading", { name: "Youth Choir" })[0]);
-    expect(scroll).toHaveBeenCalled();
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
     expect(scroll.mock.contexts[0]).toBe(target);
   });
 });

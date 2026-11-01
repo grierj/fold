@@ -31,7 +31,12 @@ This redesign keeps the chosen brand, routes and behavior; it changes compositio
 - `.fold-settings-grid`: sidebar/content from 1024px; sidebar/back-link visibility must use
   the same breakpoint. Below it, keep the selected section and a back link, not a full menu
   before the form. Do not hide the section's content.
-- Home: greeting and compact upcoming dates, directory with its own search/filter row.
+- Home: greeting and four compact upcoming dates above a full-width directory; two group
+  columns from 1024px, never two squeezed into a side rail. Browse groups skips the agenda.
+- Directory: sticky search/Filters/count toolbar, available tags disclosed on demand,
+  selected tags removable inline. Start with 12 results and an explicit Show more button.
+  Search, tags and expanded count live in the URL; return position is in memory under
+  the user-keyed shell. Restore the originating row and focus when returning from detail.
 - Group: compact photo-led identity header retains the uniform scrim, inverse text/action
   and contrast contract; below it, tabs and sections use the shared page measure.
 - Events: date, place and response form a coherent unit; dates read as an agenda, not tiles.
@@ -62,3 +67,5 @@ This redesign keeps the chosen brand, routes and behavior; it changes compositio
 - `web/src/index.css`, `web/src/tokens.css`, `web/src/base.css`; existing Tailwind role names.
 - Baseline and route inventory: `.hallmark/preflight.json`, `.hallmark/routes.md`.
 - Verification, remaining flags and independent review: `.hallmark/verification.md`.
+- Directory implementation and larger-list recommendations: `.hallmark/busy-church.md`.
+  The latter's roster/calendar/admin recommendations are not yet implemented designs.

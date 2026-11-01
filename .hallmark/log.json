@@ -1,6 +1,35 @@
 [
  {
   "mode": "redesign",
+  "scope": "app",
+  "theme": "Fold brand (approved product system)",
+  "prompt": "Implement all five directory recommendations, then evaluate a busy church and recommend further improvements.",
+  "base": "54717aa",
+  "branch": "design/hallmark-fold",
+  "changes": [
+   "URL-backed search, selected tags and expanded count; Back restores position and focus",
+   "compact sticky Filters disclosure and announced result count",
+   "12-result batches with explicit Show more and keyboard focus handling",
+   "four-date agenda above full-width two-column desktop directory",
+   "Browse groups jump waits for preceding content",
+   "100-user busy-church API fixture and browsing experiment"
+  ],
+  "result": {
+   "floorFailures": 0,
+   "warnings": 0,
+   "tests": 1388,
+   "browserChecks": 99,
+   "eagerGzipKB": 173.6,
+   "independentReview": "UI/UX and correctness explicitly approved after three filter findings were fixed",
+   "reviewRun": "5fc6e7b8-f2d7-44e9-bd3c-53f9d9884dbb",
+   "evidence": "/tmp/fold-verify-proof/20261101T214745Z-294686",
+   "details": ".hallmark/busy-church.md",
+   "furtherListRecommendationsImplemented": false
+  },
+  "date": "2026-11-01"
+ },
+ {
+  "mode": "redesign",
   "depth": "polish",
   "scope": "app",
   "theme": "Fold brand (approved product system)",

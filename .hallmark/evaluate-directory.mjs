@@ -1,5 +1,6 @@
-// 50-group directory experiment. Seed only an isolated verify-fold instance
-// via the app's normal authenticated API, then exercise the real page.
+// Historical pre-implementation 50-group evaluator. On the current layout use
+// SEED_ONLY=1, then verify-directory.mjs. Fixture writes require an isolated
+// verify-fold instance and use the app's normal authenticated API.
 import { createRequire } from 'node:module';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { measure } from '../web/e2e/ui-measure.mjs';
@@ -140,6 +141,7 @@ try {
   expect(inventory).toHaveLength(50);
   await writeFile(`${dir}/inventory.json`, JSON.stringify(inventory, null, 2) + '\n');
   await admin.context().close();
+  if (!process.env.SEED_ONLY) {
   for (const role of ['visitor', 'member']) {
     const page = await newPage();
     if (role === 'member') await signIn(page, 'member');
@@ -197,6 +199,7 @@ try {
     await capture(page, 'shared-tag-link', width);
   }
   await page.context().close();
+  }
 } finally {
   await browser.close();
   await writeFile(`${dir}/results.json`, JSON.stringify({ url, groups: inventory.length, uniqueTags: [...new Set(inventory.flatMap((g) => g.tags))].sort(), scheduledGroups: inventory.filter((g) => g.nextEventAt).length, results, tasks }, null, 2) + '\n');

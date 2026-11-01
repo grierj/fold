@@ -8,6 +8,7 @@ import { Avatar } from "./Avatar";
 import { CalendarIcon, GroupsIcon, HomeIcon, MeIcon, PlusIcon } from "./icons";
 import { NotificationBell, NotificationTab } from "./Notifications";
 import { FoldMark } from "./FoldMark";
+import { DirectoryPositionProvider } from "../lib/directoryPosition";
 
 // The app shell (UI makeover PR 5): a header with the church's name, a top
 // nav from the sm breakpoint up, and a bottom tab bar on phones (Home,
@@ -127,7 +128,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </nav>
         </div>
       </header>
-      <main id="main" tabIndex={-1} className={`flex-1 scroll-mt-[calc(var(--fold-header-height,4rem)+1rem)] ${signedIn ? "pb-[calc(3.5rem+env(safe-area-inset-bottom))] sm:pb-0" : ""}`}>{children}</main>
+      <main id="main" tabIndex={-1} className={`flex-1 scroll-mt-[calc(var(--fold-header-height,4rem)+1rem)] ${signedIn ? "pb-[calc(3.5rem+env(safe-area-inset-bottom))] sm:pb-0" : ""}`}><DirectoryPositionProvider>{children}</DirectoryPositionProvider></main>
       {signedIn && (
         <nav
           aria-label="Tabs"

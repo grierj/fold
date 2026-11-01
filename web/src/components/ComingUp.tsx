@@ -18,7 +18,7 @@ const WINDOW_DAYS = 60;
 // calendar's Just mine scope, each with their own answer. It stays inside
 // Just mine, so it never lists another group's unanswered public events
 // (DEC-76). It loads and fails on its own, so the groups below still work.
-export function ComingUp() {
+export function ComingUp({ onReady }: { onReady?: () => void } = {}) {
   const [rows, setRows] = useState<CalendarOccurrence[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retry, setRetry] = useState(0);
@@ -48,6 +48,10 @@ export function ComingUp() {
     };
   }, [retry]);
 
+  useEffect(() => {
+    if (rows !== null || error) onReady?.();
+  }, [rows, error, onReady]);
+
   return (
     <section aria-labelledby="coming-up-heading">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
@@ -63,9 +67,9 @@ export function ComingUp() {
       ) : rows.length === 0 ? (
         <EmptyState title="Nothing coming up in the next two months" body="Dates from your groups, and events you answer, show up here." />
       ) : (
-        <ul className="fold-list">
+        <ul className="grid gap-x-6 border-t border-border sm:grid-cols-2 lg:grid-cols-4">
           {rows.map((o) => (
-            <li key={`${o.eventId}-${o.date}`}>
+            <li key={`${o.eventId}-${o.date}`} className="min-w-0 border-b border-border">
               <ComingUpRow occ={o} />
             </li>
           ))}
@@ -85,7 +89,7 @@ function ComingUpRow({ occ }: { occ: CalendarOccurrence }) {
     // own address, anything else opens the event.
     <Link
       to={occurrenceLink(occ)}
-      className="fold-list-row flex min-h-11 gap-4 rounded-sm hover:bg-sunken"
+      className="fold-list-row flex min-h-11 gap-3 rounded-sm hover:bg-sunken"
     >
       <DateBadge at={occ.startsAt} />
       <span className="min-w-0 flex-1">

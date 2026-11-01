@@ -4,9 +4,38 @@ Branch: `design/hallmark-fold`. Baseline: `82323bf`. User approved proceeding af
 No backend, schema, deployment, API, route or permission-policy changes. Initial redesign through `e71a8e7` changed no test source. The user then explicitly requested fixing the three deferred failures and thumbnail performance: that follow-up updates two exact copy expectations and adds nine regression cases without weakening behavior assertions.
 `ui-ratchet.json` allowances only decreased. No project dependency added.
 
-## Delivered direction
+## Latest: directory implementation and busy-church experiment
 
-- **Shape:** working app, not a marketing page. Compact date-led agenda beside the group directory on desktop.
+All five recommendations in `directory-50.md` are implemented: URL-backed search
+and expanded count with Back/position restoration, compact Filters and announced
+counts, 12-result Show more, a four-date agenda above a full-width two-column
+desktop directory, and reliable Browse groups jumps. The user authorized these
+changes and related interaction-test updates. No backend or permission changes.
+
+A fresh isolated run seeded 100 users, 50 groups, 149 events/191 dates, 25 church
+wide events, a 60-person group, a 49-person attendee list, 25 personal memberships,
+30 notifications, 40 drafts and 18 rooms. Further roster/calendar/admin design
+recommendations are **not implemented**. Full measurements, priorities and
+reproduction: [`busy-church.md`](busy-church.md).
+
+Latest verification: **138 Vitest files / 1,388 tests**, **99 browser checks**
+(six baseline + 36 directory + 57 busy-church), no recorded hard failures.
+Build/types/Knip/Go lint/selected guards/contrast pass; eager bundle **173.6KB gzip**
+against 180KB. Rendered Hallmark: **0 FAIL, 0 WARN, 9 WAIVED, 22 ANSWERED,
+6 DISMISSED**. The older kept-content totals below describe the earlier snapshot;
+initially rendered result links now intentionally differ because of batching.
+
+Independent review found three filter edge cases, then explicitly approved their
+fixes and the current UI/UX/correctness. Reports:
+`reviews/directory-initial.md`, `reviews/directory-final.md`. The reviewer inspected
+source and supplied screenshots/results; test execution was the parent's.
+Final evidence: `/tmp/fold-verify-proof/20261101T214745Z-294686/`.
+Full Go database and full Playwright suites remain unrun; no production benchmark,
+push or merge is claimed. Both verification instances have been stopped.
+
+## Earlier delivered direction
+
+- **Shape:** working app, not a marketing page. Originally a compact date-led agenda beside the desktop directory; the latest content-scale improvement places it above the full-width directory.
 - **Theme:** retained Fold Violet, self-hosted Inter, warm surfaces, existing group assets and illustrations.
 - **Chrome:** existing desktop destinations and five mobile tabs. Existing buttons and fields retain their APIs.
 - **Signature:** date, event and RSVP read together. Group covers are smaller, not replaced with invented material.
@@ -43,7 +72,7 @@ Both reviewers were read-only and used supplied source diffs and browser capture
 
 Full reports are retained in `.hallmark/reviews/`. Older reviews describe their historical snapshot. Review approval is not CI or permission to merge; nothing was pushed or merged.
 
-## Executed checks
+## Earlier executed checks
 
 - **137 Vitest files, 1,376 tests passed**, rerun after the follow-up (nine added cases).
 - TypeScript, Knip, SPA production build, `go build ./...`, `go vet ./...`, `make lint-go` passed.

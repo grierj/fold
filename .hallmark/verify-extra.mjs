@@ -43,7 +43,7 @@ const cases = [
     await p.getByRole('button', { name: /^More for / }).first().click();
     await p.getByRole('menuitem', { name: 'Edit this date', exact: true }).click();
   }],
-  ['group-filter', 'member', '/', async (p) => { await p.getByRole('button', { name: 'music', exact: true }).click(); await p.getByText('Showing groups tagged').waitFor(); }],
+  ['group-filter', 'member', '/', async (p) => { await p.getByRole('button', { name: 'Filters', exact: true }).click(); await p.getByRole('button', { name: 'music', exact: true }).click(); await p.getByRole('group', { name: 'Selected group filters' }).waitFor(); }],
   ['rsvp-dialog', 'member', `/events/${seed.eventId}`, async (p) => {
     await p.getByRole('button', { name: 'Maybe', exact: true }).first().click();
     await p.getByRole('dialog').waitFor();
