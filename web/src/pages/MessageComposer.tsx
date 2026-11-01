@@ -470,7 +470,7 @@ export function MessageComposerPage() {
             tab, when it exists, has nothing to do with it. */}
         {pushShown && (
           <Checkbox label="Push notification too"
-            description="People who turned on notifications also get a short note: the subject and the first line."
+            description="People who turned on notifications also get a short note: the subject and the start of the message."
             checked={pushAlert} onChange={(e) => setPushAlert(e.target.checked)} />
         )}
       </section>
@@ -532,7 +532,7 @@ export function MessageComposerPage() {
         <div role="group" aria-labelledby={`${ids.when}-c`} className="space-y-3 rounded-lg border border-primary-border bg-primary-subtle p-4">
           <p id={`${ids.when}-c`} className="font-semibold text-primary-on-subtle">{confirmLine(asking.eligible, asking.at, zone)}</p>
           <p className="text-sm text-primary-on-subtle">To {audience ? audienceLabel(audience, options) : "the people you chose"}. You can change or cancel it until it starts sending.</p>
-          {asking.push > 0 && <p className="text-sm text-primary-on-subtle">{asking.push} of them also {asking.push === 1 ? "gets" : "get"} a push notification.</p>}
+          {asking.push > 0 && <p className="text-sm text-primary-on-subtle">{asking.push} {asking.push === 1 ? "person gets" : "people get"} a push notification too.</p>}
           <FormActions>
             <Button ref={confirmButton} variant="primary" layout="w-full sm:w-auto" disabled={busy === "schedule"} onClick={() => void schedule()}>
               {busy === "schedule" ? "Scheduling…" : asking.at ? "Schedule" : "Send now"}

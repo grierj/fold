@@ -134,15 +134,42 @@ func TestMessagePushText(t *testing.T) {
 	}
 }
 
-// Who gets no push: someone with push off (or off for messages from
-// leaders) gets the email only; a guardian's copy gets none; push_alert
-// off sends none; and with the church's switch off no push row is
-// recorded at all.
+// No contact detail reaches a lock screen (DEC-124): email addresses (with
+// or without mailto:) and phone numbers are taken out of the subject and
+// the text; dates, times and ordinary numbers stay.
+func TestMessagePushTextLeavesOutContactDetails(t *testing.T) {
+	m := &models.Message{Subject: "Questions? pat@example.org or 555-123-4567",
+		BodyText: "Write to Pat.Lee+church@mail.example.co.uk, mailto:office@example.org or call (208) 555-0199, +44 20 7946 0958 or 555 0100. " +
+			"We meet 2026-11-05 at 6:45 in Room 104 with 12 people."}
+	title, body := messagePushText(m, nil)
+	for _, bad := range []string{"@", "mailto", "555", "0199", "7946", "0100"} {
+		if strings.Contains(title, bad) || strings.Contains(body, bad) {
+			t.Fatalf("%q reached the lock screen: %q / %q", bad, title, body)
+		}
+	}
+	for _, keep := range []string{"Write to", "2026-11-05", "6:45", "Room 104", "12 people"} {
+		if !strings.Contains(body, keep) {
+			t.Fatalf("%q was taken out: %q", keep, body)
+		}
+	}
+	if title != "Questions? or" {
+		t.Fatalf("title %q", title)
+	}
+}
+
+// Push follows push consent, not the email row (DEC-122): someone who
+// turned off email from leaders, or whose email bounces, still gets the
+// push when push is on, and no email. Someone with push off for messages
+// from leaders gets the email only; a guardian's copy gets no push;
+// push_alert off sends none; and with the church's switch off no push row
+// is recorded at all.
 func TestAnnouncementPushSkips(t *testing.T) {
 	f := newComposeFixture(t)
 	fp := useFakePush(t, f.app)
-	pushConsentRow(t, f.app, f.teen, "all", models.ConsentOptedIn)
-	newPushDevice(t, f.app, f.teen, "teen-phone")
+	for _, u := range []*models.User{f.teen, f.opted, f.bouncing} {
+		pushConsentRow(t, f.app, u, "all", models.ConsentOptedIn)
+		newPushDevice(t, f.app, u, u.Name+"-phone")
+	}
 	// The leader turned push off for messages from leaders.
 	pushConsentRow(t, f.app, f.leaderUser, "all", models.ConsentOptedIn)
 	pushConsentRow(t, f.app, f.leaderUser, "category:"+notify.CatMessages, models.ConsentOptedOut)
@@ -156,14 +183,35 @@ func TestAnnouncementPushSkips(t *testing.T) {
 	id := f.scheduleNow(t, f.leader, "One", "<p>Hi</p>", groupAudience(f))
 	runMessageJobs(t, f.app)
 	pushes := pushRowsOf(t, f.app, id)
-	if len(pushes) != 1 || pushes[f.teen.Email].Status != models.RecipientSent {
+	if len(pushes) != 3 || pushes[f.teen.Email].Status != models.RecipientSent || pushes[f.opted.Email].Status != models.RecipientSent ||
+		pushes[f.bouncing.Email].Status != models.RecipientSent {
 		t.Fatalf("push rows: %+v", pushes)
 	}
-	if emails := recipientsOf(t, f.app, id); emails[f.leaderUser.Email].Status != models.RecipientSent || emails["copy:"+parent.Email].Status != models.RecipientSent {
+	emails := recipientsOf(t, f.app, id)
+	if emails[f.leaderUser.Email].Status != models.RecipientSent || emails["copy:"+parent.Email].Status != models.RecipientSent ||
+		emails[f.opted.Email].Status != models.RecipientSuppressed || emails[f.bouncing.Email].Status != models.RecipientSuppressed {
 		t.Fatalf("emails: %+v", emails)
 	}
-	if fp.total() != 1 {
+	if _, err := devOutbox(t, f.app).LatestTo(f.opted.Email); err == nil {
+		t.Fatal("someone who turned off email from leaders got the email")
+	}
+	if fp.total() != 3 {
 		t.Fatalf("pushes %v", fp.sent)
+	}
+	// The history shows it on the person's own row: missed the email,
+	// pushed. Each person once, guardian copies apart.
+	var h messageRecipientsJSON
+	decodeJSON(t, f.admin.do("GET", "/api/v1/messages/"+itoa(id)+"/recipients", nil, false), &h)
+	for _, r := range h.Recipients {
+		if r.Name == f.opted.PublicName() && (r.Status != historyMissed || r.Push == nil || r.Push.Status != historySent) {
+			t.Fatalf("opted: %+v", r)
+		}
+		if r.CopyOf != "" && r.Push != nil {
+			t.Fatalf("a copy shows a push: %+v", r)
+		}
+	}
+	if len(h.Recipients) != 5 || h.Counts.Push.Sent != 3 {
+		t.Fatalf("history: %+v", h)
 	}
 
 	// push_alert off: email only.
@@ -190,7 +238,7 @@ func TestAnnouncementPushSkips(t *testing.T) {
 	f.app.DB.Create(&models.Setting{Key: settingPushEnabled, Value: "false"})
 	off := f.scheduleNow(t, f.leader, "Three", "<p>Hi</p>", groupAudience(f))
 	runMessageJobs(t, f.app)
-	if rows := pushRowsOf(t, f.app, off); len(rows) != 0 || fp.total() != 1 {
+	if rows := pushRowsOf(t, f.app, off); len(rows) != 0 || fp.total() != 3 {
 		t.Fatalf("church off: %+v, pushes %v", rows, fp.sent)
 	}
 	var m models.Message
@@ -244,16 +292,18 @@ func TestAnnouncementPushWaitsForTheMorning(t *testing.T) {
 		h.Counts.Sent != 2 || h.Counts.Queued != 0 || h.CanRetry {
 		t.Fatalf("history counts: %+v", h.Counts)
 	}
+	// One row a person: the teen's push is on their own row, with when it
+	// goes (as the counts say it) and no reason for a leader.
 	waiting := 0
 	for _, r := range h.Recipients {
-		if r.Channel == models.DeliveryPush {
+		if r.Push != nil {
 			waiting++
-			if r.Status != historyWaiting || r.Reason != "" { // a leader sees no person's reason
-				t.Fatalf("push row %+v", r)
+			if r.Name != f.teen.PublicName() || *r.Push != (historyPushJSON{Status: historyWaiting, Until: "8:00 AM"}) || r.Status != historySent {
+				t.Fatalf("push on %+v: %+v", r, *r.Push)
 			}
 		}
 	}
-	if waiting != 1 {
+	if waiting != 1 || len(h.Recipients) != 4 {
 		t.Fatalf("history rows: %+v", h.Recipients)
 	}
 	clock.set(8, 0, 16)
@@ -371,5 +421,37 @@ func TestReaperStopsAPushWithNoJob(t *testing.T) {
 	f.app.DB.First(&kept, waiting.ID)
 	if got.Status != models.RecipientSuppressed || got.Reason != pushWhyStopped || kept.Status != models.RecipientQueued {
 		t.Fatalf("reaped %+v, kept %+v", got, kept)
+	}
+}
+
+// A queued push row whose person has no device left when the jobs are
+// queued is "device gone" at once, not left waiting for the reaper; one
+// with devices gets a job per device.
+func TestQueuingPushesSettlesARowWithNoDevice(t *testing.T) {
+	f := newComposeFixture(t)
+	useFakePush(t, f.app)
+	id := f.scheduleNow(t, f.leader, "Once", "<p>Hi</p>", groupAudience(f))
+	phone, laptop := newPushDevice(t, f.app, f.teen, "phone"), newPushDevice(t, f.app, f.teen, "laptop")
+	withDevices := models.MessageRecipient{MessageID: id, UserID: f.teen.ID, Channel: models.DeliveryPush, Status: models.RecipientQueued}
+	gone := models.MessageRecipient{MessageID: id, UserID: f.leaderUser.ID, Channel: models.DeliveryPush, Status: models.RecipientQueued}
+	for _, r := range []*models.MessageRecipient{&withDevices, &gone} {
+		if err := f.app.DB.Create(r).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := enqueueMessagePushes(f.app.DB, id); err != nil {
+		t.Fatal(err)
+	}
+	var keys []string
+	f.app.DB.Model(&models.Job{}).Where("kind = ?", kindPushDeliver).Order("unique_key").Pluck("unique_key", &keys)
+	want := []string{fmt.Sprintf("push:mr:%d:d:%d", withDevices.ID, phone.ID), fmt.Sprintf("push:mr:%d:d:%d", withDevices.ID, laptop.ID)}
+	if len(keys) != 2 || keys[0] != min(want[0], want[1]) || keys[1] != max(want[0], want[1]) {
+		t.Fatalf("jobs %v, want %v", keys, want)
+	}
+	var got, left models.MessageRecipient
+	f.app.DB.First(&got, gone.ID)
+	f.app.DB.First(&left, withDevices.ID)
+	if got.Status != models.RecipientSuppressed || got.Reason != pushWhyGone || left.Status != models.RecipientQueued {
+		t.Fatalf("no device: %+v; with devices: %+v", got, left)
 	}
 }

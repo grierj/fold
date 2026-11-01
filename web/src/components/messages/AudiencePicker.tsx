@@ -139,19 +139,23 @@ export function AudiencePicker({ options, choice, onChange, error, id, push = fa
 
 // One person on the list: a name, a Teen badge (DEC-20), and in words
 // whether they won't get it, with the reason when the API gives one
-// (admins). With push on, a phone and "Push too" mark those who also get
-// a push notification: never the colour or the glyph alone.
+// (admins). With push on, a phone and words mark who gets a push
+// notification, never the colour or the glyph alone: "Push too", or for
+// someone the email won't reach, "Push only" (push follows its own
+// consent, DEC-122).
 function RecipientRow({ r, push }: { r: AudienceRecipient; push: boolean }) {
+  const pushed = push && !!r.push;
+  const what = pushed ? "the email" : "this";
   return (
     <li className="flex flex-wrap items-center gap-2 px-3 py-2">
       <span className={r.skipped ? "text-text-muted" : "text-text"}>{r.name}</span>
       {r.teen && <Badge>Teen</Badge>}
-      {push && r.push && (
+      {pushed && (
         <span className="inline-flex items-center gap-1 text-text-muted">
-          <SmartphoneIcon className="h-4 w-4" />Push too
+          <SmartphoneIcon className="h-4 w-4" />{r.skipped ? "Push only" : "Push too"}
         </span>
       )}
-      {r.skipped && <span className="text-text-muted">· {r.skipped === "won't get this" ? "Won't get this" : `Won't get this: ${r.skipped}`}</span>}
+      {r.skipped && <span className="text-text-muted">· {r.skipped === "won't get this" ? `Won't get ${what}` : `Won't get ${what}: ${r.skipped}`}</span>}
     </li>
   );
 }

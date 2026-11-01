@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Messages } from "../../messages-api";
 import type { Message, MessageHistoryRecipient, MessageRecipientCounts, MessageRecipients } from "../../types";
-import { failedLine, HISTORY_WORDS, historyLine, pushReason, pushRows } from "../../lib/messages";
+import { failedLine, HISTORY_WORDS, historyLine, pushBadge } from "../../lib/messages";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { FormError } from "../ui/Field";
@@ -174,10 +174,10 @@ export function SendProblem({ message, history, busy, error, onRetry }: {
   );
 }
 
-// Every row the list could show: the people it was for, their pushes
-// (M3.13d2), and for an admin the guardian copies too (DEC-132).
+// Everyone the list could show: the people it was for, and for an admin
+// the guardian copies too (DEC-132). A push is on its person's row.
 const totalOf = (c: MessageRecipientCounts, withCopies: boolean) =>
-  c.sent + c.delivered + c.bounced + c.complained + c.failed + c.skipped + c.queued + pushRows(c.push) + (withCopies ? c.guardianCopies : 0);
+  c.sent + c.delivered + c.bounced + c.complained + c.failed + c.skipped + c.queued + (withCopies ? c.guardianCopies : 0);
 
 // WhoGotIt is the "See who got it" list: the first 200 by name. Only an
 // admin's has guardian copies (withCopies); a leader's counts them above.
@@ -195,20 +195,19 @@ export function WhoGotIt({ history, withCopies }: { history: MessageRecipients; 
   );
 }
 
-// One row: their name, a Teen badge (DEC-20), "Copy for Sam" on a
-// guardian's copy (DEC-19), "Push" on a companion push (M3.13d2), and the
-// status in words, with the reason for an admin.
+// One person: their name, a Teen badge (DEC-20), "Copy for Sam" on a
+// guardian's copy (DEC-19), the email's status in words with the reason
+// for an admin, and their push (M3.13d2) as a badge in words: "Push sent",
+// "Push waiting until 8:00 AM". One row a person, however they got it.
 function HistoryRow({ r }: { r: MessageHistoryRecipient }) {
   const missed = r.status === "missed";
-  const push = r.channel === "push";
-  const reason = r.reason ? (push ? pushReason(r.reason) : r.reason) : "";
   return (
     <li className="flex flex-wrap items-center gap-2 px-3 py-2">
       <span className={missed ? "text-text-muted" : "text-text"}>{r.name}</span>
       {r.teen && <Badge>Teen</Badge>}
       {r.copyOf && <Badge>Copy for {r.copyOf}</Badge>}
-      {push && <Badge>Push</Badge>}
-      <span className="text-text-muted">· {HISTORY_WORDS[r.status]}{reason ? `: ${reason}` : ""}</span>
+      <span className="text-text-muted">· {HISTORY_WORDS[r.status]}{r.reason ? `: ${r.reason}` : ""}</span>
+      {r.push && <Badge>{pushBadge(r.push)}</Badge>}
     </li>
   );
 }

@@ -511,7 +511,13 @@ func (a *App) applyMessageBody(c *gin.Context, me *models.User, m *models.Messag
 	}
 	aud, _ := json.Marshal(body.Audience)
 	m.Channel, m.Subject, m.BodyHTML, m.BodyText, m.Audience = body.Channel, subject, clean, text, string(aud)
-	m.PushAlert = body.PushAlert == nil || *body.PushAlert
+	// Left out, a new message has it on and a saved one keeps its own.
+	switch {
+	case body.PushAlert != nil:
+		m.PushAlert = *body.PushAlert
+	case m.ID == 0:
+		m.PushAlert = true
+	}
 	return true
 }
 
@@ -571,6 +577,7 @@ func (a *App) apiCreateMessage(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not save the message")
 		return
 	}
+	m.PushAlert = pushAlert
 	a.respondMessage(c, http.StatusCreated, &m, nil)
 }
 

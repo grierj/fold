@@ -382,14 +382,24 @@ func TestMessageDraftScheduleCancel(t *testing.T) {
 	}
 }
 
-// "Push notification too" (M3.13d2, DEC-123) defaults to on when a
-// request leaves it out, on create and on update; false is kept; and the
-// composer hears whether the church allows push.
+// "Push notification too" (M3.13d2, DEC-123) is on for a new message
+// that leaves it out; false is kept, in the 201 too; an update that leaves
+// it out keeps the stored value; and the composer hears whether the
+// church allows push.
 func TestMessagePushAlertDefaultsOn(t *testing.T) {
 	f := newComposeFixture(t)
 	aud := map[string]any{"type": "group", "groupId": f.group.ID}
 	var out struct {
 		Message messageJSON `json:"message"`
+	}
+	w := f.leader.do("POST", "/api/v1/messages", map[string]any{"subject": "Off", "bodyHtml": "<p>Hi</p>", "audience": aud, "pushAlert": false}, true)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	decodeJSON(t, w, &out)
+	var off models.Message
+	if f.app.DB.First(&off, out.Message.ID); out.Message.PushAlert || off.PushAlert {
+		t.Fatalf("created with pushAlert false: response %v, stored %v", out.Message.PushAlert, off.PushAlert)
 	}
 	decodeJSON(t, f.leader.do("POST", "/api/v1/messages", map[string]any{"subject": "Hi", "bodyHtml": "<p>Hi</p>", "audience": aud}, true), &out)
 	if !out.Message.PushAlert {
@@ -401,9 +411,9 @@ func TestMessagePushAlertDefaultsOn(t *testing.T) {
 	if f.app.DB.First(&m, out.Message.ID); out.Message.PushAlert || m.PushAlert {
 		t.Fatalf("pushAlert false: %v %v", out.Message.PushAlert, m.PushAlert)
 	}
-	decodeJSON(t, f.leader.do("PUT", "/api/v1/messages/"+id, map[string]any{"subject": "Hi", "bodyHtml": "<p>Hi</p>", "audience": aud}, true), &out)
-	if !out.Message.PushAlert {
-		t.Fatal("an update that leaves pushAlert out doesn't turn it on")
+	decodeJSON(t, f.leader.do("PUT", "/api/v1/messages/"+id, map[string]any{"subject": "Hi again", "bodyHtml": "<p>Hi</p>", "audience": aud}, true), &out)
+	if f.app.DB.First(&m, out.Message.ID); out.Message.PushAlert || m.PushAlert || m.Subject != "Hi again" {
+		t.Fatalf("an update that leaves pushAlert out changed it: %v %v", out.Message.PushAlert, m.PushAlert)
 	}
 	var opts composeOptionsJSON
 	decodeJSON(t, f.leader.do("GET", "/api/v1/messages/compose", nil, false), &opts)
@@ -445,14 +455,16 @@ func TestMessagePushOnlyIsRefused(t *testing.T) {
 
 // The preview counts who also gets a push: push on for messages from
 // leaders and a device. Someone with push on but no device isn't a skip;
-// they still get the email. Off for messages from leaders, or the church
-// switch off, counts nobody.
+// they still get the email. Push follows push consent, not the email
+// (DEC-122): someone who turned off email from leaders but has push on is
+// counted and marked. Off for messages from leaders, or the church switch
+// off, counts nobody.
 func TestAudiencePreviewCountsPush(t *testing.T) {
 	f := newComposeFixture(t)
 	pushConsentRow(t, f.app, f.teen, "all", models.ConsentOptedIn)
 	newPushDevice(t, f.app, f.teen, "teen-phone")
 	pushConsentRow(t, f.app, f.leaderUser, "all", models.ConsentOptedIn) // no device
-	// Opted out of email from leaders: skipped, so never counted for push.
+	// Opted out of email from leaders: skipped for the email, still pushed.
 	pushConsentRow(t, f.app, f.opted, "all", models.ConsentOptedIn)
 	newPushDevice(t, f.app, f.opted, "opted-phone")
 	preview := func() audienceSummaryJSON {
@@ -463,19 +475,18 @@ func TestAudiencePreviewCountsPush(t *testing.T) {
 		return out.Summary
 	}
 	s := preview()
-	if s.Push != 1 || s.Eligible != 2 || len(s.Skipped) != 2 {
+	if s.Push != 2 || s.Eligible != 2 || len(s.Skipped) != 2 {
 		t.Fatalf("summary: %+v", s)
 	}
 	for _, r := range s.Recipients {
-		if want := r.Name == f.teen.PublicName(); r.Push != want {
+		if want := r.Name == f.teen.PublicName() || r.Name == f.opted.PublicName(); r.Push != want {
 			t.Fatalf("%s: push %v", r.Name, r.Push)
 		}
 	}
 	pushConsentRow(t, f.app, f.teen, "category:"+notify.CatMessages, models.ConsentOptedOut)
-	if s := preview(); s.Push != 0 || s.Eligible != 2 {
+	if s := preview(); s.Push != 1 || s.Eligible != 2 {
 		t.Fatalf("push off for messages from leaders: %+v", s)
 	}
-	pushConsentRow(t, f.app, f.teen, "category:"+notify.CatMessages, models.ConsentOptedIn)
 	f.app.DB.Create(&models.Setting{Key: settingPushEnabled, Value: "false"})
 	if s := preview(); s.Push != 0 {
 		t.Fatalf("church off: %+v", s)

@@ -254,8 +254,10 @@ type audienceRecipientJSON struct {
 	// Skipped says why this person won't get it ("won't get this" unless
 	// the viewer is an admin); "" means they will.
 	Skipped string `json:"skipped,omitempty"`
-	// Push: they get the email and have push on, so "Push notification
-	// too" reaches them (M3.13d2). Never set for someone skipped.
+	// Push: they would get "Push notification too" (M3.13d2): an active
+	// account with push on for messages from leaders and a device. It
+	// follows push consent, so someone skipped for an email reason may
+	// still have it (DEC-122).
 	Push bool `json:"push,omitempty"`
 }
 
@@ -267,10 +269,10 @@ type audienceSummaryJSON struct {
 	// Teens counts the teens among those who will get it (DEC-20).
 	Teens   int            `json:"teens"`
 	Skipped map[string]int `json:"skipped"`
-	// Push counts those who get the email and would also get "Push
-	// notification too": push on for messages from leaders and a device
-	// (DEC-123). Having no device isn't a skip; they still get the email.
-	// 0 when the church turned push off.
+	// Push counts who would also get "Push notification too" (DEC-123):
+	// an active account with push on for messages from leaders and a
+	// device, whether or not the email reaches them (DEC-122). Having no
+	// device isn't a skip. 0 when the church turned push off.
 	Push int `json:"push"`
 	// Recipients are the first 100 by name.
 	Recipients []audienceRecipientJSON `json:"recipients"`
@@ -294,21 +296,23 @@ func (a *App) summarizeAudience(db *gorm.DB, ids []uint, reasons bool) (audience
 	}
 	pushOn := map[uint]bool{}
 	if a.pushEnabled() {
-		if pushOn, err = pushReady(db, emailReaders(facts), notify.CatMessages); err != nil {
+		if pushOn, err = pushReady(db, pushCandidates(facts), notify.CatMessages); err != nil {
 			return out, err
 		}
 	}
 	for _, f := range facts {
 		r := audienceRecipientJSON{Name: f.User.PublicName(), Teen: f.User.AccountType == models.AccountTeen, Skipped: f.Skip}
 		out.People++
+		// Push follows push consent, not the email (DEC-122): someone
+		// skipped for an email reason may still get the push.
+		if pushOn[f.User.ID] {
+			r.Push = true
+			out.Push++
+		}
 		if r.Skipped == "" {
 			out.Eligible++
 			if r.Teen {
 				out.Teens++
-			}
-			if pushOn[f.User.ID] {
-				r.Push = true
-				out.Push++
 			}
 		} else {
 			out.Skipped[r.Skipped]++

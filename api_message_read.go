@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -93,6 +94,22 @@ func (a *App) apiReadMessage(c *gin.Context) {
 		Subject:  strings.TrimSpace(content.Merge(m.Subject, vals, false)),
 		From:     a.messageFromName(a.DB, &m, a.siteName()),
 		SentAt:   sentAt,
-		BodyHTML: content.SanitizeHTML(content.Merge(m.BodyHTML, vals, true)),
+		BodyHTML: content.SanitizeHTML(content.Merge(unlinkMissingFields(m.BodyHTML, vals), vals, true)),
 	}})
+}
+
+// linkFieldAnchorRe is a link the editor made to {{event_link}} or
+// {{manage_link}}, as the sanitizer stores it.
+var linkFieldAnchorRe = regexp.MustCompile(`(?is)<a\b[^>]*\bhref="\{\{\s*(event_link|manage_link)\s*\}\}"[^>]*>(.*?)</a>`)
+
+// unlinkMissingFields keeps the text of a link to a link field that has no
+// value for this reader (its event is gone, say), never an empty href.
+func unlinkMissingFields(html string, vals map[string]string) string {
+	return linkFieldAnchorRe.ReplaceAllStringFunc(html, func(a string) string {
+		m := linkFieldAnchorRe.FindStringSubmatch(a)
+		if vals[strings.ToLower(m[1])] != "" {
+			return a
+		}
+		return m[2]
+	})
 }

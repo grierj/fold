@@ -1250,8 +1250,17 @@ export interface MessageHistoryRecipient {
   status: HistoryStatus;
   reason?: string;
   copyOf?: string;
-  // A companion push is its own row, after the same person's email.
-  channel: "email" | "push";
+  // Their companion push (M3.13d2), on their own row.
+  push?: MessageHistoryPush;
+}
+
+// One person's push in a history: sent, waiting (until when quiet hours
+// end on their clock, "" for about to go) or missed, with the reason for an
+// admin.
+export interface MessageHistoryPush {
+  status: HistoryStatus;
+  until?: string;
+  reason?: string;
 }
 
 // GET /messages/:id/recipients.

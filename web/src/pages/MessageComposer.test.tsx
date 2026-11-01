@@ -423,7 +423,7 @@ describe("a sent message's history", () => {
     vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "failed", editable: false, failedCount: 4, sentAt: "2026-10-31T15:30:00Z", error: "The email service didn't take it. Try again in a little while. If it keeps happening, ask an admin to open this message to see what went wrong." }) });
     vi.mocked(Messages.recipients).mockResolvedValue(recipients({
       counts: counts({ sent: 0, failed: 4, skipped: 0, teens: 0, guardianCopies: 0 }), skippedBy: {}, canRetry: true,
-      recipients: [{ name: "Ann Adult", teen: false, status: "missed", channel: "email" }],
+      recipients: [{ name: "Ann Adult", teen: false, status: "missed" }],
     }));
     open("/messages/5");
     // The problem is announced; Try again sits outside the announced part.
@@ -573,8 +573,8 @@ describe("a sent message's history", () => {
 // pushes listed apart in the history.
 describe("push notification too", () => {
   const pushSummary = summary({
-    push: 1,
-    recipients: [{ name: "Ann Adult", teen: false, push: true }, { name: "Opal Opted", teen: false, skipped: "won't get this" }, { name: "Tia Teen", teen: true }],
+    push: 2,
+    recipients: [{ name: "Ann Adult", teen: false, push: true }, { name: "Opal Opted", teen: false, skipped: "won't get this", push: true }, { name: "Tia Teen", teen: true }],
   });
 
   it("is on by default, counts who also gets a push and marks them in words", async () => {
@@ -583,18 +583,21 @@ describe("push notification too", () => {
     open("/messages/new?group=7");
     const box = await screen.findByRole("checkbox", { name: /Push notification too/ });
     expect(box).toBeChecked();
-    expect(box).toHaveAccessibleName(expect.stringContaining("the subject and the first line"));
-    expect(await screen.findByText("1 also gets a push notification.")).toBeInTheDocument();
+    expect(box).toHaveAccessibleName(expect.stringContaining("the subject and the start of the message"));
+    expect(await screen.findByText("2 also get a push notification.")).toBeInTheDocument();
     await user.click(screen.getByText("See who's on the list"));
     const rows = within(screen.getByRole("list")).getAllByRole("listitem");
     // The phone glyph is decorative; the words carry it (never the glyph alone).
     expect(rows[0]).toHaveTextContent("Ann AdultPush too");
     expect(rows[0].querySelector("svg")).toHaveAttribute("aria-hidden", "true");
-    expect(rows[2]).not.toHaveTextContent("Push too");
+    // Turned off email from leaders, push on: the push still goes (DEC-122).
+    expect(rows[1]).toHaveTextContent("Opal OptedPush only· Won't get the email");
+    expect(rows[2]).not.toHaveTextContent("Push");
     // Off: no count, no marks, and the draft says so.
     await user.click(box);
-    expect(screen.queryByText("1 also gets a push notification.")).toBeNull();
-    expect(screen.queryByText("Push too")).toBeNull();
+    expect(screen.queryByText("2 also get a push notification.")).toBeNull();
+    expect(screen.queryByText(/^Push (too|only)$/)).toBeNull();
+    expect(rows[1]).toHaveTextContent("Opal Opted· Won't get this");
     await editorReady();
     await user.type(screen.getByRole("textbox", { name: "Subject" }), "Snacks");
     await user.click(screen.getByRole("button", { name: "Save draft" }));
@@ -622,36 +625,39 @@ describe("push notification too", () => {
     open("/messages/5");
     await editorReady();
     await user.click(screen.getByRole("button", { name: "Send now" }));
-    expect(await screen.findByText("2 of them also get a push notification.")).toBeInTheDocument();
+    expect(await screen.findByText("2 people get a push notification too.")).toBeInTheDocument();
   });
 
-  it("lists pushes as their own rows in the history, with a count apart from the email", async () => {
+  it("shows each person's push on their own row, with a count apart from the email", async () => {
     viewer.isAdmin = true;
     const user = userEvent.setup();
     vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sent", sentAt: "2026-10-30T16:30:00Z", editable: false }) });
     const base = adminRecipients();
     vi.mocked(Messages.recipients).mockResolvedValue({
       ...base,
-      counts: { ...base.counts, push: { sent: 1, waiting: [{ until: "8:00 AM", n: 1 }], missed: { "device gone": 1 } } },
+      counts: { ...base.counts, sent: 3, skipped: 1, push: { sent: 2, waiting: [{ until: "8:00 AM", n: 1 }], missed: { "device gone": 1 } } },
+      more: true,
       recipients: [
-        { name: "Ann Adult", teen: false, status: "sent", channel: "email" },
-        { name: "Ann Adult", teen: false, status: "sent", channel: "push" },
-        { name: "Bo Late", teen: false, status: "waiting", reason: "outside quiet hours · sending at 8:00 AM", channel: "push" },
-        { name: "Cy Gone", teen: false, status: "missed", reason: "device gone", channel: "push" },
+        { name: "Ann Adult", teen: false, status: "sent", push: { status: "sent" } },
+        { name: "Bo Late", teen: false, status: "sent", push: { status: "waiting", until: "8:00 AM" } },
+        { name: "Cy Gone", teen: false, status: "sent", push: { status: "missed", reason: "device gone" } },
+        { name: "Opal Opted", teen: false, status: "missed", reason: "turned off messages from leaders", push: { status: "sent" } },
       ],
     });
     open("/messages/5");
-    expect(await screen.findByText("Push notifications: 1 pushed · 1 waiting until 8:00 AM · 1 device gone")).toBeInTheDocument();
+    expect(await screen.findByText("Push notifications: 2 pushed · 1 waiting until 8:00 AM · 1 device gone")).toBeInTheDocument();
     // Pushes never change the email's count or offer Try again.
-    expect(screen.getByText("Sent to 2 people · 1 skipped (1 turned off messages from leaders)")).toBeInTheDocument();
+    expect(screen.getByText("Sent to 3 people · 1 skipped (1 turned off messages from leaders)")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
     await user.click(screen.getByText("See who got it"));
     const rows = within(screen.getByRole("list")).getAllByRole("listitem");
+    // One row a person: "And N more" counts people, not pushes.
     expect(rows.map((r) => r.textContent)).toEqual([
-      "Ann Adult· Sent",
-      "Ann AdultPush· Sent",
-      "Bo LatePush· Waiting: outside quiet hours · sending at 8:00 AM",
-      "Cy GonePush· Didn't get it: device gone",
+      "Ann Adult· SentPush sent",
+      "Bo Late· SentPush waiting until 8:00 AM",
+      "Cy Gone· SentPush didn't go out: device gone",
+      "Opal Opted· Didn't get it: turned off messages from leaders" + "Push sent",
+      "And 1 more",
     ]);
   });
 });

@@ -36,9 +36,9 @@ export function recipients(over: Partial<MessageRecipients> = {}): MessageRecipi
     counts: { sent: 2, delivered: 0, bounced: 0, complained: 0, failed: 0, skipped: 1, queued: 0, teens: 1, guardianCopies: 1, guardianCopiesMissed: 0, guardianCopiesFailed: 0, push: { sent: 0, waiting: [], missed: {} } },
     skippedBy: { "turned off messages from leaders": 1 },
     recipients: [
-      { name: "Ann Adult", teen: false, status: "sent", channel: "email" },
-      { name: "Opal Opted", teen: false, status: "missed", channel: "email" },
-      { name: "Tia Teen", teen: true, status: "sent", channel: "email" },
+      { name: "Ann Adult", teen: false, status: "sent" },
+      { name: "Opal Opted", teen: false, status: "missed" },
+      { name: "Tia Teen", teen: true, status: "sent" },
     ],
     more: false, canRetry: false, ...over,
   };
@@ -47,10 +47,10 @@ export function recipients(over: Partial<MessageRecipients> = {}): MessageRecipi
 export function adminRecipients(over: Partial<MessageRecipients> = {}): MessageRecipients {
   return recipients({
     recipients: [
-      { name: "Ann Adult", teen: false, status: "sent", channel: "email" },
-      { name: "Opal Opted", teen: false, status: "missed", reason: "turned off messages from leaders", channel: "email" },
-      { name: "Pat Parent", teen: false, status: "sent", copyOf: "Tia Teen", channel: "email" },
-      { name: "Tia Teen", teen: true, status: "sent", channel: "email" },
+      { name: "Ann Adult", teen: false, status: "sent" },
+      { name: "Opal Opted", teen: false, status: "missed", reason: "turned off messages from leaders" },
+      { name: "Pat Parent", teen: false, status: "sent", copyOf: "Tia Teen" },
+      { name: "Tia Teen", teen: true, status: "sent" },
     ],
     ...over,
   });

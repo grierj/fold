@@ -242,8 +242,8 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 		}
 		rows = append(rows, copies...)
 	}
-	// 7, push (DEC-123): a companion row for each direct recipient who
-	// gets the email and has push on, never for a guardian copy.
+	// 7, push (DEC-123, DEC-122): a row for each active direct recipient
+	// with push on, whatever their email row says; never a guardian copy.
 	pushRows, err := a.messagePushRows(db, &m, facts)
 	if err != nil {
 		return err
@@ -275,11 +275,13 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 		if err := tx.Model(&models.Message{}).Where("id = ?", m.ID).Update("recipient_count", len(queued)).Error; err != nil {
 			return err
 		}
-		if len(queued) == 0 {
-			return a.settleMessage(tx, m.ID)
-		}
+		// Pushes first: they follow push consent, so they go even when no
+		// email does (DEC-122).
 		if err := enqueueMessagePushes(tx, m.ID); err != nil {
 			return err
+		}
+		if len(queued) == 0 {
+			return a.settleMessage(tx, m.ID)
 		}
 		return enqueueBatches(tx, m.ID, queued, "")
 	})

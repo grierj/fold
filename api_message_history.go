@@ -85,9 +85,18 @@ type historyRecipientJSON struct {
 	Status string `json:"status"`
 	Reason string `json:"reason,omitempty"`
 	CopyOf string `json:"copyOf,omitempty"`
-	// Channel is email, or push for a companion push (M3.13d2), listed
-	// after the same person's email.
-	Channel string `json:"channel"`
+	// Push is the person's companion push (M3.13d2), when they had one:
+	// shown on their row, so the list counts people, not rows.
+	Push *historyPushJSON `json:"push,omitempty"`
+}
+
+// historyPushJSON is one person's push: sent, waiting (until when quiet
+// hours end on their clock, for everyone who may see the history, as the
+// counts say it) or missed, with the reason for an admin.
+type historyPushJSON struct {
+	Status string `json:"status"`
+	Until  string `json:"until,omitempty"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // messageRecipientsJSON is GET /messages/:id/recipients.
@@ -222,20 +231,21 @@ func historyStatus(status, reason, errText string, admin bool) (string, string) 
 	return out, why
 }
 
-// pushHistoryStatus is a push row's status in the history's terms: sent,
-// waiting (with when, for an admin), or missed with its reason (admin).
-func pushHistoryStatus(status, reason string, admin bool) (string, string) {
-	out := historyMissed
+// pushHistoryStatus is a person's push in the history's terms: sent,
+// waiting (until when), or missed with its reason (admins only).
+func pushHistoryStatus(status, reason string, admin bool) *historyPushJSON {
 	switch status {
 	case models.RecipientSent:
-		return historySent, ""
+		return &historyPushJSON{Status: historySent}
 	case models.RecipientQueued:
-		out = historyWaiting
+		// When it goes is no one's private reason: the counts say it too.
+		return &historyPushJSON{Status: historyWaiting, Until: strings.TrimPrefix(reason, pushWaitPrefix)}
 	}
-	if !admin {
-		reason = ""
+	h := &historyPushJSON{Status: historyMissed}
+	if admin {
+		h.Reason = reason
 	}
-	return out, reason
+	return h
 }
 
 // historyRecipients lists the first rows by name in one query, and says
@@ -243,7 +253,6 @@ func pushHistoryStatus(status, reason string, admin bool) (string, string) {
 // with its teen; a leader or host never sees a guardian's name (DEC-132).
 func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, bool, error) {
 	var rows []struct {
-		Channel         string
 		Status          string
 		Reason          string
 		Error           string
@@ -253,15 +262,19 @@ func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, bo
 		AccountType     string
 		TeenName        string
 		TeenDisplayName string
+		PushStatus      *string
+		PushReason      *string
 	}
-	// By name, each person's email before their push (rows are
-	// snapshotted email first, so r.id orders them).
-	err := a.DB.Raw(`SELECT r.channel, r.status, r.reason, r.error, r.copy_of_user_id IS NOT NULL AS copy,
-		u.name, u.display_name, u.account_type, COALESCE(t.name, '') AS teen_name, COALESCE(t.display_name, '') AS teen_display_name
+	// One row a person (or guardian copy): the email row, with the
+	// person's push row joined on (never a copy's).
+	err := a.DB.Raw(`SELECT r.status, r.reason, r.error, r.copy_of_user_id IS NOT NULL AS copy,
+		u.name, u.display_name, u.account_type, COALESCE(t.name, '') AS teen_name, COALESCE(t.display_name, '') AS teen_display_name,
+		p.status AS push_status, p.reason AS push_reason
 		FROM message_recipients r JOIN users u ON u.id = r.user_id LEFT JOIN users t ON t.id = r.copy_of_user_id
-		WHERE r.message_id = ? AND (? OR r.copy_of_user_id IS NULL)
+		LEFT JOIN message_recipients p ON p.message_id = r.message_id AND p.user_id = r.user_id AND p.channel = ? AND r.copy_of_user_id IS NULL
+		WHERE r.message_id = ? AND r.channel <> ? AND (? OR r.copy_of_user_id IS NULL)
 		ORDER BY lower(COALESCE(NULLIF(u.display_name, ''), NULLIF(u.name, ''), 'Member')), r.id
-		LIMIT ?`, id, admin, maxHistoryRecipients+1).Scan(&rows).Error
+		LIMIT ?`, models.DeliveryPush, id, models.DeliveryPush, admin, maxHistoryRecipients+1).Scan(&rows).Error
 	more := len(rows) > maxHistoryRecipients
 	if more {
 		rows = rows[:maxHistoryRecipients]
@@ -269,11 +282,14 @@ func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, bo
 	out := make([]historyRecipientJSON, 0, len(rows))
 	for _, r := range rows {
 		u := models.User{Name: r.Name, DisplayName: r.DisplayName}
-		h := historyRecipientJSON{Name: u.PublicName(), Teen: r.AccountType == models.AccountTeen && !r.Copy, Channel: r.Channel}
-		if r.Channel == models.DeliveryPush {
-			h.Status, h.Reason = pushHistoryStatus(r.Status, r.Reason, admin)
-		} else {
-			h.Status, h.Reason = historyStatus(r.Status, r.Reason, r.Error, admin)
+		h := historyRecipientJSON{Name: u.PublicName(), Teen: r.AccountType == models.AccountTeen && !r.Copy}
+		h.Status, h.Reason = historyStatus(r.Status, r.Reason, r.Error, admin)
+		if r.PushStatus != nil {
+			reason := ""
+			if r.PushReason != nil {
+				reason = *r.PushReason
+			}
+			h.Push = pushHistoryStatus(*r.PushStatus, reason, admin)
 		}
 		if r.Copy {
 			teen := models.User{Name: r.TeenName, DisplayName: r.TeenDisplayName}

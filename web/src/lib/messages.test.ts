@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composeOptions, recipients, summary } from "../test/compose";
-import { audienceLabel, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushHistoryLine, pushLine, pushRows, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
+import { audienceLabel, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushBadge, pushHistoryLine, pushLine, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
 
 describe("audiences", () => {
   it("turns the picker's choice into the API's audience and back", () => {
@@ -138,6 +138,13 @@ describe("push words", () => {
       .toBe("Push notifications: 3 waiting · 2 devices gone · 2 over the hourly limit");
     expect(pushHistoryLine({ sent: 0, waiting: [], missed: {} })).toBe("");
     expect(pushHistoryLine(undefined)).toBe("");
-    expect(pushRows({ sent: 3, waiting: [{ until: "8:00 AM", n: 2 }], missed: { "device gone": 1 } })).toBe(6);
+  });
+
+  it("words one person's push on their history row", () => {
+    expect(pushBadge({ status: "sent" })).toBe("Push sent");
+    expect(pushBadge({ status: "waiting", until: "8:00 AM" })).toBe("Push waiting until 8:00 AM");
+    expect(pushBadge({ status: "waiting" })).toBe("Push waiting");
+    expect(pushBadge({ status: "missed" })).toBe("Push didn't go out");
+    expect(pushBadge({ status: "missed", reason: "push turned off by the church" })).toBe("Push didn't go out: notifications turned off by the church");
   });
 });

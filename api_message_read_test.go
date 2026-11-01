@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 
+	"fold/internal/content"
 	"fold/models"
 )
 
@@ -80,5 +82,20 @@ func TestRecipientReadsTheAnnouncement(t *testing.T) {
 		if w := c.do("GET", "/api/v1/messages/"+itoa(id)+"/read", nil, false); w.Code != http.StatusOK {
 			t.Fatalf("%s: %d", name, w.Code)
 		}
+	}
+}
+
+// A link to {{event_link}} or {{manage_link}} with no value for the reader
+// (its event is gone) reads as its text, never an empty href.
+func TestReadPageUnlinksMissingLinkFields(t *testing.T) {
+	stored := content.SanitizeHTML(`<p>Hi. <a href="{{event_link}}">See the event</a> or <a href="{{ manage_link }}">your sign-up</a>, <a href="https://example.org">this</a>.</p>`)
+	got := content.SanitizeHTML(content.Merge(unlinkMissingFields(stored, map[string]string{}), map[string]string{}, true))
+	if strings.Contains(got, `href=""`) || !strings.Contains(got, "See the event") || !strings.Contains(got, "your sign-up") || !strings.Contains(got, `href="https://example.org"`) {
+		t.Fatalf("no values: %s", got)
+	}
+	vals := map[string]string{content.FieldEventLink: "https://fold.example/events/3", content.FieldManageLink: "https://fold.example/events/3/dates/2026-11-05"}
+	got = content.SanitizeHTML(content.Merge(unlinkMissingFields(stored, vals), vals, true))
+	if !strings.Contains(got, `href="https://fold.example/events/3"`) || !strings.Contains(got, `href="https://fold.example/events/3/dates/2026-11-05"`) {
+		t.Fatalf("with values: %s", got)
 	}
 }

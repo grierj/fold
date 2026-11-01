@@ -1,4 +1,4 @@
-import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessagePushCounts, MessagePushWait, MessageRecipientCounts, MessageRecipients } from "../types";
+import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageHistoryPush, MessagePushCounts, MessagePushWait, MessageRecipientCounts, MessageRecipients } from "../types";
 import { formatShortDay, formatWhenIn } from "./when";
 
 // The composer's words and audience shapes (M3.4c, PLAN 7.2 and 7.3).
@@ -218,17 +218,28 @@ const PUSH_REASONS: Record<string, [one: string, many: string]> = {
   "hourly limit": ["over the hourly limit", "over the hourly limit"],
   "push turned off for messages from leaders": ["turned notifications off for messages from leaders", "turned notifications off for messages from leaders"],
   "push not turned on": ["turned notifications off", "turned notifications off"],
-  "push turned off by the church": ["held: the church turned notifications off", "held: the church turned notifications off"],
+  "push turned off by the church": ["notifications turned off by the church", "notifications turned off by the church"],
   "recipient not active": ["not active", "not active"],
   "no longer current": ["not sent: the message stopped", "not sent: the message stopped"],
   "the push service refused it": ["refused by the push service", "refused by the push service"],
   "the push service couldn't be reached": ["the push service couldn't be reached", "the push service couldn't be reached"],
   "the notification was too large to push": ["too large to push", "too large to push"],
-  "sending stopped before it went out": ["stopped before it went out", "stopped before it went out"],
+  "didn't go out": ["didn't go out", "didn't go out"],
 };
 
-// pushReason is one push row's reason in words, for an admin's list.
-export const pushReason = (reason: string) => PUSH_REASONS[reason]?.[0] ?? reason;
+// pushBadge is one person's push in their history row, in words (status
+// is never colour alone): "Push sent", "Push waiting until 8:00 AM", or
+// "Push didn't go out", with the reason for an admin.
+export function pushBadge(p: MessageHistoryPush): string {
+  switch (p.status) {
+    case "sent":
+    case "delivered":
+      return "Push sent";
+    case "waiting":
+      return p.until ? `Push waiting until ${p.until}` : "Push waiting";
+  }
+  return p.reason ? `Push didn't go out: ${PUSH_REASONS[p.reason]?.[0] ?? p.reason}` : "Push didn't go out";
+}
 
 // pushHistoryLine counts a message's companion pushes (M3.13d2): "38
 // pushed · 2 waiting until 8:00 AM · 1 device gone", or "" when it had
@@ -245,10 +256,6 @@ export function pushHistoryLine(c: MessagePushCounts | undefined): string {
     .forEach(([reason, n]) => parts.push(`${n} ${PUSH_REASONS[reason]?.[n === 1 ? 0 : 1] ?? reason}`));
   return parts.length ? `Push notifications: ${parts.join(" · ")}` : "";
 }
-
-// pushRows counts the push rows a history could list.
-export const pushRows = (c: MessagePushCounts | undefined) =>
-  c ? c.sent + c.waiting.reduce((n, w) => n + w.n, 0) + Object.values(c.missed).reduce((n, m) => n + m, 0) : 0;
 
 // Times a message goes out read on the church's clock (the schedule is
 // picked in it), with its zone named when the viewer's clock differs.

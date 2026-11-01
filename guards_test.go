@@ -161,6 +161,7 @@ var tsContracts = []struct {
 	{historyRecipientJSON{}, "MessageHistoryRecipient"},
 	{pushCountsJSON{}, "MessagePushCounts"},
 	{pushWaitJSON{}, "MessagePushWait"},
+	{historyPushJSON{}, "MessageHistoryPush"},
 	{messageReadJSON{}, "MessageRead"},
 	{messageReminderJSON{}, "MessageReminder"},
 	{dateRemindersJSON{}, "DateReminders"},
