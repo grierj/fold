@@ -265,7 +265,8 @@ func vapidSubject(cfg Config) string {
 		!strings.ContainsAny(from, " <>\"") && !strings.HasSuffix(domain, ".") {
 		return "mailto:" + from
 	}
-	if u, err := url.Parse(cfg.SiteURL); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" {
+	// RFC 8292: a mailto: or an https: URL, never http.
+	if u, err := url.Parse(cfg.SiteURL); err == nil && u.Scheme == "https" && u.Host != "" {
 		return strings.TrimSuffix(cfg.SiteURL, "/")
 	}
 	return ""

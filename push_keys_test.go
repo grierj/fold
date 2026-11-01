@@ -202,6 +202,8 @@ func TestVAPIDSubject(t *testing.T) {
 		{"", "", ""},
 		{"not an address", "groups.church.example", ""},
 		{"hello@church", "https://groups.church.example", "https://groups.church.example"},
+		// RFC 8292 allows mailto: or https:, so a dev http site gives none.
+		{"Fold <noreply@localhost>", "http://localhost:8080", ""},
 	} {
 		if got := vapidSubject(Config{EmailFrom: tc.from, SiteURL: tc.site}); got != tc.want {
 			t.Errorf("%q %q: %q, want %q", tc.from, tc.site, got, tc.want)
