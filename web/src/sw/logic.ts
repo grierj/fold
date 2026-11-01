@@ -57,11 +57,13 @@ export function fromPush(text: string | null | undefined, origin: string): Shown
   return shown;
 }
 
-// clickPath is where a tap goes: the same-origin link as a path (pathname,
-// search and hash), so nothing but this site can be named.
+// clickPath is where a tap goes: the same-origin link rebuilt as origin,
+// path, search and hash (any userinfo dropped). It stays absolute: a bare
+// path like "//evil.com" (from "/.//evil.com") would be read as
+// protocol-relative by openWindow and navigate and leave Fold.
 export function clickPath(link: unknown, origin: string): string {
   const url = new URL(sameOrigin(link, origin));
-  return url.pathname + url.search + url.hash;
+  return url.origin + url.pathname + url.search + url.hash;
 }
 
 // The part of a window client the click handler uses.

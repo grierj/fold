@@ -38,9 +38,16 @@ describe("sameOrigin", () => {
   });
 });
 
-it("taps go to a path on this site", () => {
-  expect(clickPath(`${origin}/events/2?d=2026-11-03#rsvp`, origin)).toBe("/events/2?d=2026-11-03#rsvp");
-  expect(clickPath("https://evil.example/x", origin)).toBe("/");
+it("taps stay on this site", () => {
+  expect(clickPath(`${origin}/events/2?d=2026-11-03#rsvp`, origin)).toBe(`${origin}/events/2?d=2026-11-03#rsvp`);
+  expect(clickPath("https://evil.example/x", origin)).toBe(`${origin}/`);
+  expect(clickPath("https://user:pw@church.example/groups/1", origin)).toBe(`${origin}/groups/1`);
+  // A path that normalises to a leading "//" stays absolute on Fold.
+  for (const link of ["/.//evil.com", "/..//evil.com", "///evil.com", "//evil.com"]) {
+    const target = clickPath(link, origin);
+    expect(new URL(target).origin, link).toBe(origin);
+    expect(target.startsWith(`${origin}/`), link).toBe(true);
+  }
 });
 
 describe("openOrFocus", () => {
