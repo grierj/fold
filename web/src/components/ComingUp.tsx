@@ -50,8 +50,8 @@ export function ComingUp() {
 
   return (
     <section aria-labelledby="coming-up-heading">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h2 id="coming-up-heading" className="text-2xl font-bold">Coming up for you</h2>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
+        <h2 id="coming-up-heading" className="text-xl font-bold">Coming up for you</h2>
         <Link to="/calendar?mine=1" className="inline-flex min-h-11 items-center font-semibold text-primary hover:underline">
           See calendar
         </Link>
@@ -63,7 +63,7 @@ export function ComingUp() {
       ) : rows.length === 0 ? (
         <EmptyState title="Nothing coming up in the next two months" body="Dates from your groups, and events you answer, show up here." />
       ) : (
-        <ul className="space-y-3">
+        <ul className="fold-list">
           {rows.map((o) => (
             <li key={`${o.eventId}-${o.date}`}>
               <ComingUpRow occ={o} />
@@ -85,15 +85,15 @@ function ComingUpRow({ occ }: { occ: CalendarOccurrence }) {
     // own address, anything else opens the event.
     <Link
       to={occurrenceLink(occ)}
-      className="flex min-h-11 gap-4 rounded-lg border border-border bg-surface p-4 hover:border-border-strong"
+      className="fold-list-row flex min-h-11 gap-4 rounded-sm hover:bg-sunken"
     >
-      <DateBadge at={occ.startsAt} size="sm" />
+      <DateBadge at={occ.startsAt} />
       <span className="min-w-0 flex-1">
-        <span className="block font-semibold text-text">{occ.title || occ.groupName}</span>
-        <span className="block text-sm text-text-muted">{formatNextMeeting(occ.startsAt).text}</span>
-        {where && <span className="block truncate text-sm text-text-muted">{where}</span>}
+        <span className="block text-sm font-medium text-text-muted">{formatNextMeeting(occ.startsAt).text}</span>
+        <span className="mt-1 block font-semibold text-text wrap-anywhere">{occ.title || occ.groupName}</span>
+        {where && <span className="mt-1 block text-sm text-text-muted wrap-anywhere">{where}</span>}
         {state && (
-          <span className="mt-1 block">
+          <span className="mt-2 block">
             <StatusBadge state={state} />
           </span>
         )}

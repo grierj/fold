@@ -5,10 +5,8 @@ import { formatNextMeeting } from "../lib/when";
 import { coverSrc } from "../lib/covers";
 import { CalendarIcon } from "./icons";
 
-// Meetup-style group card (DEC-94). One link target for the whole card.
-// Phones: a compact row, an 88px cover thumbnail beside the text. sm and up:
-// the tall card, cover on top. Either way the text runs name, next meeting,
-// "N members · place", then tags as quiet text (the Home hero chips filter).
+// One link target per directory row, with the same image/name/date rhythm
+// at every width. Tags stay quiet text; the directory toolbar owns filtering.
 // `showRole` is off on My groups, where every card is the viewer's own and
 // only "You lead" is worth saying.
 export function GroupCard({
@@ -31,9 +29,9 @@ export function GroupCard({
   return (
     <Link
       to={`/groups/${group.id}`}
-      className="bg-surface rounded-lg shadow-sm hover:shadow-md transition-shadow overflow-hidden border border-border flex gap-3 p-3 sm:p-0 sm:gap-0 sm:flex-col"
+      className="fold-list-row flex gap-4 rounded-sm hover:bg-sunken"
     >
-      <div className="size-[88px] shrink-0 overflow-hidden rounded-md bg-sunken sm:size-auto sm:h-40 sm:w-full sm:rounded-none">
+      <div className="size-[88px] shrink-0 overflow-hidden rounded-lg bg-sunken sm:size-28">
         <img
           src={coverSrc(group)}
           alt=""
@@ -42,40 +40,36 @@ export function GroupCard({
           loading="lazy"
         />
       </div>
-      <div className="min-w-0 flex-1 sm:px-4 sm:pt-4 sm:pb-4 space-y-0.5">
+      <div className="min-w-0 flex-1 space-y-1">
         {(group.status === "pending" ||
           group.status === "archived" ||
           group.visibility !== "public") && (
           <div className="flex flex-wrap gap-x-2 gap-y-1">
             {group.status === "pending" && (
-              <span className="text-xs font-bold uppercase tracking-wide text-warning-on-subtle">
+              <span className="text-sm font-semibold text-warning-on-subtle">
                 Pending approval
               </span>
             )}
             {group.status === "archived" && (
-              <span className="text-xs font-bold uppercase tracking-wide text-text-muted">Archived</span>
+              <span className="text-sm font-semibold text-text-muted">Archived</span>
             )}
             {group.visibility === "private" && (
-              <span className="text-xs font-bold uppercase tracking-wide text-text-muted">Private</span>
+              <span className="text-sm font-semibold text-text-muted">Private</span>
             )}
             {group.visibility === "invite_only" && (
-              <span className="inline-block text-xs font-bold uppercase tracking-wide bg-inverse text-inverse-foreground rounded-full px-2 py-0.5">
+              <span className="inline-block text-sm font-semibold bg-inverse text-inverse-foreground rounded-full px-2 py-0.5">
                 Invite only
               </span>
             )}
           </div>
         )}
-        <Heading className="font-bold text-base sm:text-lg leading-snug">{group.name}</Heading>
+        <Heading className="font-bold text-lg leading-snug wrap-anywhere">{group.name}</Heading>
         <div
-          className={`text-sm ${next?.soon ? "text-success-on-subtle font-semibold" : next ? "text-primary-hover font-medium" : "text-text-muted"}`}
+          className={`text-sm ${next?.soon ? "text-success-on-subtle font-semibold" : next ? "text-text font-medium" : "text-text-muted"}`}
         >
           {next ? (
             next.soon ? (
-              // Today or Tonight: the word carries the meaning, the dot only decorates (DEC-99).
-              <span className="inline-flex items-center gap-1.5">
-                <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-success" />
-                {next.text}
-              </span>
+              <span>{next.text}</span>
             ) : next.text
           ) : (
             <span className="inline-flex items-center gap-1">
@@ -84,13 +78,13 @@ export function GroupCard({
             </span>
           )}
         </div>
-        <div className="truncate text-sm text-text-muted">{memberLine}</div>
+        <div className="text-sm text-text-muted wrap-anywhere">{memberLine}</div>
         {role && (
           <div className="text-sm font-medium text-text-muted">
             <span aria-hidden="true">✓</span> {role}
           </div>
         )}
-        {tags && <div className="truncate text-sm text-text-muted">{tags}</div>}
+        {tags && <div className="text-sm text-text-muted wrap-anywhere">{tags}</div>}
       </div>
     </Link>
   );

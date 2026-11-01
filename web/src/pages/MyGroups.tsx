@@ -36,11 +36,11 @@ function MeetingSoon() {
   // flashes in and vanishes.
   if (!groups || groups.length === 0) return null;
   return (
-    <section aria-labelledby="meeting-soon" className="mt-10">
+    <section aria-labelledby="meeting-soon" className="fold-section mt-8">
       <h2 id="meeting-soon" className="text-xl font-bold mb-4">
         Groups meeting soon
       </h2>
-      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="fold-list">
         {groups.map((g) => <GroupCard key={g.id} group={g} headingLevel={3} />)}
       </div>
     </section>
@@ -84,8 +84,8 @@ export function MyGroups() {
 
   if (!authLoading && !user) {
     return (
-      <div className="max-w-6xl mx-auto px-4 py-12 text-center">
-        <h1 className="text-3xl font-bold mb-6">My groups</h1>
+      <div className="fold-page-narrow">
+        <h1 className="fold-page-header text-3xl font-bold">My groups</h1>
         <p className="text-text-muted">
           <Link to="/login" className="text-primary font-semibold">
             Log in
@@ -97,12 +97,12 @@ export function MyGroups() {
   }
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-6">My groups</h1>
+    <div className="fold-page-narrow">
+      <h1 className="fold-page-header text-3xl font-bold">My groups</h1>
       {departureStatus && <p role="status" className="mb-4 rounded-lg border border-border bg-sunken px-4 py-3 text-sm">{departureStatus}</p>}
       {loading && (
-        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          <Skeleton kind="cards" count={3} />
+        <div className="fold-list">
+          <Skeleton kind="lines" count={3} />
         </div>
       )}
       {!loading && error && <ErrorNotice message={error} onRetry={() => setRetry((n) => n + 1)} />}
@@ -130,7 +130,7 @@ export function MyGroups() {
         </>
       )}
       {!loading && groups.length > 0 && (
-        <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="fold-list">
           {groups.map((g) => (
             <GroupCard key={g.id} group={g} headingLevel={2} showRole={false} />
           ))}

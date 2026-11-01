@@ -15,7 +15,7 @@ export function NewGroup() {
 
   if (!loading && !user) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+      <div className="fold-auth">
         <p className="text-text-muted">
           You need to{" "}
           <Link to="/login" state={{ from: "/groups/new" }} className="text-primary font-semibold">
@@ -46,7 +46,7 @@ export function NewGroup() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-4 py-8">
+    <div className="fold-auth">
       {created && created.status === "active" ? (
         // Admins' groups (and anyone else's the server activates) are live now.
         <EmptyState
@@ -71,8 +71,12 @@ export function NewGroup() {
         />
       ) : (
         <>
-          <h1 className="text-3xl font-bold mb-2">Start a group</h1>
-          {!isAdmin && <p className="text-text-muted mb-6">An admin reviews new groups before they go live.</p>}
+          <header className="fold-page-header">
+            <div>
+              <h1 className="text-3xl font-bold">Start a group</h1>
+              {!isAdmin && <p className="mt-2 text-text-muted">An admin reviews new groups before they go live.</p>}
+            </div>
+          </header>
           <CreateGroupForm onSaved={create} onCancel={() => navigate("/")} />
         </>
       )}
