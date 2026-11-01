@@ -173,7 +173,7 @@ func messagePushRecorder(id uint) pushRecorder {
 // pushes together (DEC-126). A push reminder row goes on to
 // deliverReminderPush after the device check. It returns an error only
 // when a retry may succeed.
-func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint) error {
+func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint, plannedAt int64) error {
 	db := a.DB.WithContext(ctx)
 	var row models.MessageRecipient
 	if err := db.First(&row, rowID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
@@ -237,7 +237,7 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint) erro
 	if m.Category == models.MessageCategoryReminder {
 		// The 2-hour push reminder (M3.13d3) has its own checks; the
 		// sweep timed it, so it neither waits nor meets the hourly limit.
-		return a.deliverReminderPush(ctx, &row, &u, dev, &m)
+		return a.deliverReminderPush(ctx, &row, &u, dev, &m, plannedAt)
 	}
 	now := a.pushNow()
 	loc := zoneOrChurch(db, u.Timezone)

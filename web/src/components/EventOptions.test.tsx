@@ -115,7 +115,7 @@ function PushHarness() {
 describe("the push reminder switch (M3.13d3)", () => {
   it("sits under the reminder email, on by default, and says who gets it", async () => {
     render(<PushHarness />);
-    const box = screen.getByRole("checkbox", { name: /^Push reminder 2 hours before/ });
+    const box = await screen.findByRole("checkbox", { name: /^Push reminder 2 hours before/ });
     expect(box).toBeChecked();
     expect(box).toHaveAccessibleName(/People who turned on notifications get a short reminder on their phone\./);
     expect(screen.getByLabelText("Reminder email").compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

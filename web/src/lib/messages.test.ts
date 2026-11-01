@@ -69,6 +69,15 @@ describe("counts", () => {
     expect(statusLabel({ status: "cancelled", scheduledAt: "2026-11-03T16:00:00Z", sentAt: null }, z, now)).toBe("Cancelled");
     expect(statusLabel({ status: "cancelled", scheduledAt: null, sentAt: null }, z, now)).toBe("Discarded");
   });
+
+  it("never says a push reminder was sent before anything went (M3.13d3)", () => {
+    const z = "America/Boise", now = new Date("2026-11-02T18:00:00Z");
+    // Due at 11 AM, so its date starts at 1 PM.
+    const push = { status: "sent" as const, channel: "push" as const, scheduledAt: "2026-11-02T18:00:00Z" };
+    expect(statusLabel({ ...push, sentAt: null }, z, now)).toBe("Waiting to go out");
+    expect(statusLabel({ ...push, sentAt: "2026-11-02T18:00:00Z" }, z, now)).toMatch(/^Pushed Today at 11:00 AM( MST)?$/);
+    expect(statusLabel({ ...push, sentAt: null }, z, new Date("2026-11-02T20:30:00Z"))).toBe("Nobody got it");
+  });
 });
 
 describe("history", () => {

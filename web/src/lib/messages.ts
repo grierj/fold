@@ -282,8 +282,16 @@ export function confirmLine(eligible: number, at: string | null, zone: string): 
 // scheduled time already reached is "Waiting to send" until the sender
 // (M3.5) picks it up; a draft that was never scheduled and then cancelled
 // was discarded. A send that reached some people and failed for others is
-// "Partly sent".
-export function statusLabel(m: Pick<Message, "status" | "scheduledAt" | "sentAt"> & { failedCount?: number }, zone: string, now = new Date()): string {
+// "Partly sent". A push reminder (M3.13d3, channel push) is sent from the
+// start and its sentAt is its first push: "Pushed today at 5:00 PM", else
+// "Waiting to go out" until its date starts (scheduledAt is 2 hours
+// before), then "Nobody got it".
+export function statusLabel(m: Pick<Message, "status" | "scheduledAt" | "sentAt"> & { failedCount?: number; channel?: Message["channel"] }, zone: string, now = new Date()): string {
+  if (m.channel === "push" && m.status === "sent") {
+    if (m.sentAt) return `Pushed ${formatWhenIn(m.sentAt, zone, now)}`;
+    const starts = m.scheduledAt ? new Date(m.scheduledAt).getTime() + 2 * 3600_000 : 0;
+    return starts > now.getTime() ? "Waiting to go out" : "Nobody got it";
+  }
   switch (m.status) {
     case "draft": return "Draft";
     case "scheduled":

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"strconv"
 	"strings"
 	"time"
@@ -38,7 +37,9 @@ import (
 // one push.deliver per device due at its time; the job checks the date,
 // the switch, the registration and who may see the date again when it
 // runs, so a cancelled or moved date, a switch turned off or someone no
-// longer going sends nothing.
+// longer going sends nothing, and a backlog that runs it more than 15
+// minutes into quiet hours skips it. The lock screen never shows the place
+// (DEC-136).
 
 const (
 	// reminderPushKind is the push reminder's kind in its key and on the
@@ -115,82 +116,76 @@ func planPushReminder(w push.Window, due time.Time, loc *time.Location, now time
 	return now, false, true
 }
 
-// sweepPushReminders is the push part of reminders.sweep: each scheduled
-// date of an event with the switch on, someone going, and a push reminder
-// due between six hours back and 18 hours plus the lookahead ahead (the
-// most quiet hours can move it earlier).
+// sweepPushReminders is the push part of reminders.sweep. One query reads,
+// for every scheduled date of an event with the switch on whose push
+// reminder is due between six hours back and 18 hours plus the lookahead
+// ahead (the most quiet hours can move it earlier), each going registrant
+// (a household person's reaches the account holder, as the email does)
+// who is active, has a device, and has no row yet on that date's push
+// reminder for its current start. So a date whose people are all planned
+// costs nothing on later sweeps; what is left each hour is the people not
+// yet due (planned later), the ones without push on for event updates
+// (never given a row), and late sign-ups, who are planned the hour they
+// appear. Push consent is read once for all of them, and the church's
+// zone once.
 func (a *App) sweepPushReminders(ctx context.Context, now time.Time) error {
 	if !a.pushEnabled() {
 		return nil
 	}
 	db := a.DB.WithContext(ctx)
-	var occs []models.EventOccurrence
-	if err := db.Raw(`SELECT o.* FROM event_occurrences o JOIN events e ON e.id = o.event_id AND e.deleted_at IS NULL
-		WHERE o.status = ? AND e.reminder_push AND o.starts_at > ? AND o.starts_at BETWEEN ? AND ?
-		  AND EXISTS (SELECT 1 FROM registrations r WHERE r.occurrence_id = o.id AND r.status = ?)
-		ORDER BY o.starts_at, o.id`,
-		models.OccurrenceScheduled, now, now.Add(pushReminderLead-reminderLookback), now.Add(pushReminderLead+pushReminderMaxMove+reminderLookahead),
-		models.RegGoing).Scan(&occs).Error; err != nil {
+	cands, err := pushReminderCandidates(db, now)
+	if err != nil {
 		return err
 	}
-	for i := range occs {
-		if err := a.sweepPushReminder(db, &occs[i], now); err != nil {
+	if len(cands) == 0 {
+		return nil
+	}
+	ids := make([]uint, 0, len(cands))
+	for _, c := range cands {
+		ids = append(ids, c.UserID)
+	}
+	ready, err := pushReady(db, dedupeIDs(ids), notify.CatEvents)
+	if err != nil {
+		return err
+	}
+	church := churchZone(db)
+	win := a.pushQuietHours()
+	type date struct {
+		occ   models.EventOccurrence
+		plans []pushReminderPlan
+	}
+	var dates []*date
+	for _, c := range cands {
+		if !ready[c.UserID] {
+			continue
+		}
+		loc, err := events.LoadZone(c.Timezone)
+		if err != nil {
+			loc = church
+		}
+		at, skip, ok := planPushReminder(win, c.StartsAt.Add(-pushReminderLead), loc, now)
+		if !ok {
+			continue
+		}
+		if len(dates) == 0 || dates[len(dates)-1].occ.ID != c.OccurrenceID {
+			dates = append(dates, &date{occ: models.EventOccurrence{ID: c.OccurrenceID, StartsAt: c.StartsAt}})
+		}
+		d := dates[len(dates)-1]
+		d.plans = append(d.plans, pushReminderPlan{UserID: c.UserID, At: at, Skip: skip})
+	}
+	for _, d := range dates {
+		if err := writePushReminderPlans(db, &d.occ, d.plans); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// sweepPushReminder plans one date's push reminder for each going
-// registrant (a household person's goes to the account holder, as the
-// email does) who is active and has push on for event updates and a
-// device. Someone without push gets no row at all. The message, the rows
-// and the jobs are each written once however often it runs.
-func (a *App) sweepPushReminder(db *gorm.DB, occ *models.EventOccurrence, now time.Time) error {
-	due := occ.StartsAt.Add(-pushReminderLead)
-	ids, err := a.audienceUserIDs(db, audienceJSON{Type: policy.AudienceOccurrence, OccurrenceID: occ.ID, Statuses: []string{models.RegGoing}}, now)
-	if err != nil || len(ids) == 0 {
-		return err
-	}
-	var users []models.User
-	if err := db.Select("id", "timezone").Where("id IN ? AND status = ?", ids, models.UserActive).Order("id").Find(&users).Error; err != nil {
-		return err
-	}
-	active := make([]uint, 0, len(users))
-	for _, u := range users {
-		active = append(active, u.ID)
-	}
-	ready, err := pushReady(db, active, notify.CatEvents)
-	if err != nil {
-		return err
-	}
-	church := churchZone(db)
-	win := a.pushQuietHours()
-	var plans []pushReminderPlan
-	for _, u := range users {
-		if !ready[u.ID] {
-			continue
-		}
-		loc, err := events.LoadZone(u.Timezone)
-		if err != nil {
-			loc = church
-		}
-		at, skip, ok := planPushReminder(win, due, loc, now)
-		if ok {
-			plans = append(plans, pushReminderPlan{UserID: u.ID, At: at, Skip: skip})
-		}
-	}
-	if len(plans) == 0 {
-		return nil
-	}
-	var ev models.Event
-	if err := db.First(&ev, occ.EventID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil
-	} else if err != nil {
-		return err
-	}
+// writePushReminderPlans writes one date's message (once), the planned
+// people's rows (once each) and their jobs, in one transaction.
+func writePushReminderPlans(db *gorm.DB, occ *models.EventOccurrence, plans []pushReminderPlan) error {
 	return db.Transaction(func(tx *gorm.DB) error {
-		id, err := writePushReminder(tx, &ev, occ, due)
+		id, err := writePushReminder(tx, occ)
 		if err != nil {
 			return err
 		}
@@ -205,7 +200,12 @@ func (a *App) sweepPushReminder(db *gorm.DB, occ *models.EventOccurrence, now ti
 			}
 			rows = append(rows, row)
 		}
-		// A person already planned keeps their row (and its job).
+		// A person already planned keeps their row (and its job). A date
+		// cancelled and then restored at the same start keeps its key, so
+		// a row its cancelled job suppressed ("date cancelled or moved")
+		// stays: that person gets no push reminder for it. The date has no
+		// restore count to put in the key, and it needs a cancel and a
+		// restore inside the last 20 hours before the date.
 		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(&rows, 500).Error; err != nil {
 			return err
 		}
@@ -214,20 +214,18 @@ func (a *App) sweepPushReminder(db *gorm.DB, occ *models.EventOccurrence, now ti
 }
 
 // writePushReminder writes the date's push reminder message for its
-// start, or finds the one already written, and returns its id. It holds
-// only push rows, which never settle it: it is sent from the start, and
-// its sent_at is the first push that went (pushReminderRecorder).
-func writePushReminder(tx *gorm.DB, ev *models.Event, occ *models.EventOccurrence, due time.Time) (uint, error) {
+// start, or finds the one already written, and returns its id. Its channel
+// is push. It holds only push rows, which never settle it: it is sent from
+// the start, and its sent_at is the first push that went
+// (pushReminderRecorder).
+func writePushReminder(tx *gorm.DB, occ *models.EventOccurrence) (uint, error) {
 	key := pushReminderKey(occ.ID, occ.StartsAt)
+	due := occ.StartsAt.Add(-pushReminderLead)
 	aud, _ := json.Marshal(audienceJSON{Type: policy.AudienceOccurrence, OccurrenceID: occ.ID, Statuses: []string{models.RegGoing}})
 	// What the history page shows of it: the lock screen's words, with
-	// the time on each person's own clock.
-	body := "<p>Starts at {{event_time}}, on each person's own clock.</p>"
-	if place := occurrencePlace(ev, occ); place != "" {
-		body += "<p>" + html.EscapeString(strings.ReplaceAll(place, "{{", "{ {")) + "</p>"
-	}
-	clean := content.SanitizeHTML(body)
-	m := models.Message{Status: models.MessageSent, Category: models.MessageCategoryReminder,
+	// the time on each person's own clock and never the place (DEC-136).
+	clean := content.SanitizeHTML("<p>Starts at {{event_time}}, on each person's own clock.</p>")
+	m := models.Message{Channel: models.DeliveryPush, Status: models.MessageSent, Category: models.MessageCategoryReminder,
 		Subject: "Reminder: {{event_title}}", BodyHTML: clean, BodyText: content.PlainText(clean), Audience: string(aud),
 		ScheduledAt: &due, OccurrenceID: &occ.ID, ReminderKey: &key}
 	res := tx.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "reminder_key"}}, TargetWhere: clause.Where{Exprs: []clause.Expression{clause.Expr{SQL: "reminder_key IS NOT NULL"}}}, DoNothing: true}).Create(&m)
@@ -267,7 +265,7 @@ func enqueuePushReminderJobs(tx *gorm.DB, messageID uint, at map[uint]time.Time)
 	}
 	specs := make([]jobs.Spec, 0, len(pairs))
 	for _, p := range pairs {
-		specs = append(specs, jobs.Spec{Kind: kindPushDeliver, Payload: pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID}, RunAt: at[p.UserID],
+		specs = append(specs, jobs.Spec{Kind: kindPushDeliver, Payload: pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID, PlannedAt: at[p.UserID].Unix()}, RunAt: at[p.UserID],
 			UniqueKey: "push:mr:" + historyID(p.RecipientID) + ":d:" + historyID(p.DeviceID), MaxAttempts: pushDeliverAttempts})
 	}
 	if _, err := jobs.EnqueueMany(tx, specs); err != nil {
@@ -296,15 +294,22 @@ func pushReminderRecorder(row models.MessageRecipient) pushRecorder {
 	}
 }
 
+// pushReminderGrace is how far into quiet hours a push reminder may still
+// go past the time the sweep planned for it: a 7:59 PM push whose job runs
+// a minute late still goes; a backlog that runs it at 8:30 PM doesn't.
+const pushReminderGrace = 15 * time.Minute
+
 // deliverReminderPush sends one push reminder row to one device, once
 // deliverMessagePush has checked the church's switch, the account, push
 // consent for event updates and the device. It checks again that the date
 // is still scheduled at the start the key names and not started, that the
 // event's switch is still on, that the person is still going, and that
 // they may still see the date (M1.13), as an email reminder does at send.
-// Quiet hours were applied when the sweep planned it, and the hourly limit
+// The sweep planned it inside the person's window; if the window has shut
+// by the time it runs, more than 15 minutes past that plan (plannedAt,
+// Unix seconds), it is skipped as "outside quiet hours". The hourly limit
 // never stops a reminder, though a sent one counts toward it (DEC-126).
-func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipient, u *models.User, dev models.PushSubscription, m *models.Message) error {
+func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipient, u *models.User, dev models.PushSubscription, m *models.Message, plannedAt int64) error {
 	db := a.DB.WithContext(ctx)
 	rec := pushReminderRecorder(*row)
 	record := func(status, reason string) error { return rec(db, status, reason, a.pushNow()) }
@@ -349,11 +354,15 @@ func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipi
 	if !can[u.ID] {
 		return record(models.RecipientSuppressed, skipCantSeeDate)
 	}
+	loc := zoneOrChurch(db, u.Timezone)
+	if inside, _ := a.pushQuietHours().Check(now, "", loc); !inside && now.After(time.Unix(plannedAt, 0).Add(pushReminderGrace)) {
+		return record(models.RecipientSuppressed, pushWhyQuietHours)
+	}
 	title := ev.Title
 	if occ.TitleOverride != nil {
 		title = *occ.TitleOverride
 	}
-	head, text := reminderPushText(title, occurrencePlace(&ev, &occ), occ.StartsAt, zoneOrChurch(db, u.Timezone), now)
+	head, text := reminderPushText(title, occ.StartsAt, loc, now)
 	what := fmt.Sprintf("reminder %d recipient %d", m.ID, row.ID)
 	body, err := push.MarshalPayload(push.NewPayload(push.Notification{
 		Title: head, Body: text, Navigate: a.emailLink(occurrenceDatePath(ev.ID, occ.OriginalDate)), Tag: "r" + historyID(occ.ID),
@@ -369,16 +378,14 @@ func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipi
 	return a.pushOutcome(ctx, what, dev, a.pushClient().Send(ctx, sub, body, opts), "", rec)
 }
 
-// pushReminderPlace is how much of the place a lock screen shows.
-const pushReminderPlace = 80
-
-// reminderPushText is a push reminder's lock screen (DEC-124): "Reminder:
-// Book night", then "Starts at 7:00 PM" on the reader's clock ("Starts
-// tomorrow at 9:00 AM" when it goes the evening before) and the date's
-// place, which a reader who may see the date may see, as the email says
-// it. The title and place go through lockScreenSafe: a place that is a
-// link or holds a phone number shows without it.
-func reminderPushText(title, place string, start time.Time, loc *time.Location, now time.Time) (string, string) {
+// reminderPushText is a push reminder's lock screen (DEC-124, DEC-136):
+// "Reminder: Book night", then "Starts at 7:00 PM" on the reader's clock
+// ("Starts tomorrow at 9:00 AM" when it goes the evening before). It never
+// carries the place: a lock screen is public and a small group often meets
+// in a home. The tap opens the date page, which shows it. It takes no
+// person, so no name or badge can reach it; the title goes through
+// lockScreenSafe.
+func reminderPushText(title string, start time.Time, loc *time.Location, now time.Time) (string, string) {
 	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
 	head := clipRunes(oneLine(lockScreenSafe("Reminder: "+oneLine(title))), maxMessageSubject)
 	local, today := start.In(loc), now.In(loc)
@@ -390,8 +397,33 @@ func reminderPushText(title, place string, start time.Time, loc *time.Location, 
 	case today.AddDate(0, 0, 1).Format(time.DateOnly):
 		when = "Starts tomorrow at " + clock
 	}
-	if p := oneLine(lockScreenSafe(oneLine(place))); p != "" {
-		when += " · " + clipRunes(p, pushReminderPlace)
-	}
 	return head, when
+}
+
+// pushReminderCandidate is one going person on one date the sweep may
+// still have to plan.
+type pushReminderCandidate struct {
+	OccurrenceID uint
+	StartsAt     time.Time
+	UserID       uint
+	Timezone     string
+}
+
+// pushReminderCandidates is sweepPushReminders' one read (see there).
+func pushReminderCandidates(db *gorm.DB, now time.Time) ([]pushReminderCandidate, error) {
+	var cands []pushReminderCandidate
+	err := db.Raw(`SELECT DISTINCT o.id AS occurrence_id, o.starts_at, u.id AS user_id, u.timezone
+		FROM event_occurrences o
+		JOIN events e ON e.id = o.event_id AND e.deleted_at IS NULL
+		JOIN registrations r ON r.occurrence_id = o.id AND r.status = ?
+		JOIN users u ON u.id = COALESCE(r.user_id, r.registered_by) AND u.status = ?
+		WHERE o.status = ? AND e.reminder_push AND o.starts_at > ? AND o.starts_at BETWEEN ? AND ?
+		  AND EXISTS (SELECT 1 FROM push_subscriptions d WHERE d.user_id = u.id)
+		  AND NOT EXISTS (SELECT 1 FROM messages m JOIN message_recipients mr ON mr.message_id = m.id AND mr.user_id = u.id AND mr.channel = ?
+			WHERE m.reminder_key = ? || o.id || ':' || extract(epoch FROM o.starts_at)::bigint || ?)
+		ORDER BY o.starts_at, o.id, u.id`,
+		models.RegGoing, models.UserActive, models.OccurrenceScheduled, now,
+		now.Add(pushReminderLead-reminderLookback), now.Add(pushReminderLead+pushReminderMaxMove+reminderLookahead),
+		models.DeliveryPush, reminderPushKind+":", ":"+strconv.Itoa(int(pushReminderLead/time.Minute))).Scan(&cands).Error
+	return cands, err
 }

@@ -154,9 +154,10 @@ pushes (M3.13d2, `messages_push.go`) are `message_recipients` rows with `channel
 message's status, counts, settling, reaper and Try again read its email rows only, so filter
 `channel = 'email'` in any new query over a message's rows. The 2-hour push reminder (M3.13d3,
 `reminders_push.go`) is its own reminder message (key `push:<occ>:<start>:120`) with only push
-rows: `reminders.sweep` plans each person with `Window.LastAllowed`, queues `push.deliver` at
-that time, and the job rechecks the date, the event's `reminder_push`, going and visibility;
-it never waits for quiet hours and the hourly limit never stops it. A trigger deletes
+rows and `messages.channel = 'push'`: `reminders.sweep` plans each person with
+`Window.LastAllowed`, queues `push.deliver` at that time, and the job rechecks the date, the
+event's `reminder_push`, going, visibility and the window (15 minutes' grace); the hourly limit
+never stops it. No push shows a place (DEC-136). A trigger deletes
 an account's devices when its sessions are revoked or it stops being active, and queues
 `push.devices_off`, which writes the person a bell notice (migration 00059). Holding an endpoint
 alone never moves a device to another account: its keys must match. Browser side (M3.13c1):

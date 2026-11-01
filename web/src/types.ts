@@ -1130,7 +1130,8 @@ export interface MessageAudience {
 
 export interface Message {
   id: number;
-  channel: "email" | "sms";
+  // push: an automatic push reminder (M3.13d3); never one the composer writes.
+  channel: "email" | "sms" | "push";
   status: MessageStatus;
   subject: string;
   bodyHtml: string;

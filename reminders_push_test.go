@@ -69,6 +69,8 @@ func moveDate(t *testing.T, app *App, occ *models.EventOccurrence, start time.Ti
 // with one push row and no email rows, and writes no bell row (DEC-44).
 func TestPushReminderGoesOnceTwoHoursBefore(t *testing.T) {
 	f, fp, phone := pushReminderFixture(t)
+	// A small group meeting at someone's home (DEC-136).
+	f.app.DB.Model(&models.Event{}).Where("id = ?", f.groupEvent.ID).Update("location", "412 Elm Street, Boise")
 	var notesBefore int64
 	f.app.DB.Model(&models.Notification{}).Count(&notesBefore)
 	due := f.groupOcc.StartsAt.Add(-2 * time.Hour)
@@ -76,8 +78,28 @@ func TestPushReminderGoesOnceTwoHoursBefore(t *testing.T) {
 	if m, _ := pushReminderOf(t, f.app, f.groupOcc); m.ID != 0 {
 		t.Fatal("planned beyond the lookahead")
 	}
+	counts := func() [3]int64 {
+		var c [3]int64
+		f.app.DB.Model(&models.Job{}).Where("kind = ?", kindPushDeliver).Count(&c[0])
+		f.app.DB.Model(&models.MessageRecipient{}).Where("channel = ?", models.DeliveryPush).Count(&c[1])
+		f.app.DB.Model(&models.Message{}).Where("category = ?", models.MessageCategoryReminder).Count(&c[2])
+		return c
+	}
+	if c, err := pushReminderCandidates(f.app.DB, due.Add(-90*time.Minute)); err != nil || len(c) != 1 {
+		t.Fatalf("before planning: %+v %v", c, err)
+	}
+	sweepAt(t, f.app, due.Add(-90*time.Minute))
+	first := counts()
+	// Once planned, the date is nothing to the next sweep's read.
+	if c, err := pushReminderCandidates(f.app.DB, due.Add(-30*time.Minute)); err != nil || len(c) != 0 {
+		t.Fatalf("planned people read again: %+v %v", c, err)
+	}
+	// The same sweep twice, and the next hour's: nothing new.
 	for _, now := range []time.Time{due.Add(-90 * time.Minute), due.Add(-30 * time.Minute)} {
 		sweepAt(t, f.app, now)
+	}
+	if c := counts(); c != first || c != [3]int64{1, 1, 1} {
+		t.Fatalf("sweeping again wrote more: %v then %v", first, c)
 	}
 	var js []models.Job
 	f.app.DB.Where("kind = ?", kindPushDeliver).Find(&js)
@@ -90,8 +112,19 @@ func TestPushReminderGoesOnceTwoHoursBefore(t *testing.T) {
 	if fp.count(phone.path) != 1 || fp.total() != 1 {
 		t.Fatalf("pushes: %v", fp.sent)
 	}
+	// The lock screen: the title and the time, never the place (DEC-136);
+	// the tap opens the date page.
+	note := pushPayload(t, fp, phone)
+	if note.Title != "Reminder: Book night" || note.Body != "Starts at 7:00 PM" ||
+		!strings.HasSuffix(note.Navigate, occurrenceDatePath(f.groupEvent.ID, f.groupOcc.OriginalDate)) {
+		t.Fatalf("lock screen: %+v", note)
+	}
+	if strings.Contains(note.Title+note.Body, "Elm") || strings.Contains(note.Title+note.Body, "412") {
+		t.Fatalf("the home address reached the lock screen: %+v", note)
+	}
 	m, rows := pushReminderOf(t, f.app, f.groupOcc)
-	if m.Category != models.MessageCategoryReminder || m.Status != models.MessageSent || m.SentAt == nil || m.OccurrenceID == nil || reminderKind(&m) != reminderPushKind {
+	if m.Category != models.MessageCategoryReminder || m.Channel != models.DeliveryPush || m.Status != models.MessageSent || m.SentAt == nil ||
+		m.OccurrenceID == nil || reminderKind(&m) != reminderPushKind || strings.Contains(m.BodyHTML, "Elm") {
 		t.Fatalf("message: %+v", m)
 	}
 	if len(rows) != 1 || rows[f.teen.Email].Status != models.RecipientSent || rows[f.teen.Email].Reason != "" {
@@ -237,6 +270,115 @@ func TestPlanPushReminder(t *testing.T) {
 	if _, skip, ok := planPushReminder(narrow, at(10, 6, 30), time.UTC, at(10, 5, 0)); !skip || !ok {
 		t.Errorf("a skip near due: %v %v", skip, ok)
 	}
+	// Across a clock change the move is wall-clock: 7:59 PM the evening
+	// before a 9:00 AM date, both the day the clocks spring forward
+	// (Mar 10, 2030) and the day they fall back (Nov 3, 2030).
+	for _, c := range []struct{ due, now, want time.Time }{
+		{time.Date(2030, 3, 10, 7, 0, 0, 0, denverZone), time.Date(2030, 3, 9, 19, 0, 0, 0, denverZone), time.Date(2030, 3, 9, 19, 59, 0, 0, denverZone)},
+		{time.Date(2030, 11, 3, 7, 0, 0, 0, denverZone), time.Date(2030, 11, 2, 19, 0, 0, 0, denverZone), time.Date(2030, 11, 2, 19, 59, 0, 0, denverZone)},
+	} {
+		if got, skip, ok := planPushReminder(w, c.due, denverZone, c.now); !got.Equal(c.want) || skip || !ok {
+			t.Errorf("DST %s: got %s %v %v", c.due, got, skip, ok)
+		}
+	}
+}
+
+// The window is checked again when the job runs: a 7:59 PM push whose job
+// runs at 8:01 PM still goes (15 minutes' grace); a backlog that runs it
+// at 8:16 PM skips it as "outside quiet hours".
+func TestPushReminderRechecksQuietHoursAtSend(t *testing.T) {
+	for _, c := range []struct {
+		late time.Duration
+		sent bool
+	}{{2 * time.Minute, true}, {17 * time.Minute, false}} {
+		t.Run(c.late.String(), func(t *testing.T) {
+			f, fp, phone := pushReminderFixture(t)
+			w := push.DefaultWindow
+			f.app.pushWindow = &w
+			f.app.DB.Model(f.teen).Update("timezone", "America/Denver")
+			day := f.groupOcc.StartsAt.AddDate(0, 0, 1)
+			moveDate(t, f.app, &f.groupOcc, time.Date(day.Year(), day.Month(), day.Day(), 9, 0, 0, 0, denverZone))
+			evening := time.Date(day.Year(), day.Month(), day.Day()-1, 19, 59, 0, 0, denverZone)
+			sweepAt(t, f.app, evening.Add(-40*time.Minute))
+			deliverAt(t, f.app, evening.Add(c.late))
+			_, rows := pushReminderOf(t, f.app, f.groupOcc)
+			r := rows[f.teen.Email]
+			if c.sent && (fp.count(phone.path) != 1 || r.Status != models.RecipientSent) {
+				t.Fatalf("a minute late didn't go: %v %+v", fp.sent, r)
+			}
+			if !c.sent && (fp.total() != 0 || r.Status != models.RecipientSuppressed || r.Reason != pushWhyQuietHours) {
+				t.Fatalf("a backlog into quiet hours went: %v %+v", fp.sent, r)
+			}
+		})
+	}
+}
+
+// Late sign-ups: one whose push time just passed, with the window open,
+// gets it at once; one whose moved time passed longer ago than the sweep's
+// lookback (signing up at 8:30 AM for a 9:00 AM date whose push would have
+// gone at 7:59 PM) gets no row and no push.
+func TestPushReminderLateSignUps(t *testing.T) {
+	f, fp, phone := pushReminderFixture(t)
+	w := push.DefaultWindow
+	f.app.pushWindow = &w
+	due := f.groupOcc.StartsAt.Add(-2 * time.Hour) // 5:00 PM UTC, the church's clock
+	sweepAt(t, f.app, due.Add(30*time.Minute))
+	var js []models.Job
+	f.app.DB.Where("kind = ?", kindPushDeliver).Find(&js)
+	if len(js) != 1 || js[0].RunAt.Sub(due.Add(30*time.Minute)).Abs() > time.Second {
+		t.Fatalf("jobs: %+v", js)
+	}
+	deliverAt(t, f.app, due.Add(30*time.Minute))
+	if fp.count(phone.path) != 1 {
+		t.Fatalf("pushes: %v", fp.sent)
+	}
+
+	day := f.groupOcc.StartsAt.AddDate(0, 0, 2)
+	moveDate(t, f.app, &f.groupOcc, time.Date(day.Year(), day.Month(), day.Day(), 9, 0, 0, 0, time.UTC))
+	sweepAt(t, f.app, f.groupOcc.StartsAt.Add(-30*time.Minute))
+	deliverAt(t, f.app, f.groupOcc.StartsAt.Add(-30*time.Minute))
+	if _, rows := pushReminderOf(t, f.app, f.groupOcc); len(rows) != 0 || fp.total() != 1 {
+		t.Fatalf("rows %+v, pushes %v", rows, fp.sent)
+	}
+}
+
+// A household person's registration reaches the account holder, as the
+// email does, and the lock screen names neither of them and shows no Teen
+// badge: only the event and its time.
+func TestPushReminderReachesTheHouseholdAccountHolder(t *testing.T) {
+	f, fp, teenPhone := pushReminderFixture(t)
+	holder := pushMember(t, f.app, "holder")
+	holderPhone := newPushDevice(t, f.app, holder, "holder")
+	household := models.Household{Name: "Holder family", CreatedBy: holder.ID}
+	if err := f.app.DB.Create(&household).Error; err != nil {
+		t.Fatal(err)
+	}
+	child := models.HouseholdPerson{HouseholdID: household.ID, FirstName: "Jamie", Kind: models.HouseholdChild, CreatedBy: holder.ID}
+	if err := f.app.DB.Create(&child).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.app.DB.Create(&models.Registration{OccurrenceID: f.groupOcc.ID, HouseholdPersonID: &child.ID, RegisteredBy: &holder.ID, Status: models.RegGoing}).Error; err != nil {
+		t.Fatal(err)
+	}
+	due := f.groupOcc.StartsAt.Add(-2 * time.Hour)
+	sweepAt(t, f.app, due.Add(-30*time.Minute))
+	deliverAt(t, f.app, due)
+	_, rows := pushReminderOf(t, f.app, f.groupOcc)
+	if len(rows) != 2 || rows[holder.Email].Status != models.RecipientSent || fp.count(holderPhone.path) != 1 {
+		t.Fatalf("rows %+v, pushes %v", rows, fp.sent)
+	}
+	for _, d := range []testDevice{holderPhone, teenPhone} {
+		note := pushPayload(t, fp, d)
+		text := note.Title + " " + note.Body
+		for _, bad := range []string{"Jamie", "holder", "teen", "Teen", f.teen.PublicName(), holder.PublicName()} {
+			if strings.Contains(text, bad) {
+				t.Fatalf("%s's lock screen has %q: %q", d.Label, bad, text)
+			}
+		}
+		if note.Title != "Reminder: Book night" {
+			t.Fatalf("title: %q", note.Title)
+		}
+	}
 }
 
 // Turning the event's push reminder off, or cancelling the date, cancels
@@ -354,25 +496,26 @@ func TestPushReminderCountsButIsNotLimited(t *testing.T) {
 	}
 }
 
-// The lock screen: "Reminder: <title>", when it starts on the reader's
-// clock, and the place, with no link or phone number.
+// The lock screen: "Reminder: <title>" and when it starts on the reader's
+// clock, never the place (DEC-136); a title with a link or phone number
+// shows without it.
 func TestReminderPushText(t *testing.T) {
 	start := time.Date(2030, 1, 10, 19, 0, 0, 0, denverZone)
-	title, body := reminderPushText("Book night", "Room 201", start, denverZone, start.Add(-2*time.Hour))
-	if title != "Reminder: Book night" || body != "Starts at 7:00 PM · Room 201" {
+	title, body := reminderPushText("Book night", start, denverZone, start.Add(-2*time.Hour))
+	if title != "Reminder: Book night" || body != "Starts at 7:00 PM" {
 		t.Fatalf("%q / %q", title, body)
 	}
 	morning := time.Date(2030, 1, 10, 9, 0, 0, 0, denverZone)
-	if _, body := reminderPushText("Prayer", "", morning, denverZone, morning.Add(-13*time.Hour-time.Minute)); body != "Starts tomorrow at 9:00 AM" {
+	if _, body := reminderPushText("Prayer", morning, denverZone, morning.Add(-13*time.Hour-time.Minute)); body != "Starts tomorrow at 9:00 AM" {
 		t.Fatalf("the night before: %q", body)
 	}
-	if _, body := reminderPushText("Prayer", "", morning, time.UTC, morning.Add(-2*time.Hour)); body != "Starts at 4:00 PM" {
+	if _, body := reminderPushText("Prayer", morning, time.UTC, morning.Add(-2*time.Hour)); body != "Starts at 4:00 PM" {
 		t.Fatalf("another zone: %q", body)
 	}
-	_, body = reminderPushText("Call", "https://zoom.us/j/123?pwd=secret or call 208-555-0123", start, denverZone, start.Add(-2*time.Hour))
+	title, _ = reminderPushText("Call https://zoom.us/j/123?pwd=secret or 208-555-0123", start, denverZone, start.Add(-2*time.Hour))
 	for _, bad := range []string{"zoom", "secret", "555"} {
-		if strings.Contains(body, bad) {
-			t.Fatalf("%q leaked: %q", bad, body)
+		if strings.Contains(title, bad) {
+			t.Fatalf("%q leaked: %q", bad, title)
 		}
 	}
 }

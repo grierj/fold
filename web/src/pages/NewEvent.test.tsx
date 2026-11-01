@@ -113,7 +113,7 @@ describe("NewEvent", () => {
     await ready();
     await userEvent.type(screen.getByLabelText("Date"), "2026-12-02");
     await userEvent.click(screen.getByRole("button", { name: "More options" }));
-    const push = screen.getByRole("checkbox", { name: /^Push reminder 2 hours before/ });
+    const push = await screen.findByRole("checkbox", { name: /^Push reminder 2 hours before/ });
     expect(push).toBeChecked();
     expect(push).toHaveAccessibleName(/People who turned on notifications get a short reminder on their phone\./);
     await userEvent.click(push);

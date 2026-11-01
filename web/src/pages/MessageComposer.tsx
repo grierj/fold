@@ -382,12 +382,10 @@ export function MessageComposerPage() {
     const reminder = message.category === "reminder";
     // A leader opens a reminder from its date page (it isn't on their list), so that is where back goes.
     const datePath = message.reminder ? `/events/${message.reminder.eventId}/dates/${message.reminder.date}` : null;
-    // A push reminder (M3.13d3) has push rows only: it is "sent" from the
-    // start, and sentAt is its first push. Its email counts are always empty.
-    const pushReminder = message.reminder?.kind === "push";
-    const label = pushReminder && !message.sentAt
-      ? (history && history.counts.push.waiting.length === 0 ? "Nobody got it" : "Waiting to go out")
-      : statusLabel(message, zone);
+    // A push reminder (M3.13d3) has push rows only (statusLabel words its
+    // state), so its email counts are always empty.
+    const pushReminder = message.channel === "push";
+    const label = statusLabel(message, zone);
     return page(<>
       {reminder && !isAdmin && message.reminder && datePath
         ? <ButtonLink variant="link" to={datePath}>‹ Back to {message.reminder.eventTitle}</ButtonLink>

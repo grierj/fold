@@ -3,9 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ecdh"
+	"crypto/hkdf"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,14 +39,21 @@ type fakePush struct {
 	err     map[string]bool
 	sent    map[string]int
 	headers []http.Header
+	// bodies is each path's last encrypted body (pushPayload decrypts it).
+	bodies map[string][]byte
 }
 
 func (f *fakePush) RoundTrip(r *http.Request) (*http.Response, error) {
+	var body []byte
 	if r.Body != nil {
-		_, _ = io.Copy(io.Discard, r.Body)
+		body, _ = io.ReadAll(r.Body)
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.bodies == nil {
+		f.bodies = map[string][]byte{}
+	}
+	f.bodies[r.URL.Path] = body
 	f.sent[r.URL.Path]++
 	f.headers = append(f.headers, r.Header.Clone())
 	if f.err[r.URL.Path] {
@@ -104,6 +117,8 @@ func useFakePush(t *testing.T, app *App) *fakePush {
 type testDevice struct {
 	models.PushSubscription
 	path string
+	key  *ecdh.PrivateKey
+	auth []byte
 }
 
 func newPushDevice(t *testing.T, app *App, u *models.User, name string) testDevice {
@@ -120,7 +135,7 @@ func newPushDevice(t *testing.T, app *App, u *models.User, name string) testDevi
 	if err := app.DB.Create(&d).Error; err != nil {
 		t.Fatal(err)
 	}
-	return testDevice{d, path}
+	return testDevice{d, path, key, auth}
 }
 
 func pushConsentRow(t *testing.T, app *App, u *models.User, scope, status string) {
@@ -394,7 +409,7 @@ func TestPushDeliverSkipsWhatIsNoLongerThere(t *testing.T) {
 	app.DB.Model(&models.PushSubscription{}).Where("id = ?", phone.ID).Update("user_id", lee.ID)
 	drainJobs(t, app)
 	// A device or notification that's gone.
-	runPushJobs(t, app, n, testDevice{models.PushSubscription{ID: 99999}, ""})
+	runPushJobs(t, app, n, testDevice{PushSubscription: models.PushSubscription{ID: 99999}})
 	if err := app.deliverPush(context.Background(), pushJob{NotificationID: 99999, DeviceID: phone.ID}); err != nil {
 		t.Fatal(err)
 	}
@@ -1092,4 +1107,55 @@ func TestPushSecondDeviceIsNeverLimited(t *testing.T) {
 	if status, reason := pushDelivery(t, app, fresh); status != models.DeliverySuppressed || reason != pushWhyHourly || f.count(laptop.path) != 1 {
 		t.Fatalf("a new notification past the limit: %q %q, sends %v", status, reason, f.sent)
 	}
+}
+
+// pushPayload decrypts the last push the fake service got for dev (RFC
+// 8291, the receiver's side, written apart from internal/push's encrypt),
+// so a test can read the lock screen Fold really sent.
+func pushPayload(t *testing.T, f *fakePush, dev testDevice) push.Notification {
+	t.Helper()
+	f.mu.Lock()
+	body := f.bodies[dev.path]
+	f.mu.Unlock()
+	if len(body) < 21 || len(body) < 21+int(body[20]) {
+		t.Fatalf("no push body for %s", dev.Label)
+	}
+	salt, idlen := body[:16], int(body[20])
+	if binary.BigEndian.Uint32(body[16:20]) < 18 {
+		t.Fatal("bad record size")
+	}
+	asPublic, ciphertext := body[21:21+idlen], body[21+idlen:]
+	sender, err := ecdh.P256().NewPublicKey(asPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := dev.key.ECDH(sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := append(append([]byte("WebPush: info\x00"), dev.key.PublicKey().Bytes()...), asPublic...)
+	ikm, err := hkdf.Key(sha256.New, shared, dev.auth, string(info), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cek, _ := hkdf.Key(sha256.New, ikm, salt, "Content-Encoding: aes128gcm\x00", 16)
+	nonce, _ := hkdf.Key(sha256.New, ikm, salt, "Content-Encoding: nonce\x00", 12)
+	block, _ := aes.NewCipher(cek)
+	gcm, _ := cipher.NewGCM(block)
+	plain, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := len(plain) - 1
+	for i >= 0 && plain[i] == 0 {
+		i--
+	}
+	if i < 0 || plain[i] != 0x02 {
+		t.Fatal("no last-record delimiter")
+	}
+	var p push.Payload
+	if err := json.Unmarshal(plain[:i], &p); err != nil {
+		t.Fatal(err)
+	}
+	return p.Notification
 }
