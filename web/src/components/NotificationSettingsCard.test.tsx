@@ -10,7 +10,8 @@ vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
   NotificationSettings: { get: () => get(), update: (c: EmailSettingsChange) => update(c) },
   // The church has notifications on devices off unless a test says so, so
-  // these tests see the email card alone (PushDeviceCard.test.tsx has the rest).
+  // the device card is its one line with nothing to press, and these tests
+  // are about the email card (PushDeviceCard.test.tsx has the rest).
   Push: { config: () => config() },
 }));
 const config = vi.fn();

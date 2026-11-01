@@ -146,7 +146,7 @@ test("a blocked device shows the undo steps and no button", async ({ page, conte
   await page.setViewportSize({ width: 390, height: 844 });
   await signIn(page, login);
   await page.goto("/profile/notifications");
-  await expect(card(page).getByText("This device is blocking notifications from Fold. To allow them again:")).toBeVisible();
+  await expect(card(page).getByText("This device is blocking notifications from Fold e2e. To allow them again:")).toBeVisible();
   await expect(card(page).getByText("Click the icon left of the address bar, find Notifications, and set it to Allow.")).toBeVisible();
   await expect(card(page).getByRole("link", { name: "More help with notifications" })).toHaveAttribute("href", "/notifications/setup");
   await expect(card(page).getByRole("button")).toHaveCount(0);

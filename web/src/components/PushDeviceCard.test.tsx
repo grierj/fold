@@ -134,7 +134,7 @@ describe("the eight states", () => {
   it("blocked: the undo steps, no button", async () => {
     show({ permission: "denied" });
     const c = await card();
-    expect(c).toHaveTextContent("This device is blocking notifications from Fold. To allow them again:");
+    expect(c).toHaveTextContent("This device is blocking notifications from Grace Church. To allow them again:");
     expect(c).toHaveTextContent("Click the icon left of the address bar, find Notifications, and set it to Allow.");
     expect(within(c).getByRole("link", { name: "More help with notifications" })).toHaveAttribute("href", "/notifications/setup");
     expect(within(c).queryByRole("button")).not.toBeInTheDocument();
@@ -145,12 +145,14 @@ describe("the eight states", () => {
     expect(await screen.findByText(/Open Settings → Notifications → Grace Church/)).toBeInTheDocument();
   });
 
-  it("church off: no card at all", async () => {
-    api.config.mockResolvedValue({ enabled: false, publicKey: "AQID" });
-    show();
-    await waitFor(() => expect(api.config).toHaveBeenCalled());
-    await waitFor(() => expect(screen.queryByText("Loading notifications on this device…")).not.toBeInTheDocument());
-    expect(screen.queryByRole("region", { name: "Notifications on this device" })).not.toBeInTheDocument();
+  it("church off: one line, nothing to press", async () => {
+    api.config.mockResolvedValue({ enabled: false, publicKey: "" });
+    show({ permission: "granted", subscription: fakeSub() });
+    const c = await card();
+    expect(await within(c).findByText("Grace Church hasn't turned on notifications on devices. You'll still get email and Alerts in Fold.")).toBeInTheDocument();
+    expect(within(c).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(c).queryByRole("link")).not.toBeInTheDocument();
+    expect(api.save).not.toHaveBeenCalled();
   });
 });
 

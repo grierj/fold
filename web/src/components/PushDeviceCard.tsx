@@ -100,9 +100,13 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
   if (!data) return <Skeleton kind="lines" count={2} label="Loading notifications on this device…" />;
   const others = data.push.devices.filter((d) => d.id !== data.mine?.id);
   const state = cardState({ enabled: data.enabled, device: data.device, thisDeviceOn: !!data.mine, otherDevices: others.length });
-  // The church turned notifications off: no card at all (DEC-124).
-  if (state === "church_off") return null;
   const church = site || "Fold";
+  // The church turned notifications off (DEC-124): the card says so, with
+  // nothing to press (PLAN M3.13 acceptance).
+  if (state === "church_off") return <section aria-labelledby="push-card-heading" className="bg-surface rounded-lg border border-border p-6 space-y-4">
+    <h2 id="push-card-heading" className="text-lg font-semibold">Notifications on this device</h2>
+    <p className="text-text">{site === undefined ? "Your church" : church} hasn't turned on notifications on devices. You'll still get email and Alerts in Fold.</p>
+  </section>;
   const mobile = data.platform === "ios" || data.platform === "android";
 
   // Each action shows the server's line as it is (DEC-129) or an error.
@@ -222,7 +226,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
     </>}
 
     {state === "blocked" && <>
-      <p className="text-text">This device is blocking notifications from Fold. To allow them again:</p>
+      <p className="text-text">This device is blocking notifications from {church}. To allow them again:</p>
       <ol className="list-decimal space-y-1 pl-5 text-text">
         {undoSteps(data.platform, church).map((s) => <li key={s}>{s}</li>)}
       </ol>
