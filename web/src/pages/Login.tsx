@@ -7,7 +7,7 @@ import { ApiError } from "../api";
 import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { useSiteName } from "../lib/useSiteName";
-import { isStandalone } from "../lib/push";
+import { isStandalone, syncAppBadge } from "../lib/push";
 
 export function Login() {
   const { login, user } = useAuth();
@@ -25,6 +25,8 @@ export function Login() {
 
   useEffect(() => {
     if (user) navigate(from, { replace: true });
+    // Nobody is signed in here, so the app icon shows no one's count.
+    else syncAppBadge(0);
   }, [user, navigate, from]);
 
   if (user) {

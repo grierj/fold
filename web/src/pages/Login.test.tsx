@@ -50,6 +50,17 @@ describe("Login", () => {
     }
   });
 
+  it("clears the app icon's count, since nobody is signed in", () => {
+    const clear = vi.fn(async () => {});
+    Object.assign(navigator, { clearAppBadge: clear });
+    try {
+      renderLogin();
+      expect(clear).toHaveBeenCalled();
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).clearAppBadge;
+    }
+  });
+
   it("names the church in the page title", async () => {
     renderLogin();
     expect(await screen.findByRole("heading", { name: "Log in to Grace Community Church" })).toBeInTheDocument();

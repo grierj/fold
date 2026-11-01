@@ -6,7 +6,7 @@
 // the worker can never serve a stale page after logout or fight the shell's
 // no-store (10.1). Messages from pages are ignored. The decisions live in
 // logic.ts.
-import { fromPush, openOrFocus, resubscribe, sameOrigin, type WindowLike } from "./logic";
+import { clickPath, fromPush, openOrFocus, resubscribe, type WindowLike } from "./logic";
 
 // The project's types are the page's (lib DOM), so the worker's own global
 // is described here rather than mixing in lib WebWorker.
@@ -69,7 +69,7 @@ export function wire(sw: WorkerScope) {
   sw.addEventListener("notificationclick", (event) => {
     event.notification.close();
     const data = event.notification.data as { navigate?: unknown } | null;
-    const target = sameOrigin(data?.navigate, origin);
+    const target = clickPath(data?.navigate, origin);
     event.waitUntil(
       sw.clients.matchAll({ type: "window", includeUncontrolled: true })
         .then((windows) => openOrFocus(target, origin, windows, (url) => sw.clients.openWindow(url))),

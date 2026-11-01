@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { fallback, fromPush, keyBytes, openOrFocus, resubscribe, sameOrigin } from "./logic";
+import { clickPath, fallback, fromPush, keyBytes, openOrFocus, resubscribe, sameOrigin } from "./logic";
 
 const origin = "https://church.example";
 const payload = (n: Record<string, unknown>) => JSON.stringify({ web_push: 8030, notification: n });
@@ -38,6 +38,11 @@ describe("sameOrigin", () => {
   });
 });
 
+it("taps go to a path on this site", () => {
+  expect(clickPath(`${origin}/events/2?d=2026-11-03#rsvp`, origin)).toBe("/events/2?d=2026-11-03#rsvp");
+  expect(clickPath("https://evil.example/x", origin)).toBe("/");
+});
+
 describe("openOrFocus", () => {
   const win = (url: string, navigate = vi.fn(async () => undefined)) => ({ url, focus: vi.fn(async () => undefined), navigate });
 
@@ -69,9 +74,10 @@ it("decodes the base64url key", () => {
 describe("resubscribe", () => {
   const sub = { endpoint: "https://fcm.googleapis.com/fcm/send/new", toJSON: () => ({ endpoint: "https://fcm.googleapis.com/fcm/send/new", keys: { p256dh: "p", auth: "a" } }) } as unknown as PushSubscription;
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
-  function fetcher(config: unknown, saved = true) {
+  function fetcher(config: unknown, saved = true, on = true) {
     return vi.fn(async (url: RequestInfo | URL) => {
       if (url === "/api/v1/auth/csrf") return json({ csrfToken: "tok" });
+      if (url === "/api/v1/me/notification-settings") return config === 401 ? json({ error: "unauthorized" }, 401) : json({ settings: { push: { on } } });
       if (url === "/api/v1/push/config") return config === 401 ? json({ error: "unauthorized" }, 401) : json(config);
       return json({ saved });
     });
@@ -82,7 +88,7 @@ describe("resubscribe", () => {
     const subscribe = vi.fn(async () => sub);
     expect(await resubscribe({ fetch, subscribe }, null)).toBe(true);
     expect([...(subscribe.mock.calls[0] as unknown as [Uint8Array])[0]]).toEqual([1, 2, 3]);
-    const put = fetch.mock.calls[2] as unknown as [string, RequestInit];
+    const put = fetch.mock.calls[3] as unknown as [string, RequestInit];
     expect(put[0]).toBe("/api/v1/push/subscriptions");
     expect(put[1]).toMatchObject({ method: "PUT", headers: { "X-CSRF-Token": "tok" } });
     expect(JSON.parse(put[1].body as string).endpoint).toBe(sub.endpoint);
@@ -92,6 +98,14 @@ describe("resubscribe", () => {
     const subscribe = vi.fn();
     expect(await resubscribe({ fetch: fetcher({ enabled: true, publicKey: "AQID" }), subscribe }, sub)).toBe(true);
     expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  it("saves nothing after Turn off notifications everywhere, which would opt the person back in", async () => {
+    const fetch = fetcher({ enabled: true, publicKey: "AQID" }, true, false);
+    const subscribe = vi.fn(async () => sub);
+    expect(await resubscribe({ fetch, subscribe }, sub)).toBe(false);
+    expect(subscribe).not.toHaveBeenCalled();
+    expect(fetch.mock.calls.map((c) => (c as unknown as [string])[0])).not.toContain("/api/v1/push/subscriptions");
   });
 
   it("saves nothing when signed out or when the church turned notifications off", async () => {

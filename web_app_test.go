@@ -80,7 +80,7 @@ func TestManifestCarriesTheChurchName(t *testing.T) {
 	if m.Name != "Fold" || m.ShortName != "Fold" {
 		t.Fatalf("no church name: %+v", m)
 	}
-	if m.StartURL != "/?source=homescreen" || m.Scope != "/" || m.Display != "standalone" || m.BackgroundColor == "" || m.ThemeColor == "" {
+	if m.ID != "/" || m.StartURL != "/?source=homescreen" || m.Scope != "/" || m.Display != "standalone" || m.BackgroundColor == "" || m.ThemeColor == "" {
 		t.Fatalf("manifest fields: %+v", m)
 	}
 	var sizes []string

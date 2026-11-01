@@ -106,14 +106,38 @@ export async function localSubscription(): Promise<PushSubscription | null> {
 }
 
 // subscribeThisDevice registers /sw.js (scope /) and subscribes with the
-// church's key, replacing a subscription made with an older key. Call it
+// church's key, replacing a subscription made with an older key; replaced
+// is that old endpoint, for the caller to delete on the server. Call it
 // after the person tapped and the permission is granted.
-export async function subscribeThisDevice(publicKey: string): Promise<PushSubscription> {
+export async function subscribeThisDevice(publicKey: string): Promise<{ sub: PushSubscription; replaced?: string }> {
   await navigator.serviceWorker.register("/sw.js", { scope: "/" });
   const reg = await navigator.serviceWorker.ready;
   const old = await reg.pushManager.getSubscription();
-  if (old && sameKey(old, publicKey)) return old;
+  if (old && sameKey(old, publicKey)) return { sub: old };
   if (old) await old.unsubscribe().catch(() => false);
-  return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(publicKey) });
+  const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(publicKey) });
+  return { sub, replaced: old?.endpoint };
+}
+
+// The browser remembers whose subscription it holds (fold.pushOwner, a user
+// id), so the card re-saves it on load only for that person: after one
+// person's session simply expires and someone else signs in on the same
+// browser, a quiet re-save would move the first person's device to them.
+// Logout's clearClientData wipes it. Storage can be unavailable.
+const OWNER = "fold.pushOwner";
+export function pushOwner(): string | null {
+  try {
+    return localStorage.getItem(OWNER);
+  } catch {
+    return null;
+  }
+}
+export function setPushOwner(userId: number | null) {
+  try {
+    if (userId === null) localStorage.removeItem(OWNER);
+    else localStorage.setItem(OWNER, String(userId));
+  } catch {
+    // No storage: the card asks for a tap instead of re-saving.
+  }
 }
 

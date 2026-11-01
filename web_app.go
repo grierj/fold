@@ -34,6 +34,7 @@ type manifestIcon struct {
 }
 
 type webManifest struct {
+	ID              string         `json:"id"`
 	Name            string         `json:"name"`
 	ShortName       string         `json:"short_name"`
 	StartURL        string         `json:"start_url"`
@@ -52,7 +53,7 @@ func manifestFor(siteName string) webManifest {
 		short = "Fold"
 	}
 	return webManifest{
-		Name: siteName, ShortName: short,
+		ID: "/", Name: siteName, ShortName: short,
 		StartURL: "/?source=homescreen", Scope: "/", Display: "standalone",
 		BackgroundColor: manifestBackground, ThemeColor: manifestTheme,
 		Icons: []manifestIcon{

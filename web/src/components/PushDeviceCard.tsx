@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { NotificationSettings as SettingsApi, Push } from "../api";
 import type { EmailKind, NotificationSettings, PushDevice, PushSettings, PushSubscribeResponse } from "../types";
 import { errorText } from "../lib/errors";
-import { cardState, deviceState, localSubscription, readPushEnv, sameKey, subscribeThisDevice, type Platform } from "../lib/pushState";
+import { useAuth } from "../auth";
+import { cardState, deviceState, localSubscription, pushOwner, readPushEnv, sameKey, setPushOwner, subscribeThisDevice, type Platform } from "../lib/pushState";
 import { useSiteName } from "../lib/useSiteName";
 import { formatShortDay } from "../lib/when";
 import { Button, ButtonLink } from "./ui/Button";
@@ -17,16 +18,24 @@ const SETUP = "/notifications/setup";
 // Re-saving this browser's subscription on load fixes a device the server
 // dropped (a password, email or role change deletes them, M3.13b) while the
 // browser kept its subscription. At most one PUT per endpoint per page load:
-// the result is kept for later visits to this page.
+// a saved result is kept for later visits to this page; a failure or
+// saved:false is forgotten, so Try again saves again.
 const resaved = new Map<string, Promise<PushSubscribeResponse | null>>();
 function resaveOnce(sub: PushSubscription): Promise<PushSubscribeResponse | null> {
   let p = resaved.get(sub.endpoint);
   if (!p) {
-    p = Push.save(sub.toJSON()).catch(() => null);
-    resaved.set(sub.endpoint, p);
+    const endpoint = sub.endpoint;
+    p = Push.save(sub.toJSON()).catch(() => null).then((r) => {
+      if (!r?.saved) resaved.delete(endpoint);
+      return r;
+    });
+    resaved.set(endpoint, p);
   }
   return p;
 }
+
+// Buttons are full width on phones, in every state.
+const FULL = "w-full sm:w-auto";
 
 const NO_PUSH: PushSettings = { on: false, devices: [], kinds: [] };
 
@@ -39,6 +48,8 @@ interface Loaded {
   mine: { id: number; sub: PushSubscription } | null;
   // Permission was granted here before, but the device isn't on now.
   setUpBefore: boolean;
+  // The server's line when the re-save on load saved nothing (DEC-129).
+  resaveMessage?: string;
   push: PushSettings;
 }
 
@@ -48,6 +59,7 @@ interface Loaded {
 // endpoints, so the browser can't look itself up in the device list.
 export function PushDeviceCard({ load }: { load: () => Promise<NotificationSettings> }) {
   const site = useSiteName();
+  const userId = useAuth().user?.id ?? null;
   const [data, setData] = useState<Loaded | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -77,24 +89,28 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
         const push = settings.push ?? NO_PUSH;
         let mine: Loaded["mine"] = null;
         let setUpBefore = false;
+        let resaveMessage: string | undefined;
         if (device === "available" && env.permission === "granted") {
           const sub = await localSubscription();
-          // Re-save only while the person's push consent is on: after
-          // "Turn off notifications everywhere" on another device, this
-          // browser's leftover subscription must not turn it back on.
-          if (sub && push.on && sameKey(sub, config.publicKey)) {
+          // Re-save only while the person's push consent is on (after "Turn
+          // off notifications everywhere" on another device, a leftover
+          // subscription must not turn it back on), and only for the person
+          // this browser says it belongs to; anyone else taps to decide.
+          if (sub && !push.on) resaved.delete(sub.endpoint);
+          if (sub && push.on && sameKey(sub, config.publicKey) && userId !== null && pushOwner() === String(userId)) {
             const r = await resaveOnce(sub);
             if (r?.saved && r.device) mine = { id: r.device.id, sub };
+            else if (r?.message) resaveMessage = r.message;
           }
           setUpBefore = !!sub && !mine;
         }
-        if (alive.current) setData({ enabled: true, publicKey: config.publicKey, platform: env.platform, device, mine, setUpBefore, push });
+        if (alive.current) setData({ enabled: true, publicKey: config.publicKey, platform: env.platform, device, mine, setUpBefore, resaveMessage, push });
       } catch (err) {
         if (alive.current) setLoadError(errorText(err, "We couldn't load your notification settings."));
       }
     })();
     return () => { alive.current = false; };
-  }, [load, attempt]);
+  }, [load, attempt, userId]);
 
   if (loadError) return <ErrorNotice message={loadError} onRetry={() => setAttempt((n) => n + 1)} />;
   if (!data) return <Skeleton kind="lines" count={2} label="Loading notifications on this device…" />;
@@ -123,7 +139,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
   }
   const refreshed = async (mine: Loaded["mine"]) => {
     const s = await SettingsApi.get();
-    if (alive.current) setData((d) => d && { ...d, mine, setUpBefore: false, push: s.settings.push ?? NO_PUSH });
+    if (alive.current) setData((d) => d && { ...d, mine, setUpBefore: false, resaveMessage: undefined, push: s.settings.push ?? NO_PUSH });
     heading.current?.focus();
   };
 
@@ -145,7 +161,11 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
       }
       let sub: PushSubscription;
       try {
-        sub = await subscribeThisDevice(publicKey);
+        const made = await subscribeThisDevice(publicKey);
+        sub = made.sub;
+        // A subscription made with an older key can't receive anything:
+        // its row goes too (it is ours only if the server says so).
+        if (made.replaced) await Push.remove(made.replaced).catch(() => {});
       } catch {
         setError("This browser couldn't turn on notifications. Try again, or use email on this device.");
         return;
@@ -156,6 +176,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
         return;
       }
       resaved.set(sub.endpoint, Promise.resolve(r));
+      setPushOwner(userId);
       await refreshed({ id: r.device.id, sub });
       setStatus("Turned on. Send a test to check it works.");
     });
@@ -176,6 +197,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
     void act(async () => {
       await Push.remove(mine.sub.endpoint);
       resaved.delete(mine.sub.endpoint);
+      setPushOwner(null);
       await mine.sub.unsubscribe().catch(() => false);
       await refreshed(null);
       setStatus("Notifications are off for this device.");
@@ -187,6 +209,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
     void act(async () => {
       const r = await Push.turnOffEverywhere();
       resaved.clear();
+      setPushOwner(null);
       await data?.mine?.sub.unsubscribe().catch(() => false);
       if (alive.current) setData((d) => d && { ...d, mine: null, setUpBefore: false, push: r.push });
       heading.current?.focus();
@@ -222,7 +245,7 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
         <li>Tap Add to Home Screen, then tap Add.</li>
         <li>Open {church} from your Home Screen, sign in, and come back to Me → Notifications.</li>
       </ol>
-      <ButtonLink variant="secondary" to={SETUP}>See the steps</ButtonLink>
+      <ButtonLink variant="secondary" layout={FULL} to={SETUP}>See the steps</ButtonLink>
     </>}
 
     {state === "blocked" && <>
@@ -235,9 +258,11 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
 
     {(state === "ready" || state === "on_elsewhere") && <>
       {state === "on_elsewhere" && <p className="text-text">Notifications are on for your other devices, not this one.</p>}
-      {data.setUpBefore && <p className="text-text">This device was set up before. Turn it on again.</p>}
+      {data.resaveMessage
+        ? <p className="text-text">{data.resaveMessage}</p>
+        : data.setUpBefore && <p className="text-text">This device was set up before. Turn it on again.</p>}
       <div className="space-y-2">
-        <Button variant="primary" onClick={turnOn} aria-disabled={busy || undefined}>
+        <Button variant="primary" layout={FULL} onClick={turnOn} aria-disabled={busy || undefined}>
           {state === "on_elsewhere" ? "Turn on notifications on this device" : "Turn on notifications"}
         </Button>
         <p className="text-sm text-text-muted">{asks}</p>
@@ -247,8 +272,8 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
     {state === "on" && <>
       <p className="text-text">Notifications are on for this device.</p>
       <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-        <Button variant="primary" onClick={sendTest} aria-disabled={busy || undefined}>Send a test notification</Button>
-        <Button variant="secondary" onClick={turnOffHere} aria-disabled={busy || undefined}>Turn off notifications on this device</Button>
+        <Button variant="primary" layout={FULL} onClick={sendTest} aria-disabled={busy || undefined}>Send a test notification</Button>
+        <Button variant="secondary" layout={FULL} onClick={turnOffHere} aria-disabled={busy || undefined}>Turn off notifications on this device</Button>
       </div>
     </>}
 
@@ -267,9 +292,12 @@ export function PushDeviceCard({ load }: { load: () => Promise<NotificationSetti
       <p className="text-sm text-text-muted">Account and safety notices always come to a device with notifications on.</p>
     </>}
 
-    {(state === "on" || state === "on_elsewhere") && <Button variant="ghost" onClick={turnOffEverywhere} aria-disabled={busy || undefined}>Turn off notifications everywhere</Button>}
+    {(state === "on" || state === "on_elsewhere") && <div className="border-t border-border pt-4">
+      <Button variant="danger-outline" layout={FULL} onClick={turnOffEverywhere} aria-disabled={busy || undefined}>Turn off notifications everywhere</Button>
+    </div>}
 
-    <p className="text-sm text-text-muted">Notifications are a shortcut. Everything still shows in Alerts in Fold, and in your email.</p>
+    {state !== "blocked" && state !== "unavailable" && state !== "unavailable_ios" &&
+      <p className="text-sm text-text-muted">Notifications are a shortcut. Everything still shows in Alerts in Fold, and in your email.</p>}
   </section>;
 }
 

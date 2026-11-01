@@ -57,6 +57,13 @@ export function fromPush(text: string | null | undefined, origin: string): Shown
   return shown;
 }
 
+// clickPath is where a tap goes: the same-origin link as a path (pathname,
+// search and hash), so nothing but this site can be named.
+export function clickPath(link: unknown, origin: string): string {
+  const url = new URL(sameOrigin(link, origin));
+  return url.pathname + url.search + url.hash;
+}
+
 // The part of a window client the click handler uses.
 export interface WindowLike {
   url: string;
@@ -110,14 +117,20 @@ export interface ResubscribeDeps {
 }
 
 // resubscribe answers pushsubscriptionchange: the browser replaced or
-// dropped this device's subscription. With a session it asks for a CSRF
-// token, reads the church's key, subscribes again (unless the browser
-// already handed over the new subscription) and saves it, as the card's
-// "Turn on notifications" does. It returns whether the server saved it.
+// dropped this device's subscription. With a session and the person's push
+// consent still on, it asks for a CSRF token, reads the church's key,
+// subscribes again (unless the browser already handed over the new
+// subscription) and saves it, as the card's "Turn on notifications" does.
+// After "Turn off notifications everywhere" it saves nothing: a save would
+// opt the person back in. It returns whether the server saved it.
 export async function resubscribe(deps: ResubscribeDeps, given: PushSubscription | null): Promise<boolean> {
   const csrfRes = await deps.fetch("/api/v1/auth/csrf", { credentials: "same-origin" });
   if (!csrfRes.ok) return false;
   const { csrfToken } = (await csrfRes.json()) as { csrfToken?: string };
+  const settingsRes = await deps.fetch("/api/v1/me/notification-settings", { credentials: "same-origin" });
+  if (!settingsRes.ok) return false; // signed out (401)
+  const { settings } = (await settingsRes.json()) as { settings?: { push?: { on?: boolean } } };
+  if (!settings?.push?.on) return false;
   const configRes = await deps.fetch("/api/v1/push/config", { credentials: "same-origin" });
   if (!configRes.ok || !csrfToken) return false; // signed out (401): nothing to save
   const config = (await configRes.json()) as { enabled?: boolean; publicKey?: string };

@@ -72,6 +72,9 @@ make dev    # starts Postgres (deploy/docker-compose.dev.yml), the API on :8080,
             # and the Vite dev server (proxies /api to :8080)
 ```
 
+Run `cd web && npm run build` once before `make dev` if you want to try notifications on this
+device: the Go server serves `/sw.js` from the built `web/dist`, and Vite proxies it there.
+
 For a production-like local run, build the SPA first so the binary embeds it:
 
 ```bash

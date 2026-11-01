@@ -49,5 +49,5 @@ it("shows a push and opens its same-origin link when tapped", async () => {
   on.notificationclick(click.e);
   await Promise.all(click.waits);
   expect(close).toHaveBeenCalled();
-  expect(sw.clients.openWindow).toHaveBeenCalledWith("https://church.example/");
+  expect(sw.clients.openWindow).toHaveBeenCalledWith("/");
 });

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -21,6 +21,9 @@ vi.mock("../api", async (orig) => ({
   Site: { get: async () => ({ name: "Grace Church", timezone: "America/Boise", selfSignup: "request", roomsEnabled: false }) },
 }));
 
+// Signed in as person 5; this browser remembers its subscription is theirs.
+vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 5 } }) }));
+
 import { PushDeviceCard } from "./PushDeviceCard";
 
 const UA = {
@@ -36,6 +39,7 @@ let push: PushSettings;
 const settings = (): NotificationSettings => ({ optionalEmailOff: false, kinds: [], push: structuredClone(push) });
 
 beforeEach(() => {
+  localStorage.setItem("fold.pushOwner", "5");
   push = { on: false, devices: [], kinds: kinds() };
   Object.values(api).forEach((f) => f.mockReset());
   api.config.mockResolvedValue({ enabled: true, publicKey: "AQID" });
@@ -59,6 +63,7 @@ beforeEach(() => {
   });
 });
 afterEach(() => {
+  localStorage.clear();
   uninstallBrowser();
   vi.restoreAllMocks();
 });
@@ -157,12 +162,40 @@ describe("the eight states", () => {
 });
 
 describe("re-saving on load", () => {
-  it("shows ready when the server refuses the saved subscription", async () => {
+  it("shows ready with the server's line when it refuses the saved subscription, and tries again next time", async () => {
     push = { on: true, devices: [], kinds: kinds() };
     api.save.mockResolvedValue({ saved: false, message: "Try again in a few minutes." });
-    show({ permission: "granted", subscription: fakeSub() });
+    const sub = fakeSub();
+    show({ permission: "granted", subscription: sub });
     expect(await screen.findByRole("button", { name: "Turn on notifications" })).toBeInTheDocument();
-    expect(screen.getByText("This device was set up before. Turn it on again.")).toBeInTheDocument();
+    expect(screen.getByText("Try again in a few minutes.")).toBeInTheDocument();
+    expect(screen.queryByText("This device was set up before. Turn it on again.")).not.toBeInTheDocument();
+    cleanup();
+    render(<MemoryRouter><PushDeviceCard load={async () => settings()} /></MemoryRouter>);
+    expect(await screen.findByText("Try again in a few minutes.")).toBeInTheDocument();
+    expect(api.save).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-saves only for the person the browser says the subscription belongs to", async () => {
+    push = { on: true, devices: [device(3, "iPhone · Home Screen app")], kinds: kinds() };
+    localStorage.setItem("fold.pushOwner", "9"); // someone else's session expired here
+    const sub = fakeSub();
+    show({ permission: "granted", subscription: sub });
+    expect(await screen.findByText("This device was set up before. Turn it on again.")).toBeInTheDocument();
+    expect(api.save).not.toHaveBeenCalled();
+    // A tap decides: the device is saved for this person, who now owns it here.
+    await userEvent.click(screen.getByRole("button", { name: "Turn on notifications on this device" }));
+    expect(await screen.findByRole("button", { name: "Send a test notification" })).toBeInTheDocument();
+    expect(api.save).toHaveBeenCalledWith(sub.toJSON());
+    expect(localStorage.getItem("fold.pushOwner")).toBe("5");
+  });
+
+  it("asks for a tap when the browser doesn't remember an owner", async () => {
+    push = { on: true, devices: [], kinds: kinds() };
+    localStorage.removeItem("fold.pushOwner");
+    show({ permission: "granted", subscription: fakeSub() });
+    expect(await screen.findByText("This device was set up before. Turn it on again.")).toBeInTheDocument();
+    expect(api.save).not.toHaveBeenCalled();
   });
 
   it("doesn't turn push back on after Turn off everywhere elsewhere", async () => {
@@ -170,6 +203,18 @@ describe("re-saving on load", () => {
     show({ permission: "granted", subscription: fakeSub() });
     expect(await screen.findByRole("button", { name: "Turn on notifications" })).toBeInTheDocument();
     expect(api.save).not.toHaveBeenCalled();
+  });
+
+  it("replaces a subscription made with an older key and deletes its old row", async () => {
+    push = { on: true, devices: [], kinds: kinds() };
+    const old = fakeSub(undefined, [9, 9, 9]);
+    const b = show({ permission: "granted", subscription: old });
+    await userEvent.click(await screen.findByRole("button", { name: "Turn on notifications" }));
+    expect(await screen.findByRole("button", { name: "Send a test notification" })).toBeInTheDocument();
+    expect(old.unsubscribe).toHaveBeenCalled();
+    expect(b.pushManager.subscribe).toHaveBeenCalled();
+    expect(api.remove).toHaveBeenCalledWith(old.endpoint);
+    expect(api.save).toHaveBeenCalledWith(b.current()!.toJSON());
   });
 
   it("skips a subscription made with an older key", async () => {

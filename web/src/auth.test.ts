@@ -61,7 +61,7 @@ describe("logout", () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
     await act(async () => { await result.current.logout(); });
     expect(AuthApi.logout).toHaveBeenCalledWith(sub.endpoint);
-    expect(order).toEqual(["logout", "unsubscribe"]);
+    expect(order.sort()).toEqual(["logout", "unsubscribe"]);
     expect(browser.shown.every((n) => n.close.mock.calls.length === 1)).toBe(true);
     expect(browser.serviceWorker.register).not.toHaveBeenCalled();
   });

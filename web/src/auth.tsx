@@ -91,16 +91,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // previous screen up. A full load of "/" is the only reset that covers
   // everything (state, module caches like the CSRF token, history entries
   // that belonged to the old page). With notifications on, the request
-  // names this browser's device so the server deletes it at once, and then
-  // the browser drops its subscription and closes what's on screen (10.1).
+  // names this browser's device (read first) so the server deletes it at
+  // once, while the browser drops its subscription and closes what's on
+  // screen (10.1). clearClientData also forgets fold.pushOwner.
   const logout = useCallback(async () => {
     const device = await deviceForLogout();
-    try {
-      await AuthApi.logout(device?.sub?.endpoint);
-    } catch {
-      // Still clear this browser; the reload shows if the server disagreed.
-    }
-    await forgetDevice(device);
+    await Promise.all([
+      // Still clear this browser if it fails; the reload shows if the server disagreed.
+      AuthApi.logout(device?.sub?.endpoint).catch(() => {}),
+      forgetDevice(device),
+    ]);
     setUser(null);
     clearClientData();
     leaveWithoutAsking();
