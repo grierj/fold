@@ -149,7 +149,11 @@ export function historyLine(h: Pick<MessageRecipients, "counts" | "skippedBy">, 
   // Someone who marked it as spam got it.
   const reached = c.sent + c.delivered + c.complained;
   const parts: string[] = [];
+  // No email reached anyone, though someone was on the list: said plainly,
+  // since its pushes may still have gone (they follow push consent,
+  // DEC-122), never "Sent to 0 people".
   if (reached) parts.push(`Sent to ${people(reached)}`);
+  else if (c.bounced || c.failed || c.skipped) parts.push("No emails went out");
   if (c.bounced) parts.push(`${c.bounced} bounced`);
   if (c.failed) parts.push(`${c.failed} didn't get it`);
   if (c.skipped) parts.push(`${c.skipped} skipped (${reasonList(h.skippedBy)})`);

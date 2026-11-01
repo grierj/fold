@@ -300,28 +300,54 @@ var (
 	pushLinkAddressRe = regexp.MustCompile(`\s*\((?:https?://|\{\{)[^()\s]*\)`)
 	pushBareURLRe     = regexp.MustCompile(`(?i)\b(?:https?://|www\.)\S+`)
 	// Contact details (DEC-124): an email address, with or without
-	// mailto:, and a run of digits that reads as a phone number.
-	pushEmailRe  = regexp.MustCompile(`(?i)(?:\bmailto:\S*)|(?:[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+)`)
-	pushDigitsRe = regexp.MustCompile(`\+?\(?\d[\d\s().-]{5,}\d`)
-	pushDateRe   = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`)
+	// mailto:, and a phone number.
+	pushEmailRe = regexp.MustCompile(`(?i)(?:\bmailto:\S*)|(?:[a-z0-9._%+-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+)`)
+	// pushPhoneRe matches phone-shaped runs only: "+44 20 7946 0958" (a
+	// leading + with groups of 1–4 digits), "(208) 555-0123",
+	// "1-208-555-0123" and "555-0123" (3-3-4 or 3-4 groups joined by one
+	// space, dot or dash), and ten unbroken digits. Room lists, hymn
+	// numbers and years ("101 102 103", "12 45 301", "2026 2027") have no
+	// such shape and stay; lockScreenSafe also checks for 7 to 15 digits.
+	pushPhoneRe = regexp.MustCompile(`\+\d{1,3}(?:[ .-]\(?\d{1,4}\)?){1,5}` +
+		`|\(\d{3}\)[ .-]?\d{3}[ .-]\d{4}\b` +
+		`|\b(?:1[ .-])?\d{3}[ .-]\d{3}[ .-]\d{4}\b` +
+		`|\b\d{3}[ .-]\d{4}\b` +
+		`|\b1?\d{10}\b`)
+	// pushDateTimeRe is an ISO date (with its time, if any) or a clock
+	// time: never a phone number, so the phone pass skips it.
+	pushDateTimeRe = regexp.MustCompile(`\b\d{4}-\d{2}-\d{2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?\b|\b\d{1,2}:\d{2}(?::\d{2})?\b`)
 )
 
 // lockScreenSafe takes out of s what a lock screen must never show
-// (DEC-124): link addresses, URLs, email addresses and phone numbers (a
-// run of seven or more digits with only spaces, dots, dashes, brackets or
-// a plus between them; an ISO date stays).
+// (DEC-124): link addresses, URLs, email addresses and phone-shaped
+// numbers, leaving dates, times and other numbers. It is best effort: a
+// number spelled out in words, or written in an odd shape, isn't caught.
 func lockScreenSafe(s string) string {
 	s = pushLinkAddressRe.ReplaceAllString(s, "")
 	s = pushBareURLRe.ReplaceAllString(s, "")
 	s = pushEmailRe.ReplaceAllString(s, "")
-	return pushDigitsRe.ReplaceAllStringFunc(s, func(run string) string {
+	// The phone pass runs only between the dates and times.
+	var b strings.Builder
+	at := 0
+	for _, span := range pushDateTimeRe.FindAllStringIndex(s, -1) {
+		b.WriteString(stripPhones(s[at:span[0]]))
+		b.WriteString(s[span[0]:span[1]])
+		at = span[1]
+	}
+	b.WriteString(stripPhones(s[at:]))
+	return b.String()
+}
+
+// stripPhones removes the phone-shaped runs in s that hold 7 to 15 digits.
+func stripPhones(s string) string {
+	return pushPhoneRe.ReplaceAllStringFunc(s, func(run string) string {
 		digits := 0
 		for _, r := range run {
 			if r >= '0' && r <= '9' {
 				digits++
 			}
 		}
-		if digits < 7 || pushDateRe.MatchString(strings.TrimSpace(run)) {
+		if digits < 7 || digits > 15 {
 			return run
 		}
 		return ""
@@ -344,12 +370,14 @@ func messagePushText(m *models.Message, vals map[string]string) (title, body str
 		}
 	}
 	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
-	title = clipRunes(oneLine(lockScreenSafe(content.Merge(m.Subject, text, false))), maxMessageSubject)
+	title = clipRunes(oneLine(lockScreenSafe(oneLine(content.Merge(m.Subject, text, false)))), maxMessageSubject)
 	if title == "" {
 		title = "New message"
 	}
-	// Link addresses go before the merge, while a link field still reads as one.
-	s := oneLine(lockScreenSafe(content.Merge(pushLinkAddressRe.ReplaceAllString(m.BodyText, ""), text, false)))
+	// Link addresses go before the merge, while a link field still reads as
+	// one; lines are joined before the contact pass, so a number split
+	// across lines is caught.
+	s := oneLine(lockScreenSafe(oneLine(content.Merge(pushLinkAddressRe.ReplaceAllString(m.BodyText, ""), text, false))))
 	if r := []rune(s); len(r) > messagePushSnippet {
 		cut := string(r[:messagePushSnippet])
 		if i := strings.LastIndex(cut, " "); i > messagePushSnippet/2 {

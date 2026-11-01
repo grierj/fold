@@ -84,7 +84,9 @@ describe("history", () => {
     expect(historyLine(h, sent)).toBe("Sent to 132 people · 3 bounced · 9 skipped (6 turned off messages from leaders, 3 have no email address)");
     expect(historyLine(recipients({ counts: counts({ sent: 1, skipped: 0 }) }), sent)).toBe("Sent to 1 person");
     expect(historyLine(recipients({ counts: counts({ sent: 128, failed: 4, skipped: 0 }) }), sent)).toBe("Sent to 128 people · 4 didn't get it");
-    expect(historyLine(recipients({ counts: counts({ sent: 0, failed: 4, skipped: 0 }) }), failed)).toBe("4 didn't get it");
+    expect(historyLine(recipients({ counts: counts({ sent: 0, failed: 4, skipped: 0 }) }), failed)).toBe("No emails went out · 4 didn't get it");
+    // Everyone skipped for an email reason; their pushes may still have gone (DEC-122).
+    expect(historyLine(recipients({ counts: counts({ sent: 0, skipped: 2 }), skippedBy: { "turned off messages from leaders": 2 } }), sent)).toBe("No emails went out · 2 skipped (2 turned off messages from leaders)");
     expect(historyLine(recipients({ counts: counts({ sent: 0, skipped: 0 }) }), sent)).toBe("No one was on the list.");
   });
 

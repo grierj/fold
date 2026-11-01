@@ -431,7 +431,7 @@ describe("a sent message's history", () => {
     expect(alert).toHaveTextContent("The email service didn't take it.");
     expect(within(alert).queryByRole("button")).toBeNull();
     expect(screen.getByText("Failed")).toBeInTheDocument();
-    expect(await screen.findByText("4 didn't get it")).toBeInTheDocument();
+    expect(await screen.findByText("No emails went out · 4 didn't get it")).toBeInTheDocument();
     const again = await screen.findByRole("button", { name: "Try again" });
     expect(again).toHaveClass("btn-primary");
     expect(document.querySelectorAll(".btn-primary")).toHaveLength(1);

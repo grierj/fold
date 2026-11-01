@@ -67,7 +67,7 @@ type Spec struct {
 }
 
 // enqueueBatch is how many jobs one INSERT adds (well inside Postgres's
-// parameter limit at 7 columns a row).
+// parameter limit at 6 columns a row).
 const enqueueBatch = 500
 
 // EnqueueMany adds jobs as Enqueue does, in INSERTs of up to 500 rows, and

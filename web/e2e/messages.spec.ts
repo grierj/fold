@@ -113,7 +113,7 @@ test("a leader sends now and the page follows it: sent with counts, or failed wi
     await expect(banner).toBeVisible({ timeout: 20_000 });
     await expect(banner).toContainText("No email service is set up yet");
     await expect(page.getByText("Failed", { exact: true })).toBeVisible();
-    await expect(page.getByText(/^\d+ didn't get it/)).toBeVisible();
+    await expect(page.getByText(/^No emails went out · \d+ didn't get it/)).toBeVisible();
     await page.getByText("See who got it").click();
     await expect(page.getByRole("listitem").filter({ hasText: "· Didn't get it" }).first()).toBeVisible();
     // Try again asks, sends to the same people, and fails the same way.

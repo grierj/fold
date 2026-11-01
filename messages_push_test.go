@@ -455,3 +455,39 @@ func TestQueuingPushesSettlesARowWithNoDevice(t *testing.T) {
 		t.Fatalf("no device: %+v; with devices: %+v", got, left)
 	}
 }
+
+// The phone pass takes only phone-shaped runs: dates, times, room lists,
+// hymn numbers and years stay word for word.
+func TestLockScreenSafeTakesOnlyPhoneNumbers(t *testing.T) {
+	for _, keep := range []string{
+		"Meeting 2026-10-31 18:00",
+		"Meeting 2026-10-31T18:00:00 in the hall",
+		"Rooms 101 102 103 104",
+		"Hymns 12 45 301 22",
+		"2026 2027 2028",
+		"Doors at 6:45, start 7:00",
+		"Bring $25 and 3 friends",
+		"Psalm 23:1-6",
+	} {
+		if got := lockScreenSafe(keep); got != keep {
+			t.Errorf("%q became %q", keep, got)
+		}
+	}
+	for in, want := range map[string]string{
+		"Call 555 0123 today":                   "Call  today",
+		"Call 555-0123 today":                   "Call  today",
+		"Call 555.0123 today":                   "Call  today",
+		"Call (208) 555-0123 today":             "Call  today",
+		"Call 208-555-0123 today":               "Call  today",
+		"Call 1-208-555-0123 today":             "Call  today",
+		"Call 2085550123 today":                 "Call  today",
+		"Call +44 20 7946 0958 today":           "Call  today",
+		"Call +1 (208) 555-0123 today":          "Call  today",
+		"On 2026-10-31 18:00 call 555-0123":     "On 2026-10-31 18:00 call ",
+		"Rooms 101 102, or call 555 0123 first": "Rooms 101 102, or call  first",
+	} {
+		if got := lockScreenSafe(in); got != want {
+			t.Errorf("%q became %q, want %q", in, got, want)
+		}
+	}
+}
