@@ -183,6 +183,21 @@ describe("SeriesEditor form layout (DEC-95)", () => {
     expect(Events.update).toHaveBeenLastCalledWith(7, expect.objectContaining({ reminderEmailMinutes: 0 }));
   });
 
+  it("shows the series' push reminder switch and sends it only once changed (M3.13d3)", async () => {
+    vi.mocked(Events.update).mockClear();
+    const first = render(<SeriesEditor series={{ ...baseSeries, reminderPush: false }} idPrefix="push" onSaved={() => {}} />);
+    expect(await screen.findByRole("checkbox", { name: /^Push reminder 2 hours before/ })).not.toBeChecked();
+    await userEvent.click(screen.getByRole("button", { name: "Save series" }));
+    expect(vi.mocked(Events.update).mock.calls[0][1]).not.toHaveProperty("reminderPush");
+    first.unmount();
+    render(<SeriesEditor series={baseSeries} idPrefix="push2" onSaved={() => {}} />);
+    const push = await screen.findByRole("checkbox", { name: /^Push reminder 2 hours before/ });
+    expect(push).toBeChecked(); // absent reads as on
+    await userEvent.click(push);
+    await userEvent.click(screen.getByRole("button", { name: "Save series" }));
+    expect(Events.update).toHaveBeenLastCalledWith(7, expect.objectContaining({ reminderPush: false }));
+  });
+
   it("reads a missing reminder time as the default, 1 day before", () => {
     render(<SeriesEditor series={baseSeries} idPrefix="rem0" onSaved={() => {}} />);
     expect(screen.getByLabelText("Reminder email")).toHaveValue("1440");

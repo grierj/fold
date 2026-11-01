@@ -289,6 +289,11 @@ type Event struct {
 	// ReminderEmailMinutes is how long before each date its email reminder
 	// goes (M3.6, DEC-133): 0 off, 120, 1440 (the default), 2880 or 10080.
 	ReminderEmailMinutes int `gorm:"not null;default:1440"`
+	// ReminderPush sends each date's 2-hour push reminder to the going
+	// registrants who turned on notifications (M3.13d3, PLAN 7.7). GORM
+	// leaves a false value out of an INSERT (the column defaults to true),
+	// so createEvent writes an explicit Off after.
+	ReminderPush bool `gorm:"not null;default:true"`
 	// Remote attendance (M1.8 slice 2): people may register remote only
 	// when RemoteAvailable is on. Remote seats count against
 	// RemoteCapacity (nil means unlimited; 0 means no remote seats),

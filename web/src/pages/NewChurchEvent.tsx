@@ -39,6 +39,7 @@ export function NewChurchEvent() {
   const [remote, setRemote] = useState<RemoteValue>(emptyRemote);
   const [seats, setSeats] = useState<SeatsValue>(emptySeats);
   const [reminder, setReminder] = useState(DEFAULT_REMINDER_MINUTES);
+  const [reminderPush, setReminderPush] = useState(true);
   // The room for every date; the event page lists any dates it is busy on.
   const [roomId, setRoomId] = useState<number | null>(null);
   // Closed on create; a problem inside it opens it (DEC-95).
@@ -51,7 +52,7 @@ export function NewChurchEvent() {
   const [remoteError, setRemoteError] = useState<string | null>(null);
 
   const dirty = useDirty(
-    { title, description, date, startTime, durationMin, recurring, days, tzid, location, visibility, hostEmail, video, childcare, remote, seats, roomId, reminder },
+    { title, description, date, startTime, durationMin, recurring, days, tzid, location, visibility, hostEmail, video, childcare, remote, seats, roomId, reminder, reminderPush },
     !loading && tzid !== "",
   );
   const { guard, markSaved } = useUnsavedChanges(dirty);
@@ -123,6 +124,7 @@ export function NewChurchEvent() {
         ...remoteBody(remote),
         ...childcareBody(childcare),
         reminderEmailMinutes: reminder,
+        reminderPush,
         ...(roomId !== null ? { roomId } : {}),
       });
       markSaved();
@@ -242,6 +244,8 @@ export function NewChurchEvent() {
           childcareError={childcareError}
           reminder={reminder}
           onReminder={setReminder}
+          reminderPush={reminderPush}
+          onReminderPush={setReminderPush}
         />
         <FormActions>
           <Button variant="primary" layout="w-full sm:w-auto" type="submit" disabled={busy}>

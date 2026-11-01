@@ -72,3 +72,32 @@ describe("a reminder in Messages", () => {
     expect(reminderAudience({ kind: "waitlist" })).toBe("Everyone on the waitlist");
   });
 });
+
+describe("the push reminder's lines (M3.13d3)", () => {
+  const pushed = (over: Partial<DateReminder> = {}) => sent({ messageId: 43, kind: "push", reached: 5, sentAt: "2026-11-04T17:00:00Z", waiting: 0, ...over });
+
+  it("counts who it was pushed to, apart from the email, linking to its history", () => {
+    const out = reminderLines({ minutes: 1440, dueAt: null, covered: true, push: true, pushDueAt: null, messages: [sent(), pushed()] }, zone, now, zone);
+    expect(out.map((l) => l.text)).toEqual(["Reminder emailed to 12 people · yesterday at 7:00 PM", "Reminder pushed to 5 people · today at 10:00 AM"]);
+    expect(out.map((l) => l.messageId)).toEqual([41, 43]);
+    expect(lines({ push: true, messages: [pushed({ reached: 1, waiting: 2, skipped: 1 })] })[0]).toBe("Reminder pushed to 1 person · today at 10:00 AM · 2 waiting · 1 skipped");
+    expect(lines({ push: true, messages: [pushed({ reached: 0, waiting: 3, sentAt: null })] })[0]).toBe("Push reminder waiting to go to 3 people");
+    expect(lines({ push: true, messages: [pushed({ reached: 0, skipped: 2, sentAt: null })] })[0]).toBe("Push reminder reached no one · 2 skipped");
+  });
+
+  it("says when it goes before it does, or that push reminders are off", () => {
+    expect(lines({ dueAt: "2026-11-05T02:00:00Z", push: true, pushDueAt: "2026-11-06T00:00:00Z" })).toEqual([
+      "Reminder goes out today at 7:00 PM", "Push reminder goes out tomorrow at 5:00 PM",
+    ]);
+    expect(lines({ dueAt: "2026-11-05T02:00:00Z", push: false })).toEqual(["Reminder goes out today at 7:00 PM", "Push reminders are off for this event"]);
+    expect(lines({ minutes: 0, push: true, pushDueAt: "2026-11-06T00:00:00Z" })).toEqual(["Reminder emails are off for this event", "Push reminder goes out tomorrow at 5:00 PM"]);
+    expect(lines({ minutes: 0, push: false })).toEqual(["Reminders are off for this event"]);
+    // The church turned push off: nothing about it.
+    expect(lines({ dueAt: "2026-11-05T02:00:00Z", push: null })).toEqual(["Reminder goes out today at 7:00 PM"]);
+  });
+
+  it("is named and addressed as a push", () => {
+    expect(reminderName({ kind: "push" })).toBe("Automatic push reminder");
+    expect(reminderAudience({ kind: "push" })).toBe("Everyone going who turned on notifications");
+  });
+});

@@ -41,7 +41,7 @@ it("shares the group form's order: When, Location, then a closed More options wi
   expect(screen.getByRole("button", { name: "1½ hr" })).toHaveAttribute("aria-pressed", "true");
   const toggle = screen.getByRole("button", { name: "More options" });
   expect(toggle).toHaveAttribute("aria-expanded", "false");
-  expect(screen.getByText("Visible to: Public · No seat limit · No video · No childcare · Reminder 1 day before")).toBeInTheDocument();
+  expect(screen.getByText("Visible to: Public · No seat limit · No video · No childcare · Reminder 1 day before · Push reminder")).toBeInTheDocument();
   // Church-wide events offer public or private only.
   await userEvent.click(toggle);
   expect(screen.getByRole("group", { name: "Who can see this event" })).toBeInTheDocument();

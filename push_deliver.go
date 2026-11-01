@@ -41,11 +41,14 @@ const (
 
 // pushJob is push.deliver's payload. NotificationID is set for a
 // notification; MessageRecipientID is reserved for announcements and
-// reminders (M3.13d, key push:mr:<id>:d:<device>).
+// reminders (M3.13d, key push:mr:<id>:d:<device>). PlannedAt (Unix
+// seconds) is when the sweep planned a push reminder to go; the job gives
+// it 15 minutes' grace into quiet hours (M3.13d3).
 type pushJob struct {
-	NotificationID     uint `json:"notificationId,omitempty"`
-	MessageRecipientID uint `json:"messageRecipientId,omitempty"`
-	DeviceID           uint `json:"deviceId"`
+	NotificationID     uint  `json:"notificationId,omitempty"`
+	MessageRecipientID uint  `json:"messageRecipientId,omitempty"`
+	DeviceID           uint  `json:"deviceId"`
+	PlannedAt          int64 `json:"plannedAt,omitempty"`
 }
 
 // enqueuePushDelivery queues one notification for one device, once.
@@ -301,7 +304,8 @@ type pushItem struct {
 // is never limited, so a person's second device always gets what the
 // first did. Required pushes and urgent event changes carry a reason on
 // their sent row and aren't counted; announcement pushes are always
-// optional. idx_notification_deliveries_push_sent (migration 00060) and
+// optional, and so are push reminders (M3.13d3): they count here, but
+// the limit never stops one. idx_notification_deliveries_push_sent (migration 00060) and
 // idx_message_recipients_push_sent (00061) cover the counts; their
 // predicates are written as literals so a cached generic plan still
 // matches the partial indexes.
@@ -332,7 +336,7 @@ func (a *App) overHourlyLimit(ctx context.Context, it pushItem, now time.Time) (
 // only when a retry may succeed (429, 5xx, a timeout).
 func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	if p.MessageRecipientID != 0 && p.NotificationID == 0 && p.DeviceID != 0 {
-		return a.deliverMessagePush(ctx, p.MessageRecipientID, p.DeviceID)
+		return a.deliverMessagePush(ctx, p.MessageRecipientID, p.DeviceID, p.PlannedAt)
 	}
 	if p.NotificationID == 0 || p.DeviceID == 0 {
 		return nil // nothing else is valid

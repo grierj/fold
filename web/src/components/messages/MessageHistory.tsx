@@ -175,9 +175,13 @@ export function SendProblem({ message, history, busy, error, onRetry }: {
 }
 
 // Everyone the list could show: the people it was for, and for an admin
-// the guardian copies too (DEC-132). A push is on its person's row.
-const totalOf = (c: MessageRecipientCounts, withCopies: boolean) =>
-  c.sent + c.delivered + c.bounced + c.complained + c.failed + c.skipped + c.queued + (withCopies ? c.guardianCopies : 0);
+// the guardian copies too (DEC-132). A push is on its person's row; a push
+// reminder (M3.13d3), with no email rows, lists its pushes.
+const totalOf = (c: MessageRecipientCounts, withCopies: boolean) => {
+  const email = c.sent + c.delivered + c.bounced + c.complained + c.failed + c.skipped + c.queued + (withCopies ? c.guardianCopies : 0);
+  if (email > 0 || !c.push) return email;
+  return c.push.sent + c.push.waiting.reduce((n, w) => n + w.n, 0) + Object.values(c.push.missed).reduce((n, k) => n + k, 0);
+};
 
 // WhoGotIt is the "See who got it" list: the first 200 by name. Only an
 // admin's has guardian copies (withCopies); a leader's counts them above.

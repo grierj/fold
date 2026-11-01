@@ -385,6 +385,7 @@ func occurrenceToJSON(ev *models.Event, o *models.EventOccurrence, groupLoc stri
 		WaitlistEnabled:      ev.WaitlistEnabled,
 		GuestsAllowed:        ev.GuestsAllowed,
 		ReminderEmailMinutes: ev.ReminderEmailMinutes,
+		ReminderPush:         ev.ReminderPush,
 		ChildcareAvailable:   ev.ChildcareAvailable, ChildcareNotes: ev.ChildcareNotes,
 		ChildcareCapacity: ev.ChildcareCapacity, ChildcareAges: ev.ChildcareAges,
 		RemoteAvailable: ev.RemoteAvailable,
@@ -419,6 +420,7 @@ func toEventJSON(ev *models.Event) eventJSON {
 		ChildcareCapacity: ev.ChildcareCapacity, ChildcareAges: ev.ChildcareAges,
 		RemoteAvailable: ev.RemoteAvailable, RemoteCapacity: ev.RemoteCapacity,
 		ReminderEmailMinutes: ev.ReminderEmailMinutes,
+		ReminderPush:         ev.ReminderPush,
 		VideoProvider:        videoProviderOf(ev), VideoReveal: videoRevealOf(ev),
 	}
 	// Fail closed like occurrenceToJSON; presentEvent refines for the
@@ -531,6 +533,9 @@ type eventBody struct {
 	// ReminderEmailMinutes: when each date's email reminder goes (M3.6):
 	// 0 off, 120, 1440, 2880 or 10080 minutes before.
 	ReminderEmailMinutes *int `json:"reminderEmailMinutes"`
+	// ReminderPush: each date's 2-hour push reminder (M3.13d3), on by
+	// default.
+	ReminderPush *bool `json:"reminderPush"`
 	// Create only: the room for every date (M2.1c). A series edit changes
 	// it through PUT /events/:id/room.
 	RoomID *uint `json:"roomId"`
@@ -636,6 +641,9 @@ func applySpec(ev *models.Event, spec events.Spec, body eventBody, ed capacityEd
 	}
 	if ed.reminderSet {
 		ev.ReminderEmailMinutes = ed.reminder
+	}
+	if body.ReminderPush != nil {
+		ev.ReminderPush = *body.ReminderPush
 	}
 	// Remote attendance (M1.8 slice 2).
 	if body.RemoteAvailable != nil {
@@ -770,7 +778,7 @@ func (a *App) apiCreateEvent(c *gin.Context) {
 		// tighten it (DEC-48).
 		GroupID: &gid, Visibility: g.Visibility,
 		CreatedBy:            apiUser(c).ID,
-		ReminderEmailMinutes: defaultReminderMinutes,
+		ReminderEmailMinutes: defaultReminderMinutes, ReminderPush: true,
 	}
 	applySpec(&ev, spec, body, ed, vid)
 	if !textOK(c, ev.Title, ev.Description, ev.Location) {

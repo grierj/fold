@@ -268,6 +268,11 @@ and tap **Turn on notifications**. On an iPhone or iPad (iOS 16.4 or newer), add
 Fold to your Home Screen from Safari first, then open it from there and sign in
 once.
 
+With notifications on, you also get a short reminder 2 hours before each event
+you're going to (for an early-morning event, the evening before, so it never
+wakes you), unless its leaders turned that reminder off. It follows your
+**Event updates** switch.
+
 To stop them, use **Turn off notifications on this device** in **Me →
 Notifications**, or turn them off in your phone's settings. Notifications are a
 shortcut: everything still shows in **Alerts** in Fold, and in your email. If

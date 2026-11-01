@@ -266,15 +266,19 @@ func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, bo
 		PushReason      *string
 	}
 	// One row a person (or guardian copy): the email row, with the
-	// person's push row joined on (never a copy's).
+	// person's push row joined on (never a copy's). A push row with no
+	// email row beside it (a push reminder's, M3.13d3) is the person's row
+	// itself.
 	err := a.DB.Raw(`SELECT r.status, r.reason, r.error, r.copy_of_user_id IS NOT NULL AS copy,
 		u.name, u.display_name, u.account_type, COALESCE(t.name, '') AS teen_name, COALESCE(t.display_name, '') AS teen_display_name,
 		p.status AS push_status, p.reason AS push_reason
 		FROM message_recipients r JOIN users u ON u.id = r.user_id LEFT JOIN users t ON t.id = r.copy_of_user_id
-		LEFT JOIN message_recipients p ON p.message_id = r.message_id AND p.user_id = r.user_id AND p.channel = ? AND r.copy_of_user_id IS NULL
-		WHERE r.message_id = ? AND r.channel <> ? AND (? OR r.copy_of_user_id IS NULL)
+		LEFT JOIN message_recipients p ON r.channel <> ? AND p.message_id = r.message_id AND p.user_id = r.user_id AND p.channel = ? AND r.copy_of_user_id IS NULL
+		WHERE r.message_id = ? AND (? OR r.copy_of_user_id IS NULL)
+		  AND (r.channel <> ? OR NOT EXISTS (SELECT 1 FROM message_recipients e
+			WHERE e.message_id = r.message_id AND e.user_id = r.user_id AND e.channel <> ? AND e.copy_of_user_id IS NULL))
 		ORDER BY lower(COALESCE(NULLIF(u.display_name, ''), NULLIF(u.name, ''), 'Member')), r.id
-		LIMIT ?`, models.DeliveryPush, id, models.DeliveryPush, admin, maxHistoryRecipients+1).Scan(&rows).Error
+		LIMIT ?`, models.DeliveryPush, models.DeliveryPush, id, admin, models.DeliveryPush, models.DeliveryPush, maxHistoryRecipients+1).Scan(&rows).Error
 	more := len(rows) > maxHistoryRecipients
 	if more {
 		rows = rows[:maxHistoryRecipients]
@@ -350,9 +354,10 @@ func (a *App) authorMayResend(m *models.Message) (bool, error) {
 // needs only what reminder.send needs: its date still scheduled and not
 // yet started, and its event's reminders still on (who pressed it was
 // checked by loadMessage: an admin or a manager of the event). Each person
-// is checked again by recheckReminderRows.
+// is checked again by recheckReminderRows. A push reminder (M3.13d3) is
+// never sent again, as no push is.
 func (a *App) reminderMayResend(m *models.Message) (bool, error) {
-	if m.OccurrenceID == nil {
+	if m.OccurrenceID == nil || reminderKind(m) == reminderPushKind {
 		return false, nil
 	}
 	// An audience that no longer reads as one (a gone audience, as for an
@@ -388,13 +393,14 @@ const (
 // again, as message.send does: someone no longer going (or no longer on
 // the waitlist, for the waitlist note), or who can no longer see the date
 // (M1.13), is skipped with that reason, not sent to. A guardian copy
-// follows its teen. It answers the row ids still to send.
+// follows its teen. It answers the row ids still to send: email rows only,
+// since a push is never sent again.
 func (a *App) recheckReminderRows(tx *gorm.DB, m *models.Message, ids []uint, now time.Time) ([]uint, error) {
 	if len(ids) == 0 || m.OccurrenceID == nil {
 		return ids, nil
 	}
 	var rows []models.MessageRecipient
-	if err := tx.Select("id, user_id, copy_of_user_id").Where("id IN ?", ids).Order("id").Find(&rows).Error; err != nil {
+	if err := tx.Select("id, user_id, copy_of_user_id").Where("id IN ? AND channel = ?", ids, models.DeliveryEmail).Order("id").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	subject := func(r models.MessageRecipient) uint {

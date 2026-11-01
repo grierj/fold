@@ -382,6 +382,10 @@ export function MessageComposerPage() {
     const reminder = message.category === "reminder";
     // A leader opens a reminder from its date page (it isn't on their list), so that is where back goes.
     const datePath = message.reminder ? `/events/${message.reminder.eventId}/dates/${message.reminder.date}` : null;
+    // A push reminder (M3.13d3) has push rows only (statusLabel words its
+    // state), so its email counts are always empty.
+    const pushReminder = message.channel === "push";
+    const label = statusLabel(message, zone);
     return page(<>
       {reminder && !isAdmin && message.reminder && datePath
         ? <ButtonLink variant="link" to={datePath}>‹ Back to {message.reminder.eventTitle}</ButtonLink>
@@ -392,8 +396,8 @@ export function MessageComposerPage() {
       <SendProblem message={message} history={history} busy={busy === "retry"} error={retryError} onRetry={() => void retry()} />
       <section aria-label="This message" className="space-y-4 rounded-lg border border-border bg-surface p-4 sm:p-6">
         <div className="space-y-1">
-          <p className="text-lg font-semibold">{statusLabel(message, zone)}</p>
-          {history && <p className="text-sm">{historyLine(history, message)}</p>}
+          <p className="text-lg font-semibold">{label}</p>
+          {history && !pushReminder && <p className="text-sm">{historyLine(history, message)}</p>}
           {history && pushHistoryLine(history.counts.push) && <p className="text-sm">{pushHistoryLine(history.counts.push)}</p>}
           {history && message.status !== "sending" && history.counts.teens > 0 && <p className="text-sm text-text-muted">{historyTeenLine(history.counts.teens)}</p>}
           {history && message.status !== "sending" && guardianLine(history.counts) && <p className="text-sm text-text-muted">{guardianLine(history.counts)}</p>}

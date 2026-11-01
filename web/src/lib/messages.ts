@@ -229,6 +229,13 @@ const PUSH_REASONS: Record<string, [one: string, many: string]> = {
   "the push service couldn't be reached": ["the push service couldn't be reached", "the push service couldn't be reached"],
   "the notification was too large to push": ["too large to push", "too large to push"],
   "didn't go out": ["didn't go out", "didn't go out"],
+  // A push reminder's (M3.13d3).
+  "push turned off for event updates": ["turned notifications off for event updates", "turned notifications off for event updates"],
+  "outside quiet hours": ["skipped: it would have come during quiet hours", "skipped: it would have come during quiet hours"],
+  "date cancelled or moved": ["not sent: the date was cancelled or moved", "not sent: the date was cancelled or moved"],
+  "push reminder turned off": ["not sent: push reminders were turned off", "not sent: push reminders were turned off"],
+  "no longer going": ["no longer going", "no longer going"],
+  "can't see this date anymore": ["can't see this date anymore", "can't see this date anymore"],
 };
 
 // pushBadge is one person's push in their history row, in words (status
@@ -275,8 +282,15 @@ export function confirmLine(eligible: number, at: string | null, zone: string): 
 // scheduled time already reached is "Waiting to send" until the sender
 // (M3.5) picks it up; a draft that was never scheduled and then cancelled
 // was discarded. A send that reached some people and failed for others is
-// "Partly sent".
-export function statusLabel(m: Pick<Message, "status" | "scheduledAt" | "sentAt"> & { failedCount?: number }, zone: string, now = new Date()): string {
+// "Partly sent". A push reminder (M3.13d3, channel push) is sent from the
+// start and its sentAt is its first push: "Pushed today at 5:00 PM", else
+// "Waiting to go out" while some of its rows are still to go
+// (pushWaiting), and "Nobody got it" once none are.
+export function statusLabel(m: Pick<Message, "status" | "scheduledAt" | "sentAt"> & { failedCount?: number; channel?: Message["channel"]; pushWaiting?: number }, zone: string, now = new Date()): string {
+  if (m.channel === "push" && m.status === "sent") {
+    if (m.sentAt) return `Pushed ${formatWhenIn(m.sentAt, zone, now)}`;
+    return m.pushWaiting ? "Waiting to go out" : "Nobody got it";
+  }
   switch (m.status) {
     case "draft": return "Draft";
     case "scheduled":

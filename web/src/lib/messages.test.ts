@@ -69,6 +69,18 @@ describe("counts", () => {
     expect(statusLabel({ status: "cancelled", scheduledAt: "2026-11-03T16:00:00Z", sentAt: null }, z, now)).toBe("Cancelled");
     expect(statusLabel({ status: "cancelled", scheduledAt: null, sentAt: null }, z, now)).toBe("Discarded");
   });
+
+  it("never says a push reminder was sent before anything went (M3.13d3)", () => {
+    const z = "America/Boise", now = new Date("2026-11-02T18:00:00Z");
+    const push = { status: "sent" as const, channel: "push" as const, scheduledAt: "2026-11-02T18:00:00Z" };
+    // By its counts, not the clock: waiting while some rows are still to go.
+    expect(statusLabel({ ...push, sentAt: null, pushWaiting: 3 }, z, now)).toBe("Waiting to go out");
+    expect(statusLabel({ ...push, sentAt: "2026-11-02T18:00:00Z", pushWaiting: 1 }, z, now)).toMatch(/^Pushed Today at 11:00 AM( MST)?$/);
+    // Nothing left waiting and nothing pushed (every row skipped), even
+    // before its date.
+    expect(statusLabel({ ...push, sentAt: null, pushWaiting: 0 }, z, now)).toBe("Nobody got it");
+    expect(statusLabel({ ...push, sentAt: null }, z, now)).toBe("Nobody got it");
+  });
 });
 
 describe("history", () => {

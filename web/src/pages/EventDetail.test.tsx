@@ -21,7 +21,7 @@ const page: EventDetailResponse = {
     id: 7, title: "Hybrid study", description: "", startsLocal: "2026-12-01T19:00", durationMinutes: 60,
     tzid: "UTC", startsAt: "2026-12-01T19:00:00Z", endsAt: "2026-12-01T20:00:00Z", location: "Hall",
     recurrenceRule: "", visibility: "public", leaderOpened: false, churchWide: false,
-    capacity: null, waitlistEnabled: false, guestsAllowed: 0, reminderEmailMinutes: 1440,
+    capacity: null, waitlistEnabled: false, guestsAllowed: 0, reminderEmailMinutes: 1440, reminderPush: true,
     childcareAvailable: false, childcareCapacity: null, childcareAges: "", childcareNotes: "",
     remoteAvailable: true, remoteCapacity: 5, videoProvider: "none", videoReveal: "registered_only",
   },

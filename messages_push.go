@@ -92,7 +92,8 @@ func pushCandidates(facts []recipientFact) []uint {
 // messagePushRows are message.send's push rows for m: one queued row per
 // candidate among facts who has push on for m's category and a device,
 // when m asks for it, is an announcement, and the church has push on. A
-// reminder's push is M3.13d3's.
+// date's push reminder is its own message, written by the sweep
+// (reminders_push.go).
 func (a *App) messagePushRows(db *gorm.DB, m *models.Message, facts []recipientFact) ([]models.MessageRecipient, error) {
 	if !m.PushAlert || m.Category != models.MessageCategoryAnnouncement || !a.pushEnabled() {
 		return nil, nil
@@ -169,9 +170,10 @@ func messagePushRecorder(id uint) pushRecorder {
 // consent for the message's category, the device, that the message is
 // still going out, quiet hours (announcements are optional, so they
 // wait), and the hourly limit, which counts announcement and notification
-// pushes together (DEC-126). It returns an error only when a retry may
-// succeed.
-func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint) error {
+// pushes together (DEC-126). A push reminder row goes on to
+// deliverReminderPush after the device check. It returns an error only
+// when a retry may succeed.
+func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint, plannedAt int64) error {
 	db := a.DB.WithContext(ctx)
 	var row models.MessageRecipient
 	if err := db.First(&row, rowID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
@@ -197,7 +199,7 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint) erro
 		return record(models.RecipientSuppressed, pushWhyInactive)
 	}
 	var m models.Message
-	if err := db.Select("id", "status", "category", "subject", "body_text", "audience").First(&m, row.MessageID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := db.Select("id", "status", "category", "subject", "body_text", "audience", "occurrence_id", "reminder_key").First(&m, row.MessageID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	} else if err != nil {
 		return err
@@ -231,6 +233,11 @@ func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint) erro
 	}
 	if m.Status != models.MessageSending && m.Status != models.MessageSent {
 		return record(models.RecipientSuppressed, pushWhyStale)
+	}
+	if m.Category == models.MessageCategoryReminder {
+		// The 2-hour push reminder (M3.13d3) has its own checks; the
+		// sweep timed it, so it neither waits nor meets the hourly limit.
+		return a.deliverReminderPush(ctx, &row, &u, dev, &m, plannedAt)
 	}
 	now := a.pushNow()
 	loc := zoneOrChurch(db, u.Timezone)

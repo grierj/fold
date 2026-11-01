@@ -123,6 +123,20 @@ func TestEveryKindsPushTextIsLockScreenSafe(t *testing.T) {
 				t.Errorf("%s push text names the group: %q %q", k.Key, title, body)
 			}
 		}
+		// No push shows a place, even a changed one: a small group often
+		// meets in a home and a lock screen is public (DEC-124, DEC-136).
+		// Every Change a kind reads, with the place set each time.
+		if k.AllowPush {
+			for _, change := range []string{"", "time", "place", "time and place", "details", "added", "removed", "leader", "member",
+				"approved", "not approved", "child", "teen", "teen_account", "1 date", "3 dates"} {
+				title, body, _ := k.RenderForPush(Vars{Event: "Supper", When: "Tue 7pm", Place: "412 Elm Street", Change: change})
+				for _, bad := range []string{"412 Elm Street", "412", "Elm"} {
+					if strings.Contains(title+body, bad) {
+						t.Errorf("%s push text (change %q) shows the place (%q): %q %q", k.Key, change, bad, title, body)
+					}
+				}
+			}
+		}
 	}
 	if pushed == 0 {
 		t.Fatal("no kind pushes; the test checks nothing")
