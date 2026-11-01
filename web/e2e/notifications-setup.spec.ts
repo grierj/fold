@@ -21,9 +21,26 @@ test("an iPhone gets the iPhone steps first, an Android phone the Android ones",
     await expect(page.getByRole("heading", { name: "Get notifications on your phone", level: 1 })).toBeVisible();
     await expect(page.getByRole("heading", { level: 2 }).first()).toHaveText(heading);
     await expect(page.getByRole("region", { name: "Using a different device?" }).getByRole("heading", { level: 3 })).toHaveCount(3);
+    // The other devices start collapsed.
+    await expect(page.locator("details[open]")).toHaveCount(0);
     await shot(page.getByRole("region", { name: heading }), name);
+    if (name === "iphone") await page.locator("main").screenshot({ path: test.info().outputPath("setup-collapsed-default-390.png") });
     await context.close();
   }
+});
+
+test("inside the iPhone Home Screen app it says where to go, not how to install", async ({ browser }) => {
+  const context = await browser.newContext({ baseURL: test.info().project.use.baseURL, userAgent: IPHONE, viewport: { width: 390, height: 844 } });
+  await context.addInitScript(() => Object.defineProperty(navigator, "standalone", { get: () => true, configurable: true }));
+  const page = await context.newPage();
+  await page.goto("/notifications/setup");
+  const mine = page.getByRole("region", { name: "Get notifications on your iPhone or iPad" });
+  await expect(mine).toContainText("You're in the Home Screen app. Go to Me → Notifications and tap Turn on notifications.");
+  await expect(mine.getByText(/Add to Home Screen/)).toHaveCount(0);
+  // The install steps stay, collapsed, beside the three other devices.
+  await expect(page.getByRole("region", { name: "Using a different device?" }).getByRole("heading", { level: 3 })).toHaveCount(4);
+  await page.locator("main").screenshot({ path: test.info().outputPath("setup-ios-standalone-390.png") });
+  await context.close();
 });
 
 // Headless Chromium reports notifications as denied, which is the blocked

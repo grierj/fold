@@ -53,7 +53,7 @@ export function PushEnabledSetting() {
     <div className="mb-6 max-w-xl space-y-2">
       <Checkbox
         label="Notifications on devices"
-        description="Members can turn on notifications on their phones and computers. Turn this off to stop all of them; email and Alerts still work."
+        description="Members can turn on notifications on their phones and computers. Turn this off to stop all of them; email and Alerts still work. Members' devices stay set up for when you turn it back on."
         checked={on === true}
         disabled={saving || on === null}
         onChange={(e) => void change(e.target.checked)}

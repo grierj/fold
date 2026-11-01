@@ -688,12 +688,13 @@ func TestPushSubscribeRechecksTheSession(t *testing.T) {
 
 // The church's switch (M3.13c2, DEC-124): on by default, admins only,
 // audited; off tells the card and the public directions page through
-// /push/config and /site, and turning on is refused.
+// /push/config and /site, refuses turning on and tests, and stops sends.
 func TestPushEnabledSetting(t *testing.T) {
-	app := testApp(t)
+	app, fake := pushTestApp(t)
 	newTestUser(t, app, "root", "password1234", models.RoleAdmin)
-	newTestUser(t, app, "sam", "password1234", models.RoleMember)
-	root, sam := loginAPI(t, app, "root", "password1234"), loginAPI(t, app, "sam", "password1234")
+	samUser := pushMember(t, app, "sam")
+	phone := newPushDevice(t, app, samUser, "sam-phone")
+	root, sam := loginAPI(t, app, "root", "password1234"), loginAPI(t, app, "sam", "password123456")
 	for _, method := range []string{"GET", "PUT"} {
 		if w := sam.do(method, "/api/v1/admin/settings/push-enabled", map[string]any{"on": false}, true); w.Code != http.StatusForbidden {
 			t.Fatalf("member %s: %d", method, w.Code)
@@ -721,6 +722,18 @@ func TestPushEnabledSetting(t *testing.T) {
 	}
 	if _, w := subscribe(t, sam, newBrowserSub(t, "off")); w.Code != http.StatusForbidden || errorCodeOf(w) != "push_church_off" {
 		t.Fatalf("subscribe while off: %d %s", w.Code, w.Body.String())
+	}
+	if w := sam.do("POST", "/api/v1/push/test", map[string]string{"endpoint": phone.Endpoint}, true); w.Code != http.StatusForbidden || errorCodeOf(w) != "push_church_off" {
+		t.Fatalf("test while off: %d %s", w.Code, w.Body.String())
+	}
+	// A push already queued is stopped at send time.
+	n := sendNotice(t, app, notify.AccountTurned18, samUser)
+	runPushJobs(t, app, n, phone)
+	if status, reason := pushDelivery(t, app, n); status != models.DeliverySuppressed || reason != pushWhyChurchOff {
+		t.Fatalf("queued push while off: %q %q", status, reason)
+	}
+	if fake.total() != 0 {
+		t.Fatalf("sent while off: %v", fake.sent)
 	}
 	if w := root.do("PUT", "/api/v1/admin/settings/push-enabled", map[string]any{"on": true}, true); w.Code != http.StatusOK || !app.pushEnabled() {
 		t.Fatalf("on again: %d", w.Code)

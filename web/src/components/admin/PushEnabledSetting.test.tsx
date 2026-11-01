@@ -23,7 +23,7 @@ it("is on by default and turns off at once, saying Saved", async () => {
   render(<PushEnabledSetting />);
   const b = await box();
   expect(b).toBeChecked();
-  expect(screen.getByText("Members can turn on notifications on their phones and computers. Turn this off to stop all of them; email and Alerts still work.")).toBeInTheDocument();
+  expect(screen.getByText("Members can turn on notifications on their phones and computers. Turn this off to stop all of them; email and Alerts still work. Members' devices stay set up for when you turn it back on.")).toBeInTheDocument();
   await userEvent.click(b);
   expect(setPushEnabled).toHaveBeenCalledWith(false);
   expect(await screen.findByRole("status")).toHaveTextContent("Saved");

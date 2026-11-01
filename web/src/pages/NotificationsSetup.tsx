@@ -98,7 +98,7 @@ function sections(church: string, site: string): Section[] {
 }
 
 // What this browser says about itself, for the line at the top.
-type Here = { platform: Platform; device: DeviceState; on: boolean };
+type Here = { platform: Platform; device: DeviceState; on: boolean; secure: boolean; standalone: boolean };
 
 export function NotificationsSetupPage() {
   const { user } = useAuth();
@@ -114,7 +114,7 @@ export function NotificationsSetupPage() {
     );
     const env = readPushEnv();
     const device = deviceState(env);
-    const known = { platform: env.platform, device, on: false };
+    const known = { platform: env.platform, device, on: false, secure: env.secure, standalone: env.standalone };
     if (device === "available" && env.permission === "granted") {
       localSubscription().then((sub) => { if (alive) setHere({ ...known, on: !!sub }); });
     } else {
@@ -130,48 +130,56 @@ export function NotificationsSetupPage() {
   const church = site.name || "Fold";
   const all = sections(church, window.location.host);
   const mine = all.find((s) => s.platform === here.platform) ?? all[2];
-  const others = all.filter((s) => s !== mine);
+  // Reading this inside the Home Screen app: it is already installed, so
+  // the install steps stay with the other devices, collapsed.
+  const inApp = here.platform === "ios" && here.standalone;
+  const others = inApp ? all.filter((s) => s.platform !== "ios").concat(mine) : all.filter((s) => s !== mine);
+  // The top box already shows this device's undo steps when it blocks.
+  const blockedAtTop = here.device === "blocked" && !here.on;
 
   return <div className="max-w-2xl mx-auto px-4 py-8 space-y-8 wrap-anywhere">
     <div className="space-y-3">
       <h1 className="text-3xl font-bold">Get notifications on your phone</h1>
       <p className="text-text-muted">{church} can send notifications to your phone or computer, like any app: a cancelled date, a new group, a message from your leader.</p>
-      <Here here={here} section={mine} church={church} signedIn={!!user} />
+      <HereLine here={here} section={mine} church={church} />
     </div>
 
     <section aria-labelledby="setup-mine" className="space-y-4 rounded-lg border border-border bg-surface p-6">
       <h2 id="setup-mine" className="text-xl font-semibold">{mine.heading}</h2>
-      {mine.body}
-      <div className="space-y-2">
+      {inApp
+        ? <p>You're in the Home Screen app. Go to <MeNotifications /> and tap <strong>Turn on notifications</strong>.{user ? "" : " Sign in first if you haven't."}</p>
+        : mine.body}
+      {!inApp && !blockedAtTop && <div className="space-y-2">
         <h3 className="font-semibold">Blocked it by mistake?</h3>
         {mine.blocked}
-      </div>
-      <p className="text-sm text-text-muted">Notifications are a shortcut. Everything still shows in Alerts in {church}, and in your email.</p>
+      </div>}
     </section>
 
-    <section aria-labelledby="setup-others" className="space-y-6">
+    <section aria-labelledby="setup-others" className="space-y-3">
       <h2 id="setup-others" className="text-xl font-semibold">Using a different device?</h2>
-      {others.map((s) => <section key={s.platform} aria-labelledby={`setup-${s.platform}`} className="space-y-4 rounded-lg border border-border bg-surface p-6">
-        <h3 id={`setup-${s.platform}`} className="text-lg font-semibold">{s.heading}</h3>
-        {s.body}
-        <div className="space-y-2">
-          <h4 className="font-semibold">Blocked it by mistake?</h4>
-          {s.blocked}
+      {others.map((s) => <details key={s.platform} className="rounded-lg border border-border bg-surface">
+        <summary className="cursor-pointer px-6 py-4"><h3 className="inline text-lg font-semibold">{s.heading}</h3></summary>
+        <div className="space-y-4 px-6 pb-6">
+          {s.body}
+          <div className="space-y-2">
+            <h4 className="font-semibold">Blocked it by mistake?</h4>
+            {s.blocked}
+          </div>
         </div>
-      </section>)}
+      </details>)}
     </section>
+
+    <p className="text-sm text-text-muted">Notifications are a shortcut. Everything still shows in Alerts in {church}, and in your email.</p>
   </div>;
 }
 
-// Here is the line about this browser: notifications already on, blocked
-// (with this device's undo steps), or not possible here.
-function Here({ here, section, church, signedIn }: { here: Here; section: Section; church: string; signedIn: boolean }) {
+// HereLine is the line about this browser: set up already, blocked (with
+// this device's undo steps), or not possible here.
+function HereLine({ here, section, church }: { here: Here; section: Section; church: string }) {
   const box = "space-y-2 rounded-lg border border-border bg-sunken p-4 text-text";
   if (here.on) {
-    return <div className={box}>
-      <p className="font-semibold">Notifications are already on in this browser.</p>
-      <p>{signedIn ? <>To send a test or turn them off, go to <MeNotifications />.</> : <>Sign in and go to <MeNotifications /> to send a test or turn them off.</>}</p>
-    </div>;
+    // The server may have lost the device since; the card has the truth.
+    return <div className={box}><p>This browser is set up. Check <MeNotifications /> to send yourself a test.</p></div>;
   }
   if (here.device === "blocked") {
     return <div className={box}>
@@ -183,7 +191,9 @@ function Here({ here, section, church, signedIn }: { here: Here; section: Sectio
     return <div className={box}><p>Notifications on an iPhone or iPad need iOS 16.4 or newer. Until you update, use email on this device.</p></div>;
   }
   if (here.device === "unavailable") {
-    return <div className={box}><p>This browser can't receive notifications: they need a secure (https) connection and a browser that can. Try another browser below, or use email.</p></div>;
+    return <div className={box}><p>{here.secure
+      ? "This browser can't receive notifications. Open Fold in another browser, or use email."
+      : "This address isn't secure (https), so notifications can't work here. Open Fold at its https address, or use email."}</p></div>;
   }
   return null;
 }

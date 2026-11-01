@@ -58,12 +58,41 @@ it("puts Mac Safari first in Safari on a Mac", async () => {
 it("gives this device's undo steps at the top when it blocks notifications", async () => {
   await show({ userAgent: UA.android, permission: "denied" });
   expect(screen.getByText("This device is blocking notifications from Grace Church. To allow them again:")).toBeInTheDocument();
-  expect(screen.getAllByText(/Tap the lock icon next to the address in Chrome, then/)).toHaveLength(2);
+  // Once, at the top: not again in this device's section.
+  expect(screen.getAllByText(/Tap the lock icon next to the address in Chrome, then/)).toHaveLength(1);
+  expect(screen.queryByRole("heading", { name: "Blocked it by mistake?", level: 3 })).not.toBeInTheDocument();
 });
 
 it("says when notifications are already on in this browser", async () => {
   await show({ permission: "granted", subscription: fakeSub() });
-  expect(await screen.findByText("Notifications are already on in this browser.")).toBeInTheDocument();
+  expect(await screen.findByText(/This browser is set up\. Check/)).toBeInTheDocument();
+});
+
+it("inside the Home Screen app, says where to go instead of how to install", async () => {
+  await show({ userAgent: UA.iphone, standalone: true });
+  const mine = screen.getByRole("region", { name: "Get notifications on your iPhone or iPad" });
+  expect(mine).toHaveTextContent("You're in the Home Screen app. Go to Me → Notifications and tap Turn on notifications.");
+  expect(within(mine).queryByText(/Add to Home Screen/)).not.toBeInTheDocument();
+  // The install steps are still there, collapsed with the other devices.
+  const others = screen.getByRole("region", { name: "Using a different device?" });
+  expect(within(others).getByRole("heading", { name: "Get notifications on your iPhone or iPad", level: 3 })).toBeInTheDocument();
+});
+
+it("names the missing https on an insecure address", async () => {
+  await show({ secure: false });
+  expect(screen.getByText("This address isn't secure (https), so notifications can't work here. Open Fold at its https address, or use email.")).toBeInTheDocument();
+});
+
+it("says when this browser can't receive notifications", async () => {
+  await show({ supported: false });
+  expect(screen.getByText("This browser can't receive notifications. Open Fold in another browser, or use email.")).toBeInTheDocument();
+});
+
+it("collapses the other devices and closes with one shortcut line", async () => {
+  await show();
+  const others = screen.getByRole("region", { name: "Using a different device?" });
+  for (const d of others.querySelectorAll("details")) expect(d.open).toBe(false);
+  expect(screen.getAllByText(/Notifications are a shortcut/)).toHaveLength(1);
 });
 
 it("says when the iPhone is too old", async () => {
