@@ -1,0 +1,9 @@
+shots/
+before/
+before.json
+before.txt
+baseline-lint.log
+compare.html
+before-original.json
+after-lint.log
+review.diff

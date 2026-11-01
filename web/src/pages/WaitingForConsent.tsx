@@ -7,7 +7,7 @@ import { ButtonLink } from "../components/ui/Button";
 export default function WaitingForConsent() {
   const { user } = useAuth();
   if (user) return <Navigate to="/" replace />;
-  return <div className="max-w-md mx-auto px-4 py-12 space-y-4">
+  return <div className="fold-auth space-y-4">
     <h1 className="text-3xl font-bold">Your account is almost ready</h1>
     <p>Your account needs a parent or guardian's consent before you can log in. Your church office can help with the next step.</p>
     <p>You can still browse public groups and events without logging in.</p>

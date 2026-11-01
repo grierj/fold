@@ -8,6 +8,7 @@ import { Field, FormError, Select, Textarea } from "./ui/Field";
 import { Button } from "./ui/Button";
 import { Skeleton } from "./ui/Skeleton";
 import { RoomOptions } from "./RoomOptions";
+import { AlertCircleIcon } from "./icons";
 
 const NONE = "none";
 const REASON_MAX = 500;
@@ -238,21 +239,21 @@ export function SeriesRoomField({ eventId, idPrefix, onChanged }: {
           </Button>
           <div role="status" className="space-y-2 empty:hidden">
             {chosen && pick !== value && busyNote(chosen, dates) && (
-              <p className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>{busyNote(chosen, dates)}</p>
+              <p className="text-sm text-warning-on-subtle"><AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />{busyNote(chosen, dates)}</p>
             )}
             {status && <p className="text-sm text-text-muted">{status}</p>}
             {!status && current && pendingCount > 0 && (
               <p className="text-sm text-text-muted">Waiting for an admin to approve this room for {dateCount(pendingCount)}.</p>
             )}
             {current && dates > 0 && needsCount >= dates && (
-              <p className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>Not booked on any date yet: every date is busy.</p>
+              <p className="text-sm text-warning-on-subtle"><AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />Not booked on any date yet: every date is busy.</p>
             )}
           </div>
           {error && <FormError>{error}</FormError>}
           {pending && (
             <div className="space-y-2 rounded-md border border-warning-border bg-warning-subtle p-3">
               <p role="alert" className="text-sm text-warning-on-subtle">
-                <span aria-hidden="true">⚠ </span>
+                <AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />
                 {pending.dates === 1 ? "1 date is" : `${pending.dates} dates are`} in use. Give a reason to book {pending.dates === 1 ? "it" : "them"} anyway.
               </p>
               <Field id={reasonId} label="Reason for double-booking" error={reasonError}>

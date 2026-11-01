@@ -43,7 +43,7 @@ export function ContactHistoryPage() {
   const location = useLocation();
   if (loading) return null;
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  if (!isAdmin || user.status !== "active" || user.accountType === "teen") return <div className="max-w-3xl mx-auto px-4 py-8"><h1 className="text-2xl font-bold">Contact access history</h1><p>This page is for church admins only.</p></div>;
+  if (!isAdmin || user.status !== "active" || user.accountType === "teen") return <div className="fold-page-narrow"><h1 className="text-2xl font-bold">Contact access history</h1><p>This page is for church admins only.</p></div>;
   return <HistoryView key={`${user.id}:${user.status}:${user.role}:${user.accountType}:${user.birthDate}:${id}`} initialId={id} />;
 }
 
@@ -204,8 +204,8 @@ function HistoryView({ initialId }: { initialId: string }) {
   const appliedCount = selection ? [selection.filters.purpose, selection.filters.action, selection.days.from, selection.days.until].filter(Boolean).length : 0;
 
   if (authority === 401) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  if (authority === 403) return <div className="max-w-3xl mx-auto px-4 py-8"><h1 className="text-2xl font-bold">Contact access history</h1><p>This history is no longer available to you. Ask an active adult church admin for help.</p></div>;
-  return <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
+  if (authority === 403) return <div className="fold-page-narrow"><h1 className="text-2xl font-bold">Contact access history</h1><p>This history is no longer available to you. Ask an active adult church admin for help.</p></div>;
+  return <div className="fold-page-narrow space-y-5">
     <ButtonLink variant="link" to="/admin?tab=users">Back to users</ButtonLink>
     <h1 className="text-2xl font-bold">Contact access history</h1>
     <p className="text-text-muted">Choose a person to review when contact access was requested, shared or ended. History records what happened, not the contact details themselves.</p>
@@ -236,7 +236,7 @@ function HistoryView({ initialId }: { initialId: string }) {
       <p className="text-sm text-text-muted">Export includes all matching entries, not just the loaded page. Each page is a fresh read; refresh to see newer entries.</p>
       {busy && <p role="status">Loading history…</p>}
       {loaded && !entries.length && <EmptyState title="No matching history" body="Retained activity for this person will appear here. Try fewer filters or check the person ID with your church office." />}
-      <ol className="space-y-3">{entries.map((entry) => <HistoryEntry key={entry.id} entry={entry} />)}</ol>
+      <ol className="fold-list">{entries.map((entry) => <HistoryEntry key={entry.id} entry={entry} />)}</ol>
       {nextBefore && <Button variant="secondary" disabled={busy} onClick={() => void more()}>Load older entries</Button>}
     </section>}
     {!selection && <EmptyState title="Choose a person" body="Choose a person above to review their contact access history." />}
@@ -250,7 +250,7 @@ function HistoryEntry({ entry: e }: { entry: ContactHistoryEntry }) {
     ["Requester", e.requesterId], ["Subject", e.subjectUserId], ["Request", e.requestId], ["Access", e.accessId],
     [e.contextType === "group" ? "Group" : e.contextType === "event" ? "Event" : "Context", e.contextId], ["Occurrence", e.occurrenceId],
   ].filter(([, id]) => safeId(id));
-  return <li className="border border-border rounded-lg p-4 bg-surface space-y-2 wrap-anywhere">
+  return <li className="fold-list-row space-y-2 wrap-anywhere">
     <h3 className="font-semibold">{labelFor(actions, e.action) || "Recorded activity"}</h3>
     <p>{labelFor(outcomes, e.outcome) || "Outcome not available"} · <time dateTime={e.at}>{formatWhen(e.at)}</time></p>
     <p className="text-sm">Audit #{safeId(e.id) || "unavailable"} · {safeId(e.actorId) ? `Actor #${e.actorId}` : "System action"}</p>

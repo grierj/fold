@@ -8,6 +8,7 @@ import { Field, FormError, Input, Select, Textarea } from "./ui/Field";
 import { Button } from "./ui/Button";
 import { Skeleton } from "./ui/Skeleton";
 import { RoomOptions } from "./RoomOptions";
+import { AlertCircleIcon } from "./icons";
 
 const NONE = "none";
 const REASON_MAX = 500;
@@ -228,24 +229,24 @@ export function RoomField({ eventId, date, idPrefix, onChanged, focusOnLoad }: {
             {waiting && <p className="text-sm text-text-muted">Waiting for an admin to approve {booking?.roomName ?? "the room"}.</p>}
             {rejected && (
               <p className="rounded-md border border-warning-border bg-warning-subtle p-3 text-sm text-warning-on-subtle">
-                <span aria-hidden="true">⚠ </span>An admin didn't approve {booking?.roomName} for this date. Pick another room.
+                <AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />An admin didn't approve {booking?.roomName} for this date. Pick another room.
               </p>
             )}
             {requested && (
               <p className="rounded-md border border-warning-border bg-warning-subtle p-3 text-sm text-warning-on-subtle">
-                <span aria-hidden="true">⚠ </span>{booking?.roomName} was taken at the new time, so this date has no room. Pick another room.
+                <AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />{booking?.roomName} was taken at the new time, so this date has no room. Pick another room.
               </p>
             )}
             {(booking?.status === "confirmed" || waiting) && booking?.tooSmall && (
               <p className="text-sm text-warning-on-subtle">
-                <span aria-hidden="true">⚠ </span>This room seats fewer people than this date allows.
+                <AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />This room seats fewer people than this date allows.
               </p>
             )}
           </div>
           {error && <FormError>{error}</FormError>}
           {pending && (
             <div className="space-y-2 rounded-md border border-warning-border bg-warning-subtle p-3">
-              <p role="alert" className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>That room is in use at this time. Give a reason to book it anyway.</p>
+              <p role="alert" className="text-sm text-warning-on-subtle"><AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />That room is in use at this time. Give a reason to book it anyway.</p>
               <Field id={reasonId} label="Reason for double-booking" error={reasonError}>
                 <Textarea rows={2} maxLength={REASON_MAX} value={reason} onChange={(e) => setReason(e.target.value)} />
               </Field>

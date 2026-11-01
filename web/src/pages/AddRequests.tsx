@@ -31,7 +31,7 @@ export function AddRequestsPage() {
   const location = useLocation();
   const { id } = useParams();
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  return <div className="max-w-2xl mx-auto px-4 py-6 space-y-5">
+  return <div className="fold-page-narrow space-y-5">
     <h1 className="text-2xl font-bold">Add requests</h1>
     <p className="text-text-muted">Requests to add someone to a group or event date. Contact details stay private.</p>
     {id ? <AddRequestDetail key={`${user.id}:${id}`} id={Number(id)} /> : <AddRequestList key={user.id} />}
@@ -73,7 +73,7 @@ function AddRequestList() {
     {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={refresh}>Try again</Button></>}
     {!loaded && !error && <p role="status">Loading add requests…</p>}
     {loaded && !requests.length && <EmptyState title="No add requests yet" body="Asks you send or can review will appear here. To send an ask, select a person by name in a group or event date you manage." />}
-    <ul className="space-y-3">{requests.map((r) => <li key={r.id} className="border border-border rounded-lg bg-surface p-4 space-y-2 wrap-anywhere">
+    <ul className="fold-list">{requests.map((r) => <li key={r.id} className="fold-list-row space-y-2 wrap-anywhere">
       <Preview request={r} /><p>{statuses[r.status]}</p>
       {r.needsAdmin && <p className="text-sm">Teen: {decisions[r.subjectDecision]} · Admin: {decisions[r.adminDecision]}</p>}
       <ButtonLink variant="link" to={`/add-requests/${r.id}`}>Review ask #{r.id}</ButtonLink>
@@ -126,7 +126,7 @@ function AddRequestDetail({ id }: { id: number }) {
     {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={() => setRevision((n) => n + 1)}>Try again</Button></>}
     {!loaded && !error && <p role="status">Loading ask…</p>}
     {loaded && !request && <EmptyState title="This ask is not available" body="It may have ended or may not be yours to review. Open your add request history to see what is available to you." />}
-    {request && <section aria-label="Ask to add review" className="bg-surface border border-border rounded-lg p-4 space-y-4 wrap-anywhere">
+    {request && <section aria-label="Ask to add review" className="fold-section space-y-4 wrap-anywhere">
       <h2 className="text-xl font-bold">Ask to add #{request.id}</h2>
       <Preview request={request} />
       <p role="status" className="font-semibold">{statuses[request.status]}</p>

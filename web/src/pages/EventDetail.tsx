@@ -169,7 +169,7 @@ function EventDetailContent() {
           </div>
         )}
       </div>
-      <div className="grid gap-4 py-6 sm:grid-cols-2 sm:gap-8">
+      <div className="grid gap-4 pb-4 sm:grid-cols-2 sm:gap-8">
         <div className="space-y-2">
           {line && <p className="font-semibold wrap-anywhere">{line}</p>}
           {single && heldIn(next.startsAt, next.tzid) && <p className="text-sm text-text-muted">{heldIn(next.startsAt, next.tzid)}</p>}
@@ -223,7 +223,7 @@ function EventDetailContent() {
         />
       )}
 
-      {!single && <h2 className="text-xl font-semibold mt-8 mb-4">Upcoming dates</h2>}
+      {!single && <h2 className="text-xl font-semibold mt-6 mb-4">Upcoming dates</h2>}
       {householdError && <ErrorNotice message={householdError} onRetry={retryHousehold} />}
       {occurrences.length === 0 && (
         <EmptyState title="No upcoming dates." body="This event has no more dates on the calendar." />

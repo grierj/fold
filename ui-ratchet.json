@@ -3,7 +3,7 @@
     "web/src/components/DeleteUserPanel.tsx": 3,
     "web/src/components/GroupVisibilityReview.tsx": 2,
     "web/src/components/Notifications.tsx": 1,
-    "web/src/pages/EventDetail.tsx": 2
+    "web/src/pages/EventDetail.tsx": 1
   },
   "dateFormatting": {
     "web/src/components/Notifications.tsx": 2,
@@ -12,13 +12,11 @@
     "web/src/pages/Admin.tsx": 1
   },
   "importantOverrides": {
-    "web/src/components/Notifications.tsx": 2,
     "web/src/pages/Profile.tsx": 1
   },
   "rawControls": {
     "web/src/components/Layout.tsx": 1,
     "web/src/components/Notifications.tsx": 8,
-    "web/src/pages/EventDetail.tsx": 1,
     "web/src/pages/Home.tsx": 6
   },
   "styleLiterals": {}

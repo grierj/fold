@@ -21,7 +21,7 @@ export function ContactRequestsPage() {
   const location = useLocation();
   const { id } = useParams();
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  return <div className="max-w-2xl mx-auto px-4 py-6 space-y-5">
+  return <div className="fold-page-narrow space-y-5">
     <h1 className="text-2xl font-bold">Direct contact</h1>
     <p className="text-text-muted">Review requests and manage shared contact access. Contact details stay private.</p>
     {id ? <ContactRequestDetail key={`${user.id}:${id}`} id={Number(id)} /> : <ContactRequestLists key={user.id} />}
@@ -74,7 +74,7 @@ function ContactRequestLists() {
     {loaded && <>
       <section aria-label="Request history" className="space-y-3"><h2 className="text-xl font-bold">Request history</h2>
         {!requests.length && <EmptyState title="No contact requests yet" body="Requests you send or can review will appear here. To ask for contact details, open the person's card in a group or event you manage." />}
-        <ul className="space-y-3">{requests.map((r) => <li key={r.id} className="border border-border rounded-lg p-4 bg-surface wrap-anywhere">
+        <ul className="fold-list">{requests.map((r) => <li key={r.id} className="fold-list-row wrap-anywhere">
           <p className="font-semibold">{r.requesterName} → {r.subjectName}</p>
           <p>{contactFieldsLabel(r.fields)} · {statusLabels[r.status]}</p>
           {r.needsAdmin && <p className="text-sm">Person: {decisionLabels[r.subjectDecision]} · Admin: {decisionLabels[r.adminDecision]}</p>}
@@ -144,7 +144,7 @@ function ContactRequestDetail({ id }: { id: number }) {
     {error && <><FormError>{error}</FormError><Button variant="secondary" onClick={() => setRevision((n) => n + 1)}>Try again</Button></>}
     {!loaded && !error && <p role="status">Loading request…</p>}
     {loaded && !request && !grants.length && <EmptyState title="Contact access is not available" body="This request or grant may have ended, or may not be yours to review. Open your contact history to see what is available to you." />}
-    {loaded && request && <section aria-label="Contact request review" className="bg-surface border border-border rounded-lg p-4 space-y-3 wrap-anywhere">
+    {loaded && request && <section aria-label="Contact request review" className="fold-section space-y-3 wrap-anywhere">
       <h2 className="text-xl font-bold">{request.requesterName} → {request.subjectName}</h2>
       <p>{contactFieldsLabel(request.fields)} · {statusLabels[request.status]}</p>
       <ContactContextLink {...request} />

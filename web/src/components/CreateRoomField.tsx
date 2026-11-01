@@ -9,6 +9,7 @@ import { seriesRoomLabel } from "./SeriesRoomField";
 import { Field, FormError, Select } from "./ui/Field";
 import { Button } from "./ui/Button";
 import { RoomOptions } from "./RoomOptions";
+import { AlertCircleIcon } from "./icons";
 
 const NONE = "none";
 const DEBOUNCE_MS = 400;
@@ -178,9 +179,9 @@ export function CreateRoomField({ id, schedule, groupId, visibility, roomId, onC
       </Field>
       <div role="status" className="space-y-2 empty:hidden">
         {checking && <p className="text-sm text-text-muted">Checking which rooms are free…</p>}
-        {dropped && <p className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>{dropped}</p>}
+        {dropped && <p className="text-sm text-warning-on-subtle"><AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />{dropped}</p>}
         {!checking && chosen && notes(chosen, dates).map((n) => (
-          <p key={n} className="text-sm text-warning-on-subtle"><span aria-hidden="true">⚠ </span>{n}</p>
+          <p key={n} className="text-sm text-warning-on-subtle"><AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />{n}</p>
         ))}
       </div>
       {error && (

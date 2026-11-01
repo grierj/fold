@@ -27,7 +27,7 @@ export function OccurrenceCard({ at, title, meta, menu, notice, compact, childre
       <div className="space-y-3">{children}</div>
     </article>;
   }
-  return <article aria-labelledby={heading} className="fold-list-row border-t border-border wrap-anywhere">
+  return <article aria-labelledby={heading} className="fold-list-row wrap-anywhere sm:grid sm:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] sm:gap-6">
     <div className="flex gap-3">
       <DateBadge at={at} />
       <div className="grow min-w-0">
@@ -39,6 +39,6 @@ export function OccurrenceCard({ at, title, meta, menu, notice, compact, childre
         {meta}
       </div>
     </div>
-    <div className="mt-4 space-y-3 border-l-2 border-border pl-4">{children}</div>
+    <div className="mt-4 min-w-0 space-y-3 sm:mt-0">{children}</div>
   </article>;
 }

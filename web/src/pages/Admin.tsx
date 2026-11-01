@@ -1273,7 +1273,7 @@ function InviteTab() {
       {error && <FormError>{error}</FormError>}
       {status && <p role="status" className="text-success text-sm">{status}</p>}
       <p className="text-sm text-text-muted">
-        They'll get an email link, set a password, and join with an active account — no
+        They'll get an email link, set a password, and join with an active account. No
         approval step.
       </p>
       <Field id="inv-email" label="Email">

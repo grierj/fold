@@ -92,8 +92,7 @@ export function Login() {
         New here?{" "}
         <Link to="/join" className="text-link">
           Request an account
-        </Link>{" "}
-        — an admin reviews every request.
+        </Link>. An admin reviews every request.
       </p>
     </div>
   );

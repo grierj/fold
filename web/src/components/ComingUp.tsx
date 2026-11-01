@@ -89,14 +89,12 @@ function ComingUpRow({ occ }: { occ: CalendarOccurrence }) {
     >
       <DateBadge at={occ.startsAt} />
       <span className="min-w-0 flex-1">
-        <span className="block text-sm font-medium text-text-muted">{formatNextMeeting(occ.startsAt).text}</span>
-        <span className="mt-1 block font-semibold text-text wrap-anywhere">{occ.title || occ.groupName}</span>
+        <span className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <span className="font-semibold text-text wrap-anywhere">{occ.title || occ.groupName}</span>
+          {state && <StatusBadge state={state} />}
+        </span>
+        <span className="mt-1 block text-sm text-text-muted">{formatNextMeeting(occ.startsAt).text}</span>
         {where && <span className="mt-1 block text-sm text-text-muted wrap-anywhere">{where}</span>}
-        {state && (
-          <span className="mt-2 block">
-            <StatusBadge state={state} />
-          </span>
-        )}
       </span>
     </Link>
   );

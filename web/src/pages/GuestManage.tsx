@@ -48,7 +48,7 @@ export function GuestManage() {
 
   if (!reg && error) {
     return (
-      <div className="max-w-md mx-auto px-4 py-12">
+      <div className="fold-auth">
         <h1 className="text-3xl font-bold mb-6">Your guest registration</h1>
         <EmptyState
           illustration={<Illustration name="link-expired" />}
@@ -60,9 +60,9 @@ export function GuestManage() {
   }
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
+    <div className="fold-auth">
       <h1 className="text-3xl font-bold mb-6">Your guest registration</h1>
-      <div className="bg-surface rounded-lg border border-border p-6">
+      <div className="fold-section">
         {!reg && !error && <p className="text-sm text-text-muted">Loading…</p>}
         {reg && error && <FormError>{error}</FormError>}
         {reg && (

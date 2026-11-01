@@ -16,12 +16,12 @@ import { FoldMark } from "./FoldMark";
 // keeps room under the tab bar so it never covers a focused field
 // (scroll-padding in index.css).
 const topLink = ({ isActive }: { isActive: boolean }) =>
-  `inline-flex items-center min-h-11 px-2 rounded-md whitespace-nowrap ${isActive ? "text-primary" : "text-text-muted hover:text-primary"}`;
+  `fold-nav-link inline-flex items-center min-h-11 px-2 rounded-md whitespace-nowrap ${isActive ? "text-primary" : "text-text-muted hover:text-primary"}`;
 // The phone's "+ New group" (DEC-62: a labeled pill, not a bare icon).
 const pill = ({ isActive }: { isActive: boolean }) =>
   `inline-flex items-center gap-1 min-h-11 px-3 rounded-full border whitespace-nowrap font-semibold ${isActive ? "border-primary-border bg-primary-subtle text-primary-on-subtle" : "border-border-strong text-primary"}`;
 const tab = ({ isActive }: { isActive: boolean }) =>
-  `flex flex-1 flex-col items-center justify-center gap-0.5 min-h-14 whitespace-nowrap text-xs font-medium ${isActive ? "text-primary" : "text-text-muted"}`;
+  `fold-tab flex flex-1 flex-col items-center justify-center gap-0.5 min-h-14 whitespace-nowrap text-xs font-medium ${isActive ? "text-primary" : "text-text-muted"}`;
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { pathname, search } = useLocation();
@@ -52,7 +52,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         main?.scrollIntoView({ block: "start" });
       }} className="fixed top-2 left-2 z-50 -translate-y-[200%] focus:translate-y-0 rounded-md bg-surface p-3 min-h-11 text-primary focus:outline-2 focus:outline-focus">Skip to main content</a>
       <header ref={header} className="bg-surface border-b border-border sticky top-0 z-10 pt-[env(safe-area-inset-top)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
-        <div className="max-w-6xl mx-auto px-4 min-h-16 py-2 flex items-center gap-3 sm:gap-4">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 min-h-16 py-2 flex items-center gap-3 sm:gap-4">
           <Link
             to="/"
             aria-label={site === undefined ? "Home" : undefined}
@@ -75,10 +75,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
               </span>
             )}
           </Link>
-          <nav aria-label="Main" className="flex shrink-0 items-center gap-2 ml-auto text-sm font-medium">
+          <nav aria-label="Main" className="flex shrink-0 items-center gap-1 ml-auto text-sm font-medium">
             {loading ? null : user ? (
               <>
-                <div className="hidden sm:flex items-center gap-2">
+                <div className="hidden sm:flex items-center gap-1">
                   <NavLink to="/" end className={topLink}>Home</NavLink>
                   <NavLink to="/calendar" className={topLink}>Calendar</NavLink>
                   <NavLink to="/my-groups" className={topLink}>My groups</NavLink>
@@ -95,7 +95,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <PlusIcon className="h-4 w-4" />
                   New group
                 </NavLink>
-                <div className="hidden sm:flex items-center gap-2">
+                <div className="hidden sm:flex items-center gap-1">
                   <NotificationBell badge={badge} />
                   <Link to="/profile" className="flex items-center gap-2 min-h-11 px-1 text-text-muted hover:text-primary" title="Your profile">
                     <Avatar

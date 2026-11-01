@@ -106,12 +106,12 @@ export function ProfilePage() {
   }
   return <div className="fold-page wrap-anywhere">
     <div className="fold-settings-grid">
-      <aside className="hidden sm:block space-y-6">
+      <aside className="hidden lg:block space-y-6">
         <ButtonLink variant="link" to="/profile">Your profile</ButtonLink>
         {menu(false)}
       </aside>
       <div className="min-w-0 space-y-6">
-        <ButtonLink variant="link" to="/profile" layout="sm:hidden">Back to your profile</ButtonLink>
+        <ButtonLink variant="link" to="/profile" layout="lg:hidden">Back to your profile</ButtonLink>
         <h1 className="fold-page-header text-3xl font-bold">{selected.label}</h1>
         <div key={selected.id}>
           {section === "details" && <ProfileDetails />}

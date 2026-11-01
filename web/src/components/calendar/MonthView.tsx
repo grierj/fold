@@ -71,7 +71,7 @@ export function MonthView({
         <thead>
           <tr>
             {names.map((n) => (
-              <th key={n} scope="col" className="pb-3 text-sm font-semibold text-text-muted">
+              <th key={n} scope="col" className="pb-2 text-sm font-semibold text-text-muted">
                 {n}
               </th>
             ))}
@@ -162,7 +162,7 @@ export function MonthView({
         <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full border border-border-strong bg-transparent" />Can't go</span>
         <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="h-1.5 w-1.5 rounded-full border border-border-strong bg-border-strong" />Other events</span>
       </div>
-      <div className="fold-section mt-8">
+      <div className="mt-6">
         <DaySection heading={formatDayHeading(selected)} occs={byDay.get(selected) ?? []} />
       </div>
     </>

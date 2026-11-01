@@ -253,8 +253,7 @@ export function Home() {
             </h1>
             {church && <p className="mt-2 font-medium">Welcome to {church}</p>}
             <p className="mt-2 text-text-muted max-w-2xl">
-              Small groups, ministries, and activities — all in one place. Join a group and show
-              up.
+              Small groups, ministries, and activities for your church. Join a group and show up.
             </p>
             {!authLoading && site && (
               <div className="mt-4 flex flex-wrap gap-3">

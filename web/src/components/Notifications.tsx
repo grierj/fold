@@ -184,13 +184,13 @@ function Skeleton() {
 
 function FeedEmpty({ text, action }: { text?: string; action?: ReactNode }) {
   return (
-    <EmptyState
+    <div className="px-4"><EmptyState
       framed={false}
       illustration={<Illustration name="all-caught-up" size="sm" />}
       title={text ?? "You're all caught up"}
       body={!text ? "Updates about your groups and events show up here." : undefined}
       action={!text ? action : undefined}
-    />
+    /></div>
   );
 }
 

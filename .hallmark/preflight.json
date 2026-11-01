@@ -1,0 +1,56 @@
+{
+  "scanned": "2026-11-01T18:57:51Z",
+  "target": "/home/grier/git/fold",
+  "mode": "redesign",
+  "depth": "full",
+  "scope": "app",
+  "genre": "playful (inferred from church community; restrained app treatment, not marketing)",
+  "commit": "82323bf",
+  "sourceTreeInitiallyClean": true,
+  "status": "Implemented after the user's go ahead; independently reviewed and verified, with three retained Hallmark copy failures and one confirmed image-loading warning. See verification.md.",
+  "branch": "design/hallmark-fold",
+  "approval": "go ahead; infer a warm, practical, community-first app treatment while preserving the approved Fold brand",
+  "finalEvidence": "/tmp/fold-verify-proof/20261101T192757Z-3404058",
+  "finalCalendarEvidence": "/tmp/fold-verify-proof/20261101T193330Z-3450234",
+  "findings": {
+    "lockedSystem": "No root design.md/DESIGN.md; approved product decisions still govern (docs/plan/PLAN.md:2165-2172).",
+    "fonts": "Self-hosted Inter variable WOFF2, web/src/index.css:116-145; explicitly approved in PLAN DEC-60, not an incidental framework default.",
+    "palette": "Fold Violet primary #7f47c7, warm stone neutrals and semantic role tokens in @theme, web/src/index.css:8-129; PLAN.md:2165.",
+    "motion": "CSS/Tailwind states; no dedicated motion dependency (web/package.json:2-28).",
+    "spacing": "Tailwind 4 quarter-rem steps and semantic spacing roles, 44px interaction targets (web/src/index.css:105-114).",
+    "framework": "React 19 + React Router 7 + Vite 8 + Tailwind 4 (web/package.json:2-28), embedded in one Go binary (docs/plan/PLAN.md:110-111).",
+    "shell": "Existing responsive top navigation and five mobile tabs, church name and Fold mark (web/src/components/Layout.tsx:51-179).",
+    "material": "Real existing groups, event dates, RSVP controls, calendar, member/leader/admin workflows; uploaded covers and six deterministic fallback patterns. Verification screenshots use test seed data only, not production claims.",
+    "routeInventory": ".hallmark/routes.md"
+  },
+  "preserve": [
+    "Approved Fold Violet, Inter, Fold mark, semantic token names and shared control contracts unless the user explicitly changes the brand decision",
+    "All destinations, fields, ids, test hooks, handlers, API calls and permission boundaries",
+    "The mobile/desktop navigation destinations and familiar Meetup-style groups, dates and RSVPs",
+    "Existing facts and assets, consent/legal wording, deployment model and tests"
+  ],
+  "introduce": [
+    "Recomposed app screens with stronger task hierarchy, more deliberate density and less repetitive card framing",
+    "Hallmark token/focus/motion/responsive/copy checks within Fold's product constraints",
+    "A shared documented visual system and before/after evidence after the direction is confirmed"
+  ],
+  "baseline": {
+    "build": "npm run build and CGO_ENABLED=0 binary build passed through verify-fold up using Node 24",
+    "runId": "20261101T185403Z-3129426",
+    "urlAtCapture": "http://127.0.0.1:34453",
+    "evidence": "/tmp/fold-verify-proof/20261101T185403Z-3129426/ui",
+    "screens": 25,
+    "widths": [390, 768, 1280],
+    "hardFailures": 0,
+    "controlsUnder44At390": 0,
+    "excluded": "profile-requests: verify-ui expects heading Requests; actual heading is Contact and add requests (web/src/pages/Profile.tsx:42). Initial full drive timed out here. Re-ran 25 other screens; did not edit the test or app to force a pass.",
+    "hallmarkSourceScan": "137 production CSS/TSX files: 39 FAIL, 9 REFLEX, 30 WARN; unadjudicated source flags, not a rendered verdict. Wiring snapshot: 88 links, 15 fields, 547 handlers, 1 test hook.",
+    "hallmarkRender": "Initial attempt lacked puppeteer-core. Subsequently installed it outside the repo at /tmp/fold-hallmark-tools and captured five public routes in isolated baseline run 20261101T190552Z-3221574: 40 FAIL, 9 REFLEX. Final rendered comparison is .hallmark/compare.html; no project dependency added.",
+    "visualRead": {
+      "job": "Church members find a group and answer an upcoming event; leaders and admins organize those activities.",
+      "keep": "Clear RSVP choices, accessible labelled controls, familiar date badges, and useful mobile tabs.",
+      "generatedTells": "Repeated oversized rounded date cards dilute hierarchy; signed-out opening uses a tracked-cap welcome eyebrow (54/67) and generic all-in-one copy (19).",
+      "broken": "No hard failures in the initial 75 checks. Supplemental coverage later found and corrected cover-focus contrast and a filter Clear target. The stale profile-requests locator is unchanged; supplemental coverage checks the actual page. Renderer dependency was resolved outside the repo."
+    }
+  }
+}

@@ -1,6 +1,7 @@
 import { createContext, useContext, useId, type InputHTMLAttributes, type ReactNode, type Ref, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { flushSync } from "react-dom";
 import { FormErrorsContext } from "./FormContext";
+import { AlertCircleIcon } from "../icons";
 
 // The one form pattern (DEC-65, PR7-SPEC): the label sits above the
 // control, the hint sits under the label and above the control (so it's
@@ -47,8 +48,8 @@ export function Field({ label, hint, error: providedError, optional, id: fixed, 
 // An error line: danger text with an icon, so it isn't color alone.
 function FieldError({ id, children }: { id?: string; children: ReactNode }) {
   return (
-    <p id={id} className="mt-1 flex items-center gap-1 text-sm text-danger">
-      <span aria-hidden="true">⚠</span>
+    <p id={id} className="mt-1 flex items-start gap-2 text-sm text-danger">
+      <AlertCircleIcon className="mt-0.5 size-4 shrink-0" />
       {children}
     </p>
   );
@@ -178,7 +179,7 @@ export function showFieldErrors(form: HTMLElement | null, update: () => void) {
 export function FormError({ layout, children }: { layout?: string; children: ReactNode }) {
   return (
     <p role="alert" className={`flex items-start gap-1 text-sm text-danger${layout ? ` ${layout}` : ""}`}>
-      <span aria-hidden="true">⚠</span>
+      <AlertCircleIcon className="mt-0.5 size-4 shrink-0" />
       <span>{children}</span>
     </p>
   );

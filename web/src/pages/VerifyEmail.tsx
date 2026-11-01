@@ -30,9 +30,9 @@ export function VerifyEmail() {
   }, [token, refresh]);
 
   return (
-    <div className="max-w-md mx-auto px-4 py-12">
+    <div className="fold-auth">
       <h1 className="text-3xl font-bold mb-6">Verify your email</h1>
-      <div className="bg-surface rounded-lg border border-border p-6">
+      <div className="fold-section">
         {state === "working" && <p className="text-sm text-text-muted">Verifying…</p>}
         {state === "done" && (
           <>

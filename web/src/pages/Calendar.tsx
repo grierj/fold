@@ -112,7 +112,7 @@ export function CalendarPage() {
 
   return (
     <div className="fold-page">
-      <header className="fold-page-header">
+      <header className="fold-page-header mb-4 border-0 pb-0">
         <h1 className="text-3xl font-bold text-text">Calendar</h1>
         <CalendarViewSwitch
           current={view}
@@ -120,7 +120,7 @@ export function CalendarPage() {
           to={(v) => (v === "rooms" ? `/calendar/rooms${params.get("date") ? `?date=${params.get("date")}` : ""}` : link({ view: v === "agenda" ? null : v }))}
         />
       </header>
-      <div className="space-y-4 border-b border-border pb-6">
+      <div className="space-y-3 border-b border-border pb-4">
         {view !== "agenda" && (
           <div className="flex items-center gap-2 sm:max-w-lg">
             <Button variant="secondary" aria-label={`Previous ${unit}`} onClick={() => step(-1)}>
@@ -155,7 +155,7 @@ export function CalendarPage() {
               Show deleted events
             </Chip>
           )}
-          <div className="min-w-0 w-full sm:ml-auto sm:w-56">
+          <div className="min-w-48 flex-1 sm:ml-auto sm:max-w-56">
             <Field label="Group">
               <Select
                 value={group}

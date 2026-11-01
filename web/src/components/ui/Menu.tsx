@@ -108,7 +108,7 @@ export function Menu({ items, label = "More", text = "More", align = "end", tone
               tabIndex={-1}
               disabled={it.disabled}
               onClick={() => { close(true); it.onSelect(); }}
-              className={`flex w-full min-h-11 items-center px-4 text-left text-sm font-medium hover:bg-sunken focus:bg-sunken focus:outline-none disabled:opacity-50 ${it.danger ? "text-danger" : "text-text"}`}
+              className={`flex w-full min-h-11 items-center px-4 text-left text-sm font-medium hover:bg-sunken focus:bg-sunken focus-visible:outline-2 focus-visible:outline-focus focus-visible:-outline-offset-2 disabled:opacity-50 ${it.danger ? "text-danger" : "text-text"}`}
             >
               {it.label}
             </button>

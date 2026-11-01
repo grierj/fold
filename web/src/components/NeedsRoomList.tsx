@@ -6,6 +6,7 @@ import type { NeedsRoom } from "../types";
 import { RoomField } from "./RoomField";
 import { Button } from "./ui/Button";
 import { FormError } from "./ui/Field";
+import { AlertCircleIcon } from "./icons";
 
 // A long list shows its first rows; the rest wait behind one button.
 const SHOWN = 10;
@@ -85,7 +86,7 @@ export function NeedsRoomList({ eventId, revision, hasDate, onPick }: {
       {notes}
       <section aria-labelledby="needs-room-title" className="mt-6 rounded-md border border-warning-border bg-warning-subtle p-4">
         <h2 id="needs-room-title" className="text-lg font-bold text-warning-on-subtle">
-          <span aria-hidden="true">⚠ </span>Dates that need a room ({needs.length})
+          <AlertCircleIcon className="mr-1 inline-block size-4 align-text-bottom" />Dates that need a room ({needs.length})
         </h2>
         <p className="mt-1 text-sm text-warning-on-subtle">These dates have no room right now. Pick another one for each.</p>
         <ul className="mt-3 space-y-3">
