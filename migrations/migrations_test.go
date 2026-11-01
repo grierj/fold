@@ -1589,3 +1589,70 @@ func TestMembershipAndRegistrationLookupPlans(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestPushSubscriptionsMigration checks 00058: the device table and its
+// bounds, push as a consent and delivery channel, and a Down that refuses
+// once push rows exist (as 00044's does).
+func TestPushSubscriptionsMigration(t *testing.T) {
+	t.Parallel()
+	db := openSQL(t, testdb.Fresh(t, false))
+	p, err := migrations.NewProvider(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := p.UpTo(ctx, 58); err != nil {
+		t.Fatal(err)
+	}
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.Exec(query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`INSERT INTO users(id,email,status) VALUES(1,'pat@example.com','active')`)
+	exec(`INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth,label) VALUES(1,'https://fcm.googleapis.com/a','k','a','Chrome on Linux')`)
+	for name, query := range map[string]string{
+		"duplicate endpoint": `INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth) VALUES(1,'https://fcm.googleapis.com/a','k','a')`,
+		"long endpoint":      `INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth) VALUES(1,'https://x/` + strings.Repeat("a", 2048) + `','k','a')`,
+		"long label":         `INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth,label) VALUES(1,'https://fcm.googleapis.com/b','k','a','` + strings.Repeat("a", 81) + `')`,
+		"no user":            `INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth) VALUES(99,'https://fcm.googleapis.com/c','k','a')`,
+		"other channel":      `INSERT INTO consents(user_id,channel,scope,status,source) VALUES(1,'fax','all','opted_in','web_form')`,
+	} {
+		if _, err := db.Exec(query); err == nil {
+			t.Errorf("%s allowed", name)
+		}
+	}
+	if _, err := p.DownTo(ctx, 57); err == nil || !strings.Contains(err.Error(), "push devices, consent or deliveries exist") {
+		t.Fatalf("down discarded devices: %v", err)
+	}
+	exec(`DELETE FROM push_subscriptions`)
+	exec(`INSERT INTO consents(user_id,channel,scope,status,source) VALUES(1,'push','all','opted_in','web_form')`)
+	if _, err := p.DownTo(ctx, 57); err == nil || !strings.Contains(err.Error(), "push devices, consent or deliveries exist") {
+		t.Fatalf("down discarded push consent: %v", err)
+	}
+	exec(`TRUNCATE consents`)
+	exec(`INSERT INTO notifications(user_id,kind,category,title,link) VALUES(1,'group.approved','groups','t','/')`)
+	exec(`INSERT INTO notification_deliveries(notification_id,user_id,channel,status) SELECT id,1,'push','sent' FROM notifications`)
+	if _, err := p.DownTo(ctx, 57); err == nil {
+		t.Fatal("down discarded push deliveries")
+	}
+	exec(`DELETE FROM notification_deliveries`)
+	if _, err := p.DownTo(ctx, 57); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO consents(user_id,channel,scope,status,source) VALUES(1,'push','all','opted_in','web_form')`); err == nil {
+		t.Fatal("push consent allowed after down")
+	}
+	// Deleting a user removes their devices.
+	if _, err := p.UpTo(ctx, 58); err != nil {
+		t.Fatal(err)
+	}
+	exec(`INSERT INTO push_subscriptions(user_id,endpoint,p256dh,auth) VALUES(1,'https://fcm.googleapis.com/a','k','a')`)
+	exec(`DELETE FROM notifications`)
+	exec(`DELETE FROM users WHERE id=1`)
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM push_subscriptions`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("devices after the user went: %d %v", n, err)
+	}
+}

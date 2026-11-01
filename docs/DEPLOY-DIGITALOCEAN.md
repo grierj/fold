@@ -178,7 +178,7 @@ The script will:
 7. Install Docker Engine and the Compose plugin from Docker's Ubuntu repository when `docker compose version` is not already working.
 8. Copy the stack to `/opt/fold`, write `/opt/fold/.env` mode 600 with a new `SESSION_SECRET` and `DB_PASSWORD`, and refuse to continue if that file is not mode 600 or is committed in git.
 9. Install `/opt/fold/backup.sh` and a cron job at 02:30 in the droplet's timezone.
-10. After Compose is up, run `smoke.sh`: wait until the db and app containers are healthy, request `https://$DOMAIN/healthz`, check the TLS certificate, and fail if 5432 or 8080 is reachable. The same script runs from cron every five minutes (`logger -t fold-health` on failure).
+10. After Compose is up, run `smoke.sh`: wait until the db and app containers are healthy, request `https://$DOMAIN/healthz`, check the TLS certificate, and fail if 5432 or 8080 is reachable. It also runs `fold push check` and warns, without failing, if the app can't reach a browser push service on port 443. The same script runs from cron every five minutes (`logger -t fold-health` on failure).
 11. Read `sshd -T` and fail if root login or password login is still on. Fail if `ufw` is not active.
 
 A second run does not rotate `.env` secrets, does not duplicate SSH keys, and does not replace `/swapfile` or `backup.env`. Pass the same `--domain`. To change the hostname, edit `.env` yourself; the script stops if the flag and the file disagree. `:latest` is refused.

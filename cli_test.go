@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fold/internal/push"
 	"fold/internal/testdb"
 	"fold/migrations"
+	"net"
 	"strings"
 	"testing"
 )
@@ -124,5 +127,112 @@ func TestMigrateDownOneRefusesAdvancedMembershipTenure(t *testing.T) {
 	}
 	if _, err := db.Exec(`UPDATE memberships SET tenure=9 WHERE id=50`); err == nil {
 		t.Fatal("down-one failure left tenure trigger inactive")
+	}
+}
+
+func TestPushKeysShowAndRotate(t *testing.T) {
+	testdb.Shared(t)
+	name := testdb.Fresh(t, true)
+	url, err := testdb.URL(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := testdb.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if s, err := db.DB(); err == nil {
+			s.Close()
+		}
+	})
+	t.Setenv("APP_ENV", "")
+	t.Setenv("SESSION_SECRET", "")
+	t.Setenv("DATABASE_URL", url)
+	var out, errOut bytes.Buffer
+	// No keys until the server first starts.
+	if code := run([]string{"push", "keys", "show"}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "no web push keys yet") {
+		t.Fatalf("show before boot: %d %q", code, errOut.String())
+	}
+	secret := "a session secret that is long enough for prod"
+	if _, err := ensureVAPIDKeys(db, []byte(secret)); err != nil {
+		t.Fatal(err)
+	}
+	public, _, _ := readVAPID(db)
+	out.Reset()
+	if code := run([]string{"push", "keys", "show"}, &out, &errOut); code != 0 || out.String() != public+"\n" {
+		t.Fatalf("show: %d %q", code, out.String())
+	}
+	out.Reset()
+	if code := run([]string{"push", "keys", "show", "--json"}, &out, &errOut); code != 0 || out.String() != `{"publicKey":"`+public+`"}`+"\n" {
+		t.Fatalf("show --json: %d %q", code, out.String())
+	}
+	// Rotate needs SESSION_SECRET outside dev.
+	errOut.Reset()
+	if code := run([]string{"push", "keys", "rotate"}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "SESSION_SECRET must be set") {
+		t.Fatalf("rotate without a secret: %d %q", code, errOut.String())
+	}
+	t.Setenv("SESSION_SECRET", secret)
+	if err := db.Exec(`INSERT INTO users (id, email, name, role, status) VALUES (1, 'pat@example.com', 'Pat', 'member', 'active')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (1, 'https://fcm.googleapis.com/a', 'k', 'a'), (1, 'https://fcm.googleapis.com/b', 'k', 'a')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := run([]string{"push", "keys", "rotate"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "removed 2 devices") {
+		t.Fatalf("rotate: %d %q %q", code, out.String(), errOut.String())
+	}
+	rotated, enc, _ := readVAPID(db)
+	if rotated == public {
+		t.Fatal("rotate kept the key")
+	}
+	if _, err := openVAPIDKey([]byte(secret), enc); err != nil {
+		t.Fatalf("the rotated key doesn't open with SESSION_SECRET: %v", err)
+	}
+	out.Reset()
+	if code := run([]string{"push", "keys", "rotate", "--json"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), `"devicesRemoved":0`) {
+		t.Fatalf("rotate --json: %d %q", code, out.String())
+	}
+	if code := run([]string{"push", "keys", "spin"}, &out, &errOut); code != 2 {
+		t.Fatalf("unknown push command: %d", code)
+	}
+}
+
+func TestPushCheckNeedsNothingAndReportsEachHost(t *testing.T) {
+	for _, k := range []string{"APP_ENV", "SESSION_SECRET", "DATABASE_URL"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("FOLD_PUSH_HOSTS", "push.example.org")
+	var dialed []string
+	pushCheckDial = func(_ context.Context, _, addr string) (net.Conn, error) {
+		dialed = append(dialed, addr)
+		if addr == "push.example.org:443" {
+			return nil, errors.New("no route to host")
+		}
+		a, b := net.Pipe()
+		_ = b.Close()
+		return a, nil
+	}
+	t.Cleanup(func() { pushCheckDial = nil })
+	var out, errOut bytes.Buffer
+	if code := run([]string{"push", "check"}, &out, &errOut); code != 1 {
+		t.Fatalf("check: %d", code)
+	}
+	if !strings.Contains(out.String(), "OK    fcm.googleapis.com:443") || !strings.Contains(out.String(), "OK    web.push.apple.com:443") ||
+		!strings.Contains(out.String(), "FAIL  push.example.org:443  no route to host") || !strings.Contains(errOut.String(), "Allow outbound https") {
+		t.Fatalf("check output %q %q", out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "SKIP  push.samsungosp.com") || len(dialed) != len(push.DefaultHosts) {
+		t.Fatalf("dialed %v", dialed)
+	}
+	t.Setenv("FOLD_PUSH_HOSTS", "")
+	out.Reset()
+	if code := run([]string{"push", "check", "--json"}, &out, &errOut); code != 0 || !json.Valid(out.Bytes()) || !strings.Contains(out.String(), `"ok":true`) {
+		t.Fatalf("check --json: %d %q", code, out.String())
+	}
+	t.Setenv("FOLD_PUSH_HOSTS", "10.0.0.1")
+	if code := run([]string{"push", "check"}, &out, &errOut); code != 1 {
+		t.Fatalf("a bad FOLD_PUSH_HOSTS: %d", code)
 	}
 }

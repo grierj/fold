@@ -9,8 +9,14 @@ import (
 	"os"
 	"path"
 	"slices"
+	"strings"
 
+	"fold/internal/push"
 	"fold/migrations"
+
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 // version is set at build time with -ldflags "-X main.version=x.y.z".
@@ -22,6 +28,10 @@ commands:
   serve                        run the web server (the default)
   healthcheck                  probe the local server (used by Docker)
   migrate [up|status|down-one] apply or inspect schema migrations (needs DATABASE_URL)
+  push keys show               print the web push public key (needs DATABASE_URL)
+  push keys rotate             make new web push keys and remove every device
+                               (needs SESSION_SECRET and DATABASE_URL)
+  push check                   connect to each push service on port 443
   version                      print the version
 `
 
@@ -42,6 +52,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runHealthcheck(getEnv("PORT", "8080"))
 	case "migrate":
 		return runMigrate(args, asJSON, stdout, stderr)
+	case "push":
+		return runPush(args, asJSON, stdout, stderr)
 	case "version":
 		if asJSON {
 			_ = json.NewEncoder(stdout).Encode(map[string]string{"version": version})
@@ -130,6 +142,109 @@ func runMigrate(args []string, asJSON bool, stdout, stderr io.Writer) int {
 	}
 	for _, r := range rows {
 		fmt.Fprintf(stdout, "%05d  %-10s  %s\n", r.Version, r.State, r.Name)
+	}
+	return 0
+}
+
+// pushCheckDial is how `fold push check` connects; tests replace it so
+// they need no network. nil is push's own dialer.
+var pushCheckDial push.DialFunc
+
+// runPush is `fold push keys show|rotate` and `fold push check` (M3.13a,
+// PLAN 11.4). Each loads only what it needs: check needs nothing, show
+// only DATABASE_URL, rotate SESSION_SECRET as well.
+func runPush(args []string, asJSON bool, stdout, stderr io.Writer) int {
+	sub := strings.Join(args, " ")
+	switch sub {
+	case "check":
+		return runPushCheck(asJSON, stdout, stderr)
+	case "keys show", "keys rotate":
+	default:
+		fmt.Fprintf(stderr, "fold: unknown push command %q (want keys show, keys rotate, or check)\n", sub)
+		return 2
+	}
+	var secret string
+	if sub == "keys rotate" {
+		var err error
+		if secret, err = sessionSecret(getEnv("APP_ENV", "prod") == "dev"); err != nil {
+			fmt.Fprintln(stderr, "fold:", err)
+			return 1
+		}
+	}
+	url, err := databaseURL()
+	if err != nil {
+		fmt.Fprintln(stderr, "fold:", err)
+		return 1
+	}
+	// No migrations here: `fold migrate` and `fold serve` do that.
+	db, err := gorm.Open(postgres.Open(url), &gorm.Config{Logger: logger.Discard})
+	if err != nil {
+		fmt.Fprintln(stderr, "fold:", err)
+		return 1
+	}
+	if sqlDB, err := db.DB(); err == nil {
+		defer sqlDB.Close()
+	}
+	var removed int64
+	if sub == "keys rotate" {
+		if removed, err = rotateVAPIDKeys(db, []byte(secret)); err != nil {
+			fmt.Fprintln(stderr, "fold: push keys rotate:", err)
+			return 1
+		}
+	}
+	public, _, err := readVAPID(db)
+	if err != nil {
+		fmt.Fprintf(stderr, "fold: push %s: %v\n", sub, err)
+		return 1
+	}
+	switch {
+	case sub == "keys rotate" && asJSON:
+		_ = json.NewEncoder(stdout).Encode(map[string]any{"publicKey": public, "devicesRemoved": removed})
+	case sub == "keys rotate":
+		fmt.Fprintf(stdout, "made new web push keys; removed %d devices (members turn notifications on again in Me > Notifications)\n", removed)
+	case public == "":
+		fmt.Fprintln(stderr, "fold: no web push keys yet; the server makes them when it starts")
+		return 1
+	case asJSON:
+		_ = json.NewEncoder(stdout).Encode(map[string]string{"publicKey": public})
+	default:
+		fmt.Fprintln(stdout, public)
+	}
+	return 0
+}
+
+// runPushCheck resolves and connects to each allow-listed push host on
+// 443 and says which it can't reach. It exits 1 if any fails.
+func runPushCheck(asJSON bool, stdout, stderr io.Writer) int {
+	extra, err := push.ParseHosts(os.Getenv("FOLD_PUSH_HOSTS"))
+	if err != nil {
+		fmt.Fprintln(stderr, "fold:", err)
+		return 1
+	}
+	results := push.Check(context.Background(), push.NewAllowList(extra...).Hosts(), pushCheckDial)
+	failed := false
+	for _, r := range results {
+		failed = failed || (!r.OK && !r.Skipped)
+	}
+	if asJSON {
+		_ = json.NewEncoder(stdout).Encode(results)
+	} else {
+		for _, r := range results {
+			switch {
+			case r.OK:
+				fmt.Fprintf(stdout, "OK    %s:443\n", r.Host)
+			case r.Skipped:
+				fmt.Fprintf(stdout, "SKIP  %s  (no known host to test)\n", r.Host)
+			default:
+				fmt.Fprintf(stdout, "FAIL  %s:443  %s\n", r.Host, r.Error)
+			}
+		}
+		if failed {
+			fmt.Fprintln(stderr, "fold: some push services can't be reached, so notifications to browsers that use them will fail. Allow outbound https (port 443) to them.")
+		}
+	}
+	if failed {
+		return 1
 	}
 	return 0
 }

@@ -2,3 +2,4 @@
 ^internal/notify/kinds\.go:[0-9]+:[0-9]+: unreachable func: Kinds$
 ^models/models\.go:[0-9]+:[0-9]+: unreachable func: All$
 ^internal/content/sms\.go:[0-9]+:[0-9]+: unreachable func: (CountSMS|FramedSMS|DonationAsk)$
+^push_deliver\.go:[0-9]+:[0-9]+: unreachable func: enqueuePushDelivery$

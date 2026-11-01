@@ -297,6 +297,11 @@ func TestCleanError(t *testing.T) {
 		"550 <lee@example.org>: rejected\nmore detail": "550 <[email]>: rejected",
 		"bad\x00byte":        "badbyte",
 		"connection refused": "connection refused",
+		// A push endpoint's path is the device's secret (M3.13).
+		`Post "https://fcm.googleapis.com/fcm/send/dQw4w9WgXcQ:APA91bH": EOF`:         `Post "https://fcm.googleapis.com/[path]": EOF`,
+		"to https://user:pw@push.example.org:443/x?token=abc failed":                  "to https://push.example.org:443/[path] failed",
+		"key BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4b":           "key [token]",
+		"vapid t=eyJ0eXAiOiJKV1QiLCJhbGciOiJFUzI1NiJ9.eyJhdWQiOiJodHRwcyJ9.c2ln, k=x": "vapid t=[token], k=x",
 	} {
 		if got := CleanError(errors.New(in)); got != want {
 			t.Errorf("%q: %q, want %q", in, got, want)

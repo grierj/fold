@@ -607,6 +607,7 @@ type MailOutbox struct {
 const (
 	DeliveryEmail = "email"
 	DeliverySMS   = "sms"
+	DeliveryPush  = "push"
 
 	DeliverySent       = "sent"
 	DeliveryFailed     = "failed"
@@ -896,12 +897,30 @@ type Consent struct {
 // Consent channels, statuses and sources.
 const (
 	ConsentEmail         = "email"
+	ConsentPush          = "push"
 	ConsentOptedIn       = "opted_in"
 	ConsentOptedOut      = "opted_out"
 	ConsentSourceWebForm = "web_form"
 	// ConsentSourceUnsubscribe: an email's unsubscribe link (M3.3).
 	ConsentSourceUnsubscribe = "unsubscribe_link"
 )
+
+// PushSubscription is one browser installation that turned on web push
+// (M3.13a, DEC-125). Endpoint is a capability: never log it, put it in an
+// error or return it. P256dh and Auth are the browser's public key and
+// secret, stored as given (base64url). Label is derived on the server.
+type PushSubscription struct {
+	ID         uint   `gorm:"primaryKey"`
+	UserID     uint   `gorm:"not null;index:idx_push_subscriptions_user_id"`
+	Endpoint   string `gorm:"not null;unique"`
+	P256dh     string `gorm:"column:p256dh;not null"`
+	Auth       string `gorm:"not null"`
+	ExpiresAt  *time.Time
+	Label      string    `gorm:"not null;default:''"`
+	CreatedAt  time.Time `gorm:"not null;default:now()"`
+	LastUsedAt time.Time `gorm:"not null;default:now()"`
+	FailedAt   *time.Time
+}
 
 // ContactRequest stores contact/group_add/occurrence_add outcomes, not attempt
 // history (AuditLog owns that). Retained IDs have no live-domain foreign keys.
@@ -1011,6 +1030,7 @@ func All() []any {
 		&AccountRequest{}, &GuestSignup{}, &CalendarToken{},
 		&Household{}, &HouseholdAccount{}, &HouseholdPerson{}, &GuardianLink{}, &TeenConsent{},
 		&ContactRequest{}, &ContactGrant{}, &OccurrenceAccess{}, &ManagerAddBlock{}, &Consent{}, &Room{}, &RoomBooking{}, &RoomRequest{}, &RoomFeedToken{}, &Job{}, &Suppression{}, &Message{}, &MessageRecipient{},
+		&PushSubscription{},
 	}
 }
 

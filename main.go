@@ -21,6 +21,7 @@ import (
 
 	"fold/internal/mail"
 	"fold/internal/providers"
+	"fold/internal/push"
 	"fold/models"
 	"fold/storage"
 
@@ -55,6 +56,16 @@ type App struct {
 	// without a process restart after that, which is the normal case.
 	setupMu   sync.RWMutex
 	setupDone bool
+
+	// Push sends web push (M3.13). nil builds the default from Config on
+	// first use (pushClient); tests point its HTTP transport at a fake.
+	Push     *push.Client
+	pushOnce sync.Once
+	// vapid caches the decrypted VAPID key (push_keys.go).
+	vapid vapidCache
+	// pushRender overrides renderPush in tests, until slice b gives kinds
+	// their own push text.
+	pushRender func(*models.Notification) (push.Notification, bool)
 }
 
 const sessionName = "fold-session"
@@ -107,6 +118,14 @@ func serve(stderr io.Writer) int {
 	app := &App{
 		DB: db, Store: store, Config: cfg, Uploads: uploads,
 		Mailer: newMailer(cfg, db),
+	}
+	// Web push keys (M3.13a): made on first boot, and again if
+	// SESSION_SECRET changed. A failure here costs only push, so the
+	// server still starts and the next boot tries again.
+	if notices, err := ensureVAPIDKeys(db, cfg.SessionSecret); err != nil {
+		log.Printf("push: couldn't set up the web push keys: %v", err)
+	} else {
+		app.deliverNotificationEmails(notices)
 	}
 	r := app.setupRouter()
 
