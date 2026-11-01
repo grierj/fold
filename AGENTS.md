@@ -141,7 +141,11 @@ a running server rereads the row on each send. `internal/push` is stdlib only an
 the allow-listed push hosts (`push.DefaultHosts` plus optional `FOLD_PUSH_HOSTS`) over https, with
 resolved-IP checks, no proxy and no redirects. An endpoint is a capability: never log, return or
 put in an error an endpoint, `p256dh`, `auth`, the VAPID token or a body (`jobs.CleanError` strips
-URL paths and tokens as a backstop). `push.deliver` is one job per device. The service worker
+URL paths and tokens as a backstop). `push.deliver` is one job per device. Quiet hours (DEC-126,
+M3.13d1): an optional push outside the recipient-local window (`push.Window`, the interim copy M3.8
+replaces) returns `jobs.Later` and reruns every check when it opens; required kinds and `PushSoon`
+date changes within 24 hours go at once; more than 20 optional pushes an hour are `suppressed`
+"hourly limit". The service worker
 (slice c1) has no `fetch` handler, so it can never serve a stale shell after logout. A kind
 pushes only with `AllowPush` and its own short `PushRender` (stored on the row, never the bell
 body cut short; safety kinds get the safe line, titled with `site_name` at send, DEC-134);

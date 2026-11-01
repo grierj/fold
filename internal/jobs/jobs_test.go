@@ -106,6 +106,45 @@ func TestLastAttempt(t *testing.T) {
 	}
 }
 
+// A handler that returns Later waits until then without using an attempt
+// or recording an error, even on what would be its last attempt, and
+// runs from the top when it is due.
+func TestLaterWaitsWithoutUsingAnAttempt(t *testing.T) {
+	db := testdb.Shared(t)
+	calls := 0
+	at := time.Now().Add(9 * time.Hour).Truncate(time.Second)
+	r := runner(db, Kind{Name: "wait", Run: func(context.Context, json.RawMessage) error {
+		calls++
+		if calls <= 3 {
+			return fmt.Errorf("quiet hours: %w", Later(at))
+		}
+		return nil
+	}})
+	Enqueue(db, "wait", nil, time.Now(), "wait:1", 1)
+	for i := 1; i <= 3; i++ {
+		if ran, err := r.RunOnce(context.Background(), "w"); !ran || err != nil {
+			t.Fatalf("run %d: %v %v", i, ran, err)
+		}
+		var j models.Job
+		db.First(&j)
+		if j.Status != models.JobQueued || j.Attempts != 0 || j.LastError != "" || !j.RunAt.Equal(at) || j.LockedAt != nil {
+			t.Fatalf("run %d: %+v", i, j)
+		}
+		if ran, _ := r.RunOnce(context.Background(), "w"); ran {
+			t.Fatal("a waiting job ran early")
+		}
+		db.Model(&j).Update("run_at", time.Now().Add(-time.Second))
+	}
+	if ran, err := r.RunOnce(context.Background(), "w"); !ran || err != nil {
+		t.Fatalf("last run: %v %v", ran, err)
+	}
+	var j models.Job
+	db.First(&j)
+	if j.Status != models.JobDone || j.Attempts != 1 || calls != 4 {
+		t.Fatalf("after it was due: %+v, %d calls", j, calls)
+	}
+}
+
 // A failing job retries with backoff and is dead after max_attempts.
 func TestFailingJobRetriesThenDies(t *testing.T) {
 	db := testdb.Shared(t)

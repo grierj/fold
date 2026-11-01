@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -122,8 +123,9 @@ func (a *App) lockScreen(n *models.Notification) (push.Notification, bool) {
 // queuePushDeliveries queues one push.deliver per device for every row
 // among ids that pushes (an AllowPush kind with push text) and whose
 // recipient has a device (M3.13b). Call it after the writing transaction
-// committed, beside the email (deliverNotificationEmails does). Push is
-// immediate: there is no "if not seen" delay as email will have. The job
+// committed, beside the email (deliverNotificationEmails does). Every job
+// is due at once: there is no "if not seen" delay as email will have, and
+// the job itself decides whether quiet hours make it wait (DEC-126). It
 // checks the church switch, the account and consent when it runs. A
 // failure is logged, never returned: the rows are committed, and the bell
 // and email still have them.
@@ -178,19 +180,54 @@ func renderPush(n *models.Notification) (push.Notification, bool) {
 // a task waits up to 3 days at low urgency, and anything else keeps a day.
 // The topic (n<id>) only collapses retries of the same notification still
 // waiting at the push service; different rows never replace each other.
-func (a *App) pushOptions(ctx context.Context, k notify.Kind, n *models.Notification) push.Options {
+// soon is startsSoon's answer for the row.
+func pushOptions(k notify.Kind, n *models.Notification, soon bool) push.Options {
 	opts := push.Options{TTL: pushTTL, Urgency: push.UrgencyNormal, Topic: "n" + strconv.FormatUint(uint64(n.ID), 10)}
 	switch {
 	case k.Waiting:
 		opts.TTL, opts.Urgency = pushTTLTask, push.UrgencyLow
-	case k.PushSoon && n.SubjectType == "occurrence" && n.SubjectID != nil:
-		var o models.EventOccurrence
-		if err := a.DB.WithContext(ctx).Select("starts_at").First(&o, *n.SubjectID).Error; err == nil &&
-			o.StartsAt.Before(time.Now().Add(24*time.Hour)) {
-			opts.TTL, opts.Urgency = pushTTLSoon, push.UrgencyHigh
-		}
+	case soon:
+		opts.TTL, opts.Urgency = pushTTLSoon, push.UrgencyHigh
 	}
 	return opts
+}
+
+// startsSoon reports, for a row about event dates (a PushSoon kind),
+// whether the earliest date not yet over starts within 24 hours of now
+// (soon), and whether every date it names is already over (over). The row
+// names its dates by its occurrence subject, or by its event subject plus
+// Data "dates" (the original dates). A soon push is urgent and goes
+// whatever the hour (DEC-126); an over one doesn't push at all, so a
+// change to a finished date never wakes anyone at 3 AM. A row that names
+// no date, or dates that no longer exist, is neither.
+func (a *App) startsSoon(ctx context.Context, k notify.Kind, n *models.Notification, now time.Time) (soon, over bool, err error) {
+	if !k.PushSoon || n.SubjectID == nil {
+		return false, false, nil
+	}
+	db := a.DB.WithContext(ctx).Model(&models.EventOccurrence{})
+	switch n.SubjectType {
+	case "occurrence":
+		db = db.Where("id = ?", *n.SubjectID)
+	case "event":
+		var data struct {
+			Dates []string `json:"dates"`
+		}
+		if json.Unmarshal([]byte(n.Data), &data) != nil || len(data.Dates) == 0 {
+			return false, false, nil
+		}
+		db = db.Where("event_id = ? AND original_date IN ?", *n.SubjectID, data.Dates)
+	default:
+		return false, false, nil
+	}
+	// A date is over once it ends (greatest() in case an old row's end
+	// isn't after its start). bool_and over no rows is NULL: not over.
+	var first sql.NullTime
+	var allOver sql.NullBool
+	if err := db.Select("min(starts_at) FILTER (WHERE greatest(ends_at, starts_at) > ?), bool_and(greatest(ends_at, starts_at) <= ?)", now, now).
+		Row().Scan(&first, &allOver); err != nil {
+		return false, false, err
+	}
+	return first.Valid && first.Time.Before(now.Add(24*time.Hour)), allOver.Valid && allOver.Bool, nil
 }
 
 // Delivery reasons a push row can carry (notification_deliveries.reason).
@@ -202,7 +239,80 @@ const (
 	pushWhyTooLarge   = "the notification was too large to push"
 	pushWhyRefused    = "the push service refused it"
 	pushWhyNotReached = "the push service couldn't be reached"
+	pushWhyRead       = "already read"
+	pushWhyStale      = "no longer current"
+	pushWhyHourly     = "hourly limit"
 )
+
+// Reasons on a sent row: why it went whatever the hour. An optional push's
+// sent row has no reason, and only those count toward the hourly limit.
+const (
+	pushSentRequired = "required"
+	pushSentSoon     = "event starting within 24 hours"
+)
+
+// pushHourlyLimit is how many optional pushes a person gets in an hour
+// (DEC-126); past it they are suppressed and the bell still has them.
+const pushHourlyLimit = 20
+
+func (a *App) pushNow() time.Time {
+	if a.pushClock != nil {
+		return a.pushClock()
+	}
+	return time.Now()
+}
+
+// pushQuietHours is the window optional pushes wait for (DEC-126):
+// push.DefaultWindow, 8 AM to 8 PM in the recipient's zone, until M3.8
+// brings the shared, configurable one.
+func (a *App) pushQuietHours() push.Window {
+	if a.pushWindow != nil {
+		return *a.pushWindow
+	}
+	return push.DefaultWindow
+}
+
+// pushStale says why n should no longer push, or "": it was archived, has
+// expired, or is a task someone resolved (no longer current), or it is an
+// ordinary item the person already read in Fold. A task is never "read"
+// (it stays counted until resolved), so reading one doesn't stop its push.
+// This matters most for a push that waited out quiet hours.
+func pushStale(n *models.Notification, now time.Time) string {
+	switch {
+	case n.ArchivedAt != nil, n.ExpiresAt != nil && !n.ExpiresAt.After(now), n.Waiting && n.ResolvedAt != nil:
+		return pushWhyStale
+	case !n.Waiting && n.ReadAt != nil:
+		return pushWhyRead
+	}
+	return ""
+}
+
+// overHourlyLimit reports whether the person already had pushHourlyLimit
+// optional pushes in the hour before now. It counts notifications, not
+// devices: a notification has one push row however many devices took it.
+// Once n's own row is sent (another device took it), n is never limited,
+// so a person's second device always gets what the first did. Required
+// pushes and urgent event changes carry a reason on their sent row and
+// aren't counted. idx_notification_deliveries_push_sent (migration 00060)
+// covers the count; its predicate is written as literals so a cached
+// generic plan still matches the partial index.
+//
+// There's no lock: workers racing for the last slot can each see 19 and
+// send, so a burst can overshoot by up to about the number of workers.
+// A night's backlog wakes together at 8:00, and only the first 20 go; the
+// rest are suppressed and stay in the bell (DEC-126 as written).
+func (a *App) overHourlyLimit(ctx context.Context, n models.Notification, now time.Time) (bool, error) {
+	var r struct {
+		OwnSent bool
+		Recent  int64
+	}
+	err := a.DB.WithContext(ctx).Raw(`SELECT
+		EXISTS (SELECT 1 FROM notification_deliveries WHERE notification_id = ? AND channel = 'push' AND status = 'sent') AS own_sent,
+		(SELECT count(*) FROM notification_deliveries
+			WHERE user_id = ? AND channel = 'push' AND status = 'sent' AND reason = '' AND sent_at > ? AND notification_id <> ?) AS recent`,
+		n.ID, n.UserID, now.Add(-time.Hour), n.ID).Scan(&r).Error
+	return !r.OwnSent && r.Recent >= pushHourlyLimit, err
+}
 
 // deliverPush sends one notification to one device. It returns an error
 // only when a retry may succeed (429, 5xx, a timeout).
@@ -233,7 +343,7 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 		return a.recordPush(n, models.DeliverySuppressed, pushWhyChurchOff)
 	}
 	var u models.User
-	if err := a.DB.WithContext(ctx).Select("id", "status").First(&u, n.UserID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+	if err := a.DB.WithContext(ctx).Select("id", "status", "timezone").First(&u, n.UserID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	} else if err != nil {
 		return err
@@ -251,6 +361,48 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	case categoryOff && !kind.Required:
 		return a.recordPush(n, models.DeliverySuppressed, "push turned off for "+notify.CategoryEmailName(kind.Category))
 	}
+	now := a.pushNow()
+	if why := pushStale(&n, now); why != "" {
+		return a.recordPush(n, models.DeliverySuppressed, why)
+	}
+	// Quiet hours and the hourly limit (DEC-126): a required kind, or a
+	// change to a date starting within 24 hours, goes whatever the hour
+	// and isn't counted. Anything else waits for the recipient's window
+	// (this job runs again from the top then, rechecking all of the
+	// above), and past the limit it is dropped; the bell still has it.
+	soon, over, err := a.startsSoon(ctx, kind, &n, now)
+	if err != nil {
+		return err
+	}
+	if over {
+		return a.recordPush(n, models.DeliverySuppressed, pushWhyStale)
+	}
+	sentWhy := ""
+	switch {
+	case kind.Required:
+		sentWhy = pushSentRequired
+	case soon:
+		sentWhy = pushSentSoon
+	default:
+		// The zone is resolved as emails resolve it (zoneOrChurch reads
+		// the church's only when the person's own doesn't load), so the
+		// window gets no zone name of its own.
+		if inside, opens := a.pushQuietHours().Check(now, "", zoneOrChurch(a.DB.WithContext(ctx), u.Timezone)); !inside {
+			// At least a second out, so the app's clock running a little
+			// behind the database's can't make the job spin.
+			if soonest := now.Add(time.Second); opens.Before(soonest) {
+				opens = soonest
+			}
+			return jobs.Later(opens)
+		}
+		over, err := a.overHourlyLimit(ctx, n, now)
+		if err != nil {
+			return err
+		}
+		if over {
+			return a.recordPush(n, models.DeliverySuppressed, pushWhyHourly)
+		}
+	}
 	note, ok := a.lockScreen(&n)
 	if !ok {
 		return nil
@@ -261,8 +413,8 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 		return a.recordPush(n, models.DeliveryFailed, pushWhyTooLarge)
 	}
 	sub := push.Subscription{Endpoint: dev.Endpoint, P256dh: dev.P256dh, Auth: dev.Auth}
-	res := a.pushClient().Send(ctx, sub, body, a.pushOptions(ctx, kind, &n))
-	return a.pushOutcome(ctx, n, dev, res)
+	res := a.pushClient().Send(ctx, sub, body, pushOptions(kind, &n, soon))
+	return a.pushOutcome(ctx, n, dev, res, sentWhy)
 }
 
 // pushBody is the Declarative Web Push JSON for n: the rendered text, a
@@ -277,8 +429,9 @@ func (a *App) pushBody(n *models.Notification, note push.Notification) ([]byte, 
 	return push.MarshalPayload(push.NewPayload(note))
 }
 
-// pushOutcome records what the push service said about one device.
-func (a *App) pushOutcome(ctx context.Context, n models.Notification, dev models.PushSubscription, res push.Result) error {
+// pushOutcome records what the push service said about one device;
+// sentWhy is the sent row's reason ("" for an optional push).
+func (a *App) pushOutcome(ctx context.Context, n models.Notification, dev models.PushSubscription, res push.Result, sentWhy string) error {
 	switch res.Status {
 	case push.Accepted:
 		// It went: nothing below may turn this into a retry, which would
@@ -287,7 +440,7 @@ func (a *App) pushOutcome(ctx context.Context, n models.Notification, dev models
 			WHERE id = ? AND (last_used_at < now() - interval '1 day' OR failed_at IS NOT NULL)`, dev.ID).Error; err != nil {
 			log.Printf("push: device %d: marking it used: %v", dev.ID, err)
 		}
-		if err := a.recordPush(n, models.DeliverySent, ""); err != nil {
+		if err := a.recordPush(n, models.DeliverySent, sentWhy); err != nil {
 			log.Printf("push: notification %d: recording the delivery: %v", n.ID, err)
 		}
 		return nil
@@ -304,7 +457,7 @@ func (a *App) pushOutcome(ctx context.Context, n models.Notification, dev models
 			if left > 0 {
 				return nil // another device may still take it
 			}
-			return recordPushIn(tx, n, models.DeliverySuppressed, pushWhyGone)
+			return recordPushIn(tx, n, models.DeliverySuppressed, pushWhyGone, a.pushNow())
 		})
 	case push.TooLarge:
 		log.Printf("push: notification %d (%s) was too large for the push service (%d): a bug in its push text", n.ID, n.Kind, res.Code)
@@ -354,17 +507,18 @@ func pushConsent(db *gorm.DB, userID uint, category string) (on, categoryOff boo
 }
 
 func (a *App) recordPush(n models.Notification, status, reason string) error {
-	return recordPushIn(a.DB, n, status, reason)
+	return recordPushIn(a.DB, n, status, reason, a.pushNow())
 }
 
 // recordPushIn writes the notification's one push delivery row. A sent
 // row is final; any other first outcome stays unless a later device takes
-// it, which upgrades the row to sent.
-func recordPushIn(db *gorm.DB, n models.Notification, status, reason string) error {
+// it, which upgrades the row to sent. now is the send time on a sent row,
+// which the hourly limit counts by.
+func recordPushIn(db *gorm.DB, n models.Notification, status, reason string, now time.Time) error {
 	var sentAt *time.Time
 	if status == models.DeliverySent {
-		now := time.Now().UTC()
-		sentAt = &now
+		at := now.UTC()
+		sentAt = &at
 	}
 	return db.Exec(`INSERT INTO notification_deliveries (notification_id, user_id, channel, status, reason, sent_at)
 		VALUES (?, ?, ?, ?, ?, ?)
