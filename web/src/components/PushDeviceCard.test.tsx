@@ -150,13 +150,13 @@ describe("the eight states", () => {
     expect(await screen.findByText(/Open Settings → Notifications → Grace Church/)).toBeInTheDocument();
   });
 
-  it("church off: one line, nothing to press", async () => {
+  it("church off: no card at all (DEC-124)", async () => {
     api.config.mockResolvedValue({ enabled: false, publicKey: "" });
     show({ permission: "granted", subscription: fakeSub() });
-    const c = await card();
-    expect(await within(c).findByText("Grace Church hasn't turned on notifications on devices. You'll still get email and Alerts in Fold.")).toBeInTheDocument();
-    expect(within(c).queryByRole("button")).not.toBeInTheDocument();
-    expect(within(c).queryByRole("link")).not.toBeInTheDocument();
+    await waitFor(() => expect(api.config).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText("Loading notifications on this device…")).not.toBeInTheDocument());
+    expect(screen.queryByRole("region", { name: "Notifications on this device" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/turned on notifications/)).not.toBeInTheDocument();
     expect(api.save).not.toHaveBeenCalled();
   });
 });

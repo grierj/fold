@@ -63,7 +63,7 @@ export function deviceState(env: PushEnv): DeviceState {
   return "available";
 }
 
-// The card's states (research 2.7). church_off is a one-line card (DEC-124);
+// The card's states (research 2.7). church_off hides the card (DEC-124);
 // signed_out_app is the sign-in page's line, not the card.
 export type PushCardState = "unavailable" | "unavailable_ios" | "install_first" | "blocked" | "ready" | "on" | "on_elsewhere" | "church_off";
 

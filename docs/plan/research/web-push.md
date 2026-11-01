@@ -51,7 +51,7 @@ Grier's goal is "a cheap alternative to SMS". The SMS milestones (M3.7–M3.10, 
 
 **M3.13c2 Directions page and admin switch**
 - `/notifications/setup` (public route; the in-app list is `/notifications`, DEC-127) with per-device directions (section 2.7), linked from the card and from the Help page; the `push_enabled` switch in Admin → Settings; `docs/MEMBERS.md`'s "Get notifications on your phone" section and `web/e2e/ui-pages.ts`.
-- Acceptance: `/notifications/setup` passes a11y and layout at 390 and 1280 px; with `push_enabled` off it says so.
+- Acceptance: `/notifications/setup` passes a11y and layout at 390 and 1280 px; with `push_enabled` off it is hidden (DEC-124).
 
 **M3.13d Announcements and reminders** (after M3.5 and M3.6)
 - Composer: "Push notification too" switch (default on; hidden when the church turned push off), the audience summary gains "N also get a push notification", a new skip reason "no device with notifications on" that is informational (not a skip: they still get the email).
@@ -150,7 +150,7 @@ States and what shows (first line of each is the heading):
 | `on_elsewhere` | `granted` here but subscription missing on the server (rotation, restore, another account on this browser) | Same as `ready`, with "This device was set up before; turn it on again." |
 | `blocked` | permission `denied` | "This device is blocking notifications from Fold. To allow them again:" then the platform's undo steps (below). No button (calling `requestPermission` would do nothing). |
 | `signed_out_app` | standalone, no session | The sign-in page with one line above the form: "Sign in once here and your notifications will come to this app." |
-| `church_off` | `push_enabled=false` | The card shows one line, "{church} hasn't turned on notifications on devices. You'll still get email and Alerts in Fold.", with no buttons (PLAN M3.13 acceptance; amended in M3.13c1 review); `/notifications/setup` says "Your church hasn't turned on notifications. Ask a church admin." |
+| `church_off` | `push_enabled=false` | The card is absent and `/notifications/setup` is hidden (DEC-124). |
 
 **Copy.** Plain, warm, second person (AGENTS.md). The heading on `/notifications/setup` is "Get notifications on your phone". The page picks the section for the device it's opened on and offers the others under "Using a different device?".
 
