@@ -127,6 +127,9 @@ func serve(stderr io.Writer) int {
 	} else {
 		app.deliverNotificationEmails(notices)
 	}
+	if vapidSubject(cfg) == "" {
+		log.Println("WARNING: web push has no contact address for the push services; set FOLD_EMAIL_FROM to an address at your church's domain, or SITE_URL. Some push services refuse notifications without one")
+	}
 	r := app.setupRouter()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

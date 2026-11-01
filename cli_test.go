@@ -197,6 +197,38 @@ func TestPushKeysShowAndRotate(t *testing.T) {
 	if code := run([]string{"push", "keys", "spin"}, &out, &errOut); code != 2 {
 		t.Fatalf("unknown push command: %d", code)
 	}
+	if code := run([]string{"push", "keys", "show", "--force"}, &out, &errOut); code != 2 {
+		t.Fatalf("show --force: %d", code)
+	}
+	// A SESSION_SECRET that isn't the server's is refused, and nothing changes.
+	if err := db.Exec(`INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (1, 'https://fcm.googleapis.com/c', 'k', 'a')`).Error; err != nil {
+		t.Fatal(err)
+	}
+	before, beforeEnc, _ := readVAPID(db)
+	other := "some other secret that is long enough for prod"
+	t.Setenv("SESSION_SECRET", other)
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"push", "keys", "rotate"}, &out, &errOut); code != 1 || !strings.Contains(errOut.String(), "isn't the one the server uses") {
+		t.Fatalf("rotate with another secret: %d %q", code, errOut.String())
+	}
+	if p, e, _ := readVAPID(db); p != before || e != beforeEnc {
+		t.Fatal("a refused rotate changed the keys")
+	}
+	var devices int64
+	db.Raw(`SELECT count(*) FROM push_subscriptions`).Scan(&devices)
+	if devices != 1 {
+		t.Fatalf("a refused rotate removed devices: %d left", devices)
+	}
+	// --force rotates with it anyway.
+	out.Reset()
+	if code := run([]string{"push", "keys", "rotate", "--force"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "removed 1 devices") {
+		t.Fatalf("rotate --force: %d %q %q", code, out.String(), errOut.String())
+	}
+	_, enc, _ = readVAPID(db)
+	if _, err := openVAPIDKey([]byte(other), enc); err != nil {
+		t.Fatalf("--force didn't rotate with the given secret: %v", err)
+	}
 }
 
 func TestPushCheckNeedsNothingAndReportsEachHost(t *testing.T) {
@@ -223,7 +255,7 @@ func TestPushCheckNeedsNothingAndReportsEachHost(t *testing.T) {
 		!strings.Contains(out.String(), "FAIL  push.example.org:443  no route to host") || !strings.Contains(errOut.String(), "Allow outbound https") {
 		t.Fatalf("check output %q %q", out.String(), errOut.String())
 	}
-	if !strings.Contains(out.String(), "SKIP  push.samsungosp.com") || len(dialed) != len(push.DefaultHosts) {
+	if strings.Contains(out.String(), "samsung") || len(dialed) != len(push.DefaultHosts)+1 {
 		t.Fatalf("dialed %v", dialed)
 	}
 	t.Setenv("FOLD_PUSH_HOSTS", "")

@@ -545,7 +545,7 @@ func init() {
 		// DEC-125): every device was removed.
 		Key: PushKeysReset, Category: CatAdmin, AllowEmail: true,
 		Render: func(Vars) (string, string) {
-			return "Notifications on devices were reset", "Members need to turn them on again. This happens when the server's SESSION_SECRET changes."
+			return "Notifications on devices were reset", "Members need to turn them on again. This happens when the server's SESSION_SECRET changes. If the change was a mistake, put the old SESSION_SECRET back and restart."
 		},
 	})
 	register(Kind{

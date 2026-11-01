@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -97,7 +98,7 @@ const (
 	Gone
 	// TooLarge: over the cap, or the push service said 413. A bug, not a retry.
 	TooLarge
-	// RateLimited: 429; retry later (RetryAfter, when the service said).
+	// RateLimited: 429; retry later, with the jobs backoff.
 	RateLimited
 	// Temporary: 5xx, a timeout or a network error; retry.
 	Temporary
@@ -127,26 +128,41 @@ func (s Status) String() string {
 // Result is one send's outcome. Err, when set, never holds the endpoint,
 // keys or token.
 type Result struct {
-	Status     Status
-	Code       int           // the push service's HTTP status, 0 if none
-	RetryAfter time.Duration // from Retry-After on 429 or 503
-	Err        error
+	Status Status
+	Code   int // the push service's HTTP status, 0 if none
+	Err    error
 }
 
-// Client sends to push services.
+// Client sends to push services. Use it through a pointer and reuse it:
+// it keeps one outbound client, so connections are reused.
 type Client struct {
-	// HTTP is the outbound client; nil means NewHTTPClient(). Tests point
-	// its transport at a fake push service.
+	// HTTP is the outbound client; nil means NewHTTPClient(), made once.
+	// Tests point its transport at a fake push service.
 	HTTP *http.Client
 	// Hosts is the allow-list; nil means DefaultHosts.
 	Hosts *AllowList
-	// Subject is the VAPID sub claim: "mailto:..." or an https URL.
+	// Subject is the VAPID sub claim: "mailto:..." or an https URL; empty
+	// leaves the claim out.
 	Subject string
 	// Key returns the current VAPID private key. It is called for every
 	// send, so a rotated key is used without a restart.
 	Key func(ctx context.Context) (*ecdsa.PrivateKey, error)
 	// Now is the clock for token expiry; nil means time.Now.
 	Now func() time.Time
+
+	defaults sync.Once
+}
+
+// fill sets the nil defaults once, so every send shares one transport.
+func (c *Client) fill() {
+	c.defaults.Do(func() {
+		if c.HTTP == nil {
+			c.HTTP = NewHTTPClient()
+		}
+		if c.Hosts == nil {
+			c.Hosts = NewAllowList()
+		}
+	})
 }
 
 func fail(status Status, err error) Result { return Result{Status: status, Err: err} }
@@ -157,11 +173,8 @@ func (c *Client) Send(ctx context.Context, sub Subscription, payload []byte, opt
 	if len(payload) > MaxPlaintext {
 		return fail(TooLarge, ErrTooLarge)
 	}
-	hosts := c.Hosts
-	if hosts == nil {
-		hosts = NewAllowList()
-	}
-	if err := hosts.Allowed(sub.Endpoint); err != nil {
+	c.fill()
+	if err := c.Hosts.Allowed(sub.Endpoint); err != nil {
 		return fail(Failed, err)
 	}
 	if opts.Topic != "" && !topicRe.MatchString(opts.Topic) {
@@ -202,11 +215,7 @@ func (c *Client) Send(ctx context.Context, sub Subscription, payload []byte, opt
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Authorization", auth)
 
-	client := c.HTTP
-	if client == nil {
-		client = NewHTTPClient()
-	}
-	resp, err := client.Do(req)
+	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return transportFailure(err)
 	}
@@ -229,11 +238,11 @@ func classify(resp *http.Response) Result {
 	case code == http.StatusRequestEntityTooLarge:
 		r.Status = TooLarge
 	case code == http.StatusTooManyRequests:
+		// Retry-After isn't read: a job can't ask for its own retry time,
+		// so the jobs backoff (30 s doubling to an hour) spaces retries.
 		r.Status = RateLimited
-		r.RetryAfter = retryAfter(resp.Header.Get("Retry-After"), time.Now())
 	case code >= 500:
 		r.Status = Temporary
-		r.RetryAfter = retryAfter(resp.Header.Get("Retry-After"), time.Now())
 	default:
 		// 403 (a key mismatch) and other 4xx, and a redirect, which is
 		// never followed. The body isn't read for a reason.
@@ -241,20 +250,6 @@ func classify(resp *http.Response) Result {
 	}
 	r.Err = fmt.Errorf("push: the push service answered %d (%s)", code, r.Status)
 	return r
-}
-
-// retryAfter reads Retry-After as seconds or an HTTP date.
-func retryAfter(v string, now time.Time) time.Duration {
-	if v == "" {
-		return 0
-	}
-	if s, err := strconv.Atoi(v); err == nil && s >= 0 {
-		return time.Duration(s) * time.Second
-	}
-	if t, err := http.ParseTime(v); err == nil && t.After(now) {
-		return t.Sub(now)
-	}
-	return 0
 }
 
 // transportFailure classifies an error from the HTTP client, dropping the

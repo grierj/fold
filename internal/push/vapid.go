@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -43,13 +44,19 @@ func ParsePrivateKey(raw []byte) (*ecdsa.PrivateKey, error) {
 	return ecdsa.ParseRawPrivateKey(elliptic.P256(), raw)
 }
 
-// audience is the origin of a push endpoint (the JWT's aud claim).
+// audience is the origin of a push endpoint (the JWT's aud claim), with
+// the default port left out as browsers write origins: an endpoint on
+// :443 has the audience https://host.
 func audience(endpoint string) (string, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "", errors.New("push: the endpoint isn't a URL")
 	}
-	return u.Scheme + "://" + u.Host, nil
+	host := u.Host
+	if (u.Scheme == "https" && u.Port() == "443") || (u.Scheme == "http" && u.Port() == "80") {
+		host = strings.TrimSuffix(host, ":"+u.Port())
+	}
+	return u.Scheme + "://" + host, nil
 }
 
 // vapidHeader is the Authorization header for endpoint, signed by key.

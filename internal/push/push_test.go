@@ -254,25 +254,24 @@ func TestSendResultsByStatus(t *testing.T) {
 	f := newFakeService(t)
 	c := f.client()
 	for _, tc := range []struct {
-		code   int
-		retry  string
-		want   Status
-		waitAt time.Duration
+		code  int
+		retry string // sent by the service; the jobs backoff decides instead
+		want  Status
 	}{
-		{201, "", Accepted, 0},
-		{404, "", Gone, 0},
-		{410, "", Gone, 0},
-		{413, "", TooLarge, 0},
-		{429, "120", RateLimited, 2 * time.Minute},
-		{500, "", Temporary, 0},
-		{503, "7", Temporary, 7 * time.Second},
-		{403, "", Failed, 0},
-		{400, "", Failed, 0},
+		{201, "", Accepted},
+		{404, "", Gone},
+		{410, "", Gone},
+		{413, "", TooLarge},
+		{429, "120", RateLimited},
+		{500, "", Temporary},
+		{503, "7", Temporary},
+		{403, "", Failed},
+		{400, "", Failed},
 	} {
 		f.status.Store(int64(tc.code))
 		f.retry.Store(tc.retry)
 		r := c.Send(context.Background(), testSub(), []byte(`{"web_push":8030}`), Options{TTL: time.Hour})
-		if r.Status != tc.want || r.Code != tc.code || r.RetryAfter != tc.waitAt {
+		if r.Status != tc.want || r.Code != tc.code {
 			t.Errorf("%d: %+v, want %s", tc.code, r, tc.want)
 		}
 		if tc.want != Accepted && (r.Err == nil || strings.Contains(r.Err.Error(), "secret-device-token")) {
@@ -331,5 +330,44 @@ func TestPayloadShape(t *testing.T) {
 	}
 	if _, err := MarshalPayload(NewPayload(Notification{Title: strings.Repeat("a", MaxPlaintext)})); !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("over the cap: %v", err)
+	}
+}
+
+func TestAudienceLeavesOutTheDefaultPort(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://fcm.googleapis.com/fcm/send/x":     "https://fcm.googleapis.com",
+		"https://fcm.googleapis.com:443/fcm/send/x": "https://fcm.googleapis.com",
+		"https://push.example.org:8443/x":           "https://push.example.org:8443",
+	} {
+		if got, err := audience(in); err != nil || got != want {
+			t.Errorf("%s: %q %v, want %q", in, got, err, want)
+		}
+	}
+}
+
+func TestClientMakesItsTransportOnce(t *testing.T) {
+	c := &Client{}
+	off := testSub()
+	off.Endpoint = "https://push.evil.example/x" // refused before any connection
+	c.Send(context.Background(), off, []byte("{}"), Options{})
+	first, hosts := c.HTTP, c.Hosts
+	c.Send(context.Background(), off, []byte("{}"), Options{})
+	if first == nil || c.HTTP != first || c.Hosts != hosts {
+		t.Fatal("the client made a new transport or allow-list for a second send")
+	}
+}
+
+func TestTokenLeavesOutAnEmptySubject(t *testing.T) {
+	key, _ := GenerateKey()
+	h, err := vapidHeader(key, testEndpoint, "", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := verifyVAPID(h, &key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := claims["sub"]; ok {
+		t.Fatalf("claims %v", claims)
 	}
 }

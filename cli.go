@@ -29,8 +29,10 @@ commands:
   healthcheck                  probe the local server (used by Docker)
   migrate [up|status|down-one] apply or inspect schema migrations (needs DATABASE_URL)
   push keys show               print the web push public key (needs DATABASE_URL)
-  push keys rotate             make new web push keys and remove every device
-                               (needs SESSION_SECRET and DATABASE_URL)
+  push keys rotate [--force]   make new web push keys and remove every device
+                               (needs the server's SESSION_SECRET and DATABASE_URL;
+                               --force rotates with a SESSION_SECRET that can't
+                               open the current key)
   push check                   connect to each push service on port 443
   version                      print the version
 `
@@ -154,7 +156,13 @@ var pushCheckDial push.DialFunc
 // PLAN 11.4). Each loads only what it needs: check needs nothing, show
 // only DATABASE_URL, rotate SESSION_SECRET as well.
 func runPush(args []string, asJSON bool, stdout, stderr io.Writer) int {
+	force := slices.Contains(args, "--force")
+	args = slices.DeleteFunc(args, func(s string) bool { return s == "--force" })
 	sub := strings.Join(args, " ")
+	if force && sub != "keys rotate" {
+		fmt.Fprintln(stderr, "fold: --force goes only with push keys rotate")
+		return 2
+	}
 	switch sub {
 	case "check":
 		return runPushCheck(asJSON, stdout, stderr)
@@ -187,7 +195,7 @@ func runPush(args []string, asJSON bool, stdout, stderr io.Writer) int {
 	}
 	var removed int64
 	if sub == "keys rotate" {
-		if removed, err = rotateVAPIDKeys(db, []byte(secret)); err != nil {
+		if removed, err = rotateVAPIDKeys(db, []byte(secret), force); err != nil {
 			fmt.Fprintln(stderr, "fold: push keys rotate:", err)
 			return 1
 		}
@@ -201,7 +209,7 @@ func runPush(args []string, asJSON bool, stdout, stderr io.Writer) int {
 	case sub == "keys rotate" && asJSON:
 		_ = json.NewEncoder(stdout).Encode(map[string]any{"publicKey": public, "devicesRemoved": removed})
 	case sub == "keys rotate":
-		fmt.Fprintf(stdout, "made new web push keys; removed %d devices (members turn notifications on again in Me > Notifications)\n", removed)
+		fmt.Fprintf(stdout, "made new web push keys; removed %d devices (members need to turn notifications on again)\n", removed)
 	case public == "":
 		fmt.Fprintln(stderr, "fold: no web push keys yet; the server makes them when it starts")
 		return 1
@@ -224,18 +232,15 @@ func runPushCheck(asJSON bool, stdout, stderr io.Writer) int {
 	results := push.Check(context.Background(), push.NewAllowList(extra...).Hosts(), pushCheckDial)
 	failed := false
 	for _, r := range results {
-		failed = failed || (!r.OK && !r.Skipped)
+		failed = failed || !r.OK
 	}
 	if asJSON {
 		_ = json.NewEncoder(stdout).Encode(results)
 	} else {
 		for _, r := range results {
-			switch {
-			case r.OK:
+			if r.OK {
 				fmt.Fprintf(stdout, "OK    %s:443\n", r.Host)
-			case r.Skipped:
-				fmt.Fprintf(stdout, "SKIP  %s  (no known host to test)\n", r.Host)
-			default:
+			} else {
 				fmt.Fprintf(stdout, "FAIL  %s:443  %s\n", r.Host, r.Error)
 			}
 		}

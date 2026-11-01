@@ -168,7 +168,7 @@ func TestRotateRemovesDevicesAndARunningServerUsesTheNewKey(t *testing.T) {
 	newPushDevice(t, app, u, "laptop")
 
 	// As `fold push keys rotate` would, from another process.
-	removed, err := rotateVAPIDKeys(app.DB, app.Config.SessionSecret)
+	removed, err := rotateVAPIDKeys(app.DB, app.Config.SessionSecret, false)
 	if err != nil || removed != 2 || pushDeviceCount(app) != 0 {
 		t.Fatalf("rotate: %d %v", removed, err)
 	}
@@ -198,7 +198,10 @@ func TestVAPIDSubject(t *testing.T) {
 	}{
 		{"First Church <hello@church.example>", "https://groups.church.example", "mailto:hello@church.example"},
 		{"Fold <noreply@localhost>", "https://groups.church.example/", "https://groups.church.example"},
-		{"Fold <noreply@localhost>", "", "mailto:noreply@localhost"},
+		{"Fold <noreply@localhost>", "", ""},
+		{"", "", ""},
+		{"not an address", "groups.church.example", ""},
+		{"hello@church", "https://groups.church.example", "https://groups.church.example"},
 	} {
 		if got := vapidSubject(Config{EmailFrom: tc.from, SiteURL: tc.site}); got != tc.want {
 			t.Errorf("%q %q: %q, want %q", tc.from, tc.site, got, tc.want)

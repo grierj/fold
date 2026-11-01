@@ -270,6 +270,8 @@ SMS is not implemented yet; do not provision texting just to run this version.
 `SESSION_SECRET` must be at least 32 characters. The script generates one
 with `openssl rand -base64 48`. Store `.env` in the church password manager.
 Losing it signs everyone out and, later, loses encrypted provider secrets.
+Every app container on one database must share the same SESSION_SECRET;
+changing it turns off notifications on everyone's devices.
 
 The Compose network is `172.30.0.0/24`, which is the default
 `FOLD_TRUSTED_PROXIES`. Change the subnet and that variable together.

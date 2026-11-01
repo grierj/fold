@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"log"
+	"net/url"
 	"strings"
 	"sync"
 
@@ -189,15 +190,34 @@ func ensureVAPIDKeys(db *gorm.DB, secret []byte) ([]uint, error) {
 	return notices, nil
 }
 
+// errRotateOtherSecret: `fold push keys rotate` was given a SESSION_SECRET
+// that can't open the stored key, so it isn't the server's. Rotating with
+// it would leave the server unable to read the new key.
+var errRotateOtherSecret = errors.New("this SESSION_SECRET isn't the one the server uses: it can't open the stored web push key. " +
+	"Run the command with the server's SESSION_SECRET (in .env next to docker-compose.yml, or the server's environment). " +
+	"If you are changing SESSION_SECRET on purpose, restart the server with the new one instead; it makes new keys itself. " +
+	"Add --force only to rotate with this secret anyway")
+
 // rotateVAPIDKeys is `fold push keys rotate`: a new pair, every device
-// removed. A running server picks the new key up on its next send.
-func rotateVAPIDKeys(db *gorm.DB, secret []byte) (int64, error) {
+// removed. A running server picks the new key up on its next send. Unless
+// force, it refuses when a stored key exists that secret can't open.
+func rotateVAPIDKeys(db *gorm.DB, secret []byte, force bool) (int64, error) {
 	var removed int64
 	err := db.Transaction(func(tx *gorm.DB) error {
 		if err := lockVAPID(tx); err != nil {
 			return err
 		}
-		var err error
+		_, enc, err := readVAPID(tx)
+		if err != nil {
+			return err
+		}
+		if enc != "" && !force {
+			if _, err := openVAPIDKey(secret, enc); errors.Is(err, errVAPIDUnreadable) {
+				return errRotateOtherSecret
+			} else if err != nil {
+				return err
+			}
+		}
 		if removed, err = writeVAPIDKeys(tx, secret); err != nil {
 			return err
 		}
@@ -236,16 +256,19 @@ func (a *App) vapidKey(ctx context.Context) (*ecdsa.PrivateKey, error) {
 }
 
 // vapidSubject is the VAPID sub claim: the From address, unless it is the
-// localhost default (push services refuse it), else SITE_URL.
+// localhost default (push services refuse it), else SITE_URL. With
+// neither it is "", and the token leaves the claim out rather than send an
+// invalid one; serve warns at boot.
 func vapidSubject(cfg Config) string {
 	from := mail.Address(cfg.EmailFrom)
-	if from != "" && strings.Contains(from, "@") && !strings.HasSuffix(from, "@localhost") {
+	if local, domain, ok := strings.Cut(from, "@"); ok && local != "" && strings.Contains(domain, ".") &&
+		!strings.ContainsAny(from, " <>\"") && !strings.HasSuffix(domain, ".") {
 		return "mailto:" + from
 	}
-	if cfg.SiteURL != "" {
+	if u, err := url.Parse(cfg.SiteURL); err == nil && (u.Scheme == "https" || u.Scheme == "http") && u.Host != "" {
 		return strings.TrimSuffix(cfg.SiteURL, "/")
 	}
-	return "mailto:" + from
+	return ""
 }
 
 // pushClient is the App's push sender: a.Push when set (tests), else one

@@ -22,15 +22,14 @@ import (
 
 // DefaultHosts are the browsers' push services. A host matches itself and
 // its subdomains on a dot boundary (Safari uses web.push.apple.com, Edge
-// *.notify.windows.com). Apple, Microsoft and Samsung are unconfirmed until
-// the first-church checks (DEC-128).
+// *.notify.windows.com; Samsung Internet uses FCM). Apple and Microsoft are
+// unconfirmed until the first-church checks (DEC-128).
 var DefaultHosts = []string{
 	"fcm.googleapis.com",
 	"android.googleapis.com",
 	"updates.push.services.mozilla.com",
 	"push.apple.com",
 	"notify.windows.com",
-	"push.samsungosp.com",
 }
 
 // ErrNotAllowed: the endpoint isn't an https URL on an allow-listed push
@@ -150,16 +149,23 @@ func publicAddr(ip netip.Addr) bool {
 
 // blockedPrefixes are special ranges the netip predicates don't cover.
 var blockedPrefixes = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),     // "this network"
-	netip.MustParsePrefix("100.64.0.0/10"), // carrier-grade NAT
-	netip.MustParsePrefix("192.0.0.0/24"),  // IETF protocol assignments
-	netip.MustParsePrefix("198.18.0.0/15"), // benchmarking
-	netip.MustParsePrefix("240.0.0.0/4"),   // reserved, and broadcast
-	netip.MustParsePrefix("100::/64"),      // discard
-	netip.MustParsePrefix("2001::/32"),     // Teredo, which tunnels to IPv4
-	netip.MustParsePrefix("2001:db8::/32"), // documentation
-	netip.MustParsePrefix("2002::/16"),     // 6to4, which tunnels to IPv4
-	netip.MustParsePrefix("fec0::/10"),     // old site-local
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network"
+	netip.MustParsePrefix("100.64.0.0/10"),   // carrier-grade NAT
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved, and broadcast
+	netip.MustParsePrefix("100::/64"),        // discard
+	netip.MustParsePrefix("2001::/32"),       // Teredo, which tunnels to IPv4
+	netip.MustParsePrefix("2001:db8::/32"),   // documentation
+	netip.MustParsePrefix("2002::/16"),       // 6to4, which tunnels to IPv4
+	netip.MustParsePrefix("fec0::/10"),       // old site-local
+	netip.MustParsePrefix("::/96"),           // IPv4-compatible, which embeds IPv4
+	netip.MustParsePrefix("64:ff9b::/96"),    // NAT64, which reaches IPv4 (incl. private)
+	netip.MustParsePrefix("64:ff9b:1::/48"),  // local-use NAT64
+	netip.MustParsePrefix("192.0.2.0/24"),    // documentation (TEST-NET-1)
+	netip.MustParsePrefix("198.51.100.0/24"), // documentation (TEST-NET-2)
+	netip.MustParsePrefix("203.0.113.0/24"),  // documentation (TEST-NET-3)
+	netip.MustParsePrefix("192.88.99.0/24"),  // old 6to4 relay anycast
 }
 
 // refuseInternal is the dialer's Control hook: it runs after DNS, on the
@@ -206,21 +212,16 @@ func NewHTTPClient() *http.Client {
 // probeHosts maps an allow-listed suffix to a name Check can connect to:
 // the services serve endpoints on subdomains, and the bare names of some
 // don't resolve. Safari's endpoints are on web.push.apple.com and Edge's
-// on wnsN-<region>.notify.windows.com. An empty name means no host to
-// probe is known yet (Samsung's), so Check skips it rather than failing
-// every install.
+// on wnsN-<region>.notify.windows.com.
 var probeHosts = map[string]string{
-	"push.apple.com":      "web.push.apple.com",
-	"notify.windows.com":  "wns2-bl2p.notify.windows.com",
-	"push.samsungosp.com": "",
+	"push.apple.com":     "web.push.apple.com",
+	"notify.windows.com": "wns2-bl2p.notify.windows.com",
 }
 
 // CheckResult is one host's reachability.
 type CheckResult struct {
 	Host string `json:"host"`
 	OK   bool   `json:"ok"`
-	// Skipped: no host is known to probe for this push service.
-	Skipped bool `json:"skipped,omitempty"`
 	// Error says what failed, in the dialer's words.
 	Error string `json:"error,omitempty"`
 }
@@ -240,10 +241,6 @@ func Check(ctx context.Context, hosts []string, dial DialFunc) []CheckResult {
 		probe := h
 		if p, ok := probeHosts[h]; ok {
 			probe = p
-		}
-		if probe == "" {
-			out = append(out, CheckResult{Host: h, Skipped: true})
-			continue
 		}
 		r := CheckResult{Host: probe}
 		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)

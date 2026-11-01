@@ -22,7 +22,6 @@ func TestAllowedEndpoints(t *testing.T) {
 		"https://updates.push.services.mozilla.com/wpush/v2/abc",
 		"https://web.push.apple.com/QABC",
 		"https://wns2-bl2p.notify.windows.com/w/?token=abc",
-		"https://push.samsungosp.com/abc",
 		"https://push.example.org/abc",
 		"https://eu.push.example.org/abc",
 	} {
@@ -45,6 +44,7 @@ func TestAllowedEndpoints(t *testing.T) {
 		"https://2130706433/x",                                    // decimal IP
 		"https://localhost/x",                                     // not listed
 		"https://googleapis.com/x",                                // parent of a listed host
+		"https://push.samsungosp.com/x",                           // dropped: Samsung Internet uses FCM
 		"fcm.googleapis.com/x",                                    // no scheme
 		"https:fcm.googleapis.com/x",                              // opaque
 		"https://fcm.googleapis.com/" + strings.Repeat("a", 2048), // too long
@@ -69,7 +69,9 @@ func TestParseHosts(t *testing.T) {
 
 func TestInternalAddressesAreRefused(t *testing.T) {
 	for _, s := range []string{"127.0.0.1", "::1", "10.1.2.3", "172.16.0.1", "192.168.1.20", "169.254.169.254", "fe80::1", "fd00::1",
-		"224.0.0.1", "ff02::1", "0.0.0.0", "::", "100.64.0.1", "::ffff:127.0.0.1", "255.255.255.255"} {
+		"224.0.0.1", "ff02::1", "0.0.0.0", "::", "100.64.0.1", "::ffff:127.0.0.1", "255.255.255.255",
+		"64:ff9b::a00:1", "64:ff9b::7f00:1", "64:ff9b:1::1", "::10.0.0.1", "::127.0.0.1",
+		"192.0.2.1", "198.51.100.7", "203.0.113.9", "192.88.99.1"} {
 		if publicAddr(netip.MustParseAddr(s)) {
 			t.Errorf("%s is public", s)
 		}
@@ -130,12 +132,12 @@ func TestCheckReportsEachHost(t *testing.T) {
 		_ = b.Close()
 		return a, nil
 	}
-	got := Check(context.Background(), []string{"fcm.googleapis.com", "updates.push.services.mozilla.com", "push.apple.com", "push.samsungosp.com"}, dial)
+	got := Check(context.Background(), []string{"fcm.googleapis.com", "updates.push.services.mozilla.com", "push.apple.com", "notify.windows.com"}, dial)
 	if len(got) != 4 || !got[0].OK || got[1].OK || got[1].Error != "connection refused" || got[2].Host != "web.push.apple.com" || !got[2].OK ||
-		got[3].Host != "push.samsungosp.com" || !got[3].Skipped || got[3].OK {
+		got[3].Host != "wns2-bl2p.notify.windows.com" || !got[3].OK {
 		t.Fatalf("%+v", got)
 	}
-	if strings.Join(dialed, " ") != "fcm.googleapis.com:443 updates.push.services.mozilla.com:443 web.push.apple.com:443" {
+	if strings.Join(dialed, " ") != "fcm.googleapis.com:443 updates.push.services.mozilla.com:443 web.push.apple.com:443 wns2-bl2p.notify.windows.com:443" {
 		t.Fatalf("dialed %v", dialed)
 	}
 }
