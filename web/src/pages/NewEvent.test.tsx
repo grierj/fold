@@ -4,6 +4,7 @@ import { RouterProvider, createMemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Groups, SeriesRooms, Site } from "../api";
 import { UnsavedChangesBlocker } from "../lib/unsavedChanges";
+import { forgetPushEnabled } from "../lib/usePushEnabled";
 import { NewEvent } from "./NewEvent";
 
 vi.mock("../auth", () => ({ useAuth: () => ({ user: { id: 2 }, loading: false, isAdmin: false }) }));
@@ -38,6 +39,7 @@ async function ready() {
 }
 
 beforeEach(() => {
+  forgetPushEnabled();
   vi.clearAllMocks();
   vi.mocked(Groups.get).mockResolvedValue({
     group: { name: "Choir", location: "Hall", visibility: "public" },

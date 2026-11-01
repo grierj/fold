@@ -1,13 +1,14 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Site } from "../api";
 import { emptyChildcare } from "./ChildcareField";
 import { EventOptions, optionsSummary } from "./EventOptions";
 import { emptyRemote } from "./RemoteField";
 import { emptySeats } from "./SeatsField";
 import { emptyVideo } from "./VideoField";
+import { forgetPushEnabled } from "../lib/usePushEnabled";
 
 vi.mock("../api", () => ({ Events: { generateJitsi: vi.fn() }, Site: { get: vi.fn(() => Promise.resolve({ pushEnabled: true })) } }));
 
@@ -113,6 +114,7 @@ function PushHarness() {
 }
 
 describe("the push reminder switch (M3.13d3)", () => {
+  beforeEach(forgetPushEnabled);
   it("sits under the reminder email, on by default, and says who gets it", async () => {
     render(<PushHarness />);
     const box = await screen.findByRole("checkbox", { name: /^Push reminder 2 hours before/ });

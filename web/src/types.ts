@@ -1156,6 +1156,9 @@ export interface Message {
   // "Push notification too" (DEC-123): people who get the email and have
   // notifications on also get a short push.
   pushAlert: boolean;
+  // A push reminder's rows still to go (M3.13d3); 0 otherwise. Optional
+  // in fixtures; the API always sends it.
+  pushWaiting?: number;
 }
 
 // GET /messages/:id/read: an announcement as its reader got it (the page a

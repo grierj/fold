@@ -72,11 +72,14 @@ describe("counts", () => {
 
   it("never says a push reminder was sent before anything went (M3.13d3)", () => {
     const z = "America/Boise", now = new Date("2026-11-02T18:00:00Z");
-    // Due at 11 AM, so its date starts at 1 PM.
     const push = { status: "sent" as const, channel: "push" as const, scheduledAt: "2026-11-02T18:00:00Z" };
-    expect(statusLabel({ ...push, sentAt: null }, z, now)).toBe("Waiting to go out");
-    expect(statusLabel({ ...push, sentAt: "2026-11-02T18:00:00Z" }, z, now)).toMatch(/^Pushed Today at 11:00 AM( MST)?$/);
-    expect(statusLabel({ ...push, sentAt: null }, z, new Date("2026-11-02T20:30:00Z"))).toBe("Nobody got it");
+    // By its counts, not the clock: waiting while some rows are still to go.
+    expect(statusLabel({ ...push, sentAt: null, pushWaiting: 3 }, z, now)).toBe("Waiting to go out");
+    expect(statusLabel({ ...push, sentAt: "2026-11-02T18:00:00Z", pushWaiting: 1 }, z, now)).toMatch(/^Pushed Today at 11:00 AM( MST)?$/);
+    // Nothing left waiting and nothing pushed (every row skipped), even
+    // before its date.
+    expect(statusLabel({ ...push, sentAt: null, pushWaiting: 0 }, z, now)).toBe("Nobody got it");
+    expect(statusLabel({ ...push, sentAt: null }, z, now)).toBe("Nobody got it");
   });
 });
 

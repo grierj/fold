@@ -307,7 +307,8 @@ const pushReminderGrace = 15 * time.Minute
 // they may still see the date (M1.13), as an email reminder does at send.
 // The sweep planned it inside the person's window; if the window has shut
 // by the time it runs, more than 15 minutes past that plan (plannedAt,
-// Unix seconds), it is skipped as "outside quiet hours". The hourly limit
+// Unix seconds; a job without one uses the row's updated_at, when the
+// sweep wrote it), it is skipped as "outside quiet hours". The hourly limit
 // never stops a reminder, though a sent one counts toward it (DEC-126).
 func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipient, u *models.User, dev models.PushSubscription, m *models.Message, plannedAt int64) error {
 	db := a.DB.WithContext(ctx)
@@ -355,7 +356,11 @@ func (a *App) deliverReminderPush(ctx context.Context, row *models.MessageRecipi
 		return record(models.RecipientSuppressed, skipCantSeeDate)
 	}
 	loc := zoneOrChurch(db, u.Timezone)
-	if inside, _ := a.pushQuietHours().Check(now, "", loc); !inside && now.After(time.Unix(plannedAt, 0).Add(pushReminderGrace)) {
+	planned := time.Unix(plannedAt, 0)
+	if plannedAt == 0 {
+		planned = row.UpdatedAt
+	}
+	if inside, _ := a.pushQuietHours().Check(now, "", loc); !inside && now.After(planned.Add(pushReminderGrace)) {
 		return record(models.RecipientSuppressed, pushWhyQuietHours)
 	}
 	title := ev.Title

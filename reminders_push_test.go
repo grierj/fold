@@ -526,7 +526,24 @@ func TestPushReminderHistory(t *testing.T) {
 	f, _, _ := pushReminderFixture(t)
 	due := f.groupOcc.StartsAt.Add(-2 * time.Hour)
 	sweepAt(t, f.app, due.Add(-30*time.Minute))
+	// Before it goes, the list counts what is still waiting.
+	waiting := func() messageJSON {
+		var out struct {
+			Messages []messageJSON `json:"messages"`
+		}
+		decodeJSON(t, f.admin.do("GET", "/api/v1/messages?category=reminder", nil, false), &out)
+		if len(out.Messages) != 1 || out.Messages[0].Channel != models.DeliveryPush {
+			t.Fatalf("list: %+v", out.Messages)
+		}
+		return out.Messages[0]
+	}
+	if m := waiting(); m.PushWaiting != 1 || m.SentAt != nil {
+		t.Fatalf("waiting: %+v", m)
+	}
 	deliverAt(t, f.app, due)
+	if m := waiting(); m.PushWaiting != 0 || m.SentAt == nil {
+		t.Fatalf("after: %+v", m)
+	}
 	m, _ := pushReminderOf(t, f.app, f.groupOcc)
 	var out messageRecipientsJSON
 	w := f.leader.do("GET", "/api/v1/messages/"+itoa(m.ID)+"/recipients", nil, false)

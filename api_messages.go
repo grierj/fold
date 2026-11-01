@@ -55,6 +55,10 @@ type messageJSON struct {
 	// PushAlert is "Push notification too" (M3.13d2, DEC-123): the people
 	// who get the email and have push on also get a short notification.
 	PushAlert bool `json:"pushAlert"`
+	// PushWaiting counts a push reminder's rows still to go (M3.13d3), so
+	// its status reads "Waiting to go out" only while some are; 0 for
+	// anything else.
+	PushWaiting int `json:"pushWaiting"`
 }
 
 // messageReminderJSON is the date an automatic reminder is for: "Automatic
@@ -130,13 +134,15 @@ const (
 type messageFacts struct {
 	authors map[uint]string
 	failed  map[uint]int
-	dates   map[uint]messageReminderJSON
+	// pushWaiting: a push reminder's rows still to go (M3.13d3).
+	pushWaiting map[uint]int
+	dates       map[uint]messageReminderJSON
 }
 
-// loadMessageFacts reads them for msgs in three queries, whatever the count.
+// loadMessageFacts reads them for msgs in four queries, whatever the count.
 func (a *App) loadMessageFacts(msgs []models.Message) (messageFacts, error) {
-	out := messageFacts{authors: map[uint]string{}, failed: map[uint]int{}, dates: map[uint]messageReminderJSON{}}
-	ids, settled, occs := []uint{}, []uint{}, []uint{}
+	out := messageFacts{authors: map[uint]string{}, failed: map[uint]int{}, pushWaiting: map[uint]int{}, dates: map[uint]messageReminderJSON{}}
+	ids, settled, occs, pushes := []uint{}, []uint{}, []uint{}, []uint{}
 	for _, m := range msgs {
 		if m.AuthorID != nil {
 			ids = append(ids, *m.AuthorID)
@@ -146,6 +152,9 @@ func (a *App) loadMessageFacts(msgs []models.Message) (messageFacts, error) {
 		}
 		if m.Category == models.MessageCategoryReminder && m.OccurrenceID != nil {
 			occs = append(occs, *m.OccurrenceID)
+		}
+		if m.Channel == models.DeliveryPush {
+			pushes = append(pushes, m.ID)
 		}
 	}
 	if len(occs) > 0 {
@@ -184,6 +193,20 @@ func (a *App) loadMessageFacts(msgs []models.Message) (messageFacts, error) {
 			out.failed[c.MessageID] = c.N
 		}
 	}
+	if len(pushes) > 0 {
+		var counts []struct {
+			MessageID uint
+			N         int
+		}
+		// A push reminder's rows still to go (M3.13d3).
+		if err := a.DB.Model(&models.MessageRecipient{}).Select("message_id, count(*) AS n").
+			Where("message_id IN ? AND status = ? AND channel = ?", pushes, models.RecipientQueued, models.DeliveryPush).Group("message_id").Scan(&counts).Error; err != nil {
+			return out, err
+		}
+		for _, c := range counts {
+			out.pushWaiting[c.MessageID] = c.N
+		}
+	}
 	return out, nil
 }
 
@@ -200,7 +223,7 @@ func toMessageJSON(m *models.Message, me *models.User, facts messageFacts) messa
 		Audience: au, ScheduledAt: m.ScheduledAt, SentAt: m.SentAt, AuthorName: name,
 		Editable:  (m.Status == models.MessageDraft || m.Status == models.MessageScheduled) && policy.CanEditMessage(asPerson(me), isAuthor, reminder),
 		UpdatedAt: m.UpdatedAt, Error: messageErrorFor(m.Error, policy.IsAdmin(asPerson(me))), FailedCount: facts.failed[m.ID],
-		Category: m.Category, PushAlert: m.PushAlert}
+		Category: m.Category, PushAlert: m.PushAlert, PushWaiting: facts.pushWaiting[m.ID]}
 	if reminder && m.OccurrenceID != nil {
 		if d, ok := facts.dates[*m.OccurrenceID]; ok {
 			d.Kind = reminderKind(m)
