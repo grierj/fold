@@ -288,8 +288,17 @@ func (a *App) apiChangePassword(c *gin.Context) {
 }
 
 // apiLogout ends the session: the cookie is expired (MaxAge -1), so the
-// browser drops it along with its CSRF token. The SPA then reloads.
+// browser drops it along with its CSRF token. The SPA then reloads. A body
+// of {pushEndpoint} also deletes this browser's push device in the same
+// request (M3.13b): a separate call after logout would have no CSRF token.
 func (a *App) apiLogout(c *gin.Context) {
+	var body struct {
+		PushEndpoint string `json:"pushEndpoint"`
+	}
+	if c.Request.ContentLength != 0 {
+		_ = c.ShouldBindJSON(&body) // the body is optional
+	}
+	a.endPushDeviceAtLogout(body.PushEndpoint)
 	session, _ := a.Store.Get(c.Request, sessionName)
 	session.Values = map[any]any{}
 	opts := *a.Store.Options

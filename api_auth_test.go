@@ -508,6 +508,23 @@ func TestLogoutEndsSession(t *testing.T) {
 	if c := sam.do("GET", "/api/v1/auth/me", nil, false).Code; c != http.StatusUnauthorized {
 		t.Fatalf("me after logout: %d", c)
 	}
+
+	// The logout request carries this browser's push endpoint and deletes
+	// that device in the same request (M3.13b); the person's other devices
+	// keep theirs, and a logout with no body still works (above).
+	t.Run("push device", func(t *testing.T) {
+		app := testApp(t)
+		u := newTestUser(t, app, "pat", "password1234", models.RoleMember)
+		here, other := newPushDevice(t, app, u, "this-browser"), newPushDevice(t, app, u, "phone")
+		pat := loginAs(t, app, "pat", "password1234")
+		w := pat.do("POST", "/api/v1/auth/logout", map[string]string{"pushEndpoint": here.Endpoint}, true)
+		if w.Code != http.StatusOK || deviceExists(app, here.ID) || !deviceExists(app, other.ID) {
+			t.Fatalf("logout %d: this browser's device kept %v, the phone's %v", w.Code, deviceExists(app, here.ID), deviceExists(app, other.ID))
+		}
+		if c := pat.do("GET", "/api/v1/auth/me", nil, false).Code; c != http.StatusUnauthorized {
+			t.Fatalf("me after logout: %d", c)
+		}
+	})
 }
 
 // DEC-53: guests have no password reset. A guest's address gets the

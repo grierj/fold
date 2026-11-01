@@ -20,6 +20,8 @@ import (
 	"fold/internal/notify"
 	"fold/internal/push"
 	"fold/models"
+
+	"gorm.io/gorm"
 )
 
 // fakePush is a push service behind the App's push client: it answers
@@ -74,8 +76,7 @@ func (f *fakePush) total() int {
 	return n
 }
 
-// pushTestApp is a test App with VAPID keys, the fake push service, and a
-// renderer that pushes every kind (until slice b gives kinds their own).
+// pushTestApp is a test App with VAPID keys and the fake push service.
 func pushTestApp(t *testing.T) (*App, *fakePush) {
 	t.Helper()
 	app := testApp(t)
@@ -84,9 +85,6 @@ func pushTestApp(t *testing.T) (*App, *fakePush) {
 	}
 	f := &fakePush{status: map[string]int{}, err: map[string]bool{}, sent: map[string]int{}}
 	app.Push = &push.Client{HTTP: &http.Client{Transport: f}, Subject: "mailto:admin@example.com"}
-	app.pushRender = func(n *models.Notification) (push.Notification, bool) {
-		return push.Notification{Title: n.Title}, true
-	}
 	return app, f
 }
 
@@ -352,10 +350,11 @@ func TestPushDeliverChecksConsentStatusAndTheChurchSwitch(t *testing.T) {
 		t.Errorf("all off: %q %q", status, reason)
 	}
 
-	// A disabled account gets nothing.
+	// A disabled account gets nothing. (Disabling deletes its devices; this
+	// one is written after, as a restore could leave one.)
 	sam := pushMember(t, app, "sam")
-	samPhone := newPushDevice(t, app, sam, "sam-phone")
 	app.DB.Model(sam).Update("status", models.UserDisabled)
+	samPhone := newPushDevice(t, app, sam, "sam-phone")
 	n = sendNotice(t, app, notify.AccountTurned18, sam)
 	runPushJobs(t, app, n, samPhone)
 	if status, reason := pushDelivery(t, app, n); status != models.DeliverySuppressed || reason != pushWhyInactive {
@@ -398,21 +397,135 @@ func TestPushDeliverSkipsWhatIsNoLongerThere(t *testing.T) {
 	}
 }
 
-// Until slice b gives kinds their push text, no real kind pushes.
-func TestRenderPushSendsNoKindYet(t *testing.T) {
+// The lock-screen text is the row's stored push text, and only for kinds
+// that push; never the bell title or body.
+func TestRenderPushUsesTheStoredPushText(t *testing.T) {
 	for _, k := range notify.Kinds() {
-		if _, ok := renderPush(&models.Notification{Kind: k.Key, Title: "x", Link: "/"}); ok {
-			t.Errorf("%s renders a push", k.Key)
+		got, ok := renderPush(&models.Notification{Kind: k.Key, Title: "Bell title", Body: "Bell body", PushTitle: "Push title", PushBody: "Push body", Link: "/"})
+		if ok != k.AllowPush {
+			t.Errorf("%s: renders a push %v, AllowPush %v", k.Key, ok, k.AllowPush)
+		}
+		if ok && (got.Title != "Push title" || got.Body != "Push body") {
+			t.Errorf("%s: pushed %+v", k.Key, got)
 		}
 	}
+	if _, ok := renderPush(&models.Notification{Kind: notify.GroupApproved, Title: "Bell title"}); ok {
+		t.Error("a row with no push text pushed")
+	}
+}
+
+// After commit, every notify.Send caller's rows of a pushed kind queue one
+// push.deliver per device (deliverNotificationEmails does it beside the
+// email), with no delay; a kind that doesn't push, or a person with no
+// device, queues nothing.
+func TestNotificationsQueueOnePushPerDevice(t *testing.T) {
 	app, f := pushTestApp(t)
-	app.pushRender = nil
-	u := pushMember(t, app, "pat")
-	phone := newPushDevice(t, app, u, "phone")
-	n := sendNotice(t, app, notify.GroupApproved, u)
-	runPushJobs(t, app, n, phone)
-	if f.total() != 0 {
-		t.Fatalf("sent %v", f.sent)
+	pat, lee := pushMember(t, app, "pat"), pushMember(t, app, "lee")
+	phone, laptop := newPushDevice(t, app, pat, "phone"), newPushDevice(t, app, pat, "laptop")
+	pushed := sendNotice(t, app, notify.GroupApproved, pat)
+	quiet := sendNotice(t, app, notify.MembershipLeft, pat)
+	nobody := sendNotice(t, app, notify.GroupApproved, lee) // lee has no device
+	app.deliverNotificationEmails([]uint{pushed, quiet, nobody})
+
+	var queued []models.Job
+	app.DB.Where("kind = ?", kindPushDeliver).Order("id").Find(&queued)
+	if len(queued) != 2 {
+		t.Fatalf("%d jobs queued, want one per device", len(queued))
+	}
+	want := map[string]bool{fmt.Sprintf("push:n:%d:d:%d", pushed, phone.ID): true, fmt.Sprintf("push:n:%d:d:%d", pushed, laptop.ID): true}
+	for _, j := range queued {
+		if j.UniqueKey == nil || !want[*j.UniqueKey] || j.RunAt.After(time.Now()) {
+			t.Errorf("job %v at %v", j.UniqueKey, j.RunAt)
+		}
+	}
+	// Delivering the same rows again (a merge, a retry) queues nothing new.
+	app.deliverNotificationEmails([]uint{pushed})
+	var again int64
+	app.DB.Model(&models.Job{}).Where("kind = ?", kindPushDeliver).Count(&again)
+	if again != 2 {
+		t.Fatalf("%d jobs after a second delivery", again)
+	}
+	drainJobs(t, app)
+	if f.count(phone.path) != 1 || f.count(laptop.path) != 1 || f.total() != 2 {
+		t.Fatalf("sends %v", f.sent)
+	}
+	if status, _ := pushDelivery(t, app, pushed); status != models.DeliverySent {
+		t.Fatalf("delivery %q", status)
+	}
+	if status, _ := pushDelivery(t, app, quiet); status != "" {
+		t.Fatalf("a kind that doesn't push has a push delivery %q", status)
+	}
+}
+
+// A real cancellation, through the handler that writes it, reaches a
+// registrant's phone: notify.Send callers need no change to push.
+func TestCancellingADatePushesToRegistrants(t *testing.T) {
+	app, f := pushTestApp(t)
+	leader := newTestUser(t, app, "leader", "password123456", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Supper club", models.GroupActive)
+	_, occ := seedEvent(t, app, g, leader.ID, time.Now().Add(5*time.Hour).Truncate(time.Minute))
+	app.DB.Model(&models.Event{}).Where("id = ?", occ.EventID).Update("location", "14 Elm Street")
+	pat := pushMember(t, app, "pat")
+	phone := newPushDevice(t, app, pat, "phone")
+	if err := app.DB.Create(&models.Registration{OccurrenceID: occ.ID, UserID: &pat.ID, Status: models.RegGoing}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var ids []uint
+	err := app.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		ids, err = notifyOccurrencesCancelled(tx, leader.ID, []uint{occ.ID})
+		return err
+	})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("cancel notices %v %v", ids, err)
+	}
+	app.deliverNotificationEmails(ids)
+	drainJobs(t, app)
+	if f.count(phone.path) != 1 {
+		t.Fatalf("sends %v", f.sent)
+	}
+	// Today's date: urgent and short-lived (research 2.4).
+	h := f.headers[0]
+	if h.Get("TTL") != "21600" || h.Get("Urgency") != "high" {
+		t.Fatalf("headers %v", h)
+	}
+	var n models.Notification
+	app.DB.First(&n, ids[0])
+	// The bell has the place; the lock screen doesn't.
+	if n.PushTitle != "Cancelled: Supper club" || n.PushBody == "" || strings.Contains(n.PushBody, "Elm") || !strings.Contains(n.Body, "Elm") {
+		t.Fatalf("push text %q %q (bell %q)", n.PushTitle, n.PushBody, n.Body)
+	}
+}
+
+// TTL and urgency follow the kind (research 2.4): a change to a date in
+// the next 24 hours is high for 6 hours, a later one normal for a day, and
+// an admin task low for 3 days.
+func TestPushOptionsFollowTheKind(t *testing.T) {
+	app := testApp(t)
+	leader := newTestUser(t, app, "leader", "password123456", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Supper club", models.GroupActive)
+	_, soon := seedEvent(t, app, g, leader.ID, time.Now().Add(23*time.Hour))
+	_, later := seedEvent(t, app, g, leader.ID, time.Now().Add(72*time.Hour))
+	for _, c := range []struct {
+		kind    string
+		subject *uint
+		ttl     time.Duration
+		urgency push.Urgency
+	}{
+		{notify.OccurrenceCancelled, &soon.ID, 6 * time.Hour, push.UrgencyHigh},
+		{notify.EventChanged, &soon.ID, 6 * time.Hour, push.UrgencyHigh},
+		{notify.OccurrenceCancelled, &later.ID, 24 * time.Hour, push.UrgencyNormal},
+		{notify.RegistrationPromoted, &soon.ID, 24 * time.Hour, push.UrgencyNormal},
+		{notify.GroupApproved, nil, 24 * time.Hour, push.UrgencyNormal},
+		{notify.GroupPending, nil, 72 * time.Hour, push.UrgencyLow},
+		{notify.AccountRequested, nil, 72 * time.Hour, push.UrgencyLow},
+	} {
+		k, _ := notify.Lookup(c.kind)
+		n := &models.Notification{ID: 42, Kind: c.kind, SubjectType: "occurrence", SubjectID: c.subject}
+		got := app.pushOptions(context.Background(), k, n)
+		if got.TTL != c.ttl || got.Urgency != c.urgency || got.Topic != "n42" {
+			t.Errorf("%s: %+v", c.kind, got)
+		}
 	}
 }
 

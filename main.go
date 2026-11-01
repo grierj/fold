@@ -63,8 +63,8 @@ type App struct {
 	pushOnce sync.Once
 	// vapid caches the decrypted VAPID key (push_keys.go).
 	vapid vapidCache
-	// pushRender overrides renderPush in tests, until slice b gives kinds
-	// their own push text.
+	// pushRender overrides renderPush in tests (a rendering past the
+	// payload cap); nil uses the stored push text.
 	pushRender func(*models.Notification) (push.Notification, bool)
 }
 

@@ -56,9 +56,101 @@ func TestEveryKindRendersNoContactDetails(t *testing.T) {
 		if k.Waiting && k.BatchWindow > 0 {
 			t.Errorf("%s: waiting kinds are never batched", k.Key)
 		}
+		if k.AllowPush && k.BatchWindow > 0 {
+			t.Errorf("%s: a pushed kind isn't batched (a merge doesn't push again)", k.Key)
+		}
 		if len(k.Actions) > 2 {
 			t.Errorf("%s: at most two inline actions", k.Key)
 		}
+	}
+}
+
+// A lock screen is public (DEC-124, research 2.4). Every kind's push text,
+// rendered with teen, household and hidden-adult fixtures, carries no
+// contact detail, teen badge, person, note, place, signed or video link;
+// safety, consent and contact kinds say only the safe line; and a kind that
+// doesn't push renders nothing.
+func TestEveryKindsPushTextIsLockScreenSafe(t *testing.T) {
+	phone := regexp.MustCompile(`\+?\d[\d\s().-]{6,}\d`)
+	fixtures := []Vars{
+		// A teen, a household child, contact details in the free text.
+		{Actor: "Teen Tess", Person: "Kid Kai", Group: "Youth Group", Event: "Lock-in", When: "Fri, Dec 4 · 7:00 PM",
+			Place: "14 Elm Street", Change: "time", Visibility: "public", GroupVis: "private",
+			Note: "Call tess@example.com or 555-123-4567", Count: 3, Teen: true,
+			ManageURL: "https://church.example/guest/manage/secret-token", VideoURL: "https://meet.example/room-9"},
+		// A hidden adult: the caller left the group and place out.
+		{Actor: "Hidden Hal", Person: "Hidden Hal", Event: "Supper", When: "Tue 7pm", Note: "hal@example.com", Change: "place"},
+		{},
+	}
+	never := []string{"Teen Tess", "Kid Kai", "Hidden Hal", "14 Elm Street", "secret-token", "meet.example", "Call tess", "hal@example.com", "(teen)", "teen"}
+	pushed := 0
+	for _, k := range Kinds() {
+		for _, v := range fixtures {
+			title, body, ok := k.RenderForPush(v)
+			if !k.AllowPush {
+				if ok || title != "" || body != "" {
+					t.Errorf("%s doesn't push but rendered %q %q", k.Key, title, body)
+				}
+				continue
+			}
+			text := title + "\n" + body
+			if !ok || title == "" {
+				t.Errorf("%s pushes but rendered no title", k.Key)
+			}
+			if strings.Contains(text, "@") || phone.MatchString(text) || strings.Contains(text, "http") {
+				t.Errorf("%s push text %q has a contact detail or link", k.Key, text)
+			}
+			for _, s := range never {
+				if strings.Contains(text, s) {
+					t.Errorf("%s push text %q has %q", k.Key, text, s)
+				}
+			}
+			if len(title) > 80 || len(body) > 120 {
+				t.Errorf("%s push text is too long for a lock screen: %q", k.Key, text)
+			}
+			if k.Category == CatSafety && (title != SafePushTitle || body != SafePushBody) {
+				t.Errorf("%s is a safety kind but pushes %q", k.Key, text)
+			}
+		}
+		if k.AllowPush {
+			pushed++
+		}
+	}
+	if pushed == 0 {
+		t.Fatal("no kind pushes; the test checks nothing")
+	}
+	// A row about someone in the household names nobody.
+	for _, key := range []string{RegistrationPromoted, RegistrationRemoved} {
+		k, _ := Lookup(key)
+		if title, body, _ := k.RenderForPush(Vars{Person: "Sam", Event: "Supper"}); title != SafePushTitle || body != SafePushBody {
+			t.Errorf("%s about a household person pushes %q %q", key, title, body)
+		}
+	}
+}
+
+// Send stores the push text on the row, where push.deliver reads it; a
+// kind that doesn't push stores none.
+func TestSendStoresPushText(t *testing.T) {
+	db := testdb.Shared(t)
+	uid := user(t, db, "recipient")
+	ids, err := Send(db, Msg{Kind: OccurrenceCancelled, To: []uint{uid}, Link: "/events/1",
+		Vars: Vars{Event: "Supper", When: "Tue 7pm", Place: "14 Elm Street"}})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("send: %v %v", ids, err)
+	}
+	var n models.Notification
+	db.First(&n, ids[0])
+	if n.PushTitle != "Cancelled: Supper" || n.PushBody != "Tue 7pm" {
+		t.Fatalf("push text %q %q", n.PushTitle, n.PushBody)
+	}
+	ids, err = Send(db, Msg{Kind: MembershipLeft, To: []uint{uid}, Link: "/groups/1", Vars: Vars{Person: "Pat", Group: "Youth"}})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("send: %v %v", ids, err)
+	}
+	var quiet models.Notification
+	db.First(&quiet, ids[0])
+	if quiet.ID == 0 || quiet.PushTitle != "" || quiet.PushBody != "" {
+		t.Fatalf("a kind that doesn't push stored %q %q", quiet.PushTitle, quiet.PushBody)
 	}
 }
 

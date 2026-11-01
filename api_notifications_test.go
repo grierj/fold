@@ -592,15 +592,16 @@ func TestCancelDateNoticeReadsStayBounded(t *testing.T) {
 		t.Fatalf("notices sent = %d, want 30", len(ids))
 	}
 
-	// Emailing them after commit reads the rows and their recipients once
-	// (two reads), not twice per person.
+	// Delivering them after commit reads the recipients' push devices once
+	// (M3.13b), then the rows and their recipients once for email: three
+	// reads, not some per person.
 	counter = countDBReads(t, app.DB)
 	app.deliverNotificationEmails(ids)
 	mailReads := counter.Reads()
 	counter.Stop()
-	t.Logf("cancel-date reads %d + email delivery reads %d", reads, mailReads)
-	if mailReads > 2 || reads+mailReads > 12 {
-		t.Fatalf("cancel plus delivery used %d + %d reads for 30 registrants, want delivery <= 2 and total <= 12", reads, mailReads)
+	t.Logf("cancel-date reads %d + delivery reads %d", reads, mailReads)
+	if mailReads > 3 || reads+mailReads > 13 {
+		t.Fatalf("cancel plus delivery used %d + %d reads for 30 registrants, want delivery <= 3 and total <= 13", reads, mailReads)
 	}
 
 	var notes []models.Notification

@@ -26,10 +26,13 @@ import (
 const (
 	kindPushDeliver     = "push.deliver"
 	pushDeliverAttempts = jobs.DefaultMaxAttempts
-	// pushTTL is how long a push service keeps an undelivered message.
-	// Slice b sets TTL and urgency per kind; the bell and email are the
-	// record, so an expired push is harmless.
-	pushTTL = 24 * time.Hour
+	// How long a push service keeps an undelivered message (research 2.4):
+	// a change to a date in the next 24 hours, an ordinary notice, and an
+	// admin task. The bell and email are the record, so an expired push is
+	// harmless.
+	pushTTLSoon = 6 * time.Hour
+	pushTTL     = 24 * time.Hour
+	pushTTLTask = 72 * time.Hour
 	// pushDeviceFailedFor is how long a failing device is kept before the
 	// daily cleanup removes it.
 	pushDeviceFailedFor = 30 * 24 * time.Hour
@@ -44,9 +47,7 @@ type pushJob struct {
 	DeviceID           uint `json:"deviceId"`
 }
 
-// enqueuePushDelivery queues one notification for one device, once. Slice
-// b calls it after commit for AllowPush kinds; until then only tests do
-// (its .deadcode-allow line goes with that caller).
+// enqueuePushDelivery queues one notification for one device, once.
 func enqueuePushDelivery(tx *gorm.DB, notificationID, deviceID uint, at time.Time) error {
 	key := "push:n:" + strconv.FormatUint(uint64(notificationID), 10) + ":d:" + strconv.FormatUint(uint64(deviceID), 10)
 	_, err := jobs.Enqueue(tx, kindPushDeliver, pushJob{NotificationID: notificationID, DeviceID: deviceID}, at, key, pushDeliverAttempts)
@@ -64,12 +65,77 @@ func (a *App) pushKinds() []jobs.Kind {
 		}}}
 }
 
-// renderPush is a notification's lock-screen text (DEC-124). Slice b gives
-// each kind that may push (Kind.AllowPush) its own short PushRender, never
-// the bell body cut short; until then no kind pushes, so it reports false
-// for every row and push.deliver sends nothing.
-func renderPush(*models.Notification) (push.Notification, bool) {
-	return push.Notification{}, false
+// queuePushDeliveries queues one push.deliver per device for every row
+// among ids that pushes (an AllowPush kind with push text) and whose
+// recipient has a device (M3.13b). Call it after the writing transaction
+// committed, beside the email (deliverNotificationEmails does). Push is
+// immediate: there is no "if not seen" delay as email will have. The job
+// checks the church switch, the account and consent when it runs. A
+// failure is logged, never returned: the rows are committed, and the bell
+// and email still have them.
+func (a *App) queuePushDeliveries(ids []uint) {
+	if len(ids) == 0 {
+		return
+	}
+	var pairs []struct {
+		NotificationID uint
+		DeviceID       uint
+		Kind           string
+	}
+	if err := a.DB.Raw(`SELECT n.id AS notification_id, d.id AS device_id, n.kind FROM notifications n
+		JOIN push_subscriptions d ON d.user_id = n.user_id
+		WHERE n.id IN ? AND n.push_title <> '' ORDER BY n.id, d.id`, ids).Scan(&pairs).Error; err != nil {
+		log.Printf("push: finding devices for %d notifications: %v", len(ids), err)
+		return
+	}
+	if len(pairs) == 0 {
+		return
+	}
+	now := time.Now()
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		for _, p := range pairs {
+			if k, ok := notify.Lookup(p.Kind); !ok || !k.AllowPush {
+				continue
+			}
+			if err := enqueuePushDelivery(tx, p.NotificationID, p.DeviceID, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("push: queuing %d deliveries: %v", len(pairs), err)
+	}
+}
+
+// renderPush is a notification's lock-screen text (DEC-124): the kind's
+// own short PushRender, stored on the row when it was written, never the
+// bell body cut short. False for a kind that doesn't push.
+func renderPush(n *models.Notification) (push.Notification, bool) {
+	k, ok := notify.Lookup(n.Kind)
+	if !ok || !k.AllowPush || n.PushTitle == "" {
+		return push.Notification{}, false
+	}
+	return push.Notification{Title: n.PushTitle, Body: n.PushBody}, true
+}
+
+// pushOptions are the delivery headers for one row (research 2.4): a
+// change to a date that starts within 24 hours is urgent and short-lived,
+// a task waits up to 3 days at low urgency, and anything else keeps a day.
+// The topic lets a later copy of the row replace a pending one.
+func (a *App) pushOptions(ctx context.Context, k notify.Kind, n *models.Notification) push.Options {
+	opts := push.Options{TTL: pushTTL, Urgency: push.UrgencyNormal, Topic: "n" + strconv.FormatUint(uint64(n.ID), 10)}
+	switch {
+	case k.Waiting:
+		opts.TTL, opts.Urgency = pushTTLTask, push.UrgencyLow
+	case k.PushSoon && n.SubjectType == "occurrence" && n.SubjectID != nil:
+		var o models.EventOccurrence
+		if err := a.DB.WithContext(ctx).Select("starts_at").First(&o, *n.SubjectID).Error; err == nil &&
+			o.StartsAt.Before(time.Now().Add(24*time.Hour)) {
+			opts.TTL, opts.Urgency = pushTTLSoon, push.UrgencyHigh
+		}
+	}
+	return opts
 }
 
 // Delivery reasons a push row can carry (notification_deliveries.reason).
@@ -144,7 +210,7 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 		return a.recordPush(n, models.DeliveryFailed, pushWhyTooLarge)
 	}
 	sub := push.Subscription{Endpoint: dev.Endpoint, P256dh: dev.P256dh, Auth: dev.Auth}
-	res := a.pushClient().Send(ctx, sub, body, push.Options{TTL: pushTTL, Urgency: push.UrgencyNormal, Topic: "n" + strconv.FormatUint(uint64(n.ID), 10)})
+	res := a.pushClient().Send(ctx, sub, body, a.pushOptions(ctx, kind, &n))
 	return a.pushOutcome(ctx, n, dev, res)
 }
 

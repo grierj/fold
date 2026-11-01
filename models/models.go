@@ -1056,8 +1056,13 @@ type Notification struct {
 	// M1.2): RenderEmailSafe when the kind has one, Render otherwise. The
 	// in-app title/body may name people; the email variants of sensitive
 	// kinds name nobody.
-	EmailTitle   string    `gorm:"not null;default:''"`
-	EmailBody    string    `gorm:"not null;default:''"`
+	EmailTitle string `gorm:"not null;default:''"`
+	EmailBody  string `gorm:"not null;default:''"`
+	// PushTitle/PushBody are the lock-screen text (M3.13b, DEC-124): the
+	// kind's own PushRender, never the bell body cut short. Empty
+	// PushTitle means the kind doesn't push.
+	PushTitle    string    `gorm:"not null;default:''"`
+	PushBody     string    `gorm:"not null;default:''"`
 	Link         string    `gorm:"not null"`
 	Actions      string    `gorm:"type:jsonb;not null;default:'[]'"`
 	BatchCount   int       `gorm:"not null;default:1"`

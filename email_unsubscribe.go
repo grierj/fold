@@ -121,25 +121,34 @@ func (a *App) oneClickUnsubscribe(c *gin.Context) {
 // append-only (5.3); the person's row is locked so two quick changes can't
 // interleave.
 func setEmailConsent(tx *gorm.DB, userID uint, scope, status, source, ip, userAgent string) (bool, error) {
-	if err := tx.Exec("SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE", userID).Error; err != nil {
+	// No row means opted in (the default for members, 7.4).
+	return setConsent(tx, models.Consent{UserID: userID, Channel: models.ConsentEmail, Scope: scope, Status: status,
+		Source: source, IP: ip, UserAgent: userAgent}, models.ConsentOptedIn)
+}
+
+// setConsent appends row when the latest (user, channel, scope) record
+// says otherwise, and reports whether it did; none is the status in force
+// with no record. Consent history is append-only (5.3); the person's row is
+// locked so two quick changes can't interleave.
+func setConsent(tx *gorm.DB, row models.Consent, none string) (bool, error) {
+	if err := tx.Exec("SELECT 1 FROM users WHERE id = ? FOR NO KEY UPDATE", row.UserID).Error; err != nil {
 		return false, err
 	}
 	var latest models.Consent
-	err := tx.Where("user_id = ? AND channel = ? AND scope = ?", userID, models.ConsentEmail, scope).
+	err := tx.Where("user_id = ? AND channel = ? AND scope = ?", row.UserID, row.Channel, row.Scope).
 		Order("at DESC, id DESC").First(&latest).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return false, err
 	}
-	// No row means opted in (the default for members, 7.4).
-	current := models.ConsentOptedIn
+	current := none
 	if err == nil {
 		current = latest.Status
 	}
-	if current == status {
+	if current == row.Status {
 		return false, nil
 	}
-	return true, tx.Create(&models.Consent{UserID: userID, Channel: models.ConsentEmail, Scope: scope, Status: status,
-		Source: source, IP: ip, UserAgent: clipRunes(userAgent, 500)}).Error
+	row.UserAgent = clipRunes(row.UserAgent, 500)
+	return true, tx.Create(&row).Error
 }
 
 // settingChurchAddress is the church's postal address for email footers

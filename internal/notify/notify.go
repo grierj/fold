@@ -109,10 +109,11 @@ func Send(tx *gorm.DB, m Msg) ([]uint, error) {
 		}
 		title, body := k.Render(withCount(m.Vars, 1))
 		emailTitle, emailBody := k.RenderForEmail(withCount(m.Vars, 1))
+		pushTitle, pushBody, _ := k.RenderForPush(withCount(m.Vars, 1))
 		row := models.Notification{
 			UserID: uid, Kind: k.Key, Category: k.Category, Waiting: k.Waiting,
 			ActorID: m.Actor, SubjectType: m.SubjectType, Title: title, Body: body,
-			EmailTitle: emailTitle, EmailBody: emailBody,
+			EmailTitle: emailTitle, EmailBody: emailBody, PushTitle: pushTitle, PushBody: pushBody,
 			Link: m.Link, Actions: actions, BatchCount: 1, Data: data,
 			CreatedAt: now, UpdatedAt: now, ExpiresAt: m.ExpiresAt,
 		}
@@ -167,9 +168,11 @@ func merge(tx *gorm.DB, k Kind, m Msg, uid uint, now time.Time) (bool, uint, err
 	n := open.BatchCount + 1
 	title, body := k.Render(withCount(m.Vars, n))
 	emailTitle, emailBody := k.RenderForEmail(withCount(m.Vars, n))
+	pushTitle, pushBody, _ := k.RenderForPush(withCount(m.Vars, n))
 	err = tx.Model(&open).Updates(map[string]any{
 		"batch_count": n, "title": title, "body": body,
 		"email_title": emailTitle, "email_body": emailBody,
+		"push_title": pushTitle, "push_body": pushBody,
 		"updated_at": now, "seen_at": nil,
 	}).Error
 	return true, open.ID, err
