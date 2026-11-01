@@ -33,6 +33,23 @@ func decodeKey(s string) ([]byte, error) {
 	return base64.URLEncoding.DecodeString(s)
 }
 
+// ValidKeys reports whether p256dh is a P-256 public key and auth a 16-byte
+// secret, as Encrypt needs them, so a device is refused when it subscribes
+// rather than at every send. The error names neither value.
+func ValidKeys(p256dh, auth string) error {
+	uaRaw, err := decodeKey(p256dh)
+	if err != nil {
+		return errBadKeys
+	}
+	if _, err := ecdh.P256().NewPublicKey(uaRaw); err != nil {
+		return errBadKeys
+	}
+	if a, err := decodeKey(auth); err != nil || len(a) != 16 {
+		return errBadKeys
+	}
+	return nil
+}
+
 // Encrypt encrypts plaintext for the subscription's keys with a fresh
 // sender key and salt, returning the request body.
 func Encrypt(plaintext []byte, p256dh, auth string) ([]byte, error) {

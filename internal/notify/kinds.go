@@ -60,6 +60,8 @@ const (
 	AccountTurned18         = "account.turned_18"
 	HouseholdChildTurned13  = "household.child_turned_13"
 	PushKeysReset           = "push.keys_reset"
+	PushDevicesOff          = "push.devices_off"
+	YourRole                = "group.your_role"
 )
 
 // Action is an inline button. Only allow-listed kinds carry one (6.6).
@@ -129,7 +131,41 @@ type Kind struct {
 	// (minors, consent, contact access): it names nobody and only links
 	// into Fold. Nil means Render is already safe.
 	RenderEmailSafe func(Vars) (title, body string)
+	// AllowPush sends the row to the recipient's devices with push on
+	// (M3.13b, DEC-124). A lock screen is public, so PushRender is the
+	// kind's own short text, never the bell body cut short: never a
+	// contact detail, teen badge, note, place, signed or video link, or
+	// Data. Safety, consent and contact kinds push only the safe text.
+	// Default off.
+	AllowPush  bool
+	PushRender func(Vars) (title, body string)
+	// PushSoon marks a change to a dated event: its push is urgent (a short
+	// TTL, high urgency) when the date starts within 24 hours.
+	PushSoon bool
 }
+
+// RenderForPush is the row's lock-screen text; ok is false when the kind
+// doesn't push.
+func (k Kind) RenderForPush(v Vars) (title, body string, ok bool) {
+	if !k.AllowPush || k.PushRender == nil {
+		return "", "", false
+	}
+	title, body = k.PushRender(v)
+	return title, body, title != ""
+}
+
+// SafePushTitle and SafePushBody are the whole push for safety, consent
+// and contact kinds, and for rows about someone in a household (research
+// 2.4): they name nobody. The stored SafePushTitle is replaced with the
+// church's name (site_name) when the push is sent (DEC-134 B), since the
+// registry looks nothing up. (Variables, not constants: a dotted string
+// constant in this file reads as a kind key to TestEveryKindConstIsRegistered.)
+var (
+	SafePushTitle = "Fold"
+	SafePushBody  = "Open Fold to review an update."
+)
+
+func safePush(Vars) (string, string) { return SafePushTitle, SafePushBody }
 
 // RenderForEmail renders k for email: the kind's RenderEmail when set,
 // the link-only safe variant when the kind has one, Render otherwise.
@@ -147,6 +183,11 @@ var registry = map[string]Kind{}
 
 func register(k Kind) {
 	k.Required = k.Category == CatSafety || k.Waiting
+	// Safety, consent and contact kinds push only the safe text (DEC-124),
+	// whatever the entry says.
+	if k.Category == CatSafety && k.AllowPush {
+		k.PushRender = safePush
+	}
 	registry[k.Key] = k
 }
 
@@ -233,13 +274,13 @@ func join(parts ...string) string {
 }
 
 func init() {
-	register(Kind{Key: OccurrenceChanged, Category: CatSafety, AllowEmail: true, Render: func(Vars) (string, string) {
+	register(Kind{Key: OccurrenceChanged, Category: CatSafety, AllowPush: true, AllowEmail: true, Render: func(Vars) (string, string) {
 		return "Your date invitation was updated", "Open Fold to review this date and your attendance."
 	}, RenderEmailSafe: func(Vars) (string, string) { return "Review an update in Fold", "Sign in to Fold to review an update." }})
-	register(Kind{Key: OccurrenceAdded, Category: CatSafety, AllowEmail: true, Render: func(Vars) (string, string) {
+	register(Kind{Key: OccurrenceAdded, Category: CatSafety, AllowPush: true, AllowEmail: true, Render: func(Vars) (string, string) {
 		return "You have a date invitation", "Open Fold to review the date and your attendance choices."
 	}, RenderEmailSafe: func(Vars) (string, string) { return "Review an update in Fold", "Sign in to Fold to review an update." }})
-	register(Kind{Key: OccurrenceUpdated, Category: CatSafety, AllowEmail: true, Render: func(Vars) (string, string) {
+	register(Kind{Key: OccurrenceUpdated, Category: CatSafety, AllowPush: true, AllowEmail: true, Render: func(Vars) (string, string) {
 		return "Your date invitation has ended", "Open Fold to review your upcoming dates."
 	}, RenderEmailSafe: func(Vars) (string, string) { return "Review an update in Fold", "Sign in to Fold to review an update." }})
 	for _, item := range []struct {
@@ -247,7 +288,7 @@ func init() {
 		waiting bool
 	}{{ContactSubjectReview, true}, {ContactAdminReview, true}, {ContactUpdated, false}} {
 		waiting := item.waiting
-		register(Kind{Key: item.key, Category: CatSafety, Waiting: waiting, AllowEmail: true, Render: func(Vars) (string, string) {
+		register(Kind{Key: item.key, Category: CatSafety, AllowPush: true, Waiting: waiting, AllowEmail: true, Render: func(Vars) (string, string) {
 			if waiting {
 				return "Review a direct-contact request", "Open Fold to review the requested access. No contact details have been shared."
 			}
@@ -259,14 +300,14 @@ func init() {
 		waiting bool
 	}{{AddSubjectReview, true}, {AddAdminReview, true}, {AddUpdated, false}} {
 		waiting := item.waiting
-		register(Kind{Key: item.key, Category: CatSafety, Waiting: waiting, AllowEmail: true, Render: func(Vars) (string, string) {
+		register(Kind{Key: item.key, Category: CatSafety, AllowPush: true, Waiting: waiting, AllowEmail: true, Render: func(Vars) (string, string) {
 			if waiting {
 				return "Review an ask to add", "Sign in to Fold to review a request to add someone. No contact access is included."
 			}
 			return "Ask to add updated", "Sign in to Fold to review the request. No contact access is included."
 		}, RenderEmailSafe: func(Vars) (string, string) { return "Review an update in Fold", "Sign in to Fold to review an update." }})
 	}
-	register(Kind{Key: AccountTurned18, Category: CatSafety, AllowEmail: true,
+	register(Kind{Key: AccountTurned18, Category: CatSafety, AllowPush: true, AllowEmail: true,
 		Render: func(Vars) (string, string) {
 			return "Your account is now an adult account", "Teen consent is no longer required. Your consent history stays on file. An admin's suspension, if any, still applies."
 		},
@@ -274,7 +315,7 @@ func init() {
 			return "Your Fold account was updated", "Sign in to Fold to review your account."
 		},
 	})
-	register(Kind{Key: HouseholdChildTurned13, Category: CatSafety, AllowEmail: true,
+	register(Kind{Key: HouseholdChildTurned13, Category: CatSafety, AllowPush: true, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			return or(v.Person, "A child in your household") + " is now 13 or older", "Review their birth date and age group in My household. They can also request their own account. Their sign-ups stay with your household."
 		},
@@ -283,7 +324,7 @@ func init() {
 		},
 	})
 	register(Kind{
-		Key: TeenConsentChanged, Category: CatSafety, AllowEmail: true,
+		Key: TeenConsentChanged, Category: CatSafety, AllowPush: true, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			return "Teen consent changed", or(v.Person, "A teen") + ": " + v.Change + "."
 		},
@@ -298,6 +339,8 @@ func init() {
 			return or(v.Actor, "Someone") + " started a group: " + or(v.Group, "a new group"),
 				"It needs an admin's approval before people can find it."
 		},
+		// Admin tasks push no requester or group name; the bell has them.
+		AllowPush: true, PushRender: func(Vars) (string, string) { return "A new group is waiting for approval", "" },
 	})
 	register(Kind{
 		Key: GroupDeletion, Category: CatAdmin, Waiting: true, AllowEmail: true,
@@ -305,6 +348,7 @@ func init() {
 			return or(v.Actor, "Someone") + " asked to delete " + or(v.Group, "a group"),
 				"They are its only member. Delete the group or keep it."
 		},
+		AllowPush: true, PushRender: func(Vars) (string, string) { return "A request to delete a group is waiting", "" },
 	})
 	register(Kind{
 		Key: LeadershipChanged, Category: CatAdmin, AllowEmail: true,
@@ -323,6 +367,14 @@ func init() {
 			}
 			return title, v.Group
 		},
+		// It goes to the other admins, who may see every group, so the
+		// group is named; the person isn't, on a lock screen (DEC-134 A).
+		AllowPush: true, PushRender: func(v Vars) (string, string) {
+			if v.Change == "added" {
+				return "New leader in " + or(v.Group, "a group"), "Open Fold to see who."
+			}
+			return "Leader change in " + or(v.Group, "a group"), "Open Fold to see who."
+		},
 	})
 	register(Kind{
 		Key: MembershipDeparture, Category: CatGroups, AllowEmail: true,
@@ -333,11 +385,25 @@ func init() {
 			return "Your group membership ended", fmt.Sprintf("%d upcoming dates were kept and %d ended. Sign in to Fold to review your upcoming dates.", v.KeptCount, v.EndedCount)
 		},
 	})
+	// The person whose role changed (DEC-134): Change is "leader" (they now
+	// lead) or "member" (they stepped back to member by someone else's
+	// hand). Group only when they may see it.
+	yourRole := func(v Vars) (string, string) {
+		if v.Change == "leader" {
+			return "You're now a leader of " + or(v.Group, "a group"), "You can manage its members and events in Fold."
+		}
+		return "You're no longer a leader of " + or(v.Group, "a group"), "Thanks for leading. You're still a member."
+	}
+	register(Kind{Key: YourRole, Category: CatGroups, AllowEmail: true, Render: yourRole, AllowPush: true, PushRender: yourRole})
 	// A leader hears how an admin decided their new group (DEC-96).
 	register(Kind{
 		Key: GroupApproved, Category: CatGroups, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			return or(v.Group, "Your group") + " was approved", "It's live now. Schedule its first meeting."
+		},
+		// Only its own leaders get it, so the group may be named.
+		AllowPush: true, PushRender: func(v Vars) (string, string) {
+			return or(v.Group, "Your group") + " was approved", "It's live now."
 		},
 	})
 	register(Kind{
@@ -348,6 +414,10 @@ func init() {
 				body = "An admin decided not to add it. Their note: " + v.Note
 			}
 			return or(v.Group, "Your group") + " wasn't approved", body
+		},
+		// The admin's note stays in Fold.
+		AllowPush: true, PushRender: func(v Vars) (string, string) {
+			return or(v.Group, "Your group") + " wasn't approved", "Open Fold to see more."
 		},
 	})
 	register(Kind{
@@ -368,6 +438,11 @@ func init() {
 		Render: func(v Vars) (string, string) {
 			return "Cancelled: " + or(v.Event, "Church event"), join(v.When, v.Place)
 		},
+		// Event pushes carry the title and time, never the place: a small
+		// group often meets at someone's home.
+		AllowPush: true, PushSoon: true, PushRender: func(v Vars) (string, string) {
+			return "Cancelled: " + or(v.Event, "Church event"), v.When
+		},
 	})
 	register(Kind{
 		// A date a series edit had cancelled is on again because the rule
@@ -377,12 +452,21 @@ func init() {
 			return "Back on: " + or(v.Event, "Church event"),
 				join(v.When, v.Place, "Your sign-up is still in place.")
 		},
+		// Whoever got the cancellation on their phone hears it's back on.
+		AllowPush: true, PushSoon: true, PushRender: func(v Vars) (string, string) {
+			return "Back on: " + or(v.Event, "Church event"), v.When
+		},
 	})
 	register(Kind{
 		Key: RegistrationCancelled, Category: CatEvents, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			return "Registration cancelled: " + or(v.Event, "An event you registered for"),
 				"Who can see this event has changed, so registrations for dates you can no longer access were cancelled."
+		},
+		// The caller names no group, place or date: the person can no
+		// longer see the event (DEC-134 A).
+		AllowPush: true, PushRender: func(v Vars) (string, string) {
+			return "Your spot was cancelled: " + or(v.Event, "an event"), "Open Fold to see why."
 		},
 	})
 	register(Kind{
@@ -413,9 +497,11 @@ func init() {
 		RenderEmailSafe: func(Vars) (string, string) {
 			return "New account request in Fold", "Someone asked for an account. Sign in to review it."
 		},
+		// No name and no teen badge on a lock screen.
+		AllowPush: true, PushRender: func(Vars) (string, string) { return "A new account request is waiting", "" },
 	})
 	register(Kind{
-		Key: HouseholdConverted, Category: CatSafety, AllowEmail: true,
+		Key: HouseholdConverted, Category: CatSafety, AllowPush: true, AllowEmail: true,
 		Render: func(v Vars) (string, string) {
 			body := "Their past and upcoming event sign-ups have moved to their account."
 			return or(v.Person, "A household member") + " created their own account", body
@@ -433,6 +519,10 @@ func init() {
 			what := or(v.Change, "details")
 			return "Updated: " + or(v.Event, "an event"),
 				"The " + what + " changed. " + join(v.When, v.Place)
+		},
+		// A new place is in Fold, not on the lock screen.
+		AllowPush: true, PushSoon: true, PushRender: func(v Vars) (string, string) {
+			return "Updated: " + or(v.Event, "an event"), "The " + or(v.Change, "details") + " changed. " + v.When
 		},
 	})
 	register(Kind{
@@ -459,6 +549,13 @@ func init() {
 			}
 			return title, body
 		},
+		// A row about someone in the household names nobody (research 2.4).
+		AllowPush: true, PushRender: func(v Vars) (string, string) {
+			if v.Person != "" {
+				return safePush(v)
+			}
+			return "You're in: " + or(v.Event, "an event"), v.When
+		},
 	})
 	register(Kind{
 		// A leader or host pruned a registration (DEC-20, DEC-30, M1.5).
@@ -473,6 +570,13 @@ func init() {
 				body += " Note: " + v.Note
 			}
 			return "Registration removed: " + or(v.Event, "an event"), body
+		},
+		// The leader's note stays in Fold.
+		AllowPush: true, PushRender: func(v Vars) (string, string) {
+			if v.Person != "" {
+				return safePush(v)
+			}
+			return "Registration removed: " + or(v.Event, "an event"), "A leader or host removed your registration."
 		},
 	})
 	register(Kind{
@@ -511,6 +615,7 @@ func init() {
 		RenderEmailSafe: func(Vars) (string, string) {
 			return "New household link to confirm in Fold", "Someone added a child or teen to their household. Sign in to review it."
 		},
+		AllowPush: true, PushRender: func(Vars) (string, string) { return "A household link is waiting to be confirmed", "" },
 	})
 	// A date moved and its room is booked at the new time (9.2): the
 	// booking stays requested until someone picks another room.
@@ -523,6 +628,7 @@ func init() {
 			return or(v.Actor, "Someone") + " asked for a room for " + or(v.Event, "an event"),
 				or(v.Change, "A room") + ". Needs an admin's approval."
 		},
+		AllowPush: true, PushRender: func(Vars) (string, string) { return "A room request is waiting for approval", "" },
 	})
 	register(Kind{
 		// The people running the event hear an admin's decision. Change is
@@ -537,6 +643,22 @@ func init() {
 		Render: func(v Vars) (string, string) {
 			return "Room lost on " + or(v.Change, "a date") + ": " + or(v.Event, "an event"),
 				"The room you booked is taken at the new time. Pick another room on the event page."
+		},
+		// No room name: a room can say where a group meets (DEC-124).
+		// Change is the date count ("1 date", "3 dates").
+		AllowPush: true, PushRender: func(v Vars) (string, string) {
+			return "Room booking lost: " + or(v.Event, "an event"), "Pick another room for " + or(v.Change, "a date") + " in Fold."
+		},
+	})
+	register(Kind{
+		// Every device of the person was removed because their sessions
+		// were revoked or the account stopped being active (DEC-134 C):
+		// written by the push.devices_off job the users trigger queues.
+		// Bell only: the devices are gone, and the change already emailed
+		// what needed emailing. Never required.
+		Key: PushDevicesOff, Category: CatAdmin,
+		Render: func(Vars) (string, string) {
+			return "Notifications on your devices were turned off", "Your password, email or account changed, so we turned off notifications on your phones and computers. Turn them on again in Me → Notifications."
 		},
 	})
 	register(Kind{

@@ -1388,8 +1388,8 @@ POST   /api/v1/notifications/:id/read → 200 {notification}
 DELETE /api/v1/notifications/:id/read → 200 {notification}
 POST   /api/v1/notifications/:id/archive → 200 {notification}
 DELETE /api/v1/notifications/:id/archive → 200 {notification}
-GET    /api/v1/me/notification-settings → 200 {settings: {optionalEmailOff}}
-PUT    /api/v1/me/notification-settings {optionalEmailOff: boolean} → 200 {settings}
+GET    /api/v1/me/notification-settings → 200 {settings: {optionalEmailOff, kinds, push}}
+PUT    /api/v1/me/notification-settings → 200 {settings}   (bodies: Email settings, Web push)
 ```
 
 "Turn off all optional email" (DEC-97) appends one `consents` row (channel
@@ -1470,6 +1470,58 @@ PUT  /api/v1/admin/settings/church-address → 200 {address} | 400 church_addres
 ```
 
 `emailSettings` is `{kinds: [{category, off}], optionalEmailOff}`: the optional kinds the person can get, in order (`groups`, `events`, `messages`, and `admin` for admins only), each off when its latest email consent opts out, and `optionalEmailOff` when every listed kind is off. Account and safety email can't be turned off and isn't listed. The token is an email's unsubscribe token (M3.3a); `email` is the address masked (`s•••@example.com`) and `fromCategory` the kind the link came from. A kind the person doesn't get is 400 `email_kind_unknown`. Each change appends a `consents` row for every kind whose state changes (source `unsubscribe_link` from the token page, `web_form` from Me), with IP and user agent, and nothing for a kind already in that state. The church address is shown, line by line, at the bottom of optional email (PLAN 10.5).
+
+### Web push (M3.13b, DEC-121 to DEC-129, DEC-134)
+
+```
+GET    /api/v1/push/config        → 200 {enabled, publicKey}
+PUT    /api/v1/push/subscriptions → 200 {saved: true, device} | 200 {saved: false, message} | 400 | 403
+       body: {endpoint, keys: {p256dh, auth}, expirationTime?}   (PushSubscription.toJSON())
+DELETE /api/v1/push/subscriptions → 200 {}                     body: {endpoint}
+POST   /api/v1/push/turn-off      → 200 {push}
+POST   /api/v1/push/test          → 200 {sent: true} | 200 {sent: false, message} | 403 | 404
+       body: {endpoint}
+GET    /api/v1/me/notification-settings → 200 {settings: {optionalEmailOff, kinds, push}}
+PUT    /api/v1/me/notification-settings → 200 {settings}
+       body: {channel: "push", category, off} for a Push switch; the email shapes above are unchanged
+POST   /api/v1/auth/logout        → 200 {}                     body (optional): {pushEndpoint}
+```
+
+All but logout need a signed-in, active account and the CSRF token as usual (`csrfExemptRoutes` is unchanged). A device is one browser installation; the browser names it by sending its endpoint.
+
+- **Config.** `enabled` is the church's `push_enabled` setting (default on; the admin switch comes in M3.13c2). `publicKey` is the VAPID public key, the `applicationServerKey`.
+- **Turning on.** `PUT /push/subscriptions` upserts by endpoint and binds the device to the signed-in person. An endpoint another account holds is rebound to this one only when `p256dh` and `auth` match the stored row too (compared in constant time): the same browser subscription on a shared browser that changed hands, and the other account hears nothing. With other keys the row is left alone and the answer is the same as any save (DEC-52; audited with `refused`). Under the person's row lock the account is checked again against the session: revoked or disabled meanwhile is 401 and saves nothing. The endpoint must be an https URL on an allow-listed push service (`push.DefaultHosts` plus `FOLD_PUSH_HOSTS`), else 400 `push_service_unknown`; keys that aren't a P-256 key and a 16-byte secret are 400. The label is made on the server from the User-Agent ("iPhone · Home Screen app", "Chrome on Windows"), never from the client's text. When the latest `(push, all)` consent isn't `opted_in` (the first device, or the first after turning off everywhere), it appends `(push, all, opted_in, web_form)` with evidence such as "Turned on notifications for iPhone (Home Screen app)" (DEC-122). Each save is audited `push.device_on` (`deviceId`, `label`, `rebound`). At most 10 devices: the 11th replaces the least recently used. `device` is `{id, label, createdAt, lastUsedAt}`.
+- **Refusals (403).** A guest `push_guest`, a teen whose consent isn't complete `push_consent_required` (`policy.PushRefusal`; neither can hold a session today, so these are a backstop), and push turned off by the church `push_church_off` (also for the test).
+- **Turning off.** `DELETE /push/subscriptions` ("Turn off notifications on this device") deletes the device if it is the person's own and answers the same either way. `POST /push/turn-off` ("Turn off notifications everywhere") appends `(push, all, opted_out)` ("Turned off notifications everywhere"), which overrides every per-category row, deletes every device, and answers the push settings.
+- **Test.** `POST /push/test` sends "Notifications are on. This is a test from <church>." to that device at once, through the same client and allow-list as `push.deliver` (TTL 10 minutes, high urgency), and opens Me → Notifications when tapped. An endpoint that isn't one of the person's devices is 404 `push_device_unknown`. A device the push service says is gone is deleted (`sent: false`, "This device stopped taking notifications. Turn them on again."); any other failure is `sent: false` with "The notification service didn't take the test. Try again in a few minutes.". Audited `push.test_sent`.
+- **Limits (DEC-129).** 30 saves an hour per person: past that it saves nothing and answers 200 `{saved: false, message: "Try again in a few minutes."}`, so the card never shows "on" without a subscription. 10 tests an hour: past that 200 `{sent: false, message: "You just sent a few tests. Try again in a few minutes."}`. Neither is a 429 (`TestOnlyLoginAndInvitesAnswer429`): it is the person's own device and reveals nothing, so DEC-52 doesn't apply.
+- **Settings.** `push` is `{on, devices, kinds}`: whether the latest `(push, all)` consent opts in, the devices newest first, and a Push switch per optional category (`groups`, `events`, `messages`, `admin` for admins: it covers leadership changes, the one optional admin kind that pushes), each off when its latest `(push, category:<cat>)` row opts out. With a device and no row, every category is on. The Push switches don't follow the email ones. Required kinds (safety, consent, contact, tasks waiting on you) always push to a device with push on and aren't listed; `{channel: "push"}` with any other category is 400 `push_kind_locked`. The signed-out email settings page has no push section.
+- **Sessions.** The logout request's `{pushEndpoint}` deletes that browser's device in the same request (a separate call after logout would have no CSRF token), whichever account holds it, since the browser presenting the endpoint is the device. Disabling an account, waiting for consent, and anything that revokes every session (a password change or reset, an email or role change, deletion) delete every device of the account: a trigger on `users.session_version` and `users.status` (migration 00059). When it removed any device, the trigger queues a `push.devices_off` job in the same transaction, and the job writes the person one bell notice (`push.devices_off`, never emailed, pushed or required): "Notifications on your devices were turned off" / "Your password, email or account changed, so we turned off notifications on your phones and computers. Turn them on again in Me → Notifications.", linking to `/profile/notifications` (DEC-134 C). Turning devices off yourself (this device, everywhere, logout) writes none.
+- **Privacy.** No response, log line, audit row, consent row or job carries an endpoint, `p256dh` or `auth` (`TestPushLogsKeepSecretsOut`, `TestPushSubscribeSavesBindsAndConsents`).
+
+**Delivery.** A kind with `AllowPush` gets its own short push text (`PushRender`), rendered with the bell's `Vars` when the row is written and stored as `notifications.push_title`/`push_body`. After commit, `deliverNotificationEmails` queues one `push.deliver` per device of each recipient (`push:n:<id>:d:<device>`), with no delay; the job checks the church switch, the account, consent and the per-category switch, as M3.13a built it. A lock screen is public (DEC-124): push text never carries a contact detail, teen badge, person's name, note, place, signed or video link, or `Data`, and a hidden group's name reaches it only as the bell's (the caller's `canSeeGroupIn` decision). What pushes:
+
+| Kind | Push title | Push body |
+|---|---|---|
+| `event.cancelled` | Cancelled: *event* | *when* |
+| `event.restored` | Back on: *event* | *when* |
+| `event.changed` | Updated: *event* | The time (place, time and place) changed. *when* |
+| `registration.promoted` | You're in: *event* | *when* |
+| `registration.removed` | Registration removed: *event* | A leader or host removed your registration. |
+| `group.approved` | *group* was approved | It's live now. |
+| `group.rejected` | *group* wasn't approved | Open Fold to see more. |
+| `group.pending` | A new group is waiting for approval | |
+| `group.deletion` | A request to delete a group is waiting | |
+| `account.requested` | A new account request is waiting | |
+| `household.link_pending` | A household link is waiting to be confirmed | |
+| `room.requested` | A room request is waiting for approval | |
+| `group.leadership_changed` (to the other admins) | New leader in *group* / Leader change in *group* | Open Fold to see who. |
+| `group.your_role` (to the person whose role changed; not when they changed it themselves) | You're now a leader of *group* / You're no longer a leader of *group* | You can manage its members and events in Fold. / Thanks for leading. You're still a member. |
+| `registration.cancelled` | Your spot was cancelled: *event* | Open Fold to see why. |
+| `room.lost` | Room booking lost: *event* | Pick another room for *1 date / 3 dates* in Fold. |
+| every `safety` kind (contact, ask to add, date invitations, consent, turning 13 or 18, household accounts) | *the church's name* | Open Fold to review an update. |
+
+A promotion or removal about someone in the household ("Sam is in") uses the safety line. The safety line is titled with the church's name (`site_name`) when it is sent, since it can't say what it is about (DEC-134 B). `waitlist.cutoff` doesn't push. TTL and urgency (research 2.4): a cancellation, restoration or change to a date starting within 24 hours is 6 hours, `high`; a task waiting on someone 72 hours, `low`; anything else 24 hours, `normal`. The topic is `n<notification id>`, which only collapses retries of the same notification at the push service.
 
 ### Unsubscribe links (outside `/api/v1`, M3.3a)
 

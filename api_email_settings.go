@@ -11,6 +11,7 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"gorm.io/gorm"
 )
 
@@ -71,7 +72,8 @@ type emailSettingsChange struct {
 // applyEmailSettings validates and writes one change; false means a 400 was sent.
 func (a *App) applyEmailSettings(c *gin.Context, u *models.User, source string) bool {
 	var body emailSettingsChange
-	if err := c.ShouldBindJSON(&body); err != nil {
+	// BodyWith: Me → Notifications reads the body first for its channel.
+	if err := c.ShouldBindBodyWith(&body, binding.JSON); err != nil {
 		jsonError(c, http.StatusBadRequest, "invalid request")
 		return false
 	}

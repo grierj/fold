@@ -170,6 +170,7 @@ type apiClient struct {
 	jar    map[string]*http.Cookie
 	token  string
 	ip     string // client address for requests; empty uses httptest's default
+	ua     string // User-Agent for requests; empty sends none
 }
 
 func newAPIClient(t *testing.T, app *App) *apiClient {
@@ -211,6 +212,9 @@ func (c *apiClient) do(method, path string, jsonBody any, csrf bool) *httptest.R
 		rdr = bytes.NewReader(nil)
 	}
 	req := httptest.NewRequest(method, path, rdr)
+	if c.ua != "" {
+		req.Header.Set("User-Agent", c.ua)
+	}
 	if c.ip != "" {
 		req.RemoteAddr = net.JoinHostPort(c.ip, "1234")
 	}

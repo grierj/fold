@@ -351,6 +351,16 @@ const (
 	// changed). Meta has devicesRemoved. Actor is nil.
 	PushKeysRotated = "push.keys_rotated"
 	PushKeysReset   = "push.keys_reset"
+
+	// PushDeviceOn: a person turned on notifications for a device, or the
+	// browser saved its subscription again (M3.13b); meta has deviceId,
+	// label and rebound (the device was another account's). Counted to
+	// limit saves to 30 an hour (DEC-129). Target is the user. The endpoint
+	// and keys are never recorded.
+	PushDeviceOn = "push.device_on"
+	// PushTestSent: a person sent a test notification to their own device;
+	// counted to limit tests to 10 an hour (DEC-129). Target is the user.
+	PushTestSent = "push.test_sent"
 )
 
 // Entry is one audit record. Actor is nil for system actions.

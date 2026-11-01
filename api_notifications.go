@@ -20,6 +20,7 @@ import (
 	"fold/models"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -538,11 +539,44 @@ func notifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
 	if e.Actor != nil {
 		actor = nameIn(tx, *e.Actor)
 	}
-	return notify.Send(tx, notify.Msg{
+	ids, err := notify.Send(tx, notify.Msg{
 		Kind: notify.LeadershipChanged, To: adminIDs(tx), Actor: e.Actor,
 		SubjectType: "group", SubjectID: g.ID, Link: fmt.Sprintf("/groups/%d", g.ID),
 		Vars: notify.Vars{Actor: actor, Person: nameIn(tx, userID), Group: g.Name, Change: change}, // group-ok: leadership notices go to admins
 		Data: map[string]any{"groupId": g.ID, "userId": userID},
+	})
+	if err != nil {
+		return nil, err
+	}
+	mine, err := notifyYourRole(tx, e, &g, userID, oldRole, newRole)
+	return append(ids, mine...), err
+}
+
+// notifyYourRole tells the person whose role changed that they now lead
+// the group, or no longer do and are still a member (DEC-134). It follows
+// every RoleChanged entry (a leader's or admin's change, a handoff), never
+// a removal, which has its own notices. Someone who changed their own role
+// is skipped (the Actor rule in notify.Send).
+func notifyYourRole(tx *gorm.DB, e audit.Entry, g *models.Group, userID uint, oldRole, newRole string) ([]uint, error) {
+	if e.Action != audit.RoleChanged || userID == 0 || g.ID == 0 {
+		return nil, nil
+	}
+	var change string
+	switch {
+	case newRole == models.MembershipLeader && oldRole != models.MembershipLeader:
+		change = "leader"
+	case oldRole == models.MembershipLeader && newRole == models.MembershipMember:
+		change = "member"
+	default:
+		return nil, nil
+	}
+	vars, link := notify.Vars{Change: change}, "/my-groups"
+	if canSeeGroupIn(tx, userIn(tx, userID), g) {
+		vars.Group, link = g.Name, fmt.Sprintf("/groups/%d", g.ID) // group-ok: only when canSeeGroupIn says the person may see it
+	}
+	return notify.Send(tx, notify.Msg{
+		Kind: notify.YourRole, To: []uint{userID}, Actor: e.Actor,
+		SubjectType: "group", SubjectID: g.ID, Link: link, Vars: vars,
 	})
 }
 
@@ -780,9 +814,12 @@ func (a *App) actorName(id *uint) string {
 // the notification row is already committed.
 // ---------------------------------------------------------------------------
 
-// deliverNotificationEmails sends email for the AllowEmail kinds among ids.
-// Call it after the writing transaction committed, never inside it.
+// deliverNotificationEmails sends email for the AllowEmail kinds among ids,
+// first queuing web push for the AllowPush kinds (M3.13b), so every
+// notify.Send caller gets push from the call it already makes. Call it
+// after the writing transaction committed, never inside it.
 func (a *App) deliverNotificationEmails(ids []uint) {
+	a.queuePushDeliveries(ids)
 	if len(ids) == 0 || a.Mailer == nil {
 		return
 	}
@@ -985,39 +1022,79 @@ func (a *App) emailLink(path string) string {
 	return a.emailBaseURL() + path
 }
 
-// notificationSettingsJSON is the Me > Notifications payload. Today it holds
-// the single DEC-97 switch; M3.12 adds per-category Email and Text switches.
+// notificationSettingsJSON is the Me > Notifications payload: the email
+// switches (DEC-97, DEC-115) and the push section (M3.13b, DEC-122); M3.12
+// adds Text.
 type notificationSettingsJSON struct {
 	OptionalEmailOff bool `json:"optionalEmailOff"`
-	// Kinds are the optional kinds with their switches (DEC-115).
+	// Kinds are the optional kinds with their email switches (DEC-115).
 	Kinds []emailKindJSON `json:"kinds"`
+	// Push is the person's devices and Push switches. Only signed in: the
+	// signed-out email settings page never shows it.
+	Push pushSettingsJSON `json:"push"`
+}
+
+func (a *App) notificationSettingsFor(u *models.User) (notificationSettingsJSON, error) {
+	s, err := a.emailSettingsFor(a.DB, u)
+	if err != nil {
+		return notificationSettingsJSON{}, err
+	}
+	p, err := a.pushSettingsFor(a.DB, u)
+	if err != nil {
+		return notificationSettingsJSON{}, err
+	}
+	return notificationSettingsJSON{OptionalEmailOff: s.OptionalEmailOff, Kinds: s.Kinds, Push: p}, nil
 }
 
 func (a *App) apiGetNotificationSettings(c *gin.Context) {
-	s, err := a.emailSettingsFor(a.DB, apiUser(c))
+	s, err := a.notificationSettingsFor(apiUser(c))
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load notification settings")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"settings": notificationSettingsJSON{OptionalEmailOff: s.OptionalEmailOff, Kinds: s.Kinds}})
+	c.JSON(http.StatusOK, gin.H{"settings": s})
 }
 
-// apiUpdateNotificationSettings changes one email switch (DEC-115): a kind
+// apiUpdateNotificationSettings changes one switch. Email (DEC-115): a kind
 // ({category, off}) or every optional kind ({optionalEmailOff}, DEC-97).
-// Required email (account, safety, requests waiting on you) is never
+// Push ({channel: "push", category, off}, DEC-122): one optional category.
+// Required kinds (account, safety, requests waiting on you) are never
 // affected. The append-only consents rows, with their IP and user agent,
 // are the record of the change (5.3), so no AuditLog row is added.
 func (a *App) apiUpdateNotificationSettings(c *gin.Context) {
 	me := apiUser(c)
-	if !a.applyEmailSettings(c, me, models.ConsentSourceWebForm) {
+	var which struct {
+		Channel  string  `json:"channel"`
+		Category *string `json:"category"`
+		Off      *bool   `json:"off"`
+	}
+	if err := c.ShouldBindBodyWith(&which, binding.JSON); err != nil {
+		jsonError(c, http.StatusBadRequest, "invalid request")
 		return
 	}
-	s, err := a.emailSettingsFor(a.DB, me)
+	switch which.Channel {
+	case "", models.ConsentEmail:
+		if !a.applyEmailSettings(c, me, models.ConsentSourceWebForm) {
+			return
+		}
+	case models.ConsentPush:
+		if which.Category == nil {
+			jsonError(c, http.StatusBadRequest, "invalid request")
+			return
+		}
+		if !a.applyPushSettings(c, me, *which.Category, which.Off) {
+			return
+		}
+	default:
+		jsonError(c, http.StatusBadRequest, "invalid request")
+		return
+	}
+	s, err := a.notificationSettingsFor(me)
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not load notification settings")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"settings": notificationSettingsJSON{OptionalEmailOff: s.OptionalEmailOff, Kinds: s.Kinds}})
+	c.JSON(http.StatusOK, gin.H{"settings": s})
 }
 
 // clipRunes keeps at most n runes of s (a request header we store).

@@ -610,6 +610,13 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// History and Try again (M3.5b, DEC-131).
 	v1.GET("/messages/:id/recipients", a.apiAuth(), a.apiMessageRecipients)
 	v1.POST("/messages/:id/retry", a.apiAuth(), a.apiRetryMessage)
+	// Web push (M3.13b): this browser's device, by its endpoint, which no
+	// response ever returns.
+	v1.GET("/push/config", a.apiAuth(), a.apiPushConfig)
+	v1.PUT("/push/subscriptions", a.apiAuth(), a.apiPushSubscribe)
+	v1.DELETE("/push/subscriptions", a.apiAuth(), a.apiPushUnsubscribe)
+	v1.POST("/push/turn-off", a.apiAuth(), a.apiPushTurnOff)
+	v1.POST("/push/test", a.apiAuth(), a.apiPushTest)
 	// Calendar feed link (M1.7): the raw token comes back only from POST.
 	v1.GET("/me/notification-settings", a.apiAuth(), a.apiGetNotificationSettings)
 	v1.PUT("/me/notification-settings", a.apiAuth(), a.apiUpdateNotificationSettings)

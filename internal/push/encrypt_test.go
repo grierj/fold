@@ -95,3 +95,33 @@ func TestEncryptRefusesBadKeys(t *testing.T) {
 		t.Errorf("padded keys: %v", err)
 	}
 }
+
+// A device's keys are checked when it subscribes, with the same rules
+// Encrypt applies; the error names neither value.
+func TestValidKeys(t *testing.T) {
+	if err := ValidKeys(rfcUAPublic, rfcAuth); err != nil {
+		t.Fatalf("the RFC's keys: %v", err)
+	}
+	padded := base64.URLEncoding.EncodeToString(b64(t, rfcUAPublic))
+	if err := ValidKeys(padded, rfcAuth+"=="); err != nil {
+		t.Fatalf("padded keys: %v", err)
+	}
+	for _, c := range [][2]string{
+		{"", rfcAuth},
+		{rfcUAPublic, ""},
+		{"not base64!", rfcAuth},
+		{rfcUAPublic[:40], rfcAuth},        // not a point
+		{rfcUAPublic, rfcAuth[:10]},        // short secret
+		{rfcUAPublic, rfcUAPublic},         // a key, not a secret
+		{strings.Repeat("A", 87), rfcAuth}, // 65 bytes, not on the curve
+	} {
+		err := ValidKeys(c[0], c[1])
+		if err == nil {
+			t.Errorf("ValidKeys(%q, %q) accepted", c[0], c[1])
+			continue
+		}
+		if (c[0] != "" && strings.Contains(err.Error(), c[0])) || (c[1] != "" && strings.Contains(err.Error(), c[1])) {
+			t.Errorf("the error repeats a key: %v", err)
+		}
+	}
+}

@@ -863,9 +863,57 @@ export interface EmailKind {
   off: boolean;
 }
 
+// Me > Notifications. Push comes only signed in: the signed-out email
+// settings page shares this type and has no push section.
 export interface NotificationSettings {
   optionalEmailOff: boolean;
   kinds: EmailKind[];
+  push?: PushSettings;
+}
+
+// Web push (M3.13b). The "Notifications on this device" card (M3.13c1) is
+// the first page to import these; @public keeps knip quiet until then. No
+// response ever carries a device's endpoint or keys.
+
+// Notifications on this device (DEC-122): whether the person has push on,
+// their devices by the label the server made, and a Push switch per
+// optional kind (required kinds always push and aren't listed).
+/** @public */
+export interface PushSettings {
+  on: boolean;
+  devices: PushDevice[];
+  kinds: EmailKind[];
+}
+
+/** @public */
+export interface PushDevice {
+  id: number;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string;
+}
+
+// GET /push/config: the church's switch and the applicationServerKey.
+/** @public */
+export interface PushConfig {
+  enabled: boolean;
+  publicKey: string;
+}
+
+// PUT /push/subscriptions. Past 30 saves an hour, saved is false and
+// message is the line to show (DEC-129).
+/** @public */
+export interface PushSubscribeResponse {
+  saved: boolean;
+  device?: PushDevice;
+  message?: string;
+}
+
+// POST /push/test. Sent false comes with the line to show (DEC-129).
+/** @public */
+export interface PushTestResponse {
+  sent: boolean;
+  message?: string;
 }
 
 // A bookable room (M2.1a). Admins manage rooms; notes are for admins only.
