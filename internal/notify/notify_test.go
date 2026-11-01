@@ -115,6 +115,14 @@ func TestEveryKindsPushTextIsLockScreenSafe(t *testing.T) {
 		if k.AllowPush {
 			pushed++
 		}
+		// An event's push never names its group, even when the caller let
+		// the bell name it: the event's own title stands for it.
+		if k.Category == CatEvents && k.AllowPush {
+			title, body, _ := k.RenderForPush(Vars{Group: "Secret Circle", GroupVis: "invite only", Event: "Supper", When: "Tue 7pm", Change: "time"})
+			if strings.Contains(title+body, "Secret Circle") {
+				t.Errorf("%s push text names the group: %q %q", k.Key, title, body)
+			}
+		}
 	}
 	if pushed == 0 {
 		t.Fatal("no kind pushes; the test checks nothing")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"log"
 	"math"
@@ -146,11 +147,12 @@ type pushSubscriptionBody struct {
 var errPushLimit = errors.New("push: hourly limit")
 
 // apiPushSubscribe saves this browser's subscription for the signed-in
-// person (upsert by endpoint). An endpoint another account holds is rebound:
-// whoever holds the device holds the subscription, and the old account
-// hears nothing (there is nothing for it to do, DEC-52). The first device,
-// or the first after "Turn off notifications everywhere", is the opt-in
-// (DEC-122).
+// person (upsert by endpoint). An endpoint another account holds is rebound
+// only when its keys match too: that is the same browser subscription, on
+// a shared browser that changed hands, and the old account hears nothing
+// (there is nothing for it to do, DEC-52). With other keys the row is left
+// alone and the answer is the same as any save. The first device, or the
+// first after "Turn off notifications everywhere", is the opt-in (DEC-122).
 func (a *App) apiPushSubscribe(c *gin.Context) {
 	me := apiUser(c)
 	if a.refusePush(c, me) {
@@ -177,8 +179,14 @@ func (a *App) apiPushSubscribe(c *gin.Context) {
 	label, evidence := pushDeviceLabel(c.Request.UserAgent())
 	var dev models.PushSubscription
 	err := a.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Exec("SELECT 1 FROM users WHERE id = ? FOR UPDATE", me.ID).Error; err != nil {
+		// Under the person's lock, the account must still be the one the
+		// session signed in as: revoked or disabled meanwhile saves nothing.
+		var fresh models.User
+		if err := tx.Raw("SELECT id, status, session_version FROM users WHERE id = ? FOR UPDATE", me.ID).Scan(&fresh).Error; err != nil {
 			return err
+		}
+		if fresh.ID != me.ID || fresh.Status != me.Status || fresh.SessionVersion != me.SessionVersion {
+			return errSecuritySession
 		}
 		var saves int64
 		if err := tx.Model(&models.AuditLog{}).Where("actor_id = ? AND action = ? AND at > ?", me.ID, audit.PushDeviceOn, time.Now().Add(-time.Hour)).
@@ -188,20 +196,43 @@ func (a *App) apiPushSubscribe(c *gin.Context) {
 		if saves >= pushSavesPerHour {
 			return errPushLimit
 		}
-		var prior []models.PushSubscription
-		if err := tx.Select("id", "user_id").Where("endpoint = ?", body.Endpoint).Find(&prior).Error; err != nil {
-			return err
-		}
-		rebound := len(prior) == 1 && prior[0].UserID != me.ID
+		// A new endpoint is inserted; one already saved is locked and
+		// decided below.
 		if err := tx.Raw(`INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth, expires_at, label)
-			VALUES (?, ?, ?, ?, ?, ?)
-			ON CONFLICT (endpoint) DO UPDATE SET
-				created_at = CASE WHEN push_subscriptions.user_id = excluded.user_id THEN push_subscriptions.created_at ELSE now() END,
-				user_id = excluded.user_id, p256dh = excluded.p256dh, auth = excluded.auth, expires_at = excluded.expires_at,
-				label = excluded.label, last_used_at = now(), failed_at = NULL
+			VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (endpoint) DO NOTHING
 			RETURNING id, user_id, label, created_at, last_used_at`,
 			me.ID, body.Endpoint, body.Keys.P256dh, body.Keys.Auth, expires, label).Scan(&dev).Error; err != nil {
 			return err
+		}
+		rebound := false
+		if dev.ID == 0 {
+			var prior models.PushSubscription
+			if err := tx.Raw("SELECT id, user_id, p256dh, auth FROM push_subscriptions WHERE endpoint = ? FOR UPDATE", body.Endpoint).Scan(&prior).Error; err != nil {
+				return err
+			}
+			if prior.ID == 0 {
+				return errors.New("push: the device vanished while saving it")
+			}
+			if prior.UserID != me.ID && !sameDeviceKeys(prior, body.Keys.P256dh, body.Keys.Auth) {
+				// Someone else's device, posted with other keys: holding an
+				// endpoint alone doesn't take a device. The row is left as
+				// it is, and the answer looks like any save (DEC-52).
+				now := time.Now().UTC()
+				dev = models.PushSubscription{ID: prior.ID, Label: label, CreatedAt: now, LastUsedAt: now}
+				return audit.Write(tx, audit.Entry{Actor: &me.ID, Action: audit.PushDeviceOn, TargetType: "user", TargetID: me.ID,
+					Meta: map[string]any{"deviceId": prior.ID, "label": label, "rebound": false, "refused": true}, IP: c.ClientIP()})
+			}
+			// The person's own device saved again, or the same browser
+			// subscription (same keys) now signed in as someone else: a
+			// shared browser changed hands.
+			rebound = prior.UserID != me.ID
+			if err := tx.Raw(`UPDATE push_subscriptions SET
+					created_at = CASE WHEN user_id = ? THEN created_at ELSE now() END,
+					user_id = ?, p256dh = ?, auth = ?, expires_at = ?, label = ?, last_used_at = now(), failed_at = NULL
+				WHERE id = ? RETURNING id, user_id, label, created_at, last_used_at`,
+				me.ID, me.ID, body.Keys.P256dh, body.Keys.Auth, expires, label, prior.ID).Scan(&dev).Error; err != nil {
+				return err
+			}
 		}
 		// At most ten: the 11th replaces the one least recently used.
 		if err := tx.Exec(`DELETE FROM push_subscriptions WHERE id IN (
@@ -221,12 +252,24 @@ func (a *App) apiPushSubscribe(c *gin.Context) {
 		c.JSON(http.StatusOK, pushSubscribeJSON{Saved: false, Message: pushSaveLimitMessage})
 		return
 	}
+	if errors.Is(err, errSecuritySession) {
+		jsonError(c, http.StatusUnauthorized, "unauthorized")
+		return
+	}
 	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not turn on notifications")
 		return
 	}
 	d := deviceJSON(dev)
 	c.JSON(http.StatusOK, pushSubscribeJSON{Saved: true, Device: &d})
+}
+
+// sameDeviceKeys compares a saved device's keys with posted ones in
+// constant time. The same browser subscription posts the same strings.
+func sameDeviceKeys(d models.PushSubscription, p256dh, auth string) bool {
+	a := subtle.ConstantTimeCompare([]byte(d.P256dh), []byte(p256dh))
+	b := subtle.ConstantTimeCompare([]byte(d.Auth), []byte(auth))
+	return a&b == 1
 }
 
 // pushEndpointBody names this browser's device by its endpoint.
@@ -403,8 +446,13 @@ func (a *App) applyPushSettings(c *gin.Context, u *models.User, category string,
 		status = models.ConsentOptedOut
 	}
 	// No row means on: with a device, every optional category pushes.
-	if _, err := setConsent(a.DB, models.Consent{UserID: u.ID, Channel: models.ConsentPush, Scope: categoryScope(category), Status: status,
-		Source: models.ConsentSourceWebForm, IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}, models.ConsentOptedIn); err != nil {
+	// In a transaction, so setConsent's row lock holds through the write.
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		_, err := setConsent(tx, models.Consent{UserID: u.ID, Channel: models.ConsentPush, Scope: categoryScope(category), Status: status,
+			Source: models.ConsentSourceWebForm, IP: c.ClientIP(), UserAgent: c.Request.UserAgent()}, models.ConsentOptedIn)
+		return err
+	})
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save notification settings")
 		return false
 	}

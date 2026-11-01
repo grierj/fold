@@ -1,13 +1,13 @@
 # Fold: Architecture and Development Plan
 
-Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-133.
+Status: active product plan. Phases 0 and 1 are complete (through PR #184, Oct 30, 2026). Decisions run through DEC-134.
 Repo: https://github.com/grierj/fold. [STATUS.md](../../STATUS.md) tracks delivery; [documentation review](DOCUMENTATION-REVIEW.md) records remaining conflicts and gaps.
 
 How to use this document:
 
 - People: read sections 1 to 4 for the shape of the project, section 12 for the vendor and hosting picks, and section 15 for Grier's decisions and remaining open questions.
 - Agents: read section 3 (what exists), section 5 (architecture), and section 6 (permissions). Then pick one milestone in section 14. Each milestone lists its scope, acceptance criteria, and tests. Split high-complexity work into thin end-to-end slices, one reviewable PR per slice (14.1). Do not start a milestone until the ones it depends on are merged.
-- Precedence: Grier's decisions (section 15, through DEC-133; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
+- Precedence: Grier's decisions (section 15, through DEC-134; later amendments win) win over the original requirement wording and over anything in the current repo, including `AGENTS.md` and `README.md`. When the repo disagrees with this plan, change the repo in the milestone that owns the item.
 - Clean break (DEC-22): no church runs Fold yet. Nothing in the current repo's data or schema has to be preserved. Any part of the skeleton may be changed if the result still meets the requirements in section 2.
 - Words like MUST and MUST NOT are hard rules. "Should" means the default; you may deviate if you write down why in the PR.
 
@@ -95,7 +95,7 @@ Each requirement maps to the sections and milestones that satisfy it. Agents: if
 | F12 | Remote attendance flag | 5.3, M1.8 |
 | F13 | Childcare available flag | 5.3, M1.8 |
 
-The decisions in section 15 (through DEC-133) refine these requirements. Where a decision and the wording above differ, the decision wins.
+The decisions in section 15 (through DEC-134) refine these requirements. Where a decision and the wording above differ, the decision wins.
 
 ---
 
@@ -2236,6 +2236,7 @@ Grier answered the first-draft questions on **Oct 9, 2026** (DEC-1 to DEC-16, nu
 | DEC-131 | **A failed send can be tried again** (Grier, Oct 31, 2026; M3.5 planning). When a provider outage outlasts the retries, the message shows its failed state with the error, and its author or an admin can resend to just the people it failed for; nobody it reached gets it twice. | 7.1, M3.5b |
 | DEC-132 | **Leaders see guardian copies as a count** (Grier, Oct 31, 2026; M3.5 review). A message's history never shows a leader or host the names of a teen's guardians: copy rows are left out of their list and counted instead ("2 guardian copies sent", "… 1 didn't go out"). Admins see names, each guardian with "Copy for <teen>". | 5.10, 7.1, M3.5b |
 | DEC-133 | **Event reminders: their switch, times, waitlist and history** (Grier, Oct 31, 2026; M3.6 planning). (A) Reminders follow the **Event updates** email switch (`category:events`), not Messages from leaders. (B) Leaders choose an event's reminder time from Off, 2 hours, 1 day (the default), 2 days or 1 week before. (C) Waitlisted people get a "still on the waitlist" note at the same time as the going reminder. (D) A leader sees that a reminder went out on the event or date page ("Reminder emailed to 12 people"), which opens its history; admins also see reminders in Messages, and leaders' Messages lists keep only what they wrote. | 7.7, M3.6 |
+| DEC-134 | **Push follow-ups from the M3.13 review** (Grier, Oct 31, 2026; M3.13 review). (A) Registration cancelled, room lost and leadership changes push too; waitlist cutoff doesn't. (B) A push that can't say what it's about is titled with the church's name. (C) Revoking someone's sessions also turns off notifications on all their devices, and a bell notice tells them so. | 5.12, M3.13 |
 
 The five questions left open in draft v2 are all answered: intermediate overrides (DEC-17), teens as leaders (DEC-18), guardian copies (DEC-19), which groups admit teens (DEC-20), and the email default (DEC-21). DEC-26 to DEC-30 answer the five questions draft v3 left open (Render's place, unreviewed opt-outs, a reason for opening events, guardian SMS copies, and sign-up approval). DEC-31 to DEC-33 answer the final review's co-leader and guardian findings and add contact-access logging. DEC-34 to DEC-37 answer the four questions from the M0.1 and M0.2 pull requests (#9, #10). DEC-40 records the far-future roster-sync idea (Oct 10, 2026). DEC-41 to DEC-44 (Oct 10, 2026) accept the session-cookie gap, build notifications in Fold, set the self-contained directive, and answer Illuminator's seven notification product questions. DEC-45 (Oct 10) sets notification retention, DEC-46 (Oct 12) adds per-date visibility, DEC-47 and DEC-48 (Oct 13) come from Whittler's simplicity audit, DEC-49 to DEC-51 (Oct 14) come from PRs #50 and #51, and DEC-52 to DEC-56 (Oct 15) come from the M1.4 review in #56.
 

@@ -81,7 +81,7 @@ export const ERROR_COPY = {
   message_test_failed: "We couldn't send the test. Try again in a few minutes.",
   push_service_unknown: "This browser's notification service isn't one Fold can send to. Try another browser, such as Chrome, Edge, Firefox or Safari.",
   push_guest: "Notifications on a device need a Fold account. Ask your church office for one.",
-  push_consent_required: "Notifications can be turned on once a parent or guardian's consent is complete. Your church office can help.",
+  push_consent_required: "You can turn on notifications once your account's consent is complete.",
   push_church_off: "Your church has turned off notifications on devices. You'll still get email and alerts in Fold.",
   push_device_unknown: "This device doesn't have notifications on. Turn them on first, then send a test.",
   push_kind_locked: "That kind of notification can't be turned off: account and safety notices always come. Refresh the page to see your switches.",

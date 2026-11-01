@@ -60,6 +60,7 @@ const (
 	AccountTurned18         = "account.turned_18"
 	HouseholdChildTurned13  = "household.child_turned_13"
 	PushKeysReset           = "push.keys_reset"
+	PushDevicesOff          = "push.devices_off"
 )
 
 // Action is an inline button. Only allow-listed kinds carry one (6.6).
@@ -154,7 +155,9 @@ func (k Kind) RenderForPush(v Vars) (title, body string, ok bool) {
 
 // SafePushTitle and SafePushBody are the whole push for safety, consent
 // and contact kinds, and for rows about someone in a household (research
-// 2.4): they name nobody. (Variables, not constants: a dotted string
+// 2.4): they name nobody. The stored SafePushTitle is replaced with the
+// church's name (site_name) when the push is sent (DEC-134 B), since the
+// registry looks nothing up. (Variables, not constants: a dotted string
 // constant in this file reads as a kind key to TestEveryKindConstIsRegistered.)
 var (
 	SafePushTitle = "Fold"
@@ -363,6 +366,14 @@ func init() {
 			}
 			return title, v.Group
 		},
+		// It goes to the other admins, who may see every group, so the
+		// group is named; the person isn't, on a lock screen (DEC-134 A).
+		AllowPush: true, PushRender: func(v Vars) (string, string) {
+			if v.Change == "added" {
+				return "New leader in " + or(v.Group, "a group"), "Open Fold to see who."
+			}
+			return "Leader change in " + or(v.Group, "a group"), "Open Fold to see who."
+		},
 	})
 	register(Kind{
 		Key: MembershipDeparture, Category: CatGroups, AllowEmail: true,
@@ -440,6 +451,11 @@ func init() {
 		Render: func(v Vars) (string, string) {
 			return "Registration cancelled: " + or(v.Event, "An event you registered for"),
 				"Who can see this event has changed, so registrations for dates you can no longer access were cancelled."
+		},
+		// The caller names no group, place or date: the person can no
+		// longer see the event (DEC-134 A).
+		AllowPush: true, PushRender: func(v Vars) (string, string) {
+			return "Your spot was cancelled: " + or(v.Event, "an event"), "Open Fold to see why."
 		},
 	})
 	register(Kind{
@@ -616,6 +632,22 @@ func init() {
 		Render: func(v Vars) (string, string) {
 			return "Room lost on " + or(v.Change, "a date") + ": " + or(v.Event, "an event"),
 				"The room you booked is taken at the new time. Pick another room on the event page."
+		},
+		// No room name: a room can say where a group meets (DEC-124).
+		// Change is the date count ("1 date", "3 dates").
+		AllowPush: true, PushRender: func(v Vars) (string, string) {
+			return "Room booking lost: " + or(v.Event, "an event"), "Pick another room for " + or(v.Change, "a date") + " in Fold."
+		},
+	})
+	register(Kind{
+		// Every device of the person was removed because their sessions
+		// were revoked or the account stopped being active (DEC-134 C):
+		// written by the push.devices_off job the users trigger queues.
+		// Bell only: the devices are gone, and the change already emailed
+		// what needed emailing. Never required.
+		Key: PushDevicesOff, Category: CatAdmin,
+		Render: func(Vars) (string, string) {
+			return "Notifications on your devices were turned off", "Your password, email or account changed, so we turned off notifications on your phones and computers. Turn them on again in Me → Notifications."
 		},
 	})
 	register(Kind{

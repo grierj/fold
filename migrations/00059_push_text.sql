@@ -12,10 +12,26 @@ ALTER TABLE notifications ADD COLUMN push_body text NOT NULL DEFAULT '';
 -- for consent) removes every push device, so a phone stops getting pushes
 -- meant for the account. Logout removes only its own browser's device, in
 -- the logout request.
+--
+-- When it removed any, it queues a push.devices_off job in the same
+-- transaction (DEC-134 C), and the job writes the person a bell notice
+-- through notify.Send, so no path that revokes sessions can forget to tell
+-- them. One per account per transaction. Turning devices off yourself
+-- deletes rows directly and never comes here.
 -- +goose StatementBegin
 CREATE FUNCTION push_devices_end_with_sessions() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    removed bigint;
 BEGIN
     DELETE FROM push_subscriptions WHERE user_id = NEW.id;
+    GET DIAGNOSTICS removed = ROW_COUNT;
+    IF removed > 0 THEN
+        INSERT INTO jobs (kind, payload, unique_key)
+        VALUES ('push.devices_off',
+            jsonb_build_object('userId', NEW.id, 'devices', removed, 'key', NEW.id || ':' || txid_current() || ':' || (extract(epoch FROM now()) * 1000000)::bigint),
+            'push.devices_off:' || NEW.id || ':' || txid_current() || ':' || (extract(epoch FROM now()) * 1000000)::bigint)
+        ON CONFLICT (unique_key) DO NOTHING;
+    END IF;
     RETURN NULL;
 END;
 $$;

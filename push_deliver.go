@@ -62,7 +62,61 @@ func (a *App) pushKinds() []jobs.Kind {
 				return err
 			}
 			return a.deliverPush(ctx, p)
-		}}}
+		}},
+		{Name: kindPushDevicesOff, Label: "Telling someone their devices' notifications were turned off",
+			Run: func(ctx context.Context, payload json.RawMessage) error {
+				var p devicesOffJob
+				if err := json.Unmarshal(payload, &p); err != nil {
+					return err
+				}
+				return a.noticeDevicesOff(ctx, p)
+			}},
+	}
+}
+
+// kindPushDevicesOff is queued by the users trigger (migration 00059) in
+// the transaction that revoked someone's sessions or took the account out
+// of active, when that removed any of their devices (DEC-134 C).
+const kindPushDevicesOff = "push.devices_off"
+
+// devicesOffJob is the trigger's payload: Key is unique to that change.
+type devicesOffJob struct {
+	UserID  uint   `json:"userId"`
+	Devices int    `json:"devices"`
+	Key     string `json:"key"`
+}
+
+// noticeDevicesOff writes the person one bell notice that their devices'
+// notifications were turned off. Safe to run twice (the dedupe key); a
+// deleted account gets nothing. Turning devices off yourself never queues
+// this.
+func (a *App) noticeDevicesOff(ctx context.Context, p devicesOffJob) error {
+	var u models.User
+	if err := a.DB.WithContext(ctx).Select("id").First(&u, p.UserID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	_, err := notify.Send(a.DB.WithContext(ctx), notify.Msg{
+		Kind: notify.PushDevicesOff, To: []uint{u.ID}, SubjectType: "user", SubjectID: u.ID,
+		Link: "/profile/notifications", DedupeKey: "push.devices_off:" + p.Key,
+	})
+	return err
+}
+
+// lockScreen is what the device shows for n: its stored push text, with
+// the safe line titled with the church's name, since it can't say what it
+// is about (DEC-134 B). False for a row that doesn't push.
+func (a *App) lockScreen(n *models.Notification) (push.Notification, bool) {
+	render := renderPush
+	if a.pushRender != nil {
+		render = a.pushRender
+	}
+	note, ok := render(n)
+	if ok && note.Title == notify.SafePushTitle && note.Body == notify.SafePushBody {
+		note.Title = a.siteName()
+	}
+	return note, ok
 }
 
 // queuePushDeliveries queues one push.deliver per device for every row
@@ -122,7 +176,8 @@ func renderPush(n *models.Notification) (push.Notification, bool) {
 // pushOptions are the delivery headers for one row (research 2.4): a
 // change to a date that starts within 24 hours is urgent and short-lived,
 // a task waits up to 3 days at low urgency, and anything else keeps a day.
-// The topic lets a later copy of the row replace a pending one.
+// The topic (n<id>) only collapses retries of the same notification still
+// waiting at the push service; different rows never replace each other.
 func (a *App) pushOptions(ctx context.Context, k notify.Kind, n *models.Notification) push.Options {
 	opts := push.Options{TTL: pushTTL, Urgency: push.UrgencyNormal, Topic: "n" + strconv.FormatUint(uint64(n.ID), 10)}
 	switch {
@@ -196,11 +251,7 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	case categoryOff && !kind.Required:
 		return a.recordPush(n, models.DeliverySuppressed, "push turned off for "+notify.CategoryEmailName(kind.Category))
 	}
-	render := renderPush
-	if a.pushRender != nil {
-		render = a.pushRender
-	}
-	note, ok := render(&n)
+	note, ok := a.lockScreen(&n)
 	if !ok {
 		return nil
 	}

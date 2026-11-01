@@ -397,6 +397,26 @@ func TestPushDeliverSkipsWhatIsNoLongerThere(t *testing.T) {
 	}
 }
 
+// A push that can't say what it's about is titled with the church's name
+// (DEC-134 B); every other kind keeps its own title.
+func TestSafePushesAreTitledWithTheChurch(t *testing.T) {
+	app := testApp(t)
+	app.DB.Create(&models.Setting{Key: "site_name", Value: "First Church"})
+	safe := &models.Notification{Kind: notify.TeenConsentChanged, PushTitle: notify.SafePushTitle, PushBody: notify.SafePushBody}
+	if note, ok := app.lockScreen(safe); !ok || note.Title != "First Church" || note.Body != notify.SafePushBody {
+		t.Fatalf("safe push %+v", note)
+	}
+	// A household row of an event kind uses the safe line too.
+	household := &models.Notification{Kind: notify.RegistrationPromoted, PushTitle: notify.SafePushTitle, PushBody: notify.SafePushBody}
+	if note, _ := app.lockScreen(household); note.Title != "First Church" {
+		t.Fatalf("household push %+v", note)
+	}
+	own := &models.Notification{Kind: notify.GroupApproved, PushTitle: "Youth was approved", PushBody: "It's live now."}
+	if note, _ := app.lockScreen(own); note.Title != "Youth was approved" {
+		t.Fatalf("specific push %+v", note)
+	}
+}
+
 // The lock-screen text is the row's stored push text, and only for kinds
 // that push; never the bell title or body.
 func TestRenderPushUsesTheStoredPushText(t *testing.T) {

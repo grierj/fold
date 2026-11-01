@@ -491,58 +491,197 @@ func TestPushNotificationSettings(t *testing.T) {
 	}
 }
 
-// A person's devices end with their sessions (research 2.8): disabling
-// the account, a password change and revoked sessions delete every one.
+// devicesOffNotices are the person's "notifications were turned off" rows.
+func devicesOffNotices(app *App, u *models.User) []models.Notification {
+	var out []models.Notification
+	app.DB.Where("user_id = ? AND kind = ?", u.ID, notify.PushDevicesOff).Find(&out)
+	return out
+}
+
+// A person's devices end with their sessions (research 2.8): every path
+// that revokes sessions or takes the account out of active deletes every
+// device, and the person gets one bell notice saying so (DEC-134 C), never
+// an email or a push.
 func TestPushDevicesEndWithSessions(t *testing.T) {
+	for _, change := range []string{"password_change", "password_reset", "admin_reset", "email_change", "admin_email", "role_change", "disable"} {
+		t.Run(change, func(t *testing.T) {
+			app, f := pushTestApp(t)
+			newTestUser(t, app, "admin", "password123456", models.RoleAdmin)
+			admin := loginAPI(t, app, "admin", "password123456")
+			u := pushMember(t, app, "cal")
+			newPushDevice(t, app, u, "cal-phone")
+			newPushDevice(t, app, u, "cal-laptop")
+			client := loginAPI(t, app, "cal", "password123456")
+			anon := newAPIClient(t, app)
+			anon.fetchCSRF()
+			tokens := pendingSecurityCapabilities(t, app, u)
+			target := "/api/v1/admin/users/" + itoa(u.ID)
+			switch change {
+			case "password_change":
+				apiDo(t, client, "POST", "/api/v1/me/password", map[string]string{"current": "password123456", "password": "a-new-password-1"}, http.StatusOK)
+			case "password_reset":
+				apiDo(t, anon, "POST", "/api/v1/auth/password-reset/confirm", map[string]string{"token": tokens[models.TokenPasswordReset], "password": "a-new-password-1"}, http.StatusOK)
+			case "admin_reset":
+				apiDo(t, admin, "POST", target+"/password", map[string]string{"password": "a-new-password-1"}, http.StatusOK)
+			case "email_change":
+				apiDo(t, client, "POST", "/api/v1/me/email/verify", map[string]string{"token": tokens[models.TokenEmailVerify]}, http.StatusOK)
+			case "admin_email":
+				apiDo(t, admin, "PUT", target, map[string]string{"email": "cal-new@example.com"}, http.StatusOK)
+			case "role_change":
+				apiDo(t, admin, "PUT", target, map[string]string{"role": models.RoleAdmin}, http.StatusOK)
+			case "disable":
+				apiDo(t, admin, "PUT", target, map[string]string{"status": models.UserDisabled}, http.StatusOK)
+			}
+			if n := len(userDevices(app, u)); n != 0 {
+				t.Fatalf("%d devices left", n)
+			}
+			drainJobs(t, app)
+			drainJobs(t, app) // a second run (a retry) writes no second notice
+			notes := devicesOffNotices(app, u)
+			if len(notes) != 1 {
+				t.Fatalf("%d notices, want 1", len(notes))
+			}
+			n := notes[0]
+			if n.Title != "Notifications on your devices were turned off" ||
+				n.Body != "Your password, email or account changed, so we turned off notifications on your phones and computers. Turn them on again in Me → Notifications." ||
+				n.Link != "/profile/notifications" || n.Waiting || n.PushTitle != "" {
+				t.Fatalf("notice %+v", n)
+			}
+			if k, _ := notify.Lookup(n.Kind); k.Required || k.AllowEmail || k.AllowPush {
+				t.Fatalf("the notice is bell only and optional: %+v", k)
+			}
+			var mailed int64
+			app.DB.Model(&models.NotificationDelivery{}).Where("notification_id = ?", n.ID).Count(&mailed)
+			if mailed != 0 || f.total() != 0 {
+				t.Fatalf("the notice was delivered: %d deliveries, %d pushes", mailed, f.total())
+			}
+		})
+	}
+}
+
+// Turning devices off yourself, or a revocation with no device to remove,
+// writes no notice; nor does anything that leaves sessions alone.
+func TestPushDevicesOffNoticeOnlyWhenRevoked(t *testing.T) {
 	app, _ := pushTestApp(t)
 	newTestUser(t, app, "admin", "password123456", models.RoleAdmin)
 	admin := loginAPI(t, app, "admin", "password123456")
+	u := pushMember(t, app, "pat")
+	phone, laptop, tablet := newPushDevice(t, app, u, "phone"), newPushDevice(t, app, u, "laptop"), newPushDevice(t, app, u, "tablet")
+	pat := loginAPI(t, app, "pat", "password123456")
+	apiDo(t, pat, "DELETE", "/api/v1/push/subscriptions", map[string]string{"endpoint": phone.Endpoint}, http.StatusOK)
+	apiDo(t, pat, "POST", "/api/v1/auth/logout", map[string]string{"pushEndpoint": laptop.Endpoint}, http.StatusOK)
+	pat = loginAPI(t, app, "pat", "password123456")
+	apiDo(t, admin, "PUT", "/api/v1/admin/users/"+itoa(u.ID), map[string]string{"name": "Pat Lee"}, http.StatusOK)
+	if !deviceExists(app, tablet.ID) {
+		t.Fatal("a name change deleted a device")
+	}
+	apiDo(t, pat, "POST", "/api/v1/push/turn-off", nil, http.StatusOK)
+	// No devices left: a password change has nothing to tell.
+	apiDo(t, pat, "POST", "/api/v1/me/password", map[string]string{"current": "password123456", "password": "a-new-password-1"}, http.StatusOK)
+	drainJobs(t, app)
+	if n := len(devicesOffNotices(app, u)); n != 0 {
+		t.Fatalf("%d notices for devices the person turned off", n)
+	}
+	// A deleted account gets none either.
+	gone := pushMember(t, app, "gil")
+	newPushDevice(t, app, gone, "gil-phone")
+	apiDo(t, admin, "DELETE", "/api/v1/admin/users/"+itoa(gone.ID), nil, http.StatusOK)
+	drainJobs(t, app)
+	var left int64
+	app.DB.Model(&models.Notification{}).Where("user_id = ?", gone.ID).Count(&left)
+	if left != 0 || len(userDevices(app, gone)) != 0 {
+		t.Fatalf("a deleted account has %d notices", left)
+	}
+}
 
-	disabled := pushMember(t, app, "dana")
-	newPushDevice(t, app, disabled, "dana-phone")
-	if w := admin.do("PUT", "/api/v1/admin/users/"+itoa(disabled.ID), map[string]any{"status": "disabled"}, true); w.Code != http.StatusOK {
-		t.Fatalf("disable: %d %s", w.Code, w.Body.String())
+// An admin's admin-notices Push switch skips the one optional admin kind
+// that pushes (leadership changes, DEC-134 A); tasks still push.
+func TestPushAdminSwitchSkipsLeadershipChanges(t *testing.T) {
+	app, f := pushTestApp(t)
+	newTestUser(t, app, "admin", "password123456", models.RoleAdmin)
+	var adminUser models.User
+	app.DB.Where("email = ?", testEmail("admin")).First(&adminUser)
+	pushConsentRow(t, app, &adminUser, "all", models.ConsentOptedIn)
+	phone := newPushDevice(t, app, &adminUser, "phone")
+	admin := loginAPI(t, app, "admin", "password123456")
+	w := admin.do("GET", "/api/v1/me/notification-settings", nil, false)
+	var got struct{ Settings notificationSettingsJSON }
+	decodeJSON(t, w, &got)
+	cats := []string{}
+	for _, k := range got.Settings.Push.Kinds {
+		cats = append(cats, k.Category)
 	}
-	if n := len(userDevices(app, disabled)); n != 0 {
-		t.Errorf("disabled: %d devices left", n)
+	if strings.Join(cats, ",") != "admin,groups,events,messages" {
+		t.Fatalf("an admin's push kinds %v", cats)
 	}
+	apiDo(t, admin, "PUT", "/api/v1/me/notification-settings", map[string]any{"channel": "push", "category": "admin", "off": true}, http.StatusOK)
+	leader := sendNotice(t, app, notify.LeadershipChanged, &adminUser)
+	task := sendNotice(t, app, notify.GroupPending, &adminUser)
+	app.deliverNotificationEmails([]uint{leader, task})
+	drainJobs(t, app)
+	if status, reason := pushDelivery(t, app, leader); status != models.DeliverySuppressed || reason != "push turned off for admin notices" {
+		t.Errorf("leadership change: %q %q", status, reason)
+	}
+	if status, _ := pushDelivery(t, app, task); status != models.DeliverySent || f.count(phone.path) != 1 {
+		t.Errorf("task: %q", status)
+	}
+}
 
-	changer := pushMember(t, app, "cal")
-	newPushDevice(t, app, changer, "cal-phone")
-	newPushDevice(t, app, changer, "cal-laptop")
-	cal := loginAPI(t, app, "cal", "password123456")
-	if w := cal.do("POST", "/api/v1/me/password", map[string]string{"current": "password123456", "password": "a-new-password-1"}, true); w.Code != http.StatusOK {
-		t.Fatalf("password change: %d %s", w.Code, w.Body.String())
-	}
-	if n := len(userDevices(app, changer)); n != 0 {
-		t.Errorf("password change: %d devices left", n)
-	}
+// A device someone else holds is rebound only when its keys match too (the
+// same browser subscription); an endpoint alone takes nothing, and the
+// answer looks like any save.
+func TestPushSubscribeNeedsTheKeysToTakeADevice(t *testing.T) {
+	app, _ := pushTestApp(t)
+	patUser := newTestUser(t, app, "pat", "password123456", models.RoleMember)
+	samUser := newTestUser(t, app, "sam", "password123456", models.RoleMember)
+	pat := loginAPI(t, app, "pat", "password123456")
+	sub := newBrowserSub(t, "phone")
+	mine, _ := subscribe(t, pat, sub)
+	var before models.PushSubscription
+	app.DB.First(&before, mine.Device.ID)
 
-	// An admin's password reset and a role change both revoke sessions.
-	reset := pushMember(t, app, "rae")
-	newPushDevice(t, app, reset, "rae-phone")
-	if w := admin.do("POST", "/api/v1/admin/users/"+itoa(reset.ID)+"/password", map[string]string{"password": "another-password-2"}, true); w.Code != http.StatusOK {
-		t.Fatalf("admin reset: %d %s", w.Code, w.Body.String())
+	stolen := newBrowserSub(t, "other")
+	stolen.Endpoint = sub.Endpoint
+	sam := loginAPI(t, app, "sam", "password123456")
+	got, w := subscribe(t, sam, stolen)
+	if w.Code != http.StatusOK || !got.Saved || got.Device == nil || got.Device.ID != mine.Device.ID {
+		t.Fatalf("the answer differs from a save: %d %s", w.Code, w.Body.String())
 	}
-	if n := len(userDevices(app, reset)); n != 0 {
-		t.Errorf("admin password reset: %d devices left", n)
+	var after models.PushSubscription
+	app.DB.First(&after, mine.Device.ID)
+	if after.UserID != patUser.ID || after.P256dh != before.P256dh || after.Auth != before.Auth || !after.CreatedAt.Equal(before.CreatedAt) {
+		t.Fatalf("the device changed hands without its keys: %+v", after)
 	}
-	promoted := pushMember(t, app, "pia")
-	newPushDevice(t, app, promoted, "pia-phone")
-	if w := admin.do("PUT", "/api/v1/admin/users/"+itoa(promoted.ID), map[string]any{"role": "admin"}, true); w.Code != http.StatusOK {
-		t.Fatalf("role change: %d %s", w.Code, w.Body.String())
+	if len(pushConsents(t, app, samUser, "all")) != 0 {
+		t.Fatal("a refused takeover turned push on")
 	}
-	if n := len(userDevices(app, promoted)); n != 0 {
-		t.Errorf("revoked sessions: %d devices left", n)
+	// The same subscription, keys and all, is the shared-browser case.
+	if got, _ := subscribe(t, sam, sub); !got.Saved {
+		t.Fatal("rebind refused")
 	}
+	app.DB.First(&after, mine.Device.ID)
+	if after.UserID != samUser.ID {
+		t.Fatal("the same subscription wasn't rebound")
+	}
+}
 
-	// Anything else about the account keeps them.
-	kept := pushMember(t, app, "kit")
-	phone := newPushDevice(t, app, kept, "kit-phone")
-	if w := admin.do("PUT", "/api/v1/admin/users/"+itoa(kept.ID), map[string]any{"name": "Kit Lee"}, true); w.Code != http.StatusOK {
-		t.Fatalf("rename: %d", w.Code)
+// Under its lock, subscribe rechecks the account against the session:
+// revoked or disabled meanwhile, it answers 401 and saves nothing.
+func TestPushSubscribeRechecksTheSession(t *testing.T) {
+	app, _ := pushTestApp(t)
+	u := newTestUser(t, app, "pat", "password123456", models.RoleMember)
+	stale := *u
+	app.DB.Model(u).Update("session_version", u.SessionVersion+1)
+	if w := asUser(t, &stale, "PUT", app.apiPushSubscribe, newBrowserSub(t, "phone")); w.Code != http.StatusUnauthorized {
+		t.Fatalf("revoked meanwhile: %d %s", w.Code, w.Body.String())
 	}
-	if !deviceExists(app, phone.ID) {
-		t.Error("a name change deleted the device")
+	var fresh models.User
+	app.DB.First(&fresh, u.ID)
+	app.DB.Model(u).Update("status", models.UserDisabled)
+	if w := asUser(t, &fresh, "PUT", app.apiPushSubscribe, newBrowserSub(t, "phone")); w.Code != http.StatusUnauthorized {
+		t.Fatalf("disabled meanwhile: %d %s", w.Code, w.Body.String())
+	}
+	if len(userDevices(app, u)) != 0 || len(pushConsents(t, app, u, "all")) != 0 {
+		t.Fatal("a stale session saved something")
 	}
 }

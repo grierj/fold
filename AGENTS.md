@@ -144,9 +144,11 @@ put in an error an endpoint, `p256dh`, `auth`, the VAPID token or a body (`jobs.
 URL paths and tokens as a backstop). `push.deliver` is one job per device. The service worker
 (slice c1) has no `fetch` handler, so it can never serve a stale shell after logout. A kind
 pushes only with `AllowPush` and its own short `PushRender` (stored on the row, never the bell
-body cut short; safety kinds get the safe line); `deliverNotificationEmails` queues it, so
-`notify.Send` callers change nothing. A trigger deletes an account's devices when its sessions
-are revoked or it stops being active (migration 00059).
+body cut short; safety kinds get the safe line, titled with `site_name` at send, DEC-134);
+`deliverNotificationEmails` queues it, so `notify.Send` callers change nothing. A trigger deletes
+an account's devices when its sessions are revoked or it stops being active, and queues
+`push.devices_off`, which writes the person a bell notice (migration 00059). Holding an endpoint
+alone never moves a device to another account: its keys must match.
 
 ## Phasing high-complexity work
 
