@@ -29,9 +29,9 @@ export function NotificationsPage() {
   // The Waiting chip shows to admins and to anyone with something waiting.
   const showWaiting = isAdmin || feed.waitingTotal > 0 || filter === "waiting";
   return (
-    <div className="max-w-2xl mx-auto px-4 pb-8">
-      <div className="sticky top-[var(--fold-header-height,4rem)] z-5 bg-page -mx-4 px-4 pt-4 sm:pt-6 pb-3">
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+    <div className="max-w-2xl mx-auto px-4 sm:px-6 pb-8">
+      <div className="sticky top-[var(--fold-header-height,4rem)] z-5 bg-page -mx-4 px-4 sm:-mx-6 sm:px-6 pt-6 pb-4">
+        <div className="fold-page-header">
           <h1 className="text-3xl font-bold mr-auto">Alerts</h1>
           <ButtonLink to="/profile/notifications" variant="link">
             Email settings
@@ -48,7 +48,7 @@ export function NotificationsPage() {
             </Button>
           )}
         </div>
-        <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label="Show">
+        <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label="Show">
           {FILTERS.filter((f) => f.key !== "waiting" || showWaiting).map((f) => (
             <Chip key={f.key} selected={filter === f.key} onClick={() => setParams(f.key === "all" ? {} : { filter: f.key })}>
               {f.label}

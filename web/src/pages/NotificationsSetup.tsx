@@ -123,7 +123,7 @@ export function NotificationsSetupPage() {
     return () => { alive = false; };
   }, []);
 
-  if (!site || !here) return <div className="max-w-2xl mx-auto px-4 py-8"><Skeleton kind="page" label="Loading the directions…" /></div>;
+  if (!site || !here) return <div className="fold-page fold-page-narrow"><Skeleton kind="page" label="Loading the directions…" /></div>;
   // The church turned notifications off (DEC-124): the page isn't there.
   if (!site.pushEnabled) return <NotFound />;
 
@@ -137,14 +137,14 @@ export function NotificationsSetupPage() {
   // The top box already shows this device's undo steps when it blocks.
   const blockedAtTop = here.device === "blocked" && !here.on;
 
-  return <div className="max-w-2xl mx-auto px-4 py-8 space-y-8 wrap-anywhere">
+  return <div className="fold-page fold-page-narrow space-y-8 wrap-anywhere">
     <div className="space-y-3">
-      <h1 className="text-3xl font-bold">Get notifications on your phone</h1>
+      <h1 className="fold-page-header text-3xl font-bold">Get notifications on your phone</h1>
       <p className="text-text-muted">{church} can send notifications to your phone or computer, like any app: a cancelled date, a new group, a message from your leader.</p>
       <HereLine here={here} section={mine} church={church} />
     </div>
 
-    <section aria-labelledby="setup-mine" className="space-y-4 rounded-lg border border-border bg-surface p-6">
+    <section aria-labelledby="setup-mine" className="fold-section space-y-4">
       <h2 id="setup-mine" className="text-xl font-semibold">{mine.heading}</h2>
       {inApp
         ? <p>You're in the Home Screen app. Go to <MeNotifications /> and tap <strong>Turn on notifications</strong>.{user ? "" : " Sign in first if you haven't."}</p>
@@ -155,11 +155,11 @@ export function NotificationsSetupPage() {
       </div>}
     </section>
 
-    <section aria-labelledby="setup-others" className="space-y-3">
+    <section aria-labelledby="setup-others" className="fold-section space-y-3">
       <h2 id="setup-others" className="text-xl font-semibold">Using a different device?</h2>
-      {others.map((s) => <details key={s.platform} className="rounded-lg border border-border bg-surface">
-        <summary className="cursor-pointer px-6 py-4"><h3 className="inline text-lg font-semibold">{s.heading}</h3></summary>
-        <div className="space-y-4 px-6 pb-6">
+      {others.map((s) => <details key={s.platform} className="border-b border-border">
+        <summary className="min-h-11 cursor-pointer py-4"><h3 className="inline text-lg font-semibold">{s.heading}</h3></summary>
+        <div className="space-y-4 pb-6">
           {s.body}
           <div className="space-y-2">
             <h4 className="font-semibold">Blocked it by mistake?</h4>

@@ -51,8 +51,8 @@ export function MessagesPage() {
   const newButton = <ButtonLink variant="primary" to="/messages/new" layout="w-full sm:w-auto">New message</ButtonLink>;
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-6 space-y-5 wrap-anywhere">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="fold-page fold-page-narrow space-y-6 wrap-anywhere">
+      <div className="fold-page-header">
         <h1 className="text-3xl font-bold">Messages</h1>
         {allowed && messages && (messages.length > 0 || reminders) && newButton}
       </div>
@@ -87,21 +87,22 @@ export function MessagesPage() {
         <p className="text-sm text-text-muted">{isAdmin ? `Showing the latest ${LIST_LIMIT} messages.` : `Showing your latest ${LIST_LIMIT} messages.`}</p>
       )}
       {church.done && messages && messages.length > 0 && (
-        <ul className="space-y-3">
+        <ul className="fold-list">
           {messages.map((m) => (
             <li key={m.id}>
-              <Link to={`/messages/${m.id}`} className="block rounded-lg border border-border bg-surface p-4 hover:border-border-strong">
-                <span className="block text-sm font-semibold text-text-muted">{statusLabel(m, zone)}</span>
+              <Link to={`/messages/${m.id}`} className="fold-list-row grid gap-x-6 rounded-sm px-3 hover:bg-sunken sm:grid-cols-[minmax(0,1fr)_auto]">
+                <span className="text-sm font-semibold text-text-muted sm:col-start-2 sm:row-start-1 sm:max-w-60 sm:text-right">{statusLabel(m, zone)}</span>
                 {m.category === "reminder" ? <>
                   {/* An automatic reminder (M3.6b): its date, not its subject, which holds merge fields. */}
-                  <span className="mt-1 block text-lg font-semibold text-text">{reminderRowTitle(m)}</span>
-                  <span className="mt-1 block text-sm text-text-muted">To {reminderAudience(m.reminder).toLowerCase()}</span>
+                  <span className="text-lg font-semibold text-text sm:col-start-1 sm:row-start-1">{reminderRowTitle(m)}</span>
+                  <span className="mt-1 text-sm text-text-muted sm:col-start-1">To {reminderAudience(m.reminder).toLowerCase()}</span>
                 </> : <>
-                  <span className="mt-1 block text-lg font-semibold text-text">{m.subject || "Untitled message"}</span>
-                  <span className="mt-1 block text-sm text-text-muted">To {audienceLabel(m.audience, options)}</span>
+                  <span className="text-lg font-semibold text-text sm:col-start-1 sm:row-start-1">{m.subject || "Untitled message"}</span>
+                  <span className="mt-1 text-sm text-text-muted sm:col-start-1">To {audienceLabel(m.audience, options)}</span>
                 </>}
-                <span className="mt-1 block text-sm text-text-muted">
-                  Updated {formatWhen(m.updatedAt)}{m.authorName && m.authorName !== me ? ` · By ${m.authorName}` : ""}
+                <span className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-text-muted sm:col-span-2">
+                  <span>Updated {formatWhen(m.updatedAt)}</span>
+                  {m.authorName && m.authorName !== me && <span>By {m.authorName}</span>}
                 </span>
               </Link>
             </li>
