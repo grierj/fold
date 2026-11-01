@@ -59,6 +59,7 @@ const (
 	TeenConsentChanged      = "teen_consent.changed"
 	AccountTurned18         = "account.turned_18"
 	HouseholdChildTurned13  = "household.child_turned_13"
+	PushKeysReset           = "push.keys_reset"
 )
 
 // Action is an inline button. Only allow-listed kinds carry one (6.6).
@@ -536,6 +537,15 @@ func init() {
 		Render: func(v Vars) (string, string) {
 			return "Room lost on " + or(v.Change, "a date") + ": " + or(v.Event, "an event"),
 				"The room you booked is taken at the new time. Pick another room on the event page."
+		},
+	})
+	register(Kind{
+		// The web push keys were made again because SESSION_SECRET changed
+		// and the stored private key could no longer be read (M3.13a,
+		// DEC-125): every device was removed.
+		Key: PushKeysReset, Category: CatAdmin, AllowEmail: true,
+		Render: func(Vars) (string, string) {
+			return "Notifications on devices were reset", "Members need to turn them on again. This happens when the server's SESSION_SECRET changes. If the change was a mistake, put the old SESSION_SECRET back and restart so people stay signed in; members still need to turn notifications on again."
 		},
 	})
 	register(Kind{

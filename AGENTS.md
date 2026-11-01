@@ -131,6 +131,19 @@ Full model: PLAN 5.3 and `models/models.go`. Chain: `User` → `Membership` → 
   the nonroot app can write to a fresh volume. Compose mounts the named volume `uploads` at
   `/data`; do not drop it (an anonymous volume is discarded on `up --build`).
 
+## Web push
+
+M3.13, DEC-121 to DEC-129, `docs/plan/research/web-push.md`. The VAPID key pair is made on boot
+under the migrations advisory lock and kept in `settings` (`vapid_public_key`,
+`vapid_private_key_enc`, AES-GCM with a `SESSION_SECRET`-derived key; `push_keys.go`); a secret
+change or `fold push keys rotate` makes a new pair and deletes every `push_subscriptions` row, and
+a running server rereads the row on each send. `internal/push` is stdlib only and sends only to
+the allow-listed push hosts (`push.DefaultHosts` plus optional `FOLD_PUSH_HOSTS`) over https, with
+resolved-IP checks, no proxy and no redirects. An endpoint is a capability: never log, return or
+put in an error an endpoint, `p256dh`, `auth`, the VAPID token or a body (`jobs.CleanError` strips
+URL paths and tokens as a backstop). `push.deliver` is one job per device. The service worker
+(slice c1) has no `fetch` handler, so it can never serve a stale shell after logout.
+
 ## Phasing high-complexity work
 
 Grier's rule (Oct 22, 2026). High-complexity means the change touches database, API and UI
@@ -280,4 +293,5 @@ can't happen. Prefer structure, then types, then a check, then a test.
 | Work reaches master only through a pull request with the `test`, `web` and `provision` checks green; branch pushes use an exact refspec (`HEAD:refs/heads/<branch>`) | GitHub branch protection on `master`: PR required, those checks required, admins included, no force-push or deletion |
 | The entry JS chunk stays under its gzip budget; libraries few pages need are loaded with `import()` | `web/scripts/bundle-size.mjs` (`npm run bundle-size`, in CI after the build) |
 | Secrets in URLs (calendar and room feed tokens, guest manage links, unsubscribe and email settings links, `?token=` email links) never reach the access log | `accessLog` and `redactLogPath` (`access_log.go`); `TestAccessLogKeepsSecretsOut` |
+| Push payloads never carry contact details, signed links or a hidden group's name; endpoints are never logged | registry push-render privacy test (slice b), `TestPushLogsKeepSecretsOut` |
 | Checks an agent can't run are listed for the first church | Review only (no test): the PR adds its checks to `docs/FIRST-CHURCH-CHECKS.md` and lists them in its description |

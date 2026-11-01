@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"fold/internal/push"
 )
 
 // Config holds the runtime configuration for `fold serve`, sourced from the
@@ -54,6 +56,9 @@ type Config struct {
 	// JobPoll is how often an idle worker looks for due jobs (FOLD_JOB_POLL,
 	// default 1s).
 	JobPoll time.Duration
+	// PushHosts are extra web push service hosts (FOLD_PUSH_HOSTS,
+	// optional, comma-separated), added to push.DefaultHosts (M3.13).
+	PushHosts []string
 }
 
 // minWebhookSecretLen is the shortest FOLD_POSTMARK_WEBHOOK_SECRET accepted.
@@ -127,21 +132,33 @@ func shortSecretMessage(n int) string {
 // minSessionSecretLen is the shortest SESSION_SECRET accepted outside dev.
 const minSessionSecretLen = 32
 
+// sessionSecret reads SESSION_SECRET: required outside dev, at least
+// minSessionSecretLen there; dev falls back to a loud insecure default.
+// `fold push keys rotate` reads it the same way as `fold serve`.
+func sessionSecret(isDev bool) (string, error) {
+	secret := os.Getenv("SESSION_SECRET")
+	if secret == "" {
+		if !isDev {
+			return "", errors.New("SESSION_SECRET must be set when APP_ENV != dev")
+		}
+		log.Println("WARNING: SESSION_SECRET not set; using insecure dev default")
+		return "dev-only-insecure-secret-do-not-use-in-prod", nil
+	}
+	if !isDev && len(secret) < minSessionSecretLen {
+		// A short secret can be guessed offline from one cookie, and then
+		// anyone can sign an admin session.
+		return "", fmt.Errorf("%s", shortSecretMessage(len(secret)))
+	}
+	return secret, nil
+}
+
 func LoadConfig() (Config, error) {
 	env := getEnv("APP_ENV", "prod")
 	isDev := env == "dev"
 
-	secret := os.Getenv("SESSION_SECRET")
-	if secret == "" {
-		if !isDev {
-			return Config{}, errors.New("SESSION_SECRET must be set when APP_ENV != dev")
-		}
-		secret = "dev-only-insecure-secret-do-not-use-in-prod"
-		log.Println("WARNING: SESSION_SECRET not set; using insecure dev default")
-	} else if !isDev && len(secret) < minSessionSecretLen {
-		// A short secret can be guessed offline from one cookie, and then
-		// anyone can sign an admin session.
-		return Config{}, fmt.Errorf("%s", shortSecretMessage(len(secret)))
+	secret, err := sessionSecret(isDev)
+	if err != nil {
+		return Config{}, err
 	}
 
 	dbURL, err := databaseURL()
@@ -166,6 +183,10 @@ func LoadConfig() (Config, error) {
 	if err != nil || poll < 100*time.Millisecond || poll > time.Minute {
 		return Config{}, fmt.Errorf("FOLD_JOB_POLL must be a duration from 100ms to 1m, for example 1s")
 	}
+	pushHosts, err := push.ParseHosts(os.Getenv("FOLD_PUSH_HOSTS"))
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		Env:                   env,
@@ -182,6 +203,7 @@ func LoadConfig() (Config, error) {
 		PostmarkWebhookSecret: os.Getenv("FOLD_POSTMARK_WEBHOOK_SECRET"),
 		Workers:               workers,
 		JobPoll:               poll,
+		PushHosts:             pushHosts,
 	}, nil
 }
 

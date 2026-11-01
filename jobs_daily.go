@@ -44,11 +44,19 @@ func (a *App) dailyKinds() []jobs.Kind {
 		daily("cleanup.login_throttles", "Clearing old sign-in limits", func(ctx context.Context, _ time.Time) error { return a.pruneLoginThrottles(ctx) }),
 		// Announcements that stopped where no job will pick them up (M3.5).
 		daily("messages.reap", "Settling announcements that stopped sending", a.reapMessages),
-		// Notification retention (DEC-45).
+		// Notification retention (DEC-45), and push devices that keep
+		// failing or have expired (M3.13a).
 		daily("notifications.cleanup", "Clearing old alerts", func(_ context.Context, now time.Time) error {
 			n, err := notify.Prune(a.DB, now)
 			if n > 0 {
 				log.Printf("notifications: pruned %d", n)
+			}
+			if err != nil {
+				return err
+			}
+			d, err := prunePushDevices(a.DB, now)
+			if d > 0 {
+				log.Printf("push: removed %d devices that kept failing or expired", d)
 			}
 			return err
 		}),

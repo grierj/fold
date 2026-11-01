@@ -5,7 +5,8 @@
 # the TLS certificate, and fails if Postgres (5432) or the app (8080) is
 # reachable on a public address. Also checks .env mode 600, that those files
 # are not committed, that sshd refuses root and password login, and that ufw
-# is active.
+# is active. Warns, without failing, when the app can't reach a web push
+# service (`fold push check`).
 #
 # Exit status is non-zero on any failed check.
 set -euo pipefail
@@ -212,4 +213,12 @@ wait_for_site() {
 host_checks
 wait_for_site
 assert_published_ports "$DEPLOY_DIR" || exit 1
+# Web push (M3.13): can the app reach each browser push service on 443? A
+# blocked one stops notifications only to the browsers that use it, so this
+# warns instead of failing the deploy.
+if docker compose --project-directory "$DEPLOY_DIR" exec -T app /fold push check; then
+  echo "smoke: push services reachable"
+else
+  echo "smoke: warning: the app can't reach every push service (see above); allow outbound https to them" >&2
+fi
 echo "smoke: ok https://${DOMAIN}/"

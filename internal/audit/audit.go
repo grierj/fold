@@ -344,6 +344,13 @@ const (
 	// household person was removed or stopped being a child or teen
 	// (M1.9). Target is the link; meta has guardianUserId and personId.
 	GuardianLinkRevoked = "guardian_link.revoked"
+
+	// PushKeysRotated: `fold push keys rotate` made a new web push key pair
+	// and removed every device (M3.13a). PushKeysReset: the same, done at
+	// boot because the stored private key no longer decrypts (SESSION_SECRET
+	// changed). Meta has devicesRemoved. Actor is nil.
+	PushKeysRotated = "push.keys_rotated"
+	PushKeysReset   = "push.keys_reset"
 )
 
 // Entry is one audit record. Actor is nil for system actions.

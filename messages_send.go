@@ -6,6 +6,7 @@ import (
 	"errors"
 	"html"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -82,7 +83,7 @@ func (a *App) messageKinds() []jobs.Kind {
 
 // backgroundKinds are the job kinds queued by events, not by the day.
 func (a *App) backgroundKinds() []jobs.Kind {
-	return append(append(a.eventKinds(), a.messageKinds()...), a.reminderKinds()...)
+	return slices.Concat(a.eventKinds(), a.messageKinds(), a.reminderKinds(), a.pushKinds())
 }
 
 // enqueueMessageSend queues message.send for a message scheduled at when.

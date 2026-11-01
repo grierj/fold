@@ -244,11 +244,23 @@ func (r *Runner) finish(job claimed, worker string, runErr error, final bool) er
 
 var emailLike = regexp.MustCompile(`[^\s<>"'(),;:]+@[^\s<>"'(),;:]+`)
 
+// endpointLike is a URL's path, query and userinfo: a web push endpoint's
+// path is the device's capability (M3.13), so only the scheme and host are
+// kept. tokenLike is a JWT or a long base64url run (a push key or token)
+// outside a URL.
+var (
+	endpointLike = regexp.MustCompile(`(?i)\b(https?://)(?:[^\s/?#@<>"']*@)?([^\s/?#<>"']*)[^\s<>"']*`)
+	tokenLike    = regexp.MustCompile(`eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]*|[A-Za-z0-9_-]{40,}={0,2}`)
+)
+
 // CleanError is the error text a job keeps and the System page shows: its
-// first line, without email addresses (an SMTP refusal echoes the
-// recipient) or NUL bytes, as valid UTF-8, at most 2000 bytes.
+// first line, without URL paths (a push endpoint is a secret), long
+// tokens, email addresses (an SMTP refusal echoes the recipient) or NUL
+// bytes, as valid UTF-8, at most 2000 bytes.
 func CleanError(err error) string {
 	msg, _, _ := strings.Cut(err.Error(), "\n")
+	msg = endpointLike.ReplaceAllString(msg, "$1$2/[path]")
+	msg = tokenLike.ReplaceAllString(msg, "[token]")
 	msg = emailLike.ReplaceAllString(msg, "[email]")
 	msg = strings.ReplaceAll(msg, "\x00", "")
 	if len(msg) > maxErrorLen {
