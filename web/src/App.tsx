@@ -40,6 +40,7 @@ const WaitingForConsent = lazy(() => import("./pages/WaitingForConsent"));
 const NotificationsSetupPage = lazy(() => import("./pages/NotificationsSetup").then((m) => ({ default: m.NotificationsSetupPage })));
 const MessagesPage = lazy(() => import("./pages/Messages").then((m) => ({ default: m.MessagesPage })));
 const MessageComposerPage = lazy(() => import("./pages/MessageComposer").then((m) => ({ default: m.MessageComposerPage })));
+const MessageReadPage = lazy(() => import("./pages/MessageRead").then((m) => ({ default: m.MessageReadPage })));
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -112,6 +113,8 @@ export default function App() {
         {/* One composer for both: saving a new message moves to its address without remounting. */}
         <Route path="/messages/new" element={<MessageComposerPage />} />
         <Route path="/messages/:id" element={<MessageComposerPage />} />
+        {/* An announcement as its reader got it: where its push opens (M3.13d2). */}
+        <Route path="/messages/:id/read" element={<MessageReadPage />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
       </Suspense>

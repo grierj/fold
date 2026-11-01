@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composeOptions, recipients, summary } from "../test/compose";
-import { audienceLabel, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
+import { audienceLabel, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushHistoryLine, pushLine, pushRows, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
 
 describe("audiences", () => {
   it("turns the picker's choice into the API's audience and back", () => {
@@ -119,5 +119,25 @@ describe("history", () => {
     expect(statusLabel({ status: "failed", scheduledAt: null, sentAt: null }, z, now)).toBe("Failed");
     expect(statusLabel({ status: "sent", scheduledAt: null, sentAt: "2026-11-02T16:00:00Z", failedCount: 3 }, z, now)).toMatch(/^Partly sent Today at 9:00 AM( MST)?$/);
     expect(statusLabel({ status: "sent", scheduledAt: null, sentAt: null, failedCount: 0 }, z, now)).toBe("Sent");
+  });
+});
+
+// "Push notification too" (M3.13d2): who also gets one, and a history's
+// pushes counted apart from its email.
+describe("push words", () => {
+  it("counts who also gets a push, and says nothing for none", () => {
+    expect(pushLine(summary({ push: 38 }))).toBe("38 also get a push notification.");
+    expect(pushLine(summary({ push: 1 }))).toBe("1 also gets a push notification.");
+    expect(pushLine(summary({ push: 0 }))).toBe("");
+  });
+
+  it("words a history's pushes: sent, waiting by when, and missed by reason", () => {
+    expect(pushHistoryLine({ sent: 38, waiting: [{ until: "8:00 AM", n: 2 }], missed: { "device gone": 1 } }))
+      .toBe("Push notifications: 38 pushed · 2 waiting until 8:00 AM · 1 device gone");
+    expect(pushHistoryLine({ sent: 0, waiting: [{ until: "", n: 3 }], missed: { "hourly limit": 2, "device gone": 2 } }))
+      .toBe("Push notifications: 3 waiting · 2 devices gone · 2 over the hourly limit");
+    expect(pushHistoryLine({ sent: 0, waiting: [], missed: {} })).toBe("");
+    expect(pushHistoryLine(undefined)).toBe("");
+    expect(pushRows({ sent: 3, waiting: [{ until: "8:00 AM", n: 2 }], missed: { "device gone": 1 } })).toBe(6);
   });
 });

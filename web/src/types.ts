@@ -1148,6 +1148,21 @@ export interface Message {
   // A reminder's subject with its event fields filled as its emails said
   // them, for its page's heading; "" for an announcement.
   displaySubject: string;
+  // "Push notification too" (DEC-123): people who get the email and have
+  // notifications on also get a short push.
+  pushAlert: boolean;
+}
+
+// GET /messages/:id/read: an announcement as its reader got it (the page a
+// push opens), and nothing about who else got it.
+export interface MessageRead {
+  id: number;
+  subject: string;
+  // "Pat Lee via First Church".
+  from: string;
+  sentAt: string | null;
+  // Sanitized on the server: only the composer's formatting.
+  bodyHtml: string;
 }
 
 // The date an automatic reminder is for. kind is the going reminder or
@@ -1205,6 +1220,22 @@ export interface MessageRecipientCounts {
   guardianCopies: number;
   guardianCopiesMissed: number;
   guardianCopiesFailed: number;
+  // The companion pushes (M3.13d2), counted apart from the email.
+  push: MessagePushCounts;
+}
+
+// An announcement's pushes, one per person: sent, waiting (by when quiet
+// hours end on their clock, "" for about to go) and missed by reason.
+export interface MessagePushCounts {
+  sent: number;
+  waiting: MessagePushWait[];
+  missed: Record<string, number>;
+}
+
+export interface MessagePushWait {
+  // "8:00 AM", or "" for pushes about to go out.
+  until: string;
+  n: number;
 }
 
 // "missed" is a skip, bounce, complaint or failure: a leader or host sees
@@ -1219,6 +1250,8 @@ export interface MessageHistoryRecipient {
   status: HistoryStatus;
   reason?: string;
   copyOf?: string;
+  // A companion push is its own row, after the same person's email.
+  channel: "email" | "push";
 }
 
 // GET /messages/:id/recipients.
@@ -1239,6 +1272,9 @@ export interface AudienceRecipient {
   name: string;
   teen: boolean;
   skipped?: string;
+  // They get the email and have notifications on, so "Push notification
+  // too" reaches them.
+  push?: boolean;
 }
 
 // The live count under the audience picker: everyone named, how many will
@@ -1248,6 +1284,9 @@ export interface AudienceSummary {
   eligible: number;
   teens: number;
   skipped: Record<string, number>;
+  // Of those who get it, how many also get a push notification (0 when
+  // the church turned notifications off). Having none isn't a skip.
+  push: number;
   // The first 100 by name; more says there are others.
   recipients: AudienceRecipient[];
   more: boolean;
@@ -1279,6 +1318,9 @@ export interface ComposeOptions {
   canCompose: boolean;
   canMessageEveryone: boolean;
   smsEnabled: boolean;
+  // The church's switch for notifications on devices: off hides "Push
+  // notification too" (DEC-124).
+  pushEnabled: boolean;
   groups: ComposeGroup[];
   events: ComposeEvent[];
 }

@@ -254,6 +254,9 @@ type audienceRecipientJSON struct {
 	// Skipped says why this person won't get it ("won't get this" unless
 	// the viewer is an admin); "" means they will.
 	Skipped string `json:"skipped,omitempty"`
+	// Push: they get the email and have push on, so "Push notification
+	// too" reaches them (M3.13d2). Never set for someone skipped.
+	Push bool `json:"push,omitempty"`
 }
 
 // audienceSummaryJSON is what the composer shows about an audience: counts
@@ -264,6 +267,11 @@ type audienceSummaryJSON struct {
 	// Teens counts the teens among those who will get it (DEC-20).
 	Teens   int            `json:"teens"`
 	Skipped map[string]int `json:"skipped"`
+	// Push counts those who get the email and would also get "Push
+	// notification too": push on for messages from leaders and a device
+	// (DEC-123). Having no device isn't a skip; they still get the email.
+	// 0 when the church turned push off.
+	Push int `json:"push"`
 	// Recipients are the first 100 by name.
 	Recipients []audienceRecipientJSON `json:"recipients"`
 	More       bool                    `json:"more"`
@@ -284,6 +292,12 @@ func (a *App) summarizeAudience(db *gorm.DB, ids []uint, reasons bool) (audience
 	if err != nil {
 		return out, err
 	}
+	pushOn := map[uint]bool{}
+	if a.pushEnabled() {
+		if pushOn, err = pushReady(db, emailReaders(facts), notify.CatMessages); err != nil {
+			return out, err
+		}
+	}
 	for _, f := range facts {
 		r := audienceRecipientJSON{Name: f.User.PublicName(), Teen: f.User.AccountType == models.AccountTeen, Skipped: f.Skip}
 		out.People++
@@ -291,6 +305,10 @@ func (a *App) summarizeAudience(db *gorm.DB, ids []uint, reasons bool) (audience
 			out.Eligible++
 			if r.Teen {
 				out.Teens++
+			}
+			if pushOn[f.User.ID] {
+				r.Push = true
+				out.Push++
 			}
 		} else {
 			out.Skipped[r.Skipped]++

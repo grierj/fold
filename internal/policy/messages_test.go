@@ -69,7 +69,7 @@ func TestCanEditMessage(t *testing.T) {
 	}
 }
 
-func TestCanReadMessage(t *testing.T) {
+func TestCanSeeMessageHistory(t *testing.T) {
 	admin, member := &Person{ID: 1, Admin: true}, &Person{ID: 2}
 	for _, tc := range []struct {
 		name                        string
@@ -87,7 +87,32 @@ func TestCanReadMessage(t *testing.T) {
 		{"manager, the event's reminder", member, false, true, true, true},
 		{"not a manager, a reminder", member, false, true, false, false},
 	} {
-		if got := CanReadMessage(tc.p, tc.author, tc.isReminder, tc.manages); got != tc.want {
+		if got := CanSeeMessageHistory(tc.p, tc.author, tc.isReminder, tc.manages); got != tc.want {
+			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A recipient reads an announcement they got (the page a push opens), but
+// that never opens its history, and a reminder stays its managers'.
+func TestCanReadMessage(t *testing.T) {
+	admin, member := &Person{ID: 1, Admin: true}, &Person{ID: 2}
+	for _, tc := range []struct {
+		name                                   string
+		p                                      *Person
+		author, isReminder, manages, recipient bool
+		want                                   bool
+	}{
+		{"signed out", nil, false, false, false, false, false},
+		{"signed out, even a recipient", nil, false, false, false, true, false},
+		{"recipient of an announcement", member, false, false, false, true, true},
+		{"not a recipient", member, false, false, false, false, false},
+		{"author", member, true, false, false, false, true},
+		{"admin, any announcement", admin, false, false, false, false, true},
+		{"recipient of a reminder", member, false, true, false, true, false},
+		{"manager, the event's reminder", member, false, true, true, false, true},
+	} {
+		if got := CanReadMessage(tc.p, tc.author, tc.isReminder, tc.manages, tc.recipient); got != tc.want {
 			t.Errorf("%s: got %v, want %v", tc.name, got, tc.want)
 		}
 	}

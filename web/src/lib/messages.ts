@@ -1,4 +1,4 @@
-import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageRecipientCounts, MessageRecipients } from "../types";
+import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessagePushCounts, MessagePushWait, MessageRecipientCounts, MessageRecipients } from "../types";
 import { formatShortDay, formatWhenIn } from "./when";
 
 // The composer's words and audience shapes (M3.4c, PLAN 7.2 and 7.3).
@@ -203,6 +203,52 @@ export function teenLine(s: AudienceSummary): string {
   if (s.teens === 0) return "";
   return s.teens === 1 ? "1 of them is a teen." : `${s.teens} of them are teens.`;
 }
+
+// pushLine is the composer's "38 also get a push notification." (PLAN
+// 7.3), or "" when nobody would. People with no device aren't skipped:
+// they still get the email.
+export function pushLine(s: AudienceSummary): string {
+  if (!s.push) return "";
+  return `${s.push} also ${s.push === 1 ? "gets" : "get"} a push notification.`;
+}
+
+// A push row's reason (the pipeline's words) as the history says it.
+const PUSH_REASONS: Record<string, [one: string, many: string]> = {
+  "device gone": ["device gone", "devices gone"],
+  "hourly limit": ["over the hourly limit", "over the hourly limit"],
+  "push turned off for messages from leaders": ["turned notifications off for messages from leaders", "turned notifications off for messages from leaders"],
+  "push not turned on": ["turned notifications off", "turned notifications off"],
+  "push turned off by the church": ["held: the church turned notifications off", "held: the church turned notifications off"],
+  "recipient not active": ["not active", "not active"],
+  "no longer current": ["not sent: the message stopped", "not sent: the message stopped"],
+  "the push service refused it": ["refused by the push service", "refused by the push service"],
+  "the push service couldn't be reached": ["the push service couldn't be reached", "the push service couldn't be reached"],
+  "the notification was too large to push": ["too large to push", "too large to push"],
+  "sending stopped before it went out": ["stopped before it went out", "stopped before it went out"],
+};
+
+// pushReason is one push row's reason in words, for an admin's list.
+export const pushReason = (reason: string) => PUSH_REASONS[reason]?.[0] ?? reason;
+
+// pushHistoryLine counts a message's companion pushes (M3.13d2): "38
+// pushed · 2 waiting until 8:00 AM · 1 device gone", or "" when it had
+// none. The email counts above it never include these.
+export function pushHistoryLine(c: MessagePushCounts | undefined): string {
+  if (!c) return "";
+  const parts: string[] = [];
+  if (c.sent) parts.push(`${c.sent} pushed`);
+  const waiting = (w: MessagePushWait) => (w.until ? `${w.n} waiting until ${w.until}` : `${w.n} waiting`);
+  for (const w of c.waiting) parts.push(waiting(w));
+  Object.entries(c.missed)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .forEach(([reason, n]) => parts.push(`${n} ${PUSH_REASONS[reason]?.[n === 1 ? 0 : 1] ?? reason}`));
+  return parts.length ? `Push notifications: ${parts.join(" · ")}` : "";
+}
+
+// pushRows counts the push rows a history could list.
+export const pushRows = (c: MessagePushCounts | undefined) =>
+  c ? c.sent + c.waiting.reduce((n, w) => n + w.n, 0) + Object.values(c.missed).reduce((n, m) => n + m, 0) : 0;
 
 // Times a message goes out read on the church's clock (the schedule is
 // picked in it), with its zone named when the viewer's clock differs.

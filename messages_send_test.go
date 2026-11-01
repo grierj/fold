@@ -54,10 +54,12 @@ func (f composeFixture) scheduleNow(t *testing.T, c *apiClient, subject, body st
 	return out.Message.ID
 }
 
+// recipientsOf is a message's email rows by address ("copy:" for a
+// guardian copy); pushRowsOf has its push rows.
 func recipientsOf(t *testing.T, app *App, id uint) map[string]models.MessageRecipient {
 	t.Helper()
 	var rows []models.MessageRecipient
-	app.DB.Where("message_id = ?", id).Find(&rows)
+	app.DB.Where("message_id = ? AND channel = ?", id, models.DeliveryEmail).Find(&rows)
 	out := map[string]models.MessageRecipient{}
 	for _, r := range rows {
 		var u models.User

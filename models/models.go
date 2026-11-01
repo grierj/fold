@@ -1145,6 +1145,11 @@ type Message struct {
 	SentAt           *time.Time
 	SegmentsEstimate int `gorm:"not null;default:0"`
 	RecipientCount   int `gorm:"not null;default:0"`
+	// PushAlert adds a short companion push for the people who get the
+	// email and have push on (M3.13d2, DEC-123). An announcement is never
+	// push-only. GORM leaves a false value out of an INSERT (the column
+	// defaults to true), so a create that turns it off updates it after.
+	PushAlert bool `gorm:"not null;default:true"`
 	// Error says why a message failed or was refused at send time.
 	Error string `gorm:"not null;default:''"`
 	// OccurrenceID and ReminderKey mark an automatic reminder (M3.6): its
@@ -1174,7 +1179,10 @@ const (
 
 // MessageRecipient is one person a sent message reached or skipped (M3.5,
 // PLAN 5.3, 7.1): the snapshot message.send takes. CopyOfUserID marks a
-// guardian copy (DEC-19). Address never leaves the worker (DEC-31).
+// guardian copy (DEC-19). Address never leaves the worker (DEC-31). A
+// channel 'push' row is an announcement's companion push (M3.13d2): one
+// per person whatever their device count, never a copy, with no address;
+// the message's own status and counts follow its email rows.
 type MessageRecipient struct {
 	ID                uint   `gorm:"primaryKey"`
 	MessageID         uint   `gorm:"not null;uniqueIndex:message_recipients_once;index:idx_message_recipients_message"`

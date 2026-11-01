@@ -242,6 +242,13 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 		}
 		rows = append(rows, copies...)
 	}
+	// 7, push (DEC-123): a companion row for each direct recipient who
+	// gets the email and has push on, never for a guardian copy.
+	pushRows, err := a.messagePushRows(db, &m, facts)
+	if err != nil {
+		return err
+	}
+	rows = append(rows, pushRows...)
 	return db.Transaction(func(tx *gorm.DB) error {
 		// The claim holds only if nobody changed the message since it was
 		// read; if somebody did, it is checked again (stillDue).
@@ -258,9 +265,10 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 				return err
 			}
 		}
-		// 7. Batches of 50 queued rows.
+		// 7. Batches of 50 queued email rows, and one push job per device
+		// of each push row, committed with the snapshot.
 		var queued []uint
-		if err := tx.Model(&models.MessageRecipient{}).Where("message_id = ? AND status = ?", m.ID, models.RecipientQueued).
+		if err := tx.Model(&models.MessageRecipient{}).Where("message_id = ? AND status = ? AND channel = ?", m.ID, models.RecipientQueued, models.DeliveryEmail).
 			Order("id").Pluck("id", &queued).Error; err != nil {
 			return err
 		}
@@ -269,6 +277,9 @@ func (a *App) prepareMessageOnce(ctx context.Context, id uint) error {
 		}
 		if len(queued) == 0 {
 			return a.settleMessage(tx, m.ID)
+		}
+		if err := enqueueMessagePushes(tx, m.ID); err != nil {
+			return err
 		}
 		return enqueueBatches(tx, m.ID, queued, "")
 	})
@@ -363,15 +374,17 @@ func (a *App) refuseMessage(db *gorm.DB, m *models.Message, read *models.Message
 }
 
 // settleMessage marks a sending message sent, or failed when nobody got it
-// and some sends failed, once no row is still queued; the last batch to
-// finish wins. It is audited message.sent with the counts.
+// and some sends failed, once no email row is still queued; the last batch
+// to finish wins. It is audited message.sent with the counts. Push rows
+// are companions (M3.13d2): one waiting for quiet hours never holds a
+// message in sending, and none counts here.
 func (a *App) settleMessage(tx *gorm.DB, id uint) error {
 	type count struct {
 		Status string
 		N      int
 	}
 	var counts []count
-	if err := tx.Model(&models.MessageRecipient{}).Select("status, count(*) AS n").Where("message_id = ?", id).Group("status").Scan(&counts).Error; err != nil {
+	if err := tx.Model(&models.MessageRecipient{}).Select("status, count(*) AS n").Where("message_id = ? AND channel = ?", id, models.DeliveryEmail).Group("status").Scan(&counts).Error; err != nil {
 		return err
 	}
 	by := map[string]int{}
@@ -385,7 +398,7 @@ func (a *App) settleMessage(tx *gorm.DB, id uint) error {
 	status, why := models.MessageSent, ""
 	if by[models.RecipientFailed] > 0 {
 		var first models.MessageRecipient
-		if err := tx.Select("error").Where("message_id = ? AND status = ?", id, models.RecipientFailed).Order("id").First(&first).Error; err != nil {
+		if err := tx.Select("error").Where("message_id = ? AND status = ? AND channel = ?", id, models.RecipientFailed, models.DeliveryEmail).Order("id").First(&first).Error; err != nil {
 			return err
 		}
 		why = first.Error
@@ -434,7 +447,7 @@ func (a *App) deliverMessageBatch(ctx context.Context, p messageBatchJob) error 
 	db := a.DB.WithContext(context.WithoutCancel(ctx))
 	log.Printf("message %d: giving up on a batch after its last attempt: %s", p.MessageID, jobs.CleanError(err))
 	return db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&models.MessageRecipient{}).Where("id IN ? AND status = ?", p.RecipientIDs, models.RecipientQueued).
+		if err := tx.Model(&models.MessageRecipient{}).Where("id IN ? AND status = ? AND channel = ?", p.RecipientIDs, models.RecipientQueued, models.DeliveryEmail).
 			Updates(map[string]any{"status": models.RecipientFailed, "error": jobs.CleanError(err), "updated_at": time.Now()}).Error; err != nil {
 			return err
 		}
@@ -454,7 +467,7 @@ func (a *App) deliverMessageBatchOnce(ctx context.Context, p messageBatchJob) er
 		return nil
 	}
 	var rows []models.MessageRecipient
-	if err := db.Where("id IN ? AND message_id = ? AND status = ?", p.RecipientIDs, m.ID, models.RecipientQueued).Order("id").Find(&rows).Error; err != nil {
+	if err := db.Where("id IN ? AND message_id = ? AND status = ? AND channel = ?", p.RecipientIDs, m.ID, models.RecipientQueued, models.DeliveryEmail).Order("id").Find(&rows).Error; err != nil {
 		return err
 	}
 	if len(rows) == 0 {
@@ -738,7 +751,7 @@ func (a *App) reapMessages(ctx context.Context, now time.Time) error {
 	}
 	for _, id := range sending {
 		if err := db.Transaction(func(tx *gorm.DB) error {
-			if err := tx.Model(&models.MessageRecipient{}).Where("message_id = ? AND status = ?", id, models.RecipientQueued).
+			if err := tx.Model(&models.MessageRecipient{}).Where("message_id = ? AND status = ? AND channel = ?", id, models.RecipientQueued, models.DeliveryEmail).
 				Updates(map[string]any{"status": models.RecipientFailed, "error": whyStopped, "updated_at": now}).Error; err != nil {
 				return err
 			}
@@ -749,6 +762,11 @@ func (a *App) reapMessages(ctx context.Context, now time.Time) error {
 	}
 	if n := len(stuck) + len(sending); n > 0 {
 		log.Printf("messages: settled %d that had stopped", n)
+	}
+	if n, err := reapMessagePushes(db, now); err != nil {
+		return err
+	} else if n > 0 {
+		log.Printf("messages: stopped %d announcement pushes that had no job left", n)
 	}
 	return nil
 }

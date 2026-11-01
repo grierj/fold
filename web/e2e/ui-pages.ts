@@ -21,6 +21,16 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
       location: "Room 201", recurrenceRule: "FREQ=WEEKLY;COUNT=4",
     })) as { event: { id: number; title: string } });
   }
+  // An announcement to read as it was sent (M3.13d2): its author may read
+  // their own, so a draft serves without waiting on a send.
+  const { messages = [] } = (await lee("GET", "/messages?category=announcement")) as { messages?: { id: number; subject: string }[] };
+  let note = messages.find((m) => m.subject === "UI check announcement");
+  if (!note) {
+    ({ message: note } = (await lee("POST", "/messages", {
+      channel: "email", subject: "UI check announcement", audience: { type: "group", groupId: room.id }, pushAlert: true,
+      bodyHtml: "<p>Hi {{first_name}}, we're meeting in <strong>Room 104</strong> this week.</p><ul><li>Bring a friend</li><li>Snacks at 6:45</li></ul>",
+    })) as { message: { id: number; subject: string } });
+  }
   const heading = (name: string) => (p: Page) => p.getByRole("heading", { name, level: 1 });
   return [
     { id: "home-signed-out", who: null, path: "/", ready: (p) => p.getByText("Room 201 class").first() },
@@ -49,6 +59,8 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
     // The editor loads with import(); the live count is part of the page.
     { id: "compose", who: "lee", path: `/messages/new?group=${room.id}`, ready: (p) => p.getByRole("textbox", { name: "Message" }),
       prepare: async (p) => { await expect(p.getByRole("status").filter({ hasText: /^\d+ (people|person);/ })).toBeVisible(); } },
+    { id: "message-read", who: "lee", path: `/messages/${note!.id}/read`, ready: heading("UI check announcement"),
+      prepare: async (p) => { await expect(p.getByText("Room 104")).toBeVisible(); } },
     { id: "admin", who: "grier", path: "/admin", ready: heading("Admin") },
     { id: "admin-users", who: "grier", path: "/admin?tab=users", ready: (p) => p.getByRole("button", { name: "New user" }) },
     { id: "admin-system", who: "grier", path: "/admin?tab=system", ready: (p) => p.getByRole("heading", { name: "Background tasks", level: 2 }) },

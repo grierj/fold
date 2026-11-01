@@ -287,38 +287,55 @@ func pushStale(n *models.Notification, now time.Time) string {
 	return ""
 }
 
+// pushItem is what one push is for: a notification (NotificationID) or
+// an announcement's push row (RecipientID, M3.13d2), and whose it is.
+type pushItem struct {
+	UserID, NotificationID, RecipientID uint
+}
+
 // overHourlyLimit reports whether the person already had pushHourlyLimit
-// optional pushes in the hour before now. It counts notifications, not
-// devices: a notification has one push row however many devices took it.
-// Once n's own row is sent (another device took it), n is never limited,
-// so a person's second device always gets what the first did. Required
-// pushes and urgent event changes carry a reason on their sent row and
-// aren't counted. idx_notification_deliveries_push_sent (migration 00060)
-// covers the count; its predicate is written as literals so a cached
-// generic plan still matches the partial index.
+// optional pushes in the hour before now: notification pushes and
+// announcement pushes together. It counts items, not devices: a
+// notification or an announcement has one push row however many devices
+// took it. Once the item's own row is sent (another device took it), it
+// is never limited, so a person's second device always gets what the
+// first did. Required pushes and urgent event changes carry a reason on
+// their sent row and aren't counted; announcement pushes are always
+// optional. idx_notification_deliveries_push_sent (migration 00060) and
+// idx_message_recipients_push_sent (00061) cover the counts; their
+// predicates are written as literals so a cached generic plan still
+// matches the partial indexes.
 //
 // There's no lock: workers racing for the last slot can each see 19 and
 // send, so a burst can overshoot by up to about the number of workers.
 // A night's backlog wakes together at 8:00, and only the first 20 go; the
-// rest are suppressed and stay in the bell (DEC-126 as written).
-func (a *App) overHourlyLimit(ctx context.Context, n models.Notification, now time.Time) (bool, error) {
+// rest are suppressed and stay in the bell or the inbox (DEC-126 as
+// written).
+func (a *App) overHourlyLimit(ctx context.Context, it pushItem, now time.Time) (bool, error) {
 	var r struct {
 		OwnSent bool
 		Recent  int64
 	}
+	since := now.Add(-time.Hour)
 	err := a.DB.WithContext(ctx).Raw(`SELECT
-		EXISTS (SELECT 1 FROM notification_deliveries WHERE notification_id = ? AND channel = 'push' AND status = 'sent') AS own_sent,
+		EXISTS (SELECT 1 FROM notification_deliveries WHERE notification_id = ? AND channel = 'push' AND status = 'sent')
+			OR EXISTS (SELECT 1 FROM message_recipients WHERE id = ? AND channel = 'push' AND status = 'sent') AS own_sent,
 		(SELECT count(*) FROM notification_deliveries
-			WHERE user_id = ? AND channel = 'push' AND status = 'sent' AND reason = '' AND sent_at > ? AND notification_id <> ?) AS recent`,
-		n.ID, n.UserID, now.Add(-time.Hour), n.ID).Scan(&r).Error
+			WHERE user_id = ? AND channel = 'push' AND status = 'sent' AND reason = '' AND sent_at > ? AND notification_id <> ?)
+		+ (SELECT count(*) FROM message_recipients
+			WHERE user_id = ? AND channel = 'push' AND status = 'sent' AND sent_at > ? AND id <> ?) AS recent`,
+		it.NotificationID, it.RecipientID, it.UserID, since, it.NotificationID, it.UserID, since, it.RecipientID).Scan(&r).Error
 	return !r.OwnSent && r.Recent >= pushHourlyLimit, err
 }
 
 // deliverPush sends one notification to one device. It returns an error
 // only when a retry may succeed (429, 5xx, a timeout).
 func (a *App) deliverPush(ctx context.Context, p pushJob) error {
+	if p.MessageRecipientID != 0 && p.NotificationID == 0 && p.DeviceID != 0 {
+		return a.deliverMessagePush(ctx, p.MessageRecipientID, p.DeviceID)
+	}
 	if p.NotificationID == 0 || p.DeviceID == 0 {
-		return nil // announcements arrive in M3.13d; nothing else is valid
+		return nil // nothing else is valid
 	}
 	var dev models.PushSubscription
 	if err := a.DB.WithContext(ctx).First(&dev, p.DeviceID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
@@ -395,7 +412,7 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 			}
 			return jobs.Later(opens)
 		}
-		over, err := a.overHourlyLimit(ctx, n, now)
+		over, err := a.overHourlyLimit(ctx, pushItem{UserID: n.UserID, NotificationID: n.ID}, now)
 		if err != nil {
 			return err
 		}
@@ -414,7 +431,18 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	}
 	sub := push.Subscription{Endpoint: dev.Endpoint, P256dh: dev.P256dh, Auth: dev.Auth}
 	res := a.pushClient().Send(ctx, sub, body, pushOptions(kind, &n, soon))
-	return a.pushOutcome(ctx, n, dev, res, sentWhy)
+	return a.pushOutcome(ctx, fmt.Sprintf("notification %d (%s)", n.ID, n.Kind), dev, res, sentWhy, notificationRecorder(n))
+}
+
+// pushRecorder writes a push's outcome on its one row: a notification's
+// push delivery, or an announcement's push row. now is the send time on
+// a sent row, which the hourly limit counts by.
+type pushRecorder func(db *gorm.DB, status, reason string, now time.Time) error
+
+func notificationRecorder(n models.Notification) pushRecorder {
+	return func(db *gorm.DB, status, reason string, now time.Time) error {
+		return recordPushIn(db, n, status, reason, now)
+	}
 }
 
 // pushBody is the Declarative Web Push JSON for n: the rendered text, a
@@ -430,8 +458,11 @@ func (a *App) pushBody(n *models.Notification, note push.Notification) ([]byte, 
 }
 
 // pushOutcome records what the push service said about one device;
-// sentWhy is the sent row's reason ("" for an optional push).
-func (a *App) pushOutcome(ctx context.Context, n models.Notification, dev models.PushSubscription, res push.Result, sentWhy string) error {
+// sentWhy is the sent row's reason ("" for an optional push). what names
+// the item in logs ("notification 7 (group.approved)"), never a device's
+// endpoint; rec writes its row.
+func (a *App) pushOutcome(ctx context.Context, what string, dev models.PushSubscription, res push.Result, sentWhy string, rec pushRecorder) error {
+	record := func(status, reason string) error { return rec(a.DB, status, reason, a.pushNow()) }
 	switch res.Status {
 	case push.Accepted:
 		// It went: nothing below may turn this into a retry, which would
@@ -440,8 +471,8 @@ func (a *App) pushOutcome(ctx context.Context, n models.Notification, dev models
 			WHERE id = ? AND (last_used_at < now() - interval '1 day' OR failed_at IS NOT NULL)`, dev.ID).Error; err != nil {
 			log.Printf("push: device %d: marking it used: %v", dev.ID, err)
 		}
-		if err := a.recordPush(n, models.DeliverySent, sentWhy); err != nil {
-			log.Printf("push: notification %d: recording the delivery: %v", n.ID, err)
+		if err := record(models.DeliverySent, sentWhy); err != nil {
+			log.Printf("push: %s: recording the delivery: %v", what, err)
 		}
 		return nil
 	case push.Gone:
@@ -457,24 +488,24 @@ func (a *App) pushOutcome(ctx context.Context, n models.Notification, dev models
 			if left > 0 {
 				return nil // another device may still take it
 			}
-			return recordPushIn(tx, n, models.DeliverySuppressed, pushWhyGone, a.pushNow())
+			return rec(tx, models.DeliverySuppressed, pushWhyGone, a.pushNow())
 		})
 	case push.TooLarge:
-		log.Printf("push: notification %d (%s) was too large for the push service (%d): a bug in its push text", n.ID, n.Kind, res.Code)
-		return a.recordPush(n, models.DeliveryFailed, pushWhyTooLarge)
+		log.Printf("push: %s was too large for the push service (%d): a bug in its push text", what, res.Code)
+		return record(models.DeliveryFailed, pushWhyTooLarge)
 	case push.RateLimited, push.Temporary:
 		if !jobs.LastAttempt(ctx) {
 			return fmt.Errorf("push: device %d: %s (retrying): %w", dev.ID, res.Status, res.Err)
 		}
 		a.markPushFailed(dev.ID)
-		if err := a.recordPush(n, models.DeliveryFailed, pushWhyNotReached); err != nil {
+		if err := record(models.DeliveryFailed, pushWhyNotReached); err != nil {
 			return err
 		}
 		return fmt.Errorf("push: device %d: %s: %w", dev.ID, res.Status, res.Err)
 	default:
-		log.Printf("push: notification %d to device %d: %s (%d)", n.ID, dev.ID, res.Status, res.Code)
+		log.Printf("push: %s to device %d: %s (%d)", what, dev.ID, res.Status, res.Code)
 		a.markPushFailed(dev.ID)
-		return a.recordPush(n, models.DeliveryFailed, pushWhyRefused)
+		return record(models.DeliveryFailed, pushWhyRefused)
 	}
 }
 

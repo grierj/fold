@@ -149,7 +149,10 @@ date changes within 24 hours go at once; more than 20 optional pushes an hour ar
 (slice c1) has no `fetch` handler, so it can never serve a stale shell after logout. A kind
 pushes only with `AllowPush` and its own short `PushRender` (stored on the row, never the bell
 body cut short; safety kinds get the safe line, titled with `site_name` at send, DEC-134);
-`deliverNotificationEmails` queues it, so `notify.Send` callers change nothing. A trigger deletes
+`deliverNotificationEmails` queues it, so `notify.Send` callers change nothing. Announcement
+pushes (M3.13d2, `messages_push.go`) are `message_recipients` rows with `channel = 'push'`; a
+message's status, counts, settling, reaper and Try again read its email rows only, so filter
+`channel = 'email'` in any new query over a message's rows. A trigger deletes
 an account's devices when its sessions are revoked or it stops being active, and queues
 `push.devices_off`, which writes the person a bell notice (migration 00059). Holding an endpoint
 alone never moves a device to another account: its keys must match. Browser side (M3.13c1):

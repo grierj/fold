@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"fold/internal/audit"
@@ -39,9 +41,30 @@ type recipientCountsJSON struct {
 	GuardianCopies       int `json:"guardianCopies"`
 	GuardianCopiesMissed int `json:"guardianCopiesMissed"`
 	GuardianCopiesFailed int `json:"guardianCopiesFailed"`
-	// Every row and every failed row, copies included: what "Try again"
-	// works from.
+	// Push counts the companion pushes (M3.13d2), apart from the email:
+	// they never change the counts above.
+	Push pushCountsJSON `json:"push"`
+	// Every email row and every failed one, copies included: what "Try
+	// again" works from. A push is never sent again.
 	rows, failedRows int
+}
+
+// pushCountsJSON counts an announcement's push rows (one per person
+// however many devices): sent, still waiting, and the rest by reason
+// (skipped or failed): "38 pushed · 2 waiting until 8:00 AM · 1 device
+// gone". Waiting is by when quiet hours end on each person's clock ("" for
+// pushes about to go).
+type pushCountsJSON struct {
+	Sent    int            `json:"sent"`
+	Waiting []pushWaitJSON `json:"waiting"`
+	Missed  map[string]int `json:"missed"`
+}
+
+type pushWaitJSON struct {
+	// Until is "8:00 AM" on the recipient's clock, or "" for pushes about
+	// to go out.
+	Until string `json:"until"`
+	N     int    `json:"n"`
 }
 
 // Each person's status as the history lists it. A leader or host can't tell
@@ -62,6 +85,9 @@ type historyRecipientJSON struct {
 	Status string `json:"status"`
 	Reason string `json:"reason,omitempty"`
 	CopyOf string `json:"copyOf,omitempty"`
+	// Channel is email, or push for a companion push (M3.13d2), listed
+	// after the same person's email.
+	Channel string `json:"channel"`
 }
 
 // messageRecipientsJSON is GET /messages/:id/recipients.
@@ -88,19 +114,35 @@ const (
 // in one query.
 func (a *App) recipientCounts(id uint) (recipientCountsJSON, map[string]int, error) {
 	var groups []struct {
+		Push   bool
 		Status string
 		Reason string
 		Teen   bool
 		Copy   bool
 		N      int
 	}
-	err := a.DB.Raw(`SELECT r.status, CASE WHEN r.status = ? AND r.copy_of_user_id IS NULL THEN r.reason ELSE '' END AS reason,
+	// A push row's reason is kept whatever its status (why it missed, or
+	// when it waits until); an email row's only when it was skipped.
+	err := a.DB.Raw(`SELECT r.channel = ? AS push, r.status,
+		CASE WHEN r.channel = ? OR (r.status = ? AND r.copy_of_user_id IS NULL) THEN r.reason ELSE '' END AS reason,
 		(u.account_type = ? AND r.copy_of_user_id IS NULL) AS teen, r.copy_of_user_id IS NOT NULL AS copy, count(*) AS n
 		FROM message_recipients r JOIN users u ON u.id = r.user_id
-		WHERE r.message_id = ? GROUP BY 1, 2, 3, 4`, models.RecipientSuppressed, models.AccountTeen, id).Scan(&groups).Error
-	var c recipientCountsJSON
+		WHERE r.message_id = ? GROUP BY 1, 2, 3, 4, 5`, models.DeliveryPush, models.DeliveryPush, models.RecipientSuppressed, models.AccountTeen, id).Scan(&groups).Error
+	c := recipientCountsJSON{Push: pushCountsJSON{Waiting: []pushWaitJSON{}, Missed: map[string]int{}}}
 	by := map[string]int{}
+	waiting := map[string]int{}
 	for _, g := range groups {
+		if g.Push {
+			switch g.Status {
+			case models.RecipientSent:
+				c.Push.Sent += g.N
+			case models.RecipientQueued:
+				waiting[strings.TrimPrefix(g.Reason, pushWaitPrefix)] += g.N
+			default:
+				c.Push.Missed[g.Reason] += g.N
+			}
+			continue
+		}
 		c.rows += g.N
 		if g.Status == models.RecipientFailed {
 			c.failedRows += g.N
@@ -137,6 +179,10 @@ func (a *App) recipientCounts(id uint) (recipientCountsJSON, map[string]int, err
 			c.Teens += g.N
 		}
 	}
+	for until, n := range waiting {
+		c.Push.Waiting = append(c.Push.Waiting, pushWaitJSON{Until: until, N: n})
+	}
+	sort.Slice(c.Push.Waiting, func(i, j int) bool { return c.Push.Waiting[i].Until < c.Push.Waiting[j].Until })
 	return c, by, err
 }
 
@@ -176,11 +222,28 @@ func historyStatus(status, reason, errText string, admin bool) (string, string) 
 	return out, why
 }
 
+// pushHistoryStatus is a push row's status in the history's terms: sent,
+// waiting (with when, for an admin), or missed with its reason (admin).
+func pushHistoryStatus(status, reason string, admin bool) (string, string) {
+	out := historyMissed
+	switch status {
+	case models.RecipientSent:
+		return historySent, ""
+	case models.RecipientQueued:
+		out = historyWaiting
+	}
+	if !admin {
+		reason = ""
+	}
+	return out, reason
+}
+
 // historyRecipients lists the first rows by name in one query, and says
 // whether there are more. Only an admin's list has guardian copies, each
 // with its teen; a leader or host never sees a guardian's name (DEC-132).
 func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, bool, error) {
 	var rows []struct {
+		Channel         string
 		Status          string
 		Reason          string
 		Error           string
@@ -191,7 +254,9 @@ func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, bo
 		TeenName        string
 		TeenDisplayName string
 	}
-	err := a.DB.Raw(`SELECT r.status, r.reason, r.error, r.copy_of_user_id IS NOT NULL AS copy,
+	// By name, each person's email before their push (rows are
+	// snapshotted email first, so r.id orders them).
+	err := a.DB.Raw(`SELECT r.channel, r.status, r.reason, r.error, r.copy_of_user_id IS NOT NULL AS copy,
 		u.name, u.display_name, u.account_type, COALESCE(t.name, '') AS teen_name, COALESCE(t.display_name, '') AS teen_display_name
 		FROM message_recipients r JOIN users u ON u.id = r.user_id LEFT JOIN users t ON t.id = r.copy_of_user_id
 		WHERE r.message_id = ? AND (? OR r.copy_of_user_id IS NULL)
@@ -204,8 +269,12 @@ func (a *App) historyRecipients(id uint, admin bool) ([]historyRecipientJSON, bo
 	out := make([]historyRecipientJSON, 0, len(rows))
 	for _, r := range rows {
 		u := models.User{Name: r.Name, DisplayName: r.DisplayName}
-		h := historyRecipientJSON{Name: u.PublicName(), Teen: r.AccountType == models.AccountTeen && !r.Copy}
-		h.Status, h.Reason = historyStatus(r.Status, r.Reason, r.Error, admin)
+		h := historyRecipientJSON{Name: u.PublicName(), Teen: r.AccountType == models.AccountTeen && !r.Copy, Channel: r.Channel}
+		if r.Channel == models.DeliveryPush {
+			h.Status, h.Reason = pushHistoryStatus(r.Status, r.Reason, admin)
+		} else {
+			h.Status, h.Reason = historyStatus(r.Status, r.Reason, r.Error, admin)
+		}
 		if r.Copy {
 			teen := models.User{Name: r.TeenName, DisplayName: r.TeenDisplayName}
 			h.CopyOf = teen.PublicName()
@@ -467,7 +536,8 @@ func (a *App) apiRetryMessage(c *gin.Context) {
 			if err := claim(map[string]any{"status": models.MessageSending, "error": "", "updated_at": now}); err != nil {
 				return err
 			}
-			if err := tx.Model(&models.MessageRecipient{}).Where("message_id = ? AND status = ?", m.ID, models.RecipientFailed).
+			// Email only: a push is never sent again (M3.13d2).
+			if err := tx.Model(&models.MessageRecipient{}).Where("message_id = ? AND status = ? AND channel = ?", m.ID, models.RecipientFailed, models.DeliveryEmail).
 				Order("id").Pluck("id", &ids).Error; err != nil {
 				return err
 			}

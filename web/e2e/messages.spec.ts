@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { apiAs, fromMore, signInTo, watchCSP } from "./helpers";
+import { apiAs, email, fromMore, PASSWORD, signInTo, watchCSP } from "./helpers";
 
 // The composer (M3.4c, PLAN 7.3): a leader writes to their group from its
 // page, sees the live count, previews it, sends a test to themselves,
@@ -133,3 +133,53 @@ test("a leader sends now and the page follows it: sent with counts, or failed wi
   await expect(page.getByRole("link").filter({ hasText: subject })).toContainText(dev ? /^Sent / : /^Failed/);
   expect(csp).toEqual([]);
 });
+
+// "Push notification too" (M3.13d2, DEC-123): on by default, the summary
+// counts who also gets a push, the list marks them in words, and turning
+// it off is saved with the draft. Its own group and member, so no other
+// spec's people get a device; nothing is sent, so no push leaves.
+test("Push notification too is on by default, counted, and saved off", async ({ page, request }) => {
+  const csp = await watchCSP(page);
+  const stamp = Date.now() % 100000;
+  const login = `push-reader-${stamp}`;
+  const admin = await apiAs(request, "grier");
+  const { users } = (await admin("GET", "/admin/users")) as { users: { id: number; email: string }[] };
+  const lee = users.find((u) => u.email === email("lee"))!;
+  const { user } = await admin("POST", "/admin/users", { ageBand: "adult", email: email(login), name: "Pia Pusher", password: PASSWORD, role: "member" });
+  const { group } = await admin("POST", "/groups", {
+    name: `Push check ${stamp}`, description: "For the push switch.", tags: [], imageUrl: "", location: "", visibility: "public", memberLimit: null,
+  });
+  await admin("POST", `/admin/groups/${group.id}/members`, { userId: lee.id, role: "leader" });
+  await admin("POST", `/admin/groups/${group.id}/members`, { userId: user.id, role: "member" });
+  const pia = await apiAs(request, login);
+  const endpoint = `https://fcm.googleapis.com/fcm/send/e2e-composer-${stamp}`;
+  await pia("PUT", "/push/subscriptions", { endpoint, expirationTime: null, keys: { p256dh: RFC_P256DH, auth: RFC_AUTH } });
+  try {
+    await signInTo(page, "lee", `/messages/new?group=${group.id}`);
+    const box = page.getByRole("checkbox", { name: /Push notification too/ });
+    await expect(box).toBeChecked();
+    await expect(page.getByRole("status").filter({ hasText: /^\d+ (people|person);/ })).toBeVisible();
+    await expect(page.getByText("1 also gets a push notification.")).toBeVisible();
+    await page.getByText("See who's on the list").click();
+    await expect(page.getByRole("listitem").filter({ hasText: "Pia Pusher" })).toContainText("Push too");
+    await expect(page.getByRole("listitem").filter({ hasText: "Lee Leader" })).not.toContainText("Push too");
+
+    await box.uncheck();
+    await expect(page.getByText("1 also gets a push notification.")).toHaveCount(0);
+    await expect(page.getByText("Push too")).toHaveCount(0);
+    await page.getByRole("textbox", { name: "Subject" }).fill(`Push off ${stamp}`);
+    await page.getByRole("button", { name: "Save draft" }).click();
+    await expect(page.getByText("Draft saved.")).toBeVisible();
+    await expect(page).toHaveURL(/\/messages\/\d+$/);
+    await page.reload();
+    await expect(page.getByRole("checkbox", { name: /Push notification too/ })).not.toBeChecked();
+    expect(csp).toEqual([]);
+  } finally {
+    await (await apiAs(request, login))("DELETE", "/push/subscriptions", { endpoint });
+  }
+});
+
+// The RFC 8291 Appendix A browser keys (push.spec.ts): valid, and never
+// sent anywhere here.
+const RFC_P256DH = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4";
+const RFC_AUTH = "BTBZMqHH6r4Tts7J_aSIgg";

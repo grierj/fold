@@ -4,7 +4,7 @@ import { useAuth } from "../auth";
 import { Messages, previewHTMLPath } from "../messages-api";
 import type { ComposeOptions, Message, MessagePreview } from "../types";
 import { ERROR_COPY, errorCode, errorText, type ErrorCode } from "../lib/errors";
-import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
+import { audienceKey, audienceLabel, confirmLine, emptyChoice, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushHistoryLine, retryQuestion, statusLabel, toAudience, type AudienceChoice } from "../lib/messages";
 import { reminderAudience, reminderDateText, reminderName } from "../lib/reminders";
 import { useChurchZoneLoad } from "../lib/useEventZone";
 import { useUnsavedChanges } from "../lib/unsavedChanges";
@@ -16,7 +16,7 @@ import { SmsComposer } from "../components/messages/SmsComposer";
 import { ErrorNotice } from "../components/ErrorNotice";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
-import { Choices, Field, FormError, Input, Radio, showFieldErrors } from "../components/ui/Field";
+import { Checkbox, Choices, Field, FormError, Input, Radio, showFieldErrors } from "../components/ui/Field";
 import { Form } from "../components/ui/Form";
 import { FormActions } from "../components/ui/FormActions";
 import { Skeleton } from "../components/ui/Skeleton";
@@ -85,27 +85,31 @@ export function MessageComposerPage() {
   const [when, setWhen] = useState<"now" | "later">("now");
   const [day, setDay] = useState("");
   const [time, setTime] = useState("09:00");
+  // "Push notification too" (DEC-123, DEC-127), on by default. Hidden when
+  // the church turned notifications off; the saved value stays as it was.
+  const [pushAlert, setPushAlert] = useState(true);
   // What was last saved, to tell edits from it; body is null until the
   // editor says how it writes the saved HTML.
-  const [saved, setSaved] = useState<{ subject: string; body: string | null; key: string } | null>(null);
+  const [saved, setSaved] = useState<{ subject: string; body: string | null; key: string; pushAlert: boolean } | null>(null);
 
   const [errors, setErrors] = useState<Errors>({});
   const [busy, setBusy] = useState<Action | "schedule" | "cancel" | "retry" | null>(null);
   const [note, setNote] = useState("");
   const [preview, setPreview] = useState<(MessagePreview & { id: number; n: number }) | null>(null);
   // The question before sending, for exactly what was on screen (snap).
-  const [confirm, setConfirm] = useState<{ eligible: number; at: string | null; snap: string } | null>(null);
+  const [confirm, setConfirm] = useState<{ eligible: number; push: number; at: string | null; snap: string } | null>(null);
   // Once it goes out: who got it, checked every few seconds while sending.
   const { history, failed: historyFailed, stale, announce, retryLoad } = useMessageHistory(editing ? null : message, setMessage);
   const [retryError, setRetryError] = useState("");
 
   const audience = toAudience(choice);
   const key = audienceKey(audience);
-  const dirty = editing && !!saved && (saved.subject !== subject.trim() || saved.key !== key || (saved.body !== null && saved.body !== body));
+  const dirty = editing && !!saved && (saved.subject !== subject.trim() || saved.key !== key || saved.pushAlert !== pushAlert || (saved.body !== null && saved.body !== body));
+  const pushShown = !!options?.pushEnabled;
   const { markSaved, resume } = useUnsavedChanges(dirty);
   // Any change after "Send to N people?" withdraws the question: it would
   // otherwise send something other than what it asked about.
-  const snap = JSON.stringify({ subject: subject.trim(), body, key, when, day, time });
+  const snap = JSON.stringify({ subject: subject.trim(), body, key, pushAlert, when, day, time });
   const asking = confirm && confirm.snap === snap ? confirm : null;
   useEffect(() => { setConfirm((c) => (c && c.snap !== snap ? null : c)); }, [snap]);
   useEffect(() => {
@@ -144,7 +148,7 @@ export function MessageComposerPage() {
     else {
       const c = prefillChoice(params, options);
       setChoice(c);
-      setSaved({ subject: "", body: null, key: audienceKey(toAudience(c)) });
+      setSaved({ subject: "", body: null, key: audienceKey(toAudience(c)), pushAlert: true });
       setEditing(true);
     }
     setReady(true);
@@ -154,8 +158,9 @@ export function MessageComposerPage() {
     const c = fromAudience(m.audience, o);
     setChoice(c);
     setSubject(m.subject);
+    setPushAlert(m.pushAlert);
     setBody(m.bodyHtml);
-    setSaved({ subject: m.subject, body: null, key: audienceKey(toAudience(c)) });
+    setSaved({ subject: m.subject, body: null, key: audienceKey(toAudience(c)), pushAlert: m.pushAlert });
     const later = m.status === "scheduled" && m.scheduledAt && new Date(m.scheduledAt).getTime() > Date.now() + 60_000;
     setWhen(later ? "later" : "now");
     if (later && m.scheduledAt) {
@@ -219,10 +224,10 @@ export function MessageComposerPage() {
   // save stores the draft (creating it the first time) and answers it.
   async function save(): Promise<Message> {
     if (!audience) throw new Error("save needs an audience");
-    const draft = { subject: subject.trim(), bodyHtml: body, audience };
+    const draft = { subject: subject.trim(), bodyHtml: body, audience, pushAlert };
     const { message: m } = message ? await Messages.update(message.id, draft) : await Messages.create(draft);
     setMessage(m);
-    setSaved({ subject: draft.subject, body, key });
+    setSaved({ subject: draft.subject, body, key, pushAlert });
     if (!message) {
       // The new address is the same draft, now saved: no "Leave without
       // saving?" for this move, and the guard is back right after it.
@@ -262,7 +267,7 @@ export function MessageComposerPage() {
       if (action === "send") {
         const { summary } = await Messages.audiencePreview(m.audience);
         if (summary.eligible === 0) show({ audience: ERROR_COPY.message_nobody });
-        else setConfirm({ eligible: summary.eligible, at: when === "later" ? wallToInstant(day, time, zone) : null, snap });
+        else setConfirm({ eligible: summary.eligible, push: pushShown && pushAlert ? summary.push : 0, at: when === "later" ? wallToInstant(day, time, zone) : null, snap });
       }
     } catch (e) {
       const fallback = { draft: "", preview: "We couldn't show the preview.", test: "We couldn't send the test.", send: "We couldn't count who gets it." }[action];
@@ -389,6 +394,7 @@ export function MessageComposerPage() {
         <div className="space-y-1">
           <p className="text-lg font-semibold">{statusLabel(message, zone)}</p>
           {history && <p className="text-sm">{historyLine(history, message)}</p>}
+          {history && pushHistoryLine(history.counts.push) && <p className="text-sm">{pushHistoryLine(history.counts.push)}</p>}
           {history && message.status !== "sending" && history.counts.teens > 0 && <p className="text-sm text-text-muted">{historyTeenLine(history.counts.teens)}</p>}
           {history && message.status !== "sending" && guardianLine(history.counts) && <p className="text-sm text-text-muted">{guardianLine(history.counts)}</p>}
           {historyFailed && !history && (
@@ -458,8 +464,15 @@ export function MessageComposerPage() {
     <Form ref={form} aria-label={title} onSubmit={submit} className="space-y-6">
       <section aria-labelledby={`${ids.audience}-h`} className="space-y-4">
         <h2 id={`${ids.audience}-h`} className="text-xl font-semibold">Who gets it</h2>
-        <AudiencePicker id={ids.audience} options={options} choice={choice} error={errors.audience}
+        <AudiencePicker id={ids.audience} options={options} choice={choice} error={errors.audience} push={pushShown && pushAlert}
           onChange={(c) => { setChoice(c); setErrors((e) => ({ ...e, audience: undefined })); }} />
+        {/* A companion to the email, never instead of it (DEC-123). The SMS
+            tab, when it exists, has nothing to do with it. */}
+        {pushShown && (
+          <Checkbox label="Push notification too"
+            description="People who turned on notifications also get a short note: the subject and the first line."
+            checked={pushAlert} onChange={(e) => setPushAlert(e.target.checked)} />
+        )}
       </section>
 
       <section aria-labelledby={`${ids.body}-h`} className="space-y-4">
@@ -519,6 +532,7 @@ export function MessageComposerPage() {
         <div role="group" aria-labelledby={`${ids.when}-c`} className="space-y-3 rounded-lg border border-primary-border bg-primary-subtle p-4">
           <p id={`${ids.when}-c`} className="font-semibold text-primary-on-subtle">{confirmLine(asking.eligible, asking.at, zone)}</p>
           <p className="text-sm text-primary-on-subtle">To {audience ? audienceLabel(audience, options) : "the people you chose"}. You can change or cancel it until it starts sending.</p>
+          {asking.push > 0 && <p className="text-sm text-primary-on-subtle">{asking.push} of them also {asking.push === 1 ? "gets" : "get"} a push notification.</p>}
           <FormActions>
             <Button ref={confirmButton} variant="primary" layout="w-full sm:w-auto" disabled={busy === "schedule"} onClick={() => void schedule()}>
               {busy === "schedule" ? "Scheduling…" : asking.at ? "Schedule" : "Send now"}

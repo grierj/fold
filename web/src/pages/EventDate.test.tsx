@@ -265,7 +265,7 @@ it("shows only the typed location when no room is booked (M2.1b)", async () => {
 
 it("offers Email people going for this date to someone who may write to the event (M3.4c)", async () => {
   actor.canCompose = true;
-  vi.mocked(Messages.options).mockResolvedValue({ canCompose: true, canMessageEveryone: false, smsEnabled: false, groups: [], events: [{ id: 7, title: "One invited date", churchWide: true, dates: [] }] });
+  vi.mocked(Messages.options).mockResolvedValue({ canCompose: true, canMessageEveryone: false, smsEnabled: false, pushEnabled: true, groups: [], events: [{ id: 7, title: "One invited date", churchWide: true, dates: [] }] });
   mount();
   expect(await screen.findByRole("link", { name: "Email people going" })).toHaveAttribute("href", "/messages/new?occurrence=51");
   expect(Messages.options).toHaveBeenCalledWith(7);
@@ -273,7 +273,7 @@ it("offers Email people going for this date to someone who may write to the even
 
 it("doesn't offer it for an event the viewer can't write to, or ask when they can't compose", async () => {
   actor.canCompose = true;
-  vi.mocked(Messages.options).mockResolvedValue({ canCompose: true, canMessageEveryone: false, smsEnabled: false, groups: [], events: [{ id: 8, title: "Other", churchWide: true, dates: [] }] });
+  vi.mocked(Messages.options).mockResolvedValue({ canCompose: true, canMessageEveryone: false, smsEnabled: false, pushEnabled: true, groups: [], events: [{ id: 8, title: "Other", churchWide: true, dates: [] }] });
   mount(); await screen.findByText("One invited date");
   await waitFor(() => expect(Messages.options).toHaveBeenCalled());
   expect(screen.queryByRole("link", { name: "Email people going" })).not.toBeInTheDocument();

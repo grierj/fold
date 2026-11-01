@@ -1,0 +1,318 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"fold/internal/content"
+	"fold/internal/jobs"
+	"fold/internal/notify"
+	"fold/internal/push"
+	"fold/models"
+
+	"gorm.io/gorm"
+)
+
+// Announcement pushes (M3.13d2, PLAN 7.1 step 7, DEC-123). An announcement
+// always goes by email; with "Push notification too" on (push_alert, the
+// default) message.send also snapshots one message_recipients row with
+// channel 'push' for each direct recipient who gets the email and has push
+// on, and queues one push.deliver job per device of theirs, in the same
+// transaction as the snapshot. The push is a short companion: the subject
+// and the first 120 characters of the plain text, opening the message in
+// Fold (/messages/:id/read). Guardian copies, guests and household people
+// get no push. The push rows never decide the message's status or counts:
+// those follow its email rows (settleMessage), and "Try again" resends
+// only email.
+
+const (
+	// pushWaitPrefix starts a waiting push row's reason; the rest is when
+	// quiet hours end, on the recipient's clock: "outside quiet hours ·
+	// sending at 8:00 AM" (research 2.6). The history counts by it.
+	pushWaitPrefix = "outside quiet hours · sending at "
+	// pushWhyStopped: the daily reaper found a push row still queued with
+	// no job left to send it.
+	pushWhyStopped = "sending stopped before it went out"
+	// messagePushSnippet is how much of the plain text a push carries.
+	messagePushSnippet = 120
+	// messagePushOpen ends every announcement push (PLAN 7.3).
+	messagePushOpen = "Open to read."
+)
+
+// pushReady says who among ids would get an optional push of category
+// now: their latest (push, all) consent is opted in, their latest
+// (push, category:<category>) consent isn't opted out, and they have at
+// least one device (DEC-122). It reads in chunks, like recipientFacts.
+func pushReady(db *gorm.DB, ids []uint, category string) (map[uint]bool, error) {
+	out := map[uint]bool{}
+	err := eachIDChunk(ids, func(chunk []uint) error {
+		var on []uint
+		if err := db.Raw(`SELECT c.user_id FROM (
+				SELECT DISTINCT ON (user_id, scope) user_id, scope, status FROM consents
+				WHERE user_id IN ? AND channel = ? AND scope IN ('all', ?) ORDER BY user_id, scope, at DESC, id DESC) c
+			WHERE EXISTS (SELECT 1 FROM push_subscriptions d WHERE d.user_id = c.user_id)
+			GROUP BY c.user_id
+			HAVING bool_or(c.scope = 'all' AND c.status = ?) AND NOT bool_or(c.scope <> 'all' AND c.status = ?)`,
+			chunk, models.ConsentPush, categoryScope(category), models.ConsentOptedIn, models.ConsentOptedOut).Scan(&on).Error; err != nil {
+			return err
+		}
+		for _, id := range on {
+			out[id] = true
+		}
+		return nil
+	})
+	return out, err
+}
+
+// emailReaders are the people among facts who get the email and could
+// get a push: not skipped, and active (a guest never has a device).
+func emailReaders(facts []recipientFact) []uint {
+	out := []uint{}
+	for _, f := range facts {
+		if f.Skip == "" && f.User.Status == models.UserActive {
+			out = append(out, f.User.ID)
+		}
+	}
+	return out
+}
+
+// messagePushRows are message.send's push rows for m: one queued row per
+// person among facts who gets the email and has push on, when m asks for
+// it, is an announcement, and the church has push on. A reminder's push
+// is M3.13d3's.
+func (a *App) messagePushRows(db *gorm.DB, m *models.Message, facts []recipientFact) ([]models.MessageRecipient, error) {
+	if !m.PushAlert || m.Category != models.MessageCategoryAnnouncement || !a.pushEnabled() {
+		return nil, nil
+	}
+	ids := emailReaders(facts)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	on, err := pushReady(db, ids, messageCategory(m))
+	if err != nil {
+		return nil, err
+	}
+	rows := []models.MessageRecipient{}
+	for _, id := range ids {
+		if on[id] {
+			rows = append(rows, models.MessageRecipient{MessageID: m.ID, UserID: id, Channel: models.DeliveryPush, Status: models.RecipientQueued})
+		}
+	}
+	return rows, nil
+}
+
+// enqueueMessagePushes queues one push.deliver per device of each queued
+// push row of the message. Its key (push:mr:<row>:d:<device>) makes it
+// once per device, however often it runs; the payload holds ids only.
+func enqueueMessagePushes(tx *gorm.DB, messageID uint) error {
+	var pairs []struct {
+		RecipientID uint
+		DeviceID    uint
+	}
+	if err := tx.Raw(`SELECT r.id AS recipient_id, d.id AS device_id FROM message_recipients r
+		JOIN push_subscriptions d ON d.user_id = r.user_id
+		WHERE r.message_id = ? AND r.channel = ? AND r.status = ? ORDER BY r.id, d.id`,
+		messageID, models.DeliveryPush, models.RecipientQueued).Scan(&pairs).Error; err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, p := range pairs {
+		key := "push:mr:" + historyID(p.RecipientID) + ":d:" + historyID(p.DeviceID)
+		if _, err := jobs.Enqueue(tx, kindPushDeliver, pushJob{MessageRecipientID: p.RecipientID, DeviceID: p.DeviceID}, now, key, pushDeliverAttempts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// messagePushRecorder writes an announcement push's outcome on its row,
+// as recordPushIn does for a notification: a sent row is final, and any
+// other first outcome stays unless a later device takes it, which makes
+// the row sent. A row is never moved back to queued.
+func messagePushRecorder(id uint) pushRecorder {
+	return func(db *gorm.DB, status, reason string, now time.Time) error {
+		updates := map[string]any{"status": status, "reason": reason, "updated_at": time.Now()}
+		q := db.Model(&models.MessageRecipient{}).Where("id = ? AND channel = ?", id, models.DeliveryPush)
+		if status == models.RecipientSent {
+			updates["sent_at"] = now.UTC()
+			q = q.Where("status <> ?", models.RecipientSent)
+		} else {
+			q = q.Where("status = ?", models.RecipientQueued)
+		}
+		return q.Updates(updates).Error
+	}
+}
+
+// deliverMessagePush sends one announcement push row to one device. It
+// checks, in order: the church's switch, the account, the person's push
+// consent for the message's category, the device, that the message is
+// still going out, quiet hours (announcements are optional, so they
+// wait), and the hourly limit, which counts announcement and notification
+// pushes together (DEC-126). It returns an error only when a retry may
+// succeed.
+func (a *App) deliverMessagePush(ctx context.Context, rowID, deviceID uint) error {
+	db := a.DB.WithContext(ctx)
+	var row models.MessageRecipient
+	if err := db.First(&row, rowID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if row.Channel != models.DeliveryPush || row.CopyOfUserID != nil {
+		return nil
+	}
+	rec := messagePushRecorder(row.ID)
+	record := func(status, reason string) error { return rec(db, status, reason, a.pushNow()) }
+	if !a.pushEnabled() {
+		return record(models.RecipientSuppressed, pushWhyChurchOff)
+	}
+	var u models.User
+	if err := db.Select("id", "name", "display_name", "status", "timezone").First(&u, row.UserID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if u.Status != models.UserActive {
+		return record(models.RecipientSuppressed, pushWhyInactive)
+	}
+	var m models.Message
+	if err := db.First(&m, row.MessageID).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	category := messageCategory(&m)
+	on, categoryOff, err := pushConsent(db, u.ID, category)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !on:
+		return record(models.RecipientSuppressed, pushWhyNotOn)
+	case categoryOff:
+		return record(models.RecipientSuppressed, "push turned off for "+notify.CategoryEmailName(category))
+	}
+	var dev models.PushSubscription
+	if err := db.First(&dev, deviceID).Error; err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	if dev.ID == 0 || dev.UserID != u.ID {
+		// Turned off, gone, or changed hands since it was queued. Another
+		// device's job decides when the person still has one.
+		var left int64
+		if err := db.Model(&models.PushSubscription{}).Where("user_id = ?", u.ID).Count(&left).Error; err != nil {
+			return err
+		}
+		if left == 0 {
+			return record(models.RecipientSuppressed, pushWhyGone)
+		}
+		return nil
+	}
+	if m.Status != models.MessageSending && m.Status != models.MessageSent {
+		return record(models.RecipientSuppressed, pushWhyStale)
+	}
+	now := a.pushNow()
+	loc := zoneOrChurch(db, u.Timezone)
+	if inside, opens := a.pushQuietHours().Check(now, "", loc); !inside {
+		if soonest := now.Add(time.Second); opens.Before(soonest) {
+			opens = soonest
+		}
+		// The row stays queued and says when it goes, on the
+		// recipient's clock, for the history.
+		if err := db.Model(&models.MessageRecipient{}).Where("id = ? AND status = ?", row.ID, models.RecipientQueued).
+			Updates(map[string]any{"reason": pushWaitPrefix + opens.In(loc).Format("3:04 PM"), "updated_at": time.Now()}).Error; err != nil {
+			return err
+		}
+		return jobs.Later(opens)
+	}
+	over, err := a.overHourlyLimit(ctx, pushItem{UserID: u.ID, RecipientID: row.ID}, now)
+	if err != nil {
+		return err
+	}
+	if over {
+		return record(models.RecipientSuppressed, pushWhyHourly)
+	}
+	var au audienceJSON
+	_ = json.Unmarshal([]byte(m.Audience), &au)
+	values, err := a.recipientValues(db, &m, au, map[uint]*models.User{u.ID: &u})
+	if err != nil {
+		return err
+	}
+	title, text := messagePushText(&m, values[u.ID])
+	what := fmt.Sprintf("message %d recipient %d", m.ID, row.ID)
+	body, err := push.MarshalPayload(push.NewPayload(push.Notification{
+		Title: title, Body: text, Navigate: a.emailLink(messageReadPath(m.ID)), Tag: "m" + historyID(m.ID),
+	}))
+	if err != nil {
+		log.Printf("push: %s is too large to push: a bug in its push text", what)
+		return record(models.RecipientFailed, pushWhyTooLarge)
+	}
+	sub := push.Subscription{Endpoint: dev.Endpoint, P256dh: dev.P256dh, Auth: dev.Auth}
+	opts := push.Options{TTL: pushTTL, Urgency: push.UrgencyNormal, Topic: "mr" + strconv.FormatUint(uint64(row.ID), 10)}
+	return a.pushOutcome(ctx, what, dev, a.pushClient().Send(ctx, sub, body, opts), "", rec)
+}
+
+// messageReadPath is where a recipient reads an announcement in Fold.
+func messageReadPath(id uint) string { return "/messages/" + historyID(id) + "/read" }
+
+var (
+	// A link's address after its text in the plain-text part, as
+	// content.PlainText writes it: " (https://…)" or " ({{event_link}})".
+	pushLinkAddressRe = regexp.MustCompile(`\s*\((?:https?://|\{\{)[^()\s]*\)`)
+	pushBareURLRe     = regexp.MustCompile(`(?i)\b(?:https?://|www\.)\S+`)
+)
+
+// messagePushText is an announcement's lock-screen text for one reader
+// (DEC-124, research 2.4): the subject as their email says it, and the
+// first 120 characters of the plain text then "Open to read.". It is never
+// the HTML, and carries no link of any kind: link addresses, bare URLs and
+// the link fields are left out, so no signed or manage link can reach a
+// lock screen. vals are the reader's merge values; any field without one
+// (a link field, a stray field) becomes nothing.
+func messagePushText(m *models.Message, vals map[string]string) (title, body string) {
+	text := map[string]string{}
+	for k, v := range vals {
+		if k != content.FieldEventLink && k != content.FieldManageLink {
+			text[k] = v
+		}
+	}
+	oneLine := func(s string) string { return strings.Join(strings.Fields(s), " ") }
+	title = clipRunes(oneLine(content.Merge(m.Subject, text, false)), maxMessageSubject)
+	if title == "" {
+		title = "New message"
+	}
+	s := pushLinkAddressRe.ReplaceAllString(m.BodyText, "")
+	s = content.Merge(s, text, false)
+	s = oneLine(pushBareURLRe.ReplaceAllString(s, ""))
+	if r := []rune(s); len(r) > messagePushSnippet {
+		cut := string(r[:messagePushSnippet])
+		if i := strings.LastIndex(cut, " "); i > messagePushSnippet/2 {
+			cut = cut[:i]
+		}
+		s = strings.TrimRight(cut, " ,;:.-–—") + "…"
+	}
+	if s == "" {
+		return title, messagePushOpen
+	}
+	return title, s + "\n" + messagePushOpen
+}
+
+// reapMessagePushes is the daily backstop for announcement pushes: a
+// push row still queued an hour on with no push.deliver job left for it
+// (its devices were added after the snapshot, or its job stopped) is
+// suppressed, so a history never waits forever.
+func reapMessagePushes(db *gorm.DB, now time.Time) (int64, error) {
+	res := db.Exec(`UPDATE message_recipients r SET status = ?, reason = ?, updated_at = ?
+		WHERE r.channel = 'push' AND r.status = 'queued' AND r.updated_at < ?
+		AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.kind = ? AND j.status IN ('queued', 'running', 'failed')
+			AND (j.payload->>'messageRecipientId')::bigint = r.id)`,
+		models.RecipientSuppressed, pushWhyStopped, now, now.Add(-time.Hour), kindPushDeliver)
+	return res.RowsAffected, res.Error
+}
