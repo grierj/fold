@@ -1,4 +1,4 @@
-import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageRecipientCounts, MessageRecipients } from "../types";
+import type { AudienceRole, AudienceStatus, AudienceSummary, ComposeOptions, HistoryStatus, Message, MessageAudience, MessageHistoryPush, MessagePushCounts, MessagePushWait, MessageRecipientCounts, MessageRecipients } from "../types";
 import { formatShortDay, formatWhenIn } from "./when";
 
 // The composer's words and audience shapes (M3.4c, PLAN 7.2 and 7.3).
@@ -149,7 +149,11 @@ export function historyLine(h: Pick<MessageRecipients, "counts" | "skippedBy">, 
   // Someone who marked it as spam got it.
   const reached = c.sent + c.delivered + c.complained;
   const parts: string[] = [];
+  // No email reached anyone, though someone was on the list: said plainly,
+  // since its pushes may still have gone (they follow push consent,
+  // DEC-122), never "Sent to 0 people".
   if (reached) parts.push(`Sent to ${people(reached)}`);
+  else if (c.bounced || c.failed || c.skipped) parts.push("No emails went out");
   if (c.bounced) parts.push(`${c.bounced} bounced`);
   if (c.failed) parts.push(`${c.failed} didn't get it`);
   if (c.skipped) parts.push(`${c.skipped} skipped (${reasonList(h.skippedBy)})`);
@@ -202,6 +206,59 @@ export function historyTeenLine(teens: number): string {
 export function teenLine(s: AudienceSummary): string {
   if (s.teens === 0) return "";
   return s.teens === 1 ? "1 of them is a teen." : `${s.teens} of them are teens.`;
+}
+
+// pushLine is the composer's "38 also get a push notification." (PLAN
+// 7.3), or "" when nobody would. People with no device aren't skipped:
+// they still get the email.
+export function pushLine(s: AudienceSummary): string {
+  if (!s.push) return "";
+  return `${s.push} also ${s.push === 1 ? "gets" : "get"} a push notification.`;
+}
+
+// A push row's reason (the pipeline's words) as the history says it.
+const PUSH_REASONS: Record<string, [one: string, many: string]> = {
+  "device gone": ["device gone", "devices gone"],
+  "hourly limit": ["over the hourly limit", "over the hourly limit"],
+  "push turned off for messages from leaders": ["turned notifications off for messages from leaders", "turned notifications off for messages from leaders"],
+  "push not turned on": ["turned notifications off", "turned notifications off"],
+  "push turned off by the church": ["notifications turned off by the church", "notifications turned off by the church"],
+  "recipient not active": ["not active", "not active"],
+  "no longer current": ["not sent: the message stopped", "not sent: the message stopped"],
+  "the push service refused it": ["refused by the push service", "refused by the push service"],
+  "the push service couldn't be reached": ["the push service couldn't be reached", "the push service couldn't be reached"],
+  "the notification was too large to push": ["too large to push", "too large to push"],
+  "didn't go out": ["didn't go out", "didn't go out"],
+};
+
+// pushBadge is one person's push in their history row, in words (status
+// is never colour alone): "Push sent", "Push waiting until 8:00 AM", or
+// "Push didn't go out", with the reason for an admin.
+export function pushBadge(p: MessageHistoryPush): string {
+  switch (p.status) {
+    case "sent":
+    case "delivered":
+      return "Push sent";
+    case "waiting":
+      return p.until ? `Push waiting until ${p.until}` : "Push waiting";
+  }
+  return p.reason ? `Push didn't go out: ${PUSH_REASONS[p.reason]?.[0] ?? p.reason}` : "Push didn't go out";
+}
+
+// pushHistoryLine counts a message's companion pushes (M3.13d2): "38
+// pushed · 2 waiting until 8:00 AM · 1 device gone", or "" when it had
+// none. The email counts above it never include these.
+export function pushHistoryLine(c: MessagePushCounts | undefined): string {
+  if (!c) return "";
+  const parts: string[] = [];
+  if (c.sent) parts.push(`${c.sent} pushed`);
+  const waiting = (w: MessagePushWait) => (w.until ? `${w.n} waiting until ${w.until}` : `${w.n} waiting`);
+  for (const w of c.waiting) parts.push(waiting(w));
+  Object.entries(c.missed)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .forEach(([reason, n]) => parts.push(`${n} ${PUSH_REASONS[reason]?.[n === 1 ? 0 : 1] ?? reason}`));
+  return parts.length ? `Push notifications: ${parts.join(" · ")}` : "";
 }
 
 // Times a message goes out read on the church's clock (the schedule is

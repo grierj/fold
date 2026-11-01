@@ -36,7 +36,7 @@ Reconciled against merged history through [PR #163](https://github.com/grierj/fo
 | M3.4 Composer (slices M3.4a–c) | done: M3.4a merged (#208), M3.4b (#209), M3.4c (#211) | Claude | `messages/m3.4c-composer` |
 | M3.5 Send pipeline (slices M3.5a–b) | done: M3.5a merged (#214), M3.5b (#215) | Claude | `messages/m3.5b-history` |
 | M3.6 Email reminders (slices M3.6a–b) | done: M3.6a merged (#216), M3.6b (#217) | Claude | `reminders/m3.6b-controls` |
-| M3.13 Web push (slices M3.13a–c2, d1–d3) | M3.13a keys, devices and the push client (merged, #218), M3.13b the subscribe API and delivery (merged, #219), M3.13c1 service worker, manifest and the device card (merged, #220), M3.13c2 the directions page and the church switch (merged, #221); built: M3.13d1 push quiet hours and the hourly limit; next d2 (announcement pushes) and d3 (the 2-hour push reminder) | Claude | `push/m3.13d1-quiet` |
+| M3.13 Web push (slices M3.13a–c2, d1–d3) | M3.13a keys, devices and the push client (merged, #218), M3.13b the subscribe API and delivery (merged, #219), M3.13c1 service worker, manifest and the device card (merged, #220), M3.13c2 the directions page and the church switch (merged, #221); M3.13d1 push quiet hours and the hourly limit (merged, #222); built: M3.13d2 "Push notification too" on announcements (push rows, the recipient read page, push history); next d3 (the 2-hour push reminder) | Claude | `push/m3.13d2-announce` |
 | Simplicity PR: drop `pending_return` (DEC-47), event visibility stored on the event (DEC-48) | done (merged, #43) | Wright | `simplicity` |
 
 ## Other merged work (not milestones)

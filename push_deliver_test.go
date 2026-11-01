@@ -82,6 +82,13 @@ func (f *fakePush) total() int {
 func pushTestApp(t *testing.T) (*App, *fakePush) {
 	t.Helper()
 	app := testApp(t)
+	return app, useFakePush(t, app)
+}
+
+// useFakePush gives app VAPID keys and the fake push service, with quiet
+// hours off.
+func useFakePush(t *testing.T, app *App) *fakePush {
+	t.Helper()
 	if _, err := ensureVAPIDKeys(app.DB, app.Config.SessionSecret); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +96,7 @@ func pushTestApp(t *testing.T) (*App, *fakePush) {
 	app.Push = &push.Client{HTTP: &http.Client{Transport: f}, Subject: "mailto:admin@example.com"}
 	open := push.AlwaysOpen
 	app.pushWindow = &open
-	return app, f
+	return f
 }
 
 // testDevice is a device with real browser keys; its endpoint path is

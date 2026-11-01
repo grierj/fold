@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -51,6 +52,34 @@ func TestEnqueueDedupes(t *testing.T) {
 	db.Order("id").Find(&jobs)
 	if len(jobs) != 3 || jobs[0].Payload != `{"n": 1}` || jobs[0].MaxAttempts != DefaultMaxAttempts || jobs[0].Status != models.JobQueued {
 		t.Fatalf("jobs: %+v", jobs)
+	}
+}
+
+// EnqueueMany adds every new job in batched INSERTs and skips the keys
+// some job already has, as Enqueue does one at a time.
+func TestEnqueueManyDedupes(t *testing.T) {
+	db := testdb.Shared(t)
+	now := time.Now()
+	if _, err := Enqueue(db, "x", nil, now, "x:1", 0); err != nil {
+		t.Fatal(err)
+	}
+	specs := []Spec{{Kind: "x", RunAt: now, UniqueKey: "x:1"}}
+	for i := 2; i <= 1200; i++ {
+		specs = append(specs, Spec{Kind: "x", Payload: map[string]int{"n": i}, RunAt: now, UniqueKey: "x:" + strconv.Itoa(i), MaxAttempts: 3})
+	}
+	n, err := EnqueueMany(db, specs)
+	if err != nil || n != 1199 {
+		t.Fatalf("added %d (%v), want 1199", n, err)
+	}
+	if n, err := EnqueueMany(db, specs); err != nil || n != 0 {
+		t.Fatalf("again: added %d (%v)", n, err)
+	}
+	var j models.Job
+	if db.Where("unique_key = ?", "x:7").First(&j); j.Payload != `{"n": 7}` || j.MaxAttempts != 3 || j.Status != models.JobQueued {
+		t.Fatalf("job: %+v", j)
+	}
+	if n, err := EnqueueMany(db, nil); n != 0 || err != nil {
+		t.Fatalf("none: %d %v", n, err)
 	}
 }
 

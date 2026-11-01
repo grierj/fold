@@ -90,7 +90,7 @@ describe("MessageComposerPage", () => {
     await user.type(screen.getByRole("textbox", { name: "Subject" }), "Snacks");
     await user.click(screen.getByRole("button", { name: "Save draft" }));
     expect(await screen.findByText("Draft saved.")).toBeInTheDocument();
-    expect(Messages.create).toHaveBeenCalledWith({ subject: "Snacks", bodyHtml: "", audience: { type: "event_series", eventId: 3, statuses: ["going", "waitlisted"] } });
+    expect(Messages.create).toHaveBeenCalledWith({ subject: "Snacks", bodyHtml: "", audience: { type: "event_series", eventId: 3, statuses: ["going", "waitlisted"] }, pushAlert: true });
     await waitFor(() => expect(router.state.location.pathname).toBe("/messages/9"));
     expect(Messages.get).not.toHaveBeenCalled();
     expect(screen.getByRole("textbox", { name: "Subject" })).toHaveValue("Snacks");
@@ -431,7 +431,7 @@ describe("a sent message's history", () => {
     expect(alert).toHaveTextContent("The email service didn't take it.");
     expect(within(alert).queryByRole("button")).toBeNull();
     expect(screen.getByText("Failed")).toBeInTheDocument();
-    expect(await screen.findByText("4 didn't get it")).toBeInTheDocument();
+    expect(await screen.findByText("No emails went out · 4 didn't get it")).toBeInTheDocument();
     const again = await screen.findByRole("button", { name: "Try again" });
     expect(again).toHaveClass("btn-primary");
     expect(document.querySelectorAll(".btn-primary")).toHaveLength(1);
@@ -565,5 +565,99 @@ describe("a sent message's history", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// "Push notification too" (M3.13d2, DEC-123): on by default, hidden when
+// the church turned notifications off, counted in the summary, and its
+// pushes listed apart in the history.
+describe("push notification too", () => {
+  const pushSummary = summary({
+    push: 2,
+    recipients: [{ name: "Ann Adult", teen: false, push: true }, { name: "Opal Opted", teen: false, skipped: "won't get this", push: true }, { name: "Tia Teen", teen: true }],
+  });
+
+  it("is on by default, counts who also gets a push and marks them in words", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.audiencePreview).mockResolvedValue({ summary: pushSummary });
+    open("/messages/new?group=7");
+    const box = await screen.findByRole("checkbox", { name: /Push notification too/ });
+    expect(box).toBeChecked();
+    expect(box).toHaveAccessibleName(expect.stringContaining("the subject and the start of the message"));
+    expect(await screen.findByText("2 also get a push notification.")).toBeInTheDocument();
+    await user.click(screen.getByText("See who's on the list"));
+    const rows = within(screen.getByRole("list")).getAllByRole("listitem");
+    // The phone glyph is decorative; the words carry it (never the glyph alone).
+    expect(rows[0]).toHaveTextContent("Ann AdultPush too");
+    expect(rows[0].querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    // Turned off email from leaders, push on: the push still goes (DEC-122).
+    expect(rows[1]).toHaveTextContent("Opal OptedPush only· Won't get the email");
+    expect(rows[2]).not.toHaveTextContent("Push");
+    // Off: no count, no marks, and the draft says so.
+    await user.click(box);
+    expect(screen.queryByText("2 also get a push notification.")).toBeNull();
+    expect(screen.queryByText(/^Push (too|only)$/)).toBeNull();
+    expect(rows[1]).toHaveTextContent("Opal Opted· Won't get this");
+    await editorReady();
+    await user.type(screen.getByRole("textbox", { name: "Subject" }), "Snacks");
+    await user.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(Messages.create).toHaveBeenCalledWith(expect.objectContaining({ pushAlert: false })));
+  });
+
+  it("is hidden when the church turned notifications off, and keeps the saved value", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.options).mockResolvedValue(composeOptions({ pushEnabled: false }));
+    vi.mocked(Messages.audiencePreview).mockResolvedValue({ summary: pushSummary });
+    vi.mocked(Messages.get).mockResolvedValue({ message: message({ pushAlert: false }) });
+    open("/messages/5");
+    await editorReady();
+    expect(await screen.findByText(/^3 people;/)).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: /Push notification too/ })).toBeNull();
+    expect(screen.queryByText(/also gets? a push notification/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Save draft" }));
+    await waitFor(() => expect(Messages.update).toHaveBeenCalledWith(5, expect.objectContaining({ pushAlert: false })));
+  });
+
+  it("says how many also get a push when it asks before sending", async () => {
+    const user = userEvent.setup();
+    vi.mocked(Messages.audiencePreview).mockResolvedValue({ summary: summary({ push: 2 }) });
+    vi.mocked(Messages.get).mockResolvedValue({ message: message({ subject: "Snacks", bodyHtml: "<p>Bring some</p>" }) });
+    open("/messages/5");
+    await editorReady();
+    await user.click(screen.getByRole("button", { name: "Send now" }));
+    expect(await screen.findByText("2 people get a push notification too.")).toBeInTheDocument();
+  });
+
+  it("shows each person's push on their own row, with a count apart from the email", async () => {
+    viewer.isAdmin = true;
+    const user = userEvent.setup();
+    vi.mocked(Messages.get).mockResolvedValue({ message: message({ status: "sent", sentAt: "2026-10-30T16:30:00Z", editable: false }) });
+    const base = adminRecipients();
+    vi.mocked(Messages.recipients).mockResolvedValue({
+      ...base,
+      counts: { ...base.counts, sent: 3, skipped: 1, push: { sent: 2, waiting: [{ until: "8:00 AM", n: 1 }], missed: { "device gone": 1 } } },
+      more: true,
+      recipients: [
+        { name: "Ann Adult", teen: false, status: "sent", push: { status: "sent" } },
+        { name: "Bo Late", teen: false, status: "sent", push: { status: "waiting", until: "8:00 AM" } },
+        { name: "Cy Gone", teen: false, status: "sent", push: { status: "missed", reason: "device gone" } },
+        { name: "Opal Opted", teen: false, status: "missed", reason: "turned off messages from leaders", push: { status: "sent" } },
+      ],
+    });
+    open("/messages/5");
+    expect(await screen.findByText("Push notifications: 2 pushed · 1 waiting until 8:00 AM · 1 device gone")).toBeInTheDocument();
+    // Pushes never change the email's count or offer Try again.
+    expect(screen.getByText("Sent to 3 people · 1 skipped (1 turned off messages from leaders)")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    await user.click(screen.getByText("See who got it"));
+    const rows = within(screen.getByRole("list")).getAllByRole("listitem");
+    // One row a person: "And N more" counts people, not pushes.
+    expect(rows.map((r) => r.textContent)).toEqual([
+      "Ann Adult· SentPush sent",
+      "Bo Late· SentPush waiting until 8:00 AM",
+      "Cy Gone· SentPush didn't go out: device gone",
+      "Opal Opted· Didn't get it: turned off messages from leaders" + "Push sent",
+      "And 1 more",
+    ]);
   });
 });

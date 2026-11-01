@@ -79,9 +79,20 @@ func CanEditMessage(p *Person, isAuthor, isReminder bool) bool {
 	return p != nil && !isReminder && (p.Admin || isAuthor)
 }
 
-// CanReadMessage: who may open a message's page and history — its author,
-// an admin, and for an automatic reminder (which has no author) anyone
-// who manages its event (CanManageEvent; DEC-133).
-func CanReadMessage(p *Person, isAuthor, isReminder, managesEvent bool) bool {
+// CanSeeMessageHistory: who may open a message's own page, with its
+// audience, counts and who got it — its author, an admin, and for an
+// automatic reminder (which has no author) anyone who manages its event
+// (CanManageEvent; DEC-133).
+func CanSeeMessageHistory(p *Person, isAuthor, isReminder, managesEvent bool) bool {
 	return p != nil && (p.Admin || isAuthor || (isReminder && managesEvent))
+}
+
+// CanReadMessage: who may read an announcement as it was sent — its
+// subject, author and body, nothing about who else got it (M3.13d2, the
+// page a push opens). Whoever may see its history, and a recipient of an
+// announcement: isRecipient is a direct row for the person (never a
+// guardian copy) in any channel, on a message that is sending or sent.
+// A reminder is read only by those who may see its history.
+func CanReadMessage(p *Person, isAuthor, isReminder, managesEvent, isRecipient bool) bool {
+	return CanSeeMessageHistory(p, isAuthor, isReminder, managesEvent) || (p != nil && isRecipient && !isReminder)
 }

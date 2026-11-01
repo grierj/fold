@@ -1,11 +1,13 @@
 import { api } from "./api";
-import type { AudienceSummary, ComposeOptions, Message, MessageAudience, MessagePreview, MessageRecipients } from "./types";
+import type { AudienceSummary, ComposeOptions, Message, MessageAudience, MessagePreview, MessageRead, MessageRecipients } from "./types";
 
-// The composer's API (M3.4, docs/API.md "Messages"). Email only for now.
+// The composer's API (M3.4, docs/API.md "Messages"). Email only for now;
+// pushAlert adds the companion push (M3.13d2), never instead of the email.
 export interface MessageDraft {
   subject: string;
   bodyHtml: string;
   audience: MessageAudience;
+  pushAlert: boolean;
 }
 
 export const Messages = {
@@ -28,6 +30,8 @@ export const Messages = {
   // Who got it (M3.5b), and "Try again" for the people it failed for (DEC-131).
   recipients: (id: number) => api<MessageRecipients>(`/messages/${id}/recipients`),
   retry: (id: number) => api<{ message: Message }>(`/messages/${id}/retry`, { method: "POST" }),
+  // An announcement as its reader got it: the page a push opens (M3.13d2).
+  read: (id: number) => api<{ message: MessageRead }>(`/messages/${id}/read`),
 };
 
 // The HTML part as an iframe shows it (served with its own sandboxing CSP).

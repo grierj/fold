@@ -9,12 +9,12 @@ export const dates: ComposeDate[] = [
 export const bookNight: ComposeEvent = { id: 3, title: "Book night", groupName: "Book club", churchWide: false, dates };
 
 export function composeOptions(over: Partial<ComposeOptions> = {}): ComposeOptions {
-  return { canCompose: true, canMessageEveryone: false, smsEnabled: false, groups: [bookClub], events: [bookNight], ...over };
+  return { canCompose: true, canMessageEveryone: false, smsEnabled: false, pushEnabled: true, groups: [bookClub], events: [bookNight], ...over };
 }
 
 export function summary(over: Partial<AudienceSummary> = {}): AudienceSummary {
   return {
-    people: 3, eligible: 2, teens: 1, skipped: { "turned off messages from leaders": 1 },
+    people: 3, eligible: 2, teens: 1, push: 0, skipped: { "turned off messages from leaders": 1 },
     recipients: [{ name: "Ann Adult", teen: false }, { name: "Opal Opted", teen: false, skipped: "won't get this" }, { name: "Tia Teen", teen: true }],
     more: false, ...over,
   };
@@ -24,7 +24,7 @@ export function message(over: Partial<Message> = {}): Message {
   return {
     id: 5, channel: "email", status: "draft", subject: "Bring a friend", bodyHtml: "<p>Hi {{first_name}}</p>",
     audience: { type: "group", groupId: 7, roles: ["member", "leader"] }, scheduledAt: null, sentAt: null,
-    authorName: "Lee Leader", editable: true, updatedAt: "2026-10-31T15:00:00Z", error: "", failedCount: 0, category: "announcement", displaySubject: "", ...over,
+    authorName: "Lee Leader", editable: true, updatedAt: "2026-10-31T15:00:00Z", error: "", failedCount: 0, category: "announcement", displaySubject: "", pushAlert: true, ...over,
   };
 }
 
@@ -33,7 +33,7 @@ export function message(over: Partial<Message> = {}): Message {
 // (DEC-132). adminRecipients is the same list as an admin gets it.
 export function recipients(over: Partial<MessageRecipients> = {}): MessageRecipients {
   return {
-    counts: { sent: 2, delivered: 0, bounced: 0, complained: 0, failed: 0, skipped: 1, queued: 0, teens: 1, guardianCopies: 1, guardianCopiesMissed: 0, guardianCopiesFailed: 0 },
+    counts: { sent: 2, delivered: 0, bounced: 0, complained: 0, failed: 0, skipped: 1, queued: 0, teens: 1, guardianCopies: 1, guardianCopiesMissed: 0, guardianCopiesFailed: 0, push: { sent: 0, waiting: [], missed: {} } },
     skippedBy: { "turned off messages from leaders": 1 },
     recipients: [
       { name: "Ann Adult", teen: false, status: "sent" },

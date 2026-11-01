@@ -6,7 +6,7 @@ afterEach(() => vi.unstubAllGlobals());
 it("sends email drafts, schedules for a time or now, and sends CSRF on changes", async () => {
   const fetcher = vi.fn(async (url: string) => new Response(JSON.stringify(url.endsWith("/csrf") ? { csrfToken: "t" } : {})));
   vi.stubGlobal("fetch", fetcher);
-  const draft = { subject: "Hi", bodyHtml: "<p>Hi</p>", audience: { type: "group" as const, groupId: 7 } };
+  const draft = { subject: "Hi", bodyHtml: "<p>Hi</p>", audience: { type: "group" as const, groupId: 7 }, pushAlert: true };
   await Messages.options();
   await Messages.options(7);
   await Messages.create(draft);

@@ -23,7 +23,6 @@ import (
 	"fold/models"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // Kind is one sort of job: its handler and how many attempts it gets.
@@ -54,25 +53,73 @@ const (
 // has (in any status) adds nothing and reports false, so scheduling the
 // same work twice is harmless; "" means no key.
 func Enqueue(db *gorm.DB, kind string, payload any, runAt time.Time, uniqueKey string, maxAttempts int) (bool, error) {
-	body := []byte("{}")
-	if payload != nil {
-		var err error
-		if body, err = json.Marshal(payload); err != nil {
-			return false, err
+	n, err := EnqueueMany(db, []Spec{{Kind: kind, Payload: payload, RunAt: runAt, UniqueKey: uniqueKey, MaxAttempts: maxAttempts}})
+	return n == 1, err
+}
+
+// Spec is one job for EnqueueMany, with Enqueue's arguments.
+type Spec struct {
+	Kind        string
+	Payload     any
+	RunAt       time.Time
+	UniqueKey   string
+	MaxAttempts int
+}
+
+// enqueueBatch is how many jobs one INSERT adds (well inside Postgres's
+// parameter limit at 6 columns a row).
+const enqueueBatch = 500
+
+// EnqueueMany adds jobs as Enqueue does, in INSERTs of up to 500 rows, and
+// reports how many it added: a job whose unique key some job already has
+// is skipped.
+func EnqueueMany(db *gorm.DB, specs []Spec) (int64, error) {
+	if len(specs) == 0 {
+		return 0, nil
+	}
+	rows := make([]models.Job, 0, len(specs))
+	for _, s := range specs {
+		body := []byte("{}")
+		if s.Payload != nil {
+			var err error
+			if body, err = json.Marshal(s.Payload); err != nil {
+				return 0, err
+			}
+			if string(body) == "null" { // a typed nil
+				body = []byte("{}")
+			}
 		}
-		if string(body) == "null" { // a typed nil
-			body = []byte("{}")
+		attempts := s.MaxAttempts
+		if attempts <= 0 {
+			attempts = DefaultMaxAttempts
 		}
+		job := models.Job{Kind: s.Kind, Payload: string(body), RunAt: s.RunAt.UTC(), Status: models.JobQueued, MaxAttempts: attempts}
+		if s.UniqueKey != "" {
+			key := s.UniqueKey
+			job.UniqueKey = &key
+		}
+		rows = append(rows, job)
 	}
-	if maxAttempts <= 0 {
-		maxAttempts = DefaultMaxAttempts
+	// A plain INSERT, not GORM's Create: with RETURNING and rows skipped on
+	// conflict, Create's count (and the ids it hands back) can't be trusted.
+	var added int64
+	for len(rows) > 0 {
+		batch := rows[:min(len(rows), enqueueBatch)]
+		rows = rows[len(batch):]
+		values := make([]string, 0, len(batch))
+		args := make([]any, 0, 6*len(batch))
+		for _, j := range batch {
+			values = append(values, "(?, ?, ?, ?, ?, ?)")
+			args = append(args, j.Kind, j.Payload, j.RunAt, j.Status, j.MaxAttempts, j.UniqueKey)
+		}
+		res := db.Exec("INSERT INTO jobs (kind, payload, run_at, status, max_attempts, unique_key) VALUES "+
+			strings.Join(values, ", ")+" ON CONFLICT (unique_key) DO NOTHING", args...)
+		if res.Error != nil {
+			return added, res.Error
+		}
+		added += res.RowsAffected
 	}
-	job := models.Job{Kind: kind, Payload: string(body), RunAt: runAt.UTC(), Status: models.JobQueued, MaxAttempts: maxAttempts}
-	if uniqueKey != "" {
-		job.UniqueKey = &uniqueKey
-	}
-	res := db.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "unique_key"}}, DoNothing: true}).Create(&job)
-	return res.RowsAffected == 1, res.Error
+	return added, nil
 }
 
 // Backoff is how long a job waits after its attempt-th failure (1-based):

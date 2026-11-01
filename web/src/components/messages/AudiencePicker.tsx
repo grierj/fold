@@ -2,8 +2,9 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Messages } from "../../messages-api";
 import type { AudienceRecipient, AudienceSummary, ComposeOptions } from "../../types";
 import { errorText } from "../../lib/errors";
-import { audienceKey, ROLE_CHOICES, STATUS_CHOICES, summaryLine, teenLine, toAudience, type AudienceChoice } from "../../lib/messages";
+import { audienceKey, ROLE_CHOICES, STATUS_CHOICES, pushLine, summaryLine, teenLine, toAudience, type AudienceChoice } from "../../lib/messages";
 import { formatWhen } from "../../lib/when";
+import { SmartphoneIcon } from "../icons";
 import { Badge } from "../ui/Badge";
 import { Chip } from "../ui/Chip";
 import { Field, Select } from "../ui/Field";
@@ -18,13 +19,16 @@ const LISTED_DATES = 10;
 // people and Members/Leaders chips for a group, and a live count after
 // consent filtering with a teen count and Teen badges (DEC-20). Names and
 // counts only: the API never sends an address (DEC-31). A count that comes
-// back after a newer change is dropped.
-export function AudiencePicker({ options, choice, onChange, error, id }: {
+// back after a newer change is dropped. push: "Push notification too" is
+// on (and the church allows it), so the count says who also gets a push
+// and the list marks them with a phone and words (M3.13d2).
+export function AudiencePicker({ options, choice, onChange, error, id, push = false }: {
   options: ComposeOptions;
   choice: AudienceChoice;
   onChange: (c: AudienceChoice) => void;
   error?: string;
   id: string;
+  push?: boolean;
 }) {
   const chipsLabel = useId();
   const [kind, raw] = choice.target.split(":");
@@ -116,6 +120,7 @@ export function AudiencePicker({ options, choice, onChange, error, id }: {
         {failed && <p className="text-text-muted">{failed}</p>}
         {current && <>
           <p className="font-medium text-text">{summaryLine(current)}</p>
+          {push && pushLine(current) && <p className="text-text-muted">{pushLine(current)}</p>}
           {teenLine(current) && <p className="text-text-muted">{teenLine(current)}</p>}
         </>}
       </div>
@@ -123,7 +128,7 @@ export function AudiencePicker({ options, choice, onChange, error, id }: {
         <details>
           <summary className="inline-flex min-h-11 cursor-pointer items-center text-sm font-semibold text-primary">See who's on the list</summary>
           <ul className="mt-2 divide-y divide-border rounded-md border border-border bg-surface text-sm">
-            {current.recipients.map((r, i) => <RecipientRow key={`${r.name}-${i}`} r={r} />)}
+            {current.recipients.map((r, i) => <RecipientRow key={`${r.name}-${i}`} r={r} push={push} />)}
             {current.more && <li className="px-3 py-2 text-text-muted">And {current.people - current.recipients.length} more</li>}
           </ul>
         </details>
@@ -133,13 +138,24 @@ export function AudiencePicker({ options, choice, onChange, error, id }: {
 }
 
 // One person on the list: a name, a Teen badge (DEC-20), and in words
-// whether they won't get it, with the reason when the API gives one (admins).
-function RecipientRow({ r }: { r: AudienceRecipient }) {
+// whether they won't get it, with the reason when the API gives one
+// (admins). With push on, a phone and words mark who gets a push
+// notification, never the colour or the glyph alone: "Push too", or for
+// someone the email won't reach, "Push only" (push follows its own
+// consent, DEC-122).
+function RecipientRow({ r, push }: { r: AudienceRecipient; push: boolean }) {
+  const pushed = push && !!r.push;
+  const what = pushed ? "the email" : "this";
   return (
     <li className="flex flex-wrap items-center gap-2 px-3 py-2">
       <span className={r.skipped ? "text-text-muted" : "text-text"}>{r.name}</span>
       {r.teen && <Badge>Teen</Badge>}
-      {r.skipped && <span className="text-text-muted">· {r.skipped === "won't get this" ? "Won't get this" : `Won't get this: ${r.skipped}`}</span>}
+      {pushed && (
+        <span className="inline-flex items-center gap-1 text-text-muted">
+          <SmartphoneIcon className="h-4 w-4" />{r.skipped ? "Push only" : "Push too"}
+        </span>
+      )}
+      {r.skipped && <span className="text-text-muted">· {r.skipped === "won't get this" ? `Won't get ${what}` : `Won't get ${what}: ${r.skipped}`}</span>}
     </li>
   );
 }

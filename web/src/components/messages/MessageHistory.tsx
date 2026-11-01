@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Messages } from "../../messages-api";
 import type { Message, MessageHistoryRecipient, MessageRecipientCounts, MessageRecipients } from "../../types";
-import { failedLine, HISTORY_WORDS, historyLine } from "../../lib/messages";
+import { failedLine, HISTORY_WORDS, historyLine, pushBadge } from "../../lib/messages";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { FormError } from "../ui/Field";
@@ -175,7 +175,7 @@ export function SendProblem({ message, history, busy, error, onRetry }: {
 }
 
 // Everyone the list could show: the people it was for, and for an admin
-// the guardian copies too (DEC-132).
+// the guardian copies too (DEC-132). A push is on its person's row.
 const totalOf = (c: MessageRecipientCounts, withCopies: boolean) =>
   c.sent + c.delivered + c.bounced + c.complained + c.failed + c.skipped + c.queued + (withCopies ? c.guardianCopies : 0);
 
@@ -196,8 +196,9 @@ export function WhoGotIt({ history, withCopies }: { history: MessageRecipients; 
 }
 
 // One person: their name, a Teen badge (DEC-20), "Copy for Sam" on a
-// guardian's copy (DEC-19), and their status in words, with the reason for
-// an admin.
+// guardian's copy (DEC-19), the email's status in words with the reason
+// for an admin, and their push (M3.13d2) as a badge in words: "Push sent",
+// "Push waiting until 8:00 AM". One row a person, however they got it.
 function HistoryRow({ r }: { r: MessageHistoryRecipient }) {
   const missed = r.status === "missed";
   return (
@@ -206,6 +207,7 @@ function HistoryRow({ r }: { r: MessageHistoryRecipient }) {
       {r.teen && <Badge>Teen</Badge>}
       {r.copyOf && <Badge>Copy for {r.copyOf}</Badge>}
       <span className="text-text-muted">· {HISTORY_WORDS[r.status]}{r.reason ? `: ${r.reason}` : ""}</span>
+      {r.push && <Badge>{pushBadge(r.push)}</Badge>}
     </li>
   );
 }

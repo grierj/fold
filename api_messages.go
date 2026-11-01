@@ -52,6 +52,9 @@ type messageJSON struct {
 	// PM MST"), for its page's heading; "" for an announcement, whose
 	// subject is shown as written.
 	DisplaySubject string `json:"displaySubject"`
+	// PushAlert is "Push notification too" (M3.13d2, DEC-123): the people
+	// who get the email and have push on also get a short notification.
+	PushAlert bool `json:"pushAlert"`
 }
 
 // messageReminderJSON is the date an automatic reminder is for: "Automatic
@@ -111,6 +114,9 @@ const (
 	errMessageWhen     = "pick a time from now to a year ahead"
 	errMessageChannel  = "texting isn't set up yet; send this as an email"
 	errMessageNotYours = "you can't send to those people"
+	// errMessagePushOnly refuses an announcement asked to go by push
+	// alone (DEC-123): push is a companion to the email, never instead of it.
+	errMessagePushOnly = "an announcement always goes by email"
 )
 
 // messageFacts is what a list of messages shows beyond their own rows:
@@ -164,8 +170,9 @@ func (a *App) loadMessageFacts(msgs []models.Message) (messageFacts, error) {
 			MessageID uint
 			N         int
 		}
+		// A message's counts follow its email; push rows are companions.
 		if err := a.DB.Model(&models.MessageRecipient{}).Select("message_id, count(*) AS n").
-			Where("message_id IN ? AND status = ?", settled, models.RecipientFailed).Group("message_id").Scan(&counts).Error; err != nil {
+			Where("message_id IN ? AND status = ? AND channel = ?", settled, models.RecipientFailed, models.DeliveryEmail).Group("message_id").Scan(&counts).Error; err != nil {
 			return out, err
 		}
 		for _, c := range counts {
@@ -188,7 +195,7 @@ func toMessageJSON(m *models.Message, me *models.User, facts messageFacts) messa
 		Audience: au, ScheduledAt: m.ScheduledAt, SentAt: m.SentAt, AuthorName: name,
 		Editable:  (m.Status == models.MessageDraft || m.Status == models.MessageScheduled) && policy.CanEditMessage(asPerson(me), isAuthor, reminder),
 		UpdatedAt: m.UpdatedAt, Error: messageErrorFor(m.Error, policy.IsAdmin(asPerson(me))), FailedCount: facts.failed[m.ID],
-		Category: m.Category}
+		Category: m.Category, PushAlert: m.PushAlert}
 	if reminder && m.OccurrenceID != nil {
 		if d, ok := facts.dates[*m.OccurrenceID]; ok {
 			d.Kind = reminderKind(m)
@@ -311,9 +318,12 @@ type composeOptionsJSON struct {
 	CanMessageEveryone bool `json:"canMessageEveryone"`
 	// SmsEnabled shows the composer's SMS tab. Always false until an SMS
 	// provider can be set up (M3.7, DEC-117).
-	SmsEnabled bool               `json:"smsEnabled"`
-	Groups     []composeGroupJSON `json:"groups"`
-	Events     []composeEventJSON `json:"events"`
+	SmsEnabled bool `json:"smsEnabled"`
+	// PushEnabled shows "Push notification too": the church's switch for
+	// notifications on devices (DEC-124). Off, no announcement pushes.
+	PushEnabled bool               `json:"pushEnabled"`
+	Groups      []composeGroupJSON `json:"groups"`
+	Events      []composeEventJSON `json:"events"`
 }
 
 // How much the picker lists.
@@ -345,7 +355,7 @@ func (a *App) apiComposeOptions(c *gin.Context) {
 		jsonError(c, http.StatusInternalServerError, "could not load the composer")
 		return
 	}
-	out := composeOptionsJSON{CanCompose: ok, CanMessageEveryone: policy.IsAdmin(p), Groups: []composeGroupJSON{}, Events: []composeEventJSON{}}
+	out := composeOptionsJSON{CanCompose: ok, CanMessageEveryone: policy.IsAdmin(p), PushEnabled: a.pushEnabled(), Groups: []composeGroupJSON{}, Events: []composeEventJSON{}}
 	if !ok {
 		c.JSON(http.StatusOK, out)
 		return
@@ -449,6 +459,8 @@ type messageBody struct {
 	Subject  string       `json:"subject"`
 	BodyHTML string       `json:"bodyHtml"`
 	Audience audienceJSON `json:"audience"`
+	// PushAlert is "Push notification too"; missing means on (DEC-123).
+	PushAlert *bool `json:"pushAlert"`
 }
 
 // apply validates and copies a draft's fields onto m; false means the
@@ -461,6 +473,13 @@ func (a *App) applyMessageBody(c *gin.Context, me *models.User, m *models.Messag
 	}
 	if body.Channel == "" {
 		body.Channel = "email"
+	}
+	// Push-only (DEC-123): push is a switch beside the email, never a
+	// channel of its own, so asking for channel "push" is refused in
+	// words. Any other channel isn't set up yet.
+	if strings.EqualFold(strings.TrimSpace(body.Channel), models.DeliveryPush) {
+		jsonError(c, http.StatusBadRequest, errMessagePushOnly)
+		return false
 	}
 	if body.Channel != "email" {
 		jsonError(c, http.StatusBadRequest, errMessageChannel)
@@ -492,6 +511,13 @@ func (a *App) applyMessageBody(c *gin.Context, me *models.User, m *models.Messag
 	}
 	aud, _ := json.Marshal(body.Audience)
 	m.Channel, m.Subject, m.BodyHTML, m.BodyText, m.Audience = body.Channel, subject, clean, text, string(aud)
+	// Left out, a new message has it on and a saved one keeps its own.
+	switch {
+	case body.PushAlert != nil:
+		m.PushAlert = *body.PushAlert
+	case m.ID == 0:
+		m.PushAlert = true
+	}
 	return true
 }
 
@@ -535,16 +561,30 @@ func (a *App) apiCreateMessage(c *gin.Context) {
 	if !a.applyMessageBody(c, me, &m) {
 		return
 	}
-	if err := a.DB.Create(&m).Error; err != nil {
+	pushAlert := m.PushAlert
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&m).Error; err != nil {
+			return err
+		}
+		// GORM leaves a false bool with a default out of the INSERT (and
+		// reads the column's true back into m).
+		if !pushAlert {
+			return tx.Model(&models.Message{}).Where("id = ?", m.ID).Update("push_alert", false).Error
+		}
+		return nil
+	})
+	if err != nil {
 		jsonError(c, http.StatusInternalServerError, "could not save the message")
 		return
 	}
+	m.PushAlert = pushAlert
 	a.respondMessage(c, http.StatusCreated, &m, nil)
 }
 
-// loadMessage finds a message the viewer may read (policy.CanReadMessage):
-// its author's, any for an admin, and an automatic reminder for anyone who
-// manages its event. Anyone else gets 404.
+// loadMessage finds a message whose page and history the viewer may see
+// (policy.CanSeeMessageHistory): its author's, any for an admin, and an
+// automatic reminder for anyone who manages its event. Anyone else gets
+// 404; a recipient reads it at /messages/:id/read (apiReadMessage).
 func (a *App) loadMessage(c *gin.Context) (*models.Message, bool) {
 	me := apiUser(c)
 	id, err := strconv.ParseUint(c.Param("id"), 10, 63)
@@ -564,7 +604,7 @@ func (a *App) loadMessage(c *gin.Context) (*models.Message, bool) {
 			return nil, false
 		}
 	}
-	if !policy.CanReadMessage(p, isAuthor, reminder, manages) {
+	if !policy.CanSeeMessageHistory(p, isAuthor, reminder, manages) {
 		jsonError(c, http.StatusNotFound, "message not found")
 		return nil, false
 	}
@@ -675,7 +715,7 @@ func (a *App) apiUpdateMessage(c *gin.Context) {
 		return
 	}
 	fields := map[string]any{"channel": m.Channel, "subject": m.Subject, "body_html": m.BodyHTML, "body_text": m.BodyText,
-		"audience": m.Audience, "updated_at": time.Now()}
+		"audience": m.Audience, "push_alert": m.PushAlert, "updated_at": time.Now()}
 	// A scheduled message stays scheduled only while it could still go out,
 	// and its count follows the new audience.
 	scheduled := m.Status == models.MessageScheduled

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { composeOptions, recipients, summary } from "../test/compose";
-import { audienceLabel, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
+import { audienceLabel, confirmLine, emptyChoice, failedLine, fromAudience, guardianLine, historyLine, historyTeenLine, isOneEvent, prefillChoice, pushBadge, pushHistoryLine, pushLine, retryQuestion, statusLabel, summaryLine, teenLine, toAudience } from "./messages";
 
 describe("audiences", () => {
   it("turns the picker's choice into the API's audience and back", () => {
@@ -84,7 +84,9 @@ describe("history", () => {
     expect(historyLine(h, sent)).toBe("Sent to 132 people · 3 bounced · 9 skipped (6 turned off messages from leaders, 3 have no email address)");
     expect(historyLine(recipients({ counts: counts({ sent: 1, skipped: 0 }) }), sent)).toBe("Sent to 1 person");
     expect(historyLine(recipients({ counts: counts({ sent: 128, failed: 4, skipped: 0 }) }), sent)).toBe("Sent to 128 people · 4 didn't get it");
-    expect(historyLine(recipients({ counts: counts({ sent: 0, failed: 4, skipped: 0 }) }), failed)).toBe("4 didn't get it");
+    expect(historyLine(recipients({ counts: counts({ sent: 0, failed: 4, skipped: 0 }) }), failed)).toBe("No emails went out · 4 didn't get it");
+    // Everyone skipped for an email reason; their pushes may still have gone (DEC-122).
+    expect(historyLine(recipients({ counts: counts({ sent: 0, skipped: 2 }), skippedBy: { "turned off messages from leaders": 2 } }), sent)).toBe("No emails went out · 2 skipped (2 turned off messages from leaders)");
     expect(historyLine(recipients({ counts: counts({ sent: 0, skipped: 0 }) }), sent)).toBe("No one was on the list.");
   });
 
@@ -119,5 +121,32 @@ describe("history", () => {
     expect(statusLabel({ status: "failed", scheduledAt: null, sentAt: null }, z, now)).toBe("Failed");
     expect(statusLabel({ status: "sent", scheduledAt: null, sentAt: "2026-11-02T16:00:00Z", failedCount: 3 }, z, now)).toMatch(/^Partly sent Today at 9:00 AM( MST)?$/);
     expect(statusLabel({ status: "sent", scheduledAt: null, sentAt: null, failedCount: 0 }, z, now)).toBe("Sent");
+  });
+});
+
+// "Push notification too" (M3.13d2): who also gets one, and a history's
+// pushes counted apart from its email.
+describe("push words", () => {
+  it("counts who also gets a push, and says nothing for none", () => {
+    expect(pushLine(summary({ push: 38 }))).toBe("38 also get a push notification.");
+    expect(pushLine(summary({ push: 1 }))).toBe("1 also gets a push notification.");
+    expect(pushLine(summary({ push: 0 }))).toBe("");
+  });
+
+  it("words a history's pushes: sent, waiting by when, and missed by reason", () => {
+    expect(pushHistoryLine({ sent: 38, waiting: [{ until: "8:00 AM", n: 2 }], missed: { "device gone": 1 } }))
+      .toBe("Push notifications: 38 pushed · 2 waiting until 8:00 AM · 1 device gone");
+    expect(pushHistoryLine({ sent: 0, waiting: [{ until: "", n: 3 }], missed: { "hourly limit": 2, "device gone": 2 } }))
+      .toBe("Push notifications: 3 waiting · 2 devices gone · 2 over the hourly limit");
+    expect(pushHistoryLine({ sent: 0, waiting: [], missed: {} })).toBe("");
+    expect(pushHistoryLine(undefined)).toBe("");
+  });
+
+  it("words one person's push on their history row", () => {
+    expect(pushBadge({ status: "sent" })).toBe("Push sent");
+    expect(pushBadge({ status: "waiting", until: "8:00 AM" })).toBe("Push waiting until 8:00 AM");
+    expect(pushBadge({ status: "waiting" })).toBe("Push waiting");
+    expect(pushBadge({ status: "missed" })).toBe("Push didn't go out");
+    expect(pushBadge({ status: "missed", reason: "push turned off by the church" })).toBe("Push didn't go out: notifications turned off by the church");
   });
 });
