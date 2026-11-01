@@ -548,7 +548,7 @@ func TestPushOptionsFollowTheKind(t *testing.T) {
 	} {
 		k, _ := notify.Lookup(c.kind)
 		n := &models.Notification{ID: 42, Kind: c.kind, SubjectType: "occurrence", SubjectID: c.subject}
-		soon, err := app.startsSoon(context.Background(), k, n, time.Now())
+		soon, _, err := app.startsSoon(context.Background(), k, n, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -844,11 +844,11 @@ func TestUrgentPushesSkipQuietHours(t *testing.T) {
 	for kind, exempt := range map[string]bool{notify.OccurrenceCancelled: true, notify.OccurrenceRestored: true,
 		notify.RegistrationPromoted: true, notify.RegistrationRemoved: true, notify.GroupApproved: false} {
 		k, _ := notify.Lookup(kind)
-		got, err := app.startsSoon(context.Background(), k, &models.Notification{Kind: kind, SubjectType: "occurrence", SubjectID: &tonight.ID}, clock.at)
+		got, _, err := app.startsSoon(context.Background(), k, &models.Notification{Kind: kind, SubjectType: "occurrence", SubjectID: &tonight.ID}, clock.at)
 		if err != nil || got != exempt {
 			t.Errorf("%s 3 hours away: soon %v (%v), want %v", kind, got, err, exempt)
 		}
-		if got, _ := app.startsSoon(context.Background(), k, &models.Notification{Kind: kind, SubjectType: "occurrence", SubjectID: &later.ID}, clock.at); got {
+		if got, _, _ := app.startsSoon(context.Background(), k, &models.Notification{Kind: kind, SubjectType: "occurrence", SubjectID: &later.ID}, clock.at); got {
 			t.Errorf("%s 3 days away is soon", kind)
 		}
 	}
@@ -1009,5 +1009,80 @@ func TestPushHourlyLimit(t *testing.T) {
 	runPushJobs(t, app, later, phone)
 	if status, _ := pushDelivery(t, app, later); status != models.DeliverySent {
 		t.Fatalf("an hour later: %q", status)
+	}
+}
+
+// A change to a date that's already over doesn't push, urgently or in the
+// morning: at 3 AM it is suppressed "no longer current" and nothing waits.
+// A lost room with one date over and one still ahead still counts the
+// one ahead.
+func TestPushForADateAlreadyOverIsStale(t *testing.T) {
+	app, f := pushTestApp(t)
+	clock := quietHours(app)
+	clock.set(3, 0, 16)
+	pat := denverMember(t, app, "pat")
+	phone := newPushDevice(t, app, pat, "phone")
+	leader := newTestUser(t, app, "leader", "password123456", models.RoleMember)
+	g := newTestGroup(t, app, leader, "Supper club", models.GroupActive)
+	ev, done := seedEvent(t, app, g, leader.ID, clock.at.Add(-3*time.Hour)) // ended at 1 AM
+	ahead := models.EventOccurrence{EventID: ev.ID, OriginalDate: "2030-01-16-b", StartsAt: clock.at.Add(5 * time.Hour),
+		EndsAt: clock.at.Add(6 * time.Hour), Status: models.OccurrenceScheduled}
+	if err := app.DB.Create(&ahead).Error; err != nil {
+		t.Fatal(err)
+	}
+	ids, err := notify.Send(app.DB, notify.Msg{Kind: notify.EventChanged, To: []uint{pat.ID}, SubjectType: "occurrence", SubjectID: done.ID,
+		Link: "/events/1", Vars: notify.Vars{Event: "Supper club", Change: "place"}})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("notify: %v %v", ids, err)
+	}
+	runPushJobs(t, app, ids[0], phone)
+	if status, reason := pushDelivery(t, app, ids[0]); status != models.DeliverySuppressed || reason != pushWhyStale {
+		t.Fatalf("a finished date: %q %q", status, reason)
+	}
+	if j := pushJobFor(t, app, ids[0], phone); j.Status != models.JobDone || f.total() != 0 {
+		t.Fatalf("a finished date: job %+v, sends %v", j, f.sent)
+	}
+	k, _ := notify.Lookup(notify.RoomLost)
+	both := &models.Notification{Kind: notify.RoomLost, SubjectType: "event", SubjectID: &ev.ID,
+		Data: fmt.Sprintf(`{"dates": [%q, %q]}`, done.OriginalDate, ahead.OriginalDate)}
+	if soon, over, err := app.startsSoon(context.Background(), k, both, clock.at); err != nil || !soon || over {
+		t.Fatalf("one date over, one ahead: soon %v over %v (%v)", soon, over, err)
+	}
+	onlyDone := &models.Notification{Kind: notify.RoomLost, SubjectType: "event", SubjectID: &ev.ID,
+		Data: fmt.Sprintf(`{"dates": [%q]}`, done.OriginalDate)}
+	if soon, over, err := app.startsSoon(context.Background(), k, onlyDone, clock.at); err != nil || soon || !over {
+		t.Fatalf("only a date over: soon %v over %v (%v)", soon, over, err)
+	}
+}
+
+// When a notification's push row is already sent, its other devices get
+// it even if, by then, the hour's other pushes reached 20 (workers raced
+// past the limit): a second device is never silently skipped. A new
+// notification is still limited.
+func TestPushSecondDeviceIsNeverLimited(t *testing.T) {
+	app, f := pushTestApp(t)
+	clock := quietHours(app)
+	clock.set(10, 0, 16)
+	pat := denverMember(t, app, "pat")
+	laptop := newPushDevice(t, app, pat, "laptop")
+	for i := 0; i < pushHourlyLimit; i++ {
+		other := sendNotice(t, app, notify.GroupApproved, pat)
+		if err := recordPushIn(app.DB, models.Notification{ID: other, UserID: pat.ID}, models.DeliverySent, "", clock.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n := sendNotice(t, app, notify.GroupApproved, pat)
+	// The phone took n in the race.
+	if err := recordPushIn(app.DB, models.Notification{ID: n, UserID: pat.ID}, models.DeliverySent, "", clock.at); err != nil {
+		t.Fatal(err)
+	}
+	runPushJobs(t, app, n, laptop)
+	if f.count(laptop.path) != 1 {
+		t.Fatalf("the second device was skipped: %v", f.sent)
+	}
+	fresh := sendNotice(t, app, notify.GroupApproved, pat)
+	runPushJobs(t, app, fresh, laptop)
+	if status, reason := pushDelivery(t, app, fresh); status != models.DeliverySuppressed || reason != pushWhyHourly || f.count(laptop.path) != 1 {
+		t.Fatalf("a new notification past the limit: %q %q, sends %v", status, reason, f.sent)
 	}
 }

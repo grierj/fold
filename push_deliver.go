@@ -192,15 +192,17 @@ func pushOptions(k notify.Kind, n *models.Notification, soon bool) push.Options 
 	return opts
 }
 
-// startsSoon reports whether n is about an event date (a PushSoon kind)
-// that starts within 24 hours of now, or already has. The row names the
-// date by its occurrence subject, or by its event subject plus Data
-// "dates" (the original dates; the earliest counts). Such a push is
-// urgent and goes whatever the hour (DEC-126). A row that names no date
-// is never soon.
-func (a *App) startsSoon(ctx context.Context, k notify.Kind, n *models.Notification, now time.Time) (bool, error) {
+// startsSoon reports, for a row about event dates (a PushSoon kind),
+// whether the earliest date not yet over starts within 24 hours of now
+// (soon), and whether every date it names is already over (over). The row
+// names its dates by its occurrence subject, or by its event subject plus
+// Data "dates" (the original dates). A soon push is urgent and goes
+// whatever the hour (DEC-126); an over one doesn't push at all, so a
+// change to a finished date never wakes anyone at 3 AM. A row that names
+// no date, or dates that no longer exist, is neither.
+func (a *App) startsSoon(ctx context.Context, k notify.Kind, n *models.Notification, now time.Time) (soon, over bool, err error) {
 	if !k.PushSoon || n.SubjectID == nil {
-		return false, nil
+		return false, false, nil
 	}
 	db := a.DB.WithContext(ctx).Model(&models.EventOccurrence{})
 	switch n.SubjectType {
@@ -211,17 +213,21 @@ func (a *App) startsSoon(ctx context.Context, k notify.Kind, n *models.Notificat
 			Dates []string `json:"dates"`
 		}
 		if json.Unmarshal([]byte(n.Data), &data) != nil || len(data.Dates) == 0 {
-			return false, nil
+			return false, false, nil
 		}
 		db = db.Where("event_id = ? AND original_date IN ?", *n.SubjectID, data.Dates)
 	default:
-		return false, nil
+		return false, false, nil
 	}
+	// A date is over once it ends (greatest() in case an old row's end
+	// isn't after its start). bool_and over no rows is NULL: not over.
 	var first sql.NullTime
-	if err := db.Select("min(starts_at)").Row().Scan(&first); err != nil {
-		return false, err
+	var allOver sql.NullBool
+	if err := db.Select("min(starts_at) FILTER (WHERE greatest(ends_at, starts_at) > ?), bool_and(greatest(ends_at, starts_at) <= ?)", now, now).
+		Row().Scan(&first, &allOver); err != nil {
+		return false, false, err
 	}
-	return first.Valid && first.Time.Before(now.Add(24*time.Hour)), nil
+	return first.Valid && first.Time.Before(now.Add(24*time.Hour)), allOver.Valid && allOver.Bool, nil
 }
 
 // Delivery reasons a push row can carry (notification_deliveries.reason).
@@ -283,19 +289,29 @@ func pushStale(n *models.Notification, now time.Time) string {
 
 // overHourlyLimit reports whether the person already had pushHourlyLimit
 // optional pushes in the hour before now. It counts notifications, not
-// devices: a notification has one push row however many devices took it,
-// and n's own row is left out, so its second device is never limited by
-// its first. Required pushes and urgent event changes carry a reason on
-// their sent row and aren't counted. idx_notification_deliveries_push_sent
-// (migration 00060) covers the query. Two workers racing for the last
-// slot can both see 19 and both send, so a burst may overshoot by one or
-// two; that's acceptable and not worth a lock.
+// devices: a notification has one push row however many devices took it.
+// Once n's own row is sent (another device took it), n is never limited,
+// so a person's second device always gets what the first did. Required
+// pushes and urgent event changes carry a reason on their sent row and
+// aren't counted. idx_notification_deliveries_push_sent (migration 00060)
+// covers the count; its predicate is written as literals so a cached
+// generic plan still matches the partial index.
+//
+// There's no lock: workers racing for the last slot can each see 19 and
+// send, so a burst can overshoot by up to about the number of workers.
+// A night's backlog wakes together at 8:00, and only the first 20 go; the
+// rest are suppressed and stay in the bell (DEC-126 as written).
 func (a *App) overHourlyLimit(ctx context.Context, n models.Notification, now time.Time) (bool, error) {
-	var sent int64
-	err := a.DB.WithContext(ctx).Raw(`SELECT count(*) FROM notification_deliveries
-		WHERE user_id = ? AND channel = ? AND status = ? AND sent_at > ? AND reason = '' AND notification_id <> ?`,
-		n.UserID, models.DeliveryPush, models.DeliverySent, now.Add(-time.Hour), n.ID).Scan(&sent).Error
-	return sent >= pushHourlyLimit, err
+	var r struct {
+		OwnSent bool
+		Recent  int64
+	}
+	err := a.DB.WithContext(ctx).Raw(`SELECT
+		EXISTS (SELECT 1 FROM notification_deliveries WHERE notification_id = ? AND channel = 'push' AND status = 'sent') AS own_sent,
+		(SELECT count(*) FROM notification_deliveries
+			WHERE user_id = ? AND channel = 'push' AND status = 'sent' AND reason = '' AND sent_at > ? AND notification_id <> ?) AS recent`,
+		n.ID, n.UserID, now.Add(-time.Hour), n.ID).Scan(&r).Error
+	return !r.OwnSent && r.Recent >= pushHourlyLimit, err
 }
 
 // deliverPush sends one notification to one device. It returns an error
@@ -354,9 +370,12 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	// and isn't counted. Anything else waits for the recipient's window
 	// (this job runs again from the top then, rechecking all of the
 	// above), and past the limit it is dropped; the bell still has it.
-	soon, err := a.startsSoon(ctx, kind, &n, now)
+	soon, over, err := a.startsSoon(ctx, kind, &n, now)
 	if err != nil {
 		return err
+	}
+	if over {
+		return a.recordPush(n, models.DeliverySuppressed, pushWhyStale)
 	}
 	sentWhy := ""
 	switch {
@@ -365,7 +384,15 @@ func (a *App) deliverPush(ctx context.Context, p pushJob) error {
 	case soon:
 		sentWhy = pushSentSoon
 	default:
-		if inside, opens := a.pushQuietHours().Check(now, u.Timezone, churchZone(a.DB.WithContext(ctx))); !inside {
+		// The zone is resolved as emails resolve it (zoneOrChurch reads
+		// the church's only when the person's own doesn't load), so the
+		// window gets no zone name of its own.
+		if inside, opens := a.pushQuietHours().Check(now, "", zoneOrChurch(a.DB.WithContext(ctx), u.Timezone)); !inside {
+			// At least a second out, so the app's clock running a little
+			// behind the database's can't make the job spin.
+			if soonest := now.Add(time.Second); opens.Before(soonest) {
+				opens = soonest
+			}
 			return jobs.Later(opens)
 		}
 		over, err := a.overHourlyLimit(ctx, n, now)
