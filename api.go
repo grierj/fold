@@ -673,6 +673,8 @@ func (a *App) registerAPIRoutes(r *gin.Engine) {
 	// where replies go (DEC-130).
 	v1.GET("/admin/settings/guardian-copies", a.apiAuth(), a.apiAdmin(), a.apiAdminGetGuardianCopies)
 	v1.PUT("/admin/settings/guardian-copies", a.apiAuth(), a.apiAdmin(), a.apiAdminSetGuardianCopies)
+	v1.GET("/admin/settings/push-enabled", a.apiAuth(), a.apiAdmin(), a.apiAdminGetPushEnabled)
+	v1.PUT("/admin/settings/push-enabled", a.apiAuth(), a.apiAdmin(), a.apiAdminSetPushEnabled)
 	v1.GET("/admin/settings/reply-to", a.apiAuth(), a.apiAdmin(), a.apiAdminGetReplyTo)
 	v1.PUT("/admin/settings/reply-to", a.apiAuth(), a.apiAdmin(), a.apiAdminSetReplyTo)
 	// Email settings from an email's link, without signing in (M3.3b).

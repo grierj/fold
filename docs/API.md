@@ -660,7 +660,7 @@ decisionNote, expiresAt, createdAt, decidedAt?}`.
 ### Site
 
 ```
-GET /api/v1/site → {name, timezone, selfSignup}   (public)
+GET /api/v1/site → {name, timezone, selfSignup, roomsEnabled, pushEnabled}   (public)
 PUT /api/v1/admin/timezone → 200 {timezone}   (admin)
     body: {timezone} — an IANA name, for example America/Denver
 ```
@@ -1489,7 +1489,9 @@ POST   /api/v1/auth/logout        → 200 {}                     body (optional)
 
 All but logout need a signed-in, active account and the CSRF token as usual (`csrfExemptRoutes` is unchanged). A device is one browser installation; the browser names it by sending its endpoint.
 
-- **Config.** `enabled` is the church's `push_enabled` setting (default on; the admin switch comes in M3.13c2). `publicKey` is the VAPID public key, the `applicationServerKey`.
+- **Config.** `enabled` is the church's `push_enabled` setting (default on). `publicKey` is the VAPID public key, the `applicationServerKey`.
+- **The church's switch (M3.13c2, DEC-124).** `GET /api/v1/admin/settings/push-enabled → 200 {on}` and `PUT` with `{on}` → `200 {on} | 400` (admin; audited `setting.push_enabled_changed` with `on`), shown as "Notifications on devices" in Admin → Settings. Off stops every `push.deliver` before it sends, refuses turning on and tests (403 `push_church_off`), hides the card on Me → Notifications (`/push/config` `enabled: false`) and the public directions page (`GET /site` `pushEnabled: false`); devices are kept for when it comes back on.
+- **Directions page (M3.13c2).** `/notifications/setup` is a public SPA route (the in-app list stays `/notifications`): the iPhone/iPad, Android, computer and Mac Safari steps with their undo steps, this device's first, plus "already on" and "blocked" lines for this browser. With `pushEnabled` false it renders the ordinary "Page not found".
 - **Turning on.** `PUT /push/subscriptions` upserts by endpoint and binds the device to the signed-in person. An endpoint another account holds is rebound to this one only when `p256dh` and `auth` match the stored row too (compared in constant time): the same browser subscription on a shared browser that changed hands, and the other account hears nothing. With other keys the row is left alone and the answer is the same as any save (DEC-52; audited with `refused`). Under the person's row lock the account is checked again against the session: revoked or disabled meanwhile is 401 and saves nothing. The endpoint must be an https URL on an allow-listed push service (`push.DefaultHosts` plus `FOLD_PUSH_HOSTS`), else 400 `push_service_unknown`; keys that aren't a P-256 key and a 16-byte secret are 400. The label is made on the server from the User-Agent ("iPhone · Home Screen app", "Chrome on Windows"), never from the client's text. When the latest `(push, all)` consent isn't `opted_in` (the first device, or the first after turning off everywhere), it appends `(push, all, opted_in, web_form)` with evidence such as "Turned on notifications for iPhone (Home Screen app)" (DEC-122). Each save is audited `push.device_on` (`deviceId`, `label`, `rebound`). At most 10 devices: the 11th replaces the least recently used. `device` is `{id, label, createdAt, lastUsedAt}`.
 - **Refusals (403).** A guest `push_guest`, a teen whose consent isn't complete `push_consent_required` (`policy.PushRefusal`; neither can hold a session today, so these are a backstop), and push turned off by the church `push_church_off` (also for the test).
 - **Turning off.** `DELETE /push/subscriptions` ("Turn off notifications on this device") deletes the device if it is the person's own and answers the same either way. `POST /push/turn-off` ("Turn off notifications everywhere") appends `(push, all, opted_out)` ("Turned off notifications everywhere"), which overrides every per-category row, deletes every device, and answers the push settings.

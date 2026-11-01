@@ -258,6 +258,21 @@ it may show **This date is not available** (an opaque 404): the notice does not
 give the guardian their teen's invitation, group access or read permission.
 Ask the organizer or church office if you need help.
 
+## Get notifications on your phone
+
+Fold can send notifications to your phone or computer, like any app: a
+cancelled date, a new group, a message from your leader. Open
+[/notifications/setup](/notifications/setup) on the device you want them on: it
+shows that device's steps first. In short, sign in, go to **Me → Notifications**
+and tap **Turn on notifications**. On an iPhone or iPad (iOS 16.4 or newer), add
+Fold to your Home Screen from Safari first, then open it from there and sign in
+once.
+
+To stop them, use **Turn off notifications on this device** in **Me →
+Notifications**, or turn them off in your phone's settings. Notifications are a
+shortcut: everything still shows in **Alerts** in Fold, and in your email. If
+your church has turned notifications off, the page and the switch aren't there.
+
 ## Church admins: review retained contact-access history
 
 As an active adult admin, open **Admin → Users**, open the person's **More** menu

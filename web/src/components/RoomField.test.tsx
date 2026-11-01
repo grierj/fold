@@ -23,7 +23,7 @@ const busy = () => new ApiError(409, "busy", { code: "room_busy" });
 beforeEach(() => {
   vi.resetAllMocks();
   actor.isAdmin = false;
-  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true, pushEnabled: true });
   vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [hall, chapel, closet], booking: null });
 });
 
@@ -203,7 +203,7 @@ it("announces the too-small warning in the status region", async () => {
 });
 
 it("shows nothing, and asks for no rooms, while rooms are off", async () => {
-  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
   const { container } = render(<RoomField eventId={7} date="2026-12-01" idPrefix="t" />);
   await waitFor(() => expect(Site.get).toHaveBeenCalled());
   expect(container).toBeEmptyDOMElement();

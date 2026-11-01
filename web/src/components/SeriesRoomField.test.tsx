@@ -23,7 +23,7 @@ const booking = (over: Partial<SeriesBooking> = {}): SeriesBooking => ({ default
 beforeEach(() => {
   vi.resetAllMocks();
   actor.isAdmin = false;
-  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true, pushEnabled: true });
   vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [hall, chapel, closet], dates: 10, defaultRoom: null, needsRoom: [], pending: 0 });
 });
 
@@ -147,7 +147,7 @@ it("names a series room this person can't list", async () => {
 });
 
 it("shows nothing, and asks for no rooms, while rooms are off", async () => {
-  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
   const { container } = render(<SeriesRoomField eventId={7} idPrefix="t" />);
   await waitFor(() => expect(Site.get).toHaveBeenCalled());
   expect(container).toBeEmptyDOMElement();

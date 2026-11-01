@@ -22,7 +22,7 @@ const once: Schedule = { ...weekly, recurrenceRule: "" };
 
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true, pushEnabled: true });
   vi.mocked(SeriesRooms.check).mockResolvedValue({ rooms: [hall, chapel, closet], dates: 10 });
 });
 
@@ -35,7 +35,7 @@ const select = () => screen.findByRole("combobox", { name: /^Room/ });
 
 describe("CreateRoomField", () => {
   it("shows nothing, and checks nothing, while rooms are off", async () => {
-    vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+    vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
     const { container } = render(<Harness schedule={weekly} />);
     await waitFor(() => expect(Site.get).toHaveBeenCalled());
     expect(container).toBeEmptyDOMElement();

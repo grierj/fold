@@ -6,7 +6,7 @@ import { occurrence } from "../test/occurrence";
 import { DateEditor } from "./DateEditor";
 
 vi.mock("../api", () => ({ ApiError: class extends Error {}, Events: { updateOccurrence: vi.fn(), dateVisibilityImpact: vi.fn() }, Site: { get: vi.fn() }, DateRooms: { list: vi.fn(), set: vi.fn() } }));
-beforeEach(() => { vi.resetAllMocks(); vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false }); vi.mocked(Events.dateVisibilityImpact).mockResolvedValue({ visibility: "public", tightened: [], leaderOpened: [] }); vi.mocked(Events.updateOccurrence).mockResolvedValue({ occurrence: occurrence({}) }); });
+beforeEach(() => { vi.resetAllMocks(); vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true }); vi.mocked(Events.dateVisibilityImpact).mockResolvedValue({ visibility: "public", tightened: [], leaderOpened: [] }); vi.mocked(Events.updateOccurrence).mockResolvedValue({ occurrence: occurrence({}) }); });
 
 it("opens one date through the shared visibility field without changing the series", async () => {
   const onSaved = vi.fn();
@@ -31,7 +31,7 @@ it("clears an explicit date value only after acknowledging its cancellation coun
 });
 
 it("puts the Room control beside Location when rooms are on, and not otherwise", async () => {
-  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true, pushEnabled: true });
   vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [], booking: null });
   render(<DateEditor instance={occurrence({})} onSaved={() => {}} onClose={() => {}} />);
   expect(await screen.findByRole("combobox", { name: /^Room/ })).toBeInTheDocument();
@@ -48,7 +48,7 @@ it("leaves the Room control out while rooms are off", async () => {
 });
 
 it("keeps the rest of the editor working while the rooms fail to load", async () => {
-  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true, pushEnabled: true });
   vi.mocked(DateRooms.list).mockRejectedValue(new Error("down"));
   const onSaved = vi.fn();
   render(<DateEditor instance={occurrence({})} onSaved={onSaved} onClose={() => {}} />);

@@ -26,6 +26,7 @@ export async function uiPages(request: APIRequestContext): Promise<UIPage[]> {
     { id: "home-signed-out", who: null, path: "/", ready: (p) => p.getByText("Room 201 class").first() },
     { id: "login", who: null, path: "/login", ready: heading("Log in to") },
     { id: "join", who: null, path: "/join", ready: (p) => p.locator("main") },
+    { id: "notifications-setup", who: null, path: "/notifications/setup", ready: heading("Get notifications on your phone") },
     { id: "home", who: "sam", path: "/", ready: (p) => p.getByText("Room 201 class").first() },
     { id: "my-groups", who: "sam", path: "/my-groups", ready: (p) => p.getByText("Room 201 class").first() },
     { id: "group-member", who: "sam", path: `/groups/${room.id}`, ready: heading("Room 201 class") },

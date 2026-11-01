@@ -18,6 +18,7 @@ import { MatchLocations } from "../components/admin/MatchLocations";
 import { SystemTab } from "../components/admin/SystemTab";
 import { ChurchAddressSetting } from "../components/admin/ChurchAddressSetting";
 import { GuardianCopiesSetting, ReplyToSetting } from "../components/admin/MessageSettings";
+import { PushEnabledSetting } from "../components/admin/PushEnabledSetting";
 import { ZonePicker } from "../components/ui/ZonePicker";
 import { FormActions } from "../components/ui/FormActions";
 import { AccountAgeFields } from "../components/AccountAgeFields";
@@ -1620,6 +1621,7 @@ export function AdminPage() {
         <ChurchAddressSetting />
         <ReplyToSetting />
         <GuardianCopiesSetting />
+        <PushEnabledSetting />
         <ChurchTimezone />
         <SelfSignupSetting />
         <RoomsSetting enabled={roomsEnabled} onChanged={setRoomsEnabled} />

@@ -19,7 +19,7 @@ const needs: NeedsRoom[] = [{ date: "2026-12-08", roomName: "Fellowship Hall", s
 
 beforeEach(() => {
   vi.resetAllMocks();
-  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true, pushEnabled: true });
   vi.mocked(SeriesRooms.list).mockResolvedValue({ rooms: [], dates: 10, defaultRoom: null, needsRoom: needs, pending: 0 });
 });
 
@@ -105,7 +105,7 @@ it("shows nothing when every date has its room", async () => {
 });
 
 it("shows nothing, and asks for no rooms, while rooms are off", async () => {
-  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
   const { container } = show();
   await waitFor(() => expect(Site.get).toHaveBeenCalled());
   expect(container).toBeEmptyDOMElement();

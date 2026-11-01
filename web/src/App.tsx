@@ -37,6 +37,7 @@ const ContactRequestsPage = lazy(() => import("./pages/ContactRequests").then((m
 const AddRequestsPage = lazy(() => import("./pages/AddRequests").then((m) => ({ default: m.AddRequestsPage })));
 const EventDatePage = lazy(() => import("./pages/EventDate").then((m) => ({ default: m.EventDatePage })));
 const WaitingForConsent = lazy(() => import("./pages/WaitingForConsent"));
+const NotificationsSetupPage = lazy(() => import("./pages/NotificationsSetup").then((m) => ({ default: m.NotificationsSetupPage })));
 const MessagesPage = lazy(() => import("./pages/Messages").then((m) => ({ default: m.MessagesPage })));
 const MessageComposerPage = lazy(() => import("./pages/MessageComposer").then((m) => ({ default: m.MessageComposerPage })));
 
@@ -106,6 +107,7 @@ export default function App() {
         <Route path="/admin/users/:id/contact-history" element={<Suspense fallback={<Skeleton kind="page" label="Loading contact history…" />}><ContactHistoryPage /></Suspense>} />
         <Route path="/admin" element={<Suspense fallback={<div className="max-w-6xl mx-auto px-4 py-8"><Skeleton kind="page" label="Loading admin…" /></div>}><AdminPage /></Suspense>} />
         <Route path="/notifications" element={<NotificationsPage />} />
+        <Route path="/notifications/setup" element={<NotificationsSetupPage />} />
         <Route path="/messages" element={<MessagesPage />} />
         {/* One composer for both: saving a new message moves to its address without remounting. */}
         <Route path="/messages/new" element={<MessageComposerPage />} />

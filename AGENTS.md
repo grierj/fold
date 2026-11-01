@@ -155,6 +155,8 @@ name), and the icons come from `npm run icons`. The card's state code is `lib/pu
 `lib/push.ts` is the eager part (logout, the icon badge). A device belongs to the person, not the
 session: an expired session clears the icon count but leaves the subscription, and the card
 re-saves it on load only for the user in `localStorage["fold.pushOwner"]` (wiped at logout).
+The church's switch (`push_enabled`, Admin → Settings, M3.13c2) hides the card and the public
+`/notifications/setup` page (via `/push/config` and `/site` `pushEnabled`) and stops every send.
 
 ## Phasing high-complexity work
 

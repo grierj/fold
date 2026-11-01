@@ -290,7 +290,8 @@ export const Groups = {
 };
 
 export const Site = {
-  get: () => api<{ name: string; timezone: string; selfSignup: "request" | "off"; roomsEnabled: boolean }>("/site"),
+  // pushEnabled: the church's switch for notifications on devices (DEC-124).
+  get: () => api<{ name: string; timezone: string; selfSignup: "request" | "off"; roomsEnabled: boolean; pushEnabled: boolean }>("/site"),
 };
 
 export interface AccountRequestInput {
@@ -528,6 +529,9 @@ export const Admin = {
   // Guardian copies of messages to teens (DEC-19) and where replies go (DEC-130).
   guardianCopies: () => api<{ on: boolean }>("/admin/settings/guardian-copies"),
   setGuardianCopies: (on: boolean) => api<{ on: boolean }>("/admin/settings/guardian-copies", { method: "PUT", body: { on } }),
+  // Notifications on devices for the whole church (DEC-124, default on).
+  pushEnabled: () => api<{ on: boolean }>("/admin/settings/push-enabled"),
+  setPushEnabled: (on: boolean) => api<{ on: boolean }>("/admin/settings/push-enabled", { method: "PUT", body: { on } }),
   replyTo: () => api<{ address: string }>("/admin/settings/reply-to"),
   setReplyTo: (address: string) => api<{ address: string }>("/admin/settings/reply-to", { method: "PUT", body: { address } }),
 };

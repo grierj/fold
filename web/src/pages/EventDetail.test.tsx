@@ -704,7 +704,7 @@ describe("EventDetail dates that need a room", () => {
     vi.restoreAllMocks();
     vi.mocked(Households.mine).mockResolvedValue({ household: null });
     vi.mocked(Events.get).mockResolvedValue(series);
-    vi.spyOn(Site, "get").mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
+    vi.spyOn(Site, "get").mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true, pushEnabled: true });
     vi.spyOn(DateRooms, "list").mockResolvedValue({ rooms: [], booking: null });
   });
 
@@ -743,7 +743,7 @@ describe("EventDetail dates that need a room", () => {
 
   it("asks nothing and shows nothing while rooms are off", async () => {
     needs({ date: "2026-12-08", roomName: "Fellowship Hall", status: "requested" });
-    vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+    vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
     renderPage();
     await screen.findAllByRole("article");
     expect(screen.queryByRole("heading", { name: /Dates that need a room/ })).not.toBeInTheDocument();
