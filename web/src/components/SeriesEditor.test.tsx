@@ -225,7 +225,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
   describe("Room control (M2.1b)", () => {
     const single = { eventId: 7, startsLocal: "2026-12-01T19:00", durationMinutes: 60, tzid: "UTC", title: "Supper", description: "", location: "Hall", recurrenceRule: "", capacity: null, waitlistEnabled: false, guestsAllowed: 0 };
     const roomsOn = () => {
-      vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true });
+      vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: true, pushEnabled: true });
       vi.mocked(DateRooms.list).mockResolvedValue({ rooms: [], booking: null });
     };
 
@@ -260,7 +260,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
       expect(screen.getByRole("textbox", { name: /^Location/ }).compareDocumentPosition(room) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(room.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       unmount();
-      vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+      vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
       vi.mocked(SeriesRooms.list).mockClear();
       render(<SeriesEditor series={series} idPrefix="room-hint-off" onSaved={() => {}} />);
       await screen.findByRole("button", { name: "Save series" });
@@ -269,7 +269,7 @@ describe("SeriesEditor form layout (DEC-95)", () => {
     });
 
     it("is hidden when rooms are off", async () => {
-      vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false });
+      vi.mocked(Site.get).mockResolvedValue({ name: "Fold", timezone: "UTC", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
       vi.mocked(DateRooms.list).mockClear();
       render(<SeriesEditor series={single} roomDate="2026-12-01" idPrefix="room-off" onSaved={() => {}} />);
       await waitFor(() => expect(Site.get).toHaveBeenCalled());

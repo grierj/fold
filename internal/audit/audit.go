@@ -282,6 +282,9 @@ const (
 	// ReplyToChanged: an admin set or cleared where replies to
 	// announcements go (M3.5b, DEC-130); meta says whether one is set.
 	ReplyToChanged = "setting.reply_to_changed"
+	// PushEnabledChanged: an admin turned notifications on devices on or off
+	// for the whole church (M3.13c2, DEC-124); meta has on.
+	PushEnabledChanged = "setting.push_enabled_changed"
 	// MessageScheduled / MessageCancelled: an author scheduled an announcement
 	// (or rescheduled it) or cancelled it (M3.4). Target is the message.
 	MessageScheduled = "message.scheduled"

@@ -26,7 +26,7 @@ function mount(path = "/admin/users/9223372036854775807/contact-history") {
 beforeEach(() => {
   vi.clearAllMocks(); auth.user = { id: 1, role: "admin", status: "active" }; auth.isAdmin = true;
   vi.mocked(ContactHistory.people).mockResolvedValue({ people: [] });
-  vi.mocked(Site.get).mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false });
+  vi.mocked(Site.get).mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
   vi.mocked(ContactHistory.list).mockResolvedValue({ entries: [entry], nextBefore: "9007199254740993" });
   vi.mocked(ContactHistory.csv).mockResolvedValue(new Blob(["auditId,at\r\n"]));
   vi.stubGlobal("URL", class extends URL {
@@ -120,7 +120,7 @@ it("converts inclusive church dates to UTC once and exports the applied snapshot
 });
 
 it("disables date application until retry loads the church timezone and never falls back to browser UTC", async () => {
-  vi.mocked(Site.get).mockRejectedValueOnce(new TypeError("offline")).mockResolvedValueOnce({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false });
+  vi.mocked(Site.get).mockRejectedValueOnce(new TypeError("offline")).mockResolvedValueOnce({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
   mount(); await screen.findByText("Person's decision: Approved");
   await openFilters();
   fireEvent.change(screen.getByLabelText("From (optional)"), { target: { value: "2026-11-01" } });

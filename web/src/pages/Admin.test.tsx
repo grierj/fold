@@ -18,14 +18,14 @@ vi.mock("../api", async (actual) => ({
   Invitations: { create: vi.fn() },
   Groups: { list: vi.fn(), members: vi.fn().mockResolvedValue({ members: [] }), memberDeparturePreview: vi.fn(), confirmMemberDeparture: vi.fn() },
   AdminGroups: { list: vi.fn(), addMember: vi.fn() },
-  Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn(), churchAddress: vi.fn().mockResolvedValue({ address: "Grace Church" }), setChurchAddress: vi.fn(), guardianCopies: vi.fn().mockResolvedValue({ on: false }), setGuardianCopies: vi.fn(), replyTo: vi.fn().mockResolvedValue({ address: "" }), setReplyTo: vi.fn() },
+  Admin: { pending: vi.fn().mockResolvedValue({ groups: [] }), deletions: vi.fn().mockResolvedValue({ groups: [] }), approve: vi.fn(), reject: vi.fn(), deleteGroup: vi.fn(), churchAddress: vi.fn().mockResolvedValue({ address: "Grace Church" }), setChurchAddress: vi.fn(), guardianCopies: vi.fn().mockResolvedValue({ on: false }), setGuardianCopies: vi.fn(), replyTo: vi.fn().mockResolvedValue({ address: "" }), setReplyTo: vi.fn(), pushEnabled: vi.fn().mockResolvedValue({ on: true }), setPushEnabled: vi.fn() },
   AdminUsers: { list: vi.fn().mockResolvedValue({ users: [] }), clearEmailSuppression: vi.fn() },
   AdminGuardianLinks: { list: vi.fn().mockResolvedValue({ guardianLinks: [], nominations: [] }) },
   AdminAccountRequests: { list: vi.fn(), approve: vi.fn(), setSelfSignup: vi.fn() },
   AdminRooms: { list: vi.fn(), create: vi.fn(), update: vi.fn(), setEnabled: vi.fn(), setApproval: vi.fn(), locations: vi.fn(), matchLocation: vi.fn() },
   RoomRequests: { list: vi.fn(), confirm: vi.fn(), reject: vi.fn() },
   AdminJobs: { list: vi.fn(), retry: vi.fn(), dismiss: vi.fn() },
-  Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false }) },
+  Site: { get: vi.fn().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true }) },
 }));
 
 function HistoryDestination() {
@@ -45,7 +45,7 @@ const group = (id: number, name: string, extra: Partial<GroupSummary> = {}): Gro
 
 beforeEach(() => {
   vi.mocked(AdminJobs.list).mockReset().mockResolvedValue({ jobs: [], more: false });
-  vi.mocked(Site.get).mockReset().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false });
+  vi.mocked(Site.get).mockReset().mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
   vi.mocked(AdminRooms.list).mockReset().mockResolvedValue({ rooms: [], needApproval: false });
   vi.mocked(AdminRooms.setEnabled).mockReset();
   vi.mocked(AdminRooms.setApproval).mockReset();
@@ -673,7 +673,7 @@ describe("Approvals: new groups", () => {
 });
 
 const hall: Room = { id: 1, name: "Fellowship Hall", building: "Main", capacity: 80, features: "kitchen", notes: "", active: true, restricted: false, defaultSetupMinutes: 30, defaultTeardownMinutes: 0 };
-const withRooms = (roomsEnabled: boolean) => vi.mocked(Site.get).mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled });
+const withRooms = (roomsEnabled: boolean) => vi.mocked(Site.get).mockResolvedValue({ name: "Church", timezone: "America/Denver", selfSignup: "off", roomsEnabled, pushEnabled: true });
 
 it("shows no Rooms tab while rooms are off", async () => {
   render(<MemoryRouter initialEntries={["/admin"]}><AdminPage /></MemoryRouter>);

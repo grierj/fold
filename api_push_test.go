@@ -685,3 +685,47 @@ func TestPushSubscribeRechecksTheSession(t *testing.T) {
 		t.Fatal("a stale session saved something")
 	}
 }
+
+// The church's switch (M3.13c2, DEC-124): on by default, admins only,
+// audited; off tells the card and the public directions page through
+// /push/config and /site, and turning on is refused.
+func TestPushEnabledSetting(t *testing.T) {
+	app := testApp(t)
+	newTestUser(t, app, "root", "password1234", models.RoleAdmin)
+	newTestUser(t, app, "sam", "password1234", models.RoleMember)
+	root, sam := loginAPI(t, app, "root", "password1234"), loginAPI(t, app, "sam", "password1234")
+	for _, method := range []string{"GET", "PUT"} {
+		if w := sam.do(method, "/api/v1/admin/settings/push-enabled", map[string]any{"on": false}, true); w.Code != http.StatusForbidden {
+			t.Fatalf("member %s: %d", method, w.Code)
+		}
+	}
+	anon := newAPIClient(t, app)
+	site := func() string { return anon.do("GET", "/api/v1/site", nil, false).Body.String() }
+	if w := root.do("GET", "/api/v1/admin/settings/push-enabled", nil, false); !strings.Contains(w.Body.String(), `"on":true`) {
+		t.Fatalf("default: %s", w.Body.String())
+	}
+	if !strings.Contains(site(), `"pushEnabled":true`) {
+		t.Fatalf("site default: %s", site())
+	}
+	if w := root.do("PUT", "/api/v1/admin/settings/push-enabled", map[string]any{}, true); w.Code != http.StatusBadRequest {
+		t.Fatalf("no value: %d", w.Code)
+	}
+	if w := root.do("PUT", "/api/v1/admin/settings/push-enabled", map[string]any{"on": false}, true); w.Code != http.StatusOK {
+		t.Fatalf("off: %d %s", w.Code, w.Body.String())
+	}
+	if app.settingValue(settingPushEnabled) != "false" || !strings.Contains(site(), `"pushEnabled":false`) {
+		t.Fatalf("stored %q, site %s", app.settingValue(settingPushEnabled), site())
+	}
+	if w := sam.do("GET", "/api/v1/push/config", nil, false); !strings.Contains(w.Body.String(), `"enabled":false`) {
+		t.Fatalf("config: %s", w.Body.String())
+	}
+	if _, w := subscribe(t, sam, newBrowserSub(t, "off")); w.Code != http.StatusForbidden || errorCodeOf(w) != "push_church_off" {
+		t.Fatalf("subscribe while off: %d %s", w.Code, w.Body.String())
+	}
+	if w := root.do("PUT", "/api/v1/admin/settings/push-enabled", map[string]any{"on": true}, true); w.Code != http.StatusOK || !app.pushEnabled() {
+		t.Fatalf("on again: %d", w.Code)
+	}
+	if auditCount(t, app, audit.PushEnabledChanged) != 2 {
+		t.Fatal("each change is audited")
+	}
+}

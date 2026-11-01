@@ -98,6 +98,36 @@ func deviceJSON(d models.PushSubscription) pushDeviceJSON {
 
 func (a *App) pushEnabled() bool { return a.settingValue(settingPushEnabled) != "false" }
 
+// apiAdminGetPushEnabled is the church's switch for notifications on
+// devices (DEC-124, default on).
+func (a *App) apiAdminGetPushEnabled(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"on": a.pushEnabled()})
+}
+
+// apiAdminSetPushEnabled turns notifications on devices on or off for the
+// whole church (M3.13c2, DEC-124). Off stops every push job (push.deliver
+// checks it before sending), refuses turning on and tests (403
+// push_church_off), and hides the card and /notifications/setup. Devices
+// are kept, so turning it back on needs nobody to set anything up again.
+func (a *App) apiAdminSetPushEnabled(c *gin.Context) {
+	var body struct {
+		On *bool `json:"on"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.On == nil {
+		jsonError(c, http.StatusBadRequest, "invalid request")
+		return
+	}
+	value := "false"
+	if *body.On {
+		value = "true"
+	}
+	if err := a.saveSetting(c, settingPushEnabled, value, audit.PushEnabledChanged, map[string]any{"on": *body.On}); err != nil {
+		jsonError(c, http.StatusInternalServerError, "could not save the setting")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"on": *body.On})
+}
+
 // pushHosts is the allow-list the client sends to.
 func (a *App) pushHosts() *push.AllowList {
 	if h := a.pushClient().Hosts; h != nil {
