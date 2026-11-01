@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,6 +34,31 @@ describe("Login", () => {
     expect(link).toHaveClass("text-link");
     expect(link).toHaveAttribute("href", "/join");
     expect(link.parentElement?.className).not.toMatch(/leading-/);
+  });
+
+  it("tells a signed-out Home Screen app that signing in once brings notifications here", () => {
+    const line = "Sign in once here and your notifications will come to this app.";
+    renderLogin();
+    expect(screen.queryByText(line)).not.toBeInTheDocument();
+    cleanup();
+    Object.defineProperty(navigator, "standalone", { value: true, configurable: true });
+    try {
+      renderLogin();
+      expect(screen.getByText(line)).toBeInTheDocument();
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).standalone;
+    }
+  });
+
+  it("clears the app icon's count, since nobody is signed in", () => {
+    const clear = vi.fn(async () => {});
+    Object.assign(navigator, { clearAppBadge: clear });
+    try {
+      renderLogin();
+      expect(clear).toHaveBeenCalled();
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).clearAppBadge;
+    }
   });
 
   it("names the church in the page title", async () => {

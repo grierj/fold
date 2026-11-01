@@ -7,6 +7,7 @@ import { ApiError } from "../api";
 import { Field, FormError, Input } from "../components/ui/Field";
 import { Button, ButtonLink } from "../components/ui/Button";
 import { useSiteName } from "../lib/useSiteName";
+import { isStandalone, syncAppBadge } from "../lib/push";
 
 export function Login() {
   const { login, user } = useAuth();
@@ -19,9 +20,13 @@ export function Login() {
   const [busy, setBusy] = useState(false);
   const [waiting, setWaiting] = useState(false);
   const from = (location.state as { from?: string } | null)?.from ?? "/";
+  // The Home Screen app keeps its own sign-in (signed_out_app, research 2.7).
+  const [homeScreen] = useState(isStandalone);
 
   useEffect(() => {
     if (user) navigate(from, { replace: true });
+    // Nobody is signed in here, so the app icon shows no one's count.
+    else syncAppBadge(0);
   }, [user, navigate, from]);
 
   if (user) {
@@ -50,6 +55,7 @@ export function Login() {
     <div className="max-w-md mx-auto px-4 py-12">
       {/* The church's name, as the header shows it ("Fold" when it has none); plain "Log in" until it loads. */}
       <h1 className="text-3xl font-bold mb-6">{site === undefined ? "Log in" : `Log in to ${site || "Fold"}`}</h1>
+      {homeScreen && <p className="-mt-3 mb-6 text-text-muted">Sign in once here and your notifications will come to this app.</p>}
       <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-6 space-y-4">
         {error && (waiting
           ? <p role="status" className="rounded-md border border-border bg-sunken p-3 text-text">{error}</p>

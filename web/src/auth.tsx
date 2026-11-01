@@ -3,6 +3,7 @@ import { Auth as AuthApi, Profile, ensureCsrf } from "./api";
 import { errorCode } from "./lib/errors";
 import { browserTimeZone } from "./lib/when";
 import { leaveWithoutAsking } from "./lib/unsavedChanges";
+import { deviceForLogout, forgetDevice } from "./lib/push";
 import type { User } from "./types";
 
 // clearClientData removes everything the SPA keeps in browser storage.
@@ -89,13 +90,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // don't refetch when the user changes, so clearing auth alone left the
   // previous screen up. A full load of "/" is the only reset that covers
   // everything (state, module caches like the CSRF token, history entries
-  // that belonged to the old page).
+  // that belonged to the old page). With notifications on, the request
+  // names this browser's device (read first) so the server deletes it at
+  // once, while the browser drops its subscription and closes what's on
+  // screen (10.1). clearClientData also forgets fold.pushOwner.
   const logout = useCallback(async () => {
-    try {
-      await AuthApi.logout();
-    } catch {
-      // Still clear this browser; the reload shows if the server disagreed.
-    }
+    const device = await deviceForLogout();
+    await Promise.all([
+      // Still clear this browser if it fails; the reload shows if the server disagreed.
+      AuthApi.logout(device?.sub?.endpoint).catch(() => {}),
+      forgetDevice(device),
+    ]);
     setUser(null);
     clearClientData();
     leaveWithoutAsking();

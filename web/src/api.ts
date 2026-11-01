@@ -146,6 +146,10 @@ import type {
   OccurrenceRoom,
   NotificationSettings as NotificationSettingsData,
   EmailKind,
+  PushConfig,
+  PushSettings,
+  PushSubscribeResponse,
+  PushTestResponse,
   NotificationFeed,
   NotificationFilter,
   OpenedDecision,
@@ -167,7 +171,10 @@ export const Auth = {
   me: () => api<{ user: User; canCompose?: boolean }>("/auth/me", { anonymousOK: true }),
   login: (email: string, password: string) =>
     api<{ user: User; canCompose?: boolean }>("/auth/login", { method: "POST", body: { email, password } }),
-  logout: () => api<Record<string, never>>("/auth/logout", { method: "POST" }),
+  // The logout request carries this browser's push endpoint, if it has
+  // one, so the server deletes the device in the same request (M3.13b).
+  logout: (pushEndpoint?: string) =>
+    api<Record<string, never>>("/auth/logout", { method: "POST", body: pushEndpoint ? { pushEndpoint } : undefined }),
   // Password reset (M1.2): the response is uniform for known and unknown
   // addresses, so the message is shown as-is.
   requestPasswordReset: (email: string) =>
@@ -584,6 +591,22 @@ export const NotificationSettings = {
   get: () => api<{ settings: NotificationSettingsData }>("/me/notification-settings"),
   update: (change: EmailSettingsChange) =>
     api<{ settings: NotificationSettingsData }>("/me/notification-settings", { method: "PUT", body: change }),
+  // One Push switch (DEC-122): an optional kind on every device.
+  updatePush: (category: EmailKind["category"], off: boolean) =>
+    api<{ settings: NotificationSettingsData }>("/me/notification-settings", { method: "PUT", body: { channel: "push", category, off } }),
+};
+
+// Notifications on this device (M3.13b). A device is named by its endpoint,
+// which only this browser and the server know; no response carries one.
+export const Push = {
+  config: () => api<PushConfig>("/push/config"),
+  // Past 30 saves an hour, saved is false with the line to show (DEC-129).
+  save: (subscription: PushSubscriptionJSON) =>
+    api<PushSubscribeResponse>("/push/subscriptions", { method: "PUT", body: subscription }),
+  remove: (endpoint: string) =>
+    api<Record<string, never>>("/push/subscriptions", { method: "DELETE", body: { endpoint } }),
+  turnOffEverywhere: () => api<{ push: PushSettings }>("/push/turn-off", { method: "POST" }),
+  test: (endpoint: string) => api<PushTestResponse>("/push/test", { method: "POST", body: { endpoint } }),
 };
 
 // The email settings page an email's link opens, without signing in (M3.3b).

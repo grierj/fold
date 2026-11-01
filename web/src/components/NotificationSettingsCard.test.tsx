@@ -9,7 +9,11 @@ const update = vi.fn();
 vi.mock("../api", async (orig) => ({
   ...(await orig<typeof import("../api")>()),
   NotificationSettings: { get: () => get(), update: (c: EmailSettingsChange) => update(c) },
+  // The church has notifications on devices off unless a test says so, so
+  // these tests see the email card alone (PushDeviceCard.test.tsx has the rest).
+  Push: { config: () => config() },
 }));
+const config = vi.fn();
 
 import { ApiError } from "../api";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
@@ -22,6 +26,7 @@ const settings = (k: EmailKind[]) => ({ settings: { kinds: k, optionalEmailOff: 
 // The server applies a change the way the real one does.
 let state = kinds();
 beforeEach(() => {
+  config.mockReset().mockResolvedValue({ enabled: false, publicKey: "" });
   state = kinds();
   get.mockReset().mockImplementation(async () => settings(state));
   update.mockReset().mockImplementation(async (c: EmailSettingsChange) => {
@@ -117,4 +122,12 @@ it("lists admin notices for admins", async () => {
   render(<NotificationSettingsCard />);
   expect(await screen.findByRole("checkbox", { name: /^Admin notices/ })).toBeInTheDocument();
   expect(screen.getByText("For church admins")).toBeInTheDocument();
+});
+
+it("loads the settings once for the email card and the device card", async () => {
+  config.mockResolvedValue({ enabled: true, publicKey: "AQID" });
+  render(<NotificationSettingsCard />);
+  expect(await screen.findByRole("region", { name: "Notifications on this device" })).toBeInTheDocument();
+  expect(await screen.findByRole("checkbox", { name: /^Group updates/ })).toBeInTheDocument();
+  expect(get).toHaveBeenCalledOnce();
 });

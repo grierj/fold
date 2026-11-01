@@ -90,6 +90,25 @@ describe("NotificationBell", () => {
     expect(screen.queryByText("0")).toBeNull();
   });
 
+  it("puts the count on the app icon where the browser can, and clears it at 0", async () => {
+    const set = vi.fn(async () => {});
+    const clear = vi.fn(async () => {});
+    Object.assign(navigator, { setAppBadge: set, clearAppBadge: clear });
+    try {
+      const { unmount } = renderBell();
+      await screen.findByText("2");
+      expect(set).toHaveBeenLastCalledWith(2);
+      unmount();
+      api.badge.mockResolvedValue({ badge: { unread: 0, waiting: 0 }, etag: "z" });
+      renderBell();
+      await screen.findByRole("button", { name: "Alerts" });
+      expect(clear).toHaveBeenCalled();
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).setAppBadge;
+      delete (navigator as unknown as Record<string, unknown>).clearAppBadge;
+    }
+  });
+
   it("refetches on focus, sends its ETag, and keeps the count on 304", async () => {
     renderBell();
     await screen.findByText("2");

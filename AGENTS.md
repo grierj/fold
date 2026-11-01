@@ -148,7 +148,13 @@ body cut short; safety kinds get the safe line, titled with `site_name` at send,
 `deliverNotificationEmails` queues it, so `notify.Send` callers change nothing. A trigger deletes
 an account's devices when its sessions are revoked or it stops being active, and queues
 `push.devices_off`, which writes the person a bell notice (migration 00059). Holding an endpoint
-alone never moves a device to another account: its keys must match.
+alone never moves a device to another account: its keys must match. Browser side (M3.13c1):
+`web/src/sw.ts` builds to `/sw.js` (served `no-cache`, registered only by the card's "Turn on
+notifications", never on load; it skips waiting and claims tabs, and still has no `fetch` handler), `/manifest.webmanifest` comes from Go (`web_app.go`, church
+name), and the icons come from `npm run icons`. The card's state code is `lib/pushState.ts`;
+`lib/push.ts` is the eager part (logout, the icon badge). A device belongs to the person, not the
+session: an expired session clears the icon count but leaves the subscription, and the card
+re-saves it on load only for the user in `localStorage["fold.pushOwner"]` (wiped at logout).
 
 ## Phasing high-complexity work
 
@@ -174,7 +180,8 @@ together, or changes 3+ tables. Smaller work is exempt.
 `make dev` (dev Postgres from `deploy/docker-compose.dev.yml`, Go server, Vite), `make test`
 (against `DATABASE_URL`, root package sharded, starts the dev DB if unset), `make lint` (shell, Go
 vet/gofmt/staticcheck, web), `make e2e` (Playwright in parallel shards on fresh databases),
-`cd web && npm test` (Vitest), `cd web && npm run build` (outputs `web/dist`, embedded).
+`cd web && npm test` (Vitest), `cd web && npm run build` (outputs `web/dist`, embedded). Run the
+build once before `make dev` to try push: the Go server serves `/sw.js` from `web/dist`.
 
 There is no fallback database: `fold serve` without `DATABASE_URL` exits with a "start the dev
 database" message, in dev too. Env vars: `config.go`, `.env.example`; `SESSION_SECRET` is required
