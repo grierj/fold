@@ -67,9 +67,9 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
   return (
     <Link
       to={occurrenceLink(occ)}
-      className={`block min-h-11 rounded-lg border p-4 hover:border-border-strong ${stateClass}`}
+      className={`grid min-h-11 gap-x-6 gap-y-1 border-l-2 px-4 py-3 hover:border-border-strong sm:grid-cols-[12rem_minmax(0,1fr)] ${stateClass}`}
     >
-      <span className="flex flex-wrap items-center gap-2">
+      <span className="flex flex-wrap items-center gap-2 sm:row-span-2 sm:content-start">
         <span className={`tabular-nums text-sm ${solid ? "text-primary-foreground" : "text-text-muted"}`}>
           {formatTime(occ.startsAt)} – {formatTime(occ.endsAt)}
         </span>
@@ -77,23 +77,23 @@ export function EventRow({ occ }: { occ: CalendarOccurrence }) {
         {occ.remoteAvailable && <RemoteBadge />}
         {occ.childcareAvailable && <ChildcareBadge />}
       </span>
-      <span className={`mt-1 block font-semibold ${solid ? "text-primary-foreground" : "text-text"}`}>{occ.title || occ.groupName}</span>
-      <span className={`mt-1 flex min-w-0 items-center gap-1 text-sm ${solid ? "text-primary-foreground" : "text-text-muted"}`}>
+      <span className={`min-w-0 wrap-anywhere font-semibold ${solid ? "text-primary-foreground" : "text-text"}`}>{occ.title || occ.groupName}</span>
+      <span className={`flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-sm ${solid ? "text-primary-foreground" : "text-text-muted"}`}>
         {occ.churchWide ? (
-          <span className="shrink-0 rounded-full bg-inverse px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-inverse-foreground">
+          <span className="shrink-0 rounded-sm bg-inverse px-2 py-0.5 text-xs font-semibold text-inverse-foreground">
             Church-wide
           </span>
         ) : (
           <>
-            {(occ.groupName || occ.hostedBy) && <span className="shrink-0">{occ.groupName || `Hosted by ${occ.hostedBy}`}</span>}
+            {(occ.groupName || occ.hostedBy) && <span className="min-w-0 wrap-anywhere">{occ.groupName || `Hosted by ${occ.hostedBy}`}</span>}
             {occ.groupDeleted && (
-              <span className="shrink-0 rounded-full bg-sunken px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-text-muted">
+              <span className="shrink-0 rounded-sm bg-sunken px-2 py-0.5 text-xs font-semibold text-text-muted">
                 Deleted group
               </span>
             )}
           </>
         )}
-        {occ.location && <span className="truncate">{occ.churchWide || occ.groupName || occ.hostedBy ? " · " : ""}{occ.location}</span>}
+        {occ.location && <span className="min-w-0 wrap-anywhere">{occ.churchWide || occ.groupName || occ.hostedBy ? " · " : ""}{occ.location}</span>}
       </span>
     </Link>
   );
@@ -157,11 +157,11 @@ export function EventChip({ occ, stacked }: { occ: CalendarOccurrence; stacked?:
 export function DaySection({ heading, occs, sticky }: { heading: string; occs: CalendarOccurrence[]; sticky?: boolean }) {
   return (
     <section>
-      <h2 className={`py-2 font-semibold text-text ${sticky ? "sticky top-[var(--fold-header-height,4rem)] z-0 bg-page sm:static" : ""}`}>{heading}</h2>
+      <h2 className={`mb-2 py-2 font-semibold text-text ${sticky ? "sticky top-[var(--fold-header-height,4rem)] z-0 bg-page sm:static" : ""}`}>{heading}</h2>
       {occs.length === 0 ? (
         <p className="text-sm text-text-muted">Nothing on this day.</p>
       ) : (
-        <ul className="space-y-2">
+        <ul className="fold-list space-y-1">
           {occs.map((o) => <li key={`${o.eventId}-${o.date}`}><EventRow occ={o} /></li>)}
         </ul>
       )}

@@ -111,17 +111,18 @@ export function CalendarPage() {
   const groupName = groups.find((g) => String(g.id) === group)?.name ?? "this group";
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold text-text">Calendar</h1>
-
-      <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+    <div className="fold-page">
+      <header className="fold-page-header">
+        <h1 className="text-3xl font-bold text-text">Calendar</h1>
         <CalendarViewSwitch
           current={view}
           rooms={roomsShown}
           to={(v) => (v === "rooms" ? `/calendar/rooms${params.get("date") ? `?date=${params.get("date")}` : ""}` : link({ view: v === "agenda" ? null : v }))}
         />
+      </header>
+      <div className="space-y-4 border-b border-border pb-6">
         {view !== "agenda" && (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 sm:max-w-lg">
             <Button variant="secondary" aria-label={`Previous ${unit}`} onClick={() => step(-1)}>
               <ChevronLeftIcon />
             </Button>
@@ -137,7 +138,7 @@ export function CalendarPage() {
             </Button>
           </div>
         )}
-        <div className="flex flex-wrap items-end gap-3 sm:ml-auto">
+        <div className="flex flex-wrap items-end gap-3">
           {user && (
             <Chip selected={mine} onClick={() => go({ mine: mine ? null : "1" })}>
               Just mine
@@ -154,7 +155,7 @@ export function CalendarPage() {
               Show deleted events
             </Chip>
           )}
-          <div className="min-w-48 flex-1 sm:w-56 sm:flex-none">
+          <div className="min-w-0 w-full sm:ml-auto sm:w-56">
             <Field label="Group">
               <Select
                 value={group}
@@ -189,7 +190,7 @@ export function CalendarPage() {
           ) : occs.length === 0 ? (
             <AgendaEmpty mine={mine} remote={remote} childcare={childcare} group={group} groupName={groupName} signedIn={!!user} go={go} />
           ) : (
-            <div className="max-w-3xl space-y-6">
+            <div className="space-y-8">
               {[...byDay.entries()].map(([d, list]) => (
                 <DaySection key={d} heading={formatDayHeading(d, zone)} occs={list} sticky />
               ))}

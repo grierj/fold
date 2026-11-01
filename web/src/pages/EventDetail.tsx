@@ -113,7 +113,7 @@ function EventDetailContent() {
 
   if (loading || authLoading) {
     return (
-      <div className="max-w-3xl mx-auto px-4 py-8">
+      <div className="fold-page fold-page-narrow">
         <Skeleton kind="page" />
       </div>
     );
@@ -123,7 +123,7 @@ function EventDetailContent() {
   }
   if (!page) {
     return (
-      <div className="max-w-xl mx-auto px-4 py-12 sm:py-16">
+      <div className="fold-page fold-page-narrow">
         <h1 className="text-3xl font-bold mb-6">Event unavailable</h1>
         <ErrorNotice message={error ?? "We couldn't load this event."} onRetry={() => void load()} />
       </div>
@@ -150,15 +150,15 @@ function EventDetailContent() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-8">
+    <div className="fold-page fold-page-narrow">
       {/* Edit series and More sit beside the title as secondary actions; an event page has no primary one (DEC-63, DEC-65). */}
-      <div className="sm:flex sm:items-start sm:justify-between sm:gap-4">
+      <div className="fold-page-header">
         <div className="min-w-0">
           <h1 className="text-3xl font-bold mb-2 wrap-anywhere">{title}</h1>
           <EventIntro hostedBy={event.hostedBy} groupName={event.groupName} groupId={event.groupId} churchWide={event.churchWide} />
         </div>
         {canManage && (
-          <div className="mt-3 flex gap-2 sm:mt-0 sm:shrink-0">
+          <div className="flex w-full gap-2 sm:w-auto sm:shrink-0">
             <Button variant="secondary" layout="flex-1 sm:flex-none" aria-expanded={editing} onClick={() => setEditing((v) => !v)}>
               {event.recurrenceRule ? "Edit series" : "Edit event"}
             </Button>
@@ -169,15 +169,19 @@ function EventDetailContent() {
           </div>
         )}
       </div>
-      {line && <p className="mt-1 font-medium wrap-anywhere">{line}</p>}
-      {single && heldIn(next.startsAt, next.tzid) && <p className="text-sm text-text-muted">{heldIn(next.startsAt, next.tzid)}</p>}
-      {headerPlace && <p className="text-text-muted mt-1 wrap-anywhere">{headerPlace}</p>}
-      {single && line && <DateActions eventId={event.id} date={next.date} sharePath={`/events/${event.id}`} title={title} when={line} />}
-      {event.childcareAvailable && <div className="mt-3 text-text-muted">
-        <p>Childcare available{event.childcareAges && ` · ${event.childcareAges}`}</p>
-        {event.childcareNotes && <p className="whitespace-pre-wrap">{event.childcareNotes}</p>}
-      </div>}
-      {event.description && <p className="text-text-muted whitespace-pre-wrap mt-3">{event.description}</p>}
+      <div className="grid gap-4 py-6 sm:grid-cols-2 sm:gap-8">
+        <div className="space-y-2">
+          {line && <p className="font-semibold wrap-anywhere">{line}</p>}
+          {single && heldIn(next.startsAt, next.tzid) && <p className="text-sm text-text-muted">{heldIn(next.startsAt, next.tzid)}</p>}
+          {headerPlace && <p className="text-text-muted mt-1 wrap-anywhere">{headerPlace}</p>}
+          {single && line && <DateActions eventId={event.id} date={next.date} sharePath={`/events/${event.id}`} title={title} when={line} />}
+          {event.childcareAvailable && <div className="mt-3 text-text-muted">
+            <p>Childcare available{event.childcareAges && ` · ${event.childcareAges}`}</p>
+            {event.childcareNotes && <p className="whitespace-pre-wrap">{event.childcareNotes}</p>}
+          </div>}
+        </div>
+        {event.description && <p className="text-text-muted whitespace-pre-wrap">{event.description}</p>}
+      </div>
       {error && <div className="text-danger mt-3">{error}</div>}
 
 
@@ -219,12 +223,12 @@ function EventDetailContent() {
         />
       )}
 
-      {!single && <h2 className="text-xl font-bold mt-8 mb-3">Upcoming dates</h2>}
+      {!single && <h2 className="text-xl font-semibold mt-8 mb-4">Upcoming dates</h2>}
       {householdError && <ErrorNotice message={householdError} onRetry={retryHousehold} />}
       {occurrences.length === 0 && (
         <EmptyState title="No upcoming dates." body="This event has no more dates on the calendar." />
       )}
-      <div className={single ? "mt-6 space-y-3" : "space-y-3"}>
+      <div className={single ? "mt-6 fold-list" : "fold-list"}>
         {occurrences.map((m) => (
           <DateRow
             key={`${m.eventId}-${m.date}`}
@@ -460,7 +464,7 @@ function HostEditor({
   }
 
   return (
-    <div className="mt-4 bg-surface rounded-lg border border-border p-4">
+    <div className="fold-section mt-4">
       <div className="font-semibold mb-2">Hosts</div>
       {error && <FormError layout="mb-2">{error}</FormError>}
       <ul className="text-sm space-y-1 mb-3">
@@ -470,9 +474,9 @@ function HostEditor({
               {h.name} <span className="text-text-muted">{h.email}</span>
             </span>
             {hosts.length > 1 && (
-              <button type="button" className="text-danger" disabled={busy} onClick={() => void remove(h.userId)}>
+              <Button type="button" variant="danger-outline" disabled={busy} onClick={() => void remove(h.userId)}>
                 Remove
-              </button>
+              </Button>
             )}
           </li>
         ))}

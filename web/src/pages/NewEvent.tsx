@@ -178,7 +178,7 @@ export function NewEvent() {
 
   if (loading || authLoading) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12">
+      <div className="fold-page fold-page-narrow">
         <Skeleton kind="page" />
       </div>
     );
@@ -186,7 +186,7 @@ export function NewEvent() {
 
   if (!user) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+      <div className="fold-page fold-page-narrow">
         <h1 className="text-3xl font-bold mb-6">Schedule an event</h1>
         <Link to="/login" state={{ from: `/groups/${id}/events/new` }} className="text-primary font-semibold">
           Log in
@@ -198,7 +198,7 @@ export function NewEvent() {
 
   if (!canManage) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12 text-center">
+      <div className="fold-page fold-page-narrow">
         <h1 className="text-3xl font-bold mb-6">Schedule an event</h1>
         <p className="text-text-muted">
           Only the group leader or an admin can schedule events for{" "}
@@ -212,12 +212,16 @@ export function NewEvent() {
   }
 
   return (
-    <div className="max-w-xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold mb-2">Schedule an event</h1>
-      <p className="text-text-muted mb-6">
-        for <span className="font-semibold">{groupName}</span>
-      </p>
-      <Form noValidate onSubmit={submit} className="bg-surface rounded-lg border border-border p-4 sm:p-6 space-y-4">
+    <div className="fold-page fold-page-narrow">
+      <header className="fold-page-header">
+        <div>
+          <h1 className="text-3xl font-bold mb-2">Schedule an event</h1>
+          <p className="text-text-muted">
+            for <span className="font-semibold">{groupName}</span>
+          </p>
+        </div>
+      </header>
+      <Form noValidate onSubmit={submit} className="fold-form space-y-6">
         {guard}
         {error && <FormError>{error}</FormError>}
         <Field id="event-title" label="Title" optional hint="Leave it blank to use the group's name.">
@@ -235,28 +239,30 @@ export function NewEvent() {
             onChange={(e) => setDescription(e.target.value)}
           />
         </Field>
-        <WhenFields
-          idPrefix="event"
-          when={when}
-          tzid={tzid}
-          onTzid={setTzid}
-          zoneHint="The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving."
-        />
-        <Field id="event-location" label="Location" optional hint="Leave it blank to use the group's location.">
-          <Input
-            value={location}
-            onChange={(e) => setLocation(e.target.value)}
-            placeholder="e.g. Room 201, Main Campus"
+        <div className="fold-section space-y-4">
+          <WhenFields
+            idPrefix="event"
+            when={when}
+            tzid={tzid}
+            onTzid={setTzid}
+            zoneHint="The church's time zone. Change it if the event is held somewhere else. The clock stays put across daylight saving."
           />
-        </Field>
-        <CreateRoomField
-          id="event-room"
-          schedule={scheduleReady(when, tzid, seats) ? scheduleFields(when, tzid, seats) : null}
-          groupId={Number(id)}
-          visibility={visibility}
-          roomId={roomId}
-          onChange={setRoomId}
-        />
+          <Field id="event-location" label="Location" optional hint="Leave it blank to use the group's location.">
+            <Input
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="e.g. Room 201, Main Campus"
+            />
+          </Field>
+          <CreateRoomField
+            id="event-room"
+            schedule={scheduleReady(when, tzid, seats) ? scheduleFields(when, tzid, seats) : null}
+            groupId={Number(id)}
+            visibility={visibility}
+            roomId={roomId}
+            onChange={setRoomId}
+          />
+        </div>
         <EventOptions
           idPrefix="event"
           open={moreOpen}

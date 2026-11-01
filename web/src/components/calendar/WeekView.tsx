@@ -10,7 +10,7 @@ import { DaySection, EventChip } from "./EventRow";
 export function WeekView({ days, byDay, today }: { days: string[]; byDay: Map<string, CalendarOccurrence[]>; today: string }) {
   return (
     <>
-      <div className="hidden sm:flex gap-2">
+      <div className="hidden sm:flex gap-0 border-y border-border">
         {days.map((d) => {
           const occs = byDay.get(d) ?? [];
           const empty = occs.length === 0;
@@ -18,7 +18,7 @@ export function WeekView({ days, byDay, today }: { days: string[]; byDay: Map<st
             <section
               key={d}
               data-empty={empty || undefined}
-              className={`min-w-0 rounded-lg border border-border bg-surface p-2 ${empty ? "w-20 flex-none text-center" : "flex-1 basis-0"}`}
+              className={`min-w-0 border-r border-border bg-surface p-2 last:border-r-0 ${empty ? "w-20 flex-none text-center" : "flex-1 basis-0"}`}
             >
               <h3 className={`text-sm font-semibold ${empty ? "" : "mb-2"} ${d === today ? "text-primary" : "text-text"}`}>
                 {formatWeekday(d)}
