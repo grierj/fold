@@ -539,11 +539,44 @@ func notifyLeadership(tx *gorm.DB, e audit.Entry) ([]uint, error) {
 	if e.Actor != nil {
 		actor = nameIn(tx, *e.Actor)
 	}
-	return notify.Send(tx, notify.Msg{
+	ids, err := notify.Send(tx, notify.Msg{
 		Kind: notify.LeadershipChanged, To: adminIDs(tx), Actor: e.Actor,
 		SubjectType: "group", SubjectID: g.ID, Link: fmt.Sprintf("/groups/%d", g.ID),
 		Vars: notify.Vars{Actor: actor, Person: nameIn(tx, userID), Group: g.Name, Change: change}, // group-ok: leadership notices go to admins
 		Data: map[string]any{"groupId": g.ID, "userId": userID},
+	})
+	if err != nil {
+		return nil, err
+	}
+	mine, err := notifyYourRole(tx, e, &g, userID, oldRole, newRole)
+	return append(ids, mine...), err
+}
+
+// notifyYourRole tells the person whose role changed that they now lead
+// the group, or no longer do and are still a member (DEC-134). It follows
+// every RoleChanged entry (a leader's or admin's change, a handoff), never
+// a removal, which has its own notices. Someone who changed their own role
+// is skipped (the Actor rule in notify.Send).
+func notifyYourRole(tx *gorm.DB, e audit.Entry, g *models.Group, userID uint, oldRole, newRole string) ([]uint, error) {
+	if e.Action != audit.RoleChanged || userID == 0 || g.ID == 0 {
+		return nil, nil
+	}
+	var change string
+	switch {
+	case newRole == models.MembershipLeader && oldRole != models.MembershipLeader:
+		change = "leader"
+	case oldRole == models.MembershipLeader && newRole == models.MembershipMember:
+		change = "member"
+	default:
+		return nil, nil
+	}
+	vars, link := notify.Vars{Change: change}, "/my-groups"
+	if canSeeGroupIn(tx, userIn(tx, userID), g) {
+		vars.Group, link = g.Name, fmt.Sprintf("/groups/%d", g.ID) // group-ok: only when canSeeGroupIn says the person may see it
+	}
+	return notify.Send(tx, notify.Msg{
+		Kind: notify.YourRole, To: []uint{userID}, Actor: e.Actor,
+		SubjectType: "group", SubjectID: g.ID, Link: link, Vars: vars,
 	})
 }
 

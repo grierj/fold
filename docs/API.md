@@ -1516,6 +1516,7 @@ All but logout need a signed-in, active account and the CSRF token as usual (`cs
 | `household.link_pending` | A household link is waiting to be confirmed | |
 | `room.requested` | A room request is waiting for approval | |
 | `group.leadership_changed` (to the other admins) | New leader in *group* / Leader change in *group* | Open Fold to see who. |
+| `group.your_role` (to the person whose role changed; not when they changed it themselves) | You're now a leader of *group* / You're no longer a leader of *group* | You can manage its members and events in Fold. / Thanks for leading. You're still a member. |
 | `registration.cancelled` | Your spot was cancelled: *event* | Open Fold to see why. |
 | `room.lost` | Room booking lost: *event* | Pick another room for *1 date / 3 dates* in Fold. |
 | every `safety` kind (contact, ask to add, date invitations, consent, turning 13 or 18, household accounts) | *the church's name* | Open Fold to review an update. |

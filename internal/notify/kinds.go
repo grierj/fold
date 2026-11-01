@@ -61,6 +61,7 @@ const (
 	HouseholdChildTurned13  = "household.child_turned_13"
 	PushKeysReset           = "push.keys_reset"
 	PushDevicesOff          = "push.devices_off"
+	YourRole                = "group.your_role"
 )
 
 // Action is an inline button. Only allow-listed kinds carry one (6.6).
@@ -384,6 +385,16 @@ func init() {
 			return "Your group membership ended", fmt.Sprintf("%d upcoming dates were kept and %d ended. Sign in to Fold to review your upcoming dates.", v.KeptCount, v.EndedCount)
 		},
 	})
+	// The person whose role changed (DEC-134): Change is "leader" (they now
+	// lead) or "member" (they stepped back to member by someone else's
+	// hand). Group only when they may see it.
+	yourRole := func(v Vars) (string, string) {
+		if v.Change == "leader" {
+			return "You're now a leader of " + or(v.Group, "a group"), "You can manage its members and events in Fold."
+		}
+		return "You're no longer a leader of " + or(v.Group, "a group"), "Thanks for leading. You're still a member."
+	}
+	register(Kind{Key: YourRole, Category: CatGroups, AllowEmail: true, Render: yourRole, AllowPush: true, PushRender: yourRole})
 	// A leader hears how an admin decided their new group (DEC-96).
 	register(Kind{
 		Key: GroupApproved, Category: CatGroups, AllowEmail: true,

@@ -1015,3 +1015,55 @@ func TestOptionalEmailSwitch(t *testing.T) {
 		t.Fatal("consent rows accepted a DELETE")
 	}
 }
+
+// The person whose role changed hears it (DEC-134): promoted, "You're now
+// a leader"; demoted by someone else, "You're no longer a leader". Their
+// own step down tells them nothing. The admins' notice stays, and the
+// person's notice reaches their phone.
+func TestYourRoleNoticeOnPromoteAndDemote(t *testing.T) {
+	app, f := pushTestApp(t)
+	newTestUser(t, app, "admin", "password123456", models.RoleAdmin)
+	patUser := newTestUser(t, app, "pat", "password123456", models.RoleMember)
+	g := newTestGroup(t, app, patUser, "Supper club", models.GroupActive)
+	app.DB.Model(g).Update("visibility", models.VisibilityInviteOnly)
+	sam := pushMember(t, app, "sam")
+	addMember(t, app, sam, g, models.MembershipMember)
+	phone := newPushDevice(t, app, sam, "sam-phone")
+	pat := loginAPI(t, app, "pat", "password123456")
+	path := "/api/v1/groups/" + itoa(g.ID) + "/members/" + itoa(sam.ID) + "/role"
+	mine := func() []models.Notification {
+		var out []models.Notification
+		app.DB.Where("user_id = ? AND kind = ?", sam.ID, notify.YourRole).Order("id").Find(&out)
+		return out
+	}
+
+	apiDo(t, pat, "PUT", path, map[string]any{"role": "leader"}, http.StatusOK)
+	notes := mine()
+	if len(notes) != 1 || notes[0].Title != "You're now a leader of Supper club" || notes[0].Body != "You can manage its members and events in Fold." ||
+		notes[0].Link != "/groups/"+itoa(g.ID) || notes[0].Category != notify.CatGroups {
+		t.Fatalf("promote: %+v", notes)
+	}
+	drainJobs(t, app)
+	if f.count(phone.path) != 1 || notes[0].PushTitle != notes[0].Title {
+		t.Fatalf("promote push: %d sends, push title %q", f.count(phone.path), notes[0].PushTitle)
+	}
+
+	apiDo(t, pat, "PUT", path, map[string]any{"role": "member"}, http.StatusOK)
+	notes = mine()
+	if len(notes) != 2 || notes[1].Title != "You're no longer a leader of Supper club" || notes[1].Body != "Thanks for leading. You're still a member." {
+		t.Fatalf("demote: %+v", notes)
+	}
+	var adminNotices int64
+	app.DB.Model(&models.Notification{}).Where("kind = ?", notify.LeadershipChanged).Count(&adminNotices)
+	if adminNotices != 2 {
+		t.Fatalf("%d admin notices, want one per change", adminNotices)
+	}
+
+	// Stepping down yourself says nothing to you.
+	apiDo(t, pat, "PUT", path, map[string]any{"role": "leader"}, http.StatusOK)
+	samClient := loginAPI(t, app, "sam", "password123456")
+	apiDo(t, samClient, "PUT", path, map[string]any{"role": "member"}, http.StatusOK)
+	if n := len(mine()); n != 3 {
+		t.Fatalf("%d notices after stepping down yourself, want 3", n)
+	}
+}

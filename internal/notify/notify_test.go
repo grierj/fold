@@ -127,6 +127,17 @@ func TestEveryKindsPushTextIsLockScreenSafe(t *testing.T) {
 	if pushed == 0 {
 		t.Fatal("no kind pushes; the test checks nothing")
 	}
+	// The person whose role changed hears it in their own words; a group
+	// they can't see is never named (the caller leaves it out).
+	k, _ := Lookup(YourRole)
+	for change, want := range map[string]string{"leader": "You're now a leader of Youth", "member": "You're no longer a leader of Youth"} {
+		if title, _, ok := k.RenderForPush(Vars{Group: "Youth", Change: change, Person: "Hidden Hal", Teen: true}); !ok || title != want {
+			t.Errorf("your role %s: %q", change, title)
+		}
+	}
+	if title, _, _ := k.RenderForPush(Vars{Change: "leader"}); title != "You're now a leader of a group" {
+		t.Errorf("your role, hidden group: %q", title)
+	}
 	// A row about someone in the household names nobody.
 	for _, key := range []string{RegistrationPromoted, RegistrationRemoved} {
 		k, _ := Lookup(key)
