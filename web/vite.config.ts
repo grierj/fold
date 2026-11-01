@@ -25,10 +25,32 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+    // The service worker (src/sw.ts) is a second entry built to exactly
+    // dist/sw.js, unhashed: browsers find a worker by a fixed URL, and one
+    // served from the root has the whole site as its scope. index.html
+    // doesn't link it, so bundle-size.mjs's entry budget doesn't count it.
+    // It imports only src/sw/, which the app never does, so it shares no
+    // chunk with the page and stays one classic script.
+    rolldownOptions: {
+      input: { index: resolve(import.meta.dirname, "index.html"), sw: resolve(import.meta.dirname, "src/sw.ts") },
+      output: {
+        entryFileNames: (chunk) => (chunk.name === "sw" ? "sw.js" : "assets/[name]-[hash].js"),
+      },
+    },
   },
   server: {
     port: 5173,
+    // The manifest and worker come from the Go server (make dev runs it);
+    // the worker is whatever web/dist last built.
     proxy: {
+      "/manifest.webmanifest": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
+      "/sw.js": {
+        target: "http://localhost:8080",
+        changeOrigin: true,
+      },
       "/api": {
         target: "http://localhost:8080",
         changeOrigin: true,

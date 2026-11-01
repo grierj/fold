@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from "react";
-import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { Layout } from "./components/Layout";
 import { Home } from "./pages/Home";
 import { Login } from "./pages/Login";
@@ -56,6 +56,10 @@ export default function App() {
   }, [navigate, location.pathname, location.search]);
 
   if (loading) return null;
+  // The Home Screen app opens at /?source=homescreen (the manifest) with
+  // its own sign-in, separate from the browser: signed out, it goes
+  // straight to Log in (research 2.3).
+  const homeScreenSignIn = !user && new URLSearchParams(location.search).get("source") === "homescreen";
 
   return (
     // Keyed by user: signing in as someone else remounts every page and the
@@ -65,7 +69,7 @@ export default function App() {
       <UnsavedChangesBlocker />
       <Suspense fallback={<Skeleton kind="page" label="Loading page…" />}>
       <Routes>
-        <Route path="/" element={<Home />} />
+        <Route path="/" element={homeScreenSignIn ? <Navigate to="/login" replace /> : <Home />} />
         <Route path="/login" element={<Login />} />
         <Route path="/waiting-for-consent" element={<WaitingForConsent />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />

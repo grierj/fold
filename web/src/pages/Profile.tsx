@@ -30,7 +30,7 @@ const sectionGroups: { heading: string; items: Section[] }[] = [
     { id: "details", label: "Profile details", description: "Name, photo and time zone" },
     { id: "security", label: "Email and password", description: "How you sign in" },
     { id: "privacy", label: "Privacy", description: "Hide your contact info from leaders" },
-    { id: "notifications", label: "Notifications", description: "Turn optional email on or off" },
+    { id: "notifications", label: "Notifications", description: "Email and notifications on your devices" },
   ] },
   { heading: "Family", items: [
     { id: "household", label: "Household", description: "Family members you sign up with you", adultOnly: true },

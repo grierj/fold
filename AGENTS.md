@@ -148,7 +148,11 @@ body cut short; safety kinds get the safe line, titled with `site_name` at send,
 `deliverNotificationEmails` queues it, so `notify.Send` callers change nothing. A trigger deletes
 an account's devices when its sessions are revoked or it stops being active, and queues
 `push.devices_off`, which writes the person a bell notice (migration 00059). Holding an endpoint
-alone never moves a device to another account: its keys must match.
+alone never moves a device to another account: its keys must match. Browser side (M3.13c1):
+`web/src/sw.ts` builds to `/sw.js` (served `no-cache`, registered only by the card's "Turn on
+notifications", never on load), `/manifest.webmanifest` comes from Go (`web_app.go`, church
+name), and the icons come from `npm run icons`. The card's state code is `lib/pushState.ts`;
+`lib/push.ts` is the eager part (logout, the icon badge).
 
 ## Phasing high-complexity work
 

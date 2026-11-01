@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, Notifications as Api, type Badge } from "../api";
 import type { Notification, NotificationFilter } from "../types";
+import { syncAppBadge } from "./push";
 
 // Everything here lives in memory only: no notification state goes to
 // localStorage or sessionStorage (5.12, research 6.13 #7), so logout's full
@@ -19,6 +20,8 @@ const POLL_MS = 60_000;
 // useBadge polls GET /notifications/badge every 60 s while the tab is
 // visible, and refetches on focus, on navigation (refreshKey), when coming
 // back online, and after any change. It pauses while the tab is hidden.
+// The bell's count also goes on the app icon where the browser can show it
+// (M3.13c1), and clears at 0.
 export function useBadge(refreshKey: string, enabled = true): Badge & { loaded: boolean } {
   const [badge, setBadge] = useState<Badge & { loaded: boolean }>({ unread: 0, waiting: 0, loaded: false });
   const etag = useRef("");
@@ -29,6 +32,7 @@ export function useBadge(refreshKey: string, enabled = true): Badge & { loaded: 
       if (got) {
         etag.current = got.etag;
         setBadge({ ...got.badge, loaded: true });
+        syncAppBadge(got.badge.unread + got.badge.waiting);
       }
     } catch {
       // Keep the last value; the bell never breaks the header.

@@ -1918,7 +1918,7 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - [ ] Optional pushes outside the recipient's window wait for it; required kinds and changes to events starting within 24 hours go at once; past 20 optional pushes an hour the extras are `suppressed` "hourly limit" and the bell still has them
   - [x] Logout deletes this browser's device in the same request (`TestLogoutEndsSession` has a case); disabling the account, a password change and revoked sessions delete the user's devices
   - [x] An endpoint posted by a second user is rebound to that user
-  - [ ] `/sw.js` is served `Cache-Control: no-cache`, and the CSP carries `worker-src 'self'; manifest-src 'self'`
+  - [x] `/sw.js` is served `Cache-Control: no-cache`, and the CSP carries `worker-src 'self'; manifest-src 'self'`
   - [x] `TestOnlyLoginAndInvitesAnswer429` stays green: the test-notification limit answers 200 with its own line (DEC-129)
   - [ ] `fold push keys rotate` deletes every device; a running server uses the new key without a restart
   - [ ] A payload over the 3,000-byte plaintext cap is refused before any network call

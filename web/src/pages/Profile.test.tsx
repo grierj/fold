@@ -55,7 +55,7 @@ it("opens a short hub without mounting forms or fetching the calendar feed", () 
 it("groups the rows under You, Family and Sharing, each with a one-line description", () => {
   renderProfile();
   const rows: Record<string, [string, string][]> = {
-    You: [["Profile details", "Name, photo and time zone"], ["Email and password", "How you sign in"], ["Privacy", "Hide your contact info from leaders"], ["Notifications", "Turn optional email on or off"]],
+    You: [["Profile details", "Name, photo and time zone"], ["Email and password", "How you sign in"], ["Privacy", "Hide your contact info from leaders"], ["Notifications", "Email and notifications on your devices"]],
     Family: [["Household", "Family members you sign up with you"], ["Parent or guardian link", "Connect a parent or guardian"]],
     Sharing: [["Calendar feed", "Add Fold dates to your phone's calendar"], ["Invite someone", "Ask an admin to let someone in"], ["Contact and add requests", "Requests to reach or add you"]],
   };

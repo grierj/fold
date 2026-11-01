@@ -277,7 +277,10 @@ func (a *App) setupRouter() *gin.Engine {
 	// middleware like everything else; safe methods need no token.
 	a.registerCalendarFeeds(r)
 
-	// Embedded SPA for everything else.
+	// The Home Screen app's manifest carries the church's name (M3.13c1).
+	r.GET("/manifest.webmanifest", a.serveManifest)
+
+	// Embedded SPA for everything else, including the service worker.
 	r.NoRoute(a.serveSPA())
 
 	return r
@@ -317,7 +320,15 @@ func builtStylesheet(fsys fs.FS) string {
 // for client-side routes. API paths get a JSON 404 instead.
 func (a *App) serveSPA() gin.HandlerFunc {
 	sub, err := fs.Sub(distFS, "web/dist")
-	built := err == nil
+	if err != nil {
+		sub = nil
+	}
+	return serveSPAFrom(sub)
+}
+
+// serveSPAFrom serves a built bundle: web/dist, or a test's files.
+func serveSPAFrom(sub fs.FS) gin.HandlerFunc {
+	built := sub != nil
 	if built {
 		if _, err := fs.Stat(sub, "index.html"); err != nil {
 			built = false
@@ -342,6 +353,12 @@ func (a *App) serveSPA() gin.HandlerFunc {
 			path = "index.html"
 		}
 		if _, err := fs.Stat(sub, path); err != nil {
+			if path == serviceWorkerPath {
+				// Never the shell in the worker's place: registering
+				// HTML as a script fails in a confusing way.
+				jsonError(c, http.StatusNotFound, "not found")
+				return
+			}
 			// Client-side route — let the SPA router handle it.
 			path = "index.html"
 		}
@@ -362,6 +379,11 @@ func (a *App) serveSPA() gin.HandlerFunc {
 			// runs), and keep the page out of the back/forward cache, so going
 			// back after logout never shows the previous session's screen.
 			c.Header("Cache-Control", "no-store")
+		} else if path == serviceWorkerPath {
+			// no-cache: the browser checks for a new worker on every
+			// registration and update instead of guessing a lifetime for
+			// a root file with no header (research 2.3).
+			c.Header("Cache-Control", "no-cache")
 		} else if strings.HasPrefix(path, "assets/") {
 			c.Header("Cache-Control", "public, max-age=31536000, immutable")
 		}
@@ -373,9 +395,12 @@ func (a *App) serveSPA() gin.HandlerFunc {
 // and styles come only from this origin; React sets focal points through
 // the CSSOM, which CSP allows without 'unsafe-inline'. Images may be data:
 // and blob: (upload previews) or any https URL (group covers given by URL);
-// tighten img-src when uploads are the only source (M4.7).
+// tighten img-src when uploads are the only source (M4.7). The service
+// worker and the manifest come only from this origin too (M3.13c1); both
+// already fell back to 'self', and naming them keeps it that way.
 const contentSecurityPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; " +
 	"img-src 'self' data: blob: https:; connect-src 'self'; font-src 'self'; object-src 'none'; " +
+	"worker-src 'self'; manifest-src 'self'; " +
 	"base-uri 'self'; form-action 'self'; frame-ancestors 'self'"
 
 // securityHeaders sets the headers on every response, so they hold behind

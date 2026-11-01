@@ -101,7 +101,7 @@ test("Me reaches Notifications, and the optional-email switch saves and sticks",
   await page.getByRole("navigation", { name: "Tabs" }).getByRole("link", { name: "Me", exact: true }).click();
   await page.getByRole("main").getByRole("link", { name: /^Notifications/ }).click();
   await expect(page).toHaveURL(/\/profile\/notifications$/);
-  await expect(page.getByRole("heading", { name: "Notifications" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Notifications", level: 1 })).toBeVisible();
   const box = page.getByRole("checkbox", { name: "Turn off all optional email" });
   await expect(box).not.toBeChecked();
   await box.check();
