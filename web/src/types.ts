@@ -261,8 +261,10 @@ export interface EventOccurrence {
   waitlistEnabled: boolean;
   guestsAllowed: number;
   // The series' reminder time (M3.6), for its Edit series form; 0 is off.
-  // Optional in fixtures; the API always sends it.
+  // Optional in fixtures; the API always sends it. reminderPush is its
+  // 2-hour push reminder switch (M3.13d3).
   reminderEmailMinutes?: number;
+  reminderPush?: boolean;
   // Remote attendance (M1.8 slice 2): the second seat pool, mirroring
   // the in-person fields. remoteCapacity is this date's effective cap.
   childcareAvailable: boolean;
@@ -340,6 +342,8 @@ export interface EventSeries {
   // When each date's email reminder goes, in minutes before (M3.6,
   // DEC-133): 0 off, 120, 1440 (the default), 2880 or 10080.
   reminderEmailMinutes: number;
+  // Each date's 2-hour push reminder (M3.13d3), on by default.
+  reminderPush: boolean;
   // Remote attendance (M1.8 slice 2). remoteCapacity null is unlimited.
   childcareAvailable: boolean;
   childcareCapacity: number | null;
@@ -1178,16 +1182,24 @@ export interface MessageReminder {
   tzid: string;
 }
 
-export type ReminderKind = "going" | "waitlist";
+// going: the reminder email; waitlist: the "still on the waitlist" note;
+// push: the 2-hour push reminder (M3.13d3).
+export type ReminderKind = "going" | "waitlist" | "push";
 
-// A date's email reminders as its event's managers see them on the date
-// page (M3.6b): the event's reminder time (0 off), when this date's
-// reminder goes (null when off), and each reminder written for it.
+// A date's reminders as its event's managers see them on the date page
+// (M3.6b): the event's reminder time (0 off), when this date's reminder
+// goes (null when off), and each reminder written for it. push is the
+// event's push reminder switch, null when the church turned push off;
+// pushDueAt is when this date's push reminder goes on the church's clock
+// (null when off, already written, or skipped by quiet hours).
 export interface DateReminders {
   minutes: number;
   dueAt: string | null;
   // A reminder already sent covers the one due, so it won't go.
   covered: boolean;
+  // Optional in fixtures; the API always sends them.
+  push?: boolean | null;
+  pushDueAt?: string | null;
   messages: DateReminder[];
 }
 
@@ -1202,6 +1214,8 @@ export interface DateReminder {
   // failed: bounced, marked as spam or failed; skipped: never sent (M3.5b's counts).
   failed: number;
   skipped: number;
+  // A push reminder's rows still to go. Optional in fixtures.
+  waiting?: number;
 }
 
 // The people a sent message was for, by status (M3.5b). skipped never went

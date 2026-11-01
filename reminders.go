@@ -119,7 +119,8 @@ func (a *App) sweepReminders(ctx context.Context, now time.Time) error {
 			return err
 		}
 	}
-	return nil
+	// The 2-hour push reminders (M3.13d3), planned per person.
+	return a.sweepPushReminders(ctx, now)
 }
 
 // sendReminder is reminder.send. It does nothing when the date was
@@ -317,18 +318,29 @@ func messageCategory(m *models.Message) string {
 // off), whether one already sent covers that one so it won't go (Covered,
 // reminderAlreadyCovers' rule), and each reminder written for it, oldest
 // first.
+//
+// Push is the event's push reminder switch (M3.13d3), null when the church
+// turned push off; PushDueAt is when this date's push reminder goes on the
+// church's clock (2 hours before, or the last allowed minute before quiet
+// hours, as each person's is planned on their own clock), absent when it
+// is off, already written for this start, or skipped by quiet hours.
 type dateRemindersJSON struct {
-	Minutes  int                `json:"minutes"`
-	DueAt    *time.Time         `json:"dueAt"`
-	Covered  bool               `json:"covered"`
-	Messages []dateReminderJSON `json:"messages"`
+	Minutes   int                `json:"minutes"`
+	DueAt     *time.Time         `json:"dueAt"`
+	Covered   bool               `json:"covered"`
+	Push      *bool              `json:"push"`
+	PushDueAt *time.Time         `json:"pushDueAt"`
+	Messages  []dateReminderJSON `json:"messages"`
 }
 
-// dateReminderJSON is one reminder message: going (the reminder) or
-// waitlist (the "still on the waitlist" note), its status, and its people,
-// guardian copies apart (DEC-132), as the history counts them (M3.5b):
-// Reached got it (sent or delivered), Failed didn't (bounced, marked as
-// spam, or failed), Skipped weren't sent it (suppressed, with a reason).
+// dateReminderJSON is one reminder message: going (the reminder),
+// waitlist (the "still on the waitlist" note) or push (the push reminder,
+// M3.13d3), its status, and its people, guardian copies apart (DEC-132),
+// as the history counts them (M3.5b): Reached got it (sent or delivered),
+// Failed didn't (bounced, marked as spam, or failed), Skipped weren't sent
+// it (suppressed, with a reason), Waiting are push rows still to go. An
+// email reminder counts its email rows only, and a push reminder its push
+// rows.
 type dateReminderJSON struct {
 	MessageID uint       `json:"messageId"`
 	Kind      string     `json:"kind"`
@@ -337,6 +349,7 @@ type dateReminderJSON struct {
 	Reached   int        `json:"reached"`
 	Failed    int        `json:"failed"`
 	Skipped   int        `json:"skipped"`
+	Waiting   int        `json:"waiting"`
 }
 
 // dateReminders reads them in one query. Call it only for a manager.
@@ -346,6 +359,10 @@ func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dat
 		due := occ.StartsAt.Add(-time.Duration(ev.ReminderEmailMinutes) * time.Minute).UTC()
 		out.DueAt = &due
 	}
+	if a.pushEnabled() {
+		on := ev.ReminderPush
+		out.Push = &on
+	}
 	var rows []struct {
 		ID          uint
 		ReminderKey *string
@@ -354,25 +371,40 @@ func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dat
 		Reached     int
 		Failed      int
 		Skipped     int
+		Waiting     int
 	}
 	if err := a.DB.Raw(`SELECT m.id, m.reminder_key, m.status, m.sent_at,
 		count(r.id) FILTER (WHERE r.copy_of_user_id IS NULL AND r.status IN ?) AS reached,
 		count(r.id) FILTER (WHERE r.copy_of_user_id IS NULL AND r.status IN ?) AS failed,
-		count(r.id) FILTER (WHERE r.copy_of_user_id IS NULL AND r.status = ?) AS skipped
+		count(r.id) FILTER (WHERE r.copy_of_user_id IS NULL AND r.status = ?) AS skipped,
+		count(r.id) FILTER (WHERE r.copy_of_user_id IS NULL AND r.status = ?) AS waiting
 		FROM messages m LEFT JOIN message_recipients r ON r.message_id = m.id
+			AND (r.channel = ?) = (m.reminder_key LIKE ?)
 		WHERE m.occurrence_id = ? AND m.category = ?
 		GROUP BY m.id ORDER BY m.id`,
 		[]string{models.RecipientSent, models.RecipientDelivered},
-		[]string{models.RecipientBounced, models.RecipientComplained, models.RecipientFailed}, models.RecipientSuppressed,
+		[]string{models.RecipientBounced, models.RecipientComplained, models.RecipientFailed}, models.RecipientSuppressed, models.RecipientQueued,
+		models.DeliveryPush, reminderPushKind+":%",
 		occ.ID, models.MessageCategoryReminder).Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	next := reminderJob{OccurrenceID: occ.ID, StartsAt: occ.StartsAt.Unix(), Minutes: ev.ReminderEmailMinutes}
+	pushWritten := false
 	for _, r := range rows {
 		m := models.Message{ReminderKey: r.ReminderKey}
 		kind := reminderKind(&m)
+		if kind == reminderPushKind {
+			// A push reminder for a start the date has moved from, that
+			// reached no one, is no news: its rows never went.
+			start, _ := pushReminderStart(r.ReminderKey)
+			if start == occ.StartsAt.Unix() {
+				pushWritten = true
+			} else if r.Reached == 0 {
+				continue
+			}
+		}
 		out.Messages = append(out.Messages, dateReminderJSON{MessageID: r.ID, Kind: kind, Status: r.Status,
-			SentAt: r.SentAt, Reached: r.Reached, Failed: r.Failed, Skipped: r.Skipped})
+			SentAt: r.SentAt, Reached: r.Reached, Failed: r.Failed, Skipped: r.Skipped, Waiting: r.Waiting})
 		if kind != reminderGoing || r.ReminderKey == nil || ev.ReminderEmailMinutes == 0 {
 			continue
 		}
@@ -384,6 +416,12 @@ func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dat
 			out.Covered = true
 		}
 	}
+	if out.Push != nil && *out.Push && !pushWritten {
+		if at, ok := a.pushQuietHours().LastAllowed(occ.StartsAt.Add(-pushReminderLead), "", churchZone(a.DB), pushReminderMaxMove); ok {
+			at = at.UTC()
+			out.PushDueAt = &at
+		}
+	}
 	return out, nil
 }
 
@@ -391,20 +429,29 @@ func (a *App) dateReminders(ev *models.Event, occ *models.EventOccurrence) (*dat
 const defaultReminderMinutes = 1440
 
 // createEvent inserts ev. GORM leaves a zero value out of an INSERT, so the
-// column's default (1 day) would replace a leader's "Off"; an Off is
-// written explicitly after.
+// columns' defaults (1 day, push on) would replace a leader's "Off"; an
+// Off is written explicitly after. A caller builds ev with ReminderPush
+// true unless the leader turned it off.
 func createEvent(tx *gorm.DB, ev *models.Event) error {
-	// Create reads the column's default back into ev, so the choice is
+	// Create reads the columns' defaults back into ev, so the choices are
 	// kept from before it.
-	off := ev.ReminderEmailMinutes == 0
+	emailOff, pushOff := ev.ReminderEmailMinutes == 0, !ev.ReminderPush
 	if err := tx.Create(ev).Error; err != nil {
 		return err
 	}
-	if off {
+	off := map[string]any{}
+	if emailOff {
 		ev.ReminderEmailMinutes = 0
-		return tx.Model(ev).Update("reminder_email_minutes", 0).Error
+		off["reminder_email_minutes"] = 0
 	}
-	return nil
+	if pushOff {
+		ev.ReminderPush = false
+		off["reminder_push"] = false
+	}
+	if len(off) == 0 {
+		return nil
+	}
+	return tx.Model(ev).Updates(off).Error
 }
 
 // reminderAlreadyCovers reports whether a reminder of this kind already

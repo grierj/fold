@@ -285,6 +285,7 @@ export const Groups = {
       videoUrl?: string;
       videoReveal?: VideoReveal;
       reminderEmailMinutes?: number;
+      reminderPush?: boolean;
     }
   ) => api<{ event: EventSeries }>(`/groups/${id}/events`, { method: "POST", body: data }),
 };
@@ -382,6 +383,7 @@ export const Events = {
     videoUrl?: string;
     videoReveal?: VideoReveal;
     reminderEmailMinutes?: number;
+    reminderPush?: boolean;
   }) => api<{ event: EventSeries }>("/events", { method: "POST", body: data }),
   setVisibility: (
     id: number,
@@ -418,6 +420,7 @@ export const Events = {
       videoUrl?: string;
       videoReveal?: VideoReveal;
       reminderEmailMinutes?: number;
+      reminderPush?: boolean;
     }
   ) => api<{ event: EventSeries }>(`/events/${id}`, { method: "PUT", body: data }),
   // Mint a fresh Jitsi room URL (M1.8); each call makes a new one.

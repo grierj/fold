@@ -7,6 +7,7 @@ import { SeatsField, type SeatsValue } from "./SeatsField";
 import { VideoField, type VideoValue } from "./VideoField";
 import { ReminderField, reminderSummary } from "./ReminderField";
 import { Button } from "./ui/Button";
+import { usePushEnabled } from "../lib/usePushEnabled";
 
 const VISIBILITY_NAMES: Record<Visibility, string> = { public: "Public", private: "Private", invite_only: "Invite only" };
 
@@ -19,6 +20,7 @@ export function optionsSummary({
   remote,
   childcare,
   reminder,
+  reminderPush,
 }: {
   visibility?: Visibility;
   seats: SeatsValue;
@@ -26,6 +28,8 @@ export function optionsSummary({
   remote: RemoteValue;
   childcare: ChildcareValue;
   reminder?: number;
+  // The push reminder switch, when the form offers it (M3.13d3).
+  reminderPush?: boolean;
 }): string {
   const cap = seats.capacity.trim();
   const seatText = cap === "" ? "No seat limit" : `${cap} ${cap === "1" ? "seat" : "seats"}${seats.waitlist ? " with waitlist" : ""}`;
@@ -35,7 +39,7 @@ export function optionsSummary({
     video.provider === "none" ? "No video" : "Video link",
     ...(remote.available ? ["Remote seats"] : []),
     childcare.available ? "Childcare" : "No childcare",
-    ...(reminder !== undefined ? [reminderSummary(reminder)] : []),
+    ...(reminder !== undefined ? [reminderSummary(reminder, reminderPush)] : []),
   ];
   return parts.join(" · ");
 }
@@ -96,8 +100,8 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 // Everything inside More options, in one order for the group, church-wide and
 // Edit series forms: who can see it (a create form passes the shared
 // VisibilityField; Edit series sets visibility in its own panel), seats and
-// waitlist, Online (video and remote together), childcare and the reminder
-// email (M3.6b).
+// waitlist, Online (video and remote together), childcare and the reminders
+// (the email, M3.6b, and the push reminder, M3.13d3).
 export function EventOptions({
   idPrefix,
   open,
@@ -117,6 +121,8 @@ export function EventOptions({
   childcareError,
   reminder,
   onReminder,
+  reminderPush,
+  onReminderPush,
 }: {
   idPrefix: string;
   open: boolean;
@@ -136,12 +142,18 @@ export function EventOptions({
   childcareError?: string | null;
   reminder: number;
   onReminder: (minutes: number) => void;
+  // The 2-hour push reminder switch (M3.13d3); hidden while the church has
+  // notifications on devices turned off.
+  reminderPush?: boolean;
+  onReminderPush?: (on: boolean) => void;
 }) {
+  const pushOn = usePushEnabled();
+  const push = pushOn && reminderPush !== undefined && onReminderPush ? { value: reminderPush, onChange: onReminderPush } : undefined;
   return (
     <MoreOptions
       open={open}
       onOpenChange={onOpenChange}
-      summary={optionsSummary({ visibility: visibility?.value, seats, video, remote, childcare, reminder })}
+      summary={optionsSummary({ visibility: visibility?.value, seats, video, remote, childcare, reminder, reminderPush: push?.value })}
     >
       {visibility?.field}
       <Section title="Seats">
@@ -155,7 +167,7 @@ export function EventOptions({
         <ChildcareField idPrefix={idPrefix} value={childcare} onChange={onChildcare} error={childcareError} />
       </Section>
       <Section title="Reminders">
-        <ReminderField idPrefix={idPrefix} value={reminder} onChange={onReminder} />
+        <ReminderField idPrefix={idPrefix} value={reminder} onChange={onReminder} push={push} />
       </Section>
     </MoreOptions>
   );

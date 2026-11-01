@@ -292,9 +292,23 @@ it("shows its event's managers the date's reminder lines, each sent one linking 
     ],
   } }) });
   mount();
-  expect(await screen.findByRole("heading", { level: 2, name: "Reminder email" })).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { level: 2, name: "Reminders" })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Reminder emailed to 12 people · Fri, Jan 30 at 12:00 PM" })).toHaveAttribute("href", "/messages/61");
   expect(screen.getByRole("link", { name: "Waitlist note emailed to 3 people · Fri, Jan 30 at 12:00 PM" })).toHaveAttribute("href", "/messages/62");
+});
+
+it("adds the push reminder's count, linking to its history, beside the email (M3.13d3)", async () => {
+  vi.spyOn(Site, "get").mockResolvedValue({ name: "Grace", timezone: "America/Boise", selfSignup: "off", roomsEnabled: false, pushEnabled: true });
+  vi.mocked(Dates.get).mockResolvedValue({ occurrence: occurrence({ canDecline: false, canBlock: false, reminders: {
+    minutes: 1440, dueAt: "2026-01-30T19:00:00Z", covered: true, push: true, pushDueAt: null,
+    messages: [
+      { messageId: 61, kind: "going", status: "sent", sentAt: "2026-01-30T19:00:00Z", reached: 12, failed: 0, skipped: 0 },
+      { messageId: 63, kind: "push", status: "sent", sentAt: "2026-01-31T17:00:00Z", reached: 5, failed: 0, skipped: 1, waiting: 0 },
+    ],
+  } }) });
+  mount();
+  expect(await screen.findByRole("link", { name: "Reminder emailed to 12 people · Fri, Jan 30 at 12:00 PM" })).toHaveAttribute("href", "/messages/61");
+  expect(screen.getByRole("link", { name: "Reminder pushed to 5 people · Sat, Jan 31 at 10:00 AM · 1 skipped" })).toHaveAttribute("href", "/messages/63");
 });
 
 it("says before it goes when the reminder will, and when reminders are off, without a link", async () => {
@@ -311,5 +325,5 @@ it("says before it goes when the reminder will, and when reminders are off, with
 
 it("shows no reminder lines to anyone the API doesn't send them to", async () => {
   mount(); await screen.findByText("One invited date");
-  expect(screen.queryByText("Reminder email")).not.toBeInTheDocument();
+  expect(screen.queryByText("Reminders")).not.toBeInTheDocument();
 });

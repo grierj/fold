@@ -69,7 +69,7 @@ describe("NewEvent", () => {
     await ready();
     const toggle = screen.getByRole("button", { name: "More options" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByText("Visible to: Public · No seat limit · No video · No childcare · Reminder 1 day before")).toBeInTheDocument();
+    expect(screen.getByText("Visible to: Public · No seat limit · No video · No childcare · Reminder 1 day before · Push reminder")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Who can see this event" })).not.toBeInTheDocument();
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
@@ -106,6 +106,31 @@ describe("NewEvent", () => {
     await userEvent.click(screen.getByRole("button", { name: "Schedule event" }));
     await waitFor(() => expect(Groups.createEvent).toHaveBeenCalled());
     expect(Groups.createEvent).toHaveBeenCalledWith("5", expect.objectContaining({ reminderEmailMinutes: 10080 }));
+  });
+
+  it("offers the push reminder, on by default, and sends it off when turned off (M3.13d3)", async () => {
+    renderForm();
+    await ready();
+    await userEvent.type(screen.getByLabelText("Date"), "2026-12-02");
+    await userEvent.click(screen.getByRole("button", { name: "More options" }));
+    const push = screen.getByRole("checkbox", { name: /^Push reminder 2 hours before/ });
+    expect(push).toBeChecked();
+    expect(push).toHaveAccessibleName(/People who turned on notifications get a short reminder on their phone\./);
+    await userEvent.click(push);
+    await userEvent.click(screen.getByRole("button", { name: "Schedule event" }));
+    await waitFor(() => expect(Groups.createEvent).toHaveBeenCalled());
+    expect(Groups.createEvent).toHaveBeenCalledWith("5", expect.objectContaining({ reminderPush: false }));
+  });
+
+  it("hides the push reminder when the church turned notifications off", async () => {
+    vi.mocked(Site.get).mockResolvedValue({ timezone: "America/Denver", pushEnabled: false } as never);
+    renderForm();
+    await ready();
+    await userEvent.click(screen.getByRole("button", { name: "More options" }));
+    expect(screen.getByLabelText("Reminder email")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("checkbox", { name: /Push reminder/ })).not.toBeInTheDocument());
+    await userEvent.click(screen.getByRole("button", { name: "More options" }));
+    expect(screen.getByText(/· Reminder 1 day before$/)).toBeInTheDocument();
   });
 
   it("sends a weekly rule from Every week and the chosen duration preset", async () => {

@@ -208,16 +208,34 @@ test("a leader sets the reminder in Edit series and sees when it goes out on a d
   const reminder = page.getByRole("combobox", { name: "Reminder email" });
   await expect(reminder).toHaveValue("1440");
   await reminder.selectOption({ label: "2 days before" });
+  // The 2-hour push reminder (M3.13d3): on by default, beside the email.
+  const push = page.getByRole("checkbox", { name: /^Push reminder 2 hours before/ });
+  await expect(push).toBeChecked();
+  await push.uncheck();
   await page.getByRole("button", { name: "Save series" }).click();
+  // The button reads "Saving…" while it saves, so wait for what was saved.
+  const saved = async () => ((await lee("GET", `/events/${event.id}`)) as { event: { reminderEmailMinutes: number; reminderPush: boolean } }).event;
+  await expect.poll(saved).toMatchObject({ reminderEmailMinutes: 2880, reminderPush: false });
   await expect(page.getByRole("button", { name: "Save series" })).toHaveCount(0);
-  const saved = (await lee("GET", `/events/${event.id}`)) as { event: { reminderEmailMinutes: number } };
-  expect(saved.event.reminderEmailMinutes).toBe(2880);
 
   // Two days before 7:00 PM on the first date, on the church's clock.
   const due = new Date(`${d}T12:00:00Z`);
   due.setUTCDate(due.getUTCDate() - 2);
-  const day = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" }).format(due);
+  const fmt = new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" });
+  const day = fmt.format(due);
   await page.goto(`/events/${event.id}/dates/${d}`);
-  await expect(page.getByRole("heading", { name: "Reminder email", level: 2 })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Reminders", level: 2 })).toBeVisible();
   await expect(page.getByText(new RegExp(`^Reminder goes out ${day} at 7:00 PM`))).toBeVisible();
+  await expect(page.getByText("Push reminders are off for this event")).toBeVisible();
+
+  // Back on, the push reminder goes 2 hours before the date.
+  await page.goto(`/events/${event.id}`);
+  await page.getByRole("button", { name: "Edit series" }).click();
+  await expect(push).not.toBeChecked();
+  await push.check();
+  await page.getByRole("button", { name: "Save series" }).click();
+  await expect.poll(saved).toMatchObject({ reminderPush: true });
+  await expect(page.getByRole("button", { name: "Save series" })).toHaveCount(0);
+  await page.goto(`/events/${event.id}/dates/${d}`);
+  await expect(page.getByText(new RegExp(`^Push reminder goes out ${fmt.format(new Date(`${d}T12:00:00Z`))} at 5:00 PM`))).toBeVisible();
 });

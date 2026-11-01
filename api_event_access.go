@@ -352,7 +352,7 @@ func (a *App) apiCreateChurchEvent(c *gin.Context) {
 	}
 	ev := models.Event{
 		Visibility: vis, CreatedBy: creator.ID,
-		ReminderEmailMinutes: defaultReminderMinutes,
+		ReminderEmailMinutes: defaultReminderMinutes, ReminderPush: true,
 	}
 	applySpec(&ev, spec, body.eventBody, ed, vid)
 	if !textOK(c, ev.Title, ev.Description, ev.Location) {

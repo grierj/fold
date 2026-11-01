@@ -301,7 +301,8 @@ type pushItem struct {
 // is never limited, so a person's second device always gets what the
 // first did. Required pushes and urgent event changes carry a reason on
 // their sent row and aren't counted; announcement pushes are always
-// optional. idx_notification_deliveries_push_sent (migration 00060) and
+// optional, and so are push reminders (M3.13d3): they count here, but
+// the limit never stops one. idx_notification_deliveries_push_sent (migration 00060) and
 // idx_message_recipients_push_sent (00061) cover the counts; their
 // predicates are written as literals so a cached generic plan still
 // matches the partial indexes.

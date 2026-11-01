@@ -1905,14 +1905,14 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - **M3.13c2 Directions page and admin switch**: `/notifications/setup` (public route; the in-app list is `/notifications`) with the iPhone/iPad, Android, computer and Mac Safari steps and their undo steps (DEC-127); the `push_enabled` switch in Admin → Settings; `docs/MEMBERS.md`'s section and `web/e2e/ui-pages.ts`.
   - **M3.13d Announcements and reminders**: "Push notification too" in the composer (default on), "N also get a push notification" in the summary, push rows in `message_recipients` and history, a push following push consent rather than the email row (DEC-122), and the read page a push opens, `/messages/:id/read`, for anyone it was sent to, with leaders seeing push per person (DEC-135); the 2-hour push reminder per occurrence with its per-event switch, following the same out-of-window rule as SMS reminders (7.7); quiet hours (DEC-126). A 1,000-recipient announcement queues one job per device; the worker pool caps concurrency, and no per-host limiter is needed in v1.
 - Acceptance:
-  - [ ] The RFC 8291 Appendix A vector encrypts byte for byte; a fake push service decrypts every payload Fold sends and sees `TTL`, `Urgency`, `aes128gcm` and a VAPID token that verifies against the public key
-  - [ ] An endpoint whose host is not on the allow-list, or that resolves to a private, loopback or link-local address, is refused at subscribe time and again at send time, with no connection made
-  - [ ] 404 and 410 delete the device and record `suppressed` "device gone"; 429 and 5xx retry with the jobs backoff and never send twice to a device that already accepted
-  - [ ] Nothing in logs, job errors, audit rows or API responses contains an endpoint URL, `p256dh`, `auth` or a token (`TestPushLogsKeepSecretsOut`)
+  - [x] The RFC 8291 Appendix A vector encrypts byte for byte; a fake push service decrypts every payload Fold sends and sees `TTL`, `Urgency`, `aes128gcm` and a VAPID token that verifies against the public key
+  - [x] An endpoint whose host is not on the allow-list, or that resolves to a private, loopback or link-local address, is refused at subscribe time and again at send time, with no connection made
+  - [x] 404 and 410 delete the device and record `suppressed` "device gone"; 429 and 5xx retry with the jobs backoff and never send twice to a device that already accepted
+  - [x] Nothing in logs, job errors, audit rows or API responses contains an endpoint URL, `p256dh`, `auth` or a token (`TestPushLogsKeepSecretsOut`)
   - [x] Every kind's push rendering passes the teen and hidden-adult fixtures: safety, consent and contact kinds say only "Open Fold to review an update"; no push carries an email, phone, birth date, care note, teen badge, manage link or video link
   - [x] A `category:<cat>` push opt-out skips optional kinds of that category and never a required one; turning the first device on writes `(push, all, opted_in)`; turning it on again after "Turn off notifications everywhere" writes a new opt-in; `(push, all, opted_out)` overrides every per-category row and deletes every device; a guest or `pending_consent` teen gets 403
   - [x] An announcement with the push notification on sends each recipient with a device one email and one push, even across a restart; push-only is refused (400); the push body is the subject plus 120 characters of plain text (M3.13d2)
-  - [ ] A reminder push creates no `notifications` row (DEC-44); a cancelled occurrence cancels its pending reminder push
+  - [x] A reminder push creates no `notifications` row (DEC-44); a cancelled occurrence cancels its pending reminder push (M3.13d3)
   - [x] With `push_enabled` off, no job sends, the card and `/notifications/setup` are hidden, and subscribe answers 403 (`push_enabled` stays default on)
   - [x] Playwright with a stubbed `PushManager`: the card moves ready → on, posts the right body, offers the test notification, and turns off; the blocked state shows the undo steps; `/notifications/setup` and the card pass a11y and layout at 390 and 1280 px
   - [x] Optional pushes outside the recipient's window wait for it; required kinds and changes to events starting within 24 hours go at once; past 20 optional pushes an hour the extras are `suppressed` "hourly limit" and the bell still has them
@@ -1920,8 +1920,8 @@ Design defaults for this phase (decided here so slices don't reopen them; change
   - [x] An endpoint posted by a second user is rebound to that user
   - [x] `/sw.js` is served `Cache-Control: no-cache`, and the CSP carries `worker-src 'self'; manifest-src 'self'`
   - [x] `TestOnlyLoginAndInvitesAnswer429` stays green: the test-notification limit answers 200 with its own line (DEC-129)
-  - [ ] `fold push keys rotate` deletes every device; a running server uses the new key without a restart
-  - [ ] A payload over the 3,000-byte plaintext cap is refused before any network call
+  - [x] `fold push keys rotate` deletes every device; a running server uses the new key without a restart
+  - [x] A payload over the 3,000-byte plaintext cap is refused before any network call
   - [x] The new error codes have `api_errors.go` entries and `ERROR_COPY` lines (DEC-61) (slice b's are in; the push-only 400, `message_push_only`, came with d2)
   - [ ] Best effort, listed in `docs/FIRST-CHURCH-CHECKS.md` (DEC-128): proven on a real iPhone (iOS 16.4 or newer, Home Screen app), Android Chrome, desktop Safari and Edge on Windows, with the iOS version recorded
 - Tests: vector and fake-service tests in `internal/push`; allow-list and DNS-rebinding tests; registry privacy tests; job idempotency with a fake clock; handler tests; Playwright for the card and directions.

@@ -58,8 +58,9 @@ type messageJSON struct {
 }
 
 // messageReminderJSON is the date an automatic reminder is for: "Automatic
-// reminder for Book night, Tue, Nov 3". Kind is going (the reminder) or
-// waitlist (the "still on the waitlist" note, DEC-133).
+// reminder for Book night, Tue, Nov 3". Kind is going (the reminder),
+// waitlist (the "still on the waitlist" note, DEC-133) or push (the 2-hour
+// push reminder, M3.13d3).
 type messageReminderJSON struct {
 	Kind         string    `json:"kind"`
 	OccurrenceID uint      `json:"occurrenceId"`
@@ -83,11 +84,15 @@ func reminderSubject(subject string, d messageReminderJSON) string {
 	return strings.NewReplacer("{{"+content.FieldEventTitle+"}}", d.EventTitle, "{{"+content.FieldEventTime+"}}", formatWhen(d.StartsAt, loc)).Replace(subject)
 }
 
-// reminderKind is going or waitlist, from a reminder's key
-// ("<kind>:<occurrence>:<start>:<minutes>", writeReminder).
+// reminderKind is going, waitlist or push, from a reminder's key
+// ("<kind>:<occurrence>:<start>:<minutes>", writeReminder and
+// pushReminderKey).
 func reminderKind(m *models.Message) string {
-	if m.ReminderKey != nil && strings.HasPrefix(*m.ReminderKey, reminderWaitlist+":") {
+	switch {
+	case m.ReminderKey != nil && strings.HasPrefix(*m.ReminderKey, reminderWaitlist+":"):
 		return reminderWaitlist
+	case m.ReminderKey != nil && strings.HasPrefix(*m.ReminderKey, reminderPushKind+":"):
+		return reminderPushKind
 	}
 	return reminderGoing
 }

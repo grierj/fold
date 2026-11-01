@@ -229,6 +229,13 @@ const PUSH_REASONS: Record<string, [one: string, many: string]> = {
   "the push service couldn't be reached": ["the push service couldn't be reached", "the push service couldn't be reached"],
   "the notification was too large to push": ["too large to push", "too large to push"],
   "didn't go out": ["didn't go out", "didn't go out"],
+  // A push reminder's (M3.13d3).
+  "push turned off for event updates": ["turned notifications off for event updates", "turned notifications off for event updates"],
+  "outside quiet hours": ["skipped: it would have come during quiet hours", "skipped: it would have come during quiet hours"],
+  "date cancelled or moved": ["not sent: the date was cancelled or moved", "not sent: the date was cancelled or moved"],
+  "push reminder turned off": ["not sent: push reminders were turned off", "not sent: push reminders were turned off"],
+  "no longer going": ["no longer going", "no longer going"],
+  "can't see this date anymore": ["can't see this date anymore", "can't see this date anymore"],
 };
 
 // pushBadge is one person's push in their history row, in words (status

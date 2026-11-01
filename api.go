@@ -214,8 +214,10 @@ type occurrenceJSON struct {
 	WaitlistEnabled bool `json:"waitlistEnabled"`
 	GuestsAllowed   int  `json:"guestsAllowed"`
 	// ReminderEmailMinutes is the series' reminder time (M3.6), for its
-	// Edit series form; 0 is off.
-	ReminderEmailMinutes int `json:"reminderEmailMinutes"`
+	// Edit series form; 0 is off. ReminderPush is its 2-hour push
+	// reminder switch (M3.13d3).
+	ReminderEmailMinutes int  `json:"reminderEmailMinutes"`
+	ReminderPush         bool `json:"reminderPush"`
 	// Remote attendance (M1.8 slice 2): a second seat pool. The remote
 	// fields mirror the in-person ones; remoteCapacity is the effective
 	// cap for this date (per-date override wins), null is unlimited.
@@ -301,8 +303,10 @@ type eventJSON struct {
 	WaitlistEnabled bool `json:"waitlistEnabled"`
 	GuestsAllowed   int  `json:"guestsAllowed"`
 	// ReminderEmailMinutes: when each date's email reminder goes (M3.6,
-	// DEC-133); 0 is off.
-	ReminderEmailMinutes int `json:"reminderEmailMinutes"`
+	// DEC-133); 0 is off. ReminderPush: each date's 2-hour push reminder
+	// (M3.13d3).
+	ReminderEmailMinutes int  `json:"reminderEmailMinutes"`
+	ReminderPush         bool `json:"reminderPush"`
 	// Remote attendance (M1.8 slice 2). RemoteCapacity null means
 	// unlimited remote seats.
 	RemoteAvailable    bool   `json:"remoteAvailable"`

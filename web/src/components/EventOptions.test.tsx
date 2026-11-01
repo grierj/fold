@@ -1,14 +1,15 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { Site } from "../api";
 import { emptyChildcare } from "./ChildcareField";
 import { EventOptions, optionsSummary } from "./EventOptions";
 import { emptyRemote } from "./RemoteField";
 import { emptySeats } from "./SeatsField";
 import { emptyVideo } from "./VideoField";
 
-vi.mock("../api", () => ({ Events: { generateJitsi: vi.fn() } }));
+vi.mock("../api", () => ({ Events: { generateJitsi: vi.fn() }, Site: { get: vi.fn(() => Promise.resolve({ pushEnabled: true })) } }));
 
 const base = { seats: emptySeats, video: emptyVideo, remote: emptyRemote, childcare: emptyChildcare };
 
@@ -96,5 +97,42 @@ describe("ReminderField in More options", () => {
     await userEvent.selectOptions(select, "Off");
     await userEvent.click(screen.getByRole("button", { name: "More options" }));
     expect(screen.getByText("No seat limit · No video · No childcare · No reminder")).toBeInTheDocument();
+  });
+});
+
+function PushHarness() {
+  const [reminder, setReminder] = useState(1440);
+  const [push, setPush] = useState(true);
+  return (
+    <>
+      <EventOptions idPrefix="p" open onOpenChange={() => {}} {...base} onSeats={() => {}} onVideo={() => {}} onRemote={() => {}} onChildcare={() => {}}
+        reminder={reminder} onReminder={setReminder} reminderPush={push} onReminderPush={setPush} />
+      <p>push is {push ? "on" : "off"}</p>
+    </>
+  );
+}
+
+describe("the push reminder switch (M3.13d3)", () => {
+  it("sits under the reminder email, on by default, and says who gets it", async () => {
+    render(<PushHarness />);
+    const box = screen.getByRole("checkbox", { name: /^Push reminder 2 hours before/ });
+    expect(box).toBeChecked();
+    expect(box).toHaveAccessibleName(/People who turned on notifications get a short reminder on their phone\./);
+    expect(screen.getByLabelText("Reminder email").compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(box);
+    expect(screen.getByText("push is off")).toBeInTheDocument();
+  });
+
+  it("is hidden when the church turned notifications off", async () => {
+    vi.mocked(Site.get).mockResolvedValueOnce({ pushEnabled: false } as never);
+    render(<PushHarness />);
+    await waitFor(() => expect(screen.queryByRole("checkbox", { name: /Push reminder/ })).not.toBeInTheDocument());
+    expect(screen.getByLabelText("Reminder email")).toBeInTheDocument();
+  });
+
+  it("joins the closed summary", () => {
+    expect(optionsSummary({ ...base, reminder: 1440, reminderPush: true })).toBe("No seat limit · No video · No childcare · Reminder 1 day before · Push reminder");
+    expect(optionsSummary({ ...base, reminder: 0, reminderPush: true })).toBe("No seat limit · No video · No childcare · No reminder email · Push reminder");
+    expect(optionsSummary({ ...base, reminder: 0, reminderPush: false })).toBe("No seat limit · No video · No childcare · No reminder");
   });
 });

@@ -159,6 +159,7 @@ function EventRow({
                 waitlistEnabled: instance.waitlistEnabled,
                 guestsAllowed: instance.guestsAllowed,
                 reminderEmailMinutes: instance.reminderEmailMinutes,
+                reminderPush: instance.reminderPush,
                 childcareAvailable: instance.childcareAvailable, childcareCapacity: instance.childcareCapacity,
                 childcareAges: instance.childcareAges, childcareNotes: instance.childcareNotes,
                 remoteAvailable: instance.remoteAvailable,
